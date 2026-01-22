@@ -14,6 +14,7 @@ import javax.xml.transform.stream.StreamResult;
 
 import org.w3c.dom.*;
 
+import java.io.StringWriter;
 import java.io.Writer;
 import java.util.*;
 
@@ -27,6 +28,8 @@ public final class DomLirSerializer implements LirSerializer {
 
         Element irEl = doc.createElement("ir");
         doc.appendChild(irEl);
+
+        var insnSerializer = new SimpleLirBlockInsnSerializer();
 
         for (var cls : module.getClassDefs()) {
             Element classEl = doc.createElement("class_def");
@@ -131,7 +134,6 @@ public final class DomLirSerializer implements LirSerializer {
                 }
                 fEl.appendChild(varsEl);
 
-                // basic_blocks: Not serializing instruction lists here; only structure
                 Element bbsEl = doc.createElement("basic_blocks");
                 // set entry to first basic block id if present
                 if (fn.getBasicBlockCount() > 0) {
@@ -143,7 +145,14 @@ public final class DomLirSerializer implements LirSerializer {
                 for (var bb : fn) {
                     Element bbEl = doc.createElement("basic_block");
                     bbEl.setAttribute("id", bb.id());
-                    // instructions are omitted by design for now
+
+                    // serialize instructions for this basic block into textual form and attach as text node
+                    try (var sw = new StringWriter()) {
+                        insnSerializer.serialize(bb.instructions(), sw);
+                        var textNode = doc.createTextNode(sw.toString());
+                        bbEl.appendChild(textNode);
+                    }
+
                     bbsEl.appendChild(bbEl);
                 }
                 fEl.appendChild(bbsEl);
@@ -163,4 +172,3 @@ public final class DomLirSerializer implements LirSerializer {
         transformer.transform(new DOMSource(doc), new StreamResult(out));
     }
 }
-

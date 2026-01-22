@@ -7,7 +7,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-public record DestructInsn(@Nullable String resultId, @NotNull String variableId) implements ConstructionInstruction {
+public record DestructInsn(@NotNull String variableId) implements ConstructionInstruction {
     @Override
     public @Nullable String resultId() {
         return null;

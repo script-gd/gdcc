@@ -7,6 +7,7 @@ import org.jetbrains.annotations.NotNull;
 import org.w3c.dom.*;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.Reader;
+import java.io.StringReader;
 import java.util.*;
 
 /// DOM-based implementation of LirParser. Parses the XML structure into LIR entities.
@@ -169,7 +170,21 @@ public final class DomLirParser implements LirParser {
                         for (int bi = 0; bi < bbList.getLength(); bi++) {
                             var bbEl = (Element) bbList.item(bi);
                             var bbid = bbEl.getAttribute("id");
-                            fn.addBasicBlock(new LirBasicBlock(bbid));
+                            var block = new LirBasicBlock(bbid);
+
+                            // parse textual instruction list inside the basic_block element
+                            var text = bbEl.getTextContent();
+                            if (text != null && !text.isBlank()) {
+                                var parser = new SimpleLirBlockInsnParser();
+                                try (var sr = new StringReader(text)) {
+                                    var insns = parser.parse(sr);
+                                    for (var insn : insns) {
+                                        block.instructions().add(insn);
+                                    }
+                                }
+                            }
+
+                            fn.addBasicBlock(block);
                         }
                         // Note: we don't parse instruction lists in this initial implementation.
                         // The entry attribute is kept on XML but not stored on LirFunctionDef.
