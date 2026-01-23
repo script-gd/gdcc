@@ -1,0 +1,4191 @@
+{
+  "header": {
+    "version_major": 4,
+    "version_minor": 5,
+    "version_patch": 1,
+    "version_status": "stable",
+    "version_build": "official",
+    "version_full_name": "Godot Engine v4.5.1.stable.official",
+    "precision": "single"
+  },
+  "builtin_class_sizes": [
+    {
+      "build_configuration": "float_32",
+      "sizes": [
+        {
+          "name": "Nil",
+          "size": 0
+        },
+        {
+          "name": "bool",
+          "size": 1
+        },
+        {
+          "name": "int",
+          "size": 8
+        },
+        {
+          "name": "float",
+          "size": 8
+        },
+        {
+          "name": "String",
+          "size": 4
+        },
+        {
+          "name": "Vector2",
+          "size": 8
+        },
+        {
+          "name": "Vector2i",
+          "size": 8
+        },
+        {
+          "name": "Rect2",
+          "size": 16
+        },
+        {
+          "name": "Rect2i",
+          "size": 16
+        },
+        {
+          "name": "Vector3",
+          "size": 12
+        },
+        {
+          "name": "Vector3i",
+          "size": 12
+        },
+        {
+          "name": "Transform2D",
+          "size": 24
+        },
+        {
+          "name": "Vector4",
+          "size": 16
+        },
+        {
+          "name": "Vector4i",
+          "size": 16
+        },
+        {
+          "name": "Plane",
+          "size": 16
+        },
+        {
+          "name": "Quaternion",
+          "size": 16
+        },
+        {
+          "name": "AABB",
+          "size": 24
+        },
+        {
+          "name": "Basis",
+          "size": 36
+        },
+        {
+          "name": "Transform3D",
+          "size": 48
+        },
+        {
+          "name": "Projection",
+          "size": 64
+        },
+        {
+          "name": "Color",
+          "size": 16
+        },
+        {
+          "name": "StringName",
+          "size": 4
+        },
+        {
+          "name": "NodePath",
+          "size": 4
+        },
+        {
+          "name": "RID",
+          "size": 8
+        },
+        {
+          "name": "Object",
+          "size": 4
+        },
+        {
+          "name": "Callable",
+          "size": 16
+        },
+        {
+          "name": "Signal",
+          "size": 16
+        },
+        {
+          "name": "Dictionary",
+          "size": 4
+        },
+        {
+          "name": "Array",
+          "size": 4
+        },
+        {
+          "name": "PackedByteArray",
+          "size": 8
+        },
+        {
+          "name": "PackedInt32Array",
+          "size": 8
+        },
+        {
+          "name": "PackedInt64Array",
+          "size": 8
+        },
+        {
+          "name": "PackedFloat32Array",
+          "size": 8
+        },
+        {
+          "name": "PackedFloat64Array",
+          "size": 8
+        },
+        {
+          "name": "PackedStringArray",
+          "size": 8
+        },
+        {
+          "name": "PackedVector2Array",
+          "size": 8
+        },
+        {
+          "name": "PackedVector3Array",
+          "size": 8
+        },
+        {
+          "name": "PackedColorArray",
+          "size": 8
+        },
+        {
+          "name": "PackedVector4Array",
+          "size": 8
+        },
+        {
+          "name": "Variant",
+          "size": 24
+        }
+      ]
+    }
+  ],
+  "builtin_class_member_offsets": [
+    {
+      "build_configuration": "float_32",
+      "classes": [
+        {
+          "name": "Vector2",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "float"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "Vector2i",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "int32"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "Rect2",
+          "members": [
+            {
+              "member": "position",
+              "offset": 0,
+              "meta": "Vector2"
+            },
+            {
+              "member": "size",
+              "offset": 8,
+              "meta": "Vector2"
+            }
+          ]
+        },
+        {
+          "name": "Rect2i",
+          "members": [
+            {
+              "member": "position",
+              "offset": 0,
+              "meta": "Vector2i"
+            },
+            {
+              "member": "size",
+              "offset": 8,
+              "meta": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "Vector3",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "float"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "float"
+            },
+            {
+              "member": "z",
+              "offset": 8,
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "Vector3i",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "int32"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "int32"
+            },
+            {
+              "member": "z",
+              "offset": 8,
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "Transform2D",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "Vector2"
+            },
+            {
+              "member": "y",
+              "offset": 8,
+              "meta": "Vector2"
+            },
+            {
+              "member": "origin",
+              "offset": 16,
+              "meta": "Vector2"
+            }
+          ]
+        },
+        {
+          "name": "Vector4",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "float"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "float"
+            },
+            {
+              "member": "z",
+              "offset": 8,
+              "meta": "float"
+            },
+            {
+              "member": "w",
+              "offset": 12,
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "Vector4i",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "int32"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "int32"
+            },
+            {
+              "member": "z",
+              "offset": 8,
+              "meta": "int32"
+            },
+            {
+              "member": "w",
+              "offset": 12,
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "Plane",
+          "members": [
+            {
+              "member": "normal",
+              "offset": 0,
+              "meta": "Vector3"
+            },
+            {
+              "member": "d",
+              "offset": 12,
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "Quaternion",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "float"
+            },
+            {
+              "member": "y",
+              "offset": 4,
+              "meta": "float"
+            },
+            {
+              "member": "z",
+              "offset": 8,
+              "meta": "float"
+            },
+            {
+              "member": "w",
+              "offset": 12,
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "AABB",
+          "members": [
+            {
+              "member": "position",
+              "offset": 0,
+              "meta": "Vector3"
+            },
+            {
+              "member": "size",
+              "offset": 12,
+              "meta": "Vector3"
+            }
+          ]
+        },
+        {
+          "name": "Basis",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "Vector3"
+            },
+            {
+              "member": "y",
+              "offset": 12,
+              "meta": "Vector3"
+            },
+            {
+              "member": "z",
+              "offset": 24,
+              "meta": "Vector3"
+            }
+          ]
+        },
+        {
+          "name": "Transform3D",
+          "members": [
+            {
+              "member": "basis",
+              "offset": 0,
+              "meta": "Basis"
+            },
+            {
+              "member": "origin",
+              "offset": 36,
+              "meta": "Vector3"
+            }
+          ]
+        },
+        {
+          "name": "Projection",
+          "members": [
+            {
+              "member": "x",
+              "offset": 0,
+              "meta": "Vector4"
+            },
+            {
+              "member": "y",
+              "offset": 16,
+              "meta": "Vector4"
+            },
+            {
+              "member": "z",
+              "offset": 32,
+              "meta": "Vector4"
+            },
+            {
+              "member": "w",
+              "offset": 48,
+              "meta": "Vector4"
+            }
+          ]
+        },
+        {
+          "name": "Color",
+          "members": [
+            {
+              "member": "r",
+              "offset": 0,
+              "meta": "float"
+            },
+            {
+              "member": "g",
+              "offset": 4,
+              "meta": "float"
+            },
+            {
+              "member": "b",
+              "offset": 8,
+              "meta": "float"
+            },
+            {
+              "member": "a",
+              "offset": 12,
+              "meta": "float"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "global_enums": [
+    {
+      "name": "Side",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "SIDE_LEFT",
+          "value": 0
+        },
+        {
+          "name": "SIDE_TOP",
+          "value": 1
+        },
+        {
+          "name": "SIDE_RIGHT",
+          "value": 2
+        },
+        {
+          "name": "SIDE_BOTTOM",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "Corner",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "CORNER_TOP_LEFT",
+          "value": 0
+        },
+        {
+          "name": "CORNER_TOP_RIGHT",
+          "value": 1
+        },
+        {
+          "name": "CORNER_BOTTOM_RIGHT",
+          "value": 2
+        },
+        {
+          "name": "CORNER_BOTTOM_LEFT",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "Orientation",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "VERTICAL",
+          "value": 1
+        },
+        {
+          "name": "HORIZONTAL",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "ClockDirection",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "CLOCKWISE",
+          "value": 0
+        },
+        {
+          "name": "COUNTERCLOCKWISE",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "HorizontalAlignment",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "HORIZONTAL_ALIGNMENT_LEFT",
+          "value": 0
+        },
+        {
+          "name": "HORIZONTAL_ALIGNMENT_CENTER",
+          "value": 1
+        },
+        {
+          "name": "HORIZONTAL_ALIGNMENT_RIGHT",
+          "value": 2
+        },
+        {
+          "name": "HORIZONTAL_ALIGNMENT_FILL",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "VerticalAlignment",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "VERTICAL_ALIGNMENT_TOP",
+          "value": 0
+        },
+        {
+          "name": "VERTICAL_ALIGNMENT_CENTER",
+          "value": 1
+        },
+        {
+          "name": "VERTICAL_ALIGNMENT_BOTTOM",
+          "value": 2
+        },
+        {
+          "name": "VERTICAL_ALIGNMENT_FILL",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "InlineAlignment",
+      "is_bitfield": false,
+      "values": [
+        {
+          "name": "INLINE_ALIGNMENT_TOP_TO",
+          "value": 0
+        },
+        {
+          "name": "INLINE_ALIGNMENT_CENTER_TO",
+          "value": 1
+        },
+        {
+          "name": "INLINE_ALIGNMENT_BASELINE_TO",
+          "value": 3
+        },
+        {
+          "name": "INLINE_ALIGNMENT_BOTTOM_TO",
+          "value": 2
+        },
+        {
+          "name": "INLINE_ALIGNMENT_TO_TOP",
+          "value": 0
+        },
+        {
+          "name": "INLINE_ALIGNMENT_TO_CENTER",
+          "value": 4
+        },
+        {
+          "name": "INLINE_ALIGNMENT_TO_BASELINE",
+          "value": 8
+        },
+        {
+          "name": "INLINE_ALIGNMENT_TO_BOTTOM",
+          "value": 12
+        },
+        {
+          "name": "INLINE_ALIGNMENT_TOP",
+          "value": 0
+        },
+        {
+          "name": "INLINE_ALIGNMENT_CENTER",
+          "value": 5
+        },
+        {
+          "name": "INLINE_ALIGNMENT_BOTTOM",
+          "value": 14
+        },
+        {
+          "name": "INLINE_ALIGNMENT_IMAGE_MASK",
+          "value": 3
+        },
+        {
+          "name": "INLINE_ALIGNMENT_TEXT_MASK",
+          "value": 12
+        }
+      ]
+    }
+  ],
+  "utility_functions": [
+    {
+      "name": "sin",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "angle_rad",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "cos",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "angle_rad",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "tan",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "angle_rad",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "sinh",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "cosh",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "tanh",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "asin",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "acos",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "atan",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "atan2",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 92296394,
+      "arguments": [
+        {
+          "name": "y",
+          "type": "float"
+        },
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    },
+    {
+      "name": "asinh",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 2140049587,
+      "arguments": [
+        {
+          "name": "x",
+          "type": "float"
+        }
+      ]
+    }
+  ],
+  "builtin_classes": [
+    {
+      "name": "Nil",
+      "is_keyed": false,
+      "operators": [
+        {
+          "name": "==",
+          "right_type": "Variant",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Variant",
+          "return_type": "bool"
+        },
+        {
+          "name": "or",
+          "right_type": "Variant",
+          "return_type": "bool"
+        },
+        {
+          "name": "not",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "bool",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "bool",
+          "return_type": "bool"
+        },
+        {
+          "name": "and",
+          "right_type": "bool",
+          "return_type": "bool"
+        },
+        {
+          "name": "or",
+          "right_type": "bool",
+          "return_type": "bool"
+        },
+        {
+          "name": "xor",
+          "right_type": "bool",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "int",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "int",
+          "return_type": "bool"
+        },
+        {
+          "name": "and",
+          "right_type": "int",
+          "return_type": "bool"
+        },
+        {
+          "name": "or",
+          "right_type": "int",
+          "return_type": "bool"
+        },
+        {
+          "name": "xor",
+          "right_type": "int",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "float",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "float",
+          "return_type": "bool"
+        },
+        {
+          "name": "and",
+          "right_type": "float",
+          "return_type": "bool"
+        },
+        {
+          "name": "or",
+          "right_type": "float",
+          "return_type": "bool"
+        },
+        {
+          "name": "xor",
+          "right_type": "float",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Vector2",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Vector2",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Vector2i",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Vector2i",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Rect2",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Rect2",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Rect2i",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Rect2i",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Vector3",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Vector3",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Vector3i",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Vector3i",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Transform2D",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Transform2D",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Vector4",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Vector4",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Vector4i",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Vector4i",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Plane",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Plane",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Quaternion",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Quaternion",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "AABB",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "AABB",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Basis",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Basis",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Transform3D",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Transform3D",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Projection",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Projection",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Color",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Color",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "StringName",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "StringName",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "NodePath",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "NodePath",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "RID",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "RID",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Object",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Object",
+          "return_type": "bool"
+        },
+        {
+          "name": "and",
+          "right_type": "Object",
+          "return_type": "bool"
+        },
+        {
+          "name": "or",
+          "right_type": "Object",
+          "return_type": "bool"
+        },
+        {
+          "name": "xor",
+          "right_type": "Object",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Callable",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Callable",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Signal",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Signal",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Dictionary",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Dictionary",
+          "return_type": "bool"
+        },
+        {
+          "name": "in",
+          "right_type": "Dictionary",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "in",
+          "right_type": "Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedByteArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedByteArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedInt32Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedInt32Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedInt64Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedInt64Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedFloat32Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedFloat32Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedFloat64Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedFloat64Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedStringArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedStringArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedVector2Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedVector2Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedVector3Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedVector3Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedColorArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedColorArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "==",
+          "right_type": "PackedVector4Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "PackedVector4Array",
+          "return_type": "bool"
+        }
+      ],
+      "constructors": [
+        {
+          "index": 0
+        },
+        {
+          "index": 1,
+          "arguments": [
+            {
+              "name": "from",
+              "type": "Variant"
+            }
+          ]
+        }
+      ],
+      "has_destructor": false
+    },
+    {
+      "name": "String",
+      "indexing_return_type": "String",
+      "is_keyed": false,
+      "operators": [
+        {
+          "name": "==",
+          "right_type": "Variant",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "Variant",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "Variant",
+          "return_type": "String"
+        },
+        {
+          "name": "not",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "bool",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "int",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "float",
+          "return_type": "String"
+        },
+        {
+          "name": "==",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "<",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "<=",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": ">",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": ">=",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "+",
+          "right_type": "String",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "String",
+          "return_type": "String"
+        },
+        {
+          "name": "in",
+          "right_type": "String",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "Vector2",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Vector2i",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Rect2",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Rect2i",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Vector3",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Vector3i",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Transform2D",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Vector4",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Vector4i",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Plane",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Quaternion",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "AABB",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Basis",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Transform3D",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Projection",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Color",
+          "return_type": "String"
+        },
+        {
+          "name": "==",
+          "right_type": "StringName",
+          "return_type": "bool"
+        },
+        {
+          "name": "!=",
+          "right_type": "StringName",
+          "return_type": "bool"
+        },
+        {
+          "name": "+",
+          "right_type": "StringName",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "StringName",
+          "return_type": "String"
+        },
+        {
+          "name": "in",
+          "right_type": "StringName",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "NodePath",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "RID",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Object",
+          "return_type": "String"
+        },
+        {
+          "name": "in",
+          "right_type": "Object",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "Callable",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Signal",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "Dictionary",
+          "return_type": "String"
+        },
+        {
+          "name": "in",
+          "right_type": "Dictionary",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "Array",
+          "return_type": "String"
+        },
+        {
+          "name": "in",
+          "right_type": "Array",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedByteArray",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedInt32Array",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedInt64Array",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedFloat32Array",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedFloat64Array",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedStringArray",
+          "return_type": "String"
+        },
+        {
+          "name": "in",
+          "right_type": "PackedStringArray",
+          "return_type": "bool"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedVector2Array",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedVector3Array",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedColorArray",
+          "return_type": "String"
+        },
+        {
+          "name": "%",
+          "right_type": "PackedVector4Array",
+          "return_type": "String"
+        }
+      ],
+      "methods": [
+        {
+          "name": "casecmp_to",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "to",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "nocasecmp_to",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "to",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "naturalcasecmp_to",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "to",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "naturalnocasecmp_to",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "to",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "filecasecmp_to",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "to",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "filenocasecmp_to",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "to",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "length",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3173160232
+        },
+        {
+          "name": "substr",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 787537301,
+          "arguments": [
+            {
+              "name": "from",
+              "type": "int"
+            },
+            {
+              "name": "len",
+              "type": "int",
+              "default_value": "-1"
+            }
+          ]
+        },
+        {
+          "name": "get_slice",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3535100402,
+          "arguments": [
+            {
+              "name": "delimiter",
+              "type": "String"
+            },
+            {
+              "name": "slice",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "get_slicec",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 787537301,
+          "arguments": [
+            {
+              "name": "delimiter",
+              "type": "int"
+            },
+            {
+              "name": "slice",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "get_slice_count",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2920860731,
+          "arguments": [
+            {
+              "name": "delimiter",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "find",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1760645412,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "from",
+              "type": "int",
+              "default_value": "0"
+            }
+          ]
+        },
+        {
+          "name": "findn",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1760645412,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "from",
+              "type": "int",
+              "default_value": "0"
+            }
+          ]
+        },
+        {
+          "name": "count",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2343087891,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "from",
+              "type": "int",
+              "default_value": "0"
+            },
+            {
+              "name": "to",
+              "type": "int",
+              "default_value": "0"
+            }
+          ]
+        },
+        {
+          "name": "countn",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2343087891,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "from",
+              "type": "int",
+              "default_value": "0"
+            },
+            {
+              "name": "to",
+              "type": "int",
+              "default_value": "0"
+            }
+          ]
+        },
+        {
+          "name": "rfind",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1760645412,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "from",
+              "type": "int",
+              "default_value": "-1"
+            }
+          ]
+        },
+        {
+          "name": "rfindn",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1760645412,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "from",
+              "type": "int",
+              "default_value": "-1"
+            }
+          ]
+        },
+        {
+          "name": "match",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "expr",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "matchn",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "expr",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "begins_with",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "text",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "ends_with",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "text",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "is_subsequence_of",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "text",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "is_subsequence_ofn",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "text",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "bigrams",
+          "return_type": "PackedStringArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 747180633
+        },
+        {
+          "name": "similarity",
+          "return_type": "float",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2697460964,
+          "arguments": [
+            {
+              "name": "text",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "format",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3212199029,
+          "arguments": [
+            {
+              "name": "values",
+              "type": "Variant"
+            },
+            {
+              "name": "placeholder",
+              "type": "String",
+              "default_value": "\"{_}\""
+            }
+          ]
+        },
+        {
+          "name": "replace",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1340436205,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "forwhat",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "replacen",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1340436205,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            },
+            {
+              "name": "forwhat",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "replace_char",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 787537301,
+          "arguments": [
+            {
+              "name": "key",
+              "type": "int"
+            },
+            {
+              "name": "with",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "replace_chars",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3535100402,
+          "arguments": [
+            {
+              "name": "keys",
+              "type": "String"
+            },
+            {
+              "name": "with",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "remove_char",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2162347432,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "remove_chars",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "chars",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "repeat",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2162347432,
+          "arguments": [
+            {
+              "name": "count",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "reverse",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "insert",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 248737229,
+          "arguments": [
+            {
+              "name": "position",
+              "type": "int"
+            },
+            {
+              "name": "what",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "erase",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 787537301,
+          "arguments": [
+            {
+              "name": "position",
+              "type": "int"
+            },
+            {
+              "name": "chars",
+              "type": "int",
+              "default_value": "1"
+            }
+          ]
+        },
+        {
+          "name": "capitalize",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "to_camel_case",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "to_pascal_case",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "to_snake_case",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "to_kebab_case",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "split",
+          "return_type": "PackedStringArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1252735785,
+          "arguments": [
+            {
+              "name": "delimiter",
+              "type": "String",
+              "default_value": "\"\""
+            },
+            {
+              "name": "allow_empty",
+              "type": "bool",
+              "default_value": "true"
+            },
+            {
+              "name": "maxsplit",
+              "type": "int",
+              "default_value": "0"
+            }
+          ]
+        },
+        {
+          "name": "rsplit",
+          "return_type": "PackedStringArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 1252735785,
+          "arguments": [
+            {
+              "name": "delimiter",
+              "type": "String",
+              "default_value": "\"\""
+            },
+            {
+              "name": "allow_empty",
+              "type": "bool",
+              "default_value": "true"
+            },
+            {
+              "name": "maxsplit",
+              "type": "int",
+              "default_value": "0"
+            }
+          ]
+        },
+        {
+          "name": "split_floats",
+          "return_type": "PackedFloat64Array",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2092079095,
+          "arguments": [
+            {
+              "name": "delimiter",
+              "type": "String"
+            },
+            {
+              "name": "allow_empty",
+              "type": "bool",
+              "default_value": "true"
+            }
+          ]
+        },
+        {
+          "name": "join",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3595973238,
+          "arguments": [
+            {
+              "name": "parts",
+              "type": "PackedStringArray"
+            }
+          ]
+        },
+        {
+          "name": "to_upper",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "to_lower",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "left",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2162347432,
+          "arguments": [
+            {
+              "name": "length",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "right",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2162347432,
+          "arguments": [
+            {
+              "name": "length",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "strip_edges",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 907855311,
+          "arguments": [
+            {
+              "name": "left",
+              "type": "bool",
+              "default_value": "true"
+            },
+            {
+              "name": "right",
+              "type": "bool",
+              "default_value": "true"
+            }
+          ]
+        },
+        {
+          "name": "strip_escapes",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "lstrip",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "chars",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "rstrip",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "chars",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "get_extension",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "get_basename",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "path_join",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "path",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "unicode_at",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 4103005248,
+          "arguments": [
+            {
+              "name": "at",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "indent",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "prefix",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "dedent",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "hash",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3173160232
+        },
+        {
+          "name": "md5_text",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "sha1_text",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "sha256_text",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "md5_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "sha1_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "sha256_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "is_empty",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "contains",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "containsn",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2566493496,
+          "arguments": [
+            {
+              "name": "what",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "is_absolute_path",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_relative_path",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "simplify_path",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "get_base_dir",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "get_file",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "xml_escape",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3429816538,
+          "arguments": [
+            {
+              "name": "escape_quotes",
+              "type": "bool",
+              "default_value": "false"
+            }
+          ]
+        },
+        {
+          "name": "xml_unescape",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "uri_encode",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "uri_decode",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "uri_file_decode",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "c_escape",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "c_unescape",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "json_escape",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "validate_node_name",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "validate_filename",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3942272618
+        },
+        {
+          "name": "is_valid_ascii_identifier",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_unicode_identifier",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_identifier",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_int",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_float",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_hex_number",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 593672999,
+          "arguments": [
+            {
+              "name": "with_prefix",
+              "type": "bool",
+              "default_value": "false"
+            }
+          ]
+        },
+        {
+          "name": "is_valid_html_color",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_ip_address",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "is_valid_filename",
+          "return_type": "bool",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3918633141
+        },
+        {
+          "name": "to_int",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3173160232
+        },
+        {
+          "name": "to_float",
+          "return_type": "float",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 466405837
+        },
+        {
+          "name": "hex_to_int",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3173160232
+        },
+        {
+          "name": "bin_to_int",
+          "return_type": "int",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3173160232
+        },
+        {
+          "name": "lpad",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 248737229,
+          "arguments": [
+            {
+              "name": "min_length",
+              "type": "int"
+            },
+            {
+              "name": "character",
+              "type": "String",
+              "default_value": "\" \""
+            }
+          ]
+        },
+        {
+          "name": "rpad",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 248737229,
+          "arguments": [
+            {
+              "name": "min_length",
+              "type": "int"
+            },
+            {
+              "name": "character",
+              "type": "String",
+              "default_value": "\" \""
+            }
+          ]
+        },
+        {
+          "name": "pad_decimals",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2162347432,
+          "arguments": [
+            {
+              "name": "digits",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "pad_zeros",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 2162347432,
+          "arguments": [
+            {
+              "name": "digits",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "trim_prefix",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "prefix",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "trim_suffix",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3134094431,
+          "arguments": [
+            {
+              "name": "suffix",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "name": "to_ascii_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "to_utf8_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "to_utf16_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "to_utf32_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "to_wchar_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "to_multibyte_char_buffer",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 3055765187,
+          "arguments": [
+            {
+              "name": "encoding",
+              "type": "String",
+              "default_value": "\"\""
+            }
+          ]
+        },
+        {
+          "name": "hex_decode",
+          "return_type": "PackedByteArray",
+          "is_vararg": false,
+          "is_const": true,
+          "is_static": false,
+          "hash": 247621236
+        },
+        {
+          "name": "num_scientific",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": false,
+          "is_static": true,
+          "hash": 2710373411,
+          "arguments": [
+            {
+              "name": "number",
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "name": "num",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": false,
+          "is_static": true,
+          "hash": 1555901022,
+          "arguments": [
+            {
+              "name": "number",
+              "type": "float"
+            },
+            {
+              "name": "decimals",
+              "type": "int",
+              "default_value": "-1"
+            }
+          ]
+        },
+        {
+          "name": "num_int64",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": false,
+          "is_static": true,
+          "hash": 2111271071,
+          "arguments": [
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "base",
+              "type": "int",
+              "default_value": "10"
+            },
+            {
+              "name": "capitalize_hex",
+              "type": "bool",
+              "default_value": "false"
+            }
+          ]
+        },
+        {
+          "name": "num_uint64",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": false,
+          "is_static": true,
+          "hash": 2111271071,
+          "arguments": [
+            {
+              "name": "number",
+              "type": "int"
+            },
+            {
+              "name": "base",
+              "type": "int",
+              "default_value": "10"
+            },
+            {
+              "name": "capitalize_hex",
+              "type": "bool",
+              "default_value": "false"
+            }
+          ]
+        },
+        {
+          "name": "chr",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": false,
+          "is_static": true,
+          "hash": 897497541,
+          "arguments": [
+            {
+              "name": "code",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "humanize_size",
+          "return_type": "String",
+          "is_vararg": false,
+          "is_const": false,
+          "is_static": true,
+          "hash": 897497541,
+          "arguments": [
+            {
+              "name": "size",
+              "type": "int"
+            }
+          ]
+        }
+      ],
+      "constructors": [
+        {
+          "index": 0
+        },
+        {
+          "index": 1,
+          "arguments": [
+            {
+              "name": "from",
+              "type": "String"
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "arguments": [
+            {
+              "name": "from",
+              "type": "StringName"
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "arguments": [
+            {
+              "name": "from",
+              "type": "NodePath"
+            }
+          ]
+        }
+      ],
+      "has_destructor": true
+    }
+  ],
+  "classes": [
+    {
+      "name": "AESContext",
+      "is_refcounted": true,
+      "is_instantiable": true,
+      "inherits": "RefCounted",
+      "api_type": "core",
+      "enums": [
+        {
+          "name": "Mode",
+          "is_bitfield": false,
+          "values": [
+            {
+              "name": "MODE_ECB_ENCRYPT",
+              "value": 0
+            },
+            {
+              "name": "MODE_ECB_DECRYPT",
+              "value": 1
+            },
+            {
+              "name": "MODE_CBC_ENCRYPT",
+              "value": 2
+            },
+            {
+              "name": "MODE_CBC_DECRYPT",
+              "value": 3
+            },
+            {
+              "name": "MODE_MAX",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "methods": [
+        {
+          "name": "start",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3122411423,
+          "hash_compatibility": [
+            3167574919
+          ],
+          "return_value": {
+            "type": "enum::Error"
+          },
+          "arguments": [
+            {
+              "name": "mode",
+              "type": "enum::AESContext.Mode"
+            },
+            {
+              "name": "key",
+              "type": "PackedByteArray"
+            },
+            {
+              "name": "iv",
+              "type": "PackedByteArray",
+              "default_value": "PackedByteArray()"
+            }
+          ]
+        },
+        {
+          "name": "update",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 527836100,
+          "return_value": {
+            "type": "PackedByteArray"
+          },
+          "arguments": [
+            {
+              "name": "src",
+              "type": "PackedByteArray"
+            }
+          ]
+        },
+        {
+          "name": "get_iv_state",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2115431945,
+          "return_value": {
+            "type": "PackedByteArray"
+          }
+        },
+        {
+          "name": "finish",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3218959716
+        }
+      ]
+    },
+    {
+      "name": "AStarGrid2D",
+      "is_refcounted": true,
+      "is_instantiable": true,
+      "inherits": "RefCounted",
+      "api_type": "core",
+      "enums": [
+        {
+          "name": "Heuristic",
+          "is_bitfield": false,
+          "values": [
+            {
+              "name": "HEURISTIC_EUCLIDEAN",
+              "value": 0
+            },
+            {
+              "name": "HEURISTIC_MANHATTAN",
+              "value": 1
+            },
+            {
+              "name": "HEURISTIC_OCTILE",
+              "value": 2
+            },
+            {
+              "name": "HEURISTIC_CHEBYSHEV",
+              "value": 3
+            },
+            {
+              "name": "HEURISTIC_MAX",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "name": "DiagonalMode",
+          "is_bitfield": false,
+          "values": [
+            {
+              "name": "DIAGONAL_MODE_ALWAYS",
+              "value": 0
+            },
+            {
+              "name": "DIAGONAL_MODE_NEVER",
+              "value": 1
+            },
+            {
+              "name": "DIAGONAL_MODE_AT_LEAST_ONE_WALKABLE",
+              "value": 2
+            },
+            {
+              "name": "DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES",
+              "value": 3
+            },
+            {
+              "name": "DIAGONAL_MODE_MAX",
+              "value": 4
+            }
+          ]
+        },
+        {
+          "name": "CellShape",
+          "is_bitfield": false,
+          "values": [
+            {
+              "name": "CELL_SHAPE_SQUARE",
+              "value": 0
+            },
+            {
+              "name": "CELL_SHAPE_ISOMETRIC_RIGHT",
+              "value": 1
+            },
+            {
+              "name": "CELL_SHAPE_ISOMETRIC_DOWN",
+              "value": 2
+            },
+            {
+              "name": "CELL_SHAPE_MAX",
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "methods": [
+        {
+          "name": "_estimate_cost",
+          "is_const": true,
+          "is_static": false,
+          "is_required": false,
+          "is_vararg": false,
+          "is_virtual": true,
+          "hash": 2153177966,
+          "return_value": {
+            "type": "float",
+            "meta": "float"
+          },
+          "arguments": [
+            {
+              "name": "from_id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "end_id",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "_compute_cost",
+          "is_const": true,
+          "is_static": false,
+          "is_required": false,
+          "is_vararg": false,
+          "is_virtual": true,
+          "hash": 2153177966,
+          "return_value": {
+            "type": "float",
+            "meta": "float"
+          },
+          "arguments": [
+            {
+              "name": "from_id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "to_id",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "set_region",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1763793166,
+          "arguments": [
+            {
+              "name": "region",
+              "type": "Rect2i"
+            }
+          ]
+        },
+        {
+          "name": "get_region",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 410525958,
+          "return_value": {
+            "type": "Rect2i"
+          }
+        },
+        {
+          "name": "set_size",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1130785943,
+          "arguments": [
+            {
+              "name": "size",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "get_size",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3690982128,
+          "return_value": {
+            "type": "Vector2i"
+          }
+        },
+        {
+          "name": "set_offset",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 743155724,
+          "arguments": [
+            {
+              "name": "offset",
+              "type": "Vector2"
+            }
+          ]
+        },
+        {
+          "name": "get_offset",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3341600327,
+          "return_value": {
+            "type": "Vector2"
+          }
+        },
+        {
+          "name": "set_cell_size",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 743155724,
+          "arguments": [
+            {
+              "name": "cell_size",
+              "type": "Vector2"
+            }
+          ]
+        },
+        {
+          "name": "get_cell_size",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3341600327,
+          "return_value": {
+            "type": "Vector2"
+          }
+        },
+        {
+          "name": "set_cell_shape",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 4130591146,
+          "arguments": [
+            {
+              "name": "cell_shape",
+              "type": "enum::AStarGrid2D.CellShape"
+            }
+          ]
+        },
+        {
+          "name": "get_cell_shape",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3293463634,
+          "return_value": {
+            "type": "enum::AStarGrid2D.CellShape"
+          }
+        },
+        {
+          "name": "is_in_bounds",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2522259332,
+          "return_value": {
+            "type": "bool"
+          },
+          "arguments": [
+            {
+              "name": "x",
+              "type": "int",
+              "meta": "int32"
+            },
+            {
+              "name": "y",
+              "type": "int",
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "is_in_boundsv",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3900751641,
+          "return_value": {
+            "type": "bool"
+          },
+          "arguments": [
+            {
+              "name": "id",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "is_dirty",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 36873697,
+          "return_value": {
+            "type": "bool"
+          }
+        },
+        {
+          "name": "update",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3218959716
+        },
+        {
+          "name": "set_jumping_enabled",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2586408642,
+          "arguments": [
+            {
+              "name": "enabled",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "is_jumping_enabled",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 36873697,
+          "return_value": {
+            "type": "bool"
+          }
+        },
+        {
+          "name": "set_diagonal_mode",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1017829798,
+          "arguments": [
+            {
+              "name": "mode",
+              "type": "enum::AStarGrid2D.DiagonalMode"
+            }
+          ]
+        },
+        {
+          "name": "get_diagonal_mode",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3129282674,
+          "return_value": {
+            "type": "enum::AStarGrid2D.DiagonalMode"
+          }
+        },
+        {
+          "name": "set_default_compute_heuristic",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1044375519,
+          "arguments": [
+            {
+              "name": "heuristic",
+              "type": "enum::AStarGrid2D.Heuristic"
+            }
+          ]
+        },
+        {
+          "name": "get_default_compute_heuristic",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2074731422,
+          "return_value": {
+            "type": "enum::AStarGrid2D.Heuristic"
+          }
+        },
+        {
+          "name": "set_default_estimate_heuristic",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1044375519,
+          "arguments": [
+            {
+              "name": "heuristic",
+              "type": "enum::AStarGrid2D.Heuristic"
+            }
+          ]
+        },
+        {
+          "name": "get_default_estimate_heuristic",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2074731422,
+          "return_value": {
+            "type": "enum::AStarGrid2D.Heuristic"
+          }
+        },
+        {
+          "name": "set_point_solid",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1765703753,
+          "hash_compatibility": [
+            2825551965
+          ],
+          "arguments": [
+            {
+              "name": "id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "solid",
+              "type": "bool",
+              "default_value": "true"
+            }
+          ]
+        },
+        {
+          "name": "is_point_solid",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3900751641,
+          "return_value": {
+            "type": "bool"
+          },
+          "arguments": [
+            {
+              "name": "id",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "set_point_weight_scale",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2262553149,
+          "arguments": [
+            {
+              "name": "id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "weight_scale",
+              "type": "float",
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "get_point_weight_scale",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 719993801,
+          "return_value": {
+            "type": "float",
+            "meta": "float"
+          },
+          "arguments": [
+            {
+              "name": "id",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "fill_solid_region",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2261970063,
+          "hash_compatibility": [
+            1152863744
+          ],
+          "arguments": [
+            {
+              "name": "region",
+              "type": "Rect2i"
+            },
+            {
+              "name": "solid",
+              "type": "bool",
+              "default_value": "true"
+            }
+          ]
+        },
+        {
+          "name": "fill_weight_scale_region",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2793244083,
+          "arguments": [
+            {
+              "name": "region",
+              "type": "Rect2i"
+            },
+            {
+              "name": "weight_scale",
+              "type": "float",
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "clear",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3218959716
+        },
+        {
+          "name": "get_point_position",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 108438297,
+          "return_value": {
+            "type": "Vector2"
+          },
+          "arguments": [
+            {
+              "name": "id",
+              "type": "Vector2i"
+            }
+          ]
+        },
+        {
+          "name": "get_point_data_in_region",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3893818462,
+          "return_value": {
+            "type": "typedarray::Dictionary"
+          },
+          "arguments": [
+            {
+              "name": "region",
+              "type": "Rect2i"
+            }
+          ]
+        },
+        {
+          "name": "get_point_path",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1641925693,
+          "hash_compatibility": [
+            690373547
+          ],
+          "return_value": {
+            "type": "PackedVector2Array"
+          },
+          "arguments": [
+            {
+              "name": "from_id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "to_id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "allow_partial_path",
+              "type": "bool",
+              "default_value": "false"
+            }
+          ]
+        },
+        {
+          "name": "get_id_path",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1918132273,
+          "hash_compatibility": [
+            1989391000
+          ],
+          "return_value": {
+            "type": "typedarray::Vector2i"
+          },
+          "arguments": [
+            {
+              "name": "from_id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "to_id",
+              "type": "Vector2i"
+            },
+            {
+              "name": "allow_partial_path",
+              "type": "bool",
+              "default_value": "false"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "type": "Rect2i",
+          "name": "region",
+          "setter": "set_region",
+          "getter": "get_region"
+        },
+        {
+          "type": "Vector2i",
+          "name": "size",
+          "setter": "set_size",
+          "getter": "get_size"
+        },
+        {
+          "type": "Vector2",
+          "name": "offset",
+          "setter": "set_offset",
+          "getter": "get_offset"
+        },
+        {
+          "type": "Vector2",
+          "name": "cell_size",
+          "setter": "set_cell_size",
+          "getter": "get_cell_size"
+        },
+        {
+          "type": "int",
+          "name": "cell_shape",
+          "setter": "set_cell_shape",
+          "getter": "get_cell_shape"
+        },
+        {
+          "type": "bool",
+          "name": "jumping_enabled",
+          "setter": "set_jumping_enabled",
+          "getter": "is_jumping_enabled"
+        },
+        {
+          "type": "int",
+          "name": "default_compute_heuristic",
+          "setter": "set_default_compute_heuristic",
+          "getter": "get_default_compute_heuristic"
+        },
+        {
+          "type": "int",
+          "name": "default_estimate_heuristic",
+          "setter": "set_default_estimate_heuristic",
+          "getter": "get_default_estimate_heuristic"
+        },
+        {
+          "type": "int",
+          "name": "diagonal_mode",
+          "setter": "set_diagonal_mode",
+          "getter": "get_diagonal_mode"
+        }
+      ]
+    },
+    {
+      "name": "AnimatedTexture",
+      "is_refcounted": true,
+      "is_instantiable": true,
+      "inherits": "Texture2D",
+      "api_type": "core",
+      "constants": [
+        {
+          "name": "MAX_FRAMES",
+          "value": 256
+        }
+      ],
+      "methods": [
+        {
+          "name": "set_frames",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1286410249,
+          "arguments": [
+            {
+              "name": "frames",
+              "type": "int",
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "get_frames",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3905245786,
+          "return_value": {
+            "type": "int",
+            "meta": "int32"
+          }
+        },
+        {
+          "name": "set_current_frame",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1286410249,
+          "arguments": [
+            {
+              "name": "frame",
+              "type": "int",
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "get_current_frame",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3905245786,
+          "return_value": {
+            "type": "int",
+            "meta": "int32"
+          }
+        },
+        {
+          "name": "set_pause",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2586408642,
+          "arguments": [
+            {
+              "name": "pause",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "get_pause",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 36873697,
+          "return_value": {
+            "type": "bool"
+          }
+        },
+        {
+          "name": "set_one_shot",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2586408642,
+          "arguments": [
+            {
+              "name": "one_shot",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "get_one_shot",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 36873697,
+          "return_value": {
+            "type": "bool"
+          }
+        },
+        {
+          "name": "set_speed_scale",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 373806689,
+          "arguments": [
+            {
+              "name": "scale",
+              "type": "float",
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "get_speed_scale",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1740695150,
+          "return_value": {
+            "type": "float",
+            "meta": "float"
+          }
+        },
+        {
+          "name": "set_frame_texture",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 666127730,
+          "arguments": [
+            {
+              "name": "frame",
+              "type": "int",
+              "meta": "int32"
+            },
+            {
+              "name": "texture",
+              "type": "Texture2D"
+            }
+          ]
+        },
+        {
+          "name": "get_frame_texture",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 3536238170,
+          "return_value": {
+            "type": "Texture2D"
+          },
+          "arguments": [
+            {
+              "name": "frame",
+              "type": "int",
+              "meta": "int32"
+            }
+          ]
+        },
+        {
+          "name": "set_frame_duration",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 1602489585,
+          "arguments": [
+            {
+              "name": "frame",
+              "type": "int",
+              "meta": "int32"
+            },
+            {
+              "name": "duration",
+              "type": "float",
+              "meta": "float"
+            }
+          ]
+        },
+        {
+          "name": "get_frame_duration",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "hash": 2339986948,
+          "return_value": {
+            "type": "float",
+            "meta": "float"
+          },
+          "arguments": [
+            {
+              "name": "frame",
+              "type": "int",
+              "meta": "int32"
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "type": "int",
+          "name": "frames",
+          "setter": "set_frames",
+          "getter": "get_frames"
+        },
+        {
+          "type": "int",
+          "name": "current_frame",
+          "setter": "set_current_frame",
+          "getter": "get_current_frame"
+        },
+        {
+          "type": "bool",
+          "name": "pause",
+          "setter": "set_pause",
+          "getter": "get_pause"
+        },
+        {
+          "type": "bool",
+          "name": "one_shot",
+          "setter": "set_one_shot",
+          "getter": "get_one_shot"
+        },
+        {
+          "type": "float",
+          "name": "speed_scale",
+          "setter": "set_speed_scale",
+          "getter": "get_speed_scale"
+        }
+      ]
+    }
+  ],
+  "singletons": [
+    {
+      "name": "Performance",
+      "type": "Performance"
+    },
+    {
+      "name": "Engine",
+      "type": "Engine"
+    },
+    {
+      "name": "ProjectSettings",
+      "type": "ProjectSettings"
+    },
+    {
+      "name": "OS",
+      "type": "OS"
+    },
+    {
+      "name": "Time",
+      "type": "Time"
+    },
+    {
+      "name": "TextServerManager",
+      "type": "TextServerManager"
+    },
+    {
+      "name": "PhysicsServer2DManager",
+      "type": "PhysicsServer2DManager"
+    }
+  ],
+  "native_structures": [
+    {
+      "name": "AudioFrame",
+      "format": "float left;float right"
+    },
+    {
+      "name": "CaretInfo",
+      "format": "Rect2 leading_caret;Rect2 trailing_caret;TextServer::Direction leading_direction;TextServer::Direction trailing_direction"
+    },
+    {
+      "name": "Glyph",
+      "format": "int start = -1;int end = -1;uint8_t count = 0;uint8_t repeat = 1;uint16_t flags = 0;float x_off = 0.f;float y_off = 0.f;float advance = 0.f;RID font_rid;int font_size = 0;int32_t index = 0"
+    },
+    {
+      "name": "ObjectID",
+      "format": "uint64_t id = 0"
+    }
+  ]
+}
