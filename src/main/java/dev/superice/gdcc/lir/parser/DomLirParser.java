@@ -1,6 +1,7 @@
 package dev.superice.gdcc.lir.parser;
 
 import dev.superice.gdcc.lir.*;
+import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 
@@ -12,8 +13,25 @@ import java.util.*;
 
 /// DOM-based implementation of LirParser. Parses the XML structure into LIR entities.
 public final class DomLirParser implements LirParser {
+    private ClassRegistry classRegistry;
+
+    public DomLirParser(@NotNull ClassRegistry classRegistry) {
+        this.classRegistry = classRegistry;
+    }
+
+    public ClassRegistry getClassRegistry() {
+        return classRegistry;
+    }
+
+    public void setClassRegistry(ClassRegistry classRegistry) {
+        this.classRegistry = classRegistry;
+    }
+
     @Override
     public @NotNull LirModule parse(@NotNull Reader reader, @NotNull String moduleName) throws Exception {
+        if (classRegistry == null) {
+            throw new IllegalStateException("ClassRegistry is not set on DomLirParser");
+        }
         var dbf = DocumentBuilderFactory.newInstance();
         var builder = dbf.newDocumentBuilder();
         var doc = builder.parse(new org.xml.sax.InputSource(reader));

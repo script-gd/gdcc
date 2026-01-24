@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ExtensionApiLoaderTest {
     @Test
     void loadExtensionApiFromResource() throws IOException {
-        var api = ExtensionApiLoader.loadFromResource();
+        var api = ExtensionApiLoader.loadDefault();
         assertNotNull(api, "api should not be null");
         // basic header checks
         assertNotNull(api.header(), "header should not be null");

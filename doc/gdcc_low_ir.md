@@ -276,7 +276,7 @@ return ($<return_value_id>)?
 
 ### Call Instructions
 
-#### call_engine_global
+#### call_global
 Calls a global function by name.
 ```
 $<result_id>? = call_global "<function_name>" $<arg1_id> $<arg2_id> ...

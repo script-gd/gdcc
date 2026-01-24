@@ -1,6 +1,8 @@
 package dev.superice.gdcc.lir.parser;
 
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.scope.ClassRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
@@ -33,7 +35,7 @@ public class DomLirParserTest {
                 </ir>
                 """;
 
-        var parser = new DomLirParser();
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
         LirModule mod = parser.parse(new StringReader(xml));
         assertNotNull(mod);
         assertEquals(1, mod.getClassDefs().size());

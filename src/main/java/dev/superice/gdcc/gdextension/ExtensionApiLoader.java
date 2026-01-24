@@ -26,7 +26,7 @@ public final class ExtensionApiLoader {
     private static ExtensionAPI instance;
 
     /// Load the extension API from the classpath resource.
-    public static @NotNull ExtensionAPI loadFromResource() throws IOException {
+    public static @NotNull ExtensionAPI loadDefault() throws IOException {
         if (instance != null) {
             return instance;
         }
