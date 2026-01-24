@@ -72,7 +72,10 @@ public final class DomLirParser implements LirParser {
                     for (int pi = 0; pi < params.getLength(); pi++) {
                         var pEl = (Element) params.item(pi);
                         var pname = pEl.getAttribute("name");
-                        var ptype = TypeParser.parse(pEl.getAttribute("type"));
+                        var ptype = classRegistry.findType(pEl.getAttribute("type"));
+                        if (ptype == null) {
+                            throw new IllegalArgumentException("Cannot parse type for signal parameter: " + pEl.getAttribute("type"));
+                        }
                         signal.addParameter(new LirParameterDef(pname, ptype, null, signal));
                     }
                     signals.add(signal);
@@ -88,7 +91,10 @@ public final class DomLirParser implements LirParser {
                 for (int pi = 0; pi < pList.getLength(); pi++) {
                     var pEl = (Element) pList.item(pi);
                     var pname = pEl.getAttribute("name");
-                    var ptype = TypeParser.parse(pEl.getAttribute("type"));
+                    var ptype = classRegistry.findType(pEl.getAttribute("type"));
+                    if (ptype == null) {
+                        throw new IllegalArgumentException("Cannot parse type for property: " + pEl.getAttribute("type"));
+                    }
                     var isStatic = Boolean.parseBoolean(pEl.getAttribute("is_static"));
                     var init = pEl.hasAttribute("init_func") ? pEl.getAttribute("init_func") : null;
                     var getter = pEl.hasAttribute("getter_func") ? pEl.getAttribute("getter_func") : null;
@@ -141,7 +147,10 @@ public final class DomLirParser implements LirParser {
                         for (int pi = 0; pi < pList.getLength(); pi++) {
                             var pEl = (Element) pList.item(pi);
                             var pname = pEl.getAttribute("name");
-                            var ptype = TypeParser.parse(pEl.getAttribute("type"));
+                            var ptype = classRegistry.findType(pEl.getAttribute("type"));
+                            if (ptype == null) {
+                                throw new IllegalArgumentException("Cannot parse type for function parameter: " + pEl.getAttribute("type"));
+                            }
                             var defFunc = pEl.hasAttribute("default_value_func") ? pEl.getAttribute("default_value_func") : null;
                             fn.addParameter(new LirParameterDef(pname, ptype, defFunc, fn));
                         }
@@ -155,7 +164,10 @@ public final class DomLirParser implements LirParser {
                         for (int ci = 0; ci < cList.getLength(); ci++) {
                             var cEl = (Element) cList.item(ci);
                             var cname = cEl.getAttribute("name");
-                            var ctype = TypeParser.parse(cEl.getAttribute("type"));
+                            var ctype = classRegistry.findType(cEl.getAttribute("type"));
+                            if (ctype == null) {
+                                throw new IllegalArgumentException("Cannot parse type for function capture: " + cEl.getAttribute("type"));
+                            }
                             fn.addCapture(new LirCaptureDef(cname, ctype, fn));
                         }
                     }
@@ -164,7 +176,11 @@ public final class DomLirParser implements LirParser {
                     var retNodes = fEl.getElementsByTagName("return_type");
                     if (retNodes.getLength() > 0) {
                         var rEl = (Element) retNodes.item(0);
-                        fn.setReturnType(TypeParser.parse(rEl.getAttribute("type")));
+                        var rtype = classRegistry.findType(rEl.getAttribute("type"));
+                        if (rtype == null) {
+                            throw new IllegalArgumentException("Cannot parse return type for function: " + rEl.getAttribute("type"));
+                        }
+                        fn.setReturnType(rtype);
                     }
 
                     // variables
@@ -175,7 +191,10 @@ public final class DomLirParser implements LirParser {
                         for (int vi = 0; vi < vList.getLength(); vi++) {
                             var vEl = (Element) vList.item(vi);
                             var id = vEl.getAttribute("id");
-                            var t = TypeParser.parse(vEl.getAttribute("type"));
+                            var t = classRegistry.findType(vEl.getAttribute("type"));
+                            if (t == null) {
+                                throw new IllegalArgumentException("Cannot parse type for variable: " + vEl.getAttribute("type"));
+                            }
                             fn.createAndAddVariable(id, t);
                         }
                     }

@@ -53,11 +53,11 @@ public final class ClassRegistry {
 
     /// Return a GdType instance for the given type name if known.
     /// Rules:
-    /// - Prefer textual parsing (copied from TypeParser) which maps builtin and container types to concrete GdType instances.
+    /// - Prefer textual parsing which maps builtin and container types to concrete GdType instances.
     /// - If textual parsing yields a concrete non-GdObjectType -> return it (these are builtins, primitives, containers).
     /// - If the name refers to a gd class (API `classes`) -> return engine GdObjectType(name, true).
     /// - If the name refers to builtin class from API (API.builtin_classes) -> treat as builtin type (non-engine);
-    ///   we prefer TypeParser result for precise mapping; if TypeParser didn't recognize it, return a plain non-engine GdObjectType.
+    ///   we prefer tryParseTextType result for precise mapping; if tryParseTextType didn't recognize it, return a plain non-engine GdObjectType.
     /// - Do NOT return a type for global enums/utility functions in this method (return null instead).
     /// - If none of the above matched, return a plain non-engine GdObjectType(name) (represents a user type reference).
     public @Nullable GdType findType(@NotNull String name) {
@@ -71,7 +71,7 @@ public final class ClassRegistry {
         // If name is a global enum or utility function or singleton, we should not return a type here
         if (isGlobalEnum(name) || isUtilityFunction(name)) return null;
 
-        // If name is a builtin class defined in API but TypeParser couldn't map, then it is an error
+        // If name is a builtin class defined in API but tryParseTextType couldn't map, then it is an error
         if (isBuiltinClass(name)) {
             throw new TypeParsingException("Builtin class type '" + name + "' could not be resolved by parser");
         }
@@ -85,7 +85,7 @@ public final class ClassRegistry {
         return findType(typeName);
     }
 
-    /// Copy of TypeParser.parse textual mapping (exact, case-sensitive). Returns a concrete GdType or GdObjectType as fallback.
+    /// Textual mapping (exact, case-sensitive). Returns a concrete GdType or GdObjectType as fallback.
     private @Nullable GdType tryParseTextType(@NotNull String typeName) {
         var t = typeName.trim();
         if (t.isEmpty()) return null;
