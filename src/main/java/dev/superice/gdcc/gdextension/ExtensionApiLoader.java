@@ -6,6 +6,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.superice.gdcc.enums.GodotVersion;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.InputStreamReader;
@@ -14,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 /// Utility to load and serialize the extension_api_*.json as an ExtensionAPI instance.
 public final class ExtensionApiLoader {
@@ -24,6 +26,7 @@ public final class ExtensionApiLoader {
     private ExtensionApiLoader() { }
 
     private static ExtensionAPI instance;
+    private static final ConcurrentHashMap<GodotVersion, ExtensionAPI> versionedInstances = new ConcurrentHashMap<>();
 
     /// Load the extension API from the classpath resource.
     public static @NotNull ExtensionAPI loadDefault() throws IOException {
@@ -32,6 +35,16 @@ public final class ExtensionApiLoader {
         }
         instance = loadFromResource("/extension_api_451.json");
         return instance;
+    }
+
+    public static @NotNull ExtensionAPI loadVersion(@NotNull GodotVersion version) throws IOException {
+        if (versionedInstances.containsKey(version)) {
+            return versionedInstances.get(version);
+        }
+        var resourcePath = "/extension_api_" + version.getShortVersion() + ".json";
+        var api = loadFromResource(resourcePath);
+        versionedInstances.put(version, api);
+        return api;
     }
 
     /// Load the extension API from the provided classpath resource path.

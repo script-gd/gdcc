@@ -6,5 +6,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.List;
 
 public interface Codegen {
-    List<GeneratedFile> generate(@NotNull CodegenContext ctx, @NotNull LirModule module);
+    void prepare(@NotNull CodegenContext ctx, @NotNull LirModule module);
+
+    List<GeneratedFile> generate();
 }

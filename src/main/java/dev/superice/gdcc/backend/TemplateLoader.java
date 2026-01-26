@@ -3,11 +3,11 @@ package dev.superice.gdcc.backend;
 import freemarker.cache.ClassTemplateLoader;
 import freemarker.cache.FileTemplateLoader;
 import freemarker.template.Configuration;
+import freemarker.template.DefaultObjectWrapperBuilder;
 import freemarker.template.Template;
 import freemarker.template.TemplateException;
 import freemarker.template.TemplateExceptionHandler;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.StringWriter;
@@ -110,6 +110,7 @@ public final class TemplateLoader {
             created.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
             created.setLogTemplateExceptions(false);
             created.setWrapUncheckedExceptions(true);
+            created.setObjectWrapper(new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_31).build());
 
             CLASSPATH_CONFIGURATION_REF = new WeakReference<>(created);
             return created;
@@ -134,6 +135,7 @@ public final class TemplateLoader {
                 created.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
                 created.setLogTemplateExceptions(false);
                 created.setWrapUncheckedExceptions(true);
+                created.setObjectWrapper(new DefaultObjectWrapperBuilder(Configuration.VERSION_2_3_31).build());
 
                 FILE_CONFIGURATION_CACHE.put(normalized, new WeakReference<>(created));
                 return created;

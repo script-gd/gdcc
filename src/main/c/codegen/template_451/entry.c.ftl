@@ -1,6 +1,6 @@
 <#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
 
-#include "library.h"
+#include "entry.h"
 #include <gdcc_helper.h>
 #include <implementation-macros.h>
 
