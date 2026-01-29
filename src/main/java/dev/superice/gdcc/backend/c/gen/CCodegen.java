@@ -28,7 +28,7 @@ public class CCodegen implements Codegen {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateDefaultGetterSetter().");
         }
         for (var classDef : module.getClassDefs()) {
-            var selfType = new GdObjectType(classDef.getName(), false);
+            var selfType = new GdObjectType(classDef.getName());
             for (var propertyDef : classDef.getProperties()) {
                 if (propertyDef.isStatic()) {
                     throw new IllegalStateException("Static properties are not supported in GdExtension.");

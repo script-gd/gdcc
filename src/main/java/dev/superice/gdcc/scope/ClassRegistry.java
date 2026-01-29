@@ -12,12 +12,16 @@ import java.util.List;
 import java.util.Map;
 
 public final class ClassRegistry {
+    /// Built-in type are language built-in types, they are not engine defined types.
     private final Map<String, ExtensionBuiltinClass> builtinByName = new HashMap<>();
+    /// Engine defined classes exposed to scripts via GDExtension API. Aka engine types.
     private final Map<String, ExtensionGdClass> gdClassByName = new HashMap<>();
+    /// Global utility functions.
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
     // TODO: implement GDCC-specific classes related APIs
+    /// User defined classes in code that this compiler are compiling.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
 
     public ClassRegistry(@NotNull ExtensionAPI api) {
@@ -53,12 +57,31 @@ public final class ClassRegistry {
     /// Check whether a name refers to a singleton.
     public boolean isSingleton(@NotNull String name) { return singletonByName.containsKey(name); }
 
+    /// Check whether a name refers to a user-defined gdcc class.
+    public boolean isGdccClass(@NotNull String name) { return gdccClassByName.containsKey(name); }
+
+    /// Add or replace a user-defined class.
+    public void addGdccClass(@NotNull ClassDef classDef) {
+        gdccClassByName.put(classDef.getName(), classDef);
+    }
+
+    /// Remove a user-defined class by name.
+    public @Nullable ClassDef removeGdccClass(@NotNull String name) {
+        return gdccClassByName.remove(name);
+    }
+
+    /// Get a user-defined class by name.
+    public @Nullable ClassDef findGdccClass(@NotNull String name) {
+        return gdccClassByName.get(name);
+    }
+
     /// Return a GdType instance for the given type name if known.
     /// Rules:
     /// - Prefer textual parsing which maps builtin and container types to concrete GdType instances.
     /// - If textual parsing yields a concrete non-GdObjectType -> return it (these are builtins, primitives, containers).
     /// - If the name refers to a gd class (API `classes`) -> return engine GdObjectType(name, true).
     /// - If the name refers to builtin class from API (API.builtin_classes) -> treat as builtin type (non-engine);
+    /// - If the name refers to a user defined class in `gdccClassByName` -> treat as user type (non-engine).
     ///   we prefer tryParseTextType result for precise mapping; if tryParseTextType didn't recognize it, return a plain non-engine GdObjectType.
     /// - Do NOT return a type for global enums/utility functions in this method (return null instead).
     /// - If none of the above matched, return a plain non-engine GdObjectType(name) (represents a user type reference).
@@ -68,7 +91,10 @@ public final class ClassRegistry {
         if (parsed != null && !(parsed instanceof GdObjectType)) return parsed;
 
         // If name corresponds to a gd class (engine type)
-        if (isGdClass(name)) return new GdObjectType(name, true);
+        if (isGdClass(name)) return new GdObjectType(name);
+
+        // If name corresponds to a user-defined gdcc class, return a non-engine object type
+        if (isGdccClass(name)) return new GdObjectType(name);
 
         // If name is a global enum or utility function or singleton, we should not return a type here
         if (isGlobalEnum(name) || isUtilityFunction(name)) return null;
@@ -187,7 +213,7 @@ public final class ClassRegistry {
         if (s == null) return null;
         var t = s.type();
         if (t == null) return null;
-        return new GdObjectType(t, true);
+        return new GdObjectType(t);
     }
 
     /// Return the raw lists for inspection / tests.
@@ -200,4 +226,6 @@ public final class ClassRegistry {
     public @NotNull List<ExtensionGlobalEnum> globalEnums() { return List.copyOf(globalEnumByName.values()); }
 
     public @NotNull List<ExtensionSingleton> singletons() { return List.copyOf(singletonByName.values()); }
+
+    public @NotNull List<ClassDef> gdccClasses() { return List.copyOf(gdccClassByName.values()); }
 }

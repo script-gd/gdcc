@@ -24,7 +24,7 @@ public class ClassRegistryTest {
         // builtin types should resolve to concrete GdType singletons, but some names may resolve to GdObjectType as engine classes
         if (t instanceof GdObjectType) {
             assertInstanceOf(GdObjectType.class, t);
-            assertTrue(((GdObjectType)t).engineType);
+            assertTrue(((GdObjectType)t).checkEngineType(registry));
         }
 
         // Check a known gd class exists (take first class from API)
@@ -35,7 +35,7 @@ public class ClassRegistryTest {
         assertNotNull(tg, () -> "GdClass type for " + someGd.name() + " should be resolvable");
         assertEquals(someGd.name(), tg.getTypeName());
         assertInstanceOf(GdObjectType.class, tg);
-        assertTrue(((GdObjectType)tg).engineType);
+        assertTrue(((GdObjectType)tg).checkEngineType(registry));
 
         // Utility function signature (if present)
         if (!api.utilityFunctions().isEmpty()) {
@@ -70,7 +70,7 @@ public class ClassRegistryTest {
             if (s.type() != null) {
                 assertNotNull(st);
                 assertEquals(s.type(), st.getTypeName());
-                assertTrue(st.engineType);
+                assertTrue(st.checkEngineType(registry));
             } else {
                 assertNull(st);
             }

@@ -57,7 +57,7 @@ public final class CGenHelper {
                 var paramTypes = new ArrayList<GdType>();
                 var defaultVariables = new ArrayList<GdType>();
                 if (!functionDef.isStatic()) {
-                    paramTypes.add(new GdObjectType(classDef.getName(), false));
+                    paramTypes.add(new GdObjectType(classDef.getName()));
                 }
                 for (var parameterDef : functionDef.getParameters()) {
                     paramTypes.add(parameterDef.getType());
@@ -95,7 +95,7 @@ public final class CGenHelper {
                 case GdPackedArrayType gdPackedArrayType -> "godot_" + gdPackedArrayType.getTypeName();
             };
             case GdObjectType gdObjectType -> {
-                if (gdObjectType.isEngineType()) {
+                if (gdObjectType.checkEngineType(context.classRegistry())) {
                     yield "godot_" + gdObjectType.getTypeName() + "*";
                 } else if (context.classRegistry().isGdClass(gdObjectType.getTypeName())) {
                     yield "godot_" + gdObjectType.getTypeName() + "*";
