@@ -2,11 +2,7 @@ package dev.superice.gdcc.backend;
 
 import freemarker.cache.ClassTemplateLoader;
 import freemarker.cache.FileTemplateLoader;
-import freemarker.template.Configuration;
-import freemarker.template.DefaultObjectWrapperBuilder;
-import freemarker.template.Template;
-import freemarker.template.TemplateException;
-import freemarker.template.TemplateExceptionHandler;
+import freemarker.template.*;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -37,17 +33,19 @@ public final class TemplateLoader {
     }
 
     /// Renders a FreeMarker template located on the classpath.
+    ///
     /// @param resourcePath path within the classpath (no leading '/').
-    /// @param context variables used during rendering.
+    /// @param context      variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromClasspath(@NotNull String resourcePath, @NotNull Map<String, Object> context) throws IOException, TemplateException {
-        return  renderFromClasspath(resourcePath, context, true);
+        return renderFromClasspath(resourcePath, context, true);
     }
 
-        /// Renders a FreeMarker template located on the classpath.
-        /// @param resourcePath path within the classpath (no leading '/').
-        /// @param context variables used during rendering.
-        /// @return rendered template as UTF-8 string.
+    /// Renders a FreeMarker template located on the classpath.
+    ///
+    /// @param resourcePath path within the classpath (no leading '/').
+    /// @param context      variables used during rendering.
+    /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromClasspath(@NotNull String resourcePath, @NotNull Map<String, Object> context, boolean trim) throws IOException, TemplateException {
         Objects.requireNonNull(resourcePath, "resourcePath");
         Objects.requireNonNull(context, "context");
@@ -62,16 +60,18 @@ public final class TemplateLoader {
     }
 
     /// Renders a FreeMarker template located on the filesystem.
+    ///
     /// @param templateFile absolute or relative path to the .ftl file.
-    /// @param context variables used during rendering.
+    /// @param context      variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromFile(@NotNull Path templateFile, @NotNull Map<String, Object> context) throws IOException, TemplateException {
         return renderFromFile(templateFile, context, true);
     }
 
     /// Renders a FreeMarker template located on the filesystem.
+    ///
     /// @param templateFile absolute or relative path to the .ftl file.
-    /// @param context variables used during rendering.
+    /// @param context      variables used during rendering.
     /// @return rendered template as UTF-8 string.
     public static @NotNull String renderFromFile(@NotNull Path templateFile, @NotNull Map<String, Object> context, boolean trim) throws IOException, TemplateException {
         Objects.requireNonNull(templateFile, "templateFile");
@@ -175,13 +175,14 @@ public final class TemplateLoader {
         return processTrimMarkers(rendered);
     }
 
+    // Pattern matches markers like __trim<3>__ or plain __trim__ (group 1 captures digits when present).
+    static Pattern TRIM_PATTERN = Pattern.compile("__trim(?:<(\\d+)>)?__");
+
     static @NotNull String processTrimMarkers(@NotNull String text) {
-        // Pattern matches markers like __trim<3>__ or plain __trim__ (group 1 captures digits when present).
-        var pattern = Pattern.compile("__trim(?:<(\\d+)>)?__");
         var sb = new StringBuilder(text);
 
-        for (;;) {
-            var matcher = pattern.matcher(sb);
+        for (; ; ) {
+            var matcher = TRIM_PATTERN.matcher(sb);
             if (!matcher.find()) break;
 
             var numStr = matcher.group(1);
@@ -246,7 +247,8 @@ public final class TemplateLoader {
                         var pi = prevLineStart;
                         while (pi <= prevLineEnd && pi < sb.length()) {
                             var c = sb.charAt(pi);
-                            if (c == ' ' || c == '\t') pi++; else break;
+                            if (c == ' ' || c == '\t') pi++;
+                            else break;
                         }
                         prevIndent = sb.substring(prevLineStart, pi);
                         break;
@@ -260,7 +262,8 @@ public final class TemplateLoader {
                 var ci = lineStart;
                 while (ci < sb.length()) {
                     var c = sb.charAt(ci);
-                    if (c == ' ' || c == '\t') ci++; else break;
+                    if (c == ' ' || c == '\t') ci++;
+                    else break;
                 }
                 var currentIndentEnd = ci;
 

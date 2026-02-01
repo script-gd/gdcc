@@ -4,6 +4,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.JarURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -209,24 +210,155 @@ public final class ResourceExtractor {
         }
     }
 
-    private static void unzipStream(InputStream is, Path dir) throws IOException {
+    static void unzipStream(InputStream is, Path dir) throws IOException {
         try (var zis = new ZipInputStream(is)) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    Files.createDirectories(dir.resolve(entry.getName()));
-                } else {
-                    var out = dir.resolve(entry.getName());
-                    Files.createDirectories(out.getParent());
-                    var tmp = Files.createTempFile(out.getParent(), ".gdcc-unzip-", ".tmp");
-                    try (var os = Files.newOutputStream(tmp)) {
-                        zis.transferTo(os);
+                try {
+                    var entryName = entry.getName();
+                    if (entryName.isBlank()) continue;
+
+                    var out = safeResolve(dir, entryName);
+
+                    if (entry.isDirectory()) {
+                        Files.createDirectories(out);
+                        continue;
                     }
-                    atomicReplace(tmp, out);
+
+                    var parent = out.getParent();
+                    if (parent != null) Files.createDirectories(parent);
+
+                    unzipOneFileEntryNoTempIfSame(zis, out);
+                } finally {
+                    zis.closeEntry();
                 }
-                zis.closeEntry();
             }
         }
+    }
+
+    private static void unzipOneFileEntryNoTempIfSame(ZipInputStream zis, Path out) throws IOException {
+        if (!Files.exists(out)) {
+            writeEntryToTempAndReplace(zis, out, null, 0);
+            return;
+        }
+
+        // Stream-compare zip entry bytes with existing file bytes.
+        // Only if mismatch occurs, create temp and write already-buffered bytes + remainder.
+        try (var existing = Files.newInputStream(out)) {
+            var buf = new byte[64 * 1024];
+
+            OutputStream tmpOut = null;
+            Path tmp = null;
+
+            try {
+                while (true) {
+                    var n = zis.read(buf);
+                    if (n == -1) break;
+
+                    // Compare this chunk with existing file.
+                    var mismatched = mismatchChunk(existing, buf, n);
+                    if (!mismatched) {
+                        continue; // still identical so far, keep comparing
+                    }
+
+                    // First mismatch: start temp file and write everything seen so far (current chunk)
+                    tmp = Files.createTempFile(out.getParent(), ".gdcc-unzip-", ".tmp");
+                    tmpOut = Files.newOutputStream(tmp);
+
+                    tmpOut.write(buf, 0, n);
+                    // From now on, we must write the rest of entry to temp.
+                    break;
+                }
+
+                if (tmpOut == null) {
+                    // Zip entry ended without mismatch; ensure existing has no extra bytes.
+                    if (existing.read() == -1) {
+                        return; // identical, no writes, no temp
+                    }
+
+                    // Existing longer than entry: must rewrite.
+                    writeEntryToTempAndReplaceFromAlreadyConsumed(zis, out, new byte[0], 0);
+                    return;
+                }
+
+                // We already wrote the first mismatching chunk; now continue dumping rest of entry to temp.
+                zis.transferTo(tmpOut);
+                tmpOut.close();
+                atomicReplace(tmp, out);
+            } catch (Throwable t) {
+                // ensure temp cleanup on any failure
+                if (tmpOut != null) {
+                    try {
+                        tmpOut.close();
+                    } catch (IOException ignored) {
+                        // ignore
+                    }
+                }
+                if (tmp != null) {
+                    try {
+                        Files.deleteIfExists(tmp);
+                    } catch (IOException ignored) {
+                        // ignore
+                    }
+                }
+                throw t;
+            }
+        }
+    }
+
+    /// Compare the next `len` bytes from `existing` with `buf[0..len)`.
+    /// Returns true if mismatch detected (including existing EOF before `len`).
+    private static boolean mismatchChunk(InputStream existing, byte[] zipBuf, int len) throws IOException {
+        var existingBuf = new byte[Math.min(len, 8 * 1024)];
+        var zipOff = 0;
+
+        while (zipOff < len) {
+            var want = Math.min(existingBuf.length, len - zipOff);
+            var r = existing.read(existingBuf, 0, want);
+            if (r == -1) return true; // existing shorter
+            for (var i = 0; i < r; i++) {
+                if (existingBuf[i] != zipBuf[zipOff + i]) return true;
+            }
+            zipOff += r;
+        }
+        return false;
+    }
+
+    private static void writeEntryToTempAndReplace(ZipInputStream zis, Path out, byte[] prefix, int prefixLen) throws IOException {
+        var tmp = Files.createTempFile(out.getParent(), ".gdcc-unzip-", ".tmp");
+        try (var os = Files.newOutputStream(tmp)) {
+            if (prefix != null && prefixLen > 0) os.write(prefix, 0, prefixLen);
+            zis.transferTo(os);
+        } catch (Throwable t) {
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // ignore
+            }
+            throw t;
+        }
+        atomicReplace(tmp, out);
+    }
+
+    private static void writeEntryToTempAndReplaceFromAlreadyConsumed(ZipInputStream zis, Path out, byte[] prefix, int prefixLen) throws IOException {
+        writeEntryToTempAndReplace(zis, out, prefix, prefixLen);
+    }
+
+    private static void atomicReplace(Path tmp, Path out) throws IOException {
+        try {
+            Files.move(tmp, out, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static Path safeResolve(Path dir, String entryName) throws IOException {
+        // Zip Slip guard: normalize and ensure stays within dir
+        var normalized = dir.resolve(entryName).normalize();
+        if (!normalized.startsWith(dir.normalize())) {
+            throw new IOException("Zip entry escapes target dir: " + entryName);
+        }
+        return normalized;
     }
 
     private static void writeFileWithAtomicReplace(Path sourceFile, Path out) throws IOException {
@@ -241,15 +373,6 @@ public final class ResourceExtractor {
             is.transferTo(os);
         }
         atomicReplace(tmp, out);
-    }
-
-    private static void atomicReplace(Path tmp, Path out) throws IOException {
-        try {
-            Files.move(tmp, out, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            // fallback
-            Files.move(tmp, out, StandardCopyOption.REPLACE_EXISTING);
-        }
     }
 
     private static String stripZipExt(String name) {
