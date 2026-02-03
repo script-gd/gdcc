@@ -175,6 +175,7 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 // Methods for ${classDef.name}
 
 <#list classDef.functions as func>
+#line 1 "${classDef.sourceFile!classDef.name}"
 <@funcHeader helper classDef func/> {
     <#list func.variables?values as var>
         <#if !func.checkVariableParameter(var.id)>

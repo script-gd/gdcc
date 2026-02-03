@@ -1,7 +1,6 @@
 package dev.superice.gdcc.util;
 
 import com.github.abrarsyed.jastyle.ASFormatter;
-import com.github.abrarsyed.jastyle.constants.EnumBracketMode;
 import com.github.abrarsyed.jastyle.constants.EnumFormatStyle;
 import org.jetbrains.annotations.NotNull;
 

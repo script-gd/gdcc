@@ -26,6 +26,7 @@ public class CCodegen implements Codegen {
 
     static {
         registerInsnGen(new NopInsnGen());
+        registerInsnGen(new LineNumberInsnGen());
         registerInsnGen(new ControlFlowInsnGen());
         registerInsnGen(new NewDataInsnGen());
         registerInsnGen(new LoadPropertyInsnGen());
