@@ -196,6 +196,9 @@ public final class CGenHelper {
         var paramTypes = new ArrayList<GdType>();
         var defaultVarTypes = new ArrayList<GdType>();
         for (var parameterDef : functionDef.getParameters()) {
+            if (parameterDef.getName().equals("self")) {
+                continue;
+            }
             paramTypes.add(parameterDef.getType());
             if (parameterDef.getDefaultValueFunc() != null) {
                 defaultVarTypes.add(parameterDef.getType());
@@ -304,6 +307,20 @@ public final class CGenHelper {
         } else {
             return "godot_" + renderGdTypeName(type) + "_destroy";
         }
+    }
+
+    public @NotNull String renderPropertyUsageEnum(@NotNull PropertyDef propertyDef) {
+        boolean export = false;
+        for (var entry : propertyDef.getAnnotations().entrySet()) {
+            if (entry.getKey().equals("export")) {
+                export = true;
+                break;
+            }
+        }
+        if (export) {
+            return "godot_PROPERTY_USAGE_DEFAULT";
+        }
+        return "godot_PROPERTY_USAGE_NO_EDITOR";
     }
 
     public boolean checkVirtualMethod(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {

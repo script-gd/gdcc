@@ -73,11 +73,20 @@ void ${classDef.name}_class_bind_methods() {
     <#list classDef.properties as property>
     {
         <#if !property.static>
-            gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});
-            gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});
-            gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
+<#--            gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});-->
+<#--            gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});-->
+            gdcc_bind_property(class_name, GD_STATIC_SN(u8"${property.name}"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()}, ${helper.renderPropertyUsageEnum(property)}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));
         </#if>
     }
+    </#list>
+    // Methods
+    <#list classDef.functions as function>
+    gdcc_bind_method${helper.renderFuncBindName(function)}(class_name, GD_STATIC_SN(u8"${function.name}"), ${classDef.name}_${function.name}<#if function.parameters?size gt function.static?then(0, 1)>,<#else>);</#if>
+        <#list function.parameters as parameter>
+            <#if parameter.name != "self">
+                GD_STATIC_SN(u8"${parameter.name}"), GDEXTENSION_VARIANT_TYPE_${parameter.type.gdExtensionType.name()}<#if parameter_has_next>,<#else>);</#if>
+            </#if>
+        </#list>
     </#list>
 }
 </#list>
@@ -175,7 +184,6 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 // Methods for ${classDef.name}
 
 <#list classDef.functions as func>
-#line 1 "${classDef.sourceFile!classDef.name}"
 <@funcHeader helper classDef func/> {
     <#list func.variables?values as var>
         <#if !func.checkVariableParameter(var.id)>

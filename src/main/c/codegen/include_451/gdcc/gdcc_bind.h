@@ -47,11 +47,12 @@ static void gdcc_bind_property(
     const godot_StringName* class_name,
     const godot_StringName* name,
     const GDExtensionVariantType type,
+    const godot_PropertyUsageFlags usage_flags,
     const godot_StringName* getter,
     const godot_StringName* setter) {
     godot_StringName class_string_name = godot_new_StringName_with_StringName(class_name);
     const GDExtensionPropertyInfo info = gdcc_make_property_full(type, name, godot_PROPERTY_HINT_NONE,
-        GD_STATIC_S(u8""), class_name, godot_PROPERTY_USAGE_DEFAULT);
+        GD_STATIC_S(u8""), class_name, usage_flags);
     godot_StringName getter_name = godot_new_StringName_with_StringName(getter);
     godot_StringName setter_name = godot_new_StringName_with_StringName(setter);
 
