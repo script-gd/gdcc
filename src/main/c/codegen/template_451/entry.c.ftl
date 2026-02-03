@@ -1,5 +1,7 @@
 <#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
+<#-- @ftlvariable name="gen" type="dev.superice.gdcc.backend.c.gen.CCodegen" -->
+<#include "func.ftl">
 <#include "trim.ftl">
 
 #include "entry.h"
@@ -169,4 +171,19 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
         </#if>
     </#list>
 }
+
+// Methods for ${classDef.name}
+
+<#list classDef.functions as func>
+<@funcHeader helper classDef func/> {
+    // variable declarations
+    <#list func.variables?values as var>
+        <#if !func.checkVariableParameter(var.id)>
+            <@t/>${helper.renderGdTypeInC(var.type)} $${var.id};
+        </#if>
+    </#list>
+    ${gen.generateFuncBody(classDef, func)}
+}
+</#list>
+
 </#list>

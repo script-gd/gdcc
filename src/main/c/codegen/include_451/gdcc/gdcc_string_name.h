@@ -48,15 +48,15 @@ static void gdcc_sn_registry_destroy_all(void) {
 // E.g. godot_StringName *name = GD_STATIC_SN(u8"_ready");
 #define GD_STATIC_SN(U8_LIT)                                                       \
     ({                                                                             \
-        static godot_StringName _gd_sn;                                             \
-        static bool _gd_sn_inited = false;                                          \
-        static bool _gd_sn_registered = false;                                      \
-        if (unlikely(!_gd_sn_inited)) {                                                      \
-            _gd_sn = godot_new_StringName_with_utf8_chars((U8_LIT));                \
+        static godot_StringName _gd_sn;                                            \
+        static bool _gd_sn_inited = false;                                         \
+        static bool _gd_sn_registered = false;                                     \
+        if (unlikely(!_gd_sn_inited)) {                                            \
+            _gd_sn = godot_new_StringName_with_utf8_chars((const char*)(U8_LIT));  \
             _gd_sn_inited = true;                                                  \
         }                                                                          \
-        if (unlikely(!_gd_sn_registered)) {                                                  \
-            gdcc_sn_registry_add(&_gd_sn);                                               \
+        if (unlikely(!_gd_sn_registered)) {                                        \
+            gdcc_sn_registry_add(&_gd_sn);                                         \
             _gd_sn_registered = true;                                              \
         }                                                                          \
         &_gd_sn;                                                                   \
@@ -66,8 +66,8 @@ static void gdcc_sn_registry_destroy_all(void) {
     ({                                                                              \
         static godot_int _gd_sn_hash = 0;                                           \
         static bool _gd_sn_hash_inited = false;                                     \
-        godot_StringName *_gd_sn_ptr = GD_STATIC_SN((U8_LIT));                      \
-        if (unlikely(!_gd_sn_hash_inited)) {                                                  \
+        godot_StringName *_gd_sn_ptr = GD_STATIC_SN((const char*)(U8_LIT));         \
+        if (unlikely(!_gd_sn_hash_inited)) {                                        \
             _gd_sn_hash = godot_StringName_hash(_gd_sn_ptr);                        \
             _gd_sn_hash_inited = true;                                              \
         }                                                                           \

@@ -1,13 +1,12 @@
 package dev.superice.gdcc.lir.insn;
 
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.lir.LirInstruction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-public record GotoInsn(@NotNull String targetBbId) implements LirInstruction {
+public record GotoInsn(@NotNull String targetBbId) implements ControlFlowInstruction {
 
     @Override
     public @Nullable String resultId() {

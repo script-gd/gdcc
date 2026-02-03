@@ -6,10 +6,6 @@ import org.jetbrains.annotations.NotNull;
 public record GdObjectType(@NotNull String className) implements GdType {
     public final static GdObjectType OBJECT = new GdObjectType();
 
-    public GdObjectType(@NotNull String className) {
-        this.className = className;
-    }
-
     public GdObjectType() {
         this("Object");
     }

@@ -1,6 +1,8 @@
 <#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
+<#-- @ftlvariable name="gen" type="dev.superice.gdcc.backend.c.gen.CCodegen" -->
 <#include "trim.ftl">
+<#include "func.ftl">
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
 #define GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
 
@@ -55,17 +57,20 @@ void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance,
 void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExtensionConstStringNamePtr p_name, uint32_t p_hash);
 
 void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p_instance, GDExtensionConstStringNamePtr p_name, void* p_virtual_call_userdata, const GDExtensionConstTypePtr* p_args, GDExtensionTypePtr r_ret);
-// Properties for ${classDef.name}
 
-<#list classDef.properties as property>
-    <#-- Non Static -->
-    <#if property.initFunc!?trim != "" && !property.static>
-        <@t/>${helper.renderGdTypeInC(property.type)} ${classDef.name}_${property.initFunc}(${classDef.name}* self);
+// Methods for ${classDef.name}
 
-        <@t/>${helper.renderGdTypeInC(property.type)} ${classDef.name}_${property.getterFunc}(${classDef.name}* self);
-
-        <@t/>void ${classDef.name}_${property.setterFunc}(${classDef.name}* self, ${helper.renderGdTypeRefInC(property.type)} value);
-    </#if>
+<#list classDef.functions as func>
+<#-- Lambda function -->
+<#if func.lambda>
+typedef struct <@lambdaCaptureName classDef func/> {
+<#list func.captureList as capture>
+    ${helper.renderGdTypeRefInC(capture.type)} ${capture.name};
+</#list>
+} <@lambdaCaptureName classDef func/>;
+</#if>
+<#-- Normal function -->
+<@funcHeader helper classDef func/>;
 </#list>
 
 </#list>
@@ -110,11 +115,11 @@ static void call${helper.renderFuncBindName(bindingData)}(
     // Call the function
     ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
     <#if bindingData.returnType.typeName != "void">
-        <@t/>${helper.renderGdTypeInC(bindingData.returnType)} r = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderVarRef(paramType, "arg${paramType_index}")}</#list>);
-        <@t/>godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderVarRef(bindingData.returnType, "r")});
+        <@t/>${helper.renderGdTypeInC(bindingData.returnType)} r = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>);
+        <@t/>godot_Variant ret = ${helper.renderPackFunctionName(bindingData.returnType)}(${helper.renderValueRef(bindingData.returnType, "r")});
         <@t/>godot_variant_new_copy(r_return, &ret);
     <#else>
-        <@t/>(function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderVarRef(paramType, "arg${paramType_index}")}</#list>));
+        <@t/>(function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "arg${paramType_index}")}</#list>));
     </#if>
 }
 
@@ -124,9 +129,9 @@ static void ptrcall${helper.renderFuncBindName(bindingData)}(
     // Call the function.
     ${helper.renderGdTypeInC(bindingData.returnType)} (*function)(void*<#list bindingData.paramTypes as paramType>, ${helper.renderGdTypeRefInC(paramType)}</#list>) = method_userdata;
     <#if bindingData.returnType.typeName == "void">
-        <@t/>(function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderVarRef(paramType, "(*((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}]))")}</#list>));
+        <@t/>(function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "(*((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}]))")}</#list>));
     <#else>
-        <@t/>*((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderVarRef(paramType, "(*((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}]))")}</#list>);
+        <@t/>*((${helper.renderGdTypeInC(bindingData.returnType)}*)r_return) = function(p_instance<#list bindingData.paramTypes as paramType>, ${helper.renderValueRef(paramType, "(*((${helper.renderGdTypeInC(paramType)}*)p_args[${paramType_index}]))")}</#list>);
     </#if>
 }
 

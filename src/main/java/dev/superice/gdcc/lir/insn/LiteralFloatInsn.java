@@ -1,13 +1,12 @@
 package dev.superice.gdcc.lir.insn;
 
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.lir.LirInstruction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-public record LiteralFloatInsn(@Nullable String resultId, float value) implements NewDataInstruction {
+public record LiteralFloatInsn(@Nullable String resultId, double value) implements NewDataInstruction {
 
     @Override
     public GdInstruction opcode() {

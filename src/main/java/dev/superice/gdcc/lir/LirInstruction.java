@@ -55,7 +55,7 @@ public interface LirInstruction {
         }
     }
 
-    record FloatOperand(float value) implements Operand {
+    record FloatOperand(double value) implements Operand {
         @Override
         public OperandKind operandKind() {
             return OperandKind.FLOAT;

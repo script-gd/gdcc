@@ -250,6 +250,36 @@ public final class ClassRegistry {
         return virtualMethodsByClassName.get(className);
     }
 
+    public @Nullable ClassDef getClassDef(@NotNull GdObjectType type) {
+        ClassDef classDef = gdClassByName.get(type.getTypeName());
+        if (classDef != null) {
+            return classDef;
+        }
+        classDef = gdccClassByName.get(type.getTypeName());
+        return classDef;
+    }
+
+    public boolean checkAssignable(@NotNull GdType from, @NotNull GdType to) {
+        if (from.getTypeName().equals(to.getTypeName())) {
+            return true;
+        }
+        if (!(from instanceof GdObjectType(var fromClassName)) || !(to instanceof GdObjectType(var toClassName))) {
+            return false;
+        }
+        // Check inheritance chain
+        while (!fromClassName.isEmpty()) {
+            if (fromClassName.equals(toClassName)) {
+                return true;
+            }
+            var classDef = getClassDef(new GdObjectType(fromClassName));
+            if (classDef == null) {
+                break;
+            }
+            fromClassName = classDef.getSuperName();
+        }
+        return false;
+    }
+
     /// Return the raw lists for inspection / tests.
     public @NotNull List<ExtensionBuiltinClass> builtinClasses() { return List.copyOf(builtinByName.values()); }
 

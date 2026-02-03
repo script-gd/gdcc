@@ -11,7 +11,7 @@ import java.util.List;
 
 public class ZigCcCompiler implements CCompiler {
     @Override
-    public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) throws IOException {
+    public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
         var zig = ZigUtil.findZig();
         if (zig == null) {
             return new CBuildResult(false, "Zig executable not found on PATH or known locations", List.of());
@@ -40,12 +40,12 @@ public class ZigCcCompiler implements CCompiler {
             case WINDOWS_X86_64 -> {
                 cmd.add("-target");
                 cmd.add("x86_64-windows-msvc");
-                cmd.add("-D_MSC_VER=1900");
-                cmd.add("-D_MSC_FULL_VER=190000000");
             }
         }
         cmd.add("-std=c23");
         cmd.add("-shared");
+        cmd.add("-flto");
+        cmd.add("-Wno-macro-redefined");
 
         // optimization mapping
         switch (optimizationLevel) {

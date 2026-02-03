@@ -185,12 +185,12 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
 
     public void addParameter(@NotNull LirParameterDef parameter) {
         this.parameters.add(parameter);
-        this.variables.put(parameter.name(), new LirVariable(parameter.name(), parameter.type(), this));
+        this.variables.put(parameter.name(), new LirVariable(parameter.name(), parameter.type(), true, this));
     }
 
     public void addParameter(int index, @NotNull LirParameterDef parameter) {
         this.parameters.add(index, parameter);
-        this.variables.put(parameter.name(), new LirVariable(parameter.name(), parameter.type(), this));
+        this.variables.put(parameter.name(), new LirVariable(parameter.name(), parameter.type(), true, this));
     }
 
     public void clearParameters() {
@@ -324,12 +324,55 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
         return var;
     }
 
+    public @NotNull LirVariable createAndAddTmpRefVariable(@NotNull GdType type) {
+        var newId = Integer.toString(tmpVarCounter++);
+        var tmpVar = new LirVariable(newId, type, true, this);
+        variables.put(newId, tmpVar);
+        return tmpVar;
+    }
+
+    public @Nullable LirVariable createAndAddRefVariable(@NotNull String id, @NotNull GdType type) {
+        if (this.variables.containsKey(id)) {
+            return null;
+        }
+        var var = new LirVariable(id, type, true, this);
+        this.variables.put(id, var);
+        return var;
+    }
+
     public boolean hasVariable(@NotNull String id) {
         return this.variables.containsKey(id);
     }
 
     public boolean hasVariable(int id) {
         return this.variables.containsKey(Integer.toString(id));
+    }
+
+    public boolean checkVariableRef(@NotNull String id) {
+        var var = this.variables.get(id);
+        return var != null && var.ref();
+    }
+
+    public boolean checkVariableRef(int id) {
+        var var = this.variables.get(Integer.toString(id));
+        return var != null && var.ref();
+    }
+
+    public boolean checkVariableParameter(@NotNull String id) {
+        var var = this.variables.get(id);
+        if (var == null) {
+            return false;
+        }
+        for (var param : parameters) {
+            if (param.name().equals(id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean checkVariableParameter(int id) {
+        return checkVariableParameter(Integer.toString(id));
     }
 
     /**
@@ -389,5 +432,10 @@ public final class LirFunctionDef implements LirParameterEntity, FunctionDef, It
      */
     public void setEntryBlockId(@NotNull String entryBlockId) {
         this.entryBlockId = Objects.requireNonNull(entryBlockId);
+        // if entryBlockId is not empty, ensure it exists and move to the front
+        if (!this.entryBlockId.isEmpty() && this.basicBlocks.containsKey(this.entryBlockId)) {
+            var tmp = this.basicBlocks.remove(this.entryBlockId);
+            this.basicBlocks.putFirst(this.entryBlockId, tmp);
+        }
     }
 }

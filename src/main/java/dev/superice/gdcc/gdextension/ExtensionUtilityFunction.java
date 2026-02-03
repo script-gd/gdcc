@@ -1,6 +1,7 @@
 package dev.superice.gdcc.gdextension;
 
 import dev.superice.gdcc.scope.CaptureDef;
+import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.type.GdType;
@@ -10,6 +11,7 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public record ExtensionUtilityFunction(
         String name,
@@ -94,6 +96,6 @@ public record ExtensionUtilityFunction(
 
     @Override
     public @NotNull GdType getReturnType() {
-        return null;
+        return Objects.requireNonNull(ClassRegistry.tryParseTextType(returnType));
     }
 }

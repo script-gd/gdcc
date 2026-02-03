@@ -48,9 +48,9 @@ public class CProjectBuilderIntegrationTest {
         rotatingCameraClass.addProperty(new LirPropertyDef("pitch_degree",
                 GdFloatType.FLOAT,
                 false,
-                "_field_init_pitch_degree",
-                "_field_getter_pitch_degree",
-                "_field_setter_pitch_degree",
+                null,
+                null,
+                null,
                 Map.of())
         );
         var module = new LirModule("my_module", List.of(rotatingCameraClass));

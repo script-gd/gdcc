@@ -59,7 +59,18 @@ static bool gdcc_is_editor_hint() {
     return godot_Engine_is_editor_hint(_gd_engine);
 }
 
+static void own_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_reference(rc);
+}
+
 static void try_own_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
     godot_StringName class_name;
     if (!godot_object_get_class_name(obj, class_library, &class_name)) {
         return;
@@ -70,7 +81,18 @@ static void try_own_object(const GDExtensionObjectPtr obj) {
     }
 }
 
+static void release_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
+    godot_RefCounted* rc = obj;
+    godot_RefCounted_unreference(rc);
+}
+
 static void try_release_object(const GDExtensionObjectPtr obj) {
+    if (obj == NULL) {
+        return;
+    }
     godot_StringName class_name;
     if (!godot_object_get_class_name(obj, class_library, &class_name)) {
         return;
@@ -80,5 +102,21 @@ static void try_release_object(const GDExtensionObjectPtr obj) {
         godot_RefCounted_unreference(rc);
     }
 }
+
+static GDExtensionObjectPtr gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr) {
+    const GDExtensionInstanceBindingCallbacks callbacks = {
+        .create_callback = NULL,
+        .free_callback = NULL,
+        .reference_callback = NULL,
+    };
+    return godot_object_get_instance_binding(ptr, class_library, &callbacks);
+}
+
+static GDExtensionObjectPtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
+    const GDExtensionObjectPtr obj = godot_new_Object_with_Variant(value);
+    return gdcc_object_from_godot_object_ptr(obj);
+}
+
+#define godot_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(obj->_object)
 
 #endif //GDCC_HELPER_H

@@ -41,5 +41,9 @@ public non-sealed interface FunctionDef extends ParameterEntityDef {
 
     @UnmodifiableView Map<String, ? extends CaptureDef> getCaptures();
 
+    default @UnmodifiableView List<? extends CaptureDef> getCaptureList() {
+        return List.copyOf(getCaptures().values());
+    }
+
     @NotNull GdType getReturnType();
 }

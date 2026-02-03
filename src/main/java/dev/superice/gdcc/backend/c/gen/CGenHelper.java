@@ -2,6 +2,7 @@ package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.exception.NotImplementedException;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
@@ -168,11 +169,23 @@ public final class CGenHelper {
         };
     }
 
-    public @NotNull String renderVarRef(@NotNull GdType gdType, @NotNull String v) {
+    public @NotNull String renderValueRef(@NotNull GdType gdType, @NotNull String v) {
         return switch (gdType) {
             case GdObjectType _, GdPrimitiveType _ -> v;
             default -> "&" + v;
         };
+    }
+
+    public @NotNull String renderVarRef(@NotNull LirFunctionDef func, @NotNull String varName) {
+        var varDef = func.getVariableById(varName);
+        if (varDef == null) {
+            throw new IllegalArgumentException("Variable " + varName + " not found in function " + func.getName());
+        }
+        if (varDef.ref()) {
+            return "$" + varName;
+        } else {
+            return renderValueRef(varDef.type(), "$" + varName);
+        }
     }
 
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
@@ -241,19 +254,35 @@ public final class CGenHelper {
     }
 
     public @NotNull String renderUnpackFunctionName(@NotNull GdType type) {
-        if (type instanceof GdObjectType) {
-            return "godot_new_Object_with_Variant";
+        if (type instanceof GdObjectType objectType) {
+            if (objectType.checkGdccType(context.classRegistry())) {
+                return "(" + objectType.getTypeName() + "*)godot_new_gdcc_Object_with_Variant";
+            } else {
+                return "(godot_" + objectType.getTypeName() +"*)godot_new_Object_with_Variant";
+            }
         } else {
             return "godot_new_" + type.getTypeName() + "_with_Variant";
         }
     }
 
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
-        if (type instanceof GdObjectType) {
-            return "godot_new_Variant_with_Object";
+        if (type instanceof GdObjectType objectType) {
+            if (objectType.checkGdccType(context.classRegistry())) {
+                return "godot_new_Variant_with_gdcc_Object";
+            } else {
+                return "godot_new_Variant_with_Object";
+            }
         } else {
             return "godot_new_Variant_with_" + type.getTypeName();
         }
+    }
+
+    public @NotNull String renderCopyAssignFunctionName(@NotNull GdType type) {
+        return switch (type) {
+            case GdObjectType _, GdPrimitiveType _ -> "";
+            case GdVoidType _, GdNilType _ -> throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
+            default -> "godot_new_" + type.getTypeName() + "_with_" + type.getTypeName();
+        };
     }
 
     public @NotNull String renderDefaultValueFunctionName(@NotNull ParameterDef def) {
@@ -283,6 +312,13 @@ public final class CGenHelper {
 
     public boolean checkVirtualMethod(@NotNull String className, @NotNull String methodName) {
         return context.classRegistry().getVirtualMethods(className).containsKey(methodName);
+    }
+
+    public boolean checkGdccType(@NotNull GdType gdType) {
+        if (gdType instanceof GdObjectType gdObjectType) {
+            return gdObjectType.checkGdccType(context.classRegistry());
+        }
+        return false;
     }
 
     public @NotNull CodegenContext context() {

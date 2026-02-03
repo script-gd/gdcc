@@ -48,7 +48,7 @@ static void gdcc_s_registry_destroy_all(void) {
         static bool _gd_s_inited = false;                                         \
         static bool _gd_s_registered = false;                                     \
         if (unlikely(!_gd_s_inited)) {                                            \
-            _gd_s = godot_new_String_with_utf8_chars((U8_LIT));                   \
+            _gd_s = godot_new_String_with_utf8_chars((const char*)(U8_LIT));      \
             _gd_s_inited = true;                                                  \
         }                                                                         \
         if (unlikely(!_gd_s_registered)) {                                        \

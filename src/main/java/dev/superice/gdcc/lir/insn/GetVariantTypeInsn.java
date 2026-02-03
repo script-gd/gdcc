@@ -1,13 +1,12 @@
 package dev.superice.gdcc.lir.insn;
 
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.lir.LirInstruction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-public record GetVariantTypeInsn(@Nullable String resultId, @NotNull String variantId) implements LirInstruction {
+public record GetVariantTypeInsn(@Nullable String resultId, @NotNull String variantId) implements TypeInstruction {
 
     @Override
     public GdInstruction opcode() {

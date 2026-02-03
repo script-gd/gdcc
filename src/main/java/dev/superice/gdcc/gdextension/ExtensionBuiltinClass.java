@@ -2,10 +2,7 @@ package dev.superice.gdcc.gdextension;
 
 import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
-import dev.superice.gdcc.scope.CaptureDef;
-import dev.superice.gdcc.scope.ClassRegistry;
-import dev.superice.gdcc.scope.FunctionDef;
-import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.*;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -25,7 +22,72 @@ public record ExtensionBuiltinClass(
         @SerializedName("constructors") List<ConstructorInfo> constructors,
         @SerializedName("properties") List<PropertyInfo> properties,
         @SerializedName("constants") List<ConstantInfo> constants
-) {
+) implements ClassDef {
+    @Override
+    public @NotNull String getName() {
+        return name;
+    }
+
+    @Override
+    public @NotNull String getSuperName() {
+        return "";
+    }
+
+    @Override
+    public boolean isAbstract() {
+        return false;
+    }
+
+    @Override
+    public boolean isTool() {
+        return false;
+    }
+
+    @Override
+    public @NotNull @UnmodifiableView Map<String, String> getAnnotations() {
+        return Map.of();
+    }
+
+    @Override
+    public boolean hasAnnotation(@NotNull String key) {
+        return false;
+    }
+
+    @Override
+    public String getAnnotation(@NotNull String key) {
+        return "";
+    }
+
+    @Override
+    public @NotNull @UnmodifiableView List<? extends SignalDef> getSignals() {
+        return List.of();
+    }
+
+    @Override
+    public @NotNull @UnmodifiableView List<? extends PropertyDef> getProperties() {
+        return properties;
+    }
+
+    @Override
+    public @NotNull @UnmodifiableView List<? extends FunctionDef> getFunctions() {
+        return methods;
+    }
+
+    @Override
+    public boolean hasFunction(@NotNull String functionName) {
+        for (var function : methods) {
+            if (function.getName().equals(functionName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isGdccClass() {
+        return false;
+    }
+
     public record ClassOperator(String name, String rightType, String returnType) {
     }
 
@@ -208,7 +270,41 @@ public record ExtensionBuiltinClass(
         }
     }
 
-    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable, String defaultValue) {
+    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable, String defaultValue) implements PropertyDef {
+        @Override
+        public @NotNull String getName() {
+            return name;
+        }
+
+        @Override
+        public @NotNull GdType getType() {
+            return Objects.requireNonNull(ClassRegistry.tryParseTextType(type));
+        }
+
+        @Override
+        public boolean isStatic() {
+            return false;
+        }
+
+        @Override
+        public @Nullable String getInitFunc() {
+            return null;
+        }
+
+        @Override
+        public @Nullable String getGetterFunc() {
+            return null;
+        }
+
+        @Override
+        public @Nullable String getSetterFunc() {
+            return null;
+        }
+
+        @Override
+        public @NotNull @UnmodifiableView Map<String, String> getAnnotations() {
+            return Map.of();
+        }
     }
 
     public record ConstantInfo(String name, String value) {
