@@ -62,12 +62,12 @@ public final class DestructInsnGen extends TemplateInsnGen<DestructInsn> {
     }
 
     @Override
-    protected void validateInstruction(@NotNull CGenHelper helper,
-                                       @NotNull LirClassDef clazz,
-                                       @NotNull LirFunctionDef func,
-                                       @NotNull LirBasicBlock block,
-                                       int insnIndex,
-                                       @NotNull DestructInsn instruction) {
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper,
+                                                      @NotNull LirClassDef clazz,
+                                                      @NotNull LirFunctionDef func,
+                                                      @NotNull LirBasicBlock block,
+                                                      int insnIndex,
+                                                      @NotNull DestructInsn instruction) {
         var variable = func.getVariableById(instruction.variableId());
         if (variable == null) {
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.toString(),
@@ -80,5 +80,6 @@ public final class DestructInsnGen extends TemplateInsnGen<DestructInsn> {
             default -> {
             }
         }
+        return Map.of();
     }
 }

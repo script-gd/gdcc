@@ -3,13 +3,15 @@ package dev.superice.gdcc.backend.c.gen.insn;
 import dev.superice.gdcc.backend.c.gen.CGenHelper;
 import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.exception.InvalidInsnException;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
-import dev.superice.gdcc.type.GdVectorType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
@@ -28,7 +30,7 @@ public final class LoadPropertyInsnGen extends TemplateInsnGen<LoadPropertyInsn>
     }
 
     @Override
-    protected void validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull LoadPropertyInsn instruction) {
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull LoadPropertyInsn instruction) {
         var objectVar = func.getVariableById(instruction.objectId());
         if (objectVar == null) {
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
@@ -47,9 +49,9 @@ public final class LoadPropertyInsnGen extends TemplateInsnGen<LoadPropertyInsn>
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
                     "Result variable ID " + instruction.resultId() + " cannot be a reference that cannot be written into");
         }
-        if (!(objectVar.type() instanceof GdObjectType) && !(objectVar.type() instanceof GdVectorType)) {
+        if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                    "Object variable ID " + instruction.objectId() + " is not of object or vector type, but " + objectVar.type().getTypeName());
+                    "Object variable ID " + instruction.objectId() + " is not a valid property target type, but " + objectVar.type().getTypeName());
         }
         var registry = helper.context().classRegistry();
         if (objectVar.type() instanceof GdObjectType gdObjectType) {
@@ -75,7 +77,35 @@ public final class LoadPropertyInsnGen extends TemplateInsnGen<LoadPropertyInsn>
                         "Result variable ID " + instruction.resultId() + " of type " + resultVar.type().getTypeName() +
                                 " is not assignable from property '" + instruction.propertyName() + "' of type " + propertyType.getTypeName());
             }
+            return Map.of("propertyType", propertyType);
         }
+        var builtinClass = registry.findBuiltinClass(objectVar.type().getTypeName());
+        if (builtinClass == null) {
+            throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
+                    "Builtin class not found for type " + objectVar.type().getTypeName());
+        }
+        ExtensionBuiltinClass.PropertyInfo propertyFound = null;
+        for (var property : builtinClass.getProperties()) {
+            if (property.getName().equals(instruction.propertyName())) {
+                propertyFound = (ExtensionBuiltinClass.PropertyInfo) property;
+                break;
+            }
+        }
+        if (propertyFound == null) {
+            throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
+                    "Property '" + instruction.propertyName() + "' not found in builtin class " + builtinClass.getName());
+        }
+        if (!propertyFound.isReadable()) {
+            throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
+                    "Property '" + instruction.propertyName() + "' in builtin class " + builtinClass.getName() + " is not readable");
+        }
+        var propertyType = propertyFound.getType();
+        if (!registry.checkAssignable(propertyType, resultVar.type())) {
+            throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
+                    "Result variable ID " + instruction.resultId() + " of type " + resultVar.type().getTypeName() +
+                            " is not assignable from property '" + instruction.propertyName() + "' of type " + propertyType.getTypeName());
+        }
+        return Map.of("propertyType", propertyType);
     }
 
     @Override
@@ -100,10 +130,10 @@ public final class LoadPropertyInsnGen extends TemplateInsnGen<LoadPropertyInsn>
             } else {
                 return "general";
             }
-        } else if (objectVar.type() instanceof GdVectorType) {
-            return "builtin";
+        } else if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
+            throw new IllegalStateException("Invalid object variable type for LOAD_PROPERTY instruction");
         }
-        throw new IllegalStateException("Invalid object variable type for LOAD_PROPERTY instruction");
+        return "builtin";
     }
 
     private boolean isLoadingInsideGetterSelf(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LoadPropertyInsn instruction) {

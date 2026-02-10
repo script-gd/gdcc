@@ -15,6 +15,7 @@ import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
+import java.util.Map;
 import java.util.Objects;
 
 public final class ControlFlowInsnGen extends TemplateInsnGen<ControlFlowInstruction> {
@@ -29,7 +30,7 @@ public final class ControlFlowInsnGen extends TemplateInsnGen<ControlFlowInstruc
     }
 
     @Override
-    protected void validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull ControlFlowInstruction instruction) {
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull ControlFlowInstruction instruction) {
         switch (instruction) {
             case GotoInsn gotoInsn -> {
                 if (func.getBasicBlock(gotoInsn.targetBbId()) == null) {
@@ -72,5 +73,6 @@ public final class ControlFlowInsnGen extends TemplateInsnGen<ControlFlowInstruc
             default -> throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
                     "Unsupported control flow instruction type: " + instruction.getClass().getSimpleName());
         }
+        return Map.of();
     }
 }

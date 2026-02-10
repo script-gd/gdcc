@@ -27,7 +27,7 @@ public final class StorePropertyInsnGen extends TemplateInsnGen<StorePropertyIns
     }
 
     @Override
-    protected void validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull StorePropertyInsn instruction) {
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull StorePropertyInsn instruction) {
         var objectVar = func.getVariableById(instruction.objectId());
         if (objectVar == null) {
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
@@ -67,6 +67,8 @@ public final class StorePropertyInsnGen extends TemplateInsnGen<StorePropertyIns
                                 " is not assignable to property '" + instruction.propertyName() + "' of type " + propertyType.getTypeName());
             }
         }
+        // TODO: validate other built-in types' properties
+        return Map.of();
     }
 
     @Override

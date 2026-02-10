@@ -28,17 +28,18 @@ public final class OwnReleaseObjectInsnGen extends TemplateInsnGen<ConstructionI
     }
 
     @Override
-    protected void validateInstruction(@NotNull CGenHelper helper,
-                                       @NotNull LirClassDef clazz,
-                                       @NotNull LirFunctionDef func,
-                                       @NotNull LirBasicBlock block,
-                                       int insnIndex,
-                                       @NotNull ConstructionInstruction instruction) {
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper,
+                                                      @NotNull LirClassDef clazz,
+                                                      @NotNull LirFunctionDef func,
+                                                      @NotNull LirBasicBlock block,
+                                                      int insnIndex,
+                                                      @NotNull ConstructionInstruction instruction) {
         var objectVar = tryGetObjectVar(func, block, insnIndex, instruction);
         if (!(objectVar.type() instanceof GdObjectType)) {
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
                     "Object variable ID is not of object type, but " + objectVar.type().getTypeName());
         }
+        return Map.of();
     }
 
     @Override

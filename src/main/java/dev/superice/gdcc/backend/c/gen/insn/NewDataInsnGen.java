@@ -18,6 +18,7 @@ import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
+import java.util.Map;
 import java.util.Objects;
 
 public final class NewDataInsnGen extends TemplateInsnGen<NewDataInstruction> {
@@ -40,10 +41,10 @@ public final class NewDataInsnGen extends TemplateInsnGen<NewDataInstruction> {
     }
 
     @Override
-    protected void validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func,
-                                       @NotNull LirBasicBlock block,
-                                       int insnIndex,
-                                       @NotNull NewDataInstruction instruction) {
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func,
+                                                      @NotNull LirBasicBlock block,
+                                                      int insnIndex,
+                                                      @NotNull NewDataInstruction instruction) {
         if (instruction.resultId() == null) {
             throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
                     "New data instruction missing result variable ID");
@@ -99,5 +100,6 @@ public final class NewDataInsnGen extends TemplateInsnGen<NewDataInstruction> {
             default -> throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
                     "Unsupported new-data instruction: " + instruction.opcode().opcode());
         }
+        return Map.of();
     }
 }

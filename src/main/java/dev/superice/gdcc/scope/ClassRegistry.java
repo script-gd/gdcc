@@ -17,7 +17,6 @@ public final class ClassRegistry {
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
-    // TODO: implement GDCC-specific classes related APIs
     /// User defined classes in code that this compiler are compiling.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
     /// Virtual method for each class
@@ -43,6 +42,9 @@ public final class ClassRegistry {
 
     /// Check whether a name refers to a builtin class from API.
     public boolean isBuiltinClass(@NotNull String name) { return builtinByName.containsKey(name); }
+
+    /// Return a builtin class definition by name if present.
+    public @Nullable ExtensionBuiltinClass findBuiltinClass(@NotNull String name) { return builtinByName.get(name); }
 
     /// Check whether a name refers to a GdClass (script-exposed Godot class from API).
     public boolean isGdClass(@NotNull String name) { return gdClassByName.containsKey(name); }

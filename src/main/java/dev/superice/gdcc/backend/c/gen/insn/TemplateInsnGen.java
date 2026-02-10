@@ -18,13 +18,13 @@ import java.util.Map;
 public abstract class TemplateInsnGen<Insn extends LirInstruction> implements CInsnGen<Insn> {
     protected abstract @NotNull String getTemplatePath();
 
-    protected void validateInstruction(@NotNull CGenHelper helper,
-                                       @NotNull LirClassDef clazz,
-                                       @NotNull LirFunctionDef func,
-                                       @NotNull LirBasicBlock block,
-                                       int insnIndex,
-                                       @NotNull Insn instruction) {
-
+    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper,
+                                                      @NotNull LirClassDef clazz,
+                                                      @NotNull LirFunctionDef func,
+                                                      @NotNull LirBasicBlock block,
+                                                      int insnIndex,
+                                                      @NotNull Insn instruction) {
+        return Map.of();
     }
 
     protected @NotNull Map<String, Object> getGenerationExtraData(@NotNull CGenHelper helper,
@@ -43,27 +43,20 @@ public abstract class TemplateInsnGen<Insn extends LirInstruction> implements CI
                                          @NotNull LirBasicBlock block,
                                          int insnIndex,
                                          @NotNull Insn instruction) {
-        validateInstruction(helper, clazz, func, block, insnIndex, instruction);
-        Map<String, Object> templateVariables;
+        var validateData = validateInstruction(helper, clazz, func, block, insnIndex, instruction);
+        Map<String, Object> templateVariables= new HashMap<>(Map.of(
+                "helper", helper,
+                "func", func,
+                "block", block,
+                "insnIndex", insnIndex,
+                "insn", instruction,
+                "gen", this
+        ));
+        if (!validateData.isEmpty()) {
+            templateVariables.putAll(validateData);
+        }
         var blockExtraData = getGenerationExtraData(helper, clazz, func, block, insnIndex, instruction);
-        if (blockExtraData.isEmpty()) {
-            templateVariables = Map.of(
-                    "helper", helper,
-                    "func", func,
-                    "block", block,
-                    "insnIndex", insnIndex,
-                    "insn", instruction,
-                    "gen", this
-            );
-        } else {
-            templateVariables = new HashMap<>(Map.of(
-                    "helper", helper,
-                    "func", func,
-                    "block", block,
-                    "insnIndex", insnIndex,
-                    "insn", instruction,
-                    "gen", this
-            ));
+        if (!blockExtraData.isEmpty()) {
             templateVariables.putAll(blockExtraData);
         }
         try {

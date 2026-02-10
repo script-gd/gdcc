@@ -1,6 +1,7 @@
 package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassDef;
@@ -261,7 +262,7 @@ public final class CGenHelper {
             if (objectType.checkGdccType(context.classRegistry())) {
                 return "(" + objectType.getTypeName() + "*)godot_new_gdcc_Object_with_Variant";
             } else {
-                return "(godot_" + objectType.getTypeName() +"*)godot_new_Object_with_Variant";
+                return "(godot_" + objectType.getTypeName() + "*)godot_new_Object_with_Variant";
             }
         } else {
             return "godot_new_" + type.getTypeName() + "_with_Variant";
@@ -283,7 +284,8 @@ public final class CGenHelper {
     public @NotNull String renderCopyAssignFunctionName(@NotNull GdType type) {
         return switch (type) {
             case GdObjectType _, GdPrimitiveType _ -> "";
-            case GdVoidType _, GdNilType _ -> throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
+            case GdVoidType _, GdNilType _ ->
+                    throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
             default -> "godot_new_" + type.getTypeName() + "_with_" + type.getTypeName();
         };
     }
@@ -321,6 +323,40 @@ public final class CGenHelper {
             return "godot_PROPERTY_USAGE_DEFAULT";
         }
         return "godot_PROPERTY_USAGE_NO_EDITOR";
+    }
+
+    /// Renders a variable assignment statement in C, handling Godot object return types properly.
+    /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
+    ///
+    /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
+    ///                   but the underlying proxy Godot object ptr.
+    public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
+                                                          @NotNull String targetVarName,
+                                                          @NotNull GdType sourceType,
+                                                          @NotNull String sourceExpr) {
+        var targetVar = func.getVariableById(targetVarName);
+        if (targetVar == null) {
+            throw new InvalidInsnException("Variable " + targetVarName + " not found in function " + func.getName());
+        }
+        if (targetVar.ref()) {
+            throw new InvalidInsnException("Variable " + targetVarName + " is a readonly ref in function " + func.getName());
+        }
+        var registry = context.classRegistry();
+        if (!registry.checkAssignable(sourceType, targetVar.type())) {
+            throw new InvalidInsnException("Cannot assign value of type " + sourceType.getTypeName() + " to variable " +
+                    targetVarName + " of type " + targetVar.type().getTypeName() + " in function " + func.getName());
+        }
+        if (targetVar.type() instanceof GdObjectType targetType) {
+            if (targetType.checkGdccType(context.classRegistry())) {
+                return "$" + targetVarName + " = (" + targetType.getTypeName() + "*)gdcc_object_from_godot_object_ptr(" + sourceExpr + ");";
+            } else if (!targetType.getTypeName().equals(sourceType.getTypeName())) {
+                return "$" + targetVarName + " = (" + renderGdTypeInC(targetType) + ")(" + sourceExpr + ");";
+            } else {
+                return "$" + targetVarName + " = " + sourceExpr + ";";
+            }
+        } else {
+            return "$" + targetVarName + " = " + sourceExpr + ";";
+        }
     }
 
     public boolean checkVirtualMethod(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
