@@ -174,7 +174,7 @@ public final class CBodyBuilder {
         // Phase C: Full assignment semantics
         // 1. Destroy old value if needed (non-object destroyable types)
         // 2. Release old object ownership if object type
-        if (!isPrepareBlock() && targetType.isDestroyable()) {
+        if (!checkInPrepareBlock() && targetType.isDestroyable()) {
             if (targetType instanceof GdObjectType objType) {
                 // Object type: release old ownership
                 emitReleaseObject(targetCode, objType);
@@ -248,7 +248,7 @@ public final class CBodyBuilder {
         emitTempDecls(argsResult.temps());
 
         // Phase C: Handle old value destruction before assignment
-        if (!isPrepareBlock() && targetType.isDestroyable()) {
+        if (!checkInPrepareBlock() && targetType.isDestroyable()) {
             if (targetType instanceof GdObjectType objType) {
                 emitReleaseObject(targetCode, objType);
             } else {
@@ -283,7 +283,7 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder returnVoid() {
-        if (!isFinallyBlock()) {
+        if (!checkInFinallyBlock()) {
             out.append("goto _finally;\n");
             return this;
         }
@@ -293,7 +293,7 @@ public final class CBodyBuilder {
 
     public @NotNull CBodyBuilder returnValue(@NotNull ValueRef value) {
         var returnType = func.getReturnType();
-        if (!(returnType instanceof GdVoidType) && !isFinallyBlock()) {
+        if (!(returnType instanceof GdVoidType) && !checkInFinallyBlock()) {
             var returnResult = prepareReturnValue(value);
             emitTempDecls(returnResult.temps());
             out.append("_return_val = ").append(returnResult.code()).append(";\n");
@@ -530,27 +530,15 @@ public final class CBodyBuilder {
     /// Emits code to release ownership of an object.
     /// Uses try_release_object for unknown RefCounted status, release_object for definite RefCounted.
     private void emitReleaseObject(@NotNull String varCode, @NotNull GdObjectType objType) {
-        var status = classRegistry().getRefCountedStatus(objType);
         var godotPtrCode = toGodotObjectPtr(varCode, objType);
-
-        switch (status) {
-            case YES -> out.append("release_object(").append(godotPtrCode).append(");\n");
-            case NO -> {} // No release needed for non-RefCounted objects
-            case UNKNOWN -> out.append("try_release_object(").append(godotPtrCode).append(");\n");
-        }
+        releaseOrTryRelease(godotPtrCode, objType);
     }
 
     /// Emits code to own an object.
     /// Uses try_own_object for unknown RefCounted status, own_object for definite RefCounted.
     private void emitOwnObject(@NotNull String varCode, @NotNull GdObjectType objType) {
-        var status = classRegistry().getRefCountedStatus(objType);
         var godotPtrCode = toGodotObjectPtr(varCode, objType);
-
-        switch (status) {
-            case YES -> out.append("own_object(").append(godotPtrCode).append(");\n");
-            case NO -> {} // No own needed for non-RefCounted objects
-            case UNKNOWN -> out.append("try_own_object(").append(godotPtrCode).append(");\n");
-        }
+        ownOrTryOwn(godotPtrCode, objType);
     }
 
     /// Converts a GDCC object pointer to Godot object pointer.
@@ -563,11 +551,42 @@ public final class CBodyBuilder {
         return varCode;
     }
 
-    private boolean isPrepareBlock() {
+    /// Converts a Godot object pointer to a GDCC object pointer when needed.
+    /// For GDCC types: wraps with gdcc_object_from_godot_object_ptr
+    /// For engine types: use as-is
+    private @NotNull String fromGodotObjectPtr(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
+        if (objType.checkGdccType(classRegistry())) {
+            var castType = helper.renderGdTypeInC(objType);
+            return "(" + castType + ")gdcc_object_from_godot_object_ptr(" + godotPtrCode + ")";
+        }
+        return godotPtrCode;
+    }
+
+    /// Emits own_object or try_own_object based on RefCounted status.
+    private void ownOrTryOwn(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
+        var status = classRegistry().getRefCountedStatus(objType);
+        switch (status) {
+            case YES -> out.append("own_object(").append(godotPtrCode).append(");\n");
+            case NO -> { }
+            case UNKNOWN -> out.append("try_own_object(").append(godotPtrCode).append(");\n");
+        }
+    }
+
+    /// Emits release_object or try_release_object based on RefCounted status.
+    private void releaseOrTryRelease(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
+        var status = classRegistry().getRefCountedStatus(objType);
+        switch (status) {
+            case YES -> out.append("release_object(").append(godotPtrCode).append(");\n");
+            case NO -> { }
+            case UNKNOWN -> out.append("try_release_object(").append(godotPtrCode).append(");\n");
+        }
+    }
+
+    private boolean checkInPrepareBlock() {
         return currentBlock != null && "_prepare".equals(currentBlock.id());
     }
 
-    private boolean isFinallyBlock() {
+    private boolean checkInFinallyBlock() {
         return currentBlock != null && "_finally".equals(currentBlock.id());
     }
 

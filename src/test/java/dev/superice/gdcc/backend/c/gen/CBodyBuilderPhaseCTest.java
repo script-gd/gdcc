@@ -500,4 +500,24 @@ public class CBodyBuilderPhaseCTest {
             assertThrows(RuntimeException.class, () -> builder.callAssign(targetRef, "some_func", List.of()));
         }
     }
+
+    @Nested
+    @DisplayName("Unknown Object Assignment Tests")
+    class UnknownObjectAssignmentTests {
+
+        @Test
+        @DisplayName("Unknown object assignment should use try_own/try_release")
+        void testUnknownObjectAssignmentUsesTry() {
+            var target = new LirVariable("obj", new GdObjectType("UnknownType"), lirFunctionDef);
+            var source = new LirVariable("src", new GdObjectType("UnknownType"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var value = builder.valueOfVar(source);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            assertTrue(result.contains("try_release_object($obj)"), "Should try_release unknown object");
+            assertTrue(result.contains("try_own_object($obj)"), "Should try_own unknown object");
+        }
+    }
 }
