@@ -181,8 +181,7 @@ public class CCodegen implements Codegen {
                     throw new UnsupportedOperationException("Unsupported instruction opcode: " + insn.opcode().opcode());
                 }
                 bodyBuilder.setCurrentPosition(bb, i, insn);
-                var result = insnGen.generateCCode(bodyBuilder);
-                bodyBuilder.appendLine(result);
+                insnGen.generateCCode(bodyBuilder);
             }
         }
         return bodyBuilder.build();

@@ -21,13 +21,13 @@ public interface CInsnGen<Insn extends LirInstruction> {
         return "";
     }
 
-    default @NotNull String generateCCode(@NotNull CBodyBuilder bodyBuilder) {
+    default void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var insn = bodyBuilder.getCurrentInsn(this);
         var block = bodyBuilder.currentBlock();
         if (block == null) {
             throw new IllegalStateException("Current basic block is not set");
         }
-        return generateCCode(
+        var generated = generateCCode(
                 bodyBuilder.helper(),
                 bodyBuilder.clazz(),
                 bodyBuilder.func(),
@@ -35,5 +35,8 @@ public interface CInsnGen<Insn extends LirInstruction> {
                 bodyBuilder.currentInsnIndex(),
                 insn
         );
+        if (!generated.isEmpty()) {
+            bodyBuilder.appendLine(generated);
+        }
     }
 }

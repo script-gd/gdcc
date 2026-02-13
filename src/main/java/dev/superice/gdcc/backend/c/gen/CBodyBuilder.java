@@ -95,8 +95,25 @@ public final class CBodyBuilder {
         return this;
     }
 
-    public @NotNull String newTempName(@NotNull String prefix) {
+    private @NotNull String newTempName(@NotNull String prefix) {
         return "__gdcc_tmp_" + prefix + "_" + tempVarCounter++;
+    }
+
+    public @NotNull TempVar newTempVariable(@NotNull String prefix,
+                                            @NotNull GdType type,
+                                            @NotNull String initCode) {
+        return new TempVar(newTempName(prefix), type, initCode);
+    }
+
+    public @NotNull CBodyBuilder declareTempVar(@NotNull TempVar temp) {
+        out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name()).append(" = ")
+           .append(temp.initCode()).append(";\n");
+        return this;
+    }
+
+    public @NotNull CBodyBuilder destroyTempVar(@NotNull TempVar temp) {
+        emitDestroy(temp.name(), temp.type());
+        return this;
     }
 
     public @NotNull InvalidInsnException invalidInsn(@NotNull String reason) {
@@ -293,11 +310,14 @@ public final class CBodyBuilder {
 
     public @NotNull CBodyBuilder returnValue(@NotNull ValueRef value) {
         var returnType = func.getReturnType();
-        if (!(returnType instanceof GdVoidType) && !checkInFinallyBlock()) {
-            var returnResult = prepareReturnValue(value);
-            emitTempDecls(returnResult.temps());
-            out.append("_return_val = ").append(returnResult.code()).append(";\n");
-            emitTempDestroys(returnResult.temps());
+        if (!checkInFinallyBlock()) {
+            if (returnType instanceof GdVoidType) {
+                var returnResult = prepareReturnValue(value);
+                if (!returnResult.temps.isEmpty()) {
+                    throw new IllegalStateException("Cannot return a value with prepareReturnValue");
+                }
+                out.append("_return_val = ").append(returnResult.code()).append(";\n");
+            }
             out.append("goto _finally;\n");
             return this;
         }
@@ -311,11 +331,11 @@ public final class CBodyBuilder {
             return this;
         }
 
-        var retTemp = newTempName("ret");
-        out.append(helper.renderGdTypeInC(value.type())).append(" ").append(retTemp).append(" = ")
-           .append(returnResult.code()).append(";\n");
+        var retTemp = newTempVariable("ret", value.type(), returnResult.code());
+        out.append(helper.renderGdTypeInC(retTemp.type())).append(" ").append(retTemp.name()).append(" = ")
+           .append(retTemp.initCode()).append(";\n");
         emitTempDestroys(returnResult.temps());
-        out.append("return ").append(retTemp).append(";\n");
+        out.append("return ").append(retTemp.name()).append(";\n");
         return this;
     }
 
@@ -454,11 +474,11 @@ public final class CBodyBuilder {
         var copyFunc = helper.renderCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
             // Need to copy: godot_new_<Type>_with_<Type>(source_ptr)
-            var tempName = newTempName(type.getTypeName().toLowerCase());
             var sourcePtr = renderValueAddress(value);
-            var temps = new ArrayList<TempVar>(sourcePtr.temps());
-            temps.add(new TempVar(tempName, type, copyFunc + "(" + sourcePtr.code() + ")"));
-            return new RenderResult(tempName, temps);
+            var temp = newTempVariable(type.getTypeName().toLowerCase(), type, copyFunc + "(" + sourcePtr.code() + ")");
+            var temps = new ArrayList<>(sourcePtr.temps());
+            temps.add(temp);
+            return new RenderResult(temp.name(), temps);
         }
 
         return new RenderResult(code, List.of());
@@ -487,15 +507,14 @@ public final class CBodyBuilder {
 
     private void emitTempDecls(@NotNull List<TempVar> temps) {
         for (var temp : temps) {
-            out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name()).append(" = ")
-               .append(temp.initCode()).append(";\n");
+            declareTempVar(temp);
         }
     }
 
     private void emitTempDestroys(@NotNull List<TempVar> temps) {
         for (var i = temps.size() - 1; i >= 0; i--) {
             var temp = temps.get(i);
-            emitDestroy(temp.name(), temp.type());
+            destroyTempVar(temp);
         }
     }
 
@@ -512,9 +531,8 @@ public final class CBodyBuilder {
             return new RenderResult("&" + code, List.of());
         }
         if (value instanceof ExprValue exprValue) {
-            var tempName = newTempName(exprValue.type().getTypeName().toLowerCase());
-            var temp = new TempVar(tempName, exprValue.type(), exprValue.generateCode());
-            return new RenderResult("&" + tempName, List.of(temp));
+            var temp = newTempVariable(exprValue.type().getTypeName().toLowerCase(), exprValue.type(), exprValue.generateCode());
+            return new RenderResult("&" + temp.name(), List.of(temp));
         }
         return new RenderResult("&" + value.generateCode(), List.of());
     }
@@ -643,7 +661,12 @@ public final class CBodyBuilder {
         }
     }
 
-    private record TempVar(@NotNull String name, @NotNull GdType type, @NotNull String initCode) {
+    public record TempVar(@NotNull String name, @NotNull GdType type, @NotNull String initCode) {
+        public TempVar {
+            Objects.requireNonNull(name);
+            Objects.requireNonNull(type);
+            Objects.requireNonNull(initCode);
+        }
     }
 
     private record RenderResult(@NotNull String code, @NotNull List<TempVar> temps) {
