@@ -461,9 +461,9 @@ public class CBodyBuilderPhaseCTest {
     @DisplayName("Return Value Semantics Tests")
     class ReturnValueSemanticsTests {
 
-        /// Helper to set up _finally block context for return tests.
+        /// Helper to set up __finally__ block context for return tests.
         private void setFinallyBlockContext(CBodyBuilder bodyBuilder) {
-            var finallyBlock = new LirBasicBlock("_finally");
+            var finallyBlock = new LirBasicBlock("__finally__");
             bodyBuilder.setCurrentPosition(finallyBlock, 0, new ReturnInsn(null));
         }
 

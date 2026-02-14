@@ -1,11 +1,8 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
-import dev.superice.gdcc.backend.c.gen.CGenHelper;
+import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
+import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.exception.InvalidInsnException;
-import dev.superice.gdcc.lir.LirBasicBlock;
-import dev.superice.gdcc.lir.LirClassDef;
-import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.ControlFlowInstruction;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
@@ -15,14 +12,9 @@ import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
-import java.util.Map;
-import java.util.Objects;
 
-public final class ControlFlowInsnGen extends TemplateInsnGen<ControlFlowInstruction> {
-    @Override
-    protected @NotNull String getTemplatePath() {
-        return "insn/control_flow.ftl";
-    }
+public final class ControlFlowInsnGen implements CInsnGen<ControlFlowInstruction> {
+    private static final String RETURN_SLOT_ID = "_return_val";
 
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
@@ -30,49 +22,56 @@ public final class ControlFlowInsnGen extends TemplateInsnGen<ControlFlowInstruc
     }
 
     @Override
-    protected Map<String, Object> validateInstruction(@NotNull CGenHelper helper, @NotNull LirClassDef clazz, @NotNull LirFunctionDef func, @NotNull LirBasicBlock block, int insnIndex, @NotNull ControlFlowInstruction instruction) {
+    public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
+        var instruction = bodyBuilder.getCurrentInsn(this);
+        var func = bodyBuilder.func();
         switch (instruction) {
             case GotoInsn gotoInsn -> {
                 if (func.getBasicBlock(gotoInsn.targetBbId()) == null) {
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                            "Invalid target basic block ID " + gotoInsn.targetBbId());
+                    throw bodyBuilder.invalidInsn("Invalid target basic block ID " + gotoInsn.targetBbId());
                 }
+                bodyBuilder.jump(gotoInsn.targetBbId());
             }
             case GoIfInsn goIfInsn -> {
                 if (func.getBasicBlock(goIfInsn.trueBbId()) == null) {
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                            "Invalid true target basic block ID " + goIfInsn.trueBbId());
+                    throw bodyBuilder.invalidInsn("Invalid true target basic block ID " + goIfInsn.trueBbId());
                 }
                 if (func.getBasicBlock(goIfInsn.falseBbId()) == null) {
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                            "Invalid false target basic block ID " + goIfInsn.falseBbId());
+                    throw bodyBuilder.invalidInsn("Invalid false target basic block ID " + goIfInsn.falseBbId());
                 }
                 var variable = func.getVariableById(goIfInsn.conditionVarId());
                 if (variable == null) {
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                            "Condition variable ID " + goIfInsn.conditionVarId() + " does not exist");
+                    throw bodyBuilder.invalidInsn("Condition variable ID " + goIfInsn.conditionVarId() + " does not exist");
                 }
                 if (!(variable.type() instanceof GdBoolType)) {
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                            "Condition variable ID " + goIfInsn.conditionVarId() + " is not of bool type");
+                    throw bodyBuilder.invalidInsn("Condition variable ID " + goIfInsn.conditionVarId() + " is not of bool type");
                 }
+                bodyBuilder.jumpIf(bodyBuilder.valueOfVar(variable), goIfInsn.trueBbId(), goIfInsn.falseBbId());
             }
             case ReturnInsn returnInsn -> {
-                if (returnInsn.returnValueId() == null && !(func.getReturnType() instanceof GdVoidType)) {
-                    throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                            "Return instruction missing return value for non-void function");
-                }
-                if (!(func.getReturnType() instanceof GdVoidType)) {
-                    var variable = func.getVariableById(Objects.requireNonNull(returnInsn.returnValueId()));
-                    if (variable == null) {
-                        throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
-                                "Return value variable ID " + returnInsn.returnValueId() + " does not exist");
+                var returnValueId = returnInsn.returnValueId();
+                if (func.getReturnType() instanceof GdVoidType) {
+                    if (returnValueId != null) {
+                        throw bodyBuilder.invalidInsn("Cannot return a value from void function");
                     }
+                    bodyBuilder.returnVoid();
+                } else {
+                    if (returnValueId == null) {
+                        throw bodyBuilder.invalidInsn("Return instruction missing return value for non-void function");
+                    }
+                    if (RETURN_SLOT_ID.equals(returnValueId)) {
+                        bodyBuilder.returnTerminal();
+                        return;
+                    }
+                    var variable = func.getVariableById(returnValueId);
+                    if (variable == null) {
+                        throw bodyBuilder.invalidInsn("Return value variable ID " + returnValueId + " does not exist");
+                    }
+                    bodyBuilder.returnValue(bodyBuilder.valueOfVar(variable));
                 }
             }
-            default -> throw new InvalidInsnException(func.getName(), block.id(), insnIndex, instruction.opcode().opcode(),
+            default -> throw bodyBuilder.invalidInsn(
                     "Unsupported control flow instruction type: " + instruction.getClass().getSimpleName());
         }
-        return Map.of();
     }
 }

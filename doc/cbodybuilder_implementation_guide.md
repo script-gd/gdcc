@@ -91,13 +91,13 @@ GDCC 当前 C 后端函数体代码生成主要基于 FreeMarker 模板与 `CGen
 - 所有生成的临时变量必须可追踪并在指令末尾销毁
   - 生成时登记类型与初始化表达式
   - 指令级 API 负责在语句前输出声明、语句后输出 destroy
-- `_prepare` 与 `_finally` 基本块的语义必须严格遵循
-  - `_prepare` 中 IR 显式声明的非 ref 变量视为未初始化，赋值不应销毁旧内容
-  - 非 `_finally` 基本块中 `return/returnValue` 不生成真正的 return
+- `__prepare__` 与 `__finally__` 基本块的语义必须严格遵循
+  - `__prepare__` 中 IR 显式声明的非 ref 变量视为未初始化，赋值不应销毁旧内容
+  - 非 `__finally__` 基本块中 `return/returnValue` 不生成真正的 return
     - 对于非 void 返回值，将结果赋给隐式变量 `_return_val`
-    - 然后跳转到 `_finally`
-  - 仅在 `_finally` 基本块中生成真实的 return
-  - 对于非 void 函数，在 `_prepare` 基本块顶部声明 `_return_val`
+    - 然后跳转到 `__finally__`
+  - 仅在 `__finally__` 基本块中生成真实的 return
+  - 对于非 void 函数，在 `__prepare__` 基本块顶部声明 `_return_val`
     - `_return_val` 无需自动销毁
 
 ## 5. 易踩坑清单

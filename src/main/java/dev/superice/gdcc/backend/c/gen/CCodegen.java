@@ -127,9 +127,13 @@ public class CCodegen implements Codegen {
     private void generateFunctionPrepareBlock() {
         for (var classDef : module.getClassDefs()) {
             for (var func : classDef.getFunctions()) {
-                var prepareBB = new LirBasicBlock("_prepare");
-                var funcEntry = func.getEntryBlockId();
-                func.addBasicBlock(prepareBB);
+                var prepareBB = func.getBasicBlock("__prepare__");
+                if (prepareBB == null) {
+                    prepareBB = new LirBasicBlock("__prepare__");
+                    func.addBasicBlock(prepareBB);
+                } else {
+                    prepareBB.instructions().clear();
+                }
                 // initialize variables
                 var parameterNames = func.getParameters().stream().map(ParameterDef::getName).collect(HashSet::new, HashSet::add, HashSet::addAll);
                 for (var variable : func.getVariables().values()) {
@@ -153,8 +157,44 @@ public class CCodegen implements Codegen {
                         default -> prepareBB.instructions().add(new ConstructBuiltinInsn(variable.id(), List.of()));
                     }
                 }
+                var funcEntry = func.getEntryBlockId();
                 prepareBB.instructions().add(new GotoInsn(funcEntry));
-                func.setEntryBlockId("_prepare");
+                func.setEntryBlockId("__prepare__");
+            }
+        }
+    }
+
+    private void ensureFunctionFinallyBlock() {
+        for (var classDef : module.getClassDefs()) {
+            for (var func : classDef.getFunctions()) {
+                var finallyBB = func.getBasicBlock("__finally__");
+                if (finallyBB == null) {
+                    finallyBB = new LirBasicBlock("__finally__");
+                    func.addBasicBlock(finallyBB);
+                } else {
+                    finallyBB.instructions().clear();
+                }
+
+                var parameterNames = func.getParameters().stream()
+                        .map(ParameterDef::getName)
+                        .collect(HashSet::new, HashSet::add, HashSet::addAll);
+                for (var variable : func.getVariables().values()) {
+                    if (parameterNames.contains(variable.id())) {
+                        continue;
+                    }
+                    if (variable.ref()) {
+                        continue;
+                    }
+                    if (!variable.type().isDestroyable()) {
+                        continue;
+                    }
+                    finallyBB.instructions().add(new DestructInsn(variable.id()));
+                }
+                if (func.getReturnType() instanceof GdVoidType) {
+                    finallyBB.instructions().add(new ReturnInsn(null));
+                } else {
+                    finallyBB.instructions().add(new ReturnInsn("_return_val"));
+                }
             }
         }
     }
@@ -195,6 +235,7 @@ public class CCodegen implements Codegen {
         }
         this.generateDefaultGetterSetterInitialization();
         this.generateFunctionPrepareBlock();
+        this.ensureFunctionFinallyBlock();
         try {
             var tplCtx = Map.of(
                     "module", module,

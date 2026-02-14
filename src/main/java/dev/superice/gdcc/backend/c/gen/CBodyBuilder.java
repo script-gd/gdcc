@@ -69,7 +69,7 @@ public final class CBodyBuilder {
 
     public @NotNull CBodyBuilder beginBasicBlock(@NotNull String blockId) {
         out.append(blockId).append(": // ").append(blockId).append("\n");
-        if ("_prepare".equals(blockId)) {
+        if ("__prepare__".equals(blockId)) {
             var returnType = func.getReturnType();
             if (!(returnType instanceof GdVoidType)) {
                 out.append(helper.renderGdTypeInC(returnType)).append(" _return_val;\n");
@@ -386,14 +386,22 @@ public final class CBodyBuilder {
             if (!(returnType instanceof GdVoidType)) {
                 throw invalidInsn("Cannot return void from non-void function");
             }
-            out.append("goto _finally;\n");
-            return this;
-        }
-        if (!(returnType instanceof GdVoidType)) {
-            out.append("return _return_val;\n");
+            out.append("goto __finally__;\n");
             return this;
         }
         out.append("return;\n");
+        return this;
+    }
+
+    public @NotNull CBodyBuilder returnTerminal() {
+        var returnType = func.getReturnType();
+        if (!checkInFinallyBlock()) {
+            throw invalidInsn("Cannot return _return_val from non finally block");
+        }
+        if (returnType instanceof GdVoidType) {
+            throw invalidInsn("Cannot return _return_val from void function");
+        }
+        out.append("return _return_val;\n");
         return this;
     }
 
@@ -414,7 +422,7 @@ public final class CBodyBuilder {
         if (!checkInFinallyBlock()) {
             out.append("_return_val = ").append(returnCode).append(";\n");
             emitTempDestroys(returnResult.temps());
-            out.append("goto _finally;\n");
+            out.append("goto __finally__;\n");
             return this;
         }
 
@@ -746,12 +754,12 @@ public final class CBodyBuilder {
 
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private boolean checkInPrepareBlock() {
-        return currentBlock != null && "_prepare".equals(currentBlock.id());
+        return currentBlock != null && "__prepare__".equals(currentBlock.id());
     }
 
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     private boolean checkInFinallyBlock() {
-        return currentBlock != null && "_finally".equals(currentBlock.id());
+        return currentBlock != null && "__finally__".equals(currentBlock.id());
     }
 
     private boolean checkGlobalFuncRequireGodotRawPtr(@NotNull String funcName) {

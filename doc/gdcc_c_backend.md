@@ -71,14 +71,14 @@
 - The backend does **not** enforce a global read-before-init check for temps:
   - Some APIs intentionally require passing pointers to uninitialized storage for initialization.
 
-### `_prepare` / `_finally` Control Flow
+### `__prepare__` / `__finally__` Control Flow
 
-- The backend inserts two special basic blocks: `_prepare` and `_finally`.
-- In `_prepare`, all IR-declared non-ref variables are treated as uninitialized at first, and we have to init them in this block.
-  - Assignments in `_prepare` must not destroy old values.
-- In non-`_finally` blocks, `return` and `returnValue` do not emit a real `return`.
+- The backend inserts two special basic blocks: `__prepare__` and `__finally__`.
+- In `__prepare__`, all IR-declared non-ref variables are treated as uninitialized at first, and we have to init them in this block.
+  - Assignments in `__prepare__` must not destroy old values.
+- In non-`__finally__` blocks, `return` and `returnValue` do not emit a real `return`.
   - For non-void functions, the return value is assigned to an implicit `_return_val` variable.
-  - Control flow then jumps to `_finally`.
-- Only `_finally` emits the actual `return` statement.
-- For non-void functions, `_return_val` is declared at the top of the `_prepare` block.
+  - Control flow then jumps to `__finally__`.
+- Only `__finally__` emits the actual `return` statement.
+- For non-void functions, `_return_val` is declared at the top of the `__prepare__` block.
   - `_return_val` does not require automatic destruction.

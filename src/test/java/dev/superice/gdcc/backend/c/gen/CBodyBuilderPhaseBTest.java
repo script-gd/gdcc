@@ -103,7 +103,7 @@ public class CBodyBuilderPhaseBTest {
     void testReturnVoid() {
         builder.returnVoid();
 
-        assertEquals("goto _finally;\n", builder.build());
+        assertEquals("goto __finally__;\n", builder.build());
     }
 
     @Test
@@ -112,7 +112,7 @@ public class CBodyBuilderPhaseBTest {
         var val = nonVoidBuilder.valueOfVar(new LirVariable("v1", GdIntType.INT, nonVoidBuilder.func()));
         nonVoidBuilder.returnValue(val);
 
-        assertEquals("_return_val = $v1;\ngoto _finally;\n", nonVoidBuilder.build());
+        assertEquals("_return_val = $v1;\ngoto __finally__;\n", nonVoidBuilder.build());
     }
 
     @Test
@@ -124,7 +124,7 @@ public class CBodyBuilderPhaseBTest {
     @Test
     void testReturnVoidInFinallyForNonVoidFunction() {
         var nonVoidBuilder = new CBodyBuilder(helper, lirClassDef, createFunctionDef("testFuncReturnInt", GdIntType.INT));
-        nonVoidBuilder.setCurrentPosition(new dev.superice.gdcc.lir.LirBasicBlock("_finally"), 0, new dev.superice.gdcc.lir.insn.ReturnInsn(null));
+        nonVoidBuilder.setCurrentPosition(new dev.superice.gdcc.lir.LirBasicBlock("__finally__"), 0, new dev.superice.gdcc.lir.insn.ReturnInsn(null));
 
         nonVoidBuilder.returnVoid();
 
