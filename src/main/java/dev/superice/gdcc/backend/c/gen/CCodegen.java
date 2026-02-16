@@ -140,6 +140,9 @@ public class CCodegen implements Codegen {
                     if (parameterNames.contains(variable.id())) {
                         continue;
                     }
+                    if (variable.ref()) {
+                        continue;
+                    }
                     switch (variable.type()) {
                         case GdObjectType _ -> prepareBB.instructions().add(new LiteralNullInsn(variable.id()));
                         case GdVariantType _, GdNilType _ ->

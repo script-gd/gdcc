@@ -12,6 +12,7 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.insn.DestructInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
+import dev.superice.gdcc.lir.insn.LiteralStringInsn;
 import dev.superice.gdcc.lir.insn.NopInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -186,6 +187,39 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
         assertNull(returnInsn.returnValueId());
+    }
+
+    @Test
+    @DisplayName("__prepare__ should skip ref variables during initialization")
+    void prepareShouldSkipRefVariables() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("void_func");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("plainStr", GdStringType.STRING);
+        func.createAndAddRefVariable("refStr", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var prepareBlock = func.getBasicBlock("__prepare__");
+        assertNotNull(prepareBlock);
+        var hasPlainStrInit = prepareBlock.instructions().stream()
+                .filter(LiteralStringInsn.class::isInstance)
+                .map(LiteralStringInsn.class::cast)
+                .anyMatch(insn -> insn.resultId().equals("plainStr"));
+        var hasRefStrInit = prepareBlock.instructions().stream()
+                .filter(LiteralStringInsn.class::isInstance)
+                .map(LiteralStringInsn.class::cast)
+                .anyMatch(insn -> insn.resultId().equals("refStr"));
+        assertTrue(hasPlainStrInit);
+        assertFalse(hasRefStrInit);
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {

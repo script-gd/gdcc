@@ -763,6 +763,9 @@ public final class CBodyBuilder {
     }
 
     private boolean checkGlobalFuncRequireGodotRawPtr(@NotNull String funcName) {
+        if (funcName.endsWith("_with_gdcc_Object")) {
+            return false;
+        }
         if (funcName.startsWith("godot_")) {
             return true;
         }

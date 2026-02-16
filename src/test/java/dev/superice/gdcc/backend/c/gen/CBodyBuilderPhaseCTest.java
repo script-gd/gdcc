@@ -790,6 +790,16 @@ public class CBodyBuilderPhaseCTest {
 
             assertEquals("godot_Object_set($myObj->_object, &$name);\n", builder.build());
         }
+
+        @Test
+        @DisplayName("GDCC object arg should stay GDCC ptr for godot_new_Variant_with_gdcc_Object")
+        void testGdccObjectArgNotConvertedForGdccVariantPackFunc() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+
+            builder.callVoid("godot_new_Variant_with_gdcc_Object", List.of(builder.valueOfVar(gdccVar)));
+
+            assertEquals("godot_new_Variant_with_gdcc_Object($myObj);\n", builder.build());
+        }
     }
 
     @Nested
