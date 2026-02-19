@@ -6,8 +6,11 @@ import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
+import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringInsn;
+import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
+import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
 import org.junit.jupiter.api.Assumptions;
@@ -73,6 +76,33 @@ public class CProjectBuilderIntegrationTest {
             readyFunc.addBasicBlock(bb1);
             rotatingCameraClass.addFunction(readyFunc);
         }
+        {
+            var getPitchFunc = new LirFunctionDef("get_pitch", "bb1");
+            getPitchFunc.setReturnType(GdFloatType.FLOAT);
+            getPitchFunc.addParameter(new LirParameterDef("self", selfType, null, getPitchFunc));
+            getPitchFunc.addParameter(new LirParameterDef("to_radians", GdBoolType.BOOL, null, getPitchFunc));
+            var v0 = getPitchFunc.createAndAddVariable("0", GdFloatType.FLOAT);
+            var v1 = getPitchFunc.createAndAddVariable("1", GdFloatType.FLOAT);
+            Objects.requireNonNull(v0);
+            Objects.requireNonNull(v1);
+
+            var bb1 = new LirBasicBlock("bb1");
+            bb1.instructions().add(new GoIfInsn("to_radians", "bb2", "bb3"));
+            getPitchFunc.addBasicBlock(bb1);
+
+            var bb2 = new LirBasicBlock("bb2");
+            bb2.instructions().add(new LoadPropertyInsn(v0.id(), "pitch_degree", "self"));
+            bb2.instructions().add(new CallGlobalInsn(v1.id(), "deg_to_rad", List.of(new LirInstruction.VariableOperand(v0.id()))));
+            bb2.instructions().add(new ReturnInsn(v1.id()));
+            getPitchFunc.addBasicBlock(bb2);
+
+            var bb3 = new LirBasicBlock("bb3");
+            bb3.instructions().add(new LoadPropertyInsn(v0.id(), "pitch_degree", "self"));
+            bb3.instructions().add(new ReturnInsn(v0.id()));
+            getPitchFunc.addBasicBlock(bb3);
+
+            rotatingCameraClass.addFunction(getPitchFunc);
+        }
         var module = new LirModule("my_module", List.of(rotatingCameraClass));
         codegen.prepare(ctx, module);
         var result = builder.buildProject(projectInfo, codegen);
@@ -96,12 +126,20 @@ public class CProjectBuilderIntegrationTest {
                         push_error("Camera node missing.")
                         return
 
-                    var pitch = float(camera.get("pitch_degree"))
+                    var pitch = float(camera.call("get_pitch", false))
+                    var pitch_radians = float(camera.call("get_pitch", true))
                     print("Pitch degree:", pitch)
+                    print("Pitch radians:", pitch_radians)
                     if absf(pitch - EXPECTED_PITCH_DEGREE) <= 0.001:
                         print("Pitch check passed.")
                     else:
                         push_error("Pitch check failed: expected " + str(EXPECTED_PITCH_DEGREE) + ", got " + str(pitch))
+
+                    var expected_radians = deg_to_rad(EXPECTED_PITCH_DEGREE)
+                    if absf(pitch_radians - expected_radians) <= 0.001:
+                        print("Pitch radians check passed.")
+                    else:
+                        push_error("Pitch radians check failed: expected " + str(expected_radians) + ", got " + str(pitch_radians))
                 """;
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
@@ -126,6 +164,8 @@ public class CProjectBuilderIntegrationTest {
         assertTrue(runResult.stopSignalSeen(), "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("Camera ready."), "Godot output should include camera ready log.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("Pitch check passed."), "Godot output should confirm pitch check.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("Pitch radians check passed."), "Godot output should confirm radian pitch check.\nOutput:\n" + combinedOutput);
         assertFalse(combinedOutput.contains("Pitch check failed"), "Pitch check should not fail.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("Pitch radians check failed"), "Radian pitch check should not fail.\nOutput:\n" + combinedOutput);
     }
 }
