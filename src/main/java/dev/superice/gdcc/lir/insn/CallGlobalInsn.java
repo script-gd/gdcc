@@ -10,6 +10,9 @@ import java.util.List;
 
 public record CallGlobalInsn(@Nullable String resultId, @NotNull String functionName,
                              @NotNull List<Operand> args) implements CallInstruction {
+    public CallGlobalInsn(@NotNull String functionName, @NotNull List<Operand> args) {
+        this(null, functionName, args);
+    }
 
     @Override
     public GdInstruction opcode() {

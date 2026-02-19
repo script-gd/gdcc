@@ -4,11 +4,12 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.c.gen.CCodegen;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
-import dev.superice.gdcc.lir.LirClassDef;
-import dev.superice.gdcc.lir.LirModule;
-import dev.superice.gdcc.lir.LirPropertyDef;
+import dev.superice.gdcc.lir.*;
+import dev.superice.gdcc.lir.insn.CallGlobalInsn;
+import dev.superice.gdcc.lir.insn.LiteralStringInsn;
+import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
-import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.*;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
@@ -17,8 +18,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CProjectBuilderIntegrationTest {
 
@@ -45,6 +48,7 @@ public class CProjectBuilderIntegrationTest {
         var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
         var ctx = new CodegenContext(projectInfo, new ClassRegistry(api));
         var rotatingCameraClass = new LirClassDef("GDRotatingCamera3D", "Camera3D");
+        var selfType = new GdObjectType("GDRotatingCamera3D");
         rotatingCameraClass.setSourceFile("rotating_camera.gd");
         rotatingCameraClass.addProperty(new LirPropertyDef("pitch_degree",
                 GdFloatType.FLOAT,
@@ -54,6 +58,21 @@ public class CProjectBuilderIntegrationTest {
                 null,
                 Map.of())
         );
+        {
+            var readyFunc = new LirFunctionDef("_ready", "bb1");
+            readyFunc.setReturnType(GdVoidType.VOID);
+            readyFunc.addParameter(new LirParameterDef("self", selfType, null, readyFunc));
+            var v0 = readyFunc.createAndAddVariable("0", GdStringType.STRING);
+            var v1 = readyFunc.createAndAddVariable("1", GdVariantType.VARIANT);
+            Objects.requireNonNull(v0);
+            Objects.requireNonNull(v1);
+            var bb1 = new LirBasicBlock("bb1");
+            bb1.instructions().add(new LiteralStringInsn(v0.id(), "Camera ready."));
+            bb1.instructions().add(new PackVariantInsn(v1.id(), v0.id()));
+            bb1.instructions().add(new CallGlobalInsn("print", List.of(new LirInstruction.VariableOperand(v1.id()))));
+            readyFunc.addBasicBlock(bb1);
+            rotatingCameraClass.addFunction(readyFunc);
+        }
         var module = new LirModule("my_module", List.of(rotatingCameraClass));
         codegen.prepare(ctx, module);
         var result = builder.buildProject(projectInfo, codegen);

@@ -47,6 +47,7 @@ public class ZigCcCompiler implements CCompiler {
         cmd.add("-shared");
         cmd.add("-flto");
         cmd.add("-Wno-macro-redefined");
+        cmd.add("-Wno-pointer-sign");
 
         // optimization mapping
         switch (optimizationLevel) {

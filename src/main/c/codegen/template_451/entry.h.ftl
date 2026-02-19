@@ -61,7 +61,6 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
 // Methods for ${classDef.name}
 
 <#list classDef.functions as func>
-#line 1 "${classDef.sourceFile!classDef.name}"
 <#-- Lambda function -->
 <#if func.lambda>
 typedef struct <@lambdaCaptureName classDef func/> {

@@ -22,7 +22,6 @@ import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 public class CCodegen implements Codegen {
     private static final Logger LOGGER = LoggerFactory.getLogger(CCodegen.class);
@@ -303,10 +302,10 @@ public class CCodegen implements Codegen {
     public void prepare(@NotNull CodegenContext ctx, @NotNull LirModule module) {
         this.ctx = ctx;
         this.module = module;
-        this.helper = new CGenHelper(ctx, module.getClassDefs());
         var registry = ctx.classRegistry();
         for (var classDef : module.getClassDefs()) {
             registry.addGdccClass(classDef);
         }
+        this.helper = new CGenHelper(ctx, module.getClassDefs());
     }
 }

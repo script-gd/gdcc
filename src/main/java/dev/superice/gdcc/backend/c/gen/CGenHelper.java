@@ -63,10 +63,10 @@ public final class CGenHelper {
                 }
                 var paramTypes = new ArrayList<GdType>();
                 var defaultVariables = new ArrayList<GdType>();
-                if (!functionDef.isStatic()) {
-                    paramTypes.add(new GdObjectType(classDef.getName()));
-                }
                 for (var parameterDef : functionDef.getParameters()) {
+                    if (parameterDef.getName().equals("self")) {
+                        continue;
+                    }
                     paramTypes.add(parameterDef.getType());
                     if (parameterDef.getDefaultValueFunc() != null) {
                         defaultVariables.add(parameterDef.getType());
@@ -87,11 +87,10 @@ public final class CGenHelper {
                 }
                 var paramTypes = new ArrayList<GdType>();
                 var defaultVariables = new ArrayList<GdType>();
-                if (!functionDef.isStatic()) {
+                if (functionDef.isStatic()) {
                     throw new IllegalStateException("Virtual methods must be instance methods");
                 }
                 for (var parameterDef : functionDef.getParameters()) {
-                    paramTypes.add(parameterDef.getType());
                     if (parameterDef.getDefaultValueFunc() != null) {
                         defaultVariables.add(parameterDef.getType());
                     }
