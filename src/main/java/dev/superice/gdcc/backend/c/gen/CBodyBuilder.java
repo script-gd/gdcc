@@ -758,7 +758,7 @@ public final class CBodyBuilder {
     }
 
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
-    private boolean checkInFinallyBlock() {
+    public boolean checkInFinallyBlock() {
         return currentBlock != null && "__finally__".equals(currentBlock.id());
     }
 

@@ -60,8 +60,10 @@ public final class ControlFlowInsnGen implements CInsnGen<ControlFlowInstruction
                         throw bodyBuilder.invalidInsn("Return instruction missing return value for non-void function");
                     }
                     if (RETURN_SLOT_ID.equals(returnValueId)) {
-                        bodyBuilder.returnTerminal();
-                        return;
+                        if (bodyBuilder.checkInFinallyBlock()) {
+                            bodyBuilder.returnTerminal();
+                            return;
+                        }
                     }
                     var variable = func.getVariableById(returnValueId);
                     if (variable == null) {
