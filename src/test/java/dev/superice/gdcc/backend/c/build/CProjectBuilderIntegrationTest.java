@@ -30,7 +30,7 @@ public class CProjectBuilderIntegrationTest {
     }
 
     @Test
-    public void compileWithRealZig() throws IOException {
+    public void compileWithRealZigAndRunInGodot() throws IOException, InterruptedException {
         if (!hasZig()) {
             Assumptions.abort("Zig not found; skipping integration test");
             return;
@@ -83,5 +83,49 @@ public class CProjectBuilderIntegrationTest {
         for (var p : result.artifacts()) {
             assertTrue(Files.exists(p));
         }
+
+        var testScriptContent = """
+                extends Node
+
+                const EXPECTED_PITCH_DEGREE = 45.0
+                const TARGET_NODE_NAME = "RotatingCameraNode"
+
+                func _ready() -> void:
+                    var camera = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if camera == null:
+                        push_error("Camera node missing.")
+                        return
+
+                    var pitch = float(camera.get("pitch_degree"))
+                    print("Pitch degree:", pitch)
+                    if absf(pitch - EXPECTED_PITCH_DEGREE) <= 0.001:
+                        print("Pitch check passed.")
+                    else:
+                        push_error("Pitch check failed: expected " + str(EXPECTED_PITCH_DEGREE) + ", got " + str(pitch))
+                """;
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                result.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "RotatingCameraNode",
+                        rotatingCameraClass.getName(),
+                        ".",
+                        Map.of("pitch_degree", "45.0")
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(testScriptContent)
+        ));
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        System.out.println(runResult.stdout());
+        if (!runResult.stderr().isBlank()) {
+            System.err.println(runResult.stderr());
+        }
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("Camera ready."), "Godot output should include camera ready log.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("Pitch check passed."), "Godot output should confirm pitch check.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("Pitch check failed"), "Pitch check should not fail.\nOutput:\n" + combinedOutput);
     }
 }
