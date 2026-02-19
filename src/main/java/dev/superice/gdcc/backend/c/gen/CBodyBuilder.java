@@ -2,6 +2,7 @@ package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.lir.*;
+import dev.superice.gdcc.scope.FunctionSignature;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
@@ -306,10 +307,24 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
+        rejectVarargUtilityViaNonUtilityPath(funcName);
         validateCallArgs(funcName, args);
         var argsResult = renderArgs(funcName, args);
         emitTempDecls(argsResult.temps());
         out.append(funcName).append("(").append(argsResult.code()).append(");\n");
+        emitTempDestroys(argsResult.temps());
+        return this;
+    }
+
+    /// Calls a utility function and always renders the canonical C symbol name (`godot_<name>`).
+    /// Supports utility vararg ABI by appending argv/argc automatically.
+    public @NotNull CBodyBuilder callUtilityVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
+        var utility = requireUtilityCall(funcName);
+        validateCallArgs(utility, args, true);
+        var argsResult = renderUtilityArgs(utility, args);
+        emitTempDecls(argsResult.temps());
+        emitRawLines(argsResult.preCallLines());
+        out.append(utility.cFunctionName()).append("(").append(argsResult.code()).append(");\n");
         emitTempDestroys(argsResult.temps());
         return this;
     }
@@ -323,19 +338,57 @@ public final class CBodyBuilder {
                                             @Nullable GdType returnType,
                                             @NotNull List<ValueRef> args) {
         checkTargetAssignable(target);
+        rejectVarargUtilityViaNonUtilityPath(funcName);
 
         var resolvedReturnType = resolveReturnType(funcName, returnType);
         validateCallArgs(funcName, args);
         validateReturnType(funcName, resolvedReturnType, target.type());
 
+        var argsResult = renderArgs(funcName, args);
+        emitTempDecls(argsResult.temps());
+
+        var callExpr = funcName + "(" + argsResult.code() + ")";
+        emitCallResultAssignment(target, funcName, callExpr);
+
+        emitTempDestroys(argsResult.temps());
+        return this;
+    }
+
+    /// Calls a utility function and assigns its non-void return value to target.
+    /// Supports utility vararg ABI by appending argv/argc automatically.
+    public @NotNull CBodyBuilder callUtilityAssign(@NotNull TargetRef target,
+                                                   @NotNull String funcName,
+                                                   @NotNull List<ValueRef> args) {
+        checkTargetAssignable(target);
+        var utility = requireUtilityCall(funcName);
+        validateCallArgs(utility, args, true);
+
+        var returnType = utility.signature().returnType();
+        if (returnType == null || returnType instanceof GdVoidType) {
+            throw invalidInsn("Utility function '" + utility.lookupName() + "' has no return value");
+        }
+        checkAssignable(returnType, target.type());
+
+        var argsResult = renderUtilityArgs(utility, args);
+        emitTempDecls(argsResult.temps());
+        emitRawLines(argsResult.preCallLines());
+
+        var callExpr = utility.cFunctionName() + "(" + argsResult.code() + ")";
+        emitCallResultAssignment(target, utility.cFunctionName(), callExpr);
+
+        emitTempDestroys(argsResult.temps());
+        return this;
+    }
+
+    /// Common logic for writing a call expression result into a target variable.
+    /// Handles: old-value destroy/release → ptr conversion → assignment → own new object → mark initialized.
+    private void emitCallResultAssignment(@NotNull TargetRef target,
+                                          @NotNull String cFuncName,
+                                          @NotNull String callExpr) {
         var targetCode = target.generateCode();
         var targetType = target.type();
         var canDestroyOldValue = canDestroyOldValue(target);
 
-        var argsResult = renderArgs(funcName, args);
-        emitTempDecls(argsResult.temps());
-
-        // Phase C: Handle old value destruction before assignment
         if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
             if (targetType instanceof GdObjectType objType) {
                 emitReleaseObject(targetCode, objType);
@@ -344,26 +397,20 @@ public final class CBodyBuilder {
             }
         }
 
-        // Generate call expression
-        var callExpr = funcName + "(" + argsResult.code() + ")";
-
-        // Convert Godot raw ptr return to GDCC ptr if target is a GDCC object
-        if (checkGlobalFuncReturnGodotRawPtr(funcName)
+        var finalExpr = callExpr;
+        if (checkGlobalFuncReturnGodotRawPtr(cFuncName)
                 && targetType instanceof GdObjectType objType
                 && objType.checkGdccType(classRegistry())) {
-            callExpr = fromGodotObjectPtr(callExpr, objType);
+            finalExpr = fromGodotObjectPtr(finalExpr, objType);
         }
 
-        out.append(targetCode).append(" = ").append(callExpr).append(";\n");
+        out.append(targetCode).append(" = ").append(finalExpr).append(";\n");
 
-        // Own new object if returned type is object
         if (targetType instanceof GdObjectType objType) {
             emitOwnObject(targetCode, objType);
         }
 
         markTargetInitialized(target);
-        emitTempDestroys(argsResult.temps());
-        return this;
     }
 
     public @NotNull CBodyBuilder jump(@NotNull String blockId) {
@@ -440,6 +487,14 @@ public final class CBodyBuilder {
     }
 
     private @NotNull RenderResult renderArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
+        var callArgs = new ArrayList<CallArg>(args.size());
+        for (var arg : args) {
+            callArgs.add(new ValueCallArg(arg));
+        }
+        return renderCallArgs(funcName, callArgs);
+    }
+
+    private @NotNull RenderResult renderCallArgs(@NotNull String funcName, @NotNull List<CallArg> args) {
         var requireGodotRawPtr = checkGlobalFuncRequireGodotRawPtr(funcName);
         var rendered = new StringBuilder();
         var temps = new ArrayList<TempVar>();
@@ -447,9 +502,14 @@ public final class CBodyBuilder {
             if (i > 0) {
                 rendered.append(", ");
             }
-            var argResult = renderArgument(args.get(i), requireGodotRawPtr);
-            rendered.append(argResult.code());
-            temps.addAll(argResult.temps());
+            switch (args.get(i)) {
+                case ValueCallArg(var value) -> {
+                    var argResult = renderArgument(value, requireGodotRawPtr);
+                    rendered.append(argResult.code());
+                    temps.addAll(argResult.temps());
+                }
+                case RawCallArg(var code) -> rendered.append(code);
+            }
         }
         return new RenderResult(rendered.toString(), temps);
     }
@@ -473,32 +533,37 @@ public final class CBodyBuilder {
         if (explicitType != null) {
             return explicitType;
         }
-        var signature = classRegistry().findUtilityFunctionSignature(funcName);
-        if (signature == null) {
+        var utility = resolveUtilityCall(funcName);
+        if (utility == null) {
             return null;
         }
-        return signature.returnType();
+        return utility.signature().returnType();
     }
 
     private void validateCallArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        var signature = classRegistry().findUtilityFunctionSignature(funcName);
-        if (signature == null) {
-            funcName = "godot_" + funcName;
-            signature = classRegistry().findUtilityFunctionSignature(funcName);
-        }
-        if (signature == null) {
+        var utility = resolveUtilityCall(funcName);
+        if (utility == null) {
             return;
         }
+        validateCallArgs(utility, args, false);
+    }
+
+    private void validateCallArgs(@NotNull UtilityCallInfo utility,
+                                  @NotNull List<ValueRef> args,
+                                  boolean strictVarargVariant) {
+        var signature = utility.signature();
         var paramCount = signature.parameterCount();
         var isVararg = signature.isVararg();
         if (!isVararg && args.size() > paramCount) {
-            throw invalidInsn("Too many arguments for function '" + funcName + "': expected " + paramCount + ", got " + args.size());
+            throw invalidInsn("Too many arguments for utility function '" + utility.lookupName() + "': expected " +
+                    paramCount + ", got " + args.size());
         }
         if (args.size() < paramCount) {
             for (var i = args.size(); i < paramCount; i++) {
                 var param = signature.parameters().get(i);
                 if (param.defaultValue() == null) {
-                    throw invalidInsn("Too few arguments for function '" + funcName + "': expected " + paramCount + ", got " + args.size());
+                    throw invalidInsn("Too few arguments for utility function '" + utility.lookupName() + "': expected " +
+                            (isVararg ? "at least " : "") + paramCount + ", got " + args.size());
                 }
             }
         }
@@ -510,6 +575,20 @@ public final class CBodyBuilder {
                 continue;
             }
             checkAssignable(args.get(i).type(), paramType);
+        }
+        if (!isVararg || !strictVarargVariant) {
+            return;
+        }
+        for (var i = paramCount; i < args.size(); i++) {
+            var arg = args.get(i);
+            if (!classRegistry().checkAssignable(arg.type(), GdVariantType.VARIANT)) {
+                throw invalidInsn("Vararg argument #" + (i - paramCount + 1) + " of utility '" +
+                        utility.lookupName() + "' must be Variant, got '" + arg.type().getTypeName() + "'");
+            }
+            if (!(arg instanceof VarValue)) {
+                throw invalidInsn("Vararg argument #" + (i - paramCount + 1) + " of utility '" +
+                        utility.lookupName() + "' must be a variable");
+            }
         }
     }
 
@@ -529,6 +608,113 @@ public final class CBodyBuilder {
             throw invalidInsn("jumpIf condition must be bool, got '" + condition.type().getTypeName() + "'");
         }
         return new RenderResult(condition.generateCode(), List.of());
+    }
+
+    private @NotNull UtilityCallInfo requireUtilityCall(@NotNull String funcName) {
+        var utility = resolveUtilityCall(funcName);
+        if (utility == null) {
+            throw invalidInsn("Global utility function '" + funcName + "' not found in registry");
+        }
+        return utility;
+    }
+
+    /// Guards against accidentally calling a vararg utility via `callVoid`/`callAssign`
+    /// instead of the dedicated `callUtilityVoid`/`callUtilityAssign` APIs.
+    /// Non-vararg utilities are allowed through the generic path since they don't need argv/argc handling.
+    private void rejectVarargUtilityViaNonUtilityPath(@NotNull String funcName) {
+        var utility = resolveUtilityCall(funcName);
+        if (utility != null && utility.signature().isVararg()) {
+            throw invalidInsn("Vararg utility function '" + utility.lookupName() +
+                    "' must be called via callUtilityVoid/callUtilityAssign, not callVoid/callAssign");
+        }
+    }
+
+    private @Nullable UtilityCallInfo resolveUtilityCall(@NotNull String funcName) {
+        var lookupName = normalizeUtilityLookupName(funcName);
+        var signature = classRegistry().findUtilityFunctionSignature(lookupName);
+        if (signature == null) {
+            return null;
+        }
+        return new UtilityCallInfo(lookupName, toUtilityCFunctionName(lookupName), signature);
+    }
+
+    /// Renders arguments for a utility function call, including vararg argv/argc handling.
+    ///
+    /// For vararg utilities, extra arguments beyond fixed parameters are collected into a
+    /// temporary `const godot_Variant*[]` array. The pointers in this array point directly
+    /// at the IR variables (`&$varId`), which is safe because `validateCallArgs` guarantees
+    /// that all vararg extra arguments are `VarValue` references with stable addresses.
+    private @NotNull UtilityArgsRenderResult renderUtilityArgs(@NotNull UtilityCallInfo utility,
+                                                               @NotNull List<ValueRef> args) {
+        var fixedCount = utility.signature().parameterCount();
+        var callArgs = new ArrayList<CallArg>();
+        var fixedLimit = Math.min(fixedCount, args.size());
+        for (var i = 0; i < fixedLimit; i++) {
+            callArgs.add(new ValueCallArg(args.get(i)));
+        }
+
+        var preCallLines = new ArrayList<String>();
+        if (utility.signature().isVararg()) {
+            var extraCount = Math.max(0, args.size() - fixedCount);
+            if (extraCount == 0) {
+                callArgs.add(new RawCallArg("NULL"));
+                callArgs.add(new RawCallArg("(godot_int)0"));
+            } else {
+                var argvName = newTempName("argv");
+                var pointers = new ArrayList<String>(extraCount);
+                for (var i = fixedCount; i < args.size(); i++) {
+                    pointers.add(renderVarargVariantPointer(utility, args.get(i), i - fixedCount));
+                }
+                preCallLines.add("const godot_Variant* " + argvName + "[] = { " + String.join(", ", pointers) + " };");
+                callArgs.add(new RawCallArg(argvName));
+                callArgs.add(new RawCallArg("(godot_int)" + extraCount));
+            }
+        }
+        var rendered = renderCallArgs(utility.cFunctionName(), callArgs);
+        return new UtilityArgsRenderResult(rendered.code(), rendered.temps(), preCallLines);
+    }
+
+    /// Renders the C pointer expression for a vararg extra argument.
+    /// Pre-condition: validateCallArgs has already verified that value is a VarValue of Variant type.
+    private @NotNull String renderVarargVariantPointer(@NotNull UtilityCallInfo utility,
+                                                       @NotNull ValueRef value,
+                                                       int varargIndex) {
+        if (!(value instanceof VarValue varValue)) {
+            throw invalidInsn("Vararg argument #" + (varargIndex + 1) + " of utility '" +
+                    utility.lookupName() + "' must be a variable");
+        }
+        if (!classRegistry().checkAssignable(varValue.type(), GdVariantType.VARIANT)) {
+            throw invalidInsn("Vararg argument #" + (varargIndex + 1) + " of utility '" +
+                    utility.lookupName() + "' must be Variant, got '" + varValue.type().getTypeName() + "'");
+        }
+        var code = varValue.generateCode();
+        if (varValue.variable().ref()) {
+            return code;
+        }
+        return "&" + code;
+    }
+
+    private void emitRawLines(@NotNull List<String> lines) {
+        for (var line : lines) {
+            out.append(line).append("\n");
+        }
+    }
+
+    private @NotNull String normalizeUtilityLookupName(@NotNull String funcName) {
+        if (!funcName.startsWith("godot_")) {
+            return funcName;
+        }
+        if (funcName.length() == "godot_".length()) {
+            return funcName;
+        }
+        return funcName.substring("godot_".length());
+    }
+
+    private @NotNull String toUtilityCFunctionName(@NotNull String lookupName) {
+        if (lookupName.startsWith("godot_")) {
+            return lookupName;
+        }
+        return "godot_" + lookupName;
     }
 
     /// Renders a ValueRef as a C argument, adding '&' if needed for pass-by-reference types.
@@ -968,6 +1154,41 @@ public final class CBodyBuilder {
         private RenderResult {
             Objects.requireNonNull(code);
             Objects.requireNonNull(temps);
+        }
+    }
+
+    private record UtilityCallInfo(@NotNull String lookupName,
+                                   @NotNull String cFunctionName,
+                                   @NotNull FunctionSignature signature) {
+        private UtilityCallInfo {
+            Objects.requireNonNull(lookupName);
+            Objects.requireNonNull(cFunctionName);
+            Objects.requireNonNull(signature);
+        }
+    }
+
+    private record UtilityArgsRenderResult(@NotNull String code,
+                                           @NotNull List<TempVar> temps,
+                                           @NotNull List<String> preCallLines) {
+        private UtilityArgsRenderResult {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(temps);
+            Objects.requireNonNull(preCallLines);
+        }
+    }
+
+    private sealed interface CallArg permits ValueCallArg, RawCallArg {
+    }
+
+    private record ValueCallArg(@NotNull ValueRef value) implements CallArg {
+        private ValueCallArg {
+            Objects.requireNonNull(value);
+        }
+    }
+
+    private record RawCallArg(@NotNull String code) implements CallArg {
+        private RawCallArg {
+            Objects.requireNonNull(code);
         }
     }
 }

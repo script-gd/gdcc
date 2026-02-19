@@ -379,3 +379,97 @@ var objectValue = bodyBuilder.valueOfVar(objectVar);
 ---
 
 本文件作为评审基线，后续代码实施应严格以本说明和 `doc/gdcc_c_backend.md` 为语义依据。
+
+## 12. Utility Function 调用内部设计
+
+本章记录 `CBodyBuilder` 中 utility 调用路径的内部架构决策，供后续扩展和维护参考。
+
+### 12.1 UtilityCallInfo 三元组
+
+内部使用 `UtilityCallInfo` record 统一承载 utility 查询结果：
+
+```java
+record UtilityCallInfo(
+    String lookupName,      // 用于 ClassRegistry 查询的无前缀名，如 "print"
+    String cFunctionName,   // 最终 C 调用符号，如 "godot_print"
+    FunctionSignature signature
+) {}
+```
+
+所有 utility 路径（参数校验、参数渲染、调用发射）共用同一个 `UtilityCallInfo`，避免在不同方法中分别做名称转换导致不一致。
+
+### 12.2 名称归一化流程
+
+`normalizeUtilityLookupName(funcName)` 与 `toUtilityCFunctionName(lookupName)` 两个方法负责名称转换：
+
+- 输入 `"print"` → `lookupName = "print"` → `cFunctionName = "godot_print"`
+- 输入 `"godot_print"` → `lookupName = "print"`（剥离 `"godot_"` 前缀）→ `cFunctionName = "godot_print"`
+
+`ClassRegistry.utilityByName` **只接受无前缀名**，因此所有查询必须先经 normalize。
+`resolveUtilityCall` 的实现是**单路径**（不做二次回退），因为 normalize 后的查询已覆盖全部合法输入。
+
+> 设计陷阱：不要在 `resolveUtilityCall` 里加"用原名再查一次"的回退分支——`ClassRegistry` 不使用 `"godot_"` 前缀作为 key，此类回退是死代码。
+
+### 12.3 RawCallArg：原样参数通道
+
+`argv` 数组名（如 `__gdcc_tmp_argv_0`）和 `argc` 字面量（如 `(godot_int)2`）不是 GDScript 值语义参数，不能经过 `renderArgument` 的自动 `&` 加前缀和对象指针转换。
+
+为此引入 `RawCallArg`，在 `renderCallArgs` 中直接拼接 C 片段，绕过普通参数渲染：
+
+```
+sealed interface CallArg permits ValueCallArg, RawCallArg
+```
+
+**规则**：只在已知片段完全正确且不需要任何 ABI 处理时使用 `RawCallArg`。目前仅用于 `NULL`、`(godot_int)N`、argv 数组名三种场景。
+
+### 12.4 renderUtilityArgs 与 preCallLines 机制
+
+vararg utility 的 argv 数组需要在调用语句之前声明，不能在参数列表内联。`UtilityArgsRenderResult` 通过 `preCallLines` 字段承载这些前置行：
+
+```
+record UtilityArgsRenderResult(String code, List<TempVar> temps, List<String> preCallLines)
+```
+
+调用方在 `callUtilityVoid`/`callUtilityAssign` 中的发射顺序：
+1. `emitTempDecls(temps)` — 声明固定参数的 copy temps
+2. `emitRawLines(preCallLines)` — 声明 argv 数组
+3. 发射函数调用语句
+4. `emitTempDestroys(temps)` — 销毁 copy temps
+
+**argv 指针生命周期**：argv 数组中的指针（`&$varId`）直接指向 IR 变量的存储。这是安全的，因为 `validateCallArgs` 已强制要求所有 vararg extra 参数必须是 `VarValue`（变量引用），地址稳定。一旦放开此约束（允许表达式），必须同步调整此处保证 temp 生命周期不早于函数调用。
+
+### 12.5 emitCallResultAssignment：公共调用结果赋值逻辑
+
+`callAssign` 和 `callUtilityAssign` 共享"将调用结果写入 target"的完整流程：
+1. 若 target 已初始化，destroy/release 旧值（在 `__prepare__` 块跳过）
+2. 若函数名以 `godot_` 开头且 target 是 GDCC 对象类型，用 `fromGodotObjectPtr` 包裹调用表达式
+3. 输出赋值语句
+4. 若 target 是对象类型，own 新值
+5. 标记 target 为已初始化
+
+此逻辑提取为私有方法 `emitCallResultAssignment(target, cFuncName, callExpr)`，两处调用方只需构造好 `callExpr` 即可。
+
+> 维护注意：如果未来需要修改"调用结果赋值语义"（如引入更精确的 ptr 转换判断），只改 `emitCallResultAssignment` 一处，勿在 `callAssign`/`callUtilityAssign` 中分别修改。
+
+### 12.6 rejectVarargUtilityViaNonUtilityPath 防误用守卫
+
+`callVoid`/`callAssign` 在入口处调用此方法检测 vararg utility：
+
+```java
+private void rejectVarargUtilityViaNonUtilityPath(String funcName) {
+    var utility = resolveUtilityCall(funcName);
+    if (utility != null && utility.signature().isVararg()) {
+        throw invalidInsn("Vararg utility function '...' must be called via callUtilityVoid/callUtilityAssign, ...");
+    }
+}
+```
+
+**目的**：若指令生成器误用通用路径调用 vararg utility，会在代码生成阶段立即失败，而不是静默生成缺少 argv/argc 的非法 C 代码。
+
+### 12.7 non-vararg utility 通过通用路径的说明
+
+`callVoid`/`callAssign` 通过 `resolveUtilityCall` 对非 vararg utility 仍做参数与返回类型校验，但不阻止调用。这允许调用者使用通用路径调用非 vararg utility（例如某些 one-off 场景）。
+
+目前不强制要求 non-vararg utility 也走专用路径，但未来如果需要统一，可在 `rejectVarargUtilityViaNonUtilityPath` 中去掉 `isVararg` 条件。
+
+

@@ -57,6 +57,50 @@
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass `gdcc_object->_object` instead of `gdcc_object`.
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 
+### Calling Utility Functions (CBodyBuilder)
+
+GDExtension utility functions (e.g., `print`, `deg_to_rad`) have a dedicated calling path in `CBodyBuilder`.
+**Always use the utility-specific APIs** instead of the generic `callVoid`/`callAssign`:
+
+- **`callUtilityVoid(funcName, args)`** — for utility functions with no return value.
+- **`callUtilityAssign(target, funcName, args)`** — for utility functions with a non-void return value.
+
+These dedicated APIs automatically:
+1. Normalize the function name (`print` and `godot_print` are equivalent; the `godot_` prefix is stripped for registry lookup and re-added for C symbol emission).
+2. Validate argument count and types against the utility's signature from the class registry.
+3. Append `argv`/`argc` for vararg utilities (see below).
+
+Using `callVoid`/`callAssign` directly on a **vararg utility** will throw an `InvalidInsnException` at code-gen time, preventing generation of malformed C code.
+
+#### Vararg Utility Calling Convention
+
+Vararg utilities in GDExtension C have the following calling signature:
+```c
+void godot_print(const godot_Variant *arg1, const godot_Variant **argv, godot_int argc);
+```
+- **Fixed parameters** (from the API signature) are passed normally.
+- **Extra arguments** (beyond fixed count) must each be of type `Variant` and must be materialized as IR variables (not inline expressions) so their addresses are stable.
+- `CBodyBuilder` handles argv/argc construction automatically:
+  - `extraCount == 0`: emits `NULL, (godot_int)0`.
+  - `extraCount > 0`: declares a local `const godot_Variant* __gdcc_tmp_argv_N[] = { &$v1, &$v2, ... }` and passes `__gdcc_tmp_argv_N, (godot_int)N`.
+- The index `N` in the array name is globally unique within the function to prevent name collisions when multiple vararg calls appear in the same block.
+
+#### Utility Name Rules
+
+- IR instructions may use either the plain name (`print`) or the prefixed name (`godot_print`).
+- `CBodyBuilder` normalizes internally — instruction generators never need to manually prepend or strip `godot_`.
+- The registry (`ClassRegistry.findUtilityFunctionSignature`) is always keyed on the unprefixed name; the prefixed C symbol is derived by prepending `godot_`.
+
+#### Error Messages for Utility Validation
+
+Utility-path errors should use the phrase **"utility function"** in messages to distinguish them from method/constructor errors. Examples:
+- `Global utility function 'foo' not found in registry`
+- `Too few arguments for utility function 'print': expected at least 1, got 0`
+- `Vararg argument #2 of utility 'print' must be Variant, got 'String'`
+- `Vararg argument #2 of utility 'print' must be a variable`
+- `Utility function 'print' has no return value`
+- `Utility function 'deg_to_rad' must be called via callUtilityVoid/callUtilityAssign`
+
 ### Temporary Variables (CBodyBuilder)
 
 - `TempVar` carries its own mutable initialization state.
