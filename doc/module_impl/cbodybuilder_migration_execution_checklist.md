@@ -167,16 +167,19 @@
 对每个 `LirFunctionDef func`：
 
 1) 若不存在 `__finally__`：创建并 `func.addBasicBlock(finallyBB)`。
-2) 维护跳转收敛：
-- 非 `__finally__` block 的 return 由 `CBodyBuilder.return*` 统一重写为 `goto __finally__`，无需在 LIR 端重写 return 指令。
-3) 扫描 `func.getVariables()`：
+2) 若已存在 `__finally__`：**不清空已有指令**，按“语义等价去重”追加缺失指令。
+3) 维护跳转收敛：
+   - 非 `__finally__` block 的 return 由 `CBodyBuilder.return*` 统一重写为 `goto __finally__`，无需在 LIR 端重写 return 指令。
+4) 扫描 `func.getVariables()`：
    - 跳过参数变量。
    - 跳过 `ref=true` 变量。
    - 无需处理 `_return_val`（它不在 LIR 变量表中）。
    - 对其余变量，根据类型可清理性插入 `DestructInsn(variable.id())` 到 `__finally__`。
-4) 在 `__finally__` 尾部追加：
+   - 若已存在等价 `DestructInsn`，则跳过并记录 warning 日志。
+5) 在 `__finally__` 尾部追加：
    - `ReturnInsn(null)`（`void`）
    - `ReturnInsn("_return_val")`（non-void；显式使用哨兵值触发特殊路径）
+   - 若已存在等价 `ReturnInsn`，则跳过并记录 warning 日志。
 
 ### 4.3.1 `ReturnInsn(\"_return_val\")` 特殊路径规则
 
@@ -207,6 +210,24 @@
 ### 4.5 参考伪代码（可直接翻译为 Java）
 
 ```java
+private static boolean containsInstruction(LirBasicBlock block, LirInstruction instruction) {
+    for (var existingInsn : block.instructions()) {
+        if (existingInsn.checkEquals(instruction)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+private void appendInsnIfAbsent(LirFunctionDef func, LirBasicBlock block, LirInstruction instruction) {
+    if (containsInstruction(block, instruction)) {
+        LOGGER.warn("Function {} block {} already contains instruction {}, skip append.",
+                func.getName(), block.id(), instruction);
+        return;
+    }
+    block.instructions().add(instruction);
+}
+
 private void ensureFunctionFinallyBlock() {
     for (var classDef : module.getClassDefs()) {
         for (var func : classDef.getFunctions()) {
@@ -214,8 +235,6 @@ private void ensureFunctionFinallyBlock() {
             if (finallyBlock == null) {
                 finallyBlock = new LirBasicBlock("__finally__");
                 func.addBasicBlock(finallyBlock);
-            } else {
-                finallyBlock.instructions().clear();
             }
 
             var parameterNames = func.getParameters().stream()
@@ -229,27 +248,42 @@ private void ensureFunctionFinallyBlock() {
                 if (variable.ref()) {
                     continue;
                 }
-                if ("_return_val".equals(variable.id())) {
-                    continue;
-                }
                 if (!variable.type().isDestroyable()) {
                     continue;
                 }
-                finallyBlock.instructions().add(new DestructInsn(variable.id()));
+                appendInsnIfAbsent(func, finallyBlock, new DestructInsn(variable.id()));
             }
 
             if (func.getReturnType() instanceof GdVoidType) {
-                finallyBlock.instructions().add(new ReturnInsn(null));
+                appendInsnIfAbsent(func, finallyBlock, new ReturnInsn(null));
             } else {
                 // _return_val 是代码生成期隐式变量，不进入 LIR 变量表。
                 // 这里使用 "_return_val" 作为 ReturnInsn 的哨兵值，
                 // 由 ControlFlowInsnGen 特殊处理并映射到 returnVoid() 的 finally 返回路径。
-                finallyBlock.instructions().add(new ReturnInsn("_return_val"));
+                appendInsnIfAbsent(func, finallyBlock, new ReturnInsn("_return_val"));
             }
         }
     }
 }
 ```
+
+### 4.6 已落地补充（2026-02-19）
+
+针对 `CCodegen` 的 `__prepare__` / `__finally__` 生成流程，已落地以下规则：
+
+- 已存在的 `__prepare__` / `__finally__` 块不再 `clear()`，保留手工指令。
+- 自动补齐指令时采用“语义等价去重”：
+  - 使用 `LirInstruction.checkEquals(...)` 判定是否已存在。
+  - 若不存在则追加；
+  - 若已存在则跳过，并打印 warning 日志：`already contains instruction ... skip append`。
+- 新增入口保护：
+  - 当函数入口已是 `__prepare__` 时，尝试从已有 `GotoInsn` 解析真实目标，避免生成 `goto __prepare__` 自跳转。
+
+对应测试（`CPhaseAControlFlowAndFinallyTest`）：
+
+- `generateShouldKeepExistingFinallyForVoidFunction()`
+- `duplicatePrepareInstructionsShouldWarnAndNotAppend()`
+- `duplicateFinallyInstructionsShouldWarnAndNotAppend()`
 
 ## 5. 建议提交切分（Commit Plan）
 

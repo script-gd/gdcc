@@ -7,6 +7,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Objects;
 
 /// Base type for all Low IR instructions.
 /// -----
@@ -21,6 +22,12 @@ public interface LirInstruction {
     GdInstruction opcode();
 
     @NotNull List<Operand> operands();
+
+    default boolean checkEquals(@NotNull LirInstruction another) {
+        return this.opcode() == another.opcode()
+                && Objects.equals(this.resultId(), another.resultId())
+                && Objects.equals(this.operands(), another.operands());
+    }
 
     sealed interface Operand permits BasicBlockOperand, BooleanOperand, FloatOperand, GdOperatorOperand, IntOperand, StringOperand, VarargOperand, VariableOperand {
         /// Returns the expected operand kind for this operand instance.

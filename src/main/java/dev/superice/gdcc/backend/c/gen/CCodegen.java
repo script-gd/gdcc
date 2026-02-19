@@ -13,6 +13,8 @@ import dev.superice.gdcc.type.*;
 import dev.superice.gdcc.util.CCodeFormatter;
 import freemarker.template.TemplateException;
 import org.jetbrains.annotations.NotNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -20,8 +22,10 @@ import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 public class CCodegen implements Codegen {
+    private static final Logger LOGGER = LoggerFactory.getLogger(CCodegen.class);
     private static final EnumMap<GdInstruction, CInsnGen<? extends LirInstruction>> INSN_GENS = new EnumMap<>(GdInstruction.class);
 
     static {
@@ -44,6 +48,39 @@ public class CCodegen implements Codegen {
         for (var opcode : insnGen.getInsnOpcodes()) {
             INSN_GENS.put(opcode, insnGen);
         }
+    }
+
+    private static boolean containsInstruction(@NotNull LirBasicBlock block, @NotNull LirInstruction instruction) {
+        for (var existingInsn : block.instructions()) {
+            if (existingInsn.checkEquals(instruction)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void appendInsnIfAbsent(@NotNull LirFunctionDef func,
+                                    @NotNull LirBasicBlock block,
+                                    @NotNull LirInstruction instruction) {
+        if (containsInstruction(block, instruction)) {
+            LOGGER.warn("Function {} block {} already contains instruction {}, skip append.",
+                    func.getName(),
+                    block.id(),
+                    instruction);
+            return;
+        }
+        block.instructions().add(instruction);
+    }
+
+    private @NotNull String resolvePrepareEntryTarget(@NotNull LirFunctionDef func, @NotNull LirBasicBlock prepareBB) {
+        for (var instruction : prepareBB.instructions()) {
+            if (instruction instanceof GotoInsn(var targetBbId) && !"__prepare__".equals(targetBbId)) {
+                return targetBbId;
+            }
+        }
+        LOGGER.warn("Function {} already enters __prepare__ without a non-self goto target, keep __prepare__ as goto target.",
+                func.getName());
+        return "__prepare__";
     }
 
     private void generateDefaultGetterSetterInitialization() {
@@ -131,8 +168,6 @@ public class CCodegen implements Codegen {
                 if (prepareBB == null) {
                     prepareBB = new LirBasicBlock("__prepare__");
                     func.addBasicBlock(prepareBB);
-                } else {
-                    prepareBB.instructions().clear();
                 }
                 // initialize variables
                 var parameterNames = func.getParameters().stream().map(ParameterDef::getName).collect(HashSet::new, HashSet::add, HashSet::addAll);
@@ -143,25 +178,29 @@ public class CCodegen implements Codegen {
                     if (variable.ref()) {
                         continue;
                     }
-                    switch (variable.type()) {
-                        case GdObjectType _ -> prepareBB.instructions().add(new LiteralNullInsn(variable.id()));
+                    var initInsn = switch (variable.type()) {
+                        case GdObjectType _ -> new LiteralNullInsn(variable.id());
                         case GdVariantType _, GdNilType _ ->
-                                prepareBB.instructions().add(new LiteralNilInsn(variable.id()));
-                        case GdBoolType _ -> prepareBB.instructions().add(new LiteralBoolInsn(variable.id(), false));
-                        case GdIntType _ -> prepareBB.instructions().add(new LiteralIntInsn(variable.id(), 0));
-                        case GdFloatType _ -> prepareBB.instructions().add(new LiteralFloatInsn(variable.id(), 0.0));
-                        case GdStringType _ -> prepareBB.instructions().add(new LiteralStringInsn(variable.id(), ""));
+                                new LiteralNilInsn(variable.id());
+                        case GdBoolType _ -> new LiteralBoolInsn(variable.id(), false);
+                        case GdIntType _ -> new LiteralIntInsn(variable.id(), 0);
+                        case GdFloatType _ -> new LiteralFloatInsn(variable.id(), 0.0);
+                        case GdStringType _ -> new LiteralStringInsn(variable.id(), "");
                         case GdStringNameType _ ->
-                                prepareBB.instructions().add(new LiteralStringNameInsn(variable.id(), ""));
+                                new LiteralStringNameInsn(variable.id(), "");
                         case GdArrayType gdArrayType ->
-                                prepareBB.instructions().add(new ConstructArrayInsn(variable.id(), gdArrayType.getValueType().getTypeName()));
+                                new ConstructArrayInsn(variable.id(), gdArrayType.getValueType().getTypeName());
                         case GdDictionaryType gdDictionaryType ->
-                                prepareBB.instructions().add(new ConstructDictionaryInsn(variable.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
-                        default -> prepareBB.instructions().add(new ConstructBuiltinInsn(variable.id(), List.of()));
-                    }
+                                new ConstructDictionaryInsn(variable.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName());
+                        default -> new ConstructBuiltinInsn(variable.id(), List.of());
+                    };
+                    appendInsnIfAbsent(func, prepareBB, initInsn);
                 }
                 var funcEntry = func.getEntryBlockId();
-                prepareBB.instructions().add(new GotoInsn(funcEntry));
+                var targetEntry = "__prepare__".equals(funcEntry)
+                        ? resolvePrepareEntryTarget(func, prepareBB)
+                        : funcEntry;
+                appendInsnIfAbsent(func, prepareBB, new GotoInsn(targetEntry));
                 func.setEntryBlockId("__prepare__");
             }
         }
@@ -174,8 +213,6 @@ public class CCodegen implements Codegen {
                 if (finallyBB == null) {
                     finallyBB = new LirBasicBlock("__finally__");
                     func.addBasicBlock(finallyBB);
-                } else {
-                    finallyBB.instructions().clear();
                 }
 
                 var parameterNames = func.getParameters().stream()
@@ -191,12 +228,12 @@ public class CCodegen implements Codegen {
                     if (!variable.type().isDestroyable()) {
                         continue;
                     }
-                    finallyBB.instructions().add(new DestructInsn(variable.id()));
+                    appendInsnIfAbsent(func, finallyBB, new DestructInsn(variable.id()));
                 }
                 if (func.getReturnType() instanceof GdVoidType) {
-                    finallyBB.instructions().add(new ReturnInsn(null));
+                    appendInsnIfAbsent(func, finallyBB, new ReturnInsn(null));
                 } else {
-                    finallyBB.instructions().add(new ReturnInsn("_return_val"));
+                    appendInsnIfAbsent(func, finallyBB, new ReturnInsn("_return_val"));
                 }
             }
         }

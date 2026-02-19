@@ -22,6 +22,9 @@ import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -157,8 +160,8 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     @Test
-    @DisplayName("generate should reset existing __finally__ and append void return")
-    void generateShouldResetExistingFinallyForVoidFunction() {
+    @DisplayName("generate should keep existing __finally__ instructions and append missing ones")
+    void generateShouldKeepExistingFinallyForVoidFunction() {
         var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("void_func");
         func.setReturnType(GdVoidType.VOID);
@@ -180,9 +183,11 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var finallyBlock = func.getBasicBlock("__finally__");
         assertNotNull(finallyBlock);
-        assertEquals(2, finallyBlock.instructions().size());
+        assertEquals(3, finallyBlock.instructions().size());
 
-        var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.instructions().getFirst());
+        assertInstanceOf(NopInsn.class, finallyBlock.instructions().getFirst());
+
+        var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.instructions().get(1));
         assertEquals("str", destructInsn.variableId());
 
         var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
@@ -220,6 +225,85 @@ public class CPhaseAControlFlowAndFinallyTest {
                 .anyMatch(insn -> insn.resultId().equals("refStr"));
         assertTrue(hasPlainStrInit);
         assertFalse(hasRefStrInit);
+    }
+
+    @Test
+    @DisplayName("existing duplicated __prepare__ instructions should not be appended again and must warn")
+    void duplicatePrepareInstructionsShouldWarnAndNotAppend() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("void_func");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("plainStr", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+
+        var existingPrepare = new LirBasicBlock("__prepare__");
+        existingPrepare.instructions().add(new LiteralStringInsn("plainStr", ""));
+        existingPrepare.instructions().add(new GotoInsn("entry"));
+        func.addBasicBlock(existingPrepare);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
+        var originalOut = System.out;
+        try {
+            System.setOut(capture);
+            codegen.generate();
+        } finally {
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        var prepareBlock = func.getBasicBlock("__prepare__");
+        assertNotNull(prepareBlock);
+        assertEquals(2, prepareBlock.instructions().size());
+        assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).contains("already contains instruction"));
+    }
+
+    @Test
+    @DisplayName("existing duplicated __finally__ instructions should not be appended again and must warn")
+    void duplicateFinallyInstructionsShouldWarnAndNotAppend() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("void_func");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("str", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+
+        var existingFinally = new LirBasicBlock("__finally__");
+        existingFinally.instructions().add(new DestructInsn("str"));
+        existingFinally.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(existingFinally);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
+        var originalOut = System.out;
+        try {
+            System.setOut(capture);
+            codegen.generate();
+        } finally {
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        var finallyBlock = func.getBasicBlock("__finally__");
+        assertNotNull(finallyBlock);
+        assertEquals(2, finallyBlock.instructions().size());
+        assertInstanceOf(DestructInsn.class, finallyBlock.instructions().getFirst());
+        var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
+        assertNull(returnInsn.returnValueId());
+        assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).contains("already contains instruction"));
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {

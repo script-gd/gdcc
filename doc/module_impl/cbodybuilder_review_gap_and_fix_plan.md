@@ -249,3 +249,38 @@
 - [ ] `CALL_GLOBAL` 不再处于不可用半成品状态（明确禁用或完整实现）。
 - [ ] 显式 destruct 与自动 finally destruct 策略明确且有测试守护。
 - [ ] 已迁移模板退役完成且无残留引用。
+
+---
+
+## 7. 已落地改动记录（2026-02-19）
+
+以下内容已在本次实现中落地，作为后续迁移阶段的已完成基线：
+
+- `CCodegen` 对 `__prepare__` / `__finally__` 的处理从“存在即清空重建”改为“保留已有指令 + 去重追加”。
+  - 位置：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+  - 关键实现：
+    - `containsInstruction(...)`：利用 `LirInstruction.checkEquals(...)` 判断语义等价指令；
+    - `appendInsnIfAbsent(...)`：不存在才追加，重复则记录 warning；
+    - `resolvePrepareEntryTarget(...)`：当入口已是 `__prepare__` 时，从已有 goto 中解析实际目标，避免自跳转死循环。
+- 新增日志语义：
+  - 当准备追加的指令已存在于对应基本块时，不再重复写入，输出 warning：`already contains instruction ... skip append`。
+- `__prepare__` 行为确认：
+  - 继续跳过参数变量；
+  - 明确跳过 `ref=true` 变量；
+  - 仅为非 ref 变量补齐缺失初始化指令与跳转指令。
+- `__finally__` 行为确认：
+  - 保留手工已有指令（不清空）；
+  - 对 destroyable 非 ref 非参数变量补齐缺失 `DestructInsn`；
+  - 为函数返回类型补齐缺失 `ReturnInsn(null)` / `ReturnInsn(\"_return_val\")`。
+
+对应单测（均在 `src/test/java/dev/superice/gdcc/backend/c/gen/CPhaseAControlFlowAndFinallyTest.java`）：
+
+- 更新：
+  - `generateShouldKeepExistingFinallyForVoidFunction()`：验证已有 `__finally__` 指令会被保留，并只补齐缺失析构/返回。
+- 新增：
+  - `duplicatePrepareInstructionsShouldWarnAndNotAppend()`；
+  - `duplicateFinallyInstructionsShouldWarnAndNotAppend()`。
+
+本次执行过的验证命令：
+
+- `./gradlew test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain`
