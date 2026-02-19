@@ -11,7 +11,7 @@ public final class GdTransform3DType implements GdMatrixType {
     public static final GdTransform3DType TRANSFORM3D = new GdTransform3DType();
     @Override
     public @NotNull String getTypeName() {
-        return "Transform2D";
+        return "Transform3D";
     }
 
     @Override

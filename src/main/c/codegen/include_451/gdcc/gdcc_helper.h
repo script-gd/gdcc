@@ -135,4 +135,25 @@ static GDExtensionObjectPtr godot_new_gdcc_Object_with_Variant(const godot_Varia
 
 #define godot_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(obj->_object)
 
+static godot_Transform2D godot_new_Transform2D_with_float_float_float_float_float_float(
+    godot_float xx, godot_float xy, godot_float yx, godot_float yy, godot_float tx, godot_float ty
+) {
+    godot_Vector2 x = godot_new_Vector2_with_float_float(xx, xy);
+    godot_Vector2 y = godot_new_Vector2_with_float_float(yx, yy);
+    godot_Vector2 origin = godot_new_Vector2_with_float_float(tx, ty);
+    godot_Transform2D t = godot_new_Transform2D_with_Vector2_Vector2_Vector2(&x, &y, &origin);
+    return t;
+}
+
+static godot_Transform3D godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float(
+    godot_float xx, godot_float xy, godot_float xz, godot_float yx, godot_float yy, godot_float yz, godot_float zx, godot_float zy, godot_float zz, godot_float tx, godot_float ty, godot_float tz
+) {
+    godot_Vector3 x = godot_new_Vector3_with_float_float_float(xx, xy, xz);
+    godot_Vector3 y = godot_new_Vector3_with_float_float_float(yx, yy, yz);
+    godot_Vector3 z = godot_new_Vector3_with_float_float_float(zx, zy, zz);
+    godot_Vector3 origin = godot_new_Vector3_with_float_float_float(tx, ty, tz);
+    godot_Transform3D t = godot_new_Transform3D_with_Vector3_Vector3_Vector3_Vector3(&x, &y, &z, &origin);
+    return t;
+}
+
 #endif //GDCC_HELPER_H

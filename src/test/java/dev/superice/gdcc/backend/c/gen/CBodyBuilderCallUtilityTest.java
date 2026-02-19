@@ -4,6 +4,7 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -91,9 +92,75 @@ class CBodyBuilderCallUtilityTest {
                                         new ExtensionFunctionArgument("required", "String", null, null),
                                         new ExtensionFunctionArgument("optional", "String", "\"suffix\"", null)
                                 )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_vector3_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "Vector3", "Vector3(0, 1, 0)", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_node_path_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "NodePath", "NodePath(\"\")", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_typed_array_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "Array", "Array[StringName]([])", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_transform2d_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "Transform2D",
+                                                "Transform2D(1, 0, 0, 1, 0, 0)", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_transform3d_default",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("required", "int", null, null),
+                                        new ExtensionFunctionArgument("optional", "Transform3D",
+                                                "Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)", null)
+                                )
                         )
                 ),
-                Collections.emptyList(),
+                List.of(
+                        builtinClass("Vector3", List.of(constructor("Vector3", 0,
+                                List.of("float", "float", "float")))),
+                        builtinClass("NodePath", List.of(constructor("NodePath", 0, List.of("String")))),
+                        builtinClass("Array", List.of(constructor("Array", 0, List.of()))),
+                        builtinClass("Transform2D", List.of(constructor("Transform2D", 0,
+                                List.of("Vector2", "Vector2", "Vector2")))),
+                        builtinClass("Transform3D", List.of(constructor("Transform3D", 0,
+                                List.of("Basis", "Vector3"))))
+                ),
                 Collections.emptyList(),
                 Collections.emptyList(),
                 Collections.emptyList()
@@ -287,6 +354,89 @@ class CBodyBuilderCallUtilityTest {
     }
 
     @Test
+    @DisplayName("callUtilityVoid should use typed constructor suffix for Vector3 default argument")
+    void testCallUtilityVoidWithVector3DefaultArgument() {
+        var required = addVar("required", GdIntType.INT);
+
+        builder.callUtilityVoid("utility_with_vector3_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_Vector3 __gdcc_tmp_default_vector3_0 = godot_new_Vector3_with_float_float_float(0, 1, 0);
+                godot_utility_with_vector3_default($required, &__gdcc_tmp_default_vector3_0);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should special-case NodePath string default argument")
+    void testCallUtilityVoidWithNodePathDefaultArgument() {
+        var required = addVar("required", GdIntType.INT);
+
+        builder.callUtilityVoid("utility_with_node_path_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_NodePath __gdcc_tmp_default_nodepath_0 = godot_new_NodePath_with_utf8_chars(u8"");
+                godot_utility_with_node_path_default($required, &__gdcc_tmp_default_nodepath_0);
+                godot_NodePath_destroy(&__gdcc_tmp_default_nodepath_0);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should treat typed-array empty literal default as no-arg array constructor")
+    void testCallUtilityVoidWithTypedArrayEmptyDefaultArgument() {
+        var required = addVar("required", GdIntType.INT);
+
+        builder.callUtilityVoid("utility_with_typed_array_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_Array __gdcc_tmp_default_array_0 = godot_new_Array();
+                godot_array_set_typed(&__gdcc_tmp_default_array_0, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GD_STATIC_SN(u8""), NULL);
+                godot_utility_with_typed_array_default($required, &__gdcc_tmp_default_array_0);
+                godot_Array_destroy(&__gdcc_tmp_default_array_0);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should construct Transform2D default via gdcc helper constructor")
+    void testCallUtilityVoidWithTransform2DDefaultArgument() {
+        var required = addVar("required", GdIntType.INT);
+
+        builder.callUtilityVoid("utility_with_transform2d_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_Transform2D __gdcc_tmp_default_transform2d_0 = godot_new_Transform2D_with_float_float_float_float_float_float(1, 0, 0, 1, 0, 0);
+                godot_utility_with_transform2d_default($required, &__gdcc_tmp_default_transform2d_0);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
+    @DisplayName("callUtilityVoid should construct Transform3D default via gdcc helper constructor")
+    void testCallUtilityVoidWithTransform3DDefaultArgument() {
+        var required = addVar("required", GdIntType.INT);
+
+        builder.callUtilityVoid("utility_with_transform3d_default", List.of(builder.valueOfVar(required)));
+
+        assertEquals(
+                """
+                godot_Transform3D __gdcc_tmp_default_transform3d_0 = godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0);
+                godot_utility_with_transform3d_default($required, &__gdcc_tmp_default_transform3d_0);
+                """,
+                builder.build()
+        );
+    }
+
+    @Test
     @DisplayName("callUtilityAssign should reject void utility")
     void testCallUtilityAssignVoidUtility() {
         var arg1 = addVar("v1", GdVariantType.VARIANT);
@@ -307,5 +457,29 @@ class CBodyBuilderCallUtilityTest {
 
     private @NotNull LirVariable addVar(@NotNull String id, @NotNull GdType type) {
         return Objects.requireNonNull(functionDef.createAndAddVariable(id, type));
+    }
+
+    private @NotNull ExtensionBuiltinClass builtinClass(@NotNull String name,
+                                                        @NotNull List<ExtensionBuiltinClass.ConstructorInfo> constructors) {
+        return new ExtensionBuiltinClass(
+                name,
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                constructors,
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionBuiltinClass.ConstructorInfo constructor(@NotNull String className,
+                                                                       int index,
+                                                                       @NotNull List<String> argTypes) {
+        var args = new java.util.ArrayList<ExtensionFunctionArgument>(argTypes.size());
+        for (var i = 0; i < argTypes.size(); i++) {
+            args.add(new ExtensionFunctionArgument("arg" + i, argTypes.get(i), null, null));
+        }
+        return new ExtensionBuiltinClass.ConstructorInfo(className, index, args);
     }
 }

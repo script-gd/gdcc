@@ -4,9 +4,14 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdFloatVectorType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNodePathType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +19,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -62,6 +68,7 @@ class CGenHelperUtilityResolutionTest {
         assertNotNull(utility);
         assertEquals("deg_to_rad", utility.lookupName());
         assertEquals("godot_deg_to_rad", utility.cFunctionName());
+        assertNotNull(utility.signature().returnType());
         assertEquals("float", utility.signature().returnType().getTypeName());
     }
 
@@ -70,6 +77,44 @@ class CGenHelperUtilityResolutionTest {
     void resolveUtilityCallMissing() {
         var helper = newHelper();
         assertNull(helper.resolveUtilityCall("missing_utility"));
+    }
+
+    @Test
+    @DisplayName("renderBuiltinConstructorFunctionNameByTypes should compose typed constructor suffixes")
+    void renderBuiltinConstructorFunctionNameByTypesComposesSuffixes() {
+        var helper = newHelper();
+        var ctorName = helper.renderBuiltinConstructorFunctionNameByTypes(
+                GdFloatVectorType.VECTOR3,
+                List.of(GdFloatType.FLOAT, GdFloatType.FLOAT, GdFloatType.FLOAT)
+        );
+
+        assertEquals("godot_new_Vector3_with_float_float_float", ctorName);
+    }
+
+    @Test
+    @DisplayName("renderBuiltinConstructorFunctionName should support non-type suffix tokens")
+    void renderBuiltinConstructorFunctionNameSupportsCustomSuffixTokens() {
+        var helper = newHelper();
+        var ctorName = helper.renderBuiltinConstructorFunctionName(
+                GdNodePathType.NODE_PATH,
+                List.of("utf8_chars")
+        );
+
+        assertEquals("godot_new_NodePath_with_utf8_chars", ctorName);
+    }
+
+    @Test
+    @DisplayName("hasBuiltinConstructor should check constructor metadata by argument type list")
+    void hasBuiltinConstructorMatchesByArgumentTypes() {
+        var helper = newHelper();
+        assertTrue(helper.hasBuiltinConstructor(
+                GdFloatVectorType.VECTOR3,
+                List.of(GdFloatType.FLOAT, GdFloatType.FLOAT, GdFloatType.FLOAT)
+        ));
+        assertFalse(helper.hasBuiltinConstructor(
+                GdFloatVectorType.VECTOR3,
+                List.of(GdIntType.INT, GdIntType.INT, GdIntType.INT)
+        ));
     }
 
     private CGenHelper newHelper() {
@@ -103,7 +148,28 @@ class CGenHelperUtilityResolutionTest {
                                 List.of(new ExtensionFunctionArgument("deg", "float", null, null))
                         )
                 ),
-                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass(
+                                "Vector3",
+                                false,
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of(
+                                        new ExtensionBuiltinClass.ConstructorInfo(
+                                                "Vector3",
+                                                0,
+                                                List.of(
+                                                        new ExtensionFunctionArgument("x", "float", null, null),
+                                                        new ExtensionFunctionArgument("y", "float", null, null),
+                                                        new ExtensionFunctionArgument("z", "float", null, null)
+                                                )
+                                        )
+                                ),
+                                List.of(),
+                                List.of()
+                        )
+                ),
                 List.of(),
                 List.of(),
                 List.of()
