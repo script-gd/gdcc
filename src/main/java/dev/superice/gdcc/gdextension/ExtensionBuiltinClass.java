@@ -2,6 +2,7 @@ package dev.superice.gdcc.gdextension;
 
 import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
+import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.scope.*;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
@@ -88,7 +89,37 @@ public record ExtensionBuiltinClass(
         return false;
     }
 
-    public record ClassOperator(String name, String rightType, String returnType) {
+    public record ClassOperator(String name, @NotNull String rightType, String returnType) {
+        public GodotOperator operator() {
+            return switch (name) {
+                case "==" -> GodotOperator.EQUAL;
+                case "!=" -> GodotOperator.NOT_EQUAL;
+                case "unary-" -> GodotOperator.NEGATE;
+                case "unary+" -> GodotOperator.POSITIVE;
+                case "~" -> GodotOperator.BIT_NOT;
+                case "and" -> GodotOperator.AND;
+                case "or" -> GodotOperator.OR;
+                case "xor" -> GodotOperator.XOR;
+                case "not" -> GodotOperator.NOT;
+                case "<" -> GodotOperator.LESS;
+                case ">" -> GodotOperator.GREATER;
+                case "<=" -> GodotOperator.LESS_EQUAL;
+                case ">=" -> GodotOperator.GREATER_EQUAL;
+                case "+" -> GodotOperator.ADD;
+                case "-" -> GodotOperator.SUBTRACT;
+                case "*" -> GodotOperator.MULTIPLY;
+                case "/" -> GodotOperator.DIVIDE;
+                case "%" -> GodotOperator.MODULE;
+                case "**" -> GodotOperator.POWER;
+                case "<<" -> GodotOperator.SHIFT_LEFT;
+                case ">>" -> GodotOperator.SHIFT_RIGHT;
+                case "&" -> GodotOperator.BIT_AND;
+                case "|" -> GodotOperator.BIT_OR;
+                case "^" -> GodotOperator.BIT_XOR;
+                case "in" -> GodotOperator.IN;
+                default -> throw new IllegalArgumentException("Unknown operator: " + name);
+            };
+        }
     }
 
     public record ClassMethod(
@@ -270,7 +301,8 @@ public record ExtensionBuiltinClass(
         }
     }
 
-    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable, String defaultValue) implements PropertyDef {
+    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable,
+                               String defaultValue) implements PropertyDef {
         @Override
         public @NotNull String getName() {
             return name;

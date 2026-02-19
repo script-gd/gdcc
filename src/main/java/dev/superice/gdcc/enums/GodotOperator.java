@@ -20,7 +20,7 @@ public enum GodotOperator {
     BIT_AND,
     BIT_OR,
     BIT_XOR,
-    BIT_NEGATE,
+    BIT_NOT,
     AND,
     OR,
     XOR,
