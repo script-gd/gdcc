@@ -25,6 +25,8 @@ dependencies {
     implementation("com.google.code.gson:gson:2.13.2")
     implementation("org.freemarker:freemarker:2.3.34")
     implementation("com.github.abrarsyed.jastyle:jAstyle:1.3")
+    implementation("org.slf4j:slf4j-api:2.0.17")
+    implementation("info.picocli:picocli:4.7.7")
 }
 
 tasks.test {
