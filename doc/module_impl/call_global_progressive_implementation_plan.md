@@ -6,6 +6,14 @@
 - 目标模块：`backend.c`（`CallGlobalInsnGen` + `CBodyBuilder` + `CGenHelper`）
 - 本文用途：指导后续实施，不代表代码已完成
 
+## 0. 本阶段强约定（显著）
+
+- `CBodyBuilder.callVoid(..., varargs)` / `callAssign(..., varargs)` 约定：
+  - `varargs == null`：跳过 vararg 生成路径；
+  - `varargs != null`：强制进入 vararg 生成路径（即使空列表，也要发射 `NULL, (godot_int)0`）。
+- `CallGlobalInsnGen` 在检测到“需要默认参数补全”时，本阶段统一抛 `NotImplementedException`；
+  默认参数补全实现延后，不在本阶段落地。
+
 ## 1. 调研结论（现状）
 
 ### 1.1 现有代码能力
@@ -237,4 +245,63 @@
 
 - 已执行：
   - `./gradlew classes --no-daemon --info --console=plain`
+- 结果：`BUILD SUCCESSFUL`。
+
+## 11. 本阶段状态同步（CallGlobalInsnGen）
+
+### 11.1 已完成
+
+- `CallGlobalInsnGen` 已重新实现并接入 `CBodyBuilder` 新调用签名：
+  - `callVoid(cFunctionName, fixedArgs, varargs)`
+  - `callAssign(target, cFunctionName, returnType, fixedArgs, varargs)`
+- 已增加并启用以下校验：
+  - utility 解析失败校验（含 lookup key）
+  - 参数数量校验（non-vararg / vararg）
+  - 非 vararg（固定参数）类型校验（按签名逐位检查）
+  - vararg extra 必须可赋值给 `Variant`
+  - 返回值与 `resultId` 兼容性校验（void / non-void）
+
+### 11.2 默认参数策略（本阶段）
+
+- 本阶段**不实现**默认参数补全。
+- 所有默认参数相关测试改为 `abort`，并保留 TODO 注释。
+- 默认参数测试保持“严格断言”意图（恢复时仍要求严格校验输出）。
+
+### 11.3 测试与结果
+
+- 已执行：
+  - `./gradlew test --tests CallGlobalInsnGenTest --no-daemon --info --console=plain`
+- 结果：
+  - 通过：`CallGlobalInsnGenTest` 其余用例
+  - 跳过：默认参数补全用例（按本阶段策略）
+
+## 12. 增量更新（本轮）
+
+### 12.1 CBodyBuilder
+
+- 移除 `shouldRenderVarargTail(...)`。
+- `callVoid(..., varargs)` / `callAssign(..., varargs)` 的 `varargs` 参数改为 `@Nullable List<ValueRef>`。
+- 仅当 `varargs == null` 时回退非 vararg 路径；`varargs != null` 一律生成 vararg 尾参数。
+- 已在函数 `///` 注释中写明上述约定。
+
+### 12.2 CallGlobalInsnGen
+
+- non-vararg utility 调用时向 Builder 传 `varargs = null`。
+- vararg utility 调用时向 Builder 传 `varargs` 列表（可为空，用于生成 `NULL, (godot_int)0`）。
+- 当检测到缺省参数需要补全（provided < fixed 且缺失位置存在 default）时，
+  统一抛出 `NotImplementedException`。
+
+### 12.3 单元测试
+
+- `CallGlobalInsnGenTest`：
+  - 默认参数相关用例由 skip 改为严格断言 `NotImplementedException`。
+- `CBodyBuilderPhaseCTest`：
+  - 新增/替换用例，验证 `varargs` 契约：
+    - `varargs == null` 不生成 vararg 尾参数；
+    - `varargs = List.of()` 会生成 `NULL, (godot_int)0`。
+
+### 12.4 本轮验证
+
+- 已执行：
+  - `./gradlew test --tests CallGlobalInsnGenTest --tests "CBodyBuilderPhaseCTest$CallVoidSignatureValidationTests.testCallVoidVarargTailContract" --no-daemon --info --console=plain`
 - 结果：`BUILD SUCCESSFUL`。

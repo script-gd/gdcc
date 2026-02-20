@@ -236,16 +236,20 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callUtilityVoid should allow omitted optional args by materializing defaults")
-        void testCallVoidWithDefaultArg() {
-            builder.callUtilityVoid("utility_with_default", List.of(builder.valueOfExpr("1", GdIntType.INT)));
-            assertEquals(
-                    """
-                    godot_int __gdcc_tmp_default_int_0 = 7;
-                    godot_utility_with_default(1, __gdcc_tmp_default_int_0);
-                    """,
-                    builder.build()
-            );
+        @DisplayName("callVoid should skip vararg tail only when varargs is null")
+        void testCallVoidVarargTailContract() {
+            builder.callVoid("utility_sum", List.of(
+                    builder.valueOfExpr("1", GdIntType.INT),
+                    builder.valueOfExpr("2", GdIntType.INT)
+            ), null);
+            assertEquals("utility_sum(1, 2);\n", builder.build());
+
+            builder = new CBodyBuilder(builder.helper(), builder.clazz(), lirFunctionDef);
+            builder.callVoid("utility_sum", List.of(
+                    builder.valueOfExpr("1", GdIntType.INT),
+                    builder.valueOfExpr("2", GdIntType.INT)
+            ), List.of());
+            assertEquals("utility_sum(1, 2, NULL, (godot_int)0);\n", builder.build());
         }
     }
 

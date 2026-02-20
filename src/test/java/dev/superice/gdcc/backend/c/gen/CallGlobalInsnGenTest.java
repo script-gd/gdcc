@@ -4,6 +4,7 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
+import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
@@ -51,8 +52,8 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_GLOBAL should materialize omitted default arguments")
-    void callGlobalShouldRenderDefaultArgumentTemp() {
+    @DisplayName("CALL_GLOBAL should reject omitted default arguments before completion is implemented")
+    void callGlobalShouldRejectDefaultArgumentCompletionNotImplemented() {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_default");
         func.createAndAddVariable("required", GdFloatType.FLOAT);
@@ -64,9 +65,9 @@ class CallGlobalInsnGenTest {
         ));
         clazz.addFunction(func);
 
-        var body = generateBody(clazz, func, utilityApi());
-        assertTrue(body.contains("godot_int __gdcc_tmp_default_int_0 = 7;"));
-        assertTrue(body.contains("godot_utility_with_default($required, __gdcc_tmp_default_int_0);"));
+        var ex = assertThrows(NotImplementedException.class, () -> generateBody(clazz, func, utilityApi()));
+        assertInstanceOf(NotImplementedException.class, ex);
+        assertTrue(ex.getMessage().contains("Default argument completion"));
     }
 
     @Test
