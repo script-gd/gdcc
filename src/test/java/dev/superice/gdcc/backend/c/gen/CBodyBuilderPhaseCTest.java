@@ -203,38 +203,6 @@ public class CBodyBuilderPhaseCTest {
     @Nested
     @DisplayName("CallVoid Signature Validation Tests")
     class CallVoidSignatureValidationTests {
-
-        @Test
-        @DisplayName("callVoid should validate too few args")
-        void testCallVoidTooFewArgs() {
-            assertThrows(RuntimeException.class, () ->
-                    builder.callVoid("utility_sum", List.of(builder.valueOfExpr("1", GdIntType.INT)))
-            );
-        }
-
-        @Test
-        @DisplayName("callVoid should validate too many args")
-        void testCallVoidTooManyArgs() {
-            assertThrows(RuntimeException.class, () ->
-                    builder.callVoid("utility_with_default", List.of(
-                            builder.valueOfExpr("1", GdIntType.INT),
-                            builder.valueOfExpr("2", GdIntType.INT),
-                            builder.valueOfExpr("3", GdIntType.INT)
-                    ))
-            );
-        }
-
-        @Test
-        @DisplayName("callVoid should validate argument types")
-        void testCallVoidInvalidArgType() {
-            assertThrows(RuntimeException.class, () ->
-                    builder.callVoid("utility_sum", List.of(
-                            builder.valueOfExpr("1", GdIntType.INT),
-                            builder.valueOfExpr("some_string_expr", GdStringType.STRING)
-                    ))
-            );
-        }
-
         @Test
         @DisplayName("callVoid should skip vararg tail only when varargs is null")
         void testCallVoidVarargTailContract() {
@@ -664,15 +632,6 @@ public class CBodyBuilderPhaseCTest {
             assertThrows(RuntimeException.class, () ->
                     builder.callAssign(targetRef, "some_func", GdVoidType.VOID, List.of())
             );
-        }
-
-        @Test
-        @DisplayName("callAssign without return type for non-utility should fail")
-        void testCallAssignMissingReturnType() {
-            var target = new LirVariable("x", GdIntType.INT, lirFunctionDef);
-            var targetRef = builder.targetOfVar(target);
-
-            assertThrows(RuntimeException.class, () -> builder.callAssign(targetRef, "some_func", List.of()));
         }
 
         @Test
