@@ -315,6 +315,8 @@ public final class CBodyBuilder {
     }
 
     /// Emits a void call.
+    /// This builder does not validate global/utility function signatures.
+    /// Caller is responsible for argument count/type checks.
     /// When `varargs == null`, vararg tail generation is skipped.
     /// When `varargs != null`, the vararg tail is always generated, including the empty case
     /// (which emits `NULL, (godot_int)0`).
@@ -349,6 +351,8 @@ public final class CBodyBuilder {
     }
 
     /// Emits a call with assignment/discard handling.
+    /// This builder does not validate global/utility function signatures.
+    /// Caller is responsible for argument count/type checks.
     /// When `varargs == null`, vararg tail generation is skipped.
     /// When `varargs != null`, the vararg tail is always generated, including the empty case
     /// (which emits `NULL, (godot_int)0`).
@@ -360,15 +364,8 @@ public final class CBodyBuilder {
         var discardResult = target instanceof DiscardRef;
         if (!discardResult) {
             checkTargetAssignable(target);
-            if (returnType != null) {
-                var targetType = target.type();
-                if (classRegistry().checkAssignable(returnType, targetType)) {
-                    validateReturnType(funcName, returnType, targetType);
-                } else {
-                    validateDiscardableReturnType(funcName, returnType);
-                }
-            }
         }
+        validateCallAssignReturnContract(funcName, returnType, target, discardResult);
 
         RenderResult argsResult;
         if (varargs == null) {
@@ -554,23 +551,24 @@ public final class CBodyBuilder {
         }
     }
 
-    private void validateReturnType(@NotNull String funcName, @Nullable GdType resolvedReturnType, @NotNull GdType targetType) {
-        if (resolvedReturnType == null) {
-            throw invalidInsn("Return type is required for function: " + funcName);
+    /// Validates `callAssign` return type contract.
+    /// - `returnType == null`: caller may omit type; no validation at builder layer.
+    /// - non-null return type must be non-void.
+    /// - for non-discard targets, return type must be assignable to target type.
+    private void validateCallAssignReturnContract(@NotNull String funcName,
+                                                  @Nullable GdType returnType,
+                                                  @NotNull TargetRef target,
+                                                  boolean discardResult) {
+        if (returnType == null) {
+            return;
         }
-        if (resolvedReturnType instanceof GdVoidType) {
+        if (returnType instanceof GdVoidType) {
             throw invalidInsn("CallAssign expects a non-void function: " + funcName);
         }
-        checkAssignable(resolvedReturnType, targetType);
-    }
-
-    private void validateDiscardableReturnType(@NotNull String funcName, @Nullable GdType resolvedReturnType) {
-        if (resolvedReturnType == null) {
-            throw invalidInsn("Return type is required for function: " + funcName);
+        if (discardResult) {
+            return;
         }
-        if (resolvedReturnType instanceof GdVoidType) {
-            throw invalidInsn("CallAssign discard expects a non-void function: " + funcName);
-        }
+        checkAssignable(returnType, target.type());
     }
 
     /// Renders a ValueRef for a conditional expression without emitting code.
