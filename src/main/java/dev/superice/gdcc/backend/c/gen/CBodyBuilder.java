@@ -311,21 +311,44 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        var argsResult = renderArgs(funcName, args);
-        emitTempDecls(argsResult.temps());
+        return callVoid(funcName, args, List.of());
+    }
+
+    public @NotNull CBodyBuilder callVoid(@NotNull String funcName,
+                                          @NotNull List<ValueRef> args,
+                                          @NotNull List<ValueRef> varargs) {
+        RenderResult argsResult;
+        if (varargs.isEmpty()) {
+            argsResult = renderArgs(funcName, args);
+            emitTempDecls(argsResult.temps());
+        } else {
+            argsResult = renderArgsWithVarargs(funcName, args, varargs);
+            emitTempDecls(argsResult.temps());
+            if (argsResult.preCode() != null) {
+                out.append(argsResult.preCode());
+            }
+        }
         out.append(funcName).append("(").append(argsResult.code()).append(");\n");
         emitTempDestroys(argsResult.temps());
         return this;
     }
 
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target, @NotNull String funcName, @NotNull List<ValueRef> args) {
-        return callAssign(target, funcName, null, args);
+        return callAssign(target, funcName, null, args, List.of());
     }
 
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
                                             @NotNull String funcName,
                                             @Nullable GdType returnType,
                                             @NotNull List<ValueRef> args) {
+        return callAssign(target, funcName, returnType, args, List.of());
+    }
+
+    public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
+                                            @NotNull String funcName,
+                                            @Nullable GdType returnType,
+                                            @NotNull List<ValueRef> args,
+                                            @NotNull List<ValueRef> varargs) {
         var discardResult = target instanceof DiscardRef;
         if (!discardResult) {
             checkTargetAssignable(target);
@@ -339,16 +362,31 @@ public final class CBodyBuilder {
             }
         }
 
-        var argsResult = renderArgs(funcName, args);
-        emitTempDecls(argsResult.temps());
+        RenderResult argsResult;
+        if (varargs.isEmpty()) {
+            argsResult = renderArgs(funcName, args);
+            emitTempDecls(argsResult.temps());
 
-        var callExpr = funcName + "(" + argsResult.code() + ")";
-        if (discardResult) {
-            out.append(callExpr).append(";\n");
+            var callExpr = funcName + "(" + argsResult.code() + ")";
+            if (discardResult) {
+                out.append(callExpr).append(";\n");
+            } else {
+                emitCallResultAssignment(target, funcName, callExpr);
+            }
         } else {
-            emitCallResultAssignment(target, funcName, callExpr);
-        }
+            argsResult = renderArgsWithVarargs(funcName, args, varargs);
+            emitTempDecls(argsResult.temps());
+            if (argsResult.preCode() != null) {
+                out.append(argsResult.preCode());
+            }
 
+            var callExpr = funcName + "(" + argsResult.code() + ")";
+            if (discardResult) {
+                out.append(callExpr).append(";\n");
+            } else {
+                emitCallResultAssignment(target, funcName, callExpr);
+            }
+        }
         emitTempDestroys(argsResult.temps());
         return this;
     }
@@ -475,6 +513,24 @@ public final class CBodyBuilder {
         return new RenderResult(rendered.toString(), temps);
     }
 
+    private @NotNull RenderResult renderArgsWithVarargs(@NotNull String funcName,
+                                                        @NotNull List<ValueRef> args,
+                                                        @NotNull List<ValueRef> varargs) {
+        var fixedArgsResult = renderArgs(funcName, args);
+        var argvRenderResult = renderVarargArgv(varargs);
+
+        var rendered = new StringBuilder(fixedArgsResult.code());
+        if (!fixedArgsResult.code().isEmpty()) {
+            rendered.append(", ");
+        }
+        rendered.append(argvRenderResult.code());
+        rendered.append(", (godot_int)").append(varargs.size());
+
+        var temps = new ArrayList<>(fixedArgsResult.temps());
+        temps.addAll(argvRenderResult.temps());
+        return new RenderResult(rendered.toString(), temps, argvRenderResult.preCode());
+    }
+
     /// Checks if a value of sourceType can be assigned to a variable of targetType.
     /// Throws InvalidInsnException if not assignable.
     private void checkAssignable(@NotNull GdType sourceType, @NotNull GdType targetType) {
@@ -537,30 +593,25 @@ public final class CBodyBuilder {
         return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
     }
 
-    /// Renders the C pointer expression for a vararg extra argument.
-    /// Pre-condition: validateCallArgs has already verified that value is a VarValue of Variant type.
-    private @NotNull String renderVarargVariantPointer(@NotNull CGenHelper.UtilityCallResolution utility,
-                                                       @NotNull ValueRef value,
-                                                       int varargIndex) {
-        if (!(value instanceof VarValue varValue)) {
-            throw invalidInsn("Vararg argument #" + (varargIndex + 1) + " of utility '" +
-                    utility.lookupName() + "' must be a variable");
+    private @NotNull RenderResult renderVarargArgv(@NotNull List<ValueRef> varargs) {
+        if (varargs.isEmpty()) {
+            return new RenderResult("NULL", List.of());
         }
-        if (!classRegistry().checkAssignable(varValue.type(), GdVariantType.VARIANT)) {
-            throw invalidInsn("Vararg argument #" + (varargIndex + 1) + " of utility '" +
-                    utility.lookupName() + "' must be Variant, got '" + varValue.type().getTypeName() + "'");
-        }
-        var code = varValue.generateCode();
-        if (varValue.variable().ref()) {
-            return code;
-        }
-        return "&" + code;
-    }
 
-    private void emitRawLines(@NotNull List<String> lines) {
-        for (var line : lines) {
-            out.append(line).append("\n");
+        var pointers = new ArrayList<String>(varargs.size());
+        var temps = new ArrayList<TempVar>();
+        for (var arg : varargs) {
+            if (!classRegistry().checkAssignable(arg.type(), GdVariantType.VARIANT)) {
+                throw invalidInsn("Vararg argument must be Variant, got '" + arg.type().getTypeName() + "'");
+            }
+            var pointerResult = renderValueAddress(arg);
+            pointers.add(pointerResult.code());
+            temps.addAll(pointerResult.temps());
         }
+
+        var argvName = newTempName("argv");
+        var preCode = "const godot_Variant* " + argvName + "[] = { " + String.join(", ", pointers) + " };\n";
+        return new RenderResult(argvName, temps, preCode);
     }
 
     /// Renders a ValueRef as a C argument, adding '&' if needed for pass-by-reference types.
@@ -1018,28 +1069,16 @@ public final class CBodyBuilder {
         }
     }
 
-    private record RenderResult(@NotNull String code, @NotNull List<TempVar> temps) {
+    private record RenderResult(@NotNull String code,
+                                @NotNull List<TempVar> temps,
+                                @Nullable String preCode) {
+        private RenderResult(@NotNull String code, @NotNull List<TempVar> temps) {
+            this(code, temps, null);
+        }
+
         private RenderResult {
             Objects.requireNonNull(code);
             Objects.requireNonNull(temps);
-        }
-    }
-
-    private record UtilityArgsRenderResult(@NotNull String code,
-                                           @NotNull List<TempVar> temps,
-                                           @NotNull List<String> preCallLines) {
-        private UtilityArgsRenderResult {
-            Objects.requireNonNull(code);
-            Objects.requireNonNull(temps);
-            Objects.requireNonNull(preCallLines);
-        }
-    }
-
-    private record UtilityDefaultArgsResult(@NotNull List<TempVar> temps,
-                                            @NotNull List<String> preCallLines) {
-        private UtilityDefaultArgsResult {
-            Objects.requireNonNull(temps);
-            Objects.requireNonNull(preCallLines);
         }
     }
 }

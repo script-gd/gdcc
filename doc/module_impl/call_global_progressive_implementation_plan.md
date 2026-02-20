@@ -205,3 +205,36 @@
 ---
 
 如无额外约束，后续可基于本文进入“详细设计稿（接口签名级别）”，再开始代码改造。
+
+## 10. 本次实现记录（CBodyBuilder）
+
+### 10.1 已完成改动
+
+- `CBodyBuilder.callVoid` 新增重载：
+  - `callVoid(String funcName, List<ValueRef> args, List<ValueRef> varargs)`
+  - 旧签名转发到新签名，并在 `varargs.isEmpty()` 时回退到原有调用路径（`renderArgs`）。
+- `CBodyBuilder.callAssign` 新增重载：
+  - `callAssign(TargetRef target, String funcName, GdType returnType, List<ValueRef> args, List<ValueRef> varargs)`
+  - 旧签名全部转发到新签名，并在 `varargs.isEmpty()` 时回退到原有路径。
+- 新增 `renderArgsWithVarargs(...)` 与 `renderVarargArgv(...)`：
+  - 固定参数继续走现有 `renderArgs`。
+  - vararg 尾部由 Builder 生成 `argv` 临时数组与 `argc` 片段。
+  - 调用参数最终拼为：`fixed..., argv, (godot_int)<extraCount>`。
+- 删除未使用记录类型：
+  - `UtilityDefaultArgsResult`
+  - `UtilityArgsRenderResult`
+- `RenderResult` 增加字段：
+  - `@Nullable String preCode`
+  - 用于承载 vararg 渲染前置代码（如 `argv` 声明）。
+
+### 10.2 行为约束
+
+- 当 `varargs` 为空时，`callVoid`/`callAssign` 仍使用原有渲染路径，避免影响非 vararg 历史行为。
+- 当 `varargs` 非空时，Builder 会在发射调用前输出 `preCode`，再发射调用语句。
+- Builder 对 vararg 参数保留防御性检查：要求可赋值给 `Variant`。
+
+### 10.3 本次验证
+
+- 已执行：
+  - `./gradlew classes --no-daemon --info --console=plain`
+- 结果：`BUILD SUCCESSFUL`。
