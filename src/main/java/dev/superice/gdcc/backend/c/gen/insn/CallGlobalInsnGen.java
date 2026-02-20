@@ -4,10 +4,12 @@ import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.backend.c.gen.CGenHelper;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
+import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 
@@ -18,8 +20,7 @@ import java.util.List;
 /// C code generator for `CALL_GLOBAL`.
 ///
 /// Current scope only supports utility functions in class registry.
-/// Calls are delegated to CBodyBuilder utility APIs to keep vararg ABI and
-/// lifecycle behavior centralized.
+/// Validation is performed in generator and C emission is delegated to CBodyBuilder.
 public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
@@ -28,32 +29,44 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
 
     /// Generates C code for one `call_global` instruction.
     ///
-    /// Flow: resolve utility -> resolve argument vars -> route to utility call API.
+    /// Flow: resolve utility -> validate/signature check -> route to CBodyBuilder call APIs.
     @Override
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var instruction = bodyBuilder.getCurrentInsn(this);
         var utility = requireUtilityCall(bodyBuilder, instruction.functionName());
         var argVars = resolveArgumentVariables(bodyBuilder, utility, instruction.args());
+        validateArgumentCount(bodyBuilder, utility, argVars.size());
+        validateFixedArgumentTypes(bodyBuilder, utility, argVars);
 
-        var args = new ArrayList<CBodyBuilder.ValueRef>(argVars.size());
-        for (var argVar : argVars) {
-            args.add(bodyBuilder.valueOfVar(argVar));
+        var signature = utility.signature();
+        var fixedCount = signature.parameterCount();
+        var fixedArgs = new ArrayList<CBodyBuilder.ValueRef>(Math.min(argVars.size(), fixedCount));
+        var varargs = new ArrayList<CBodyBuilder.ValueRef>(Math.max(0, argVars.size() - fixedCount));
+        for (var i = 0; i < argVars.size(); i++) {
+            var argRef = bodyBuilder.valueOfVar(argVars.get(i));
+            if (i < fixedCount) {
+                fixedArgs.add(argRef);
+            } else {
+                varargs.add(argRef);
+            }
+        }
+        if (signature.isVararg()) {
+            validateVarargTypes(bodyBuilder, utility, varargs);
         }
 
-        var returnType = utility.signature().returnType();
+        var returnType = signature.returnType();
+        var callVarargs = signature.isVararg() ? varargs : null;
         if (returnType == null || returnType instanceof GdVoidType) {
             if (instruction.resultId() != null) {
                 throw bodyBuilder.invalidInsn("Utility function '" + utility.lookupName() +
                         "' has no return value but resultId is provided");
             }
-            // TODO: implement using callVoid
-//            bodyBuilder.callUtilityVoid(utility, args);
+            bodyBuilder.callVoid(utility.cFunctionName(), fixedArgs, callVarargs);
             return;
         }
 
         var target = resolveResultTarget(bodyBuilder, instruction, utility.lookupName(), returnType);
-        // TODO: implement using callAssign
-//        bodyBuilder.callUtilityAssign(target, utility, args);
+        bodyBuilder.callAssign(target, utility.cFunctionName(), returnType, fixedArgs, callVarargs);
     }
 
     private @NotNull CBodyBuilder.TargetRef resolveResultTarget(@NotNull CBodyBuilder bodyBuilder,
@@ -109,5 +122,65 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
             argVars.add(argVar);
         }
         return argVars;
+    }
+
+    private void validateArgumentCount(@NotNull CBodyBuilder bodyBuilder,
+                                       @NotNull CGenHelper.UtilityCallResolution utility,
+                                       int providedCount) {
+        var signature = utility.signature();
+        var fixedCount = signature.parameterCount();
+        if (providedCount < fixedCount) {
+            var requiresDefaultCompletion = signature.parameters().subList(providedCount, fixedCount).stream()
+                    .anyMatch(parameter -> parameter.defaultValue() != null);
+            if (requiresDefaultCompletion) {
+                throw new NotImplementedException("Default argument completion for utility function '" +
+                        utility.lookupName() + "' is not implemented yet");
+            }
+        }
+        if (!signature.isVararg()) {
+            if (providedCount < fixedCount) {
+                throw bodyBuilder.invalidInsn("Too few arguments for utility function '" + utility.lookupName() +
+                        "': expected " + fixedCount + ", got " + providedCount);
+            }
+            if (providedCount > fixedCount) {
+                throw bodyBuilder.invalidInsn("Too many arguments for utility function '" + utility.lookupName() +
+                        "': expected " + fixedCount + ", got " + providedCount);
+            }
+        } else if (providedCount < fixedCount) {
+            throw bodyBuilder.invalidInsn("Too few arguments for utility function '" + utility.lookupName() +
+                    "': expected at least " + fixedCount + ", got " + providedCount);
+        }
+    }
+
+    private void validateFixedArgumentTypes(@NotNull CBodyBuilder bodyBuilder,
+                                            @NotNull CGenHelper.UtilityCallResolution utility,
+                                            @NotNull List<LirVariable> argVars) {
+        var signature = utility.signature();
+        var fixedCount = Math.min(signature.parameterCount(), argVars.size());
+        for (var i = 0; i < fixedCount; i++) {
+            var parameter = signature.parameters().get(i);
+            var paramType = parameter.type();
+            if (paramType == null) {
+                continue;
+            }
+            var argVar = argVars.get(i);
+            if (!bodyBuilder.classRegistry().checkAssignable(argVar.type(), paramType)) {
+                throw bodyBuilder.invalidInsn("Cannot assign value of type '" + argVar.type().getTypeName() +
+                        "' to utility parameter #" + (i + 1) + " of type '" + paramType.getTypeName() + "'");
+            }
+        }
+    }
+
+    private void validateVarargTypes(@NotNull CBodyBuilder bodyBuilder,
+                                     @NotNull CGenHelper.UtilityCallResolution utility,
+                                     @NotNull List<CBodyBuilder.ValueRef> varargs) {
+        for (var i = 0; i < varargs.size(); i++) {
+            var arg = varargs.get(i);
+            if (!bodyBuilder.classRegistry().checkAssignable(arg.type(), GdVariantType.VARIANT)) {
+                var argIndex = utility.signature().parameterCount() + i + 1;
+                throw bodyBuilder.invalidInsn("Vararg argument #" + argIndex + " of utility '" +
+                        utility.lookupName() + "' must be Variant, got '" + arg.type().getTypeName() + "'");
+            }
+        }
     }
 }

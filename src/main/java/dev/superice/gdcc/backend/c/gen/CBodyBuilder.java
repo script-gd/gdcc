@@ -311,14 +311,18 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {
-        return callVoid(funcName, args, List.of());
+        return callVoid(funcName, args, null);
     }
 
+    /// Emits a void call.
+    /// When `varargs == null`, vararg tail generation is skipped.
+    /// When `varargs != null`, the vararg tail is always generated, including the empty case
+    /// (which emits `NULL, (godot_int)0`).
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName,
                                           @NotNull List<ValueRef> args,
-                                          @NotNull List<ValueRef> varargs) {
+                                          @Nullable List<ValueRef> varargs) {
         RenderResult argsResult;
-        if (varargs.isEmpty()) {
+        if (varargs == null) {
             argsResult = renderArgs(funcName, args);
             emitTempDecls(argsResult.temps());
         } else {
@@ -334,21 +338,25 @@ public final class CBodyBuilder {
     }
 
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target, @NotNull String funcName, @NotNull List<ValueRef> args) {
-        return callAssign(target, funcName, null, args, List.of());
+        return callAssign(target, funcName, null, args, null);
     }
 
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
                                             @NotNull String funcName,
                                             @Nullable GdType returnType,
                                             @NotNull List<ValueRef> args) {
-        return callAssign(target, funcName, returnType, args, List.of());
+        return callAssign(target, funcName, returnType, args, null);
     }
 
+    /// Emits a call with assignment/discard handling.
+    /// When `varargs == null`, vararg tail generation is skipped.
+    /// When `varargs != null`, the vararg tail is always generated, including the empty case
+    /// (which emits `NULL, (godot_int)0`).
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
                                             @NotNull String funcName,
                                             @Nullable GdType returnType,
                                             @NotNull List<ValueRef> args,
-                                            @NotNull List<ValueRef> varargs) {
+                                            @Nullable List<ValueRef> varargs) {
         var discardResult = target instanceof DiscardRef;
         if (!discardResult) {
             checkTargetAssignable(target);
@@ -363,7 +371,7 @@ public final class CBodyBuilder {
         }
 
         RenderResult argsResult;
-        if (varargs.isEmpty()) {
+        if (varargs == null) {
             argsResult = renderArgs(funcName, args);
             emitTempDecls(argsResult.temps());
 
