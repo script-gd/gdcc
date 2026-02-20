@@ -329,6 +329,14 @@ public final class CBodyBuilder {
         var discardResult = target instanceof DiscardRef;
         if (!discardResult) {
             checkTargetAssignable(target);
+            if (returnType != null) {
+                var targetType = target.type();
+                if (classRegistry().checkAssignable(returnType, targetType)) {
+                    validateReturnType(funcName, returnType, targetType);
+                } else {
+                    validateDiscardableReturnType(funcName, returnType);
+                }
+            }
         }
 
         var argsResult = renderArgs(funcName, args);
@@ -484,7 +492,7 @@ public final class CBodyBuilder {
 
     private void validateReturnType(@NotNull String funcName, @Nullable GdType resolvedReturnType, @NotNull GdType targetType) {
         if (resolvedReturnType == null) {
-            throw invalidInsn("Return type is required for non-utility function: " + funcName);
+            throw invalidInsn("Return type is required for function: " + funcName);
         }
         if (resolvedReturnType instanceof GdVoidType) {
             throw invalidInsn("CallAssign expects a non-void function: " + funcName);
@@ -494,7 +502,7 @@ public final class CBodyBuilder {
 
     private void validateDiscardableReturnType(@NotNull String funcName, @Nullable GdType resolvedReturnType) {
         if (resolvedReturnType == null) {
-            throw invalidInsn("Return type is required for non-utility function: " + funcName);
+            throw invalidInsn("Return type is required for function: " + funcName);
         }
         if (resolvedReturnType instanceof GdVoidType) {
             throw invalidInsn("CallAssign discard expects a non-void function: " + funcName);
