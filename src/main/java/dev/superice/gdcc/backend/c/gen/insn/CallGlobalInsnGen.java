@@ -46,12 +46,14 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
                 throw bodyBuilder.invalidInsn("Utility function '" + utility.lookupName() +
                         "' has no return value but resultId is provided");
             }
-            bodyBuilder.callUtilityVoid(utility, args);
+            // TODO: implement using callVoid
+//            bodyBuilder.callUtilityVoid(utility, args);
             return;
         }
 
         var target = resolveResultTarget(bodyBuilder, instruction, utility.lookupName(), returnType);
-        bodyBuilder.callUtilityAssign(target, utility, args);
+        // TODO: implement using callAssign
+//        bodyBuilder.callUtilityAssign(target, utility, args);
     }
 
     private @NotNull CBodyBuilder.TargetRef resolveResultTarget(@NotNull CBodyBuilder bodyBuilder,

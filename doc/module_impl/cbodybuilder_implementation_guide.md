@@ -1,6 +1,6 @@
 # CBodyBuilder 实施与迁移总指南
 
-> 本文是 `doc/module_impl` 下 CBodyBuilder 相关三份文档的合并版，作为唯一实施基线。  
+> 本文是 `doc/module_impl` 下 CBodyBuilder 相关文档的合并基线。  
 > 语义优先级：`doc/gdcc_c_backend.md` > 本文 > 历史迁移记录。
 
 ## 1. 目标与边界
@@ -32,7 +32,7 @@
 
 ### 2.1 统一赋值语义（核心）
 
-`assignVar` / `callAssign` / `callUtilityAssign` 必须统一执行：
+`assignVar` / `callAssign` 必须统一执行：
 
 1. 校验目标存在、可写、非 `ref`。
 2. 计算 RHS（必要时 copy/convert）。
@@ -78,7 +78,6 @@
 
 - 控制流：`beginBasicBlock`、`jump`、`jumpIf`、`returnVoid`、`returnValue`
 - 赋值与调用：`assignVar`、`assignExpr`、`callVoid`、`callAssign`
-- utility：`callUtilityVoid`、`callUtilityAssign`
 - 常量：`assignGlobalConst`
 - 值工厂：`valueOfVar`、`valueOfExpr(...)`
 
@@ -115,46 +114,16 @@
 - 统一通过 `valueOfVar` + `call*` 交给 Builder 自动处理。
 - 仅在规则无法覆盖的特殊场景，允许 `valueOfExpr(..., ptrKind)` 显式指定。
 
-## 5. Utility 调用内部设计（保留项）
+## 5. 迁移实施策略
 
-### 5.1 名称解析
-
-- Registry 查询名使用无前缀 `lookupName`（如 `print`）。
-- C 符号使用 `cFunctionName`（如 `godot_print`）。
-- 归一化为单路径解析，不保留“原名重查”死代码分支。
-
-### 5.2 vararg 组包与 Raw 参数通道
-
-- vararg utility 采用 `argv/argc`：
-  - `extra == 0` -> `NULL, (godot_int)0`
-  - `extra > 0` -> 声明 `const godot_Variant* __gdcc_tmp_argv_N[] = {...}`
-- `argv/argc/NULL` 走 Raw 参数通道，避免被普通参数渲染二次处理。
-- `renderUtilityArgs` 通过 `preCallLines` 在调用前输出 argv 声明。
-
-### 5.3 调用结果赋值公共逻辑
-
-- `callAssign` 与 `callUtilityAssign` 共享 `emitCallResultAssignment(...)`：
-  - 旧值清理
-  - 必要时返回值指针转换
-  - 写入
-  - 新值 own
-  - 初始化标记
-
-### 5.4 防误用守卫
-
-- vararg utility 禁止走通用 `callVoid/callAssign`，必须走 `callUtility*`。
-- 违反时应在代码生成期立即抛 `InvalidInsnException`。
-
-## 6. 迁移实施策略
-
-### 6.1 优先级
+### 5.1 优先级
 
 - P0：Variant/Object 生命周期敏感指令。
 - P1：控制流与返回。
 - P2：普通调用与构造。
 - P3：剩余模板指令。
 
-### 6.2 指令迁移顺序建议
+### 5.2 指令迁移顺序建议
 
 1. `ControlFlowInsnGen`（先统一 `__finally__` 路径）
 2. `OwnReleaseObjectInsnGen`
@@ -162,7 +131,7 @@
 4. `NewDataInsnGen`
 5. 其余模板生成器退役
 
-### 6.3 `CCodegen` 协同规则
+### 5.3 `CCodegen` 协同规则
 
 - 自动确保存在 `__prepare__` / `__finally__` 块。
 - 已有块内容不清空，按语义等价去重追加（`checkEquals`）。
@@ -170,41 +139,36 @@
   - `__prepare__` 初始化与入口跳转
   - `__finally__` 的析构与最终返回
 
-## 7. 审阅沉淀：高价值检查项
+## 6. 审阅沉淀：高价值检查项
 
-以下为从审阅文档提炼出的长期有效项（去除过程性记录）：
-
-### 7.1 P0（必须持续守护）
+### 6.1 P0（必须持续守护）
 
 - `__prepare__` 必须跳过 ref 变量初始化。
 - 指令生成器不得绕过 Builder 直接 `$var = ...` 覆盖 destroyable/object 变量。
 
-### 7.2 P1（实现一致性）
+### 6.2 P1（实现一致性）
 
 - `_return_val` 的非 finally 路径行为必须与文档一致（跳转 finally 或明确拒绝，二选一且文档化）。
-- `CALL_GLOBAL` 不得处于“注册/模板/校验”半完成状态。
 - `__finally__` 自动析构要避免重复析构和手工逻辑覆盖。
 
-### 7.3 P2（可维护性与扩展）
+### 6.3 P2（可维护性与扩展）
 
 - 已迁移模板需及时退役，避免被误用。
-- utility 路径错误消息风格统一（`utility function`）。
-- 对未来 default 参数、非 utility global call、Object 返回值场景预留测试。
+- 对未来 global call 与 Object 返回值场景预留测试。
 
-## 8. 测试与回归清单
+## 7. 测试与回归清单
 
-### 8.1 必测语义
+### 7.1 必测语义
 
 - `getCurrentInsn` opcode 校验与定位信息。
 - ref 变量禁赋值。
 - `jumpIf` 变量/表达式双路径。
 - GDCC/Godot 指针转换。
 - own/release 决策矩阵。
-- vararg utility 的 `argv/argc` 两路径。
 - 临时变量唯一性与即时销毁。
 - `__prepare__` / `__finally__` 自动补齐与去重行为。
 
-### 8.2 建议命令
+### 7.2 建议命令
 
 ```bash
 ./gradlew test --tests CBodyBuilderPhaseBTest --no-daemon --info --console=plain
@@ -214,7 +178,7 @@
 ./gradlew classes --no-daemon --info --console=plain
 ```
 
-## 9. 常见误区速查
+## 8. 常见误区速查
 
 1. 直接把 GDCC 对象传给 `release_object`/`try_own_object`。
 2. 误以为 `gdcc_object_from_godot_object_ptr` 会自动持有对象。
@@ -224,10 +188,9 @@
 6. 条件跳转仅支持变量，不支持表达式。
 7. 错误消息缺少函数/块/指令索引。
 
-## 10. 完成标准（DoD）
+## 9. 完成标准（DoD）
 
 - 核心指令路径已迁移到 Builder，且无关键模板依赖。
 - `__prepare__` / `__finally__` 语义与文档一致并有测试守护。
-- 对象生命周期、utility vararg、指针转换语义可回归验证。
+- 对象生命周期与指针转换语义可回归验证。
 - 关键失败路径均通过 `InvalidInsnException` 提供可定位错误信息。
-
