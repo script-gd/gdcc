@@ -57,15 +57,6 @@
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass `gdcc_object->_object` instead of `gdcc_object`.
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 
-### Global Utility Call Status
-
-`CALL_GLOBAL` / utility 调用链路正在重构中，旧版实现（包含 `callUtility*` 专用入口、vararg `argv/argc` 自动组包、以及对应错误消息约定）已下线，不再作为当前实现基线。
-
-在新的 utility 调用方案重新落地前：
-- 不要将旧的 utility 调用 API 视为稳定契约。
-- 指令生成器与 Builder 的职责边界，以当前代码与测试为准。
-- 设计复盘与后续重建约束，见 `doc/module_impl/call_global_utility_lessons.md`。
-
 ### Temporary Variables (CBodyBuilder)
 
 - `TempVar` carries its own mutable initialization state.
