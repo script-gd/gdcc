@@ -121,7 +121,7 @@ public class CCodegen implements Codegen {
                         var oldValueVar = func.createAndAddTmpVariable(propertyDef.getType());
                         bb.instructions().add(new LoadPropertyInsn(oldValueVar.id(), propertyDef.getName(), "self"));
                         bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
-                        bb.instructions().add(new TryOwnObjectInsn("self"));
+                        bb.instructions().add(new TryOwnObjectInsn("value"));
                         bb.instructions().add(new TryReleaseObjectInsn(oldValueVar.id()));
                     } else {
                         bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));

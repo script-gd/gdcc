@@ -47,7 +47,10 @@
     - For built-in types, types are compatible only if they are exactly the same type.
     - For engine types and GDCC types, types are compatible if the assigned value type is the same or a subclass of the result variable type.
     - Always remember if the value that is assigning into a result variable whose type is a GDCC object is returned from a GDExtension function, it is always a `godot_Object*` that needs to be converted to the correct GDCC type.
-- When assigning a value to a variable, it implies that we destroy the old value in the variable and replace it with the new value. If they are `Object`, that means we have to release the ownership of the old value and obtain the ownership of the new value properly, otherwise it will cause memory leak or premature destruction. So always remember to call `try_release_object` on the old value and `try_own_object` on the new value if they are Objects, and use non-try version if you are 100% sure they are ref-counted (no operation if 100% sure they are not ref-counted).
+- When assigning a value to a variable, it implies that we destroy the old value in the variable and replace it with the new value. 
+  If they are `Object`, that means we have to release the ownership of the old value and obtain the ownership of the new value properly, 
+  otherwise it will cause memory leak or premature destruction. 
+  So always remember to call `try_release_object` on the old value and `try_own_object` on the new value if they are Objects, and use non-try version if you are 100% sure they are ref-counted (no operation if 100% sure they are not ref-counted).
 
 ### Lifecycle
 
