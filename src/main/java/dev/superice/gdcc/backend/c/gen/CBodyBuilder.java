@@ -345,13 +345,9 @@ public final class CBodyBuilder {
         return this;
     }
 
-    public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target, @NotNull String funcName, @NotNull List<ValueRef> args) {
-        return callAssign(target, funcName, null, args, null);
-    }
-
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
                                             @NotNull String funcName,
-                                            @Nullable GdType returnType,
+                                            @NotNull GdType returnType,
                                             @NotNull List<ValueRef> args) {
         return callAssign(target, funcName, returnType, args, null);
     }
@@ -364,7 +360,7 @@ public final class CBodyBuilder {
     /// (which emits `NULL, (godot_int)0`).
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
                                             @NotNull String funcName,
-                                            @Nullable GdType returnType,
+                                            @NotNull GdType returnType,
                                             @NotNull List<ValueRef> args,
                                             @Nullable List<ValueRef> varargs) {
         var discardResult = target instanceof DiscardRef;
@@ -408,24 +404,27 @@ public final class CBodyBuilder {
     /// Handles: old-value destroy/release → ptr conversion → assignment → ownership consume/own → mark initialized.
     private void emitCallResultAssignment(@NotNull TargetRef target,
                                           @NotNull String cFuncName,
-                                          @Nullable GdType returnType,
+                                          @NotNull GdType returnType,
                                           @NotNull String callExpr) {
         var targetCode = target.generateCode();
         var targetType = target.type();
         var canDestroyOldValue = canDestroyOldValue(target);
 
         if (targetType instanceof GdObjectType targetObjType) {
-            // Object call results are treated as OWNED by default and consumed on write.
-            var rhsObjType = returnType instanceof GdObjectType returnObjType ? returnObjType : targetObjType;
-            var rhsPtrKind = resolveCallResultPtrKind(cFuncName, rhsObjType);
-            var ownership = returnType instanceof GdObjectType ? OwnershipKind.OWNED : OwnershipKind.BORROWED;
+            // Object targets only accept object-return calls so ptr-kind conversion stays type-safe.
+            if (!(returnType instanceof GdObjectType returnObjType)) {
+                throw invalidInsn("CallAssign target '" + targetObjType.getTypeName() +
+                        "' requires object return type, but function '" + cFuncName +
+                        "' returns '" + returnType.getTypeName() + "'");
+            }
+            var rhsPtrKind = resolveCallResultPtrKind(cFuncName, returnObjType);
             emitObjectSlotWrite(
                     targetCode,
                     targetObjType,
                     canDestroyOldValue && !checkInPrepareBlock(),
                     callExpr,
                     rhsPtrKind,
-                    ownership
+                    OwnershipKind.OWNED
             );
             markTargetInitialized(target);
             return;
@@ -575,22 +574,21 @@ public final class CBodyBuilder {
     }
 
     /// Validates `callAssign` return type contract.
-    /// - `returnType == null`: caller may omit type; no validation at builder layer.
-    /// - non-null return type must be non-void.
+    /// - return type must be explicit and non-void.
+    /// - for object targets, return type must also be object to preserve pointer semantics.
     /// - for non-discard targets, return type must be assignable to target type.
     private void validateCallAssignReturnContract(@NotNull String funcName,
-                                                  @Nullable GdType returnType,
+                                                  @NotNull GdType returnType,
                                                   @NotNull TargetRef target,
                                                   boolean discardResult) {
-        if (returnType == null) {
-            if (discardResult) {
-                // Discard mode requires return type info to decide whether cleanup is needed.
-                throw invalidInsn("CallAssign discard requires explicit return type: " + funcName);
-            }
-            return;
-        }
         if (returnType instanceof GdVoidType) {
             throw invalidInsn("CallAssign expects a non-void function: " + funcName);
+        }
+        if (!discardResult && target.type() instanceof GdObjectType targetObjType && !(returnType instanceof GdObjectType)) {
+            // Emit a clear type error for object slots before entering object write logic.
+            throw invalidInsn("CallAssign target '" + targetObjType.getTypeName() +
+                    "' requires object return type, but function '" + funcName +
+                    "' returns '" + returnType.getTypeName() + "'");
         }
         if (discardResult) {
             return;
@@ -814,11 +812,7 @@ public final class CBodyBuilder {
     /// Emits a discarded call with immediate cleanup for destroyable return types.
     private void emitDiscardedCall(@NotNull String cFuncName,
                                    @NotNull String callExpr,
-                                   @Nullable GdType returnType) {
-        if (returnType == null) {
-            throw invalidInsn("Discarded call must give a non-null return type.");
-        }
-
+                                   @NotNull GdType returnType) {
         if (!returnType.isDestroyable()) {
             out.append(callExpr).append(";\n");
             return;

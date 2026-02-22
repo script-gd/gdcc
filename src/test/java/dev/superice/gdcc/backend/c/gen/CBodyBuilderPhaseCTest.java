@@ -717,11 +717,16 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign discard should require explicit return type")
-        void testCallAssignDiscardMissingReturnType() {
-            assertThrows(RuntimeException.class, () ->
-                    builder.callAssign(builder.discardRef(), "some_func", List.of())
+        @DisplayName("callAssign object target should reject non-object return type")
+        void testCallAssignObjectTargetRejectsNonObjectReturnType() {
+            var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            var ex = assertThrows(RuntimeException.class, () ->
+                    builder.callAssign(targetRef, "some_func", GdIntType.INT, List.of())
             );
+            assertTrue(ex.getMessage().contains("requires object return type"),
+                    "Should report object target/non-object return mismatch");
         }
 
         @Test
