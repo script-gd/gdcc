@@ -1,0 +1,127 @@
+# GDCC C Backend Lifecycle and Ownership Specification (Unified)
+
+> Status: Draft (proposed)  
+> Scope: Code generation semantics under `src/main/java/dev/superice/gdcc/backend/c/**` and `src/main/c/codegen/**`
+
+## 1. Background and Goals
+
+The current backend has two coexisting intuitions:
+
+1. **Return transfers ownership** (object values returned by functions are owned by the caller by default)
+2. **Storage implies ownership** (a variable/field slot that stores an object should be responsible for that reference)
+
+This specification unifies both into one executable model, aiming to prevent:
+
+- Duplicate `own` operations (extra +1 reference count)
+- Missing `release` (leaks)
+- Premature `release` (dangling references or incorrect behavior)
+- Treating pointer representation conversion as an ownership operation
+
+## 2. Terms
+
+### 2.1 Value Ownership Category
+
+- `BORROWED`: Borrowed-only value; does not carry consumable ownership.
+- `OWNED`: Carries one consumable ownership; it must be consumed exactly once.
+
+### 2.2 Slot
+
+A writable storage location, including but not limited to:
+
+- LIR variables (non-`ref`)
+- Object fields (property backing fields)
+- Implicit return slot `_return_val`
+- Declared writable temporary variables (`TempVar`)
+
+### 2.3 Representation Conversion
+
+- Conversion between GDCC object pointers (`<Type*>`) and Godot raw object pointers
+- For example: `gdcc_object_from_godot_object_ptr(...)`, `->_object`
+
+**Representation conversion does not change ownership category.**
+
+## 3. Unified Semantic Rules (Normative)
+
+### 3.1 Production Rules
+
+- Function calls that return object values produce `OWNED` by default.
+- Reading object values from variables produces `BORROWED` by default.
+- `literal_null` / `NULL` is treated as `BORROWED` (no release needed for null).
+- Pure representation-converted values keep their original ownership category.
+
+### 3.2 Slot Write Rules
+
+Writing any object value into a slot must follow this order:
+
+1. If the slot is initialized and has an old value, release the old value first (`release` or `try_release` variant).
+2. Write the new value (including pointer representation conversion if needed).
+3. Decide whether to `own` based on RHS ownership:
+   - RHS is `BORROWED`: must `own` the new value.
+   - RHS is `OWNED`: must not `own` again; consume ownership directly.
+4. Mark the slot as initialized.
+
+### 3.3 Overwrite vs First Write
+
+- For first write to an uninitialized slot, skip step 1 (no old value to release).
+- Variable initialization in `__prepare__` is first-write semantics and must not clean old value.
+
+### 3.4 Return Rules
+
+- Object values returned to the caller are considered `OWNED`.
+- In non-`__finally__` paths: write to `_return_val`, then `goto __finally__`.
+- Writing `_return_val` follows the same slot write rules from 3.2.
+- `_return_val` is outside the LIR variable table auto-destruction scope (it is published through return flow).
+
+### 3.5 Discard Rules
+
+- Discarding an `OWNED` object return value: must immediately `release` (or `try_release` variant).
+- Discarding a `BORROWED` object value: no cleanup required.
+- For non-object but `isDestroyable()==true` return values (String/Variant/Container, etc.), discarding must immediately `destroy`.
+
+### 3.6 RefCounted Status Matrix
+
+Select operation by `RefCountedStatus`:
+
+- `YES`: `own_object` / `release_object`
+- `UNKNOWN`: `try_own_object` / `try_release_object`
+- `NO`: object own/release is a no-op
+
+### 3.7 Constraints
+
+- Do not infer ownership from function name prefixes (e.g. `godot_`).
+- Do not treat `gdcc_object_from_godot_object_ptr(...)` as a retain operation.
+- `OWNED` values must be consumed exactly once; repeated consumption is forbidden.
+
+## 4. Alignment with Current Backend Structure
+
+### 4.1 CBodyBuilder
+
+- `assignVar` / `callAssign` / `returnValue` must explicitly carry or infer value ownership.
+- Object slot write logic must be unified into a single path to avoid branch drift.
+- `discardRef` branch must perform cleanup per rule 3.5.
+
+### 4.2 CCodegen
+
+- Keep `__prepare__` / `__finally__` framework unchanged.
+- `_return_val` is still generated and managed by `CBodyBuilder`, and must not be moved into variable-table auto-destruction.
+
+### 4.3 Instruction Generators
+
+- Continue emitting assignment/call code through Builder APIs.
+- Keep generators focused on semantic validation; do not hand-write object lifecycle code.
+
+## 5. Compatibility and Migration Constraints
+
+- This specification does not change LIR instruction formats.
+- This specification does not change `ClassRegistry` assignability rules.
+- If template layer (FTL) still contains object lifecycle logic, it must match this specification.
+
+## 6. Acceptance Criteria
+
+The semantics are considered implemented when all conditions hold:
+
+1. No duplicate `own` in object-call-result assignment paths.
+2. No leaks of destroyable return values in non-void discard paths.
+3. Repeated overwrite of `_return_val` does not leak and does not release too early.
+4. Pointer representation conversion paths do not alter ownership behavior.
+5. Unit tests cover all `YES/UNKNOWN/NO` RefCounted status cases.
