@@ -526,6 +526,43 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("Returning borrowed RefCounted outside finally should write return slot with own")
+        void testReturnBorrowedObjectOutsideFinallyUsesSlotSemantics() {
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("RefCounted"));
+            objectBuilder.beginBasicBlock("__prepare__");
+            var objVar = new LirVariable("obj", new GdObjectType("RefCounted"), objectBuilder.func());
+
+            objectBuilder.returnValue(objectBuilder.valueOfVar(objVar));
+
+            var result = objectBuilder.build();
+            assertTrue(result.contains("godot_RefCounted* _return_val = NULL;"), "Prepare block should init return slot");
+            assertTrue(result.contains("release_object(_return_val);"), "Writing return slot should release old value first");
+            assertTrue(result.contains("_return_val = $obj;"), "Should write returned object into slot");
+            assertTrue(result.contains("own_object(_return_val);"), "Borrowed object source should be retained for return slot");
+            assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
+        }
+
+        @Test
+        @DisplayName("Returning owned object outside finally should consume ownership without own")
+        void testReturnOwnedObjectOutsideFinallyConsumesOwnership() {
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("RefCounted"));
+            objectBuilder.beginBasicBlock("__prepare__");
+            var ownedValue = objectBuilder.valueOfOwnedExpr(
+                    "create_object()",
+                    new GdObjectType("RefCounted"),
+                    CBodyBuilder.PtrKind.GODOT_PTR
+            );
+
+            objectBuilder.returnValue(ownedValue);
+
+            var result = objectBuilder.build();
+            assertTrue(result.contains("release_object(_return_val);"), "Should still release previous return slot value");
+            assertTrue(result.contains("_return_val = create_object();"), "Should assign owned return expression");
+            assertFalse(result.contains("own_object(_return_val);"), "Owned return value must not be owned again");
+            assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
+        }
+
+        @Test
         @DisplayName("Returning value from void function should fail")
         void testReturnValueFromVoidFunctionFails() {
             var value = builder.valueOfExpr("1", GdIntType.INT);
@@ -577,7 +614,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign with RefCounted target should release old and own new")
+        @DisplayName("callAssign with RefCounted target should release old and consume owned return")
         void testCallAssignRefCountedTarget() {
             var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -586,7 +623,7 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             assertTrue(result.contains("release_object($obj)"), "Should release old object before assignment");
-            assertTrue(result.contains("own_object($obj)"), "Should own new object after assignment");
+            assertFalse(result.contains("own_object($obj)"), "Owned call result should not be owned again");
         }
 
         @Test
@@ -639,6 +676,52 @@ public class CBodyBuilderPhaseCTest {
         void testCallAssignDiscardReturn() {
             builder.callAssign(builder.discardRef(), "some_func", GdIntType.INT, List.of());
             assertEquals("some_func();\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("callAssign discard of String return should destroy temporary result")
+        void testCallAssignDiscardStringReturn() {
+            builder.callAssign(builder.discardRef(), "make_string", GdStringType.STRING, List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("godot_String __gdcc_tmp_discard_0 = make_string();"),
+                    "Should materialize String return into discard temp");
+            assertTrue(result.contains("godot_String_destroy(&__gdcc_tmp_discard_0);"),
+                    "Should destroy discarded String return");
+        }
+
+        @Test
+        @DisplayName("callAssign discard of RefCounted return should release temporary result")
+        void testCallAssignDiscardRefCountedReturn() {
+            builder.callAssign(builder.discardRef(), "create_object", new GdObjectType("RefCounted"), List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("godot_RefCounted* __gdcc_tmp_discard_0 = create_object();"),
+                    "Should materialize object return into discard temp");
+            assertTrue(result.contains("release_object(__gdcc_tmp_discard_0);"),
+                    "Should release discarded RefCounted object");
+            assertFalse(result.contains("own_object(__gdcc_tmp_discard_0)"),
+                    "Discard path must consume owned return without own");
+        }
+
+        @Test
+        @DisplayName("callAssign discard of unknown object return should try_release temporary result")
+        void testCallAssignDiscardUnknownObjectReturn() {
+            builder.callAssign(builder.discardRef(), "fetch_unknown", new GdObjectType("UnknownType"), List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("GDExtensionObjectPtr __gdcc_tmp_discard_0 = fetch_unknown();"),
+                    "Should materialize unknown object return into discard temp");
+            assertTrue(result.contains("try_release_object(__gdcc_tmp_discard_0);"),
+                    "Should try_release discarded unknown object");
+        }
+
+        @Test
+        @DisplayName("callAssign discard should require explicit return type")
+        void testCallAssignDiscardMissingReturnType() {
+            assertThrows(RuntimeException.class, () ->
+                    builder.callAssign(builder.discardRef(), "some_func", List.of())
+            );
         }
 
         @Test
@@ -710,6 +793,17 @@ public class CBodyBuilderPhaseCTest {
         void testExprAutoResolvedPtrKind() {
             var value = builder.valueOfExpr("some_ptr", new GdObjectType("MyGdccClass"));
             assertEquals(CBodyBuilder.PtrKind.GDCC_PTR, value.ptrKind());
+        }
+
+        @Test
+        @DisplayName("Owned expression should expose OWNED ownership kind")
+        void testOwnedExprOwnershipKind() {
+            var value = builder.valueOfOwnedExpr(
+                    "owned_ptr",
+                    new GdObjectType("MyGdccClass"),
+                    CBodyBuilder.PtrKind.GDCC_PTR
+            );
+            assertEquals(CBodyBuilder.OwnershipKind.OWNED, value.ownership());
         }
     }
 
@@ -834,7 +928,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign with GDCC target from godot_ func should still do own/release")
+        @DisplayName("callAssign with GDCC target from godot_ func should release old and consume owned return")
         void testCallAssignGdccTargetOwnRelease() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -842,11 +936,11 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "godot_get_something", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            // MyGdccClass extends RefCounted, should use release_object and own_object
+            // MyGdccClass extends RefCounted; owned call results should not be owned again.
             assertTrue(result.contains("release_object($myObj->_object)"),
                     "Should release old GDCC object. Actual:\n" + result);
-            assertTrue(result.contains("own_object($myObj->_object)"),
-                    "Should own new GDCC object. Actual:\n" + result);
+            assertFalse(result.contains("own_object($myObj->_object)"),
+                    "Should consume owned call result without own. Actual:\n" + result);
         }
 
         @Test

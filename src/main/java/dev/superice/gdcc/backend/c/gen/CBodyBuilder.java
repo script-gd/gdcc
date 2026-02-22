@@ -19,6 +19,8 @@ import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 /// It tracks current instruction position to provide precise codegen errors.
 @SuppressWarnings("UnusedReturnValue")
 public final class CBodyBuilder {
+    private static final String RETURN_SLOT_NAME = "_return_val";
+
     private final @NotNull CGenHelper helper;
     private final @NotNull LirClassDef clazz;
     private final @NotNull LirFunctionDef func;
@@ -69,10 +71,16 @@ public final class CBodyBuilder {
 
     public @NotNull CBodyBuilder beginBasicBlock(@NotNull String blockId) {
         out.append(blockId).append(": // ").append(blockId).append("\n");
+        // Add _return_val decl if we are in __prepare__
         if ("__prepare__".equals(blockId)) {
             var returnType = func.getReturnType();
             if (!(returnType instanceof GdVoidType)) {
-                out.append(helper.renderGdTypeInC(returnType)).append(" _return_val;\n");
+                out.append(helper.renderGdTypeInC(returnType)).append(" ").append(RETURN_SLOT_NAME);
+                if (returnType instanceof GdObjectType) {
+                    // Object return slots start with NULL so overwrite can safely release old value.
+                    out.append(" = NULL");
+                }
+                out.append(";\n");
             }
         }
         return this;
@@ -215,6 +223,12 @@ public final class CBodyBuilder {
         return new ExprValue(code, type, ptrKind);
     }
 
+    /// Creates an OWNED value reference from a raw C expression.
+    public @NotNull ValueRef valueOfOwnedExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
+        // OWNED sources are consumed by destination slots and must not be owned again.
+        return new ExprValue(code, type, ptrKind, OwnershipKind.OWNED);
+    }
+
     /// Creates a value reference for a static StringName pointer literal.
     public @NotNull ValueRef valueOfStringNamePtrLiteral(@NotNull String value) {
         return new StringNamePtrLiteralValue(value);
@@ -252,29 +266,21 @@ public final class CBodyBuilder {
         var rhsResult = prepareRhsValue(value, targetType);
         emitTempDecls(rhsResult.temps());
 
-        // Phase C: Full assignment semantics
-        // 1. Destroy old value if needed (non-object destroyable types)
-        // 2. Release old object ownership if object type
-        if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
-            if (targetType instanceof GdObjectType objType) {
-                // Object type: release old ownership
-                emitReleaseObject(targetCode, objType);
-            } else {
-                // Non-object destroyable: call destroy
+        if (targetType instanceof GdObjectType objType) {
+            // Route all object writes through one ownership-aware slot write path.
+            emitObjectSlotWrite(
+                    targetCode,
+                    objType,
+                    canDestroyOldValue && !checkInPrepareBlock(),
+                    rhsResult.code(),
+                    value.ptrKind(),
+                    value.ownership()
+            );
+        } else {
+            if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
                 emitDestroy(targetCode, targetType);
             }
-        }
-
-        // 4. Write new value, converting pointer representation if needed
-        var assignCode = rhsResult.code();
-        if (targetType instanceof GdObjectType targetObjType) {
-            assignCode = convertPtrIfNeeded(assignCode, value.ptrKind(), targetObjType);
-        }
-        out.append(targetCode).append(" = ").append(assignCode).append(";\n");
-
-        // 5. Own new object if object type
-        if (targetType instanceof GdObjectType objType) {
-            emitOwnObject(targetCode, objType);
+            out.append(targetCode).append(" = ").append(rhsResult.code()).append(";\n");
         }
 
         markTargetInitialized(target);
@@ -374,9 +380,10 @@ public final class CBodyBuilder {
 
             var callExpr = funcName + "(" + argsResult.code() + ")";
             if (discardResult) {
-                out.append(callExpr).append(";\n");
+                // Discarded non-void calls still need lifecycle cleanup for destroyable returns.
+                emitDiscardedCall(funcName, callExpr, returnType);
             } else {
-                emitCallResultAssignment(target, funcName, callExpr);
+                emitCallResultAssignment(target, funcName, returnType, callExpr);
             }
         } else {
             argsResult = renderArgsWithVarargs(funcName, args, varargs);
@@ -387,9 +394,10 @@ public final class CBodyBuilder {
 
             var callExpr = funcName + "(" + argsResult.code() + ")";
             if (discardResult) {
-                out.append(callExpr).append(";\n");
+                // Discarded non-void calls still need lifecycle cleanup for destroyable returns.
+                emitDiscardedCall(funcName, callExpr, returnType);
             } else {
-                emitCallResultAssignment(target, funcName, callExpr);
+                emitCallResultAssignment(target, funcName, returnType, callExpr);
             }
         }
         emitTempDestroys(argsResult.temps());
@@ -397,35 +405,37 @@ public final class CBodyBuilder {
     }
 
     /// Common logic for writing a call expression result into a target variable.
-    /// Handles: old-value destroy/release → ptr conversion → assignment → own new object → mark initialized.
+    /// Handles: old-value destroy/release → ptr conversion → assignment → ownership consume/own → mark initialized.
     private void emitCallResultAssignment(@NotNull TargetRef target,
                                           @NotNull String cFuncName,
+                                          @Nullable GdType returnType,
                                           @NotNull String callExpr) {
         var targetCode = target.generateCode();
         var targetType = target.type();
         var canDestroyOldValue = canDestroyOldValue(target);
 
+        if (targetType instanceof GdObjectType targetObjType) {
+            // Object call results are treated as OWNED by default and consumed on write.
+            var rhsObjType = returnType instanceof GdObjectType returnObjType ? returnObjType : targetObjType;
+            var rhsPtrKind = resolveCallResultPtrKind(cFuncName, rhsObjType);
+            var ownership = returnType instanceof GdObjectType ? OwnershipKind.OWNED : OwnershipKind.BORROWED;
+            emitObjectSlotWrite(
+                    targetCode,
+                    targetObjType,
+                    canDestroyOldValue && !checkInPrepareBlock(),
+                    callExpr,
+                    rhsPtrKind,
+                    ownership
+            );
+            markTargetInitialized(target);
+            return;
+        }
+
         if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
-            if (targetType instanceof GdObjectType objType) {
-                emitReleaseObject(targetCode, objType);
-            } else {
-                emitDestroy(targetCode, targetType);
-            }
+            emitDestroy(targetCode, targetType);
         }
 
-        var finalExpr = callExpr;
-        if (checkGlobalFuncReturnGodotRawPtr(cFuncName)
-                && targetType instanceof GdObjectType objType
-                && objType.checkGdccType(classRegistry())) {
-            finalExpr = fromGodotObjectPtr(finalExpr, objType);
-        }
-
-        out.append(targetCode).append(" = ").append(finalExpr).append(";\n");
-
-        if (targetType instanceof GdObjectType objType) {
-            emitOwnObject(targetCode, objType);
-        }
-
+        out.append(targetCode).append(" = ").append(callExpr).append(";\n");
         markTargetInitialized(target);
     }
 
@@ -459,12 +469,12 @@ public final class CBodyBuilder {
     public @NotNull CBodyBuilder returnTerminal() {
         var returnType = func.getReturnType();
         if (!checkInFinallyBlock()) {
-            throw invalidInsn("Cannot return _return_val from non finally block");
+            throw invalidInsn("Cannot return " + RETURN_SLOT_NAME + " from non finally block");
         }
         if (returnType instanceof GdVoidType) {
-            throw invalidInsn("Cannot return _return_val from void function");
+            throw invalidInsn("Cannot return " + RETURN_SLOT_NAME + " from void function");
         }
-        out.append("return _return_val;\n");
+        out.append("return ").append(RETURN_SLOT_NAME).append(";\n");
         return this;
     }
 
@@ -478,15 +488,28 @@ public final class CBodyBuilder {
         var returnResult = prepareReturnValue(value);
         emitTempDecls(returnResult.temps());
         var returnCode = returnResult.code();
-        if (returnType instanceof GdObjectType objType) {
-            returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), objType);
-        }
 
         if (!checkInFinallyBlock()) {
-            out.append("_return_val = ").append(returnCode).append(";\n");
+            if (returnType instanceof GdObjectType objType) {
+                // _return_val follows the same slot-write rules as normal object assignments.
+                emitObjectSlotWrite(
+                        RETURN_SLOT_NAME,
+                        objType,
+                        true,
+                        returnCode,
+                        value.ptrKind(),
+                        value.ownership()
+                );
+            } else {
+                out.append(RETURN_SLOT_NAME).append(" = ").append(returnCode).append(";\n");
+            }
             emitTempDestroys(returnResult.temps());
             out.append("goto __finally__;\n");
             return this;
+        }
+
+        if (returnType instanceof GdObjectType objType) {
+            returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), objType);
         }
 
         if (returnResult.temps().isEmpty()) {
@@ -560,6 +583,10 @@ public final class CBodyBuilder {
                                                   @NotNull TargetRef target,
                                                   boolean discardResult) {
         if (returnType == null) {
+            if (discardResult) {
+                // Discard mode requires return type info to decide whether cleanup is needed.
+                throw invalidInsn("CallAssign discard requires explicit return type: " + funcName);
+            }
             return;
         }
         if (returnType instanceof GdVoidType) {
@@ -765,6 +792,54 @@ public final class CBodyBuilder {
         out.append(destroyFunc).append("(&").append(varCode).append(");\n");
     }
 
+    /// Writes an object value into a storage slot with ownership-aware semantics:
+    /// release old (if initialized) → assign converted rhs → own new only for BORROWED rhs.
+    private void emitObjectSlotWrite(@NotNull String targetCode,
+                                     @NotNull GdObjectType targetType,
+                                     boolean releaseOldValue,
+                                     @NotNull String rhsCode,
+                                     @NotNull PtrKind rhsPtrKind,
+                                     @NotNull OwnershipKind ownership) {
+        if (releaseOldValue) {
+            emitReleaseObject(targetCode, targetType);
+        }
+        var assignCode = convertPtrIfNeeded(rhsCode, rhsPtrKind, targetType);
+        out.append(targetCode).append(" = ").append(assignCode).append(";\n");
+        if (ownership == OwnershipKind.BORROWED) {
+            // BORROWED rhs must be retained by the slot after assignment.
+            emitOwnObject(targetCode, targetType);
+        }
+    }
+
+    /// Emits a discarded call with immediate cleanup for destroyable return types.
+    private void emitDiscardedCall(@NotNull String cFuncName,
+                                   @NotNull String callExpr,
+                                   @Nullable GdType returnType) {
+        if (returnType == null) {
+            throw invalidInsn("Discarded call must give a non-null return type.");
+        }
+
+        if (!returnType.isDestroyable()) {
+            out.append(callExpr).append(";\n");
+            return;
+        }
+
+        if (returnType instanceof GdObjectType objType) {
+            var rhsPtrKind = resolveCallResultPtrKind(cFuncName, objType);
+            var assignCode = convertPtrIfNeeded(callExpr, rhsPtrKind, objType);
+            var discardTemp = newTempVariable("discard", returnType, assignCode);
+            declareTempVar(discardTemp);
+            // Discarded OWNED object returns are consumed by immediate release.
+            emitReleaseObject(discardTemp.name(), objType);
+            return;
+        }
+
+        var discardTemp = newTempVariable("discard", returnType, callExpr);
+        declareTempVar(discardTemp);
+        // Non-object destroyable returns are cleaned up immediately on discard.
+        emitDestroy(discardTemp.name(), returnType);
+    }
+
     /// Emits code to release ownership of an object.
     /// Uses try_release_object for unknown RefCounted status, release_object for definite RefCounted.
     private void emitReleaseObject(@NotNull String varCode, @NotNull GdObjectType objType) {
@@ -866,6 +941,15 @@ public final class CBodyBuilder {
         return funcName.startsWith("godot_");
     }
 
+    private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,
+                                                       @NotNull GdObjectType returnObjType) {
+        if (checkGlobalFuncReturnGodotRawPtr(cFuncName)) {
+            // godot_* calls return raw Godot object pointers.
+            return PtrKind.GODOT_PTR;
+        }
+        return resolvePtrKind(returnObjType);
+    }
+
     /// Indicates the pointer kind of an object value reference.
     /// Used to determine whether conversion is needed when passing to/from GDExtension APIs.
     public enum PtrKind {
@@ -877,12 +961,23 @@ public final class CBodyBuilder {
         NON_OBJECT
     }
 
+    /// Ownership category for object values.
+    public enum OwnershipKind {
+        BORROWED,
+        OWNED
+    }
+
     public sealed interface ValueRef permits VarValue, ExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, TempVar {
         @NotNull GdType type();
 
         @NotNull String generateCode();
 
         @NotNull PtrKind ptrKind();
+
+        // Existing value sources are treated as BORROWED unless explicitly marked OWNED.
+        default @NotNull OwnershipKind ownership() {
+            return OwnershipKind.BORROWED;
+        }
     }
 
     public record VarValue(@NotNull LirVariable variable, @NotNull PtrKind ptrKind) implements ValueRef {
@@ -902,11 +997,19 @@ public final class CBodyBuilder {
         }
     }
 
-    public record ExprValue(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) implements ValueRef {
+    public record ExprValue(@NotNull String code,
+                            @NotNull GdType type,
+                            @NotNull PtrKind ptrKind,
+                            @NotNull OwnershipKind ownership) implements ValueRef {
+        public ExprValue(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
+            this(code, type, ptrKind, OwnershipKind.BORROWED);
+        }
+
         public ExprValue {
             Objects.requireNonNull(code);
             Objects.requireNonNull(type);
             Objects.requireNonNull(ptrKind);
+            Objects.requireNonNull(ownership);
         }
 
         @Override

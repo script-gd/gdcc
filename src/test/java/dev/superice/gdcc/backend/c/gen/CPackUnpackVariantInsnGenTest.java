@@ -53,8 +53,8 @@ public class CPackUnpackVariantInsnGenTest {
     }
 
     @Test
-    @DisplayName("unpack_variant to RefCounted object should release and own")
-    void unpackVariantToRefCountedObjectShouldReleaseAndOwn() {
+    @DisplayName("unpack_variant to RefCounted object should release and consume owned return")
+    void unpackVariantToRefCountedObjectShouldReleaseAndConsumeOwnedReturn() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("unpack_object");
         func.setReturnType(GdVoidType.VOID);
@@ -85,7 +85,7 @@ public class CPackUnpackVariantInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("release_object($result);"));
         assertTrue(body.contains("$result = (godot_RefCounted*)godot_new_Object_with_Variant(&$variant);"));
-        assertTrue(body.contains("own_object($result);"));
+        assertFalse(body.contains("own_object($result);"));
     }
 
     @Test

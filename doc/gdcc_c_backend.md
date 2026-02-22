@@ -59,6 +59,7 @@
 - `try_own_object`, `try_release_object` are safe to use on non-ref-counted objects, they will do nothing in that case, but always use non-try version if you are 100% sure the object is ref-counted for better performance.
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass `gdcc_object->_object` instead of `gdcc_object`.
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
+- Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
 
 ### Temporary Variables (CBodyBuilder)
 

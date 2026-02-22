@@ -204,6 +204,24 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_GLOBAL discard of destroyable return should clean up temporary value")
+    void callGlobalDiscardDestroyableReturnShouldCleanup() {
+        var clazz = newTestClass();
+        var func = newFunction("call_make_string_without_result");
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "make_string",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("godot_String __gdcc_tmp_discard_0 = godot_make_string();"));
+        assertTrue(body.contains("godot_String_destroy(&__gdcc_tmp_discard_0);"));
+    }
+
+    @Test
     @DisplayName("CALL_GLOBAL should reject ref result variable")
     void callGlobalResultRefVariable() {
         var clazz = newTestClass();
@@ -437,6 +455,14 @@ class CallGlobalInsnGenTest {
                                 false,
                                 2140049587,
                                 List.of(new ExtensionFunctionArgument("deg", "float", null, null))
+                        ),
+                        new ExtensionUtilityFunction(
+                                "make_string",
+                                "String",
+                                "test",
+                                false,
+                                0,
+                                List.of()
                         ),
                         new ExtensionUtilityFunction(
                                 "utility_with_default",
