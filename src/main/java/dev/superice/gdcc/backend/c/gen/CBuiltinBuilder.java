@@ -3,11 +3,15 @@ package dev.superice.gdcc.backend.c.gen;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBasisType;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNodePathType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdProjectionType;
+import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdTransform2DType;
 import dev.superice.gdcc.type.GdTransform3DType;
 import dev.superice.gdcc.type.GdType;
@@ -18,6 +22,8 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+
+import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
 /// Helper for built-in type constructor symbol generation and constructor metadata lookup.
 ///
@@ -117,6 +123,112 @@ public final class CBuiltinBuilder {
         }
     }
 
+    /// Materializes one utility default literal into the given writable target.
+    /// The caller controls target lifetime (for example, temp var declaration/destruction).
+    public void materializeUtilityDefaultValue(@NotNull CBodyBuilder bodyBuilder,
+                                               @NotNull CBodyBuilder.TargetRef target,
+                                               @NotNull String defaultLiteral,
+                                               @NotNull String utilityName,
+                                               int parameterIndexBaseOne) {
+        var expectedType = target.type();
+        var literal = defaultLiteral.trim();
+        if (literal.isEmpty()) {
+            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                    " has empty default literal");
+        }
+
+        if ("null".equals(literal)) {
+            if (expectedType instanceof GdVariantType) {
+                bodyBuilder.callAssign(target, "godot_new_Variant_nil", GdVariantType.VARIANT, List.of());
+                return;
+            }
+            if (expectedType instanceof GdObjectType) {
+                bodyBuilder.assignExpr(target, "NULL", expectedType, CBodyBuilder.PtrKind.GODOT_PTR);
+                return;
+            }
+            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                    " default 'null' is not assignable to '" + expectedType.getTypeName() + "'");
+        }
+
+        try {
+            switch (expectedType) {
+                case GdBoolType _ -> {
+                    if (!"true".equals(literal) && !"false".equals(literal)) {
+                        throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                                " expects bool default, got '" + literal + "'");
+                    }
+                    bodyBuilder.assignExpr(target, literal, GdBoolType.BOOL);
+                    return;
+                }
+                case GdIntType _ -> {
+                    bodyBuilder.assignExpr(target, literal, GdIntType.INT);
+                    return;
+                }
+                case GdFloatType _ -> {
+                    bodyBuilder.assignExpr(target, literal, GdFloatType.FLOAT);
+                    return;
+                }
+                default -> {
+                }
+            }
+
+            if (isQuotedStringNameLiteral(literal)) {
+                var value = unescapeQuoted(literal.substring(2, literal.length() - 1));
+                bodyBuilder.assignVar(target, bodyBuilder.valueOfStringNamePtrLiteral(value));
+                return;
+            }
+            if (isQuotedStringLiteral(literal)) {
+                var value = unescapeQuoted(literal.substring(1, literal.length() - 1));
+                if (expectedType instanceof GdNodePathType) {
+                    bodyBuilder.assignExpr(
+                            target,
+                            "godot_new_NodePath_with_utf8_chars(u8\"" + escapeStringLiteral(value) + "\")",
+                            GdNodePathType.NODE_PATH
+                    );
+                    return;
+                }
+                bodyBuilder.assignVar(target, bodyBuilder.valueOfStringPtrLiteral(value));
+                return;
+            }
+            if (isQuotedNodePathLiteral(literal)) {
+                var value = unescapeQuoted(literal.substring(2, literal.length() - 1));
+                bodyBuilder.assignExpr(
+                        target,
+                        "godot_new_NodePath_with_utf8_chars(u8\"" + escapeStringLiteral(value) + "\")",
+                        GdNodePathType.NODE_PATH
+                );
+                return;
+            }
+
+            if ("[]".equals(literal)) {
+                if (expectedType instanceof GdArrayType) {
+                    constructBuiltin(bodyBuilder, target, List.of());
+                    return;
+                }
+                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                        " default '[]' is not assignable to '" + expectedType.getTypeName() + "'");
+            }
+            if ("{}".equals(literal)) {
+                if (expectedType instanceof GdDictionaryType) {
+                    constructBuiltin(bodyBuilder, target, List.of());
+                    return;
+                }
+                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                        " default '{}' is not assignable to '" + expectedType.getTypeName() + "'");
+            }
+
+            if (materializeConstructorDefault(bodyBuilder, target, literal, utilityName, parameterIndexBaseOne)) {
+                return;
+            }
+        } catch (IllegalArgumentException ex) {
+            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                    " default literal '" + literal + "' is malformed: " + ex.getMessage());
+        }
+
+        throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                " has unsupported default literal '" + literal + "'");
+    }
+
     /// Validates constructor availability against ExtensionBuiltinClass metadata.
     /// Helper shim constructors may skip this check.
     public void validateConstructor(@NotNull GdType type,
@@ -186,21 +298,37 @@ public final class CBuiltinBuilder {
                                 @NotNull CBodyBuilder.TargetRef target,
                                 @NotNull GdArrayType arrayType,
                                 @NotNull List<CBodyBuilder.ValueRef> args) {
-        if (!args.isEmpty()) {
-            throw new IllegalArgumentException("Array construction expects no runtime arguments");
-        }
         var elementType = arrayType.getValueType();
         if (elementType instanceof GdVariantType) {
-            bodyBuilder.callAssign(target, renderConstructorBaseName(arrayType), arrayType, List.of());
+            if (args.isEmpty()) {
+                bodyBuilder.callAssign(target, renderConstructorBaseName(arrayType), arrayType, List.of());
+                return;
+            }
+            constructRegularBuiltin(bodyBuilder, target, arrayType, args);
             return;
+        }
+        if (args.size() > 1) {
+            throw new IllegalArgumentException("Typed Array construction expects at most one runtime argument");
         }
 
         var baseType = new GdArrayType(GdVariantType.VARIANT);
-        var baseTemp = bodyBuilder.newTempVariable("array_base", baseType, "godot_new_Array()");
-        bodyBuilder.declareTempVar(baseTemp);
+        CBodyBuilder.ValueRef baseValue;
+        CBodyBuilder.TempVar baseTemp = null;
+        if (args.isEmpty()) {
+            baseTemp = bodyBuilder.newTempVariable("array_base", baseType, "godot_new_Array()");
+            bodyBuilder.declareTempVar(baseTemp);
+            baseValue = bodyBuilder.valueOfExpr(baseTemp.name(), baseType);
+        } else {
+            var providedBase = args.getFirst();
+            if (!(providedBase.type() instanceof GdArrayType) ||
+                    !bodyBuilder.classRegistry().checkAssignable(providedBase.type(), baseType)) {
+                throw new IllegalArgumentException("Typed Array construction expects one Array argument");
+            }
+            baseValue = providedBase;
+        }
 
         var ctorArgs = List.of(
-                bodyBuilder.valueOfExpr(baseTemp.name(), baseType),
+                baseValue,
                 bodyBuilder.valueOfExpr(renderGdExtensionVariantTypeIntLiteral(elementType), GdIntType.INT),
                 bodyBuilder.valueOfStringNamePtrLiteral(resolveTypedContainerClassName(elementType)),
                 bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR)
@@ -211,29 +339,47 @@ public final class CBuiltinBuilder {
                 arrayType,
                 ctorArgs
         );
-        bodyBuilder.destroyTempVar(baseTemp);
+        if (baseTemp != null) {
+            bodyBuilder.destroyTempVar(baseTemp);
+        }
     }
 
     private void constructDictionary(@NotNull CBodyBuilder bodyBuilder,
                                      @NotNull CBodyBuilder.TargetRef target,
                                      @NotNull GdDictionaryType dictionaryType,
                                      @NotNull List<CBodyBuilder.ValueRef> args) {
-        if (!args.isEmpty()) {
-            throw new IllegalArgumentException("Dictionary construction expects no runtime arguments");
-        }
         var keyType = dictionaryType.getKeyType();
         var valueType = dictionaryType.getValueType();
-        if (keyType instanceof GdVariantType || valueType instanceof GdVariantType) {
-            bodyBuilder.callAssign(target, renderConstructorBaseName(dictionaryType), dictionaryType, List.of());
+        if (keyType instanceof GdVariantType && valueType instanceof GdVariantType) {
+            if (args.isEmpty()) {
+                bodyBuilder.callAssign(target, renderConstructorBaseName(dictionaryType), dictionaryType, List.of());
+                return;
+            }
+            constructRegularBuiltin(bodyBuilder, target, dictionaryType, args);
             return;
+        }
+        if (args.size() > 1) {
+            throw new IllegalArgumentException("Typed Dictionary construction expects at most one runtime argument");
         }
 
         var baseType = new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
-        var baseTemp = bodyBuilder.newTempVariable("dict_base", baseType, "godot_new_Dictionary()");
-        bodyBuilder.declareTempVar(baseTemp);
+        CBodyBuilder.ValueRef baseValue;
+        CBodyBuilder.TempVar baseTemp = null;
+        if (args.isEmpty()) {
+            baseTemp = bodyBuilder.newTempVariable("dict_base", baseType, "godot_new_Dictionary()");
+            bodyBuilder.declareTempVar(baseTemp);
+            baseValue = bodyBuilder.valueOfExpr(baseTemp.name(), baseType);
+        } else {
+            var providedBase = args.getFirst();
+            if (!(providedBase.type() instanceof GdDictionaryType) ||
+                    !bodyBuilder.classRegistry().checkAssignable(providedBase.type(), baseType)) {
+                throw new IllegalArgumentException("Typed Dictionary construction expects one Dictionary argument");
+            }
+            baseValue = providedBase;
+        }
 
         var ctorArgs = List.of(
-                bodyBuilder.valueOfExpr(baseTemp.name(), baseType),
+                baseValue,
                 bodyBuilder.valueOfExpr(renderGdExtensionVariantTypeIntLiteral(keyType), GdIntType.INT),
                 bodyBuilder.valueOfStringNamePtrLiteral(resolveTypedContainerClassName(keyType)),
                 bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR),
@@ -247,7 +393,9 @@ public final class CBuiltinBuilder {
                 dictionaryType,
                 ctorArgs
         );
-        bodyBuilder.destroyTempVar(baseTemp);
+        if (baseTemp != null) {
+            bodyBuilder.destroyTempVar(baseTemp);
+        }
     }
 
     private boolean checkExactTypeNames(@NotNull List<GdType> expected,
@@ -277,5 +425,293 @@ public final class CBuiltinBuilder {
                     "' has no GDExtension variant type");
         }
         return "(godot_int)GDEXTENSION_VARIANT_TYPE_" + gdType.name();
+    }
+
+    private boolean materializeConstructorDefault(@NotNull CBodyBuilder bodyBuilder,
+                                                  @NotNull CBodyBuilder.TargetRef target,
+                                                  @NotNull String literal,
+                                                  @NotNull String utilityName,
+                                                  int parameterIndexBaseOne) {
+        var leftParen = literal.indexOf('(');
+        if (leftParen <= 0 || !literal.endsWith(")")) {
+            return false;
+        }
+        var expectedType = target.type();
+        var ctorTypeName = literal.substring(0, leftParen).trim();
+        var ctorType = ClassRegistry.tryParseTextType(ctorTypeName);
+        if (ctorType == null) {
+            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                    " default constructor type '" + ctorTypeName + "' is unknown");
+        }
+        if (!helper.context().classRegistry().checkAssignable(ctorType, expectedType)) {
+            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                    " default constructor '" + ctorTypeName + "' is not assignable to '" +
+                    expectedType.getTypeName() + "'");
+        }
+
+        var rawArgs = splitCtorArguments(literal.substring(leftParen + 1, literal.length() - 1));
+        var ctorArgTypes = resolveCtorArgTypes(ctorType, rawArgs, bodyBuilder, utilityName, parameterIndexBaseOne, literal);
+        var ctorArgs = new ArrayList<CBodyBuilder.ValueRef>(rawArgs.size());
+        for (var i = 0; i < rawArgs.size(); i++) {
+            var argLiteral = rawArgs.get(i).trim();
+            if (argLiteral.isEmpty()) {
+                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                        " default constructor '" + literal + "' has empty argument at index " + (i + 1));
+            }
+            var argValue = parseCtorArgumentValueRef(bodyBuilder, argLiteral, ctorArgTypes.get(i));
+            if (argValue == null) {
+                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                        " default constructor '" + literal + "' has unsupported argument '" + argLiteral + "'");
+            }
+            ctorArgs.add(argValue);
+        }
+
+        if (helper.renderGdTypeName(expectedType).equals(helper.renderGdTypeName(ctorType))) {
+            constructBuiltin(bodyBuilder, target, ctorArgs);
+            return true;
+        }
+
+        var ctorTemp = bodyBuilder.newTempVariable("default_ctor_arg_" + parameterIndexBaseOne, ctorType);
+        bodyBuilder.declareTempVar(ctorTemp);
+        constructBuiltin(bodyBuilder, ctorTemp, ctorArgs);
+        bodyBuilder.assignVar(target, ctorTemp);
+        bodyBuilder.destroyTempVar(ctorTemp);
+        return true;
+    }
+
+    private @NotNull List<GdType> resolveCtorArgTypes(@NotNull GdType ctorType,
+                                                       @NotNull List<String> rawArgs,
+                                                       @NotNull CBodyBuilder bodyBuilder,
+                                                       @NotNull String utilityName,
+                                                       int parameterIndexBaseOne,
+                                                       @NotNull String literal) {
+        var ctorArgCount = rawArgs.size();
+        var candidates = new ArrayList<List<GdType>>();
+
+        var builtinClass = helper.context().classRegistry().findBuiltinClass(helper.renderGdTypeName(ctorType));
+        if (builtinClass != null) {
+            for (var ctor : builtinClass.constructors()) {
+                if (ctor.arguments().size() != ctorArgCount) {
+                    continue;
+                }
+                var argTypes = new ArrayList<GdType>(ctorArgCount);
+                var malformedMetadata = false;
+                for (var ctorArg : ctor.arguments()) {
+                    var parsedType = ClassRegistry.tryParseTextType(ctorArg.type());
+                    if (parsedType == null) {
+                        malformedMetadata = true;
+                        break;
+                    }
+                    argTypes.add(parsedType);
+                }
+                if (!malformedMetadata) {
+                    candidates.add(argTypes);
+                }
+            }
+        }
+
+        var helperShimArgTypes = resolveHelperShimCtorArgTypes(ctorType, ctorArgCount);
+        if (helperShimArgTypes != null) {
+            candidates.add(helperShimArgTypes);
+        }
+
+        for (var candidate : candidates) {
+            var allMatched = true;
+            for (var i = 0; i < ctorArgCount; i++) {
+                if (!canMaterializeCtorArg(rawArgs.get(i).trim(), candidate.get(i))) {
+                    allMatched = false;
+                    break;
+                }
+            }
+            if (allMatched) {
+                return candidate;
+            }
+        }
+
+        var inferredTypes = new ArrayList<GdType>(ctorArgCount);
+        for (var rawArg : rawArgs) {
+            var inferredType = inferCtorArgType(rawArg.trim());
+            if (inferredType == null) {
+                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                        " default constructor '" + literal + "' has unsupported argument '" + rawArg.trim() + "'");
+            }
+            inferredTypes.add(inferredType);
+        }
+        return inferredTypes;
+    }
+
+    private @NotNull List<String> splitCtorArguments(@NotNull String argsLiteral) {
+        if (argsLiteral.isBlank()) {
+            return List.of();
+        }
+        var args = new ArrayList<String>();
+        var current = new StringBuilder();
+        var depth = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = 0; i < argsLiteral.length(); i++) {
+            var ch = argsLiteral.charAt(i);
+            if (inString) {
+                current.append(ch);
+                if (escaped) {
+                    escaped = false;
+                } else if (ch == '\\') {
+                    escaped = true;
+                } else if (ch == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (ch == '"') {
+                inString = true;
+                current.append(ch);
+                continue;
+            }
+            if (ch == '(') {
+                depth++;
+                current.append(ch);
+                continue;
+            }
+            if (ch == ')') {
+                depth--;
+                if (depth < 0) {
+                    throw new IllegalArgumentException("Unbalanced constructor argument literal: " + argsLiteral);
+                }
+                current.append(ch);
+                continue;
+            }
+            if (ch == ',' && depth == 0) {
+                args.add(current.toString().trim());
+                current.setLength(0);
+                continue;
+            }
+            current.append(ch);
+        }
+        if (inString || depth != 0) {
+            throw new IllegalArgumentException("Malformed constructor argument literal: " + argsLiteral);
+        }
+        var tail = current.toString().trim();
+        if (!tail.isEmpty()) {
+            args.add(tail);
+        }
+        return args;
+    }
+
+    private @Nullable GdType inferCtorArgType(@NotNull String argLiteral) {
+        if ("true".equals(argLiteral) || "false".equals(argLiteral)) {
+            return GdBoolType.BOOL;
+        }
+        if (isNumericLiteral(argLiteral)) {
+            return argLiteral.contains(".") || argLiteral.contains("e") || argLiteral.contains("E")
+                    ? GdFloatType.FLOAT
+                    : GdIntType.INT;
+        }
+        if (isQuotedStringLiteral(argLiteral)) {
+            return GdStringType.STRING;
+        }
+        if (isQuotedStringNameLiteral(argLiteral)) {
+            return GdStringNameType.STRING_NAME;
+        }
+        if ("[]".equals(argLiteral)) {
+            return new GdArrayType(GdVariantType.VARIANT);
+        }
+        if ("{}".equals(argLiteral)) {
+            return new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+        }
+        return null;
+    }
+
+    private @Nullable CBodyBuilder.ValueRef parseCtorArgumentValueRef(@NotNull CBodyBuilder bodyBuilder,
+                                                                       @NotNull String argLiteral,
+                                                                       @NotNull GdType argType) {
+        if (argType instanceof GdStringNameType) {
+            var value = unescapeQuoted(argLiteral.substring(2, argLiteral.length() - 1));
+            return bodyBuilder.valueOfStringNamePtrLiteral(value);
+        }
+        if (argType instanceof GdStringType) {
+            var value = unescapeQuoted(argLiteral.substring(1, argLiteral.length() - 1));
+            return bodyBuilder.valueOfStringPtrLiteral(value);
+        }
+        if (argType instanceof GdArrayType) {
+            return bodyBuilder.valueOfExpr("godot_new_Array()", argType);
+        }
+        if (argType instanceof GdDictionaryType) {
+            return bodyBuilder.valueOfExpr("godot_new_Dictionary()", argType);
+        }
+        return bodyBuilder.valueOfExpr(argLiteral, argType);
+    }
+
+    private boolean canMaterializeCtorArg(@NotNull String argLiteral, @NotNull GdType expectedType) {
+        return switch (expectedType) {
+            case GdBoolType _ -> "true".equals(argLiteral) || "false".equals(argLiteral);
+            case GdIntType _ -> isIntegerLiteral(argLiteral);
+            case GdFloatType _ -> isNumericLiteral(argLiteral);
+            case GdStringType _ -> isQuotedStringLiteral(argLiteral);
+            case GdStringNameType _ -> isQuotedStringNameLiteral(argLiteral);
+            case GdArrayType _ -> "[]".equals(argLiteral);
+            case GdDictionaryType _ -> "{}".equals(argLiteral);
+            default -> inferCtorArgType(argLiteral) != null;
+        };
+    }
+
+    private boolean isNumericLiteral(@NotNull String value) {
+        return value.matches("[+-]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?");
+    }
+
+    private boolean isIntegerLiteral(@NotNull String value) {
+        return value.matches("[+-]?\\d+");
+    }
+
+    private boolean isQuotedStringLiteral(@NotNull String literal) {
+        return literal.length() >= 2 && literal.startsWith("\"") && literal.endsWith("\"");
+    }
+
+    private boolean isQuotedStringNameLiteral(@NotNull String literal) {
+        return literal.length() >= 3 && literal.startsWith("&\"") && literal.endsWith("\"");
+    }
+
+    private boolean isQuotedNodePathLiteral(@NotNull String literal) {
+        return literal.length() >= 3 && literal.startsWith("$\"") && literal.endsWith("\"");
+    }
+
+    private @NotNull String unescapeQuoted(@NotNull String content) {
+        var out = new StringBuilder();
+        for (var i = 0; i < content.length(); i++) {
+            var ch = content.charAt(i);
+            if (ch != '\\') {
+                out.append(ch);
+                continue;
+            }
+            if (i + 1 >= content.length()) {
+                out.append('\\');
+                break;
+            }
+            var next = content.charAt(++i);
+            switch (next) {
+                case 'n' -> out.append('\n');
+                case 'r' -> out.append('\r');
+                case 't' -> out.append('\t');
+                case '\\' -> out.append('\\');
+                case '"' -> out.append('"');
+                case 'u' -> {
+                    if (i + 4 >= content.length()) {
+                        throw new IllegalArgumentException("Invalid unicode escape in literal: \\" + next);
+                    }
+                    var hex = content.substring(i + 1, i + 5);
+                    out.append((char) Integer.parseInt(hex, 16));
+                    i += 4;
+                }
+                case 'U' -> {
+                    if (i + 8 >= content.length()) {
+                        throw new IllegalArgumentException("Invalid unicode escape in literal: \\" + next);
+                    }
+                    var hex = content.substring(i + 1, i + 9);
+                    out.appendCodePoint(Integer.parseInt(hex, 16));
+                    i += 8;
+                }
+                default -> out.append(next);
+            }
+        }
+        return out.toString();
     }
 }

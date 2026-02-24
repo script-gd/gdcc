@@ -4,7 +4,6 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
-import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
@@ -52,8 +51,8 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_GLOBAL should reject omitted default arguments before completion is implemented")
-    void callGlobalShouldRejectDefaultArgumentCompletionNotImplemented() {
+    @DisplayName("CALL_GLOBAL should complete omitted default arguments for utility call")
+    void callGlobalShouldCompleteDefaultArgument() {
         var clazz = newTestClass();
         var func = newFunction("call_utility_with_default");
         func.createAndAddVariable("required", GdFloatType.FLOAT);
@@ -65,9 +64,87 @@ class CallGlobalInsnGenTest {
         ));
         clazz.addFunction(func);
 
-        var ex = assertThrows(NotImplementedException.class, () -> generateBody(clazz, func, utilityApi()));
-        assertInstanceOf(NotImplementedException.class, ex);
-        assertTrue(ex.getMessage().contains("Default argument completion"));
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("godot_int __gdcc_tmp_default_arg_2_0;"));
+        assertTrue(body.contains("__gdcc_tmp_default_arg_2_0 = 7;"));
+        assertTrue(body.contains("godot_utility_with_default($required, __gdcc_tmp_default_arg_2_0);"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should complete default String arguments using static literal")
+    void callGlobalShouldCompleteDefaultStringArgument() {
+        var clazz = newTestClass();
+        var func = newFunction("call_utility_with_default_string");
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "utility_with_default_string",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.contains("godot_String __gdcc_tmp_default_arg_1_0;"));
+        assertTrue(body.contains("godot_utility_with_default_string(&__gdcc_tmp_default_arg_1_0);"));
+        assertTrue(body.contains("godot_String_destroy(&__gdcc_tmp_default_arg_1_0);"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should materialize typed Array constructor defaults")
+    void callGlobalShouldCompleteTypedArrayConstructorDefault() {
+        var clazz = newTestClass();
+        var func = newFunction("call_utility_with_default_typed_array");
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "utility_with_default_typed_array",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.matches("(?s).*\\b__gdcc_tmp_default_arg_1_\\d+;.*"), body);
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant("));
+        assertTrue(body.matches("(?s).*godot_utility_with_default_typed_array\\(&__gdcc_tmp_default_arg_1_\\d+\\);.*"));
+        assertTrue(body.matches("(?s).*godot_Array_destroy\\(&__gdcc_tmp_default_arg_1_\\d+\\);.*"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should materialize typed Dictionary constructor defaults")
+    void callGlobalShouldCompleteTypedDictionaryConstructorDefault() {
+        var clazz = newTestClass();
+        var func = newFunction("call_utility_with_default_typed_dictionary");
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "utility_with_default_typed_dictionary",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.matches("(?s).*\\b__gdcc_tmp_default_arg_1_\\d+;.*"), body);
+        assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant("));
+        assertTrue(body.matches("(?s).*godot_utility_with_default_typed_dictionary\\(&__gdcc_tmp_default_arg_1_\\d+\\);.*"));
+        assertTrue(body.matches("(?s).*godot_Dictionary_destroy\\(&__gdcc_tmp_default_arg_1_\\d+\\);.*"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should fail when required fixed argument is omitted")
+    void callGlobalShouldFailWhenRequiredArgumentIsMissing() {
+        var clazz = newTestClass();
+        var func = newFunction("call_utility_with_default_missing_required");
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "utility_with_default",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("missing required parameter #1"));
     }
 
     @Test
@@ -473,6 +550,41 @@ class CallGlobalInsnGenTest {
                                 List.of(
                                         new ExtensionFunctionArgument("required", "float", null, null),
                                         new ExtensionFunctionArgument("optional", "int", "7", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default_string",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("text", "String", "\"hello\"", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default_typed_array",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("items", "Array[StringName]", "Array[StringName]([])", null)
+                                )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default_typed_dictionary",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument(
+                                                "mapping",
+                                                "Dictionary[StringName, int]",
+                                                "Dictionary[StringName, int]({})",
+                                                null
+                                        )
                                 )
                         )
                 ),
