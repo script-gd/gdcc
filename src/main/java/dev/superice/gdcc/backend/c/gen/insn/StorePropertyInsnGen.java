@@ -56,8 +56,11 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                 var classDef = Objects.requireNonNull(bodyBuilder.classRegistry().getClassDef(objectType));
                 var propertyDef = Objects.requireNonNull(findPropertyDef(classDef, insn.propertyName()));
                 if (isStoringInsideSetterSelf(bodyBuilder, insn, propertyDef)) {
-                    var rhs = renderDirectFieldAssignRhs(helper, func, valueVar.id(), valueVar.type());
-                    bodyBuilder.appendLine("$" + objectVar.id() + "->" + insn.propertyName() + " = " + rhs + ";");
+                    var fieldTarget = bodyBuilder.targetOfExpr(
+                            "$" + objectVar.id() + "->" + insn.propertyName(),
+                            propertyDef.getType()
+                    );
+                    bodyBuilder.assignVar(fieldTarget, bodyBuilder.valueOfVar(valueVar));
                 } else {
                     var setterName = propertyDef.getSetterFunc();
                     if (setterName == null || setterName.isEmpty()) {
@@ -192,18 +195,6 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
             return setter != null && setter.equals(func.getName());
         }
         return false;
-    }
-
-    private @NotNull String renderDirectFieldAssignRhs(@NotNull CGenHelper helper,
-                                                       @NotNull LirFunctionDef func,
-                                                       @NotNull String valueId,
-                                                       @NotNull GdType valueType) {
-        var valueRef = helper.renderVarRef(func, valueId);
-        var copyAssignFunc = helper.renderCopyAssignFunctionName(valueType);
-        if (copyAssignFunc.isEmpty()) {
-            return valueRef;
-        }
-        return copyAssignFunc + "(" + valueRef + ")";
     }
 
     private PropertyDef findPropertyDef(@NotNull ClassDef classDef, @NotNull String propertyName) {

@@ -117,15 +117,7 @@ public class CCodegen implements Codegen {
 
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
-                    if (propertyDef.getType() instanceof GdObjectType) {
-                        var oldValueVar = func.createAndAddTmpVariable(propertyDef.getType());
-                        bb.instructions().add(new LoadPropertyInsn(oldValueVar.id(), propertyDef.getName(), "self"));
-                        bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
-                        bb.instructions().add(new TryOwnObjectInsn("value"));
-                        bb.instructions().add(new TryReleaseObjectInsn(oldValueVar.id()));
-                    } else {
-                        bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
-                    }
+                    bb.instructions().add(new StorePropertyInsn(propertyDef.getName(), "self", "value"));
                     bb.instructions().add(new ReturnInsn(null));
                     func.setEntryBlockId("entry");
                     classDef.addFunction(func);
