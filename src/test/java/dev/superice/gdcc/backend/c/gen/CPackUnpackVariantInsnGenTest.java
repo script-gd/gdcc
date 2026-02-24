@@ -111,7 +111,7 @@ public class CPackUnpackVariantInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_Variant_destroy(&$result);"));
         assertTrue(body.contains("$result = godot_new_Variant_with_gdcc_Object($value);"));
-        assertFalse(body.contains("godot_new_Variant_with_gdcc_Object($value->_object);"));
+        assertFalse(body.contains("godot_new_Variant_with_gdcc_Object(godot_object_from_gdcc_object_ptr($value));"));
     }
 
     private ExtensionAPI emptyApi() {

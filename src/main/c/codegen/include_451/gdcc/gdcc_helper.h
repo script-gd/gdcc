@@ -128,14 +128,14 @@ static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtension
     return godot_object_get_instance_binding(ptr, class_library, &callbacks);
 }
 
-#define godot_object_from_gdcc_object_ptr(obj) (obj == NULL ? NULL : obj->_object)
+#define godot_object_from_gdcc_object_ptr(obj) ({ __typeof__(obj) _o = (obj); _o ? _o->_object : NULL; })
 
 static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
     const GDExtensionObjectPtr obj = godot_new_Object_with_Variant(value);
     return gdcc_object_from_godot_object_ptr(obj);
 }
 
-#define godot_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(obj->_object)
+#define godot_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(godot_object_from_gdcc_object_ptr(obj))
 
 static godot_Transform2D godot_new_Transform2D_with_float_float_float_float_float_float(
     godot_float xx, godot_float xy, godot_float yx, godot_float yy, godot_float tx, godot_float ty

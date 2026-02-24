@@ -49,7 +49,7 @@
 
 ### 2.2 对象与所有权语义
 
-- GDCC 对象传给 GDExtension API 时，必须用 `obj->_object`。
+- GDCC 对象传给 GDExtension API 时，必须用 `godot_object_from_gdcc_object_ptr(obj)`。
 - `gdcc_object_from_godot_object_ptr` 仅做包装转换，不自动持有；后续存储需 own/try_own。
 - `RefCountedStatus` 策略：
   - `YES`: `own_object` / `release_object`
@@ -110,7 +110,7 @@
 
 ### 4.3 生成器编写约束
 
-- 禁止手写 `->_object` 与 `gdcc_object_from_godot_object_ptr(...)`。
+- 禁止手写 `->_object` 与 `gdcc_object_from_godot_object_ptr(...)`，统一通过 helper 宏 / Builder 自动转换。
 - 统一通过 `valueOfVar` + `call*` 交给 Builder 自动处理。
 - 仅在规则无法覆盖的特殊场景，允许 `valueOfExpr(..., ptrKind)` 显式指定。
 

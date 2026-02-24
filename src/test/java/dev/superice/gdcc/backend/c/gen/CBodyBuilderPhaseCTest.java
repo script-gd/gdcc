@@ -410,7 +410,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC object assignment should use ->_object for own/release")
+        @DisplayName("GDCC object assignment should use helper conversion for own/release")
         void testGdccObjectAssignment() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var source = new LirVariable("src", new GdObjectType("MyGdccClass"), lirFunctionDef);
@@ -420,8 +420,9 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            // GDCC class inherits RefCounted, should use ->_object
-            assertTrue(result.contains("$myObj->_object"), "Should use ->_object for GDCC object");
+            // GDCC class inherits RefCounted, should use helper conversion
+            assertTrue(result.contains("godot_object_from_gdcc_object_ptr($myObj)"),
+                    "Should use godot_object_from_gdcc_object_ptr for GDCC object");
         }
 
         @Test
@@ -836,14 +837,14 @@ public class CBodyBuilderPhaseCTest {
     class GdccObjectArgConversionTests {
 
         @Test
-        @DisplayName("GDCC object arg should be converted to ->_object when calling godot_ function")
+        @DisplayName("GDCC object arg should be converted via helper when calling godot_ function")
         void testGdccObjectArgConvertedForGodotFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
             builder.callVoid("godot_some_func", List.of(value));
 
-            assertEquals("godot_some_func($myObj->_object);\n", builder.build());
+            assertEquals("godot_some_func(godot_object_from_gdcc_object_ptr($myObj));\n", builder.build());
         }
 
         @Test
@@ -876,7 +877,7 @@ public class CBodyBuilderPhaseCTest {
 
             builder.callVoid("try_own_object", List.of(value));
 
-            assertEquals("try_own_object($myObj->_object);\n", builder.build());
+            assertEquals("try_own_object(godot_object_from_gdcc_object_ptr($myObj));\n", builder.build());
         }
 
         @Test
@@ -890,7 +891,7 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfVar(strVar)
             ));
 
-            assertEquals("godot_Object_set($myObj->_object, &$name);\n", builder.build());
+            assertEquals("godot_Object_set(godot_object_from_gdcc_object_ptr($myObj), &$name);\n", builder.build());
         }
 
         @Test
@@ -961,9 +962,9 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // MyGdccClass extends RefCounted; owned call results should not be owned again.
-            assertTrue(result.contains("release_object($myObj->_object)"),
+            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr($myObj))"),
                     "Should release old GDCC object. Actual:\n" + result);
-            assertFalse(result.contains("own_object($myObj->_object)"),
+            assertFalse(result.contains("own_object(godot_object_from_gdcc_object_ptr($myObj))"),
                     "Should consume owned call result without own. Actual:\n" + result);
         }
 
@@ -979,7 +980,7 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // Arg should be converted
-            assertTrue(result.contains("$input->_object"),
+            assertTrue(result.contains("godot_object_from_gdcc_object_ptr($input)"),
                     "Should convert GDCC arg to godot ptr. Actual:\n" + result);
             // Return should be wrapped
             assertTrue(result.contains("gdcc_object_from_godot_object_ptr"),
@@ -1007,7 +1008,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC_PTR value assigned to engine (GODOT_PTR) target should use ->_object")
+        @DisplayName("GDCC_PTR value assigned to engine (GODOT_PTR) target should use helper conversion")
         void testGdccPtrValueToEngineTarget() {
             // Target is Object (engine base type), so its PtrKind is GODOT_PTR
             // MyGdccClass extends RefCounted extends Object, so assignment is valid
@@ -1020,8 +1021,8 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("$obj = $myObj->_object"),
-                    "Should convert GDCC_PTR to GODOT_PTR via ->_object. Actual:\n" + result);
+            assertTrue(result.contains("$obj = godot_object_from_gdcc_object_ptr($myObj)"),
+                    "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
         }
 
         @Test
@@ -1039,8 +1040,8 @@ public class CBodyBuilderPhaseCTest {
                     "Should assign directly without conversion. Actual:\n" + result);
             assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
                     "Should NOT wrap with fromGodotObjectPtr. Actual:\n" + result);
-            assertFalse(result.contains("$source->_object;"),
-                    "Should NOT use ->_object on RHS. Actual:\n" + result);
+            assertFalse(result.contains("godot_object_from_gdcc_object_ptr($source);"),
+                    "Should NOT use helper conversion on RHS. Actual:\n" + result);
         }
 
         @Test
@@ -1056,12 +1057,12 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertTrue(result.contains("$target = $source;"),
                     "Should assign directly without conversion. Actual:\n" + result);
-            assertFalse(result.contains("->_object"),
-                    "Should NOT use ->_object. Actual:\n" + result);
+            assertFalse(result.contains("godot_object_from_gdcc_object_ptr"),
+                    "Should NOT use helper conversion. Actual:\n" + result);
         }
 
         @Test
-        @DisplayName("GODOT_PTR to GDCC target should still do own/release with ->_object")
+        @DisplayName("GODOT_PTR to GDCC target should still do own/release with helper conversion")
         void testGodotPtrToGdccTargetOwnRelease() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1070,11 +1071,11 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            // MyGdccClass extends RefCounted, should have own/release with ->_object
-            assertTrue(result.contains("release_object($myObj->_object)"),
-                    "Should release old GDCC object via ->_object. Actual:\n" + result);
-            assertTrue(result.contains("own_object($myObj->_object)"),
-                    "Should own new GDCC object via ->_object. Actual:\n" + result);
+            // MyGdccClass extends RefCounted, should have own/release with helper conversion
+            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr($myObj))"),
+                    "Should release old GDCC object via helper conversion. Actual:\n" + result);
+            assertTrue(result.contains("own_object(godot_object_from_gdcc_object_ptr($myObj))"),
+                    "Should own new GDCC object via helper conversion. Actual:\n" + result);
             // Should also convert the assignment value
             assertTrue(result.contains("gdcc_object_from_godot_object_ptr(some_godot_result)"),
                     "Should convert GODOT_PTR to GDCC_PTR. Actual:\n" + result);
@@ -1110,7 +1111,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC_PTR to RefCounted (engine base class) target should use ->_object")
+        @DisplayName("GDCC_PTR to RefCounted (engine base class) target should use helper conversion")
         void testGdccPtrToRefCountedTarget() {
             // RefCounted is an engine type (GODOT_PTR)
             var target = new LirVariable("rc", new GdObjectType("RefCounted"), lirFunctionDef);
@@ -1122,8 +1123,8 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("$rc = $myObj->_object"),
-                    "Should convert GDCC_PTR to GODOT_PTR via ->_object. Actual:\n" + result);
+            assertTrue(result.contains("$rc = godot_object_from_gdcc_object_ptr($myObj)"),
+                    "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
         }
 
         @Test
@@ -1136,9 +1137,9 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            var releaseIndex = result.indexOf("release_object($myObj->_object)");
+            var releaseIndex = result.indexOf("release_object(godot_object_from_gdcc_object_ptr($myObj))");
             var assignIndex = result.indexOf("$myObj = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_result);");
-            var ownIndex = result.indexOf("own_object($myObj->_object)");
+            var ownIndex = result.indexOf("own_object(godot_object_from_gdcc_object_ptr($myObj))");
 
             assertTrue(releaseIndex >= 0, "Should have release. Actual:\n" + result);
             assertTrue(assignIndex >= 0, "Should have converted assignment. Actual:\n" + result);

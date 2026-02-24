@@ -68,7 +68,7 @@ public class CDestructInsnGenTest {
         var codegen = newCodegen(module, List.of(workerClass, gdccObjectClass), emptyApi());
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("release_object($obj->_object);"));
+        assertTrue(body.contains("release_object(godot_object_from_gdcc_object_ptr($obj));"));
     }
 
     @Test

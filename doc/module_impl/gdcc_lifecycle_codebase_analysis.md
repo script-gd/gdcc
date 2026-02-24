@@ -1,5 +1,7 @@
 # GDCC C Backend 生命周期与所有权语义完备性分析报告
 
+> 归档说明（2026-02-24）：本文主要记录 `godot_object_from_gdcc_object_ptr(...)` 重构前的风险分析结论。当前代码库中的 GDCC -> Godot 指针转换已统一为 helper 宏路径，不再采用调用侧手写 `->_object`。
+
 > 基于代码库状态：2026-02-24
 > 对应规范：`doc/gdcc_ownership_lifecycle_spec.md`
 
@@ -21,35 +23,6 @@
 ---
 
 ## 二、🔴 严重缺陷（规范违反 / 运行时 Bug）
-
-### 2.1 GDCC 对象指针 NULL 解引用（`toGodotObjectPtr` 无 NULL 守卫）
-
-**规范要求**：`doc/gdcc_c_backend.md` § Lifecycle "Call lifecycle functions on NULL is safe, they will do nothing."
-
-**现状**：`toGodotObjectPtr` 对 GDCC 类型通过 `varCode + "->_object"` 提取 Godot 指针。当变量值为 NULL 时（如 `__prepare__` 初始化后首次赋值、`_return_val` 首次写入），此转换**在调用生命周期函数之前解引用 NULL 指针**，属于未定义行为：
-
-```java
-// CBodyBuilder.toGodotObjectPtr()
-if (objType.checkGdccType(classRegistry())) {
-    return varCode + "->_object";   // varCode 为 NULL 时 -> UB
-}
-```
-
-**触发路径**：
-
-1. **普通变量首次赋值**：`__prepare__` 中 `literal_null` 将 GDCC 类型变量初始化为 NULL，随后在正常基本块中通过 `assignVar` 赋值新值。此时 `emitObjectSlotWrite` 的 `releaseOldValue=true`，生成 `release_object($var->_object)` — NULL 解引用。
-
-2. **`_return_val` 首次写入**：`_return_val` 在 `beginBasicBlock("__prepare__")` 中被声明为 `MyGdccClass* _return_val = NULL`。首次 `returnValue` 调用 `emitObjectSlotWrite(RETURN_SLOT_NAME, ..., releaseOldValue=true, ...)`，生成 `release_object(_return_val->_object)` — NULL 解引用。
-
-3. **`__finally__` 析构**：若 GDCC 类型变量运行时仍为 NULL（如条件分支未走到赋值路径），`DestructInsnGen` 通过 `callVoid(releaseFunc, valueOfVar(variable))` 生成的参数渲染会调用 `renderArgument` → `toGodotObjectPtr`，产出 `$var->_object` — NULL 解引用。
-
-**影响**：涉及 GDCC 类型对象的所有 release/own 路径，在目标为 NULL 时均存在段错误风险。引擎类型（`godot_Node*` 等）不受影响，因为 `toGodotObjectPtr` 对非 GDCC 类型直接返回原指针，`release_object(NULL)` 安全。
-
-**建议**：在生成的 C 代码中为 GDCC 类型的 release/own 添加 NULL 守卫，例如：
-```c
-if ($var != NULL) { release_object($var->_object); }
-```
-或者在 `emitReleaseObject` / `emitOwnObject` 中为 GDCC 类型条件性生成守卫。
 
 ## 三、🟡 重要缺陷（语义存疑 / 潜在不正确）
 
@@ -160,7 +133,6 @@ if ($var != NULL) { release_object($var->_object); }
 
 | 优先级 | 问题 | 影响 | 对应规范 |
 |---|---|---|---|
-| 🔴 P0 | GDCC 对象 NULL 解引用（`toGodotObjectPtr`） | 段错误 / UB | §3.6, §3.7 |
 | 🟡 P1 | `StorePropertyInsnGen` setter-self 直写绕过生命周期 | String 等属性旧值泄漏 | §3.2 |
 | 🟡 P1 | `__prepare__` 中 own NULL 无意义 / GDCC 类型 UB | 无意义调用 / 段错误 | §3.1 |
 | 🟡 P1 | 迁移计划缺 FTL 模板修复方案 | 模板与 Java 层语义分叉 | §5 |

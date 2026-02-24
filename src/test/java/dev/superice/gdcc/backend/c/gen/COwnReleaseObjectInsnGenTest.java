@@ -50,8 +50,8 @@ public class COwnReleaseObjectInsnGenTest {
         codegen.prepare(newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()), List.of(workerClass, objectClass)), module);
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("own_object($obj->_object);"));
-        assertFalse(body.contains("try_own_object($obj->_object);"));
+        assertTrue(body.contains("own_object(godot_object_from_gdcc_object_ptr($obj));"));
+        assertFalse(body.contains("try_own_object(godot_object_from_gdcc_object_ptr($obj));"));
     }
 
     @Test

@@ -645,7 +645,7 @@ public final class CBodyBuilder {
     /// - Primitive types and object pointers: pass by value (no &)
     /// - Value-semantic types (String, StringName, Variant, etc.): pass by pointer (&)
     /// When requireGodotRawPtr is true, GDCC object pointers are auto-converted to Godot
-    /// object pointers via `->_object`.
+    /// object pointers via `godot_object_from_gdcc_object_ptr(...)`.
     private @NotNull RenderResult renderArgument(@NotNull ValueRef value, boolean requireGodotRawPtr) {
         var type = value.type();
 
@@ -858,11 +858,11 @@ public final class CBodyBuilder {
     }
 
     /// Converts a GDCC object pointer to Godot object pointer.
-    /// For GDCC types: use ->_object
+    /// For GDCC types: use godot_object_from_gdcc_object_ptr(...)
     /// For engine types: use as-is
     private @NotNull String toGodotObjectPtr(@NotNull String varCode, @NotNull GdObjectType objType) {
         if (objType.checkGdccType(classRegistry())) {
-            return varCode + "->_object";
+            return "godot_object_from_gdcc_object_ptr(" + varCode + ")";
         }
         return varCode;
     }
@@ -870,7 +870,7 @@ public final class CBodyBuilder {
     /// Converts an object pointer expression between GDCC and Godot representations if needed.
     ///
     /// - GODOT_PTR value → GDCC_PTR target: wraps with `fromGodotObjectPtr`
-    /// - GDCC_PTR value → GODOT_PTR target: appends `->_object`
+    /// - GDCC_PTR value → GODOT_PTR target: wraps with `godot_object_from_gdcc_object_ptr(...)`
     /// - Same kind or NON_OBJECT: no conversion
     private @NotNull String convertPtrIfNeeded(@NotNull String code,
                                                @NotNull PtrKind valuePtrKind,
@@ -880,8 +880,7 @@ public final class CBodyBuilder {
             return fromGodotObjectPtr(code, targetObjType);
         }
         if (valuePtrKind == PtrKind.GDCC_PTR && targetPtrKind == PtrKind.GODOT_PTR) {
-            // GDCC object pointers have _object field containing the Godot object pointer
-            return code + "->_object";
+            return "godot_object_from_gdcc_object_ptr(" + code + ")";
         }
         return code;
     }
