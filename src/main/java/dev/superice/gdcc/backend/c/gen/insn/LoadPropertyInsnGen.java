@@ -1,13 +1,9 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
-import dev.superice.gdcc.backend.c.gen.CGenHelper;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
-import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
-import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -51,16 +47,16 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             throw bodyBuilder.invalidInsn("Object variable ID " + insn.objectId() + " is not a valid property target type, but " + objectVar.type().getTypeName());
         }
 
-        var registry = helper.context().classRegistry();
+        var registry = bodyBuilder.classRegistry();
         var propertyType = resolvePropertyType(bodyBuilder, objectVar.type(), resultVar.type(), insn.propertyName());
-        var genMode = getGenMode(helper, func, insn);
+        var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "LOAD_PROPERTY");
         var target = bodyBuilder.targetOfVar(resultVar);
 
         switch (genMode) {
-            case "gdcc" -> {
+            case GDCC -> {
                 var objectType = (GdObjectType) objectVar.type();
                 var classDef = Objects.requireNonNull(registry.getClassDef(objectType));
-                var propertyDef = Objects.requireNonNull(findPropertyDef(classDef, insn.propertyName()));
+                var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
                 var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, insn, propertyDef);
                 if (inGetterSelf) {
                     var expr = "$" + objectVar.id() + "->" + insn.propertyName();
@@ -74,13 +70,13 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                     bodyBuilder.callAssign(target, getterCall, propertyType, List.of(bodyBuilder.valueOfVar(objectVar)));
                 }
             }
-            case "engine" -> {
+            case ENGINE -> {
                 var objectType = (GdObjectType) objectVar.type();
                 var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
                 var objectValue = bodyBuilder.valueOfVar(objectVar);
                 bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
             }
-            case "general" -> {
+            case GENERAL -> {
                 // Pass objectVar directly; renderArgument will auto-convert GDCC ptrs
                 // to Godot raw ptrs via godot_object_from_gdcc_object_ptr(...) since godot_Object_get requires Godot ptrs.
                 var objectValue = bodyBuilder.valueOfVar(objectVar);
@@ -93,7 +89,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                 bodyBuilder.callAssign(target, unpackFunc, resultType, List.of(tempVar));
                 bodyBuilder.destroyTempVar(tempVar);
             }
-            case "builtin" -> {
+            case BUILTIN -> {
                 var objectType = objectVar.type();
                 var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
                 var objectValue = bodyBuilder.valueOfVar(objectVar);
@@ -114,7 +110,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                 // Unknown object types are read through godot_Object_get and unpacked into the expected result type.
                 return resultType;
             }
-            var propertyFound = findPropertyDef(classDef, propertyName);
+            var propertyFound = PropertyAccessResolver.findPropertyDef(classDef, propertyName);
             if (propertyFound == null) {
                 throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in class " + classDef.getName());
             }
@@ -126,47 +122,17 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             return propertyType;
         }
 
-        var builtinClass = registry.findBuiltinClass(objectType.getTypeName());
-        if (builtinClass == null) {
-            throw bodyBuilder.invalidInsn("Builtin class not found for type " + objectType.getTypeName());
-        }
-        ExtensionBuiltinClass.PropertyInfo propertyFound = null;
-        for (var property : builtinClass.getProperties()) {
-            if (property.getName().equals(propertyName)) {
-                propertyFound = (ExtensionBuiltinClass.PropertyInfo) property;
-                break;
-            }
-        }
-        if (propertyFound == null) {
-            throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in builtin class " + builtinClass.getName());
-        }
-        if (!propertyFound.isReadable()) {
+        var lookup = PropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
+        var builtinClass = lookup.builtinClass();
+        if (!lookup.property().isReadable()) {
             throw bodyBuilder.invalidInsn("Property '" + propertyName + "' in builtin class " + builtinClass.getName() + " is not readable");
         }
-        var propertyType = propertyFound.getType();
+        var propertyType = lookup.property().getType();
         if (!registry.checkAssignable(propertyType, resultType)) {
             throw bodyBuilder.invalidInsn("Result type " + resultType.getTypeName() +
                     " is not assignable from property '" + propertyName + "' of type " + propertyType.getTypeName());
         }
         return propertyType;
-    }
-
-    private @NotNull String getGenMode(@NotNull CGenHelper helper,
-                                       @NotNull LirFunctionDef func,
-                                       @NotNull LoadPropertyInsn insn) {
-        var objectVar = Objects.requireNonNull(func.getVariableById(insn.objectId()));
-        if (objectVar.type() instanceof GdObjectType gdObjectType) {
-            if (gdObjectType.checkGdccType(helper.context().classRegistry())) {
-                return "gdcc";
-            } else if (gdObjectType.checkEngineType(helper.context().classRegistry())) {
-                return "engine";
-            } else {
-                return "general";
-            }
-        } else if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
-            throw new IllegalStateException("Invalid object variable type for LOAD_PROPERTY instruction");
-        }
-        return "builtin";
     }
 
     private boolean isLoadingInsideGetterSelf(@NotNull CBodyBuilder bodyBuilder,
@@ -195,12 +161,4 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         return false;
     }
 
-    private PropertyDef findPropertyDef(@NotNull ClassDef classDef, @NotNull String propertyName) {
-        for (var property : classDef.getProperties()) {
-            if (property.getName().equals(propertyName)) {
-                return property;
-            }
-        }
-        return null;
-    }
 }
