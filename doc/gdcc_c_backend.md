@@ -5,8 +5,8 @@
 ### Use GDCC Class Types
 
 - GDCC types cannot be used directly as a `godot_Object*` or `GDExtensionObjectPtr`, they need to be converted first.
-  - Convert into godot Object using `_object` field.
-  - Convert from godot Object using `godot_object_get_gdcc_object`.
+  - Convert into Godot object pointer using `godot_object_from_gdcc_object_ptr(gdcc_object)`.
+  - Convert from Godot object pointer using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)`.
   - `Variant` can be converted to/from GDCC types using `godot_new_Variant_with_gdcc_Object` and `godot_new_gdcc_Object_with_Variant`.
 - `godot_float` is usually a typedef for `double`, but it should always be used as `godot_float` for compatibility.
 - Any Object, including engine object and GDCC objects, are always passed as pointers, and the pointers are passed as values, usually we do not use pointers to pointers.
