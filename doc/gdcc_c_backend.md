@@ -61,6 +61,17 @@
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 - Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
 
+### Slot Write Consolidation
+
+- Keep object and non-object slot writes separated by semantics: 
+  - Objects follow ownership rules (`release old -> assign(convert ptr if needed) -> own only for BORROWED`).
+  - Non-objects follow value-lifecycle rules (`prepare/copy rhs -> destroy old (if needed) -> assign`).
+- For non-object writes, prefer a single Builder helper (for example `emitNonObjectSlotWrite`) used by both `assignVar` and `callAssign` result assignment paths.
+- The consolidation above is a maintenance refactor only:
+  - Do not change copy/destroy behavior.
+  - Do not implicitly introduce copy-elision in this refactor.
+  - Preserve `__prepare__` first-write behavior (no old-value destroy).
+
 ### Temporary Variables (CBodyBuilder)
 
 - `TempVar` carries its own mutable initialization state.

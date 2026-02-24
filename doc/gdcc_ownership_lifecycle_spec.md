@@ -60,6 +60,14 @@ Writing any object value into a slot must follow this order:
    - RHS is `OWNED`: must not `own` again; consume ownership directly.
 4. Mark the slot as initialized.
 
+Implementation note:
+
+- Non-object slot writes are outside object ownership transfer, but can still be centralized with a helper (for example `emitNonObjectSlotWrite`) as long as existing non-object lifecycle order is preserved:
+  - prepare/copy RHS first,
+  - destroy old value when required,
+  - then assign.
+- Such consolidation is a structural refactor and must not change copy/destroy semantics by itself.
+
 ### 3.3 Overwrite vs First Write
 
 - For first write to an uninitialized slot, skip step 1 (no old value to release).

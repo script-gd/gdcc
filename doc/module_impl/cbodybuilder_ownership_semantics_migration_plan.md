@@ -1,227 +1,144 @@
-# CBodyBuilder 所有权语义改造设计（最小改造、全库覆盖）
+# CBodyBuilder 所有权语义迁移状态与后续执行清单
 
 > 对应规范：`doc/gdcc_ownership_lifecycle_spec.md`  
-> 范围：后端代码生成层（不改 LIR 结构）
+> 范围：后端代码生成层（不改 LIR 结构）  
+> 更新时间：基于当前 `main` 代码状态复盘（文档阶段，不执行代码修改）
 
-## 1. 设计目标
+## 1. 本轮结论（决策沉淀）
 
-在尽量少改现有代码结构的前提下，完成以下统一：
+- 对象槽位已经有 `emitObjectSlotWrite(...)` 统一入口，方向正确。
+- 当前**不建议**引入 `emitBuiltinSlotWrite`（命名会误导为“builtin 类型特化”）。
+- 下一步仅做一个语义等价的收敛：引入 `emitNonObjectSlotWrite(...)`，把非对象路径重复逻辑统一到 Builder 内部。
+- 本轮目标是“维护性重构”，不是“语义重写”或“copy-elision 优化”。
 
-- 函数返回对象值视为 `OWNED`
-- 存储槽写入遵循“旧值 release + 新值按类别 own/consume”
-- 丢弃可析构返回值时立即清理
-- `_return_val` 路径与 finally 自动析构协作无泄漏
+## 2. 当前已完成状态（从旧计划转为现状）
 
-## 2. 约束与非目标
+以下内容已在代码中落地，不再作为待办：
 
-### 2.1 约束
+### 2.1 `CBodyBuilder` 所有权模型已落地
 
-- 不修改 Gradle / 构建配置
-- 不改变 LIR 指令文本格式
-- 保持 `CInsnGen` 分层：生成器负责校验，Builder 负责生命周期语义
+- 已有 `OwnershipKind`：`BORROWED` / `OWNED`。
+- `ValueRef#ownership()` 已存在，默认 `BORROWED`。
+- 已有 `valueOfOwnedExpr(String code, GdType type, PtrKind ptrKind)`。
 
-### 2.2 非目标
+### 2.2 对象槽位写入统一
 
-- 不引入新 IR 指令如 `move_object`
-- 不在本阶段重写所有 FTL 模板
+- 已有 `emitObjectSlotWrite(...)`，并执行统一顺序：
+  1. release 旧值（按是否可释放）
+  2. 做指针表示转换
+  3. 赋值
+  4. `BORROWED` 才 own，`OWNED` 只消费不再 own
 
-## 3. 全库覆盖策略
+### 2.3 `callAssign` / `discard` 关键行为已收敛
 
-### 3.1 以 Builder 为中心统一语义
+- `callAssign` 要求显式非 `void` 返回类型。
+- 对象 target + 非对象 return 会直接报错（前置校验）。
+- 丢弃可析构返回值已做即时清理：
+  - 对象：`release/try_release`
+  - 非对象 destroyable：`destroy`
 
-优先改造 `CBodyBuilder`，让所有调用 Builder 的指令生成器自动继承新语义。
+### 2.4 `_return_val` 协作现状
 
-受益路径：
+- `__prepare__` 中已声明 `_return_val`。
+- 对象返回类型下 `_return_val` 以 `NULL` 初始化。
+- 非 finally 的对象 `returnValue` 已复用对象槽位写入语义。
+- `__finally__` 实际 `return _return_val;` 路径保持稳定。
 
-- `CallGlobalInsnGen`
-- `NewDataInsnGen`
-- `LoadPropertyInsnGen`
-- `StorePropertyInsnGen`（通过 Builder 的分支）
-- `PackUnpackVariantInsnGen`
-- `ControlFlowInsnGen`（return 路径）
+> 注：当前实现没有单独 `returnSlotInitialized` 字段；通过“对象 `_return_val = NULL` + 生命周期函数对空安全”维持行为正确。
 
-### 3.2 仍需人工对齐的路径
+### 2.5 相关测试覆盖已存在
 
-- `OwnReleaseObjectInsnGen`（语义本就显式）
-- `template_451/entry.c.ftl` 的构造/析构代码
-- 未迁移模板中手写生命周期逻辑
+- `CBodyBuilderPhaseCTest` 已覆盖：
+  - callAssign 对象返回消费 OWNED（不重复 own）
+  - `_return_val` 对象路径写入/覆盖
+  - discard destroy/release 行为
+- `CallGlobalInsnGenTest` 已覆盖 non-void discard 清理。
+- `CPhaseAControlFlowAndFinallyTest` 已覆盖 `_return_val` 控制流协作。
 
-## 4. 代码改造明细
+## 3. 未完成与风险热点（当前状态）
 
-## 4.1 `CBodyBuilder`（核心）
+### 3.1 非对象槽位写入逻辑重复（P1）
 
-文件：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+重复点主要在 `CBodyBuilder`：
 
-### 4.1.1 数据模型最小扩展
+- `assignVar(...)` 的非对象分支
+- `emitCallResultAssignment(...)` 的非对象分支
 
-在 `ValueRef` 语义中加入 ownership 维度：
+问题：
 
-- 新增 `OwnershipKind` 枚举：`BORROWED`、`OWNED`
-- `ValueRef` 新增 `ownership()`
-- 默认实现返回 `BORROWED`（减少存量调用改动）
+- destroy-old / assign 顺序逻辑重复，后续改动容易漂移。
+- 临时变量 first-write、`__prepare__` 特判、destroyable 判断在多处维护。
 
-建议初始映射：
+### 3.2 `StorePropertyInsnGen` 直写分支绕过 Builder 生命周期路径（P1）
 
-- `VarValue` -> `BORROWED`
-- `ExprValue` -> `BORROWED`（除显式 Owned 工厂）
-- `StringNamePtrLiteralValue` / `StringPtrLiteralValue` -> `BORROWED`
-- `TempVar` -> `BORROWED`（其生命周期由声明/销毁管理）
+- 在 setter-self 直写分支中仍存在 `appendLine("$obj->field = ...")` 路径。
+- 该路径未自动继承 Builder 槽位写入规则，属于人工审计热点。
 
-### 4.1.2 工厂方法
+### 3.3 模板与 Java 路径可能继续分叉（P2）
 
-新增：
+- `template_451/entry.c.ftl` 仍有手写生命周期代码。
+- 若后续 Builder 规则变更而模板未同步，可能出现语义分叉。
 
-- `valueOfOwnedExpr(String code, GdType type, PtrKind ptrKind)`
+## 4. 只引入 `emitNonObjectSlotWrite` 的详细执行清单
 
-用于标记“调用结果对象值”或“明确 move 源”场景。
+本清单限定为“收敛重复逻辑，不改变语义”。
 
-### 4.1.3 对象写入统一入口
+### 4.1 设计与约束
 
-抽出私有方法（命名可调整）：
+- [ ] 新增私有方法（建议签名）：
+  - `emitNonObjectSlotWrite(String targetCode, GdType targetType, boolean destroyOldValue, String rhsCode)`
+- [ ] 明确该方法仅处理“非对象类型”，对象仍走 `emitObjectSlotWrite(...)`。
+- [ ] 严禁在本次重构中引入 copy 省略、生命周期策略改写或 IR 行为改动。
 
-- `emitObjectSlotWrite(TargetRef target, String rhsCode, PtrKind rhsPtrKind, OwnershipKind ownership)`
+### 4.2 方法语义（必须保持与现有一致）
 
-行为：
+- [ ] 若 `destroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()`，先 `emitDestroy(targetCode, targetType)`。
+- [ ] 然后发出 `targetCode = rhsCode;`。
+- [ ] 不在该方法中处理 `markTargetInitialized(...)`（保持调用方现有职责）。
+- [ ] 不在该方法中处理 temp 声明/销毁（保持调用方现有职责）。
 
-1. 按 initialized 状态决定是否 release 旧值
-2. 执行必要指针转换后赋值
-3. `ownership==BORROWED` 时 own 新值
-4. `ownership==OWNED` 时不 own（消费）
-5. 标记 target initialized
+### 4.3 接入点改造
 
-### 4.1.4 `assignVar` 改造
+- [ ] `assignVar(...)` 非对象分支改为调用 `emitNonObjectSlotWrite(...)`。
+- [ ] `emitCallResultAssignment(...)` 非对象分支改为调用 `emitNonObjectSlotWrite(...)`。
+- [ ] 确认 `returnValue(...)` 的非对象 `_return_val` 路径是否保持原行为（本次默认不改语义）。
 
-- 非对象保持现有逻辑
-- 对象改为调用 `emitObjectSlotWrite(...)`
-- 关键变化：不再无条件 own，而是由 RHS ownership 决定
+### 4.4 回归检查点
 
-### 4.1.5 `callAssign` / `emitCallResultAssignment` 改造
+- [ ] 自赋值场景（String/Variant）保持“先复制 RHS，再 destroy old，再 assign”。
+- [ ] `TempVar` 首写不 destroy old。
+- [ ] `__prepare__` 中非对象赋值仍不 destroy old。
+- [ ] callAssign 非对象返回赋值路径行为与改造前一致。
 
-- 对象返回值默认按 `OWNED` 处理
-- 赋值到对象 target 时：不再额外 own
-- 非对象不变
-- 指针表示转换保持现有规则
+### 4.5 目标测试（增量回归）
 
-### 4.1.6 discard 清理
+- [ ] `CBodyBuilderPhaseCTest`（至少覆盖非对象 assign/callAssign 现有断言）。
+- [ ] `CallGlobalInsnGenTest`（确保 discard 相关路径不受影响）。
+- [ ] `./gradlew classes --no-daemon --info --console=plain` 编译校验。
 
-`callAssign` 的 discard 分支：
-
-- `returnType == null`：保持原行为（兼容）
-- 非 void 且 `isDestroyable()==true`：
-  - 物化临时接收返回值
-  - 对对象执行 release/try_release
-  - 对非对象执行 destroy
-
-### 4.1.7 `returnValue` 与 `_return_val`
-
-新增 `_return_val` 代码生成期状态跟踪（仅 Builder 内部）：
-
-- `private boolean returnSlotInitialized`
-
-规则：
-
-- 在 `__prepare__` 中声明 `_return_val` 后，若返回类型为对象，初始化为 `NULL` 并标记 initialized
-- 非 finally `returnValue` 写 `_return_val` 时，复用槽位写入语义（含旧值 release）
-- finally 块 `return _return_val` 不附加析构
-
-## 4.2 `CCodegen`（协作层）
-
-文件：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
-
-最小化改动建议：
-
-- 继续由 `ensureFunctionFinallyBlock()` 只 destruct LIR 变量，不纳入 `_return_val`
-- 不额外引入 `_return_val` 到变量表
-- 修复默认 setter 自动生成中对象 own 的对象名误用（应为 `value`，不是 `self`）
-
-## 4.3 生成器逐项核对
-
-### 4.3.1 `CallGlobalInsnGen`
-
-- 继续向 Builder 传入 `returnType`
-- discard 非 void 路径由 Builder 清理
-
-### 4.3.2 `LoadPropertyInsnGen`
-
-- `callAssign(target, getter, propertyType, ...)` 自动获得对象返回 ownership 语义
-
-### 4.3.3 `PackUnpackVariantInsnGen`
-
-- `unpack` 返回对象路径自动纳入 `OWNED` 返回处理
-
-### 4.3.4 `StorePropertyInsnGen`
-
-- 依赖 Builder 的路径自动生效
-- 对 `appendLine` 直写字段分支做一次语义审计（避免绕过生命周期）
-
-## 5. 测试改造计划
-
-## 5.1 必增单测（优先）
-
-文件：`src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
-
-新增用例：
-
-1. `callAssign` 对象返回赋值：不重复 own
-2. `returnValue`（对象 Borrowed 源）写 `_return_val` 后可安全 return
-3. 多分支 return 覆盖 `_return_val`：旧值 release 顺序正确
-4. discard 对象返回：YES/UNKNOWN 状态都释放
-5. discard String/Variant/Array 返回：立即 destroy
-
-## 5.2 协同回归
-
-- `CallGlobalInsnGenTest`：non-void discard 清理
-- `CPhaseAControlFlowAndFinallyTest`：`_return_val` 行为稳定
-- `CPackUnpackVariantInsnGenTest`：对象路径无回归
-
-## 5.3 执行命令
+建议命令：
 
 ```bash
 ./gradlew test --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
 ./gradlew test --tests CallGlobalInsnGenTest --no-daemon --info --console=plain
-./gradlew test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain
-./gradlew test --tests CPackUnpackVariantInsnGenTest --no-daemon --info --console=plain
 ./gradlew classes --no-daemon --info --console=plain
 ```
 
-## 6. 分阶段实施（建议）
+## 5. 预期收益与边界
 
-### 阶段 A：语义底座
+### 5.1 可获得收益
 
-- 完成 `ValueRef` ownership 扩展
-- 完成 `assignVar` / `emitCallResultAssignment` 对象路径改造
-- 新增 discard 清理
+- 维护性提升：非对象写槽规则单点维护，减少分支漂移。
+- 审计成本降低：assign/callAssign 的非对象生命周期逻辑路径一致。
+- 后续优化入口更清晰：若要做 copy-elision，可在单点上扩展。
 
-### 阶段 B：返回槽与 finally 协作
+### 5.2 不应误判的收益
 
-- `_return_val` initialized 管理
-- return 覆盖写路径正确释放
-- finally 回归
+- 仅引入 `emitNonObjectSlotWrite` 本身**不会自动减少复制**。
+- 若要减少复制，需要额外引入“可移动语义/唯一性证明/逃逸分析”等机制，本次不涉及。
 
-### 阶段 C：全库审计
+## 6. DoD（本轮文档与后续执行基线）
 
-- 逐个 `InsnGen` 审计是否绕开 Builder
-- 审计 `entry.c.ftl` 生命周期片段
-- 同步文档与 TODO
-
-## 7. 风险与缓解
-
-### 风险 1：对象返回路径行为变化导致历史测试失效
-
-- 缓解：先更新语义测试，再修正文案断言（强调顺序与调用次数）
-
-### 风险 2：`_return_val` 初始化与首写判断不一致
-
-- 缓解：将 `_return_val` 初始化逻辑集中在 Builder，避免 CCodegen/Builder 双重状态
-
-### 风险 3：模板路径与 Java 路径语义分叉
-
-- 缓解：列出模板清单并做对照审计，必要时在文档标注“语义来源优先 Builder”
-
-## 8. 完成标准（DoD）
-
-- `OWNED/BORROWED` 模型在 Builder 落地并覆盖对象写入核心路径
-- discard 泄漏问题关闭
-- `_return_val` 对象返回路径可重复覆盖且无泄漏
-- 目标测试集通过，且无新增已知生命周期回归
-- 文档与实现一致（本文件 + `doc/gdcc_ownership_lifecycle_spec.md`）
+- 文档已从“未来计划”转为“当前状态 + 剩余风险 + 执行清单”。
+- 已完成项不再作为待办重复列出。
+- 下一步编码任务边界明确：仅收敛非对象槽位写入重复逻辑。
