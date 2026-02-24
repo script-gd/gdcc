@@ -54,8 +54,43 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("$self->value = godot_new_String_with_String($value);"));
+        assertTrue(body.contains("godot_String_destroy(&$self->value);"));
+        assertTrue(body.contains("__gdcc_tmp_string_0 = godot_new_String_with_String($value);"));
+        assertTrue(body.contains("$self->value = __gdcc_tmp_string_0;"));
+        assertTrue(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"));
         assertFalse(body.contains("MyClass__field_setter_value("));
+    }
+
+    @Test
+    @DisplayName("GDCC object setter should rely on store_property lifecycle path without extra own/release instructions")
+    void gdccObjectSetterUsesUnifiedLifecyclePath() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        gdccClass.addProperty(new LirPropertyDef("target", new GdObjectType("Object"), false, null, null, "_field_setter_target", Map.of()));
+
+        var func = new LirFunctionDef("_field_setter_target");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("self", new GdObjectType("MyClass"), null, func));
+        func.addParameter(new LirParameterDef("value", new GdObjectType("Node"), null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("target", "self", "value"));
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("try_release_object($self->target);"));
+        assertTrue(body.contains("$self->target = $value;"));
+        assertTrue(body.contains("try_own_object($self->target);"));
+        assertFalse(body.contains("try_own_object($value);"));
     }
 
     @Test

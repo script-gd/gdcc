@@ -249,6 +249,14 @@ public final class CBodyBuilder {
         return new VarTargetRef(variable);
     }
 
+    /// Creates an assignment-only target reference from a raw C lvalue expression.
+    ///
+    /// This target is intentionally limited to assignment paths (`assignVar` / `assignExpr`).
+    /// Do not use it for result targets of `callAssign`, return-slot flow, or discard flow.
+    public @NotNull TargetRef targetOfExpr(@NotNull String code, @NotNull GdType type) {
+        return new ExprTargetRef(code, type);
+    }
+
     /// Creates a special target reference that discards call return values.
     public @NotNull DiscardRef discardRef() {
         return DiscardRef.INSTANCE;
@@ -1067,7 +1075,7 @@ public final class CBodyBuilder {
         }
     }
 
-    public sealed interface TargetRef permits VarTargetRef, TempVar, DiscardRef {
+    public sealed interface TargetRef permits VarTargetRef, ExprTargetRef, TempVar, DiscardRef {
         @NotNull GdType type();
 
         @NotNull String generateCode();
@@ -1093,6 +1101,32 @@ public final class CBodyBuilder {
         @Override
         public boolean isRef() {
             return variable.ref();
+        }
+    }
+
+    /// Assignment-only raw lvalue target.
+    ///
+    /// Keep usage scoped to assignment writes so lifecycle and ownership semantics remain
+    /// centralized in assignment APIs, instead of spreading to generic call/return paths.
+    public record ExprTargetRef(@NotNull String code, @NotNull GdType type) implements TargetRef {
+        public ExprTargetRef {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(type);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return type;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return code;
+        }
+
+        @Override
+        public boolean isRef() {
+            return false;
         }
     }
 

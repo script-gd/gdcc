@@ -98,6 +98,8 @@
 - 指令生成器负责 IR 校验与错误定位，不直接复制生命周期策略。
 - 应优先通过 `assignVar` / `assignExpr` / `callAssign` / `callVoid` 交给 Builder 处理生命周期与转换。
 - 对对象类型，避免在生成器中手工拼 own/release 与指针转换逻辑。
+- `ExprTargetRef` / `targetOfExpr(...)` is assignment-only by design.
+  Use it only with `assignVar` / `assignExpr`, not as a generic target for `callAssign` or return/discard paths.
 
 ## 7. 已知风险与后续关注点
 
