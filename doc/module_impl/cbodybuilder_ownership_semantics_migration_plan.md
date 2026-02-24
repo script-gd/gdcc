@@ -2,143 +2,89 @@
 
 > 对应规范：`doc/gdcc_ownership_lifecycle_spec.md`  
 > 范围：后端代码生成层（不改 LIR 结构）  
-> 更新时间：基于当前 `main` 代码状态复盘（文档阶段，不执行代码修改）
+> 更新时间：2026-02-24（已完成 `emitNonObjectSlotWrite` 收敛）
 
-## 1. 本轮结论（决策沉淀）
+## 1. 本轮结论（已实施）
 
-- 对象槽位已经有 `emitObjectSlotWrite(...)` 统一入口，方向正确。
-- 当前**不建议**引入 `emitBuiltinSlotWrite`（命名会误导为“builtin 类型特化”）。
-- 下一步仅做一个语义等价的收敛：引入 `emitNonObjectSlotWrite(...)`，把非对象路径重复逻辑统一到 Builder 内部。
-- 本轮目标是“维护性重构”，不是“语义重写”或“copy-elision 优化”。
+- 对象槽位继续由 `emitObjectSlotWrite(...)` 统一处理。
+- 非对象槽位新增统一入口 `emitNonObjectSlotWrite(...)`，并接入到：
+  - `assignVar(...)` 非对象分支
+  - `emitCallResultAssignment(...)` 非对象分支
+- 本轮是维护性重构：仅消除重复逻辑，不改写 copy/destroy 语义，不引入 copy-elision。
 
-## 2. 当前已完成状态（从旧计划转为现状）
+## 2. 当前已落地能力（代码现状）
 
-以下内容已在代码中落地，不再作为待办：
+### 2.1 所有权模型
 
-### 2.1 `CBodyBuilder` 所有权模型已落地
-
-- 已有 `OwnershipKind`：`BORROWED` / `OWNED`。
-- `ValueRef#ownership()` 已存在，默认 `BORROWED`。
-- 已有 `valueOfOwnedExpr(String code, GdType type, PtrKind ptrKind)`。
+- `OwnershipKind`：`BORROWED` / `OWNED`。
+- `ValueRef#ownership()` 默认 `BORROWED`。
+- `valueOfOwnedExpr(...)` 已用于显式 OWNED 值来源。
 
 ### 2.2 对象槽位写入统一
 
-- 已有 `emitObjectSlotWrite(...)`，并执行统一顺序：
-  1. release 旧值（按是否可释放）
-  2. 做指针表示转换
-  3. 赋值
-  4. `BORROWED` 才 own，`OWNED` 只消费不再 own
+`emitObjectSlotWrite(...)` 维持既有顺序：
+1. release 旧值（按可释放策略）
+2. 指针表示转换
+3. 赋值
+4. `BORROWED` 才 own，`OWNED` 仅消费不重复 own
 
-### 2.3 `callAssign` / `discard` 关键行为已收敛
+### 2.3 非对象槽位写入统一（本轮新增）
 
-- `callAssign` 要求显式非 `void` 返回类型。
-- 对象 target + 非对象 return 会直接报错（前置校验）。
-- 丢弃可析构返回值已做即时清理：
-  - 对象：`release/try_release`
-  - 非对象 destroyable：`destroy`
+`emitNonObjectSlotWrite(...)` 语义为：
+1. 满足 `destroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()` 时，先 `emitDestroy(...)`
+2. 发出 `target = rhs;`
 
-### 2.4 `_return_val` 协作现状
+约束保持：
+- 不负责 `markTargetInitialized(...)`
+- 不负责 temp 声明/销毁
 
-- `__prepare__` 中已声明 `_return_val`。
-- 对象返回类型下 `_return_val` 以 `NULL` 初始化。
-- 非 finally 的对象 `returnValue` 已复用对象槽位写入语义。
-- `__finally__` 实际 `return _return_val;` 路径保持稳定。
+### 2.4 `callAssign` / `discard` / `_return_val` 协作
 
-> 注：当前实现没有单独 `returnSlotInitialized` 字段；通过“对象 `_return_val = NULL` + 生命周期函数对空安全”维持行为正确。
+- `callAssign` 仍要求显式非 `void` 返回。
+- 对象 target + 非对象 return 仍前置报错。
+- discard 路径仍即时清理可析构返回值（对象 release/try_release；非对象 destroy）。
+- `returnValue(...)`：
+  - 对象 `_return_val` 继续复用对象槽位语义。
+  - 非对象 `_return_val` 继续保持 direct assignment（本轮明确不接入 `emitNonObjectSlotWrite`）。
 
-### 2.5 相关测试覆盖已存在
+## 3. 本轮风险应对约定（新增文档化）
 
-- `CBodyBuilderPhaseCTest` 已覆盖：
-  - callAssign 对象返回消费 OWNED（不重复 own）
-  - `_return_val` 对象路径写入/覆盖
-  - discard destroy/release 行为
-- `CallGlobalInsnGenTest` 已覆盖 non-void discard 清理。
-- `CPhaseAControlFlowAndFinallyTest` 已覆盖 `_return_val` 控制流协作。
+以下约定已同步到 `doc/gdcc_c_backend.md` 的 Slot Write Consolidation 小节：
 
-## 3. 未完成与风险热点（当前状态）
+- `emitNonObjectSlotWrite` 不触发目标初始化标记，避免 TempVar 状态语义漂移。
+- `emitNonObjectSlotWrite` 不管理 temp 生命周期，避免调用方阶段顺序被隐藏。
+- 非对象 `_return_val` 写入继续保持独立路径，避免把 return-slot 控制流耦合到 assign/callAssign 的 target-state 钩子。
 
-### 3.1 非对象槽位写入逻辑重复（P1）
+## 4. 回归检查点（已完成）
 
-重复点主要在 `CBodyBuilder`：
+- 自赋值（String/Variant）仍保持“先 copy RHS，再 destroy old，再 assign”。
+- `TempVar` 首写仍不 destroy old。
+- `__prepare__` 中非对象赋值仍不 destroy old。
+- callAssign 非对象返回赋值行为与改造前一致。
 
-- `assignVar(...)` 的非对象分支
-- `emitCallResultAssignment(...)` 的非对象分支
+## 5. 测试执行基线
 
-问题：
-
-- destroy-old / assign 顺序逻辑重复，后续改动容易漂移。
-- 临时变量 first-write、`__prepare__` 特判、destroyable 判断在多处维护。
-
-### 3.2 `StorePropertyInsnGen` 直写分支绕过 Builder 生命周期路径（P1）
-
-- 在 setter-self 直写分支中仍存在 `appendLine("$obj->field = ...")` 路径。
-- 该路径未自动继承 Builder 槽位写入规则，属于人工审计热点。
-
-### 3.3 模板与 Java 路径可能继续分叉（P2）
-
-- `template_451/entry.c.ftl` 仍有手写生命周期代码。
-- 若后续 Builder 规则变更而模板未同步，可能出现语义分叉。
-
-## 4. 只引入 `emitNonObjectSlotWrite` 的详细执行清单
-
-本清单限定为“收敛重复逻辑，不改变语义”。
-
-### 4.1 设计与约束
-
-- [ ] 新增私有方法（建议签名）：
-  - `emitNonObjectSlotWrite(String targetCode, GdType targetType, boolean destroyOldValue, String rhsCode)`
-- [ ] 明确该方法仅处理“非对象类型”，对象仍走 `emitObjectSlotWrite(...)`。
-- [ ] 严禁在本次重构中引入 copy 省略、生命周期策略改写或 IR 行为改动。
-
-### 4.2 方法语义（必须保持与现有一致）
-
-- [ ] 若 `destroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()`，先 `emitDestroy(targetCode, targetType)`。
-- [ ] 然后发出 `targetCode = rhsCode;`。
-- [ ] 不在该方法中处理 `markTargetInitialized(...)`（保持调用方现有职责）。
-- [ ] 不在该方法中处理 temp 声明/销毁（保持调用方现有职责）。
-
-### 4.3 接入点改造
-
-- [ ] `assignVar(...)` 非对象分支改为调用 `emitNonObjectSlotWrite(...)`。
-- [ ] `emitCallResultAssignment(...)` 非对象分支改为调用 `emitNonObjectSlotWrite(...)`。
-- [ ] 确认 `returnValue(...)` 的非对象 `_return_val` 路径是否保持原行为（本次默认不改语义）。
-
-### 4.4 回归检查点
-
-- [ ] 自赋值场景（String/Variant）保持“先复制 RHS，再 destroy old，再 assign”。
-- [ ] `TempVar` 首写不 destroy old。
-- [ ] `__prepare__` 中非对象赋值仍不 destroy old。
-- [ ] callAssign 非对象返回赋值路径行为与改造前一致。
-
-### 4.5 目标测试（增量回归）
-
-- [ ] `CBodyBuilderPhaseCTest`（至少覆盖非对象 assign/callAssign 现有断言）。
-- [ ] `CallGlobalInsnGenTest`（确保 discard 相关路径不受影响）。
-- [ ] `./gradlew classes --no-daemon --info --console=plain` 编译校验。
-
-建议命令：
+建议持续回归命令（按类执行）：
 
 ```bash
+./gradlew test --tests CBodyBuilderLiteralValueTest --no-daemon --info --console=plain
+./gradlew test --tests CBodyBuilderPhaseBTest --no-daemon --info --console=plain
 ./gradlew test --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
+./gradlew test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain
 ./gradlew test --tests CallGlobalInsnGenTest --no-daemon --info --console=plain
+./gradlew test --tests CCodegenTest --no-daemon --info --console=plain
+./gradlew test --tests CNewDataInsnGenTest --no-daemon --info --console=plain
+./gradlew test --tests CStorePropertyInsnGenTest --no-daemon --info --console=plain
 ./gradlew classes --no-daemon --info --console=plain
 ```
 
-## 5. 预期收益与边界
+## 6. 剩余风险热点（未在本轮处理）
 
-### 5.1 可获得收益
+- `StorePropertyInsnGen` setter-self 直写分支仍绕过 Builder 生命周期入口，仍需人工审计。
+- 模板层（`template_451/entry.c.ftl`）仍可能与 Java 路径演进节奏不一致，需持续对齐。
 
-- 维护性提升：非对象写槽规则单点维护，减少分支漂移。
-- 审计成本降低：assign/callAssign 的非对象生命周期逻辑路径一致。
-- 后续优化入口更清晰：若要做 copy-elision，可在单点上扩展。
+## 7. DoD（当前状态）
 
-### 5.2 不应误判的收益
-
-- 仅引入 `emitNonObjectSlotWrite` 本身**不会自动减少复制**。
-- 若要减少复制，需要额外引入“可移动语义/唯一性证明/逃逸分析”等机制，本次不涉及。
-
-## 6. DoD（本轮文档与后续执行基线）
-
-- 文档已从“未来计划”转为“当前状态 + 剩余风险 + 执行清单”。
-- 已完成项不再作为待办重复列出。
-- 下一步编码任务边界明确：仅收敛非对象槽位写入重复逻辑。
+- 目标范围内重构已完成：非对象槽位写入逻辑已单点收敛。
+- 关键行为保持语义等价并通过增量测试回归。
+- 文档已从“待实施清单”切换为“已实施现状 + 风险与后续清单”，去除了已实现项的冗余待办。

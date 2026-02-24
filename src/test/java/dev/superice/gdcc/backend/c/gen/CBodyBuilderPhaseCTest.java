@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirVariable;
+import dev.superice.gdcc.lir.insn.NopInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
@@ -354,6 +355,24 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertTrue(result.contains("godot_Variant_destroy"), "Should destroy old Variant");
             assertTrue(result.contains("godot_new_Variant_with_Variant"), "Should copy new Variant");
+        }
+
+        @Test
+        @DisplayName("__prepare__ non-object assignment should not destroy old value")
+        void testPrepareBlockNonObjectAssignSkipsDestroy() {
+            var prepareBlock = new LirBasicBlock("__prepare__");
+            builder.beginBasicBlock("__prepare__");
+            builder.setCurrentPosition(prepareBlock, 0, new NopInsn());
+            var target = new LirVariable("s", GdStringType.STRING, lirFunctionDef);
+            var source = new LirVariable("src", GdStringType.STRING, lirFunctionDef);
+
+            builder.assignVar(builder.targetOfVar(target), builder.valueOfVar(source));
+
+            var result = builder.build();
+            assertFalse(result.contains("godot_String_destroy(&$s)"),
+                    "__prepare__ first-write semantics should skip old value destroy");
+            assertTrue(result.contains("$s = __gdcc_tmp_string_0;"),
+                    "Should still assign copied rhs value");
         }
 
         @Test

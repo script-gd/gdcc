@@ -71,6 +71,10 @@
   - Do not change copy/destroy behavior.
   - Do not implicitly introduce copy-elision in this refactor.
   - Preserve `__prepare__` first-write behavior (no old-value destroy).
+- Risk-guard conventions for this refactor:
+  - `emitNonObjectSlotWrite` must not manage `markTargetInitialized` (target state stays in callers).
+  - `emitNonObjectSlotWrite` must not declare/destroy temps (temp lifecycle stays in callers).
+  - Keep non-object `_return_val` write in `returnValue` as direct assignment to avoid coupling return-slot flow with assign/callAssign target-state hooks.
 
 ### Temporary Variables (CBodyBuilder)
 

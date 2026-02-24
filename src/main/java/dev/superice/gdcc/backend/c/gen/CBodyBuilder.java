@@ -277,10 +277,7 @@ public final class CBodyBuilder {
                     value.ownership()
             );
         } else {
-            if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
-                emitDestroy(targetCode, targetType);
-            }
-            out.append(targetCode).append(" = ").append(rhsResult.code()).append(";\n");
+            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
         }
 
         markTargetInitialized(target);
@@ -430,11 +427,7 @@ public final class CBodyBuilder {
             return;
         }
 
-        if (canDestroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
-            emitDestroy(targetCode, targetType);
-        }
-
-        out.append(targetCode).append(" = ").append(callExpr).append(";\n");
+        emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, callExpr);
         markTargetInitialized(target);
     }
 
@@ -500,6 +493,9 @@ public final class CBodyBuilder {
                         value.ownership()
                 );
             } else {
+                // Keep non-object return-slot write as a direct assignment.
+                // _return_val for non-object return types is not modeled as a regular managed slot:
+                // we intentionally avoid coupling this path to assign/callAssign target initialization hooks.
                 out.append(RETURN_SLOT_NAME).append(" = ").append(returnCode).append(";\n");
             }
             emitTempDestroys(returnResult.temps());
@@ -807,6 +803,19 @@ public final class CBodyBuilder {
             // BORROWED rhs must be retained by the slot after assignment.
             emitOwnObject(targetCode, targetType);
         }
+    }
+
+    /// Writes a non-object value into a storage slot with value-lifecycle semantics:
+    /// destroy old when needed (skip in __prepare__/first-write) -> assign rhs.
+    /// Caller keeps target-initialization and temp lifecycle responsibilities.
+    private void emitNonObjectSlotWrite(@NotNull String targetCode,
+                                        @NotNull GdType targetType,
+                                        boolean destroyOldValue,
+                                        @NotNull String rhsCode) {
+        if (destroyOldValue && !checkInPrepareBlock() && targetType.isDestroyable()) {
+            emitDestroy(targetCode, targetType);
+        }
+        out.append(targetCode).append(" = ").append(rhsCode).append(";\n");
     }
 
     /// Emits a discarded call with immediate cleanup for destroyable return types.
