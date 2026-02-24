@@ -1,14 +1,10 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
-import dev.superice.gdcc.backend.c.gen.CGenHelper;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
-import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
-import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -48,13 +44,13 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
 
         // Validate property existence/writability and assignment compatibility first.
         validatePropertyWrite(bodyBuilder, objectVar.type(), valueVar.type(), insn.propertyName());
-        var genMode = getGenMode(helper, func, insn);
+        var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "STORE_PROPERTY");
 
         switch (genMode) {
-            case "gdcc" -> {
+            case GDCC -> {
                 var objectType = (GdObjectType) objectVar.type();
                 var classDef = Objects.requireNonNull(bodyBuilder.classRegistry().getClassDef(objectType));
-                var propertyDef = Objects.requireNonNull(findPropertyDef(classDef, insn.propertyName()));
+                var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
                 if (isStoringInsideSetterSelf(bodyBuilder, insn, propertyDef)) {
                     var fieldTarget = bodyBuilder.targetOfExpr(
                             "$" + objectVar.id() + "->" + insn.propertyName(),
@@ -72,13 +68,13 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                             List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
                 }
             }
-            case "engine", "builtin" -> {
+            case ENGINE, BUILTIN -> {
                 var objectType = objectVar.type();
                 var setterName = "godot_" + objectType.getTypeName() + "_set_" + insn.propertyName();
                 bodyBuilder.callVoid(setterName,
                         List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
             }
-            case "general" -> {
+            case GENERAL -> {
                 var packFunc = helper.renderPackFunctionName(valueVar.type());
                 var tempVariant = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT);
                 bodyBuilder.declareTempVar(tempVariant);
@@ -108,7 +104,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                 // Unknown object types are written through godot_Object_set and resolved at runtime.
                 return;
             }
-            var propertyFound = findPropertyDef(classDef, propertyName);
+            var propertyFound = PropertyAccessResolver.findPropertyDef(classDef, propertyName);
             if (propertyFound == null) {
                 throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in class " + classDef.getName());
             }
@@ -125,49 +121,18 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
             return;
         }
 
-        var builtinClass = registry.findBuiltinClass(objectType.getTypeName());
-        if (builtinClass == null) {
-            throw bodyBuilder.invalidInsn("Builtin class not found for type " + objectType.getTypeName());
-        }
-        ExtensionBuiltinClass.PropertyInfo propertyFound = null;
-        for (var property : builtinClass.getProperties()) {
-            if (property.getName().equals(propertyName)) {
-                propertyFound = (ExtensionBuiltinClass.PropertyInfo) property;
-                break;
-            }
-        }
-        if (propertyFound == null) {
-            throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in builtin class " +
-                    builtinClass.getName());
-        }
-        if (!propertyFound.isWritable()) {
+        var lookup = PropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
+        var builtinClass = lookup.builtinClass();
+        if (!lookup.property().isWritable()) {
             throw bodyBuilder.invalidInsn("Property '" + propertyName + "' in builtin class " +
                     builtinClass.getName() + " is not writable");
         }
-        var propertyType = propertyFound.getType();
+        var propertyType = lookup.property().getType();
         if (!registry.checkAssignable(valueType, propertyType)) {
             throw bodyBuilder.invalidInsn("Value type " + valueType.getTypeName() +
                     " is not assignable to property '" + propertyName +
                     "' of type " + propertyType.getTypeName());
         }
-    }
-
-    private @NotNull String getGenMode(@NotNull CGenHelper helper,
-                                       @NotNull LirFunctionDef func,
-                                       @NotNull StorePropertyInsn insn) {
-        var objectVar = Objects.requireNonNull(func.getVariableById(insn.objectId()));
-        if (objectVar.type() instanceof GdObjectType gdObjectType) {
-            if (gdObjectType.checkGdccType(helper.context().classRegistry())) {
-                return "gdcc";
-            } else if (gdObjectType.checkEngineType(helper.context().classRegistry())) {
-                return "engine";
-            } else {
-                return "general";
-            }
-        } else if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
-            throw new IllegalStateException("Invalid object variable type for STORE_PROPERTY instruction");
-        }
-        return "builtin";
     }
 
     private boolean isStoringInsideSetterSelf(@NotNull CBodyBuilder bodyBuilder,
@@ -197,12 +162,4 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         return false;
     }
 
-    private PropertyDef findPropertyDef(@NotNull ClassDef classDef, @NotNull String propertyName) {
-        for (var property : classDef.getProperties()) {
-            if (property.getName().equals(propertyName)) {
-                return property;
-            }
-        }
-        return null;
-    }
 }
