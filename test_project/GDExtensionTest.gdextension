@@ -1,7 +1,0 @@
-[configuration]
-
-entry_symbol = "gdextension_entry"
-compatibility_minimum = "4.5"
-
-[libraries]
-windows.debug = "res://bin/intproj_debug_x86_64.dll"

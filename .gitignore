@@ -47,4 +47,6 @@ bin/
 /AGENTS.md
 /test_project/.godot/
 /test_project/test_script.gd
+/test_project/GDExtensionTest.gdextension
+/test_project/main.tscn
 /script/
