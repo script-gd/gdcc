@@ -119,7 +119,7 @@ static void try_destroy_object(const GDExtensionObjectPtr obj) {
     }
 }
 
-static GDExtensionObjectPtr gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr) {
+static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr) {
     const GDExtensionInstanceBindingCallbacks callbacks = {
         .create_callback = NULL,
         .free_callback = NULL,
@@ -128,7 +128,9 @@ static GDExtensionObjectPtr gdcc_object_from_godot_object_ptr(GDExtensionObjectP
     return godot_object_get_instance_binding(ptr, class_library, &callbacks);
 }
 
-static GDExtensionObjectPtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
+#define godot_object_from_gdcc_object_ptr(obj) (obj == NULL ? NULL : obj->_object)
+
+static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
     const GDExtensionObjectPtr obj = godot_new_Object_with_Variant(value);
     return gdcc_object_from_godot_object_ptr(obj);
 }

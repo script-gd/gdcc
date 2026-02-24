@@ -119,9 +119,6 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     }
     <#list classDef.properties as property>
         self->${property.name} = ${classDef.name}_${property.initFunc}(self);
-        <#if property.type.gdExtensionType.name() == "OBJECT">
-            try_own_object(self->${property.name});
-        </#if>
     </#list>
     <#if classDef.hasFunction("_init")>
         ${classDef.name}__init(self);
@@ -135,7 +132,11 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
     <#list classDef.properties as property>
         <#if property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
-                try_release_object(self->${property.name});
+                <#if helper.checkGdccType(property.type)>
+                    try_release_object(godot_object_from_gdcc_object_ptr(self->${property.name}));
+                <#else>
+                    try_release_object(self->${property.name});
+                </#if>
             <#else>
                 ${helper.renderDestroyFunctionName(property.type)}(&(self->${property.name}));
             </#if>

@@ -102,6 +102,7 @@ $<result_id> = construct_dictionary "<key_class_name>"? "<value_class_name>"?
 
 #### construct_object
 Constructs a new Object of a specific class.
+If the new class object extends RefCounted, the returned object is owned (reference count increased by 1).
 ```
 $<result_id> = construct_object <class_name>
 ```
@@ -115,7 +116,7 @@ $<result_id> = construct_callable "<function_name>"
 #### construct_lambda
 Constructs a new Callable from a lambda function in this compiling unit.
 For implementation, `godot_callable_custom_create2` is used.
-All captures are copied into an tmp struct and passed to the lambda via `callable_userdata`.
+All captures are copied into a tmp struct and passed to the lambda via `callable_userdata`.
 If there are no captures, NULL is passed as `callable_userdata`.
 `free_func` in `GDExtensionCallableCustomInfo2` must be set to destruct the captures.
 ```
@@ -126,8 +127,10 @@ $<result_id> = construct_lambda "<lambda_function_name>" $<capture1_id> $<captur
 Destructs a variable, releasing any resources it holds.
 All Variants must be destructed after use to avoid memory leaks.  
 
-Warning: destruct object that is not ref-counted is not always needed since users may want to do it manually.
-However, destructing ref-counted objects is required to decrease the reference count.
+Warning: 
+- Destruct object that is not ref-counted is not always needed since users may want to do it manually.
+- Destruct object that is not ref-counted does actually mem-delete the object.
+- However, destructing ref-counted objects is required to decrease the reference count.
 
 Types can be destruct:
 - String
