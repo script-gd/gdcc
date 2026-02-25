@@ -99,6 +99,9 @@
 - 指令生成器负责 IR 校验与错误定位，不直接复制生命周期策略。
 - 应优先通过 `assignVar` / `assignExpr` / `callAssign` / `callVoid` 交给 Builder 处理生命周期与转换。
 - 对对象类型，避免在生成器中手工拼 own/release 与指针转换逻辑。
+- 生命周期受限指令（`destruct` / `try_own_object` / `try_release_object`）在进入 Builder 前必须通过 provenance 校验。
+  - 生成器可做轻量防御断言，但主校验在 `LifecycleInstructionRestrictionValidator`。
+  - 对非法来源应 fail-fast，不允许降级为“尽量生成”。
 - `ExprTargetRef` / `targetOfExpr(...)` is assignment-only by design.
   Use it only with `assignVar` / `assignExpr`, not as a generic target for `callAssign` or return/discard paths.
 
@@ -129,14 +132,18 @@
 以下用例用于验证本文语义与代码一致性（已通过）：
 
 ```bash
+./gradlew.bat test --tests LifecycleInstructionRestrictionValidatorTest --no-daemon --info --console=plain
+./gradlew.bat test --tests LifecycleProvenancePropagationTest --no-daemon --info --console=plain
 ./gradlew.bat test --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain
 ./gradlew.bat test --tests CDestructInsnGenTest --tests COwnReleaseObjectInsnGenTest --tests CPackUnpackVariantInsnGenTest --tests CStorePropertyInsnGenTest --no-daemon --info --console=plain
+./gradlew.bat test --tests LifecycleInstructionProvenanceParserTest --tests SimpleLirBlockInsnSerializerTest --tests DomLirSerializerTest --no-daemon --info --console=plain
 ./gradlew.bat classes --no-daemon --info --console=plain
 ```
 
 关键顺序断言（对象写槽）已按以下语义更新：
 
 - `capture old -> assign(convert if needed) -> own(BORROWED only) -> release captured old`
+- `_return_val` 仍保持“return-flow 发布槽位”边界：不进入变量表自动析构范围。
 
 ## 9. 工程反思（保留可复用教训）
 

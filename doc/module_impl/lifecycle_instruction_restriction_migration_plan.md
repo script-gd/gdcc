@@ -200,6 +200,12 @@
 - 用户显式生命周期语义可保留
 - 其余路径由编译器自动生命周期机制接管
 
+### Phase 4 当前落地状态（显式跳过）
+
+- [x] 本阶段暂不实施，原因：当前代码库尚未实现 frontend/lowering 模块，无法建立“用户源码显式生命周期调用 -> USER_EXPLICIT”的端到端链路。
+- [x] 过渡策略：后端与校验层继续支持 `USER_EXPLICIT` provenance，等待前端可用后再接入 lowering 发射。
+- [x] 风险控制：在前端缺席阶段，`USER_EXPLICIT` 仅作为 IR 受控输入能力保留，并由验证器约束其不可出现在 `__prepare__` / `__finally__` 自动块。
+
 ## Phase 5 - 文档迁移与示例更新
 
 任务：
@@ -211,6 +217,20 @@
 - 文档不再出现“任意可用”的暗示
 - 新旧行为边界清晰可执行
 
+### Phase 5 当前落地状态（已完成）
+
+- [x] 已更新 `doc/gdcc_low_ir.md`：
+  - 在 `destruct` / `try_own_object` / `try_release_object` 下补充 restrictions。
+  - 新增 “Instruction Usage Restrictions” 章节和合法/非法 IR 片段对照。
+  - Demo 中生命周期指令改为显式 provenance 示例，避免“任意可用”误导。
+- [x] 已更新 `doc/gdcc_ownership_lifecycle_spec.md`：
+  - 增加 `LifecycleProvenance` 定义与 allowed/forbidden matrix。
+  - 增加 strict/compat 说明与 `__prepare__` / `__finally__` 交互策略。
+- [x] 已更新 `doc/gdcc_c_backend.md`：
+  - 增加生成器 precondition 与 provenance fail-fast 约束。
+- [x] 已更新 `doc/module_impl/cbodybuilder_implemention.md`：
+  - 补充迁移后行为基线、关键回归命令和 `_return_val` 边界说明。
+
 ## Phase 6 - 测试迁移与回归
 
 任务：
@@ -221,6 +241,22 @@
 完成标准：
 - 相关测试全部通过
 - 迁移覆盖率满足验收标准
+
+### Phase 6 当前落地状态（已完成）
+
+- [x] 迁移 `CDestructInsnGenTest`：
+  - 合法用例改为显式 provenance（`USER_EXPLICIT`）。
+  - 新增非法 provenance 负例（`AUTO_GENERATED` 出现在非 `__finally__` 路径）。
+  - 用例上下文改为 strict 模式，避免 `UNKNOWN` 漏检。
+- [x] 迁移 `COwnReleaseObjectInsnGenTest`：
+  - 合法用例改为显式 provenance（`USER_EXPLICIT`）。
+  - 新增 `AUTO_GENERATED` 负例。
+  - 新增“普通变量 + INTERNAL provenance”负例。
+  - 用例上下文改为 strict 模式。
+- [x] 迁移 `DomLirSerializerTest`：
+  - 增加生命周期 provenance 序列化断言。
+- [x] 既有 `SimpleLirBlockInsnSerializerTest` / `LifecycleInstructionProvenanceParserTest` / `LifecycleInstructionRestrictionValidatorTest` / `LifecycleProvenancePropagationTest` 持续覆盖 provenance 核心行为。
+- [x] 按 6.3 命令分批回归并记录结果（见下文执行记录）。
 
 ---
 
@@ -277,6 +313,15 @@
 ./gradlew.bat test --tests SimpleLirBlockInsnSerializerTest --tests DomLirSerializerTest --no-daemon --info --console=plain
 ./gradlew.bat classes --no-daemon --info --console=plain
 ```
+
+### 6.4 执行记录（2026-02-25）
+
+- [x] `./gradlew.bat test --tests LifecycleInstructionRestrictionValidatorTest --no-daemon --info --console=plain` 通过
+- [x] `./gradlew.bat test --tests CDestructInsnGenTest --tests COwnReleaseObjectInsnGenTest --no-daemon --info --console=plain` 通过
+- [x] `./gradlew.bat test --tests CPhaseAControlFlowAndFinallyTest --tests CBodyBuilderPhaseCTest --no-daemon --info --console=plain` 通过
+- [x] `./gradlew.bat test --tests SimpleLirBlockInsnSerializerTest --tests DomLirSerializerTest --no-daemon --info --console=plain` 通过
+- [x] `./gradlew.bat test --tests LifecycleInstructionProvenanceParserTest --tests LifecycleProvenancePropagationTest --no-daemon --info --console=plain` 补充通过
+- [x] `./gradlew.bat classes --no-daemon --info --console=plain` 通过
 
 ---
 
@@ -363,9 +408,9 @@
 - [x] parser/serializer 支持 provenance
 - [x] 引入 lifecycle restriction validator
 - [x] 后端自动注入来源标记
-- [ ] 迁移现有测试
+- [x] 迁移现有测试
 - [x] 新增验证器与来源传播测试
-- [ ] 更新 low_ir / ownership / c_backend / module_impl 文档
+- [x] 更新 low_ir / ownership / c_backend / module_impl 文档
 - [x] 跑完 targeted tests 与 classes
 - [ ] 切 strict 前清零兼容告警
 

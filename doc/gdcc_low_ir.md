@@ -151,6 +151,19 @@ If it is not provided, it defaults to `UNKNOWN` and a warning should be emitted 
 
 This instruction should not be used arbitrarily on any variable. It should only be used in specific scenarios that meets the provenance requirement.
 
+Restrictions:
+- Allowed:
+  - `AUTO_GENERATED`: only compiler-injected destruct in `__finally__`.
+  - `INTERNAL`: only compiler internal/temp variables (for example numeric IDs or `__tmp_*` IDs).
+  - `USER_EXPLICIT`: only frontend-lowered explicit lifecycle intent from user GDScript source.
+  - `UNKNOWN`: compatibility mode warning only; strict mode rejects.
+- Forbidden:
+  - Hand-written or externally injected lifecycle instructions without valid provenance.
+  - `AUTO_GENERATED` outside compiler auto-generated paths.
+  - `INTERNAL` on ordinary user-named variables.
+- Violation result:
+  - Backend validation fails fast with `InvalidInsnException` before C code generation.
+
 ```
 destruct $<variant_id> "[lifecycle provenance]"
 ```
@@ -160,6 +173,7 @@ Attempts to take ownership of an Object. If successful, the reference count is i
 If the Object is not ref-counted, this is a no-op.
 
 The lifecycle provenance is the same as `destruct` instruction.
+The same restrictions and validation behavior apply.
 
 ```
 try_own_object $<object_id> "[lifecycle provenance]"
@@ -170,6 +184,7 @@ Attempts to release ownership of an Object. If successful, the reference count i
 If the Object is not ref-counted, this is a no-op.
 
 The lifecycle provenance is the same as `destruct` instruction.
+The same restrictions and validation behavior apply.
 
 ```
 try_release_object $<object_id> "[lifecycle provenance]"
@@ -385,6 +400,45 @@ Sets the current source code line number for debugging purposes.
 line_number <line_number:int>
 ```
 
+
+### Instruction Usage Restrictions
+
+The lifecycle instructions `destruct`, `try_own_object`, and `try_release_object` are controlled instructions.
+They are not general-purpose instructions for arbitrary external LIR.
+
+Allowed/forbidden quick reference:
+
+| Provenance | Allowed | Forbidden |
+| --- | --- | --- |
+| `AUTO_GENERATED` | Compiler-generated `destruct` in `__finally__` | Any non-`__finally__` usage; any own/release instruction |
+| `INTERNAL` | Compiler internal lifecycle maintenance on temp/internal variables | User-named variables (for example `obj`, `value`) |
+| `USER_EXPLICIT` | Frontend-lowered explicit lifecycle intent from user source | Emitting in auto-generated blocks (`__prepare__`, `__finally__`) |
+| `UNKNOWN` | Compat mode warning pass-through | Strict mode |
+
+Legal IR snippets:
+
+```text
+__finally__:
+destruct $17 "AUTO_GENERATED";
+```
+
+```text
+entry:
+try_release_object $tmp_ref "USER_EXPLICIT";
+```
+
+Illegal IR snippets:
+
+```text
+entry:
+destruct $value "AUTO_GENERATED"; // invalid: AUTO_GENERATED outside __finally__
+```
+
+```text
+entry:
+try_own_object $obj "INTERNAL"; // invalid: INTERNAL on ordinary user-named variable
+```
+
 ## Syntax
 
 A Low IR file (which is a .xml format file) consists of 4 parts:
@@ -519,6 +573,8 @@ func get_pitch(to_radius := false) -> float:
 ```
 
 Low IR:
+> Note: lifecycle instructions in this demo are shown with explicit provenance to avoid ambiguity.
+> They are illustrative controlled examples, not a signal that external hand-written IR can use lifecycle instructions freely.
 ```xml
 
 <ir>
@@ -559,8 +615,8 @@ Low IR:
                         $0 = literal_string "Camera init";
                         $1 = pack_variant $0;
                         call_global "print" $1;
-                        destruct $1;
-                        destruct $0;
+                        destruct $1 "INTERNAL";
+                        destruct $0 "INTERNAL";
                         return;
                     </basic_block>
                 </basic_blocks>
@@ -585,8 +641,8 @@ Low IR:
                         $0 = literal_string "Camera ready";
                         $1 = pack_variant $0;
                         call_global "print" $1;
-                        destruct $1;
-                        destruct $0;
+                        destruct $1 "INTERNAL";
+                        destruct $0 "INTERNAL";
                         return;
                     </basic_block>
                 </basic_blocks>
@@ -641,8 +697,8 @@ Low IR:
                         $16 = literal_string "Length should not be less than 0";
                         $17 = pack_variant $16;
                         call_global "printerr" $17;
-                        destruct $17;
-                        destruct $16;
+                        destruct $17 "INTERNAL";
+                        destruct $16 "INTERNAL";
                         return;
                     </basic_block>
                     <basic_block id="bb3">

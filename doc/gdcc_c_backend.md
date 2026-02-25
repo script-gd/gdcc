@@ -61,6 +61,19 @@
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 - Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
 
+### Lifecycle Provenance Restrictions
+
+- `destruct`, `try_own_object`, `try_release_object` are controlled lifecycle instructions and must carry valid provenance (`AUTO_GENERATED`, `INTERNAL`, `USER_EXPLICIT`, `UNKNOWN`).
+- Backend precondition: lifecycle provenance validation has already run before generators emit C.
+- Generator-level fail-fast:
+  - `DestructInsnGen` rejects `AUTO_GENERATED` outside `__finally__`.
+  - `OwnReleaseObjectInsnGen` rejects `AUTO_GENERATED`.
+  - In strict mode, `UNKNOWN` lifecycle provenance is rejected.
+- Practical guidance:
+  - Use `USER_EXPLICIT` only for frontend-lowered explicit user lifecycle intent.
+  - Use `INTERNAL` only for compiler internal/temp variable maintenance.
+  - Do not hand-inject lifecycle instructions in external IR without provenance-aware validation.
+
 ### Slot Write Consolidation
 
 - Keep object and non-object slot writes separated by semantics: 
