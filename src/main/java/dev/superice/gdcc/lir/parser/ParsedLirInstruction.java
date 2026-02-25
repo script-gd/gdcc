@@ -1,6 +1,7 @@
 package dev.superice.gdcc.lir.parser;
 
 import dev.superice.gdcc.enums.GdInstruction;
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.exception.LirInsnParsingException;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirInstruction.*;
@@ -10,6 +11,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /// Parsed representation of a LIR instruction and a converter to concrete instruction types.
 public record ParsedLirInstruction(
@@ -76,15 +78,15 @@ public record ParsedLirInstruction(
 
                 case DESTRUCT -> {
                     var id = ((VariableOperand) operands.getFirst()).id();
-                    yield new DestructInsn(id);
+                    yield new DestructInsn(id, resolveLifecycleProvenance());
                 }
                 case TRY_OWN_OBJECT -> {
                     var id = ((VariableOperand) operands.getFirst()).id();
-                    yield new TryOwnObjectInsn(id);
+                    yield new TryOwnObjectInsn(id, resolveLifecycleProvenance());
                 }
                 case TRY_RELEASE_OBJECT -> {
                     var id = ((VariableOperand) operands.getFirst()).id();
-                    yield new TryReleaseObjectInsn(id);
+                    yield new TryReleaseObjectInsn(id, resolveLifecycleProvenance());
                 }
 
                 case UNARY_OP -> {
@@ -112,8 +114,8 @@ public record ParsedLirInstruction(
                 case GET_CLASS_NAME -> new GetClassNameInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case OBJECT_CAST -> new ObjectCastInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
                 case IS_INSTANCE_OF -> new IsInstanceOfInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
-                case PACK_VARIANT -> new PackVariantInsn(resultId, ((VariableOperand) operands.getFirst()).id());
-                case UNPACK_VARIANT -> new UnpackVariantInsn(resultId, ((VariableOperand) operands.getFirst()).id());
+                case PACK_VARIANT -> new PackVariantInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
+                case UNPACK_VARIANT -> new UnpackVariantInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
                 case VARIANT_IS_NIL -> new VariantIsNilInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case OBJECT_IS_NULL -> new ObjectIsNullInsn(resultId, ((VariableOperand) operands.getFirst()).id());
 
@@ -168,6 +170,23 @@ public record ParsedLirInstruction(
             };
         } catch (IndexOutOfBoundsException | ClassCastException e) {
             throw new LirInsnParsingException(lineNumber, columnNumber, lirLine, "Error converting parsed instruction to concrete type: " + e.getMessage());
+        }
+    }
+
+    private @NotNull LifecycleProvenance resolveLifecycleProvenance() {
+        if (operands.size() < 2) {
+            return LifecycleProvenance.UNKNOWN;
+        }
+        var provenanceName = ((StringOperand) operands.get(1)).value();
+        try {
+            return LifecycleProvenance.valueOf(provenanceName);
+        } catch (IllegalArgumentException e) {
+            throw new LirInsnParsingException(
+                    lineNumber,
+                    columnNumber,
+                    lirLine,
+                    "Unknown lifecycle provenance: " + provenanceName
+            );
         }
     }
 }

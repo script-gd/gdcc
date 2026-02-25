@@ -1,8 +1,10 @@
 package dev.superice.gdcc.lir.parser;
 
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.exception.LirInsnSerializationException;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirInstruction.*;
+import dev.superice.gdcc.lir.insn.LifecycleInstruction;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -31,6 +33,7 @@ public final class SimpleLirBlockInsnSerializer implements LirBlockInsnSerialize
                     sb.append(' ');
                     appendOperand(sb, op);
                 }
+                appendLifecycleProvenance(sb, insn);
 
                 sb.append(';');
                 writer.write(sb.toString());
@@ -62,6 +65,17 @@ public final class SimpleLirBlockInsnSerializer implements LirBlockInsnSerialize
             }
             default -> throw new IllegalArgumentException("Unsupported operand kind: " + op.getClass());
         }
+    }
+
+    private static void appendLifecycleProvenance(@NotNull StringBuilder sb, @NotNull LirInstruction insn) {
+        if (!(insn instanceof LifecycleInstruction lifecycleInstruction)) {
+            return;
+        }
+        var provenance = lifecycleInstruction.getProvenance();
+        if (provenance == LifecycleProvenance.UNKNOWN) {
+            return;
+        }
+        sb.append(' ').append('"').append(provenance.name()).append('"');
     }
 
     private static String escapeString(String s) {

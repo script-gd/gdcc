@@ -24,9 +24,9 @@ public enum GdInstruction {
     CONSTRUCT_OBJECT("construct_object", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     CONSTRUCT_CALLABLE("construct_callable", ReturnKind.REQUIRED, List.of(OperandKind.STRING), 1, 1),
     CONSTRUCT_LAMBDA("construct_lambda", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.VARARGS), 1, Integer.MAX_VALUE),
-    DESTRUCT("destruct", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
-    TRY_OWN_OBJECT("try_own_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
-    TRY_RELEASE_OBJECT("try_release_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE), 1, 1),
+    DESTRUCT("destruct", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.STRING), 1, 2),
+    TRY_OWN_OBJECT("try_own_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.STRING), 1, 2),
+    TRY_RELEASE_OBJECT("try_release_object", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.STRING), 1, 2),
     UNARY_OP("unary_op", ReturnKind.REQUIRED, List.of(OperandKind.OPERATOR, OperandKind.VARIABLE), 2, 2),
     BINARY_OP("binary_op", ReturnKind.REQUIRED, List.of(OperandKind.OPERATOR, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
 
