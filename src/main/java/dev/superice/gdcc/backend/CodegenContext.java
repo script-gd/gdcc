@@ -5,6 +5,11 @@ import org.jetbrains.annotations.NotNull;
 
 public record CodegenContext(
         @NotNull ProjectInfo projectInfo,
-        @NotNull ClassRegistry classRegistry
+        @NotNull ClassRegistry classRegistry,
+        boolean strictMode
         ) {
+    public CodegenContext(@NotNull ProjectInfo projectInfo,
+                          @NotNull ClassRegistry classRegistry) {
+        this(projectInfo, classRegistry, false);
+    }
 }
