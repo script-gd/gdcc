@@ -3,8 +3,10 @@ package dev.superice.gdcc.backend.c.gen.insn;
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.ConstructionInstruction;
+import dev.superice.gdcc.lir.insn.LifecycleInstruction;
 import dev.superice.gdcc.lir.insn.TryOwnObjectInsn;
 import dev.superice.gdcc.lir.insn.TryReleaseObjectInsn;
 import dev.superice.gdcc.scope.RefCountedStatus;
@@ -23,7 +25,7 @@ public final class OwnReleaseObjectInsnGen implements CInsnGen<ConstructionInstr
     @Override
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var insn = bodyBuilder.getCurrentInsn(this);
-        var func = bodyBuilder.func();
+        assertLifecycleProvenance(bodyBuilder, insn);
         var objectVar = resolveObjectVar(bodyBuilder, insn);
         var objectType = objectVar.type();
         if (!(objectType instanceof GdObjectType gdObjectType)) {
@@ -36,6 +38,20 @@ public final class OwnReleaseObjectInsnGen implements CInsnGen<ConstructionInstr
             return;
         }
         bodyBuilder.callVoid(callee, List.of(bodyBuilder.valueOfVar(objectVar)));
+    }
+
+    /// Own/release instructions are never auto-injected by backend, provenance should reflect that.
+    private void assertLifecycleProvenance(@NotNull CBodyBuilder bodyBuilder,
+                                           @NotNull ConstructionInstruction insn) {
+        if (!(insn instanceof LifecycleInstruction lifecycleInsn)) {
+            return;
+        }
+        if (lifecycleInsn.getProvenance() == LifecycleProvenance.AUTO_GENERATED) {
+            throw bodyBuilder.invalidInsn("AUTO_GENERATED is not allowed for try_own_object/try_release_object");
+        }
+        if (lifecycleInsn.getProvenance() == LifecycleProvenance.UNKNOWN && bodyBuilder.helper().context().strictMode()) {
+            throw bodyBuilder.invalidInsn("UNKNOWN lifecycle provenance is forbidden in strict mode");
+        }
     }
 
     private @NotNull LirVariable resolveObjectVar(@NotNull CBodyBuilder bodyBuilder,

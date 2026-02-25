@@ -151,7 +151,7 @@
 1. 新增生命周期约束校验器：在 codegen 前执行。
 2. 校验规则：
    - `UNKNOWN` 的生命周期指令在 strict 模式报错
-   - `USER_EXPLICIT` 仅允许来自白名单 lowering 路径
+   - `USER_EXPLICIT` 默认允许（但禁止出现在 `__prepare__` / `__finally__` 自动块）
    - `INTERNAL` 仅允许作用于内部临时变量或其他临时值等
    - `AUTO_GENERATED` 仅允许出现在自动生成流程（如 `__finally__` 注入）
 3. 报错信息需包含：函数名、块 ID、指令索引、变量 ID、来源类型。
@@ -180,6 +180,14 @@
 完成标准：
 - 现有自动析构路径行为不变
 - 非法来源无法流入后端生成
+
+### Phase 3 当前落地状态（已完成）
+
+- [x] `CCodegen` 自动注入 `DestructInsn` 继续标记 `AUTO_GENERATED`
+- [x] `DestructInsnGen` 增加轻量来源断言：`AUTO_GENERATED` 仅允许在 `__finally__`，strict 模式下拒绝 `UNKNOWN`
+- [x] `OwnReleaseObjectInsnGen` 增加轻量来源断言：拒绝 `AUTO_GENERATED`，strict 模式下拒绝 `UNKNOWN`
+- [x] 新增 `LifecycleProvenancePropagationTest`，覆盖生成器层 provenance 防御断言
+- [x] 已确认 `__prepare__` / `__finally__` 注入框架未改动
 
 ## Phase 4 - 前端/Lowering 接入用户显式生命周期意图
 
@@ -321,7 +329,7 @@
 ## 9. 风险清单与缓解
 
 1. 误杀合法场景
-- 缓解：白名单先宽后紧，先告警后报错。
+- 缓解：规则先宽后紧，先告警后报错。
 
 2. 迁移期间测试雪崩
 - 缓解：按第 6.3 分批迁移，先 parser/validator，再 backend。
@@ -356,9 +364,9 @@
 - [x] 引入 lifecycle restriction validator
 - [x] 后端自动注入来源标记
 - [ ] 迁移现有测试
-- [ ] 新增验证器与来源传播测试
+- [x] 新增验证器与来源传播测试
 - [ ] 更新 low_ir / ownership / c_backend / module_impl 文档
-- [ ] 跑完 targeted tests 与 classes
+- [x] 跑完 targeted tests 与 classes
 - [ ] 切 strict 前清零兼容告警
 
 ---
