@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
+import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -87,10 +88,70 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("try_release_object($self->target);"));
+        assertTrue(body.contains("__gdcc_tmp_old_obj_"), "Should capture old target object in temp.");
+        assertTrue(body.contains(" = $self->target;"), "Captured old temp should be initialized from target slot.");
+        assertTrue(body.contains("try_release_object(__gdcc_tmp_old_obj_"), "Should release captured old target object.");
         assertTrue(body.contains("$self->target = $value;"));
         assertTrue(body.contains("try_own_object($self->target);"));
         assertFalse(body.contains("try_own_object($value);"));
+    }
+
+    @Test
+    @DisplayName("GDCC setter self.obj = self.obj should keep RefCounted lifecycle ordering on backing field writes")
+    void gdccSetterSelfPropertyReassignForRefCountedKeepsFieldLifecycleOrdering() {
+        var refCountedClass = new ExtensionGdClass(
+                "RefCounted", true, true, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(refCountedClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        gdccClass.addProperty(new LirPropertyDef(
+                "obj",
+                new GdObjectType("RefCounted"),
+                false,
+                null,
+                "_field_getter_obj",
+                "_field_setter_obj",
+                Map.of()
+        ));
+
+        var setter = new LirFunctionDef("_field_setter_obj");
+        setter.setReturnType(GdVoidType.VOID);
+        setter.addParameter(new LirParameterDef("self", new GdObjectType("MyClass"), null, setter));
+        setter.addParameter(new LirParameterDef("value", new GdObjectType("RefCounted"), null, setter));
+        setter.createAndAddVariable("rhs", new GdObjectType("RefCounted"));
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("rhs", "obj", "self"));
+        entry.instructions().add(new StorePropertyInsn("obj", "self", "rhs"));
+        entry.instructions().add(new ReturnInsn(null));
+        setter.addBasicBlock(entry);
+        setter.setEntryBlockId("entry");
+        gdccClass.addFunction(setter);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, setter);
+        assertTrue(body.contains("MyClass__field_getter_obj($self);"));
+        assertFalse(body.contains("MyClass__field_setter_obj($self, $rhs);"));
+        assertTrue(body.contains("__gdcc_tmp_old_obj_"), "Setter-self field write should capture old value temp.");
+        assertTrue(body.contains(" = $self->obj;"), "Captured temp should copy field old value.");
+
+        var assignIndex = body.indexOf("$self->obj = $rhs;");
+        var ownIndex = body.indexOf("own_object($self->obj);");
+        assertTrue(assignIndex >= 0, "Setter-self field write should assign RHS value.");
+        assertTrue(ownIndex >= 0, "Setter-self field write should own BORROWED RHS value.");
+        assertTrue(body.substring(0, assignIndex).contains(" = $self->obj;"),
+                "Setter-self field write should capture old value before assignment.");
+        assertTrue(assignIndex < ownIndex, "Assignment should happen before own.");
+        var releaseOldIndex = body.indexOf("release_object(__gdcc_tmp_old_obj_", ownIndex);
+        assertTrue(releaseOldIndex >= 0, "Setter-self field write should release captured old value after own.");
+        assertTrue(ownIndex < releaseOldIndex, "Release of captured old value should happen last.");
     }
 
     @Test

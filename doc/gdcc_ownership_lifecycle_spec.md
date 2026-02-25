@@ -53,12 +53,13 @@ A writable storage location, including but not limited to:
 
 Writing any object value into a slot must follow this order:
 
-1. If the slot is initialized and has an old value, release the old value first (`release` or `try_release` variant).
+1. If the slot is initialized and has an old value, capture the old value into a temporary slot.
 2. Write the new value (including pointer representation conversion if needed).
 3. Decide whether to `own` based on RHS ownership:
    - RHS is `BORROWED`: must `own` the new value.
    - RHS is `OWNED`: must not `own` again; consume ownership directly.
-4. Mark the slot as initialized.
+4. Release the captured old value (`release` or `try_release` variant).
+5. Mark the slot as initialized.
 
 Implementation note:
 

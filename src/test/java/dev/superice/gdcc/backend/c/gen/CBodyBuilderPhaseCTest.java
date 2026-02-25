@@ -376,7 +376,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("RefCounted object assignment should release old and own new")
+        @DisplayName("RefCounted object assignment should capture old, own new, then release captured old")
         void testRefCountedObjectAssignment() {
             var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
             var source = new LirVariable("src", new GdObjectType("RefCounted"), lirFunctionDef);
@@ -387,7 +387,10 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // RefCounted: should use release_object and own_object (not try_ versions)
-            assertTrue(result.contains("release_object($obj)"), "Should release old RefCounted object");
+            assertTrue(result.contains("godot_RefCounted* __gdcc_tmp_old_obj_0 = $obj;"),
+                    "Should capture old RefCounted object");
+            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"),
+                    "Should release captured old RefCounted object");
             assertTrue(result.contains("own_object($obj)"), "Should own new RefCounted object");
         }
 
@@ -556,7 +559,7 @@ public class CBodyBuilderPhaseCTest {
 
             var result = objectBuilder.build();
             assertTrue(result.contains("godot_RefCounted* _return_val = NULL;"), "Prepare block should init return slot");
-            assertTrue(result.contains("release_object(_return_val);"), "Writing return slot should release old value first");
+            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Writing return slot should release captured old value");
             assertTrue(result.contains("_return_val = $obj;"), "Should write returned object into slot");
             assertTrue(result.contains("own_object(_return_val);"), "Borrowed object source should be retained for return slot");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
@@ -576,7 +579,7 @@ public class CBodyBuilderPhaseCTest {
             objectBuilder.returnValue(ownedValue);
 
             var result = objectBuilder.build();
-            assertTrue(result.contains("release_object(_return_val);"), "Should still release previous return slot value");
+            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Should still release previous return slot value");
             assertTrue(result.contains("_return_val = create_object();"), "Should assign owned return expression");
             assertFalse(result.contains("own_object(_return_val);"), "Owned return value must not be owned again");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
@@ -634,7 +637,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign with RefCounted target should release old and consume owned return")
+        @DisplayName("callAssign with RefCounted target should release captured old and consume owned return")
         void testCallAssignRefCountedTarget() {
             var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -642,7 +645,7 @@ public class CBodyBuilderPhaseCTest {
             builder.callAssign(targetRef, "create_object", new GdObjectType("RefCounted"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("release_object($obj)"), "Should release old object before assignment");
+            assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Should release captured old object");
             assertFalse(result.contains("own_object($obj)"), "Owned call result should not be owned again");
         }
 
@@ -773,7 +776,9 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("try_release_object($obj)"), "Should try_release unknown object");
+            assertTrue(result.contains("GDExtensionObjectPtr __gdcc_tmp_old_obj_0 = $obj;"),
+                    "Should capture old unknown object");
+            assertTrue(result.contains("try_release_object(__gdcc_tmp_old_obj_0)"), "Should try_release unknown object");
             assertTrue(result.contains("try_own_object($obj)"), "Should try_own unknown object");
         }
     }
@@ -953,7 +958,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("callAssign with GDCC target from godot_ func should release old and consume owned return")
+        @DisplayName("callAssign with GDCC target from godot_ func should release captured old and consume owned return")
         void testCallAssignGdccTargetOwnRelease() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -962,8 +967,8 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // MyGdccClass extends RefCounted; owned call results should not be owned again.
-            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr($myObj))"),
-                    "Should release old GDCC object. Actual:\n" + result);
+            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr(__gdcc_tmp_old_obj_0))"),
+                    "Should release captured old GDCC object. Actual:\n" + result);
             assertFalse(result.contains("own_object(godot_object_from_gdcc_object_ptr($myObj))"),
                     "Should consume owned call result without own. Actual:\n" + result);
         }
@@ -1062,7 +1067,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GODOT_PTR to GDCC target should still do own/release with helper conversion")
+        @DisplayName("GODOT_PTR to GDCC target should still do own/release with helper conversion using old-temp flow")
         void testGodotPtrToGdccTargetOwnRelease() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1072,8 +1077,8 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // MyGdccClass extends RefCounted, should have own/release with helper conversion
-            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr($myObj))"),
-                    "Should release old GDCC object via helper conversion. Actual:\n" + result);
+            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr(__gdcc_tmp_old_obj_0))"),
+                    "Should release captured old GDCC object via helper conversion. Actual:\n" + result);
             assertTrue(result.contains("own_object(godot_object_from_gdcc_object_ptr($myObj))"),
                     "Should own new GDCC object via helper conversion. Actual:\n" + result);
             // Should also convert the assignment value
@@ -1128,7 +1133,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GODOT_PTR to GDCC target full ordering: release → assign with conversion → own")
+        @DisplayName("GODOT_PTR to GDCC target full ordering: capture old → assign with conversion → own → release old")
         void testGodotPtrToGdccTargetFullOrdering() {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -1137,15 +1142,18 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            var releaseIndex = result.indexOf("release_object(godot_object_from_gdcc_object_ptr($myObj))");
+            var captureIndex = result.indexOf("MyGdccClass* __gdcc_tmp_old_obj_0 = $myObj;");
             var assignIndex = result.indexOf("$myObj = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_result);");
             var ownIndex = result.indexOf("own_object(godot_object_from_gdcc_object_ptr($myObj))");
+            var releaseOldIndex = result.indexOf("release_object(godot_object_from_gdcc_object_ptr(__gdcc_tmp_old_obj_0));");
 
-            assertTrue(releaseIndex >= 0, "Should have release. Actual:\n" + result);
+            assertTrue(captureIndex >= 0, "Should capture old slot value. Actual:\n" + result);
             assertTrue(assignIndex >= 0, "Should have converted assignment. Actual:\n" + result);
             assertTrue(ownIndex >= 0, "Should have own. Actual:\n" + result);
-            assertTrue(releaseIndex < assignIndex, "Release should come before assignment");
+            assertTrue(releaseOldIndex >= 0, "Should release captured old value. Actual:\n" + result);
+            assertTrue(captureIndex < assignIndex, "Old capture should come before assignment");
             assertTrue(assignIndex < ownIndex, "Assignment should come before own");
+            assertTrue(ownIndex < releaseOldIndex, "Release of captured old value should happen last");
         }
     }
 }

@@ -406,7 +406,7 @@ public final class CBodyBuilder {
     }
 
     /// Common logic for writing a call expression result into a target variable.
-    /// Handles: old-value destroy/release → ptr conversion → assignment → ownership consume/own → mark initialized.
+    /// Handles: capture old slot value → ptr conversion + assignment → ownership consume/own → release captured old → mark initialized.
     private void emitCallResultAssignment(@NotNull TargetRef target,
                                           @NotNull String cFuncName,
                                           @NotNull GdType returnType,
@@ -795,21 +795,27 @@ public final class CBodyBuilder {
     }
 
     /// Writes an object value into a storage slot with ownership-aware semantics:
-    /// release old (if initialized) → assign converted rhs → own new only for BORROWED rhs.
+    /// capture old (if initialized) → assign converted rhs → own new only for BORROWED rhs → release captured old.
     private void emitObjectSlotWrite(@NotNull String targetCode,
                                      @NotNull GdObjectType targetType,
                                      boolean releaseOldValue,
                                      @NotNull String rhsCode,
                                      @NotNull PtrKind rhsPtrKind,
                                      @NotNull OwnershipKind ownership) {
+        TempVar oldValueTemp = null;
         if (releaseOldValue) {
-            emitReleaseObject(targetCode, targetType);
+            // Capture old value before overwriting slot to keep alias/self-assignment safe.
+            oldValueTemp = newTempVariable("old_obj", targetType, targetCode);
+            declareTempVar(oldValueTemp);
         }
         var assignCode = convertPtrIfNeeded(rhsCode, rhsPtrKind, targetType);
         out.append(targetCode).append(" = ").append(assignCode).append(";\n");
         if (ownership == OwnershipKind.BORROWED) {
             // BORROWED rhs must be retained by the slot after assignment.
             emitOwnObject(targetCode, targetType);
+        }
+        if (oldValueTemp != null) {
+            emitReleaseObject(oldValueTemp.name(), targetType);
         }
     }
 
