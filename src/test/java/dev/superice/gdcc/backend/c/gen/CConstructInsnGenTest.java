@@ -1,0 +1,310 @@
+package dev.superice.gdcc.backend.c.gen;
+
+import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.backend.ProjectInfo;
+import dev.superice.gdcc.enums.GodotVersion;
+import dev.superice.gdcc.exception.InvalidInsnException;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.lir.LirBasicBlock;
+import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirInstruction;
+import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.insn.ConstructArrayInsn;
+import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
+import dev.superice.gdcc.lir.insn.ConstructDictionaryInsn;
+import dev.superice.gdcc.lir.insn.ReturnInsn;
+import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdTransform2DType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class CConstructInsnGenTest {
+    @Test
+    @DisplayName("construct_builtin should emit helper-shim constructor call for Transform2D with 6 float args")
+    void constructBuiltinShouldEmitTransform2DHelperCtor() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_transform2d");
+        func.createAndAddVariable("a", GdFloatType.FLOAT);
+        func.createAndAddVariable("b", GdFloatType.FLOAT);
+        func.createAndAddVariable("c", GdFloatType.FLOAT);
+        func.createAndAddVariable("d", GdFloatType.FLOAT);
+        func.createAndAddVariable("e", GdFloatType.FLOAT);
+        func.createAndAddVariable("f", GdFloatType.FLOAT);
+        func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
+
+        entry(func).instructions().add(new ConstructBuiltinInsn(
+                "t",
+                List.of(
+                        new LirInstruction.VariableOperand("a"),
+                        new LirInstruction.VariableOperand("b"),
+                        new LirInstruction.VariableOperand("c"),
+                        new LirInstruction.VariableOperand("d"),
+                        new LirInstruction.VariableOperand("e"),
+                        new LirInstruction.VariableOperand("f")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Transform2D_with_float_float_float_float_float_float"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject non-variable operands")
+    void constructBuiltinShouldRejectNonVariableOperand() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_non_var_operand");
+        func.createAndAddVariable("t", GdTransform2DType.TRANSFORM2D);
+
+        entry(func).instructions().add(new ConstructBuiltinInsn(
+                "t",
+                List.of(new LirInstruction.StringOperand("not_var"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("must be a variable operand"));
+    }
+
+    @Test
+    @DisplayName("construct_array should emit typed Array constructor when operand type matches result type")
+    void constructArrayShouldEmitTypedCtor() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_typed_array");
+        func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
+
+        entry(func).instructions().add(new ConstructArrayInsn("arr", "StringName"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING_NAME"));
+    }
+
+    @Test
+    @DisplayName("construct_array should fail when provided class_name does not match result element type")
+    void constructArrayShouldRejectTypeMismatch() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_array_mismatch");
+        func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
+
+        entry(func).instructions().add(new ConstructArrayInsn("arr", "String"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("construct_array type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_dictionary should emit typed Dictionary constructor when key/value operands match result types")
+    void constructDictionaryShouldEmitTypedCtor() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_typed_dictionary");
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
+
+        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", "Variant"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING_NAME"));
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_NIL"));
+    }
+
+    @Test
+    @DisplayName("construct_dictionary should fail when provided key/value types do not match result types")
+    void constructDictionaryShouldRejectTypeMismatch() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_dictionary_mismatch");
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
+
+        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "String", "Variant"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_dictionary should fail when one-side typed operand implies Variant but result value type is non-Variant")
+    void constructDictionaryShouldRejectImplicitVariantValueMismatch() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_dictionary_partial_operand_mismatch");
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdStringType.STRING));
+
+        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", null));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("construct_dictionary value type mismatch"));
+    }
+
+    @Test
+    @DisplayName("generate should inject typed construct instructions into __prepare__ for Array and Dictionary variables")
+    void generateShouldInjectConstructInstructionsIntoPrepareBlock() {
+        var clazz = newTestClass();
+        var func = newFunction("prepare_inject_constructs");
+        func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
+        entry(func).instructions().add(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var prepare = func.getBasicBlock("__prepare__");
+        assertNotNull(prepare);
+        assertEquals("__prepare__", func.getEntryBlockId());
+
+        var hasArrayInsn = prepare.instructions().stream()
+                .filter(ConstructArrayInsn.class::isInstance)
+                .map(ConstructArrayInsn.class::cast)
+                .anyMatch(insn -> "arr".equals(insn.resultId()) && "StringName".equals(insn.className()));
+        assertTrue(hasArrayInsn);
+
+        var hasDictionaryInsn = prepare.instructions().stream()
+                .filter(ConstructDictionaryInsn.class::isInstance)
+                .map(ConstructDictionaryInsn.class::cast)
+                .anyMatch(insn ->
+                        "dict".equals(insn.resultId()) &&
+                                "StringName".equals(insn.keyClassName()) &&
+                                "Variant".equals(insn.valueClassName())
+                );
+        assertTrue(hasDictionaryInsn);
+    }
+
+    @Test
+    @DisplayName("__prepare__ generated typed construct instructions should emit typed constructor C calls")
+    void generatedPrepareConstructsShouldEmitTypedConstructorCalls() {
+        var clazz = newTestClass();
+        var func = newFunction("prepare_emit_typed_ctor_calls");
+        func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
+        entry(func).instructions().add(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var body = codegen.generateFuncBody(clazz, func);
+        assertTrue(body.contains("__prepare__: // __prepare__"));
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
+        assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+    }
+
+    @Test
+    @DisplayName("__prepare__ construct_array should fail fast on type mismatch")
+    void prepareConstructArrayTypeMismatchShouldFailFast() {
+        var clazz = newTestClass();
+        var func = new LirFunctionDef("prepare_array_mismatch");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("arr", new GdArrayType(GdStringNameType.STRING_NAME));
+
+        var prepare = new LirBasicBlock("__prepare__");
+        prepare.instructions().add(new ConstructArrayInsn("arr", "String"));
+        func.addBasicBlock(prepare);
+        func.setEntryBlockId("__prepare__");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("construct_array type mismatch"));
+    }
+
+    @Test
+    @DisplayName("__prepare__ construct_dictionary should fail fast on type mismatch")
+    void prepareConstructDictionaryTypeMismatchShouldFailFast() {
+        var clazz = newTestClass();
+        var func = new LirFunctionDef("prepare_dictionary_mismatch");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
+
+        var prepare = new LirBasicBlock("__prepare__");
+        prepare.instructions().add(new ConstructDictionaryInsn("dict", "String", "Variant"));
+        func.addBasicBlock(prepare);
+        func.setEntryBlockId("__prepare__");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
+    }
+
+    private LirClassDef newTestClass() {
+        return new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+    }
+
+    private LirFunctionDef newFunction(String name) {
+        var func = new LirFunctionDef(name);
+        func.setReturnType(GdVoidType.VOID);
+        var entry = new LirBasicBlock("entry");
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        return func;
+    }
+
+    private LirBasicBlock entry(LirFunctionDef functionDef) {
+        return functionDef.getBasicBlock("entry");
+    }
+
+    private String generateBody(LirClassDef clazz, LirFunctionDef func) {
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        return codegen.generateFuncBody(clazz, func);
+    }
+
+    private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {
+        var classRegistry = new ClassRegistry(emptyApi());
+        for (var gdccClass : gdccClasses) {
+            classRegistry.addGdccClass(gdccClass);
+        }
+        ProjectInfo projectInfo = new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        return codegen;
+    }
+
+    private ExtensionAPI emptyApi() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+}
