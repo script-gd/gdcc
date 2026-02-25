@@ -101,6 +101,34 @@ Select operation by `RefCountedStatus`:
 - Do not treat `gdcc_object_from_godot_object_ptr(...)` as a retain operation.
 - `OWNED` values must be consumed exactly once; repeated consumption is forbidden.
 
+### 3.8 Lifecycle Instruction Provenance Restrictions
+
+Lifecycle instructions are controlled by provenance and validated before backend generation.
+
+`LifecycleProvenance`:
+- `AUTO_GENERATED`: inserted by compiler automation (`__finally__` destruct path).
+- `INTERNAL`: compiler internal lifecycle maintenance for temp/internal variables.
+- `USER_EXPLICIT`: lowered from explicit lifecycle intent in user GDScript source.
+- `UNKNOWN`: legacy/default marker; allowed only in compatibility mode.
+
+Allowed/forbidden matrix:
+
+| Provenance | Allowed | Forbidden |
+| --- | --- | --- |
+| `AUTO_GENERATED` | `destruct` in `__finally__` auto-generated flow | Any non-`__finally__` block, `try_own_object`, `try_release_object` |
+| `INTERNAL` | Internal/temp variables (numeric IDs or `__*` IDs) | Ordinary user-named variables, parameters |
+| `USER_EXPLICIT` | Explicit user-intent lowered instructions in normal blocks | Auto-generated blocks (`__prepare__`, `__finally__`) |
+| `UNKNOWN` | Compatibility mode with warning | Strict mode |
+
+Strict/compat policy:
+- Compat mode (`strictMode=false`): `UNKNOWN` emits warning and passes.
+- Strict mode (`strictMode=true`): `UNKNOWN` and invalid provenance usage fail fast.
+
+Interaction with `__prepare__` / `__finally__`:
+- `__finally__` auto-destruct remains enabled and uses `AUTO_GENERATED`.
+- `USER_EXPLICIT` is rejected in `__prepare__` and `__finally__` to avoid semantic collision with auto lifecycle flow.
+- Conflict is resolved by validation stage before code generation.
+
 ## 4. Alignment with Current Backend Structure
 
 ### 4.1 CBodyBuilder
@@ -121,9 +149,13 @@ Select operation by `RefCountedStatus`:
 
 ## 5. Compatibility and Migration Constraints
 
-- This specification does not change LIR instruction formats.
+- LIR lifecycle instructions (`destruct`, `try_own_object`, `try_release_object`) now support an optional provenance token.
+  - Legacy format without provenance is interpreted as `UNKNOWN`.
 - This specification does not change `ClassRegistry` assignability rules.
 - If template layer (FTL) still contains object lifecycle logic, it must match this specification.
+- Strict rollout is staged:
+  - Compat phase: collect and burn down `UNKNOWN` warnings.
+  - Strict phase: reject unknown/illegal provenance.
 
 ## 6. Acceptance Criteria
 

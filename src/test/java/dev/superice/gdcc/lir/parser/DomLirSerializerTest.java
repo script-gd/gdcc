@@ -1,5 +1,6 @@
 package dev.superice.gdcc.lir.parser;
 
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.*;
 import dev.superice.gdcc.type.GdFloatType;
@@ -42,5 +43,25 @@ public class DomLirSerializerTest {
         // basic block text should include the literal string instruction
         assertTrue(xml.contains("$0 = literal_string \"Camera init\";"));
         assertTrue(xml.contains("call_global \"print\" $1;"));
+    }
+
+    @Test
+    public void serialize_module_lifecycleInstructionsIncludeProvenance() throws Exception {
+        var fn = new LirFunctionDef("_cleanup", "entry");
+        fn.addParameter(new LirParameterDef("self", new GdObjectType("RotatingCamera"), null, fn));
+        fn.createAndAddVariable("tmp", new GdObjectType("Node"));
+
+        var bb = new LirBasicBlock("entry", List.of(
+                new TryReleaseObjectInsn("tmp", LifecycleProvenance.USER_EXPLICIT),
+                new ReturnInsn(null)
+        ));
+        fn.addBasicBlock(bb);
+
+        var cls = new LirClassDef("RotatingCamera", "Camera3D", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var serializer = new DomLirSerializer();
+
+        var xml = serializer.serializeToString(module);
+        assertTrue(xml.contains("try_release_object $tmp \"USER_EXPLICIT\";"));
     }
 }
