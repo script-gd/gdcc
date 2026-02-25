@@ -82,7 +82,7 @@
 重点文件：
 - `src/main/java/dev/superice/gdcc/backend/CodegenContext.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/LifecycleInstruction.java`
-- `src/main/java/dev/superice/gdcc/lir/insn/LifecycleProvenance.java`
+- `src/main/java/dev/superice/gdcc/enums/LifecycleProvenance.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/DestructInsn.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/TryOwnObjectInsn.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/TryReleaseObjectInsn.java`
@@ -136,6 +136,14 @@
 完成标准：
 - 老测试可在兼容模式下通过
 - 新增 round-trip 测试覆盖 provenance 字段
+
+### Phase 1 当前落地状态（已完成）
+
+- [x] 生命周期指令文本语法支持可选 provenance（例如 `destruct $v "AUTO_GENERATED";`）
+- [x] `SimpleLirBlockInsnParser` / `ParsedLirInstruction` 支持 provenance 反序列化
+- [x] `SimpleLirBlockInsnSerializer` 支持 provenance 序列化（`UNKNOWN` 保持旧格式兼容）
+- [x] 增加 `LifecycleInstructionProvenanceParserTest` 覆盖 round-trip 与 legacy 兼容
+- [x] parser/serializer 相关既有测试已通过
 
 ## Phase 2 - 校验层落地（核心）
 

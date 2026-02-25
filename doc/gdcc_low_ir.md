@@ -146,22 +146,33 @@ Types can be destruct:
 All types not in the above list are stack allocated and do not need to be destructed.
 However, destructing them is a no-op and allowed.
 
+An optional lifecycle provenance enum string can be provided: `AUTO_GENERATED`, `INTERNAL`, `USER_EXPLICIT`, `UNKNOWN`.
+If it is not provided, it defaults to `UNKNOWN` and a warning should be emitted since provenance is important for validating the correct usage of this instruction.
+
+This instruction should not be used arbitrarily on any variable. It should only be used in specific scenarios that meets the provenance requirement.
+
 ```
-destruct $<variant_id>
+destruct $<variant_id> "[lifecycle provenance]"
 ```
 
 #### try_own_object
 Attempts to take ownership of an Object. If successful, the reference count is increased.
 If the Object is not ref-counted, this is a no-op.
+
+The lifecycle provenance is the same as `destruct` instruction.
+
 ```
-try_own_object $<object_id>
+try_own_object $<object_id> "[lifecycle provenance]"
 ```
 
 #### try_release_object
 Attempts to release ownership of an Object. If successful, the reference count is decreased.
 If the Object is not ref-counted, this is a no-op.
+
+The lifecycle provenance is the same as `destruct` instruction.
+
 ```
-try_release_object $<object_id>
+try_release_object $<object_id> "[lifecycle provenance]"
 ```
 
 #### unary_op

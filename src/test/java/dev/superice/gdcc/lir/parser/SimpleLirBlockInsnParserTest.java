@@ -1,5 +1,6 @@
 package dev.superice.gdcc.lir.parser;
 
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.exception.LirInsnParsingException;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.insn.*;
@@ -151,5 +152,35 @@ public class SimpleLirBlockInsnParserTest {
         var line = "   $0 = literal_int    \"notint\"   ;  ";
         var col = line.indexOf('"') + 1;
         assertParseError(line, 1, col, "Expected integer operand");
+    }
+
+    @Test
+    public void parse_lifecycleInstructionsWithAndWithoutProvenance() {
+        var input = """
+                destruct $0;
+                try_own_object $obj "INTERNAL";
+                try_release_object $obj "AUTO_GENERATED";
+                """;
+        var insns = parse(input);
+        assertEquals(3, insns.size());
+
+        var destructInsn = assertInstanceOf(DestructInsn.class, insns.getFirst());
+        assertEquals(LifecycleProvenance.UNKNOWN, destructInsn.getProvenance());
+
+        var ownInsn = assertInstanceOf(TryOwnObjectInsn.class, insns.get(1));
+        assertEquals(LifecycleProvenance.INTERNAL, ownInsn.getProvenance());
+
+        var releaseInsn = assertInstanceOf(TryReleaseObjectInsn.class, insns.getLast());
+        assertEquals(LifecycleProvenance.AUTO_GENERATED, releaseInsn.getProvenance());
+    }
+
+    @Test
+    public void parse_lifecycleInstructionWithUnknownProvenanceShouldFail() {
+        var line = "destruct $0 \"NOT_A_PROVENANCE\";";
+        var parser = new SimpleLirBlockInsnParser();
+        var ex = assertThrows(LirInsnParsingException.class, () -> parser.parse(new StringReader(line)));
+        assertEquals(1, ex.lineNumber);
+        assertEquals(line, ex.lirLine);
+        assertTrue(ex.reason.contains("Unknown lifecycle provenance"));
     }
 }
