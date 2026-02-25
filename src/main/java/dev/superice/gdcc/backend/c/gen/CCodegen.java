@@ -6,6 +6,7 @@ import dev.superice.gdcc.backend.GeneratedFile;
 import dev.superice.gdcc.backend.TemplateLoader;
 import dev.superice.gdcc.backend.c.gen.insn.*;
 import dev.superice.gdcc.enums.GdInstruction;
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.*;
 import dev.superice.gdcc.scope.ParameterDef;
@@ -220,7 +221,8 @@ public class CCodegen implements Codegen {
                     if (!variable.type().isDestroyable()) {
                         continue;
                     }
-                    appendInsnIfAbsent(func, finallyBB, new DestructInsn(variable.id()));
+                    appendInsnIfAbsent(func, finallyBB,
+                            new DestructInsn(variable.id(), LifecycleProvenance.AUTO_GENERATED));
                 }
                 if (func.getReturnType() instanceof GdVoidType) {
                     appendInsnIfAbsent(func, finallyBB, new ReturnInsn(null));

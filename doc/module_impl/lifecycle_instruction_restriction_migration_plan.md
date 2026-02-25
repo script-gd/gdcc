@@ -37,7 +37,8 @@
 - `USER_EXPLICIT`：用户源码显式生命周期意图 lowering 结果
 - `UNKNOWN`：默认值，应发出警告
 
-实现方式：在 `LirInstruction` 增加可选 `LifecycleOrigin` 字段
+实现方式：新增 `LifecycleInstruction`（继承 `ConstructionInstruction`）并提供 `getProvenance()`；
+`destruct` / `try_own_object` / `try_release_object` 三条指令实现该接口并携带 provenance 字段。
 
 ### 2.3 与现有 finally 机制关系
 
@@ -79,6 +80,9 @@
 ## 4.2 代码（主路径）
 
 重点文件：
+- `src/main/java/dev/superice/gdcc/backend/CodegenContext.java`
+- `src/main/java/dev/superice/gdcc/lir/insn/LifecycleInstruction.java`
+- `src/main/java/dev/superice/gdcc/lir/insn/LifecycleProvenance.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/DestructInsn.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/TryOwnObjectInsn.java`
 - `src/main/java/dev/superice/gdcc/lir/insn/TryReleaseObjectInsn.java`
@@ -112,6 +116,15 @@
 关键决策：
 - provenance 存储位置（指令级优先）
 - 是否启用兼容过渡开关（建议有）
+- `CodegenContext` 增加 `strictMode`（默认 false）
+
+### Phase 0 当前落地状态（已完成）
+
+- [x] 新增 `LifecycleProvenance`：`AUTO_GENERATED` / `INTERNAL` / `USER_EXPLICIT` / `UNKNOWN`
+- [x] 新增 `LifecycleInstruction` 接口，并定义 `getProvenance()`
+- [x] `DestructInsn` / `TryOwnObjectInsn` / `TryReleaseObjectInsn` 接入 provenance，默认值为 `UNKNOWN`
+- [x] `CodegenContext` 新增 `strictMode` 字段，保留二参构造兼容路径
+- [x] `CCodegen` 自动注入 `DestructInsn` 时标记 `AUTO_GENERATED`
 
 ## Phase 1 - IR 元模型与解析扩展
 
@@ -192,14 +205,14 @@
 1) `CDestructInsnGenTest`
 - 现状：直接构造 `DestructInsn` 并断言 C 输出。
 - 迁移：
-  - 为合法 case 添加 provenance（`INTERNAL_TEMP` 或 `AUTO_GENERATED` 测试上下文）
+  - 为合法 case 添加 provenance（`INTERNAL` 或 `AUTO_GENERATED` 测试上下文）
   - 新增非法 provenance case，断言在验证阶段失败（`assertThrows`）
 
 2) `COwnReleaseObjectInsnGenTest`
 - 现状：直接构造 `TryOwnObjectInsn`/`TryReleaseObjectInsn`。
 - 迁移：
   - 按来源分组测试（合法/非法）
-  - 增加“普通变量 + INTERNAL_TEMP 来源”应失败的负例
+  - 增加“普通变量 + INTERNAL 来源”应失败的负例
 
 3) `CPhaseAControlFlowAndFinallyTest`
 - 现状：断言 `__finally__` 自动注入 `DestructInsn`。
@@ -224,9 +237,9 @@
 建议新增：
 - `src/test/java/dev/superice/gdcc/lir/validation/LifecycleInstructionRestrictionValidatorTest.java`
   - 核心覆盖 allowed/forbidden matrix
-- `src/test/java/dev/superice/gdcc/backend/c/gen/LifecycleOriginPropagationTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/LifecycleProvenancePropagationTest.java`
   - 覆盖自动注入来源传播
-- `src/test/java/dev/superice/gdcc/lir/parser/LifecycleInstructionOriginParserTest.java`
+- `src/test/java/dev/superice/gdcc/lir/parser/LifecycleInstructionProvenanceParserTest.java`
   - 覆盖 parser/serializer 的新字段兼容
 
 ## 6.3 建议执行顺序（targeted）
@@ -254,7 +267,7 @@
 ## 7.2 `doc/gdcc_ownership_lifecycle_spec.md`
 
 新增：
-- `LifecycleOrigin` 定义
+- `LifecycleProvenance` 定义
 - Allowed/Forbidden Matrix
 - strict/compat 模式说明
 - 与 `__finally__` 自动析构的冲突处理策略

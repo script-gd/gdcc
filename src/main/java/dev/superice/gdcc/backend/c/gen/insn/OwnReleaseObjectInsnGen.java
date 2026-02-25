@@ -42,8 +42,8 @@ public final class OwnReleaseObjectInsnGen implements CInsnGen<ConstructionInstr
                                                   @NotNull ConstructionInstruction insn) {
         var func = bodyBuilder.func();
         var objectId = switch (insn) {
-            case TryOwnObjectInsn(var id) -> id;
-            case TryReleaseObjectInsn(var id) -> id;
+            case TryOwnObjectInsn(var id, var _) -> id;
+            case TryReleaseObjectInsn(var id, var _) -> id;
             default ->
                     throw bodyBuilder.invalidInsn("Unsupported instruction type " + insn.getClass().getSimpleName());
         };
