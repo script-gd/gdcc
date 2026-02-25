@@ -358,6 +358,24 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("Typed Array assignment should use normalized copy symbol and safe temp prefix")
+        void testTypedArrayAssignmentUsesNormalizedSymbolAndSafeTempPrefix() {
+            var arrayType = new GdArrayType(GdStringNameType.STRING_NAME);
+            var target = new LirVariable("arr", arrayType, lirFunctionDef);
+            var source = new LirVariable("src", arrayType, lirFunctionDef);
+
+            builder.assignVar(builder.targetOfVar(target), builder.valueOfVar(source));
+
+            var result = builder.build();
+            assertTrue(result.contains("godot_new_Array_with_Array(&$src);"),
+                    "Typed Array copy should use normalized Array constructor symbol");
+            assertTrue(result.contains("__gdcc_tmp_array_0"),
+                    "Typed Array temp variable should use safe normalized prefix");
+            assertFalse(result.contains("__gdcc_tmp_array["),
+                    "Temp variable name must not contain generic suffix characters");
+        }
+
+        @Test
         @DisplayName("__prepare__ non-object assignment should not destroy old value")
         void testPrepareBlockNonObjectAssignSkipsDestroy() {
             var prepareBlock = new LirBasicBlock("__prepare__");
@@ -500,6 +518,25 @@ public class CBodyBuilderPhaseCTest {
 
             var result = stringBuilder.build();
             assertTrue(result.contains("godot_new_String_with_String(&$s)"), "Should copy String on return");
+        }
+
+        @Test
+        @DisplayName("Returning typed Dictionary expression should use normalized copy symbol and safe temp prefix")
+        void testReturnTypedDictionaryExprUsesNormalizedSymbolAndSafeTempPrefix() {
+            var dictionaryType = new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT);
+            var dictionaryBuilder = createBuilderWithReturnType(dictionaryType);
+            setFinallyBlockContext(dictionaryBuilder);
+            var value = dictionaryBuilder.valueOfExpr("some_dict_expr", dictionaryType);
+
+            dictionaryBuilder.returnValue(value);
+
+            var result = dictionaryBuilder.build();
+            assertTrue(result.contains("godot_new_Dictionary_with_Dictionary(&__gdcc_tmp_dictionary_0);"),
+                    "Typed Dictionary return copy should use normalized Dictionary symbol");
+            assertTrue(result.contains("__gdcc_tmp_dictionary_0"),
+                    "Typed Dictionary expression temp should use safe normalized prefix");
+            assertFalse(result.contains("__gdcc_tmp_dictionary["),
+                    "Expression temp name must not contain generic suffix characters");
         }
 
         @Test

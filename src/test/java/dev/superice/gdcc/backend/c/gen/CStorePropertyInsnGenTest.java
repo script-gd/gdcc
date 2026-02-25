@@ -17,10 +17,13 @@ import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -227,6 +230,30 @@ public class CStorePropertyInsnGenTest {
         assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_new_Variant_with_String("));
         assertTrue(body.contains("godot_Object_set($obj, GD_STATIC_SN(u8\"name\"), &__gdcc_tmp_variant_0);"));
         assertFalse(body.contains("godot_UnknownType_set_name("));
+    }
+
+    @Test
+    @DisplayName("Unknown object type should pack typed Dictionary using normalized symbol name")
+    void unknownObjectTypeShouldPackTypedDictionaryWithNormalizedSymbol() {
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("set_unknown_typed_dict");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("UnknownType"), null, func));
+        func.addParameter(
+                new LirParameterDef("value", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT), null, func)
+        );
+        addEntryStoreAndReturn(func, new StorePropertyInsn("meta", "obj", "value"));
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(emptyApi(), List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_new_Variant_with_Dictionary("));
+        assertFalse(body.contains("godot_new_Variant_with_Dictionary["));
     }
 
     @Test

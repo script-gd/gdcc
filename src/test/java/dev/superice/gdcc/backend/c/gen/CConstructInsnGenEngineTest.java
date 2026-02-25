@@ -24,7 +24,9 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdTransform2DType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Assumptions;
@@ -71,6 +73,17 @@ class CConstructInsnGenEngineTest {
         var buildResult = builder.buildProject(projectInfo, codegen);
         assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
         assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(entrySource.contains("make_typed_array_explicit"), "Typed array method should be emitted into C source.");
+        assertTrue(entrySource.contains("make_typed_dictionary_explicit"), "Typed dictionary method should be emitted into C source.");
+        assertTrue(
+                entrySource.contains("godot_new_Array_with_Array_int_StringName_Variant"),
+                "Typed array constructor call should be generated in C source."
+        );
+        assertTrue(
+                entrySource.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"),
+                "Typed dictionary constructor call should be generated in C source."
+        );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -112,6 +125,10 @@ class CConstructInsnGenEngineTest {
         clazz.addFunction(newPrepareGenericArrayFunction(selfType));
         clazz.addFunction(newExplicitGenericDictionaryFunction(selfType));
         clazz.addFunction(newPrepareGenericDictionaryFunction(selfType));
+        clazz.addFunction(newExplicitTypedArrayFunction(selfType));
+        clazz.addFunction(newPrepareTypedArrayFunction(selfType));
+        clazz.addFunction(newExplicitTypedDictionaryFunction(selfType));
+        clazz.addFunction(newPrepareTypedDictionaryFunction(selfType));
         return clazz;
     }
 
@@ -188,12 +205,52 @@ class CConstructInsnGenEngineTest {
         return func;
     }
 
+    private static LirFunctionDef newExplicitTypedArrayFunction(GdObjectType selfType) {
+        var arrayType = new GdArrayType(new GdObjectType("Node"));
+        var func = newMethodWithMarker("make_typed_array_explicit", arrayType, selfType);
+        func.createAndAddVariable("arr", arrayType);
+        entry(func).instructions().add(new ConstructArrayInsn("arr", "Node"));
+        entry(func).instructions().add(new ReturnInsn("arr"));
+        return func;
+    }
+
+    private static LirFunctionDef newPrepareTypedArrayFunction(GdObjectType selfType) {
+        var arrayType = new GdArrayType(new GdObjectType("Node"));
+        var func = newMethodWithMarker("make_typed_array_prepare", arrayType, selfType);
+        func.createAndAddVariable("arr", arrayType);
+        entry(func).instructions().add(new ReturnInsn("arr"));
+        return func;
+    }
+
+    private static LirFunctionDef newExplicitTypedDictionaryFunction(GdObjectType selfType) {
+        var dictionaryType = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
+        var func = newMethodWithMarker("make_typed_dictionary_explicit", dictionaryType, selfType);
+        func.createAndAddVariable("dict", dictionaryType);
+        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "StringName", "Node"));
+        entry(func).instructions().add(new ReturnInsn("dict"));
+        return func;
+    }
+
+    private static LirFunctionDef newPrepareTypedDictionaryFunction(GdObjectType selfType) {
+        var dictionaryType = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
+        var func = newMethodWithMarker("make_typed_dictionary_prepare", dictionaryType, selfType);
+        func.createAndAddVariable("dict", dictionaryType);
+        entry(func).instructions().add(new ReturnInsn("dict"));
+        return func;
+    }
+
     private static LirFunctionDef newMethod(String name, dev.superice.gdcc.type.GdType returnType, GdObjectType selfType) {
         var func = new LirFunctionDef(name);
         func.setReturnType(returnType);
         func.addParameter(new LirParameterDef("self", selfType, null, func));
         func.addBasicBlock(new LirBasicBlock("entry"));
         func.setEntryBlockId("entry");
+        return func;
+    }
+
+    private static LirFunctionDef newMethodWithMarker(String name, dev.superice.gdcc.type.GdType returnType, GdObjectType selfType) {
+        var func = newMethod(name, returnType, selfType);
+        func.addParameter(new LirParameterDef("marker", GdIntType.INT, null, func));
         return func;
     }
 

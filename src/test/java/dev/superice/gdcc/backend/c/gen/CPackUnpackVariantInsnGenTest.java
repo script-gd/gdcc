@@ -13,7 +13,10 @@ import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
@@ -120,6 +123,54 @@ public class CPackUnpackVariantInsnGenTest {
         assertTrue(body.contains("godot_Variant_destroy(&$result);"));
         assertTrue(body.contains("$result = godot_new_Variant_with_gdcc_Object($value);"));
         assertFalse(body.contains("godot_new_Variant_with_gdcc_Object(godot_object_from_gdcc_object_ptr($value));"));
+    }
+
+    @Test
+    @DisplayName("pack_variant from typed Array should use normalized Array symbol without generic suffix")
+    void packVariantFromTypedArrayShouldUseNormalizedArraySymbol() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("pack_typed_array");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", GdVariantType.VARIANT);
+        func.createAndAddVariable("value", new GdArrayType(GdStringNameType.STRING_NAME));
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new PackVariantInsn("result", "value"));
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("$result = godot_new_Variant_with_Array(&$value);"));
+        assertFalse(body.contains("godot_new_Variant_with_Array["));
+    }
+
+    @Test
+    @DisplayName("unpack_variant to typed Dictionary should use normalized Dictionary symbol without generic suffix")
+    void unpackVariantToTypedDictionaryShouldUseNormalizedDictionarySymbol() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unpack_typed_dictionary");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT));
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new UnpackVariantInsn("result", "variant"));
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("$result = godot_new_Dictionary_with_Variant(&$variant);"));
+        assertFalse(body.contains("godot_new_Dictionary["));
     }
 
     private ExtensionAPI emptyApi() {

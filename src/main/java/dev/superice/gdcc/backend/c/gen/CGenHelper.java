@@ -269,7 +269,7 @@ public final class CGenHelper {
                 return "(godot_" + objectType.getTypeName() + "*)godot_new_Object_with_Variant";
             }
         } else {
-            return "godot_new_" + type.getTypeName() + "_with_Variant";
+            return "godot_new_" + renderGdTypeName(type) + "_with_Variant";
         }
     }
 
@@ -281,7 +281,7 @@ public final class CGenHelper {
                 return "godot_new_Variant_with_Object";
             }
         } else {
-            return "godot_new_Variant_with_" + type.getTypeName();
+            return "godot_new_Variant_with_" + renderGdTypeName(type);
         }
     }
 
@@ -290,7 +290,10 @@ public final class CGenHelper {
             case GdObjectType _, GdPrimitiveType _ -> "";
             case GdVoidType _, GdNilType _ ->
                     throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
-            default -> "godot_new_" + type.getTypeName() + "_with_" + type.getTypeName();
+            default -> {
+                var symbolTypeName = renderGdTypeName(type);
+                yield "godot_new_" + symbolTypeName + "_with_" + symbolTypeName;
+            }
         };
     }
 

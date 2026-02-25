@@ -9,7 +9,9 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
@@ -20,6 +22,7 @@ import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 @SuppressWarnings("UnusedReturnValue")
 public final class CBodyBuilder {
     private static final String RETURN_SLOT_NAME = "_return_val";
+    private static final @NotNull Pattern NON_TEMP_PREFIX_CHAR_PATTERN = Pattern.compile("[^a-z0-9_]");
 
     private final @NotNull CGenHelper helper;
     private final @NotNull LirClassDef clazz;
@@ -705,7 +708,7 @@ public final class CBodyBuilder {
         if (!copyFunc.isEmpty()) {
             // Need to copy: godot_new_<Type>_with_<Type>(source_ptr)
             var sourcePtr = renderValueAddress(value);
-            var temp = newTempVariable(type.getTypeName().toLowerCase(), type, copyFunc + "(" + sourcePtr.code() + ")");
+            var temp = newTempVariable(renderSafeTempPrefix(type), type, copyFunc + "(" + sourcePtr.code() + ")");
             var temps = new ArrayList<>(sourcePtr.temps());
             temps.add(temp);
             return new RenderResult(temp.name(), temps);
@@ -780,10 +783,22 @@ public final class CBodyBuilder {
             return new RenderResult("&" + code, List.of());
         }
         if (value instanceof ExprValue exprValue) {
-            var temp = newTempVariable(exprValue.type().getTypeName().toLowerCase(), exprValue.type(), exprValue.generateCode());
+            var temp = newTempVariable(renderSafeTempPrefix(exprValue.type()), exprValue.type(), exprValue.generateCode());
             return new RenderResult("&" + temp.name(), List.of(temp));
         }
         return new RenderResult("&" + value.generateCode(), List.of());
+    }
+
+    private @NotNull String renderSafeTempPrefix(@NotNull GdType type) {
+        var normalizedTypeName = helper.renderGdTypeName(type).toLowerCase(Locale.ROOT);
+        var safePrefix = NON_TEMP_PREFIX_CHAR_PATTERN.matcher(normalizedTypeName).replaceAll("_");
+        if (safePrefix.isBlank()) {
+            return "tmp";
+        }
+        if (Character.isDigit(safePrefix.charAt(0))) {
+            return "tmp_" + safePrefix;
+        }
+        return safePrefix;
     }
 
     private void emitDestroy(@NotNull String varCode, @NotNull GdType type) {
