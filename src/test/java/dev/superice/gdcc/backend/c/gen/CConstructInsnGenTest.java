@@ -30,7 +30,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -81,7 +80,6 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
-        assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("must be a variable operand"));
     }
 
@@ -111,7 +109,6 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
-        assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("construct_array type mismatch"));
     }
 
@@ -142,7 +139,6 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
-        assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
     }
 
@@ -157,7 +153,6 @@ class CConstructInsnGenTest {
         clazz.addFunction(func);
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
-        assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("construct_dictionary value type mismatch"));
     }
 
@@ -233,7 +228,6 @@ class CConstructInsnGenTest {
         var module = new LirModule("test_module", List.of(clazz));
         var codegen = newCodegen(module, List.of(clazz));
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
-        assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("construct_array type mismatch"));
     }
 
@@ -254,7 +248,6 @@ class CConstructInsnGenTest {
         var module = new LirModule("test_module", List.of(clazz));
         var codegen = newCodegen(module, List.of(clazz));
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
-        assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
     }
 
