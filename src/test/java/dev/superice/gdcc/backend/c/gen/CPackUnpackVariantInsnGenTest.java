@@ -83,9 +83,17 @@ public class CPackUnpackVariantInsnGenTest {
         var codegen = newCodegen(module, api, List.of(workerClass));
 
         var body = codegen.generateFuncBody(workerClass, func);
-        assertTrue(body.contains("release_object($result);"));
+        assertTrue(body.contains("__gdcc_tmp_old_obj_"), "Should capture old object into temp before overwriting");
+        assertTrue(body.contains("= $result;"), "Captured old temp should be initialized from result slot");
         assertTrue(body.contains("$result = (godot_RefCounted*)godot_new_Object_with_Variant(&$variant);"));
-        assertFalse(body.contains("own_object($result);"));
+        assertFalse(body.contains("own_object($result)"), "OWNED return should not be owned again");
+        assertTrue(body.contains("release_object(__gdcc_tmp_old_obj_"), "Should release captured old value");
+
+        var captureIndex = body.indexOf("= $result;");
+        var assignIndex = body.indexOf("$result = (godot_RefCounted*)godot_new_Object_with_Variant(&$variant);");
+        var releaseOldIndex = body.indexOf("release_object(__gdcc_tmp_old_obj_");
+        assertTrue(captureIndex < assignIndex, "Capture should happen before assignment");
+        assertTrue(assignIndex < releaseOldIndex, "Assignment should happen before release of old value");
     }
 
     @Test
