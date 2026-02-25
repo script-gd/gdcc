@@ -64,7 +64,7 @@
 ### Slot Write Consolidation
 
 - Keep object and non-object slot writes separated by semantics: 
-  - Objects follow ownership rules (`release old -> assign(convert ptr if needed) -> own only for BORROWED`).
+  - Objects follow ownership rules (`capture old -> assign(convert ptr if needed) -> own only for BORROWED -> release captured old`).
   - Non-objects follow value-lifecycle rules (`prepare/copy rhs -> destroy old (if needed) -> assign`).
 - For non-object writes, prefer a single Builder helper (for example `emitNonObjectSlotWrite`) used by both `assignVar` and `callAssign` result assignment paths.
 - The consolidation above is a maintenance refactor only:

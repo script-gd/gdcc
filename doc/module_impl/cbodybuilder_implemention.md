@@ -8,7 +8,7 @@
 >
 > 目标：仅保留当前代码库已落地且可验证的实现语义、长期风险和工程反思。
 >
-> 校对基线：2026-02-24（代码与单测已交叉检查）
+> 校对基线：2026-02-25（代码与单测已交叉检查）
 
 ## 1. 范围与对齐关系
 
@@ -26,10 +26,11 @@
 ### 2.1 统一槽位写入模型
 
 - 对象类型写入统一走 `emitObjectSlotWrite(...)`，顺序固定：
-  1. 可覆盖时先 release old（`release_object` / `try_release_object` / no-op）
+  1. 可覆盖时先 capture old 到对象 temp（`__gdcc_tmp_old_obj_*`）
   2. 必要时做指针表示转换
   3. 赋值
   4. RHS 为 `BORROWED` 时 own new；RHS 为 `OWNED` 时消费所有权，不重复 own
+  5. release captured old（`release_object` / `try_release_object` / no-op）
 - 非对象类型写入统一走 `emitNonObjectSlotWrite(...)`：
   1. 满足条件时 destroy old（`destroyOldValue && !__prepare__ && type.isDestroyable()`）
   2. 赋值
@@ -105,11 +106,13 @@
 
 ### 7.1 `StorePropertyInsnGen` 的 setter-self 直写路径
 
-- 现状：在 setter-self 分支中直接生成 `$self->field = rhs;`，绕过 Builder 槽位写入入口。
-- 影响：
-  - 生命周期正确性依赖外部 IR 是否补充配套指令。
-  - 对可析构非对象字段（如 String）存在旧值清理风险，需要额外审计。
-- 建议：将该分支收敛到 Builder 统一槽位写入语义，或在 IR 生成阶段强约束配套指令与顺序。
+- 现状：setter-self 分支已收敛到 `assignVar(targetOfExpr(...), valueOfVar(...))`，
+  通过 Builder 统一槽位写入语义处理生命周期和指针转换。
+- 收敛收益：
+  - 不再需要在生成器里手工拼接 own/release。
+  - 对象写槽顺序与 `assignVar` / `callAssign` / `_return_val` 保持一致。
+- 仍需关注：
+  - 模板层和 Java 层双轨演进时，需持续做语义对齐回归。
 
 ### 7.2 FTL 与 Java 路径演进偏差风险
 
@@ -131,9 +134,14 @@
 ./gradlew.bat classes --no-daemon --info --console=plain
 ```
 
+关键顺序断言（对象写槽）已按以下语义更新：
+
+- `capture old -> assign(convert if needed) -> own(BORROWED only) -> release captured old`
+
 ## 9. 工程反思（保留可复用教训）
 
 1. 指针转换规则分散在调用点时，最容易出现 `NULL->_object`、遗漏转换、断言漂移等问题；必须集中到单点 helper + Builder 自动转换。
 2. 迁移文档混合“待办清单”和“已完成记录”会快速失真；实现文档应只保留当前事实，历史过程归档到提交记录。
 3. 生命周期规则若在模板和 Java 两侧同时手写，长期一定发生语义偏差；应尽可能由单一入口承载。
-4. 单元测试不应只断言“有某个函数名”，还要断言关键顺序（release -> assign -> own）与负向约束（不重复 own、不错误转换）。
+4. 单元测试不应只断言“有某个函数名”，还要断言关键顺序
+   （capture old -> assign -> own -> release old）与负向约束（不重复 own、不错误转换）。
