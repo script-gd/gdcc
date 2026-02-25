@@ -160,6 +160,16 @@
 - 能准确拦截非法指令
 - 错误信息可直接指导修复
 
+### Phase 2 当前落地状态（已完成）
+
+- [x] 新增 `LifecycleInstructionRestrictionValidator`，覆盖 `UNKNOWN` / `AUTO_GENERATED` / `INTERNAL` / `USER_EXPLICIT` 约束
+- [x] `UNKNOWN` 在 strict 模式抛错，在 compat 模式告警放行
+- [x] 校验异常统一使用 `InvalidInsnException(func, block, index, insn, reason)`，并在 reason 中包含 provenance 与变量信息
+- [x] `CCodegen.generate()` 在 `__prepare__` / `__finally__` 注入后执行生命周期校验
+- [x] `CCodegen.generateFuncBody()` 直出路径同样执行生命周期校验（覆盖单测直接调用场景）
+- [x] 新增 `LifecycleInstructionRestrictionValidatorTest` 覆盖 allowed/forbidden 基础矩阵
+- [x] 更新 `CPhaseAControlFlowAndFinallyTest`，断言自动注入析构 provenance 为 `AUTO_GENERATED`
+
 ## Phase 3 - 后端注入与生成器对齐
 
 任务：
@@ -340,11 +350,11 @@
 
 ## 11. 执行清单（Checklist）
 
-- [ ] 冻结规范（来源模型 + 允许矩阵）
-- [ ] 实现 provenance 数据结构
-- [ ] parser/serializer 支持 provenance
-- [ ] 引入 lifecycle restriction validator
-- [ ] 后端自动注入来源标记
+- [x] 冻结规范（来源模型 + 允许矩阵）
+- [x] 实现 provenance 数据结构
+- [x] parser/serializer 支持 provenance
+- [x] 引入 lifecycle restriction validator
+- [x] 后端自动注入来源标记
 - [ ] 迁移现有测试
 - [ ] 新增验证器与来源传播测试
 - [ ] 更新 low_ir / ownership / c_backend / module_impl 文档

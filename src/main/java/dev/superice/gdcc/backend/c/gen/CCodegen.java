@@ -9,6 +9,7 @@ import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.lir.insn.*;
+import dev.superice.gdcc.lir.validation.LifecycleInstructionRestrictionValidator;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.type.*;
 import dev.superice.gdcc.util.CCodeFormatter;
@@ -44,6 +45,8 @@ public class CCodegen implements Codegen {
     public CodegenContext ctx;
     public LirModule module;
     private CGenHelper helper;
+    /// Validator for lifecycle instruction usage restrictions.
+    private final LifecycleInstructionRestrictionValidator lifecycleValidator = new LifecycleInstructionRestrictionValidator();
 
     private static void registerInsnGen(@NotNull CInsnGen<? extends LirInstruction> insnGen) {
         for (var opcode : insnGen.getInsnOpcodes()) {
@@ -239,6 +242,7 @@ public class CCodegen implements Codegen {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
+        lifecycleValidator.validateFunction(ctx, func);
         // Check if the entry block is valid
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
@@ -270,6 +274,11 @@ public class CCodegen implements Codegen {
         this.generateDefaultGetterSetterInitialization();
         this.generateFunctionPrepareBlock();
         this.ensureFunctionFinallyBlock();
+        for (var classDef : module.getClassDefs()) {
+            for (var function : classDef.getFunctions()) {
+                lifecycleValidator.validateFunction(ctx, function);
+            }
+        }
         try {
             var tplCtx = Map.of(
                     "module", module,

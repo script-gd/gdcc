@@ -3,6 +3,7 @@ package dev.superice.gdcc.backend.c.gen;
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
+import dev.superice.gdcc.enums.LifecycleProvenance;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -154,6 +155,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var destructInsn = assertInstanceOf(DestructInsn.class, instructions.getFirst());
         assertEquals("str", destructInsn.variableId());
+        assertEquals(LifecycleProvenance.AUTO_GENERATED, destructInsn.getProvenance());
 
         var returnInsn = assertInstanceOf(ReturnInsn.class, instructions.getLast());
         assertEquals("_return_val", returnInsn.returnValueId());
@@ -189,6 +191,7 @@ public class CPhaseAControlFlowAndFinallyTest {
 
         var destructInsn = assertInstanceOf(DestructInsn.class, finallyBlock.instructions().get(1));
         assertEquals("str", destructInsn.variableId());
+        assertEquals(LifecycleProvenance.AUTO_GENERATED, destructInsn.getProvenance());
 
         var returnInsn = assertInstanceOf(ReturnInsn.class, finallyBlock.instructions().getLast());
         assertNull(returnInsn.returnValueId());
