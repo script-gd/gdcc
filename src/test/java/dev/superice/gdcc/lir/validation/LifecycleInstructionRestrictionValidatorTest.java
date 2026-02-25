@@ -105,27 +105,27 @@ public class LifecycleInstructionRestrictionValidatorTest {
     }
 
     @Test
-    @DisplayName("USER_EXPLICIT provenance should require lowering whitelist annotation")
-    void userExplicitProvenanceShouldRequireWhitelistAnnotation() {
-        var invalidFunc = newFunction("invalid_user_explicit");
-        invalidFunc.createAndAddVariable("obj", new GdObjectType("Object"));
-        var invalidEntry = new LirBasicBlock("entry");
-        invalidEntry.instructions().add(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
-        invalidFunc.addBasicBlock(invalidEntry);
-
-        var invalidEx = assertThrows(InvalidInsnException.class,
-                () -> validator.validateFunction(newContext(true), invalidFunc));
-        assertInstanceOf(InvalidInsnException.class, invalidEx);
-        assertTrue(invalidEx.getMessage().contains("gdcc.lifecycle.user_explicit_allowed"));
-
+    @DisplayName("USER_EXPLICIT provenance should be allowed by default in non auto-generated blocks")
+    void userExplicitProvenanceShouldBeAllowedByDefault() {
         var validFunc = newFunction("valid_user_explicit");
-        validFunc.addAnnotation("gdcc.lifecycle.user_explicit_allowed", "true");
         validFunc.createAndAddVariable("obj", new GdObjectType("Object"));
         var validEntry = new LirBasicBlock("entry");
         validEntry.instructions().add(new TryReleaseObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
         validFunc.addBasicBlock(validEntry);
 
         assertDoesNotThrow(() -> validator.validateFunction(newContext(true), validFunc));
+
+        var invalidFunc = newFunction("invalid_user_explicit_in_finally");
+        invalidFunc.createAndAddVariable("obj", new GdObjectType("Object"));
+        var invalidFinally = new LirBasicBlock("__finally__");
+        invalidFinally.instructions().add(new TryOwnObjectInsn("obj", LifecycleProvenance.USER_EXPLICIT));
+        invalidFunc.addBasicBlock(invalidFinally);
+        invalidFunc.setEntryBlockId("__finally__");
+
+        var ex = assertThrows(InvalidInsnException.class,
+                () -> validator.validateFunction(newContext(true), invalidFunc));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("__finally__"));
     }
 
     private static LirFunctionDef newFunction(String name) {
