@@ -115,20 +115,124 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should reject known object type with unknown method")
-    void callMethodKnownTypeUnknownMethodShouldFailFast() {
+    @DisplayName("CALL_METHOD should fallback to OBJECT_DYNAMIC for known engine type with unknown method")
+    void callMethodKnownEngineTypeUnknownMethodShouldFallbackToObjectDynamic() {
         var clazz = newClass("Worker");
         var func = newFunction("call_unknown");
         func.createAndAddVariable("node", new GdObjectType("Node"));
         entry(func).instructions().add(new CallMethodInsn(null, "missing_method", "node", List.of()));
         clazz.addFunction(func);
 
-        var ex = assertThrows(
-                InvalidInsnException.class,
-                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz))
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
+        assertTrue(body.contains("godot_Object_call($node, GD_STATIC_SN(u8\"missing_method\")"), body);
+        assertFalse(body.contains("godot_Node_missing_method("), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should fallback to OBJECT_DYNAMIC for known GDCC type with unknown method")
+    void callMethodKnownGdccTypeUnknownMethodShouldFallbackToObjectDynamic() {
+        var workerClass = newClass("Worker");
+        var pingFunc = newFunction("ping");
+        pingFunc.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, pingFunc));
+        entry(pingFunc).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(pingFunc);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "missing_method",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        assertTrue(body.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($worker), GD_STATIC_SN(u8\"missing_method\")"), body);
+        assertFalse(body.contains("Worker_missing_method("), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit OBJECT_DYNAMIC for GDCC base-typed receiver with pointer conversion")
+    void callMethodGdccBaseTypedReceiverShouldFallbackToObjectDynamicWithPointerConversion() {
+        var baseClass = newClass("BaseWorker");
+        var basePing = newFunction("ping");
+        basePing.addParameter(new LirParameterDef("self", new GdObjectType("BaseWorker"), null, basePing));
+        entry(basePing).instructions().add(new ReturnInsn(null));
+        baseClass.addFunction(basePing);
+
+        var childClass = newClass("ChildWorker", "BaseWorker");
+        var childOnly = newFunction("child_only_echo");
+        childOnly.setReturnType(GdIntType.INT);
+        childOnly.addParameter(new LirParameterDef("self", new GdObjectType("ChildWorker"), null, childOnly));
+        childOnly.addParameter(new LirParameterDef("value", GdIntType.INT, null, childOnly));
+        entry(childOnly).instructions().add(new ReturnInsn("value"));
+        childClass.addFunction(childOnly);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("baseRef", new GdObjectType("BaseWorker"));
+        caller.createAndAddVariable("value", GdIntType.INT);
+        caller.createAndAddVariable("ret", GdIntType.INT);
+        entry(caller).instructions().add(new CallMethodInsn(
+                "ret",
+                "child_only_echo",
+                "baseRef",
+                List.of(new LirInstruction.VariableOperand("value"))
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, baseClass, childClass));
+        assertTrue(body.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($baseRef), GD_STATIC_SN(u8\"child_only_echo\")"), body);
+        assertFalse(body.contains("ChildWorker_child_only_echo("), body);
+        assertFalse(body.contains("godot_Variant_call("), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD OBJECT_DYNAMIC should pack GDCC object args with helper and keep pointer conversion on receiver")
+    void callMethodObjectDynamicShouldPackGdccArgsWithHelperAndPointerConversion() {
+        var baseClass = newClass("BaseWorker");
+        var basePing = newFunction("ping");
+        basePing.addParameter(new LirParameterDef("self", new GdObjectType("BaseWorker"), null, basePing));
+        entry(basePing).instructions().add(new ReturnInsn(null));
+        baseClass.addFunction(basePing);
+
+        var childClass = newClass("ChildWorker", "BaseWorker");
+        var childOnly = newFunction("child_only_consume_peer");
+        childOnly.addParameter(new LirParameterDef("self", new GdObjectType("ChildWorker"), null, childOnly));
+        childOnly.addParameter(new LirParameterDef("peer", new GdObjectType("PeerWorker"), null, childOnly));
+        entry(childOnly).instructions().add(new ReturnInsn(null));
+        childClass.addFunction(childOnly);
+
+        var peerClass = newClass("PeerWorker");
+        var peerPing = newFunction("ping");
+        peerPing.addParameter(new LirParameterDef("self", new GdObjectType("PeerWorker"), null, peerPing));
+        entry(peerPing).instructions().add(new ReturnInsn(null));
+        peerClass.addFunction(peerPing);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("baseRef", new GdObjectType("BaseWorker"));
+        caller.createAndAddVariable("peer", new GdObjectType("PeerWorker"));
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "child_only_consume_peer",
+                "baseRef",
+                List.of(new LirInstruction.VariableOperand("peer"))
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(
+                hostClass,
+                caller,
+                newApi(List.of(), List.of()),
+                List.of(hostClass, baseClass, childClass, peerClass)
         );
-        assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(ex.getMessage().contains("Method 'missing_method' not found"), ex.getMessage());
+        assertTrue(body.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($baseRef), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
+        assertTrue(body.contains("godot_new_Variant_with_gdcc_Object($peer)"), body);
+        assertFalse(body.contains("godot_new_Variant_with_Object(godot_object_from_gdcc_object_ptr($peer))"), body);
+        assertFalse(body.contains("godot_Variant_call("), body);
     }
 
     @Test
@@ -230,8 +334,8 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should report ambiguous overload when candidates are equally specific")
-    void callMethodShouldReportAmbiguousOverload() {
+    @DisplayName("CALL_METHOD should fallback to OBJECT_DYNAMIC when overload resolution is ambiguous")
+    void callMethodShouldFallbackToObjectDynamicOnAmbiguousOverload() {
         var clazz = newClass("Worker");
         var func = newFunction("call_ambiguous");
         func.createAndAddVariable("node", new GdObjectType("Node"));
@@ -244,12 +348,9 @@ class CallMethodInsnGenTest {
         ));
         clazz.addFunction(func);
 
-        var ex = assertThrows(
-                InvalidInsnException.class,
-                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAmbiguousOverloads())), List.of(clazz))
-        );
-        assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(ex.getMessage().contains("Ambiguous overload"), ex.getMessage());
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAmbiguousOverloads())), List.of(clazz));
+        assertTrue(body.contains("godot_Object_call($node, GD_STATIC_SN(u8\"mix\")"), body);
+        assertFalse(body.contains("godot_Node_mix("), body);
     }
 
     @Test

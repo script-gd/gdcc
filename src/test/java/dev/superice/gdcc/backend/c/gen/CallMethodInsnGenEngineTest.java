@@ -159,6 +159,70 @@ class CallMethodInsnGenEngineTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should emit OBJECT_DYNAMIC for parent-typed GDCC receiver and run in real engine")
+    void callMethodParentTypedGdccReceiverShouldUseObjectDynamicAndRunInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/call_method_engine_parent_dynamic");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "call_method_engine_parent_dynamic",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.WINDOWS_X86_64
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var hostClass = newGdccParentDynamicHostClass();
+        var baseClass = newGdccDynamicBaseClass();
+        var childClass = newGdccDynamicChildClass();
+        var module = new LirModule("call_method_engine_parent_dynamic_module", List.of(hostClass, baseClass, childClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(
+                entrySource.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($baseRef), GD_STATIC_SN(u8\"child_only_echo\")"),
+                "Parent-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with GDCC pointer conversion."
+        );
+        assertFalse(
+                entrySource.contains("GDChildDynamicWorker_child_only_echo($baseRef"),
+                "Parent-typed receiver should not use static GDCC dispatch at call-site."
+        );
+        assertFalse(entrySource.contains("godot_Variant_call("), "Parent-typed receiver should use OBJECT_DYNAMIC, not VARIANT_DYNAMIC.");
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "GdccParentDynamicNode",
+                        hostClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(gdccParentDynamicTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("gdcc parent-typed dynamic call_method check passed."), "Parent-typed dynamic path should pass.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should run builtin/engine/object_dynamic/variant_dynamic paths in real engine")
     void callMethodPathsShouldRunInRealGodot() throws IOException, InterruptedException {
         if (!hasZig()) {
@@ -257,6 +321,33 @@ class CallMethodInsnGenEngineTest {
 
         var selfType = new GdObjectType(clazz.getName());
         clazz.addFunction(newGdccPeerEchoFunction(selfType));
+        return clazz;
+    }
+
+    private static LirClassDef newGdccParentDynamicHostClass() {
+        var clazz = new LirClassDef("GDGdccParentDynamicNode", "Node");
+        clazz.setSourceFile("call_method_gdcc_parent_dynamic_host.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newGdccParentDynamicDispatchFunction(selfType));
+        return clazz;
+    }
+
+    private static LirClassDef newGdccDynamicBaseClass() {
+        var clazz = new LirClassDef("GDBaseDynamicWorker", "RefCounted");
+        clazz.setSourceFile("call_method_gdcc_parent_dynamic_base.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newGdccDynamicBasePingFunction(selfType));
+        return clazz;
+    }
+
+    private static LirClassDef newGdccDynamicChildClass() {
+        var clazz = new LirClassDef("GDChildDynamicWorker", "GDBaseDynamicWorker");
+        clazz.setSourceFile("call_method_gdcc_parent_dynamic_child.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newGdccDynamicChildOnlyEchoFunction(selfType));
         return clazz;
     }
 
@@ -372,6 +463,36 @@ class CallMethodInsnGenEngineTest {
         return func;
     }
 
+    private static LirFunctionDef newGdccParentDynamicDispatchFunction(GdObjectType selfType) {
+        var func = newMethod("call_child_only_from_base", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("baseRef", new GdObjectType("GDBaseDynamicWorker"), null, func));
+        func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).instructions().add(new CallMethodInsn(
+                "result",
+                "child_only_echo",
+                "baseRef",
+                List.of(varRef("value"))
+        ));
+        entry(func).instructions().add(new ReturnInsn("result"));
+        return func;
+    }
+
+    private static LirFunctionDef newGdccDynamicBasePingFunction(GdObjectType selfType) {
+        var func = newMethod("ping", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
+        entry(func).instructions().add(new ReturnInsn("value"));
+        return func;
+    }
+
+    private static LirFunctionDef newGdccDynamicChildOnlyEchoFunction(GdObjectType selfType) {
+        var func = newMethod("child_only_echo", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("value", GdIntType.INT, null, func));
+        entry(func).instructions().add(new ReturnInsn("value"));
+        return func;
+    }
+
     private static LirFunctionDef newMethod(String name, GdType returnType, GdObjectType selfType) {
         var func = new LirFunctionDef(name);
         func.setReturnType(returnType);
@@ -462,6 +583,27 @@ class CallMethodInsnGenEngineTest {
                         print("gdcc cross-class call_method check passed.")
                     else:
                         push_error("gdcc cross-class call_method check failed.")
+                """;
+    }
+
+    private static String gdccParentDynamicTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "GdccParentDynamicNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var child = GDChildDynamicWorker.new()
+                    var result = int(target.call("call_child_only_from_base", child, 93))
+                    if result == 93:
+                        print("gdcc parent-typed dynamic call_method check passed.")
+                    else:
+                        push_error("gdcc parent-typed dynamic call_method check failed.")
                 """;
     }
 }
