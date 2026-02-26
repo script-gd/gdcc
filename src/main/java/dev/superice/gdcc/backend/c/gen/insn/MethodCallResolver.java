@@ -1,13 +1,30 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.FunctionDef;
-import dev.superice.gdcc.type.*;
+import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedArrayType;
+import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.StringJoiner;
 
 /// Shared resolver for `call_method` dispatch mode and method signature lookup.
 ///
@@ -27,10 +44,31 @@ public final class MethodCallResolver {
         VARIANT_DYNAMIC
     }
 
-    public record MethodParamSpec(@NotNull String name, @NotNull GdType type) {
+    public enum DefaultArgKind {
+        NONE,
+        LITERAL,
+        FUNCTION
+    }
+
+    public record MethodParamSpec(@NotNull String name,
+                                  @NotNull GdType type,
+                                  @NotNull DefaultArgKind defaultKind,
+                                  @Nullable String defaultLiteral,
+                                  @Nullable String defaultFunctionName) {
         public MethodParamSpec {
             Objects.requireNonNull(name);
             Objects.requireNonNull(type);
+            Objects.requireNonNull(defaultKind);
+            if (defaultKind == DefaultArgKind.LITERAL && (defaultLiteral == null || defaultLiteral.isBlank())) {
+                throw new IllegalArgumentException("defaultLiteral must be present when defaultKind is LITERAL");
+            }
+            if (defaultKind == DefaultArgKind.FUNCTION && (defaultFunctionName == null || defaultFunctionName.isBlank())) {
+                throw new IllegalArgumentException("defaultFunctionName must be present when defaultKind is FUNCTION");
+            }
+        }
+
+        public boolean hasDefaultValue() {
+            return defaultKind != DefaultArgKind.NONE;
         }
     }
 
@@ -223,15 +261,18 @@ public final class MethodCallResolver {
                                                        @NotNull List<LirVariable> argVars) {
         var fixedCount = candidate.parameters().size();
         var providedCount = argVars.size();
-        if (providedCount < fixedCount) {
+        if (providedCount < fixedCount && !canOmitTrailingParameters(candidate.parameters(), providedCount)) {
+            var missingParam = firstMissingRequiredParameter(candidate.parameters(), providedCount);
             return "Too few arguments for method '" + candidate.ownerClassName() + "." + candidate.methodName() +
-                    "': expected at least " + fixedCount + ", got " + providedCount;
+                    "': missing required parameter #" + (missingParam + 1) + " ('" +
+                    candidate.parameters().get(missingParam).name() + "')";
         }
         if (!candidate.isVararg() && providedCount > fixedCount) {
             return "Too many arguments for method '" + candidate.ownerClassName() + "." + candidate.methodName() +
                     "': expected " + fixedCount + ", got " + providedCount;
         }
-        for (var i = 0; i < fixedCount; i++) {
+        var providedFixedCount = Math.min(providedCount, fixedCount);
+        for (var i = 0; i < providedFixedCount; i++) {
             var argType = argVars.get(i).type();
             var param = candidate.parameters().get(i);
             if (!bodyBuilder.classRegistry().checkAssignable(argType, param.type())) {
@@ -279,13 +320,14 @@ public final class MethodCallResolver {
                                             @NotNull List<LirVariable> argVars) {
         var fixedCount = candidate.parameters().size();
         var provided = argVars.size();
-        if (provided < fixedCount) {
+        if (provided < fixedCount && !canOmitTrailingParameters(candidate.parameters(), provided)) {
             return false;
         }
-        if (!candidate.isVararg() && provided != fixedCount) {
+        if (!candidate.isVararg() && provided > fixedCount) {
             return false;
         }
-        for (var i = 0; i < fixedCount; i++) {
+        var providedFixedCount = Math.min(provided, fixedCount);
+        for (var i = 0; i < providedFixedCount; i++) {
             var argType = argVars.get(i).type();
             var paramType = candidate.parameters().get(i).type();
             if (!bodyBuilder.classRegistry().checkAssignable(argType, paramType)) {
@@ -301,6 +343,26 @@ public final class MethodCallResolver {
             }
         }
         return true;
+    }
+
+    private static boolean canOmitTrailingParameters(@NotNull List<MethodParamSpec> parameters,
+                                                     int providedCount) {
+        for (var i = providedCount; i < parameters.size(); i++) {
+            if (!parameters.get(i).hasDefaultValue()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int firstMissingRequiredParameter(@NotNull List<MethodParamSpec> parameters,
+                                                     int providedCount) {
+        for (var i = providedCount; i < parameters.size(); i++) {
+            if (!parameters.get(i).hasDefaultValue()) {
+                return i;
+            }
+        }
+        return providedCount;
     }
 
     private static @NotNull DispatchMode resolveOwnerDispatchMode(@NotNull CBodyBuilder bodyBuilder,
@@ -348,22 +410,123 @@ public final class MethodCallResolver {
                 throw bodyBuilder.invalidInsn("Method parameter #" + (i + 1) + " metadata is missing for '" +
                         ownerClass.getName() + "." + function.getName() + "'");
             }
-            params.add(new MethodParamSpec(parameter.getName(), parameter.getType()));
+            var parameterType = resolveMethodParameterType(bodyBuilder, ownerClass, function, parameter, i + 1);
+            var defaultKind = resolveDefaultArgKind(parameter);
+            var defaultLiteral = defaultKind == DefaultArgKind.LITERAL
+                    ? ((ExtensionFunctionArgument) parameter).defaultValue()
+                    : null;
+            var defaultFunctionName = defaultKind == DefaultArgKind.FUNCTION
+                    ? parameter.getDefaultValueFunc()
+                    : null;
+            params.add(new MethodParamSpec(
+                    parameter.getName(),
+                    parameterType,
+                    defaultKind,
+                    defaultLiteral,
+                    defaultFunctionName
+            ));
         }
 
         var ownerType = resolveOwnerType(bodyBuilder, mode, ownerClass.getName());
         var cFunctionName = renderMethodCFunctionName(mode, ownerClass.getName(), function.getName());
+        var returnType = resolveMethodReturnType(bodyBuilder, ownerClass, function);
         return new ResolvedMethodCall(
                 mode,
                 function.getName(),
                 ownerClass.getName(),
                 ownerType,
                 cFunctionName,
-                function.getReturnType(),
+                returnType,
                 params,
                 function.isVararg(),
                 function.isStatic()
         );
+    }
+
+    private static @NotNull DefaultArgKind resolveDefaultArgKind(@NotNull ParameterDef parameter) {
+        if (parameter instanceof ExtensionFunctionArgument extensionArgument &&
+                extensionArgument.defaultValue() != null && !extensionArgument.defaultValue().isBlank()) {
+            return DefaultArgKind.LITERAL;
+        }
+        var defaultValueFunc = parameter.getDefaultValueFunc();
+        if (defaultValueFunc != null && !defaultValueFunc.isBlank()) {
+            return DefaultArgKind.FUNCTION;
+        }
+        return DefaultArgKind.NONE;
+    }
+
+    private static @NotNull GdType resolveMethodParameterType(@NotNull CBodyBuilder bodyBuilder,
+                                                               @NotNull ClassDef ownerClass,
+                                                               @NotNull FunctionDef function,
+                                                               @NotNull ParameterDef parameter,
+                                                               int parameterIndexBaseOne) {
+        if (parameter instanceof ExtensionFunctionArgument extensionArgument) {
+            return parseExtensionType(
+                    bodyBuilder,
+                    extensionArgument.type(),
+                    "method parameter #" + parameterIndexBaseOne + " of '" +
+                            ownerClass.getName() + "." + function.getName() + "'"
+            );
+        }
+        var parameterType = parameter.getType();
+        if (parameterType == null) {
+            throw bodyBuilder.invalidInsn("Method parameter #" + parameterIndexBaseOne + " of '" +
+                    ownerClass.getName() + "." + function.getName() + "' has unresolved type metadata");
+        }
+        return parameterType;
+    }
+
+    private static @NotNull GdType resolveMethodReturnType(@NotNull CBodyBuilder bodyBuilder,
+                                                            @NotNull ClassDef ownerClass,
+                                                            @NotNull FunctionDef function) {
+        if (function instanceof ExtensionBuiltinClass.ClassMethod builtinMethod) {
+            var rawReturnType = builtinMethod.returnValue() != null
+                    ? builtinMethod.returnValue().type()
+                    : builtinMethod.returnType();
+            return parseExtensionType(
+                    bodyBuilder,
+                    rawReturnType,
+                    "return type of '" + ownerClass.getName() + "." + function.getName() + "'"
+            );
+        }
+        if (function instanceof ExtensionGdClass.ClassMethod gdMethod) {
+            var returnInfo = gdMethod.returnValue();
+            var rawReturnType = returnInfo == null ? "void" : returnInfo.type();
+            return parseExtensionType(
+                    bodyBuilder,
+                    rawReturnType,
+                    "return type of '" + ownerClass.getName() + "." + function.getName() + "'"
+            );
+        }
+        return function.getReturnType();
+    }
+
+    private static @NotNull GdType parseExtensionType(@NotNull CBodyBuilder bodyBuilder,
+                                                       @Nullable String rawTypeName,
+                                                       @NotNull String typeUseSite) {
+        if (rawTypeName == null || rawTypeName.isBlank()) {
+            return GdVoidType.VOID;
+        }
+        var normalized = rawTypeName.trim();
+        if (normalized.startsWith("enum::") || normalized.startsWith("bitfield::")) {
+            return GdIntType.INT;
+        }
+        if (normalized.startsWith("typedarray::")) {
+            var elementTypeName = normalized.substring("typedarray::".length()).trim();
+            if (elementTypeName.isBlank()) {
+                throw bodyBuilder.invalidInsn(typeUseSite + " has malformed typedarray metadata: '" + rawTypeName + "'");
+            }
+            var elementType = parseExtensionType(bodyBuilder, elementTypeName, typeUseSite);
+            if (elementType instanceof GdPackedArrayType) {
+                return elementType;
+            }
+            return new GdArrayType(elementType);
+        }
+        var parsed = dev.superice.gdcc.scope.ClassRegistry.tryParseTextType(normalized);
+        if (parsed == null) {
+            throw bodyBuilder.invalidInsn(typeUseSite + " has unsupported type metadata: '" + rawTypeName + "'");
+        }
+        return parsed;
     }
 
     private static @NotNull GdType resolveOwnerType(@NotNull CBodyBuilder bodyBuilder,

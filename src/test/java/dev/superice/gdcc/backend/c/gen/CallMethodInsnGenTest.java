@@ -22,6 +22,9 @@ import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedNumericArrayType;
+import dev.superice.gdcc.type.GdPackedVectorArrayType;
+import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
@@ -338,6 +341,179 @@ class CallMethodInsnGenTest {
         assertTrue(ex.getMessage().contains("Argument variable ID 'axis' not found"), ex.getMessage());
     }
 
+    @Test
+    @DisplayName("CALL_METHOD should materialize extension literal defaults")
+    void callMethodShouldMaterializeExtensionLiteralDefault() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_substr_default");
+        func.createAndAddVariable("text", GdStringType.STRING);
+        func.createAndAddVariable("from", GdIntType.INT);
+        func.createAndAddVariable("ret", GdStringType.STRING);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "substr",
+                "text",
+                List.of(new LirInstruction.VariableOperand("from"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(stringBuiltinWithSubstrDefault()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_String_substr(&$text, $from, __gdcc_tmp_default_arg_2_"), body);
+        assertTrue(body.contains("__gdcc_tmp_default_arg_2_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should materialize GDCC instance default_value_func")
+    void callMethodShouldMaterializeGdccInstanceDefaultFunction() {
+        var workerClass = newClass("Worker");
+        var defaultCount = newFunction("default_count");
+        defaultCount.setReturnType(GdIntType.INT);
+        defaultCount.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, defaultCount));
+        workerClass.addFunction(defaultCount);
+
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "default_count", ping));
+        ping.setReturnType(GdVoidType.VOID);
+        entry(ping).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(ping);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "ping",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        assertTrue(body.contains("Worker_default_count($worker)"), body);
+        assertTrue(body.contains("Worker_ping($worker, __gdcc_tmp_default_arg_1_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should materialize GDCC static default_value_func without receiver")
+    void callMethodShouldMaterializeGdccStaticDefaultFunction() {
+        var workerClass = newClass("Worker");
+        var defaultCount = newFunction("default_count_static");
+        defaultCount.setStatic(true);
+        defaultCount.setReturnType(GdIntType.INT);
+        workerClass.addFunction(defaultCount);
+
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, ping));
+        ping.addParameter(new LirParameterDef("count", GdIntType.INT, "default_count_static", ping));
+        ping.setReturnType(GdVoidType.VOID);
+        entry(ping).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(ping);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "ping",
+                "worker",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        assertTrue(body.contains("Worker_default_count_static()"), body);
+        assertFalse(body.contains("Worker_default_count_static($worker)"), body);
+        assertTrue(body.contains("Worker_ping($worker, __gdcc_tmp_default_arg_1_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should reject non-Variant vararg arguments")
+    void callMethodShouldRejectNonVariantVarargArgument() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_vararg_bad_extra");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("name", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("extra", GdIntType.INT);
+        entry(func).instructions().add(new CallMethodInsn(
+                null,
+                "spread",
+                "node",
+                List.of(
+                        new LirInstruction.VariableOperand("name"),
+                        new LirInstruction.VariableOperand("extra")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithVarargSpread())), List.of(clazz))
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Vararg argument #2"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("must be Variant"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should normalize typedarray PackedByteArray parameter to packed array type")
+    void callMethodShouldNormalizeTypedarrayPackedByteArrayParameter() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_typedarray_packed_param");
+        func.createAndAddVariable("array", new GdArrayType(GdStringType.STRING));
+        func.createAndAddVariable("bytes", GdPackedNumericArrayType.PACKED_BYTE_ARRAY);
+        func.createAndAddVariable("ret", GdIntType.INT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "accept_packed",
+                "array",
+                List.of(new LirInstruction.VariableOperand("bytes"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayPackedByteArrayParam()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Array_accept_packed(&$array, &$bytes)"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should normalize typedarray StringName parameter to Array[StringName]")
+    void callMethodShouldNormalizeTypedarrayStringNameParameter() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_typedarray_string_name_param");
+        func.createAndAddVariable("array", new GdArrayType(GdStringType.STRING));
+        func.createAndAddVariable("names", new GdArrayType(GdStringNameType.STRING_NAME));
+        func.createAndAddVariable("ret", GdIntType.INT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "accept_names",
+                "array",
+                List.of(new LirInstruction.VariableOperand("names"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayStringNameParam()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Array_accept_names(&$array, &$names)"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should normalize typedarray PackedVector3Array return type")
+    void callMethodShouldNormalizeTypedarrayPackedVector3ArrayReturn() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_typedarray_packed_return");
+        func.createAndAddVariable("array", new GdArrayType(GdStringType.STRING));
+        func.createAndAddVariable("ret", GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "fetch_packed_vectors",
+                "array",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithTypedarrayPackedVector3ArrayReturn()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Array_fetch_packed_vectors(&$array)"), body);
+    }
+
     private LirClassDef newClass(String name) {
         return newClass(name, "RefCounted");
     }
@@ -530,6 +706,135 @@ class CallMethodInsnGenTest {
                 false,
                 List.of(),
                 List.of(size),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass stringBuiltinWithSubstrDefault() {
+        var substr = new ExtensionBuiltinClass.ClassMethod(
+                "substr",
+                "String",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(
+                        new ExtensionFunctionArgument("from", "int", null, null),
+                        new ExtensionFunctionArgument("len", "int", "-1", null)
+                ),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("String")
+        );
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(substr),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithVarargSpread() {
+        var spread = new ExtensionGdClass.ClassMethod(
+                "spread",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("name", "StringName", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(spread),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass arrayBuiltinWithTypedarrayPackedByteArrayParam() {
+        var method = new ExtensionBuiltinClass.ClassMethod(
+                "accept_packed",
+                "int",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(new ExtensionFunctionArgument("bytes", "typedarray::PackedByteArray", null, null)),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("int")
+        );
+        return new ExtensionBuiltinClass(
+                "Array",
+                false,
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass arrayBuiltinWithTypedarrayStringNameParam() {
+        var method = new ExtensionBuiltinClass.ClassMethod(
+                "accept_names",
+                "int",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(new ExtensionFunctionArgument("names", "typedarray::StringName", null, null)),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("int")
+        );
+        return new ExtensionBuiltinClass(
+                "Array",
+                false,
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass arrayBuiltinWithTypedarrayPackedVector3ArrayReturn() {
+        var method = new ExtensionBuiltinClass.ClassMethod(
+                "fetch_packed_vectors",
+                "typedarray::PackedVector3Array",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("typedarray::PackedVector3Array")
+        );
+        return new ExtensionBuiltinClass(
+                "Array",
+                false,
+                List.of(),
+                List.of(method),
                 List.of(),
                 List.of(),
                 List.of(),

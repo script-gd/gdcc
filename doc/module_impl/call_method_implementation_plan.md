@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（Phase 1 已落地）
+- 状态：In Progress（Phase 1 / Phase 1.1 / Phase 2 已落地）
 - 目标模块：`backend.c` / `CALL_METHOD`
 - 关联实现基线：
   - `doc/module_impl/call_global_implementation.md`
@@ -22,9 +22,22 @@
 - 已识别需在下一步修复的实现偏差（详见 4.6/4.7）：
   - owner 在父类链上切换时，调用符号分派模式必须跟随 `owner`，不能固化为 receiver 初始分支。
   - 重载选择规则需显式定义“最近 owner + 非 vararg 优先 + 唯一最佳匹配”，避免误判 `ambiguous`。
+- Phase 2 已完成并提交工作区实现（待合并）：
+  - 已实现默认参数补全：
+    - extension literal default（复用 `CBuiltinBuilder.materializeUtilityDefaultValue`）
+    - GDCC `default_value_func`（含实例/静态 default 函数契约校验与 fail-fast）
+  - 已补齐 vararg 契约：extra 参数必须可赋值给 `Variant`。
+  - 已完成方法签名类型规范化：
+    - `enum::` / `bitfield::` -> `int`
+    - `typedarray::Packed*Array` -> `GdPacked*ArrayType`
+    - 非 packed `typedarray::T` -> `GdArrayType(T)`
+  - 已补齐 `CallMethodInsnGenTest` Phase 2 覆盖：
+    - extension literal default
+    - GDCC `default_value_func`（实例/静态）
+    - vararg 类型失败路径
+    - `typedarray::` packed/non-packed 参数与返回值规范化路径
 - 当前仍按阶段计划保留未实现项：
   - `OBJECT_DYNAMIC`（`godot_Object_call`）与 `VARIANT_DYNAMIC`（`godot_Variant_call`）将于 Phase 3 落地。
-  - 默认参数补齐与 `typedarray::` 类型规范化仍在 Phase 2。
 
 ---
 
@@ -411,11 +424,11 @@ MethodSignatureSpec {
 
 ### Phase 2（语义补齐）
 
-- [ ] 默认参数补全：
+- [x] 默认参数补全：
   - extension literal default（复用 `CBuiltinBuilder`）
   - GDCC `default_value_func`
-- [ ] vararg 契约补齐
-- [ ] 完成 `typedarray::` 局部类型规范化（含 Packed*Array 特殊分支）
+- [x] vararg 契约补齐
+- [x] 完成 `typedarray::` 局部类型规范化（含 Packed*Array 特殊分支）
 
 ### Phase 3（动态兼容）
 
