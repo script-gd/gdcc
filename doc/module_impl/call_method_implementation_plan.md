@@ -18,7 +18,7 @@
   - 已注册 `CallMethodInsnGen` 到 `CCodegen` 指令分发表。
   - 新增 `CallMethodInsnGen`，落地 `GDCC/ENGINE/BUILTIN` 静态分派路径。
   - 新增 `MethodCallResolver`，统一接收者分类、方法元数据查找与已知类型缺失方法 fail-fast。
-  - 已落地 Phase 1 约束：结果契约校验、参数变量存在性校验、固定参数/vararg 类型校验、静态方法调用拒绝。
+  - 已落地 Phase 1 约束：结果契约校验、参数变量存在性校验、固定参数/vararg 类型校验、静态方法调用允许并输出 warning。
 - 已识别需在下一步修复的实现偏差（详见 4.6/4.7）：
   - owner 在父类链上切换时，调用符号分派模式必须跟随 `owner`，不能固化为 receiver 初始分支。
   - 重载选择规则需显式定义“最近 owner + 非 vararg 优先 + 唯一最佳匹配”，避免误判 `ambiguous`。
@@ -135,7 +135,7 @@
    - `ownerType`（声明该方法的类型）
    - `cFunctionName`
    - `signature`
-2. 校验不可调用静态方法（`isStatic=true`）并 fail-fast。
+2. `isStatic=true` 时允许生成静态调用，并输出 warning（提示应优先使用 `call_static_method` / 显式静态调用语义）。
 3. 固定参数校验：
    - provided > fixed 且非 vararg -> 抛错。
    - provided < fixed 时补默认值：
@@ -222,9 +222,9 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
    - 候选按 owner 到 receiver 的继承距离升序排序（距离越小优先）。
    - 仅保留最小距离组；父类候选不能与子类候选并列竞争。
 
-3. **实例方法优先**
+3. **实例方法优先（但不禁止静态）**
    - 在同一距离组中，优先非 static 候选。
-   - 若仅 static 命中，则在调用层由 `call_method` 语义统一 fail-fast（“静态方法不能被 call_method 调用”）。
+   - 若仅 static 命中，允许生成静态调用；代码生成阶段输出 warning，不阻断编译。
 
 4. **非 vararg 优先**
    - 在同一距离与 static 维度下，优先固定参数（non-vararg）候选。
@@ -335,6 +335,7 @@ MethodSignatureSpec {
 2. `ENGINE` 成功路径：
    - `Node.queue_free`（void）
    - `Node.call_deferred_thread_group`（vararg + Variant 返回）
+   - 静态方法通过实例 `call_method` 调用（应成功生成并输出 warning）
 3. `GDCC` 成功路径：
    - 同类实例方法调用
    - 继承链方法调用（验证 owner 符号与 receiver 传递）
@@ -346,7 +347,6 @@ MethodSignatureSpec {
    - Variant receiver + 未知方法（验证回退 `godot_Variant_call`）
 5. 失败路径：
    - 接收者不存在 / result 不存在 / result 为 ref
-   - 调用静态方法
    - 参数过多/过少且不可补
    - 参数类型不兼容
    - void 方法却给 resultId
@@ -404,10 +404,10 @@ MethodSignatureSpec {
 
 ### Phase 1.1（错误修复与规则收敛）
 
-- [ ] 修复 owner 分派模式：按方法实际 owner 选择 `GDCC/ENGINE` 调用符号
-- [ ] 修复已知类型元数据缺失路径：禁止回退 `OBJECT_DYNAMIC`
-- [ ] 明确并落地重载选择规则（最近 owner / 实例优先 / non-vararg 优先 / 唯一最佳）
-- [ ] 补齐对应单测与回归断言
+- [x] 修复 owner 分派模式：按方法实际 owner 选择 `GDCC/ENGINE` 调用符号
+- [x] 修复已知类型元数据缺失路径：禁止回退 `OBJECT_DYNAMIC`
+- [x] 明确并落地重载选择规则（最近 owner / 实例优先 / non-vararg 优先 / 唯一最佳）
+- [x] 补齐对应单测与回归断言
 
 ### Phase 2（语义补齐）
 

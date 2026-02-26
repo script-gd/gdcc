@@ -11,6 +11,8 @@ import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -24,6 +26,8 @@ import java.util.List;
 /// - Known object type + unknown method fails fast.
 /// - Dynamic paths (OBJECT_DYNAMIC / VARIANT_DYNAMIC) are intentionally deferred.
 public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
+    private static final Logger LOGGER = LoggerFactory.getLogger(CallMethodInsnGen.class);
+
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
         return EnumSet.of(GdInstruction.CALL_METHOD);
@@ -51,14 +55,15 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                                         @NotNull List<LirVariable> argVars,
                                         @NotNull MethodCallResolver.ResolvedMethodCall resolved) {
         if (resolved.isStatic()) {
-            throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
-                    "' is static and cannot be called by call_method");
+            warnStaticMethodCall(bodyBuilder, receiverVar, resolved);
         }
 
         validateFixedArguments(bodyBuilder, resolved, argVars);
         var fixedCount = resolved.parameters().size();
-        var fixedArgs = new ArrayList<CBodyBuilder.ValueRef>(fixedCount + 1);
-        fixedArgs.add(renderReceiverValue(bodyBuilder, receiverVar, resolved.ownerType()));
+        var fixedArgs = new ArrayList<CBodyBuilder.ValueRef>(fixedCount + (resolved.isStatic() ? 0 : 1));
+        if (!resolved.isStatic()) {
+            fixedArgs.add(renderReceiverValue(bodyBuilder, receiverVar, resolved.ownerType()));
+        }
         for (var i = 0; i < fixedCount; i++) {
             fixedArgs.add(bodyBuilder.valueOfVar(argVars.get(i)));
         }
@@ -84,6 +89,21 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var target = resolveResultTarget(bodyBuilder, instruction, resolved);
         bodyBuilder.callAssign(target, resolved.cFunctionName(), returnType, fixedArgs, varargs);
+    }
+
+    private void warnStaticMethodCall(@NotNull CBodyBuilder bodyBuilder,
+                                      @NotNull LirVariable receiverVar,
+                                      @NotNull MethodCallResolver.ResolvedMethodCall resolved) {
+        var block = bodyBuilder.currentBlock();
+        var blockId = block != null ? block.id() : "unknown";
+        LOGGER.warn("call_method on receiver '{}' resolved static method '{}.{}'; emitting static call '{}' (function='{}', block='{}', insnIndex={})",
+                receiverVar.id(),
+                resolved.ownerClassName(),
+                resolved.methodName(),
+                resolved.cFunctionName(),
+                bodyBuilder.func().getName(),
+                blockId,
+                bodyBuilder.currentInsnIndex());
     }
 
     private @NotNull CBodyBuilder.ValueRef renderReceiverValue(@NotNull CBodyBuilder bodyBuilder,
