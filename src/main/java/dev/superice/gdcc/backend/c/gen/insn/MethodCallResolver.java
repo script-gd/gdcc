@@ -30,8 +30,8 @@ import java.util.StringJoiner;
 ///
 /// Phase 1 scope:
 /// - Resolve static/direct call metadata for GDCC / ENGINE / BUILTIN receivers.
-/// - Resolve known-type missing-method as compile-time error.
-/// - Return OBJECT_DYNAMIC / VARIANT_DYNAMIC modes for not-yet-implemented dynamic paths.
+/// - Fall back to OBJECT_DYNAMIC when object receiver cannot be resolved statically.
+/// - Return OBJECT_DYNAMIC / VARIANT_DYNAMIC modes for runtime dynamic paths.
 public final class MethodCallResolver {
     private MethodCallResolver() {
     }
@@ -112,13 +112,8 @@ public final class MethodCallResolver {
         }
 
         if (receiverType instanceof GdObjectType objectType) {
-            if (objectType.checkGdccType(bodyBuilder.classRegistry())) {
-                return resolveKnownObjectMethod(bodyBuilder, objectType, methodName, argVars, "GDCC");
-            }
-            if (objectType.checkEngineType(bodyBuilder.classRegistry())) {
-                return resolveKnownObjectMethod(bodyBuilder, objectType, methodName, argVars, "ENGINE");
-            }
-            return dynamicPlaceholder(DispatchMode.OBJECT_DYNAMIC, receiverType, methodName);
+            var resolvedKnown = tryResolveKnownObjectMethod(bodyBuilder, objectType, methodName, argVars);
+            return Objects.requireNonNullElseGet(resolvedKnown, () -> dynamicPlaceholder(DispatchMode.OBJECT_DYNAMIC, receiverType, methodName));
         }
 
         if (receiverType instanceof GdVariantType) {
@@ -143,23 +138,21 @@ public final class MethodCallResolver {
         );
     }
 
-    private static @NotNull ResolvedMethodCall resolveKnownObjectMethod(@NotNull CBodyBuilder bodyBuilder,
-                                                                        @NotNull GdObjectType receiverType,
-                                                                        @NotNull String methodName,
-                                                                        @NotNull List<LirVariable> argVars,
-                                                                        @NotNull String receiverKind) {
+    private static @Nullable ResolvedMethodCall tryResolveKnownObjectMethod(@NotNull CBodyBuilder bodyBuilder,
+                                                                            @NotNull GdObjectType receiverType,
+                                                                            @NotNull String methodName,
+                                                                            @NotNull List<LirVariable> argVars) {
         var classDef = bodyBuilder.classRegistry().getClassDef(receiverType);
         if (classDef == null) {
-            throw bodyBuilder.invalidInsn(receiverKind + " receiver type '" + receiverType.getTypeName() +
-                    "' is known but class metadata is missing");
+            return null;
         }
 
         var candidates = collectMethodCandidates(bodyBuilder, classDef, methodName);
         if (candidates.isEmpty()) {
-            throw bodyBuilder.invalidInsn("Method '" + methodName + "' not found in type '" +
-                    receiverType.getTypeName() + "' or its super classes");
+            return null;
         }
-        return chooseBestCandidate(bodyBuilder, methodName, receiverType, candidates, argVars).resolved();
+        var selected = chooseBestCandidate(bodyBuilder, methodName, receiverType, candidates, argVars, true);
+        return selected == null ? null : selected.resolved();
     }
 
     private static @NotNull ResolvedMethodCall resolveBuiltinMethod(@NotNull CBodyBuilder bodyBuilder,
@@ -177,7 +170,12 @@ public final class MethodCallResolver {
             throw bodyBuilder.invalidInsn("Method '" + methodName + "' not found in builtin class '" +
                     receiverType.getTypeName() + "'");
         }
-        return chooseBestCandidate(bodyBuilder, methodName, receiverType, candidates, argVars).resolved();
+        var selected = chooseBestCandidate(bodyBuilder, methodName, receiverType, candidates, argVars, false);
+        if (selected == null) {
+            throw bodyBuilder.invalidInsn("Ambiguous overload for method '" + methodName + "' on type '" +
+                    receiverType.getTypeName() + "'");
+        }
+        return selected.resolved();
     }
 
     private static @NotNull List<MethodCandidate> collectMethodCandidates(@NotNull CBodyBuilder bodyBuilder,
@@ -210,11 +208,17 @@ public final class MethodCallResolver {
         return out;
     }
 
-    private static @NotNull MethodCandidate chooseBestCandidate(@NotNull CBodyBuilder bodyBuilder,
-                                                                @NotNull String methodName,
-                                                                @NotNull GdType receiverType,
-                                                                @NotNull List<MethodCandidate> candidates,
-                                                                @NotNull List<LirVariable> argVars) {
+    /// Object receiver dynamic fallback:
+    /// - If no applicable candidate: still fail-fast (invalid arguments).
+    /// - If ambiguous between equally-best candidates and `fallbackToDynamicOnAmbiguous=true`,
+    ///   return null so caller can emit OBJECT_DYNAMIC.
+    /// - Otherwise, report ambiguous overload as compile-time error.
+    private static @Nullable MethodCandidate chooseBestCandidate(@NotNull CBodyBuilder bodyBuilder,
+                                                                 @NotNull String methodName,
+                                                                 @NotNull GdType receiverType,
+                                                                 @NotNull List<MethodCandidate> candidates,
+                                                                 @NotNull List<LirVariable> argVars,
+                                                                 boolean fallbackToDynamicOnAmbiguous) {
         var applicable = new ArrayList<MethodCandidate>();
         for (var candidate : candidates) {
             if (matchesArguments(bodyBuilder, candidate.resolved(), argVars)) {
@@ -239,6 +243,9 @@ public final class MethodCallResolver {
 
         if (pool.size() == 1) {
             return pool.getFirst();
+        }
+        if (fallbackToDynamicOnAmbiguous) {
+            return null;
         }
         throw bodyBuilder.invalidInsn("Ambiguous overload for method '" + methodName + "' on type '" +
                 receiverType.getTypeName() + "': " + renderCandidates(pool));
@@ -456,10 +463,10 @@ public final class MethodCallResolver {
     }
 
     private static @NotNull GdType resolveMethodParameterType(@NotNull CBodyBuilder bodyBuilder,
-                                                               @NotNull ClassDef ownerClass,
-                                                               @NotNull FunctionDef function,
-                                                               @NotNull ParameterDef parameter,
-                                                               int parameterIndexBaseOne) {
+                                                              @NotNull ClassDef ownerClass,
+                                                              @NotNull FunctionDef function,
+                                                              @NotNull ParameterDef parameter,
+                                                              int parameterIndexBaseOne) {
         if (parameter instanceof ExtensionFunctionArgument extensionArgument) {
             return parseExtensionType(
                     bodyBuilder,
@@ -468,17 +475,12 @@ public final class MethodCallResolver {
                             ownerClass.getName() + "." + function.getName() + "'"
             );
         }
-        var parameterType = parameter.getType();
-        if (parameterType == null) {
-            throw bodyBuilder.invalidInsn("Method parameter #" + parameterIndexBaseOne + " of '" +
-                    ownerClass.getName() + "." + function.getName() + "' has unresolved type metadata");
-        }
-        return parameterType;
+        return parameter.getType();
     }
 
     private static @NotNull GdType resolveMethodReturnType(@NotNull CBodyBuilder bodyBuilder,
-                                                            @NotNull ClassDef ownerClass,
-                                                            @NotNull FunctionDef function) {
+                                                           @NotNull ClassDef ownerClass,
+                                                           @NotNull FunctionDef function) {
         if (function instanceof ExtensionBuiltinClass.ClassMethod builtinMethod) {
             var rawReturnType = builtinMethod.returnValue() != null
                     ? builtinMethod.returnValue().type()
@@ -502,8 +504,8 @@ public final class MethodCallResolver {
     }
 
     private static @NotNull GdType parseExtensionType(@NotNull CBodyBuilder bodyBuilder,
-                                                       @Nullable String rawTypeName,
-                                                       @NotNull String typeUseSite) {
+                                                      @Nullable String rawTypeName,
+                                                      @NotNull String typeUseSite) {
         if (rawTypeName == null || rawTypeName.isBlank()) {
             return GdVoidType.VOID;
         }

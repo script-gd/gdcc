@@ -17,7 +17,7 @@
 - Phase 1 已完成并提交代码实现：
   - 已注册 `CallMethodInsnGen` 到 `CCodegen` 指令分发表。
   - 新增 `CallMethodInsnGen`，落地 `GDCC/ENGINE/BUILTIN` 静态分派路径。
-  - 新增 `MethodCallResolver`，统一接收者分类、方法元数据查找与已知类型缺失方法 fail-fast。
+  - 新增 `MethodCallResolver`，统一接收者分类、方法元数据查找，并在对象静态不可决议时回退 `OBJECT_DYNAMIC`。
   - 已落地 Phase 1 约束：结果契约校验、参数变量存在性校验、固定参数/vararg 类型校验、静态方法调用允许并输出 warning。
 - 已识别需在下一步修复的实现偏差（详见 4.6/4.7）：
   - owner 在父类链上切换时，调用符号分派模式必须跟随 `owner`，不能固化为 receiver 初始分支。
@@ -38,7 +38,7 @@
     - `typedarray::` packed/non-packed 参数与返回值规范化路径
 - Phase 3 已完成并提交工作区实现（待合并）：
   - 已实现 `OBJECT_DYNAMIC`：
-    - 对 unknown object receiver 生成 `godot_Object_call`
+    - 对编译期无法静态决议的 `GdObjectType` receiver 生成 `godot_Object_call`
     - 非 `Variant` 实参自动 pack 为 `Variant`，调用后逆序销毁 pack 临时变量
     - 返回值统一按 `Variant` 接收；当目标非 `Variant` 时自动 unpack 到目标类型
   - 已实现 `VARIANT_DYNAMIC`：
@@ -52,7 +52,7 @@
     - `VARIANT_DYNAMIC` unpack 到非 `Variant` 结果路径
     - 动态路径 `resultId` 为 ref 的失败路径
 - Phase 4 已完成并提交工作区实现（待合并）：
-  - 已新增 `CallMethodInsnGenEngineTest`，覆盖真实 Godot 运行与代码生成断言下的六类路径（四类基础路径 + 两个专项引擎测试）：
+  - 已新增 `CallMethodInsnGenEngineTest`，覆盖真实 Godot 运行与代码生成断言下的七类路径（四类基础路径 + 三个专项引擎测试）：
     - builtin 调用
     - engine 调用
     - `VARIANT_DYNAMIC`（`godot_Variant_call`，真实运行断言）
@@ -61,12 +61,22 @@
       （覆盖 `Node.call` 的 vararg `argv/argc` 生成与真实运行）
     - 跨 GDCC 类互调专项测试：`callMethodBetweenDifferentGdccClassesShouldRunInRealGodot`
       （覆盖两个不同 GDCC 类之间静态分派，不得回退 `godot_Object_call` / `godot_Variant_call`）
+    - 父类类型变量触发动态分派专项测试：`callMethodParentTypedGdccReceiverShouldUseObjectDynamicAndRunInRealGodot`
+      （覆盖“父类类型接收子类实例 + 调用仅子类方法”场景，验证 `godot_Object_call` 与 GDCC 指针转换）
   - 已修复模板侧隐藏函数绑定语义：
     - `entry.c.ftl` 仅为非 hidden / 非 lambda 函数发射 `gdcc_bind_method*` 绑定代码
     - hidden 函数仍生成函数体，可用于内部/回归代码生成验证
   - 已补强 `CallMethodInsnGenTest` 回归边界断言：
     - GDCC 静态互调场景显式断言不得回退到 `godot_Object_call` / `godot_Variant_call`
     - 动态场景增加互斥断言，防止对象动态与 Variant 动态路径串线
+    - GDCC 对象实参在动态路径中必须使用 `godot_new_Variant_with_gdcc_Object(...)` 打包，且接收者保持 `godot_object_from_gdcc_object_ptr(...)` 转换
+  - 维护更新：调整 `GdObjectType` 动态分派规则：
+    - 当编译期无法确定目标函数（如方法缺失、owner 元数据缺失、重载歧义）时，
+      无论类型是否出现在注册表，统一回退 `OBJECT_DYNAMIC` 并生成 `godot_Object_call`
+    - 参数类型明确不兼容等“可确定为非法调用”的场景仍保持编译期报错
+  - 维护更新：合并 `MethodCallResolver` 内部重载选择逻辑：
+    - 合并 `chooseBestCandidate` 与 `chooseBestObjectCandidate`，消除重复实现
+    - 保留对象动态回退语义与注释：对象歧义回退 `OBJECT_DYNAMIC`，其余场景保持编译期歧义错误
   - 本文档阶段状态已收敛为 `implemented/maintained`。
 
 ---
@@ -119,7 +129,7 @@
    - GDCC object
    - engine object
    - builtin 值类型（如 `Vector3`、`String`、`Array`、`Callable`）
-   - unknown object（仅在对象类型未知时走动态 `godot_Object_call`）
+   - `GdObjectType`（编译期无法静态决议目标函数时走动态 `godot_Object_call`）
    - `Variant`（静态不可决议时走动态 `godot_Variant_call`）
 4. 对 destroyable 类型与对象返回值保持与 `CBodyBuilder` 统一语义。
 5. **已知 GDCC 类型之间的调用必须优先静态绑定**，不得错误回退到动态分派或直接报错。
@@ -150,7 +160,7 @@
 - `GDCC`：接收者为已知 GDCC 类（含父类链方法查找）。
 - `ENGINE`：接收者为已知 engine 类（含父类链方法查找）。
 - `BUILTIN`：接收者为 builtin 类型（如 Vector/String/Array/...）。
-- `OBJECT_DYNAMIC`：接收者是 `GdObjectType` 但类型未出现在注册表，走 `godot_Object_call`。
+- `OBJECT_DYNAMIC`：接收者是 `GdObjectType` 且编译期无法静态决议目标函数时，走 `godot_Object_call`。
 - `VARIANT_DYNAMIC`：接收者是 `GdVariantType` 且无法编译期静态决议，走 `godot_Variant_call`。
 
 ---
@@ -166,8 +176,9 @@
 3. 校验参数操作数均为变量操作数（与 `CALL_GLOBAL` 一致）。
 4. 解析分派模式（`GDCC/ENGINE/BUILTIN/OBJECT_DYNAMIC/VARIANT_DYNAMIC`）。
 5. 明确约束：
-   - 接收者类型可确定（GDCC/ENGINE/BUILTIN）但找不到方法时，**直接报错**。
-   - 仅在接收者类型本身未知时才走 `OBJECT_DYNAMIC`。
+   - 接收者类型可静态解析且匹配唯一最佳签名时，走静态分派。
+   - 接收者为 `GdObjectType` 但编译期无法确定目标函数时，回退 `OBJECT_DYNAMIC`。
+   - 参数类型明确不兼容等可判定非法调用场景，仍在编译期报错。
 
 ### 4.2 已知签名路径（GDCC/ENGINE/BUILTIN）
 
@@ -192,9 +203,9 @@
 6. 通过 `bodyBuilder.callVoid/callAssign` 发射。
 7. 逆序销毁 default 临时变量。
 
-### 4.3 `OBJECT_DYNAMIC` 路径（unknown object）
+### 4.3 `OBJECT_DYNAMIC` 路径（GdObjectType unresolved）
 
-`OBJECT_DYNAMIC` 仅用于：接收者是 `GdObjectType`，但该对象类型在注册表中找不到类定义。
+`OBJECT_DYNAMIC` 用于：接收者是 `GdObjectType`，且编译期无法静态确定目标函数。
 
 目标语义：使用 `godot_Object_call` + Variant 参数打包/解包。
 
@@ -245,9 +256,9 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
    - 规则：`ResolvedMethodCall.mode` 必须基于“方法实际 owner”判定，而不是 receiver 入口分支。
    - 预期：当 owner 为 engine 类时，必须生成 `godot_<Owner>_<method>`，并沿用 `CBodyBuilder` 的 Godot raw ptr 参数转换语义。
 
-2. **已知类型元数据缺失 fail-fast（P0）**
-   - 问题：receiver 已知（GDCC/ENGINE）但 `ClassDef` 缺失时，不能降级到 `OBJECT_DYNAMIC` 占位。
-   - 规则：已知类型但类元数据缺失属于编译期一致性错误，必须直接抛错并指出缺失类型名。
+2. **已知类型元数据缺失回退动态（P0）**
+   - 规则：receiver 为 `GdObjectType` 且编译期无法静态确定目标函数时（包括 `ClassDef` 缺失），统一回退 `OBJECT_DYNAMIC`。
+   - 约束：仅对“无法确定目标函数”回退；参数类型明确不兼容等非法调用仍保持 fail-fast。
 
 3. **typed 容器接收者归一化（P1）**
    - 问题：`Array[T]` / `Dictionary[K,V]` 作为 receiver 时，builtin 查找键可能与 API 元数据键（`Array` / `Dictionary`）不一致。
@@ -274,7 +285,9 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
    - 仅当 non-vararg 不可用时才选择 vararg 候选。
 
 5. **唯一最佳匹配**
-   - 若最终仍有多个候选并列，抛出 `ambiguous overload`。
+   - 若最终仍有多个候选并列：
+   - `GdObjectType` 场景回退 `OBJECT_DYNAMIC`
+   - 非对象动态场景抛出 `ambiguous overload`。
    - 错误信息需包含：receiver 类型、方法名、候选 owner 列表、各候选签名。
 
 ### 4.8 Phase 3 代码生成规则补充（新增）
@@ -297,7 +310,7 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
 - receiver = GDCC object（已知）：走 `GDCC` 静态分派；找不到方法直接报错。
 - receiver = engine object（已知）：走 `ENGINE` 静态分派；找不到方法直接报错。
 - receiver = builtin 值语义类型：走 `BUILTIN`；非 ref 变量参数自动 `&`。
-- receiver = unknown object（`GdObjectType` 且注册表未知）：走 `OBJECT_DYNAMIC`，调用 `godot_Object_call`。
+- receiver = `GdObjectType` 且编译期无法静态决议目标函数：走 `OBJECT_DYNAMIC`，调用 `godot_Object_call`。
 - receiver = `Variant`：静态不可决议时走 `VARIANT_DYNAMIC`，调用 `godot_Variant_call`。
 - receiver = `void` / `nil`：fail-fast。
 - 参数 = primitive（`bool/int/float`）：direct 模式直接传值；动态模式先 pack `Variant`。
@@ -397,36 +410,41 @@ MethodSignatureSpec {
    - **两个 GDCC 类型互调时必须生成静态调用符号，不得回退动态路径**
    - `default_value_func` 补参（函数默认值）
 4. 动态路径成功：
-   - unknown object + 非 Variant 参数（验证 `godot_Object_call` + pack）
+   - `GdObjectType` 无法静态决议 + 非 Variant 参数（验证 `godot_Object_call` + pack）
+   - GDCC 父类类型变量调用子类独有方法（验证 `godot_Object_call(godot_object_from_gdcc_object_ptr(...), ...)`）
+   - GDCC 对象实参动态打包（验证 `godot_new_Variant_with_gdcc_Object(...)`，且不得退化为手工 `godot_new_Variant_with_Object(godot_object_from_gdcc_object_ptr(...))`）
    - Variant receiver + 未知方法（验证回退 `godot_Variant_call`）
 5. 失败路径：
    - 接收者不存在 / result 不存在 / result 为 ref
    - 参数过多/过少且不可补
    - 参数类型不兼容
    - void 方法却给 resultId
-   - **对象类型可确定但方法未知 -> 必须报错（不得动态回退）**
+   - **参数类型明确不兼容等可判定非法调用 -> 必须编译期报错**
 6. 类型规范化回归：
    - `typedarray::PackedByteArray` / `typedarray::PackedVector3Array` 解析结果应为 `GdPacked*ArrayType`
    - 非 packed 的 `typedarray::StringName` 仍应解析为 `GdArrayType(StringName)`
 7. 重载决议回归：
    - 子类/父类同名同参：必须选择最近 owner
    - 同名 fixed + vararg：fixed 优先
-   - 同名多个 equally-specific 候选：必须报 `ambiguous overload`
+   - 同名多个 equally-specific 候选：`GdObjectType` 场景回退 `OBJECT_DYNAMIC`
 
 ### 8.2 集成测试（已落地）
 
 新增：`CallMethodInsnGenEngineTest.java`
 
-目标：完成六类路径的集成级验证（真实运行 + 生成断言）：
+目标：完成七类路径的集成级验证（真实运行 + 生成断言）：
 
 1. builtin 方法（`Vector3.rotated`）
 2. engine 方法（`Node.call_thread_safe` 或 `Object.call`）
-3. unknown object 动态路径（`godot_Object_call`，`entry.c` 断言）
+3. `GdObjectType` unresolved 动态路径（`godot_Object_call`，`entry.c` 断言）
 4. Variant 动态路径（`godot_Variant_call`，真实运行）
 5. 引擎 vararg 调用路径（`callMethodEngineVarargShouldRunInRealGodot`）：
    通过 `Node.call` 的 `vararg` 入口验证 `argv/argc` 发射与真实运行结果一致
 6. 跨 GDCC 类互调路径（`callMethodBetweenDifferentGdccClassesShouldRunInRealGodot`）：
    验证 `GDGdccCrossCallNode -> GDPeerWorker` 的静态调用符号生成且不回退动态分派
+7. 父类类型变量触发 GDCC 动态分派路径（`callMethodParentTypedGdccReceiverShouldUseObjectDynamicAndRunInRealGodot`）：
+   验证 `GDBaseDynamicWorker` 类型变量接收 `GDChildDynamicWorker` 实例并调用子类独有方法时，
+   编译器发射 `godot_Object_call`，且生成 `godot_object_from_gdcc_object_ptr(...)` 指针转换
 
 ### 8.3 回归断言重点
 
@@ -438,7 +456,7 @@ MethodSignatureSpec {
   - 不得出现 `godot_Variant_call(`
 - Variant 动态场景：
   - 必须出现 `godot_Variant_call(`
-- unknown object 动态场景：
+- `GdObjectType` unresolved 动态场景：
   - 必须出现 `godot_Object_call(`
 
 ### 8.4 建议命令
@@ -458,14 +476,14 @@ MethodSignatureSpec {
 - [x] 注册 `CallMethodInsnGen`
 - [x] 实现 `BUILTIN/ENGINE/GDCC` 静态调用（不含默认补参）
 - [x] 完成结果契约 + 参数变量存在性 + 类型校验
-- [x] 落地“已知对象未知方法即报错”规则
+- [x] 落地对象接收者静态分派主路径
 
 ### Phase 1.1（错误修复与规则收敛）
 
 - [x] 修复 owner 分派模式：按方法实际 owner 选择 `GDCC/ENGINE` 调用符号
-- [x] 修复已知类型元数据缺失路径：禁止回退 `OBJECT_DYNAMIC`
 - [x] 明确并落地重载选择规则（最近 owner / 实例优先 / non-vararg 优先 / 唯一最佳）
 - [x] 补齐对应单测与回归断言
+- [x] 维护更新：当 `GdObjectType` 编译期无法静态决议目标函数时，允许回退 `OBJECT_DYNAMIC`
 
 ### Phase 2（语义补齐）
 
