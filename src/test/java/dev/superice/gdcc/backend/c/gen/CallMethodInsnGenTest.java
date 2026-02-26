@@ -15,9 +15,12 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
+import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdFloatVectorType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -25,11 +28,15 @@ import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -120,20 +127,143 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should reject static method call")
-    void callMethodShouldRejectStaticMethod() {
+    @DisplayName("CALL_METHOD should allow static method call and print warning")
+    void callMethodStaticShouldEmitWarningAndGenerateCall() {
         var clazz = newClass("Worker");
         var func = newFunction("call_static");
         func.createAndAddVariable("node", new GdObjectType("Node"));
-        entry(func).instructions().add(new CallMethodInsn(null, "make", "node", List.of()));
+        func.createAndAddVariable("ret", new GdObjectType("Node"));
+        entry(func).instructions().add(new CallMethodInsn("ret", "make", "node", List.of()));
+        clazz.addFunction(func);
+
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
+        var originalOut = System.out;
+        String body;
+        try {
+            System.setOut(capture);
+            body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithStaticFactory())), List.of(clazz));
+        } finally {
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        var output = outputBuffer.toString(StandardCharsets.UTF_8);
+        assertTrue(body.contains("godot_Node_make()"), body);
+        assertTrue(output.contains("call_method on receiver"), output);
+        assertTrue(output.contains("resolved static method 'Node.make'"), output);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should pick nearest owner overload on inheritance chain")
+    void callMethodShouldPickNearestOwnerOverload() {
+        var baseClass = newClass("Base", "RefCounted");
+        var basePing = newFunction("ping");
+        basePing.addParameter(new LirParameterDef("self", new GdObjectType("Base"), null, basePing));
+        entry(basePing).instructions().add(new ReturnInsn(null));
+        baseClass.addFunction(basePing);
+
+        var subClass = newClass("Sub", "Base");
+        var subPing = newFunction("ping");
+        subPing.addParameter(new LirParameterDef("self", new GdObjectType("Sub"), null, subPing));
+        entry(subPing).instructions().add(new ReturnInsn(null));
+        subClass.addFunction(subPing);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("target", new GdObjectType("Sub"));
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "ping",
+                "target",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, subClass, baseClass));
+        assertTrue(body.contains("Sub_ping($target);"), body);
+        assertFalse(body.contains("Base_ping($target);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should prefer fixed overload over vararg overload")
+    void callMethodShouldPreferFixedOverVararg() {
+        var workerClass = newClass("Worker");
+
+        var fixed = newFunction("echo");
+        fixed.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, fixed));
+        fixed.addParameter(new LirParameterDef("text", GdStringType.STRING, null, fixed));
+        fixed.addParameter(new LirParameterDef("count", GdIntType.INT, null, fixed));
+        entry(fixed).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(fixed);
+
+        var vararg = newFunction("echo");
+        vararg.addParameter(new LirParameterDef("self", new GdObjectType("Worker"), null, vararg));
+        vararg.addParameter(new LirParameterDef("text", GdStringType.STRING, null, vararg));
+        vararg.setVararg(true);
+        entry(vararg).instructions().add(new ReturnInsn(null));
+        workerClass.addFunction(vararg);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("worker", new GdObjectType("Worker"));
+        caller.createAndAddVariable("text", GdStringType.STRING);
+        caller.createAndAddVariable("count", GdIntType.INT);
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "echo",
+                "worker",
+                List.of(
+                        new LirInstruction.VariableOperand("text"),
+                        new LirInstruction.VariableOperand("count")
+                )
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
+        assertTrue(body.contains("Worker_echo($worker, &$text, $count);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should report ambiguous overload when candidates are equally specific")
+    void callMethodShouldReportAmbiguousOverload() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_ambiguous");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("arg", new GdObjectType("Node"));
+        entry(func).instructions().add(new CallMethodInsn(
+                null,
+                "mix",
+                "node",
+                List.of(new LirInstruction.VariableOperand("arg"))
+        ));
         clazz.addFunction(func);
 
         var ex = assertThrows(
                 InvalidInsnException.class,
-                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithStaticFactory())), List.of(clazz))
+                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAmbiguousOverloads())), List.of(clazz))
         );
         assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(ex.getMessage().contains("is static and cannot be called"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Ambiguous overload"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should resolve typed Array receiver to Array builtin metadata")
+    void callMethodTypedArrayReceiverShouldResolveBuiltinMetadata() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_typed_array_size");
+        func.createAndAddVariable("values", new GdArrayType(GdStringType.STRING));
+        func.createAndAddVariable("ret", GdIntType.INT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "size",
+                "values",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(arrayBuiltinWithSize()), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Array_size(&$values)"), body);
     }
 
     @Test
@@ -209,7 +339,11 @@ class CallMethodInsnGenTest {
     }
 
     private LirClassDef newClass(String name) {
-        return new LirClassDef(name, "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        return newClass(name, "RefCounted");
+    }
+
+    private LirClassDef newClass(String name, String superName) {
+        return new LirClassDef(name, superName, false, false, Map.of(), List.of(), List.of(), List.of());
     }
 
     private LirFunctionDef newFunction(String name) {
@@ -335,6 +469,68 @@ class CallMethodInsnGenTest {
                 "core",
                 List.of(),
                 List.of(make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithAmbiguousOverloads() {
+        var mixNode = new ExtensionGdClass.ClassMethod(
+                "mix",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("value", "Node", null, null))
+        );
+        var mixObject = new ExtensionGdClass.ClassMethod(
+                "mix",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("value", "Object", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(mixNode, mixObject),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass arrayBuiltinWithSize() {
+        var size = new ExtensionBuiltinClass.ClassMethod(
+                "size",
+                "int",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("int")
+        );
+        return new ExtensionBuiltinClass(
+                "Array",
+                false,
+                List.of(),
+                List.of(size),
+                List.of(),
                 List.of(),
                 List.of(),
                 List.of()
