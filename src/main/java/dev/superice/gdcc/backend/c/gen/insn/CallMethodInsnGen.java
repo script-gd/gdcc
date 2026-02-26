@@ -7,11 +7,13 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
 import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,11 +23,10 @@ import java.util.List;
 
 /// C code generator for `CALL_METHOD`.
 ///
-/// Phase 1 scope:
+/// Current scope:
 /// - GDCC / ENGINE / BUILTIN static dispatch.
-/// - Argument/result contract validation.
-/// - Known object type + unknown method fails fast.
-/// - Dynamic paths (OBJECT_DYNAMIC / VARIANT_DYNAMIC) are intentionally deferred.
+/// - OBJECT_DYNAMIC / VARIANT_DYNAMIC runtime dispatch.
+/// - Argument/result contract validation with default argument completion.
 public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     private static final Logger LOGGER = LoggerFactory.getLogger(CallMethodInsnGen.class);
 
@@ -42,12 +43,120 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var resolved = MethodCallResolver.resolve(bodyBuilder, receiverVar, instruction.methodName(), argVars);
         switch (resolved.mode()) {
-            case OBJECT_DYNAMIC -> throw bodyBuilder.invalidInsn("call_method dynamic object dispatch is not implemented in Phase 1: receiver type '" +
-                    receiverVar.type().getTypeName() + "'");
-            case VARIANT_DYNAMIC -> throw bodyBuilder.invalidInsn("call_method dynamic Variant dispatch is not implemented in Phase 1");
-            case GDCC, ENGINE, BUILTIN -> emitKnownSignatureCall(bodyBuilder, instruction, receiverVar, argVars, resolved);
+            case OBJECT_DYNAMIC -> emitObjectDynamicCall(bodyBuilder, instruction, receiverVar, argVars);
+            case VARIANT_DYNAMIC -> emitVariantDynamicCall(bodyBuilder, instruction, receiverVar, argVars);
+            case GDCC, ENGINE, BUILTIN ->
+                    emitKnownSignatureCall(bodyBuilder, instruction, receiverVar, argVars, resolved);
             default -> throw bodyBuilder.invalidInsn("Unsupported call_method dispatch mode: " + resolved.mode());
         }
+    }
+
+    private record DynamicVariantArgs(@NotNull List<CBodyBuilder.ValueRef> values,
+                                      @NotNull List<CBodyBuilder.TempVar> packedTemps) {
+        private DynamicVariantArgs {
+            values = List.copyOf(values);
+            packedTemps = List.copyOf(packedTemps);
+        }
+    }
+
+    private void emitObjectDynamicCall(@NotNull CBodyBuilder bodyBuilder,
+                                       @NotNull CallMethodInsn instruction,
+                                       @NotNull LirVariable receiverVar,
+                                       @NotNull List<LirVariable> argVars) {
+        var dynamicArgs = materializeDynamicVariantArgs(bodyBuilder, argVars, "object_dynamic");
+        var fixedArgs = List.of(
+                bodyBuilder.valueOfVar(receiverVar),
+                bodyBuilder.valueOfStringNamePtrLiteral(instruction.methodName())
+        );
+        emitDynamicCallResult(
+                bodyBuilder,
+                instruction,
+                "godot_Object_call",
+                fixedArgs,
+                dynamicArgs.values(),
+                dynamicArgs.packedTemps()
+        );
+    }
+
+    private void emitVariantDynamicCall(@NotNull CBodyBuilder bodyBuilder,
+                                        @NotNull CallMethodInsn instruction,
+                                        @NotNull LirVariable receiverVar,
+                                        @NotNull List<LirVariable> argVars) {
+        var dynamicArgs = materializeDynamicVariantArgs(bodyBuilder, argVars, "variant_dynamic");
+        var fixedArgs = List.of(
+                bodyBuilder.valueOfVar(receiverVar),
+                bodyBuilder.valueOfStringNamePtrLiteral(instruction.methodName()),
+                bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR),
+                bodyBuilder.valueOfExpr(Integer.toString(bodyBuilder.currentInsnIndex()), GdIntType.INT)
+        );
+        emitDynamicCallResult(
+                bodyBuilder,
+                instruction,
+                "godot_Variant_call",
+                fixedArgs,
+                dynamicArgs.values(),
+                dynamicArgs.packedTemps()
+        );
+    }
+
+    private void emitDynamicCallResult(@NotNull CBodyBuilder bodyBuilder,
+                                       @NotNull CallMethodInsn instruction,
+                                       @NotNull String cFunctionName,
+                                       @NotNull List<CBodyBuilder.ValueRef> fixedArgs,
+                                       @Nullable List<CBodyBuilder.ValueRef> varargs,
+                                       @NotNull List<CBodyBuilder.TempVar> dynamicArgTemps) {
+        var resultVar = resolveDynamicResultVariable(bodyBuilder, instruction);
+        if (resultVar == null) {
+            bodyBuilder.callAssign(bodyBuilder.discardRef(), cFunctionName, GdVariantType.VARIANT, fixedArgs, varargs);
+            destroyDefaultTemps(bodyBuilder, dynamicArgTemps);
+            return;
+        }
+
+        if (resultVar.type() instanceof GdVariantType) {
+            bodyBuilder.callAssign(bodyBuilder.targetOfVar(resultVar), cFunctionName, GdVariantType.VARIANT, fixedArgs, varargs);
+            destroyDefaultTemps(bodyBuilder, dynamicArgTemps);
+            return;
+        }
+
+        var dynamicResultTemp = bodyBuilder.newTempVariable("dynamic_result", GdVariantType.VARIANT);
+        bodyBuilder.declareTempVar(dynamicResultTemp);
+        bodyBuilder.callAssign(dynamicResultTemp, cFunctionName, GdVariantType.VARIANT, fixedArgs, varargs);
+        var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
+        bodyBuilder.callAssign(
+                bodyBuilder.targetOfVar(resultVar),
+                unpackFunctionName,
+                resultVar.type(),
+                List.of(dynamicResultTemp)
+        );
+        bodyBuilder.destroyTempVar(dynamicResultTemp);
+        destroyDefaultTemps(bodyBuilder, dynamicArgTemps);
+    }
+
+    private @NotNull DynamicVariantArgs materializeDynamicVariantArgs(@NotNull CBodyBuilder bodyBuilder,
+                                                                      @NotNull List<LirVariable> argVars,
+                                                                      @NotNull String tempPrefix) {
+        var values = new ArrayList<CBodyBuilder.ValueRef>(argVars.size());
+        var temps = new ArrayList<CBodyBuilder.TempVar>();
+        for (var i = 0; i < argVars.size(); i++) {
+            var argVar = argVars.get(i);
+            if (argVar.type() instanceof GdVariantType) {
+                values.add(bodyBuilder.valueOfVar(argVar));
+                continue;
+            }
+
+            var packedVariantTemp = bodyBuilder.newTempVariable(tempPrefix + "_arg_" + (i + 1), GdVariantType.VARIANT);
+            bodyBuilder.declareTempVar(packedVariantTemp);
+            var packFunctionName = bodyBuilder.helper().renderPackFunctionName(argVar.type());
+            bodyBuilder.callAssign(
+                    packedVariantTemp,
+                    packFunctionName,
+                    GdVariantType.VARIANT,
+                    List.of(bodyBuilder.valueOfVar(argVar))
+            );
+            values.add(packedVariantTemp);
+            temps.add(packedVariantTemp);
+        }
+        return new DynamicVariantArgs(values, temps);
     }
 
     private void emitKnownSignatureCall(@NotNull CBodyBuilder bodyBuilder,
@@ -121,9 +230,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                 throw bodyBuilder.invalidInsn("Receiver type '" + receiverObjectType.getTypeName() +
                         "' is not assignable to method owner type '" + ownerObjectType.getTypeName() + "'");
             }
-            var castType = bodyBuilder.helper().renderGdTypeInC(ownerObjectType);
-            var castExpr = "(" + castType + ")$" + receiverVar.id();
-            return bodyBuilder.valueOfExpr(castExpr, ownerObjectType);
+            return bodyBuilder.valueOfCastedVar(receiverVar, ownerObjectType);
         }
         return bodyBuilder.valueOfVar(receiverVar);
     }
@@ -359,5 +466,21 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                     "' has incompatible type '" + resultVar.type().getTypeName() + "'");
         }
         return bodyBuilder.targetOfVar(resultVar);
+    }
+
+    private @Nullable LirVariable resolveDynamicResultVariable(@NotNull CBodyBuilder bodyBuilder,
+                                                               @NotNull CallMethodInsn instruction) {
+        var resultId = instruction.resultId();
+        if (resultId == null) {
+            return null;
+        }
+        var resultVar = bodyBuilder.func().getVariableById(resultId);
+        if (resultVar == null) {
+            throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' not found in function");
+        }
+        if (resultVar.ref()) {
+            throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
+        }
+        return resultVar;
     }
 }

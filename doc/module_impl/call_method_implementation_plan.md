@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（Phase 1 / Phase 1.1 / Phase 2 已落地）
+- 状态：In Progress（Phase 1 / Phase 1.1 / Phase 2 / Phase 3 已落地）
 - 目标模块：`backend.c` / `CALL_METHOD`
 - 关联实现基线：
   - `doc/module_impl/call_global_implementation.md`
@@ -36,8 +36,23 @@
     - GDCC `default_value_func`（实例/静态）
     - vararg 类型失败路径
     - `typedarray::` packed/non-packed 参数与返回值规范化路径
+- Phase 3 已完成并提交工作区实现（待合并）：
+  - 已实现 `OBJECT_DYNAMIC`：
+    - 对 unknown object receiver 生成 `godot_Object_call`
+    - 非 `Variant` 实参自动 pack 为 `Variant`，调用后逆序销毁 pack 临时变量
+    - 返回值统一按 `Variant` 接收；当目标非 `Variant` 时自动 unpack 到目标类型
+  - 已实现 `VARIANT_DYNAMIC`：
+    - 对 `Variant` receiver 生成 `godot_Variant_call`
+    - 方法参数统一按 `Variant` argv 组织；非 `Variant` 实参自动 pack
+    - 支持 `Variant` 直接结果与非 `Variant` 目标 unpack 路径
+    - 已移除 `CallMethodInsnGen` 中手工拼接 `argv/argc` 字符串，统一改为 `CBodyBuilder.callAssign(..., args, varargs)` 发射 vararg
+  - 已补齐 `CallMethodInsnGenTest` Phase 3 覆盖：
+    - `OBJECT_DYNAMIC` pack + unpack 成功路径
+    - `VARIANT_DYNAMIC` 直写 `Variant` 结果路径
+    - `VARIANT_DYNAMIC` unpack 到非 `Variant` 结果路径
+    - 动态路径 `resultId` 为 ref 的失败路径
 - 当前仍按阶段计划保留未实现项：
-  - `OBJECT_DYNAMIC`（`godot_Object_call`）与 `VARIANT_DYNAMIC`（`godot_Variant_call`）将于 Phase 3 落地。
+  - Phase 4 质量收敛项（单测矩阵扩展、引擎集成测试、文档转 implemented/maintained）。
 
 ---
 
@@ -247,6 +262,17 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
    - 若最终仍有多个候选并列，抛出 `ambiguous overload`。
    - 错误信息需包含：receiver 类型、方法名、候选 owner 列表、各候选签名。
 
+### 4.8 Phase 3 代码生成规则补充（新增）
+
+1. **禁止手工拼接 vararg 调用字符串**
+   - `CallMethodInsnGen` 不再直接拼接 `const godot_Variant* argv[] = {...}` 与 `argc` 文本。
+   - 所有 vararg 调用必须通过 `CBodyBuilder.callAssign(@NotNull TargetRef target, @NotNull String funcName, @NotNull GdType returnType, @NotNull List<ValueRef> args, @Nullable List<ValueRef> varargs)` 或 `callVoid(..., args, varargs)` 统一发射。
+
+2. **`VARIANT_DYNAMIC` 的调用约定**
+   - 固定参数顺序：`receiver`, `method`, `file_name`, `line_number`。
+   - 动态实参列表作为 `varargs` 传入，由 `CBodyBuilder` 负责生成 `argv/argc`。
+   - `godot_Variant_call` 原函数参数顺序已调整为“固定参数在前，`argv/argc` 在尾部”，与 `CBodyBuilder` vararg 发射约定一致。
+
 ---
 
 ## 5. 不同值类型的生成策略（重点）
@@ -432,8 +458,8 @@ MethodSignatureSpec {
 
 ### Phase 3（动态兼容）
 
-- [ ] `OBJECT_DYNAMIC`：`godot_Object_call` + pack/unpack
-- [ ] `VARIANT_DYNAMIC`：`godot_Variant_call` + pack/unpack
+- [x] `OBJECT_DYNAMIC`：`godot_Object_call` + pack/unpack
+- [x] `VARIANT_DYNAMIC`：`godot_Variant_call` + pack/unpack
 
 ### Phase 4（质量收敛）
 
