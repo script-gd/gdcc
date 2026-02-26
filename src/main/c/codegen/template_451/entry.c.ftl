@@ -71,12 +71,14 @@ void ${classDef.name}_class_bind_methods() {
     godot_StringName* class_name = GD_STATIC_SN(u8"${classDef.name}");
     // Methods
     <#list classDef.functions as function>
+        <#if !function.hidden && !function.lambda>
     gdcc_bind_method${helper.renderFuncBindName(function)}(class_name, GD_STATIC_SN(u8"${function.name}"), ${classDef.name}_${function.name}<#if function.parameters?size gt function.static?then(0, 1)>,<#else>);</#if>
-        <#list function.parameters as parameter>
-            <#if parameter.name != "self">
-                GD_STATIC_SN(u8"${parameter.name}"), GDEXTENSION_VARIANT_TYPE_${parameter.type.gdExtensionType.name()}<#if parameter_has_next>,<#else>);</#if>
-            </#if>
-        </#list>
+            <#list function.parameters as parameter>
+                <#if parameter.name != "self">
+                    GD_STATIC_SN(u8"${parameter.name}"), GDEXTENSION_VARIANT_TYPE_${parameter.type.gdExtensionType.name()}<#if parameter_has_next>,<#else>);</#if>
+                </#if>
+            </#list>
+        </#if>
     </#list>
     // Properties
     <#list classDef.properties as property>

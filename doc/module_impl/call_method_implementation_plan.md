@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（Phase 1 / Phase 1.1 / Phase 2 / Phase 3 已落地）
+- 状态：implemented/maintained（Phase 1 / Phase 1.1 / Phase 2 / Phase 3 / Phase 4 已落地）
 - 目标模块：`backend.c` / `CALL_METHOD`
 - 关联实现基线：
   - `doc/module_impl/call_global_implementation.md`
@@ -51,8 +51,23 @@
     - `VARIANT_DYNAMIC` 直写 `Variant` 结果路径
     - `VARIANT_DYNAMIC` unpack 到非 `Variant` 结果路径
     - 动态路径 `resultId` 为 ref 的失败路径
-- 当前仍按阶段计划保留未实现项：
-  - Phase 4 质量收敛项（单测矩阵扩展、引擎集成测试、文档转 implemented/maintained）。
+- Phase 4 已完成并提交工作区实现（待合并）：
+  - 已新增 `CallMethodInsnGenEngineTest`，覆盖真实 Godot 运行与代码生成断言下的六类路径（四类基础路径 + 两个专项引擎测试）：
+    - builtin 调用
+    - engine 调用
+    - `VARIANT_DYNAMIC`（`godot_Variant_call`，真实运行断言）
+    - `OBJECT_DYNAMIC`（`godot_Object_call`，`entry.c` 生成断言）
+    - 引擎 vararg 调用专项测试：`callMethodEngineVarargShouldRunInRealGodot`
+      （覆盖 `Node.call` 的 vararg `argv/argc` 生成与真实运行）
+    - 跨 GDCC 类互调专项测试：`callMethodBetweenDifferentGdccClassesShouldRunInRealGodot`
+      （覆盖两个不同 GDCC 类之间静态分派，不得回退 `godot_Object_call` / `godot_Variant_call`）
+  - 已修复模板侧隐藏函数绑定语义：
+    - `entry.c.ftl` 仅为非 hidden / 非 lambda 函数发射 `gdcc_bind_method*` 绑定代码
+    - hidden 函数仍生成函数体，可用于内部/回归代码生成验证
+  - 已补强 `CallMethodInsnGenTest` 回归边界断言：
+    - GDCC 静态互调场景显式断言不得回退到 `godot_Object_call` / `godot_Variant_call`
+    - 动态场景增加互斥断言，防止对象动态与 Variant 动态路径串线
+  - 本文档阶段状态已收敛为 `implemented/maintained`。
 
 ---
 
@@ -398,16 +413,20 @@ MethodSignatureSpec {
    - 同名 fixed + vararg：fixed 优先
    - 同名多个 equally-specific 候选：必须报 `ambiguous overload`
 
-### 8.2 集成测试（可选但建议）
+### 8.2 集成测试（已落地）
 
 新增：`CallMethodInsnGenEngineTest.java`
 
-目标：真实 Godot 跑通至少四类调用：
+目标：完成六类路径的集成级验证（真实运行 + 生成断言）：
 
 1. builtin 方法（`Vector3.rotated`）
 2. engine 方法（`Node.call_thread_safe` 或 `Object.call`）
-3. unknown object 动态路径（`godot_Object_call`）
-4. Variant 动态路径（`godot_Variant_call`）
+3. unknown object 动态路径（`godot_Object_call`，`entry.c` 断言）
+4. Variant 动态路径（`godot_Variant_call`，真实运行）
+5. 引擎 vararg 调用路径（`callMethodEngineVarargShouldRunInRealGodot`）：
+   通过 `Node.call` 的 `vararg` 入口验证 `argv/argc` 发射与真实运行结果一致
+6. 跨 GDCC 类互调路径（`callMethodBetweenDifferentGdccClassesShouldRunInRealGodot`）：
+   验证 `GDGdccCrossCallNode -> GDPeerWorker` 的静态调用符号生成且不回退动态分派
 
 ### 8.3 回归断言重点
 
@@ -463,9 +482,9 @@ MethodSignatureSpec {
 
 ### Phase 4（质量收敛）
 
-- [ ] 单测矩阵补齐 + 引擎集成测试
-- [ ] 对 GDCC 静态互调与动态回退边界加回归断言
-- [ ] 文档同步（本文件转为 implemented/maintained）
+- [x] 单测矩阵补齐 + 引擎集成测试
+- [x] 对 GDCC 静态互调与动态回退边界加回归断言
+- [x] 文档同步（本文件转为 implemented/maintained）
 
 ---
 

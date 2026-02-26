@@ -6,6 +6,7 @@
 #include <gdcc_string.h>
 #include <gdcc_call.h>
 #include <gdcc_bind.h>
+#include <stdio.h>
 
 #if !defined(GDE_EXPORT)
 #if defined(_WIN32)
@@ -177,6 +178,16 @@ static godot_Projection godot_new_Projection_with_float_float_float_float_float_
     godot_Vector4 params4 = godot_new_Vector4_with_float_float_float_float(orthogonal_size, orthogonal_aspect, orthogonal_near, orthogonal_far);
     godot_Projection p = godot_new_Projection_with_Vector4_Vector4_Vector4_Vector4(&params, &params2, &params3, &params4);
     return p;
+}
+
+/// Helper: convert a godot_StringName to a UTF-8 C string into a provided buffer.
+/// Returns the number of characters written (excluding null terminator).
+static GDExtensionInt gdcc_string_name_to_utf8(const godot_StringName *sn, char *buf, GDExtensionInt buf_size) {
+    godot_String str = godot_new_String_with_StringName(sn);
+    GDExtensionInt len = godot_string_to_utf8_chars(&str, buf, buf_size - 1);
+    buf[len] = '\0';
+    godot_String_destroy(&str);
+    return len;
 }
 
 /// @param self

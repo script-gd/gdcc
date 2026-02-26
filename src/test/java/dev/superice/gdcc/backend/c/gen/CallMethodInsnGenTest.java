@@ -110,6 +110,8 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
         assertTrue(body.contains("Worker_ping($worker);"), body);
+        assertFalse(body.contains("godot_Object_call("), body);
+        assertFalse(body.contains("godot_Variant_call("), body);
     }
 
     @Test
@@ -534,6 +536,7 @@ class CallMethodInsnGenTest {
         assertTrue(body.contains("godot_Object_call($obj, GD_STATIC_SN(u8\"compute\")"), body);
         assertTrue(body.contains("godot_new_Variant_with_int($value)"), body);
         assertTrue(body.contains("godot_new_int_with_Variant("), body);
+        assertFalse(body.contains("godot_Variant_call("), body);
     }
 
     @Test
@@ -557,6 +560,7 @@ class CallMethodInsnGenTest {
         assertTrue(body.contains("godot_new_Variant_with_int($arg)"), body);
         assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
         assertFalse(body.contains("variant_call_argv"), body);
+        assertFalse(body.contains("godot_Object_call("), body);
     }
 
     @Test
