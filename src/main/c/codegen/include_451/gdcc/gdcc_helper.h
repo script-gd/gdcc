@@ -179,4 +179,64 @@ static godot_Projection godot_new_Projection_with_float_float_float_float_float_
     return p;
 }
 
+/// @param self
+/// @param method
+/// @param argv
+/// @param argc
+/// @param file_name The name of the source file where the call is made, used for error reporting. If NULL, it will be treated as "<unknown>".
+/// @param line_number
+static godot_Variant godot_Variant_call(
+    godot_Variant* self, const godot_StringName *method, const godot_Variant **argv, godot_int argc,
+    const char* file_name, int line_number
+) {
+    godot_Variant ret;
+    GDExtensionCallError error;
+    godot_variant_call(self, method, (GDExtensionConstVariantPtr*) argv, argc, &ret, &error);
+    if (error.error != GDEXTENSION_CALL_OK) {
+        const char* src_file = file_name ? file_name : "<unknown>";
+        char method_name[256];
+        gdcc_string_name_to_utf8(method, method_name, sizeof(method_name));
+
+        char desc[512];
+        switch (error.error) {
+        case GDEXTENSION_CALL_ERROR_INVALID_METHOD:
+            snprintf(desc, sizeof(desc), "Invalid method '%s'", method_name);
+            break;
+        case GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT: {
+            char expected_type_name[64];
+            godot_String expected_str;
+            godot_variant_get_type_name(error.expected, &expected_str);
+            godot_string_to_utf8_chars(&expected_str, expected_type_name, sizeof(expected_type_name) - 1);
+            GDExtensionInt elen = godot_String_length(&expected_str);
+            if (elen >= (GDExtensionInt)sizeof(expected_type_name)) elen = sizeof(expected_type_name) - 1;
+            expected_type_name[elen] = '\0';
+            godot_String_destroy(&expected_str);
+            snprintf(desc, sizeof(desc), "Invalid argument #%d for method '%s': expected type '%s'",
+                     error.argument, method_name, expected_type_name);
+            break;
+        }
+        case GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS:
+            snprintf(desc, sizeof(desc), "Too many arguments for method '%s': expected %d, got %lld",
+                     method_name, error.expected, argc);
+            break;
+        case GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS:
+            snprintf(desc, sizeof(desc), "Too few arguments for method '%s': expected %d, got %lld",
+                     method_name, error.expected, argc);
+            break;
+        case GDEXTENSION_CALL_ERROR_INSTANCE_IS_NULL:
+            snprintf(desc, sizeof(desc), "Instance is null when calling method '%s'", method_name);
+            break;
+        case GDEXTENSION_CALL_ERROR_METHOD_NOT_CONST:
+            snprintf(desc, sizeof(desc), "Method '%s' is not const", method_name);
+            break;
+        default:
+            snprintf(desc, sizeof(desc), "Unknown error calling method '%s'", method_name);
+            break;
+        }
+        godot_print_error(desc, "godot_Variant_call", src_file, line_number, true);
+        return godot_new_Variant_nil();
+    }
+    return ret;
+}
+
 #endif //GDCC_HELPER_H
