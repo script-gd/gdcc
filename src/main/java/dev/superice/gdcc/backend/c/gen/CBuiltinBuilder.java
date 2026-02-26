@@ -504,11 +504,6 @@ public final class CBuiltinBuilder {
                 throw errorReporter.invalid("constructor literal '" + literal + "' has empty argument at index " + (i + 1));
             }
             var argValue = parseCtorArgumentValueRef(bodyBuilder, argLiteral, ctorArgTypes.get(i));
-            if (argValue == null) {
-                throw errorReporter.invalid(
-                        "constructor literal '" + literal + "' has unsupported argument '" + argLiteral + "'"
-                );
-            }
             ctorArgs.add(argValue);
         }
 
