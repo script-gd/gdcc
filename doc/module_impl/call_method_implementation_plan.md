@@ -2,13 +2,29 @@
 
 ## 文档状态
 
-- 状态：Proposal（待实施）
+- 状态：In Progress（Phase 1 已落地）
 - 目标模块：`backend.c` / `CALL_METHOD`
 - 关联实现基线：
   - `doc/module_impl/call_global_implementation.md`
   - `doc/module_impl/load_static_implementation.md`
   - `doc/module_impl/cbodybuilder_implementation.md`
 - 更新时间：2026-02-26
+
+---
+
+## 实施进度同步（2026-02-26）
+
+- Phase 1 已完成并提交代码实现：
+  - 已注册 `CallMethodInsnGen` 到 `CCodegen` 指令分发表。
+  - 新增 `CallMethodInsnGen`，落地 `GDCC/ENGINE/BUILTIN` 静态分派路径。
+  - 新增 `MethodCallResolver`，统一接收者分类、方法元数据查找与已知类型缺失方法 fail-fast。
+  - 已落地 Phase 1 约束：结果契约校验、参数变量存在性校验、固定参数/vararg 类型校验、静态方法调用拒绝。
+- 已识别需在下一步修复的实现偏差（详见 4.6/4.7）：
+  - owner 在父类链上切换时，调用符号分派模式必须跟随 `owner`，不能固化为 receiver 初始分支。
+  - 重载选择规则需显式定义“最近 owner + 非 vararg 优先 + 唯一最佳匹配”，避免误判 `ambiguous`。
+- 当前仍按阶段计划保留未实现项：
+  - `OBJECT_DYNAMIC`（`godot_Object_call`）与 `VARIANT_DYNAMIC`（`godot_Variant_call`）将于 Phase 3 落地。
+  - 默认参数补齐与 `typedarray::` 类型规范化仍在 Phase 2。
 
 ---
 
@@ -22,7 +38,7 @@
 
 ### 1.2 Backend 现状
 
-- `CCodegen` 当前 **未注册** `CALL_METHOD` 对应的 `CInsnGen`，遇到该指令会在 `generateFuncBody` 抛 `UnsupportedOperationException`。
+- `CCodegen` 已注册 `CALL_METHOD` 对应 `CInsnGen`（`CallMethodInsnGen`）。
 - 已有可复用调用基础设施：
   - `CBodyBuilder.callVoid` / `callAssign`（含 vararg 发射、discard 清理、对象所有权写槽语义）。
   - `CBodyBuilder.renderArgument` 自动处理：
@@ -177,6 +193,47 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
    - 返回类型必须可赋值给参数类型。
 4. temp 参与正常调用后逆序 destroy。
 
+### 4.6 Phase 1 错误修复清单（新增）
+
+> 本节用于明确“已落地实现”中的修复项，优先级高于新功能扩展。
+
+1. **owner 分派模式修复（P0）**
+   - 问题：当前分派模式由 receiver 初始类型决定，若最终命中的是父类（尤其 engine 父类）方法，可能生成错误调用符号。
+   - 规则：`ResolvedMethodCall.mode` 必须基于“方法实际 owner”判定，而不是 receiver 入口分支。
+   - 预期：当 owner 为 engine 类时，必须生成 `godot_<Owner>_<method>`，并沿用 `CBodyBuilder` 的 Godot raw ptr 参数转换语义。
+
+2. **已知类型元数据缺失 fail-fast（P0）**
+   - 问题：receiver 已知（GDCC/ENGINE）但 `ClassDef` 缺失时，不能降级到 `OBJECT_DYNAMIC` 占位。
+   - 规则：已知类型但类元数据缺失属于编译期一致性错误，必须直接抛错并指出缺失类型名。
+
+3. **typed 容器接收者归一化（P1）**
+   - 问题：`Array[T]` / `Dictionary[K,V]` 作为 receiver 时，builtin 查找键可能与 API 元数据键（`Array` / `Dictionary`）不一致。
+   - 规则：resolver 在查找 builtin class 前先做 receiver 名称归一化，不改变最终参数/返回类型语义。
+
+### 4.7 重载选择规则澄清（新增）
+
+为避免当前与后续实现的行为漂移，`MethodCallResolver.chooseBestCandidate` 必须遵循以下确定性规则：
+
+1. **过滤阶段**
+   - 仅保留“参数数量可接受（含 vararg）且类型可赋值”的候选。
+   - 空集时：进入“无匹配诊断”，报告最接近候选的失败原因（参数个数或首个不兼容参数）。
+
+2. **owner 距离优先**
+   - 候选按 owner 到 receiver 的继承距离升序排序（距离越小优先）。
+   - 仅保留最小距离组；父类候选不能与子类候选并列竞争。
+
+3. **实例方法优先**
+   - 在同一距离组中，优先非 static 候选。
+   - 若仅 static 命中，则在调用层由 `call_method` 语义统一 fail-fast（“静态方法不能被 call_method 调用”）。
+
+4. **非 vararg 优先**
+   - 在同一距离与 static 维度下，优先固定参数（non-vararg）候选。
+   - 仅当 non-vararg 不可用时才选择 vararg 候选。
+
+5. **唯一最佳匹配**
+   - 若最终仍有多个候选并列，抛出 `ambiguous overload`。
+   - 错误信息需包含：receiver 类型、方法名、候选 owner 列表、各候选签名。
+
 ---
 
 ## 5. 不同值类型的生成策略（重点）
@@ -281,6 +338,7 @@ MethodSignatureSpec {
 3. `GDCC` 成功路径：
    - 同类实例方法调用
    - 继承链方法调用（验证 owner 符号与 receiver 传递）
+   - GDCC 子类调用 engine 父类方法（验证生成 `godot_<Owner>_<method>` 而非 `<Owner>_<method>`）
    - **两个 GDCC 类型互调时必须生成静态调用符号，不得回退动态路径**
    - `default_value_func` 补参（函数默认值）
 4. 动态路径成功：
@@ -296,6 +354,10 @@ MethodSignatureSpec {
 6. 类型规范化回归：
    - `typedarray::PackedByteArray` / `typedarray::PackedVector3Array` 解析结果应为 `GdPacked*ArrayType`
    - 非 packed 的 `typedarray::StringName` 仍应解析为 `GdArrayType(StringName)`
+7. 重载决议回归：
+   - 子类/父类同名同参：必须选择最近 owner
+   - 同名 fixed + vararg：fixed 优先
+   - 同名多个 equally-specific 候选：必须报 `ambiguous overload`
 
 ### 8.2 集成测试（可选但建议）
 
@@ -335,29 +397,36 @@ MethodSignatureSpec {
 
 ### Phase 1（最小可用）
 
-- 注册 `CallMethodInsnGen`
-- 实现 `BUILTIN/ENGINE/GDCC` 静态调用（不含默认补参）
-- 完成结果契约 + 参数变量存在性 + 类型校验
-- 落地“已知对象未知方法即报错”规则
+- [x] 注册 `CallMethodInsnGen`
+- [x] 实现 `BUILTIN/ENGINE/GDCC` 静态调用（不含默认补参）
+- [x] 完成结果契约 + 参数变量存在性 + 类型校验
+- [x] 落地“已知对象未知方法即报错”规则
+
+### Phase 1.1（错误修复与规则收敛）
+
+- [ ] 修复 owner 分派模式：按方法实际 owner 选择 `GDCC/ENGINE` 调用符号
+- [ ] 修复已知类型元数据缺失路径：禁止回退 `OBJECT_DYNAMIC`
+- [ ] 明确并落地重载选择规则（最近 owner / 实例优先 / non-vararg 优先 / 唯一最佳）
+- [ ] 补齐对应单测与回归断言
 
 ### Phase 2（语义补齐）
 
-- 默认参数补全：
+- [ ] 默认参数补全：
   - extension literal default（复用 `CBuiltinBuilder`）
   - GDCC `default_value_func`
-- vararg 契约补齐
-- 完成 `typedarray::` 局部类型规范化（含 Packed*Array 特殊分支）
+- [ ] vararg 契约补齐
+- [ ] 完成 `typedarray::` 局部类型规范化（含 Packed*Array 特殊分支）
 
 ### Phase 3（动态兼容）
 
-- `OBJECT_DYNAMIC`：`godot_Object_call` + pack/unpack
-- `VARIANT_DYNAMIC`：`godot_Variant_call` + pack/unpack
+- [ ] `OBJECT_DYNAMIC`：`godot_Object_call` + pack/unpack
+- [ ] `VARIANT_DYNAMIC`：`godot_Variant_call` + pack/unpack
 
 ### Phase 4（质量收敛）
 
-- 单测矩阵补齐 + 引擎集成测试
-- 对 GDCC 静态互调与动态回退边界加回归断言
-- 文档同步（本文件转为 implemented/maintained）
+- [ ] 单测矩阵补齐 + 引擎集成测试
+- [ ] 对 GDCC 静态互调与动态回退边界加回归断言
+- [ ] 文档同步（本文件转为 implemented/maintained）
 
 ---
 
