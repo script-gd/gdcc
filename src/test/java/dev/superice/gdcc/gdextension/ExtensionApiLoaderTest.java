@@ -58,8 +58,20 @@ public class ExtensionApiLoaderTest {
                 }
             }
         }
-//        for (var defVal : defaultValues) {
-//            IO.println(defVal);
-//        }
+    }
+
+    @Test
+    void builtinConstantTypeShouldBeParsed() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var vector3Class = api.builtinClasses().stream()
+                .filter(builtinClass -> "Vector3".equals(builtinClass.name()))
+                .findFirst()
+                .orElseThrow();
+        var backConstant = vector3Class.constants().stream()
+                .filter(constant -> "BACK".equals(constant.name()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("Vector3", backConstant.type());
+        assertEquals("Vector3(0, 0, 1)", backConstant.value());
     }
 }

@@ -21,7 +21,9 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
@@ -29,6 +31,10 @@ import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 ///
 /// This helper is intentionally scoped to built-in constructor naming and metadata validation.
 public final class CBuiltinBuilder {
+    private static final @NotNull Pattern NUMERIC_LITERAL_PATTERN =
+            Pattern.compile("[+-]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?");
+    private static final @NotNull Pattern INTEGER_LITERAL_PATTERN = Pattern.compile("[+-]?\\d+");
+
     private final @NotNull CGenHelper helper;
 
     public CBuiltinBuilder(@NotNull CGenHelper helper) {
@@ -130,11 +136,58 @@ public final class CBuiltinBuilder {
                                                @NotNull String defaultLiteral,
                                                @NotNull String utilityName,
                                                int parameterIndexBaseOne) {
+        var errorReporter = new LiteralErrorReporter() {
+            @Override
+            public RuntimeException invalid(@NotNull String detail) {
+                return bodyBuilder.invalidInsn(
+                        "Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne + " " + detail
+                );
+            }
+
+            @Override
+            public RuntimeException malformed(@NotNull String literal, @NotNull IllegalArgumentException ex) {
+                return bodyBuilder.invalidInsn(
+                        "Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
+                                " default literal '" + literal + "' is malformed: " + ex.getMessage()
+                );
+            }
+        };
+        materializeLiteralValue(bodyBuilder, target, defaultLiteral, errorReporter);
+    }
+
+    /// Materializes one builtin static constant literal into the given writable target.
+    public void materializeStaticLiteralValue(@NotNull CBodyBuilder bodyBuilder,
+                                              @NotNull CBodyBuilder.TargetRef target,
+                                              @NotNull String literalValue,
+                                              @NotNull String className,
+                                              @NotNull String constantName) {
+        var errorReporter = new LiteralErrorReporter() {
+            @Override
+            public RuntimeException invalid(@NotNull String detail) {
+                return bodyBuilder.invalidInsn(
+                        "Builtin constant '" + constantName + "' in class '" + className + "' " + detail
+                );
+            }
+
+            @Override
+            public RuntimeException malformed(@NotNull String literal, @NotNull IllegalArgumentException ex) {
+                return bodyBuilder.invalidInsn(
+                        "Builtin constant '" + constantName + "' in class '" + className +
+                                "' literal '" + literal + "' is malformed: " + ex.getMessage()
+                );
+            }
+        };
+        materializeLiteralValue(bodyBuilder, target, literalValue, errorReporter);
+    }
+
+    private void materializeLiteralValue(@NotNull CBodyBuilder bodyBuilder,
+                                         @NotNull CBodyBuilder.TargetRef target,
+                                         @NotNull String rawLiteral,
+                                         @NotNull LiteralErrorReporter errorReporter) {
         var expectedType = target.type();
-        var literal = defaultLiteral.trim();
+        var literal = rawLiteral.trim();
         if (literal.isEmpty()) {
-            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                    " has empty default literal");
+            throw errorReporter.invalid("has empty literal value");
         }
 
         if ("null".equals(literal)) {
@@ -146,16 +199,14 @@ public final class CBuiltinBuilder {
                 bodyBuilder.assignExpr(target, "NULL", expectedType, CBodyBuilder.PtrKind.GODOT_PTR);
                 return;
             }
-            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                    " default 'null' is not assignable to '" + expectedType.getTypeName() + "'");
+            throw errorReporter.invalid("literal 'null' is not assignable to '" + expectedType.getTypeName() + "'");
         }
 
         try {
             switch (expectedType) {
                 case GdBoolType _ -> {
                     if (!"true".equals(literal) && !"false".equals(literal)) {
-                        throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                                " expects bool default, got '" + literal + "'");
+                        throw errorReporter.invalid("expects bool literal, got '" + literal + "'");
                     }
                     bodyBuilder.assignExpr(target, literal, GdBoolType.BOOL);
                     return;
@@ -165,7 +216,7 @@ public final class CBuiltinBuilder {
                     return;
                 }
                 case GdFloatType _ -> {
-                    bodyBuilder.assignExpr(target, literal, GdFloatType.FLOAT);
+                    bodyBuilder.assignExpr(target, normalizeFloatLiteral(literal), GdFloatType.FLOAT);
                     return;
                 }
                 default -> {
@@ -205,28 +256,24 @@ public final class CBuiltinBuilder {
                     constructBuiltin(bodyBuilder, target, List.of());
                     return;
                 }
-                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                        " default '[]' is not assignable to '" + expectedType.getTypeName() + "'");
+                throw errorReporter.invalid("literal '[]' is not assignable to '" + expectedType.getTypeName() + "'");
             }
             if ("{}".equals(literal)) {
                 if (expectedType instanceof GdDictionaryType) {
                     constructBuiltin(bodyBuilder, target, List.of());
                     return;
                 }
-                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                        " default '{}' is not assignable to '" + expectedType.getTypeName() + "'");
+                throw errorReporter.invalid("literal '{}' is not assignable to '" + expectedType.getTypeName() + "'");
             }
 
-            if (materializeConstructorDefault(bodyBuilder, target, literal, utilityName, parameterIndexBaseOne)) {
+            if (materializeConstructorDefault(bodyBuilder, target, literal, errorReporter)) {
                 return;
             }
         } catch (IllegalArgumentException ex) {
-            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                    " default literal '" + literal + "' is malformed: " + ex.getMessage());
+            throw errorReporter.malformed(literal, ex);
         }
 
-        throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                " has unsupported default literal '" + literal + "'");
+        throw errorReporter.invalid("has unsupported literal '" + literal + "'");
     }
 
     /// Validates constructor availability against ExtensionBuiltinClass metadata.
@@ -430,8 +477,7 @@ public final class CBuiltinBuilder {
     private boolean materializeConstructorDefault(@NotNull CBodyBuilder bodyBuilder,
                                                   @NotNull CBodyBuilder.TargetRef target,
                                                   @NotNull String literal,
-                                                  @NotNull String utilityName,
-                                                  int parameterIndexBaseOne) {
+                                                  @NotNull LiteralErrorReporter errorReporter) {
         var leftParen = literal.indexOf('(');
         if (leftParen <= 0 || !literal.endsWith(")")) {
             return false;
@@ -440,28 +486,28 @@ public final class CBuiltinBuilder {
         var ctorTypeName = literal.substring(0, leftParen).trim();
         var ctorType = ClassRegistry.tryParseTextType(ctorTypeName);
         if (ctorType == null) {
-            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                    " default constructor type '" + ctorTypeName + "' is unknown");
+            throw errorReporter.invalid("constructor type '" + ctorTypeName + "' is unknown");
         }
         if (!helper.context().classRegistry().checkAssignable(ctorType, expectedType)) {
-            throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                    " default constructor '" + ctorTypeName + "' is not assignable to '" +
-                    expectedType.getTypeName() + "'");
+            throw errorReporter.invalid(
+                    "constructor type '" + ctorTypeName + "' is not assignable to '" +
+                            expectedType.getTypeName() + "'"
+            );
         }
 
         var rawArgs = splitCtorArguments(literal.substring(leftParen + 1, literal.length() - 1));
-        var ctorArgTypes = resolveCtorArgTypes(ctorType, rawArgs, bodyBuilder, utilityName, parameterIndexBaseOne, literal);
+        var ctorArgTypes = resolveCtorArgTypes(ctorType, rawArgs, errorReporter, literal);
         var ctorArgs = new ArrayList<CBodyBuilder.ValueRef>(rawArgs.size());
         for (var i = 0; i < rawArgs.size(); i++) {
             var argLiteral = rawArgs.get(i).trim();
             if (argLiteral.isEmpty()) {
-                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                        " default constructor '" + literal + "' has empty argument at index " + (i + 1));
+                throw errorReporter.invalid("constructor literal '" + literal + "' has empty argument at index " + (i + 1));
             }
             var argValue = parseCtorArgumentValueRef(bodyBuilder, argLiteral, ctorArgTypes.get(i));
             if (argValue == null) {
-                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                        " default constructor '" + literal + "' has unsupported argument '" + argLiteral + "'");
+                throw errorReporter.invalid(
+                        "constructor literal '" + literal + "' has unsupported argument '" + argLiteral + "'"
+                );
             }
             ctorArgs.add(argValue);
         }
@@ -471,7 +517,7 @@ public final class CBuiltinBuilder {
             return true;
         }
 
-        var ctorTemp = bodyBuilder.newTempVariable("default_ctor_arg_" + parameterIndexBaseOne, ctorType);
+        var ctorTemp = bodyBuilder.newTempVariable("default_ctor_arg", ctorType);
         bodyBuilder.declareTempVar(ctorTemp);
         constructBuiltin(bodyBuilder, ctorTemp, ctorArgs);
         bodyBuilder.assignVar(target, ctorTemp);
@@ -481,9 +527,7 @@ public final class CBuiltinBuilder {
 
     private @NotNull List<GdType> resolveCtorArgTypes(@NotNull GdType ctorType,
                                                        @NotNull List<String> rawArgs,
-                                                       @NotNull CBodyBuilder bodyBuilder,
-                                                       @NotNull String utilityName,
-                                                       int parameterIndexBaseOne,
+                                                       @NotNull LiteralErrorReporter errorReporter,
                                                        @NotNull String literal) {
         var ctorArgCount = rawArgs.size();
         var candidates = new ArrayList<List<GdType>>();
@@ -532,8 +576,9 @@ public final class CBuiltinBuilder {
         for (var rawArg : rawArgs) {
             var inferredType = inferCtorArgType(rawArg.trim());
             if (inferredType == null) {
-                throw bodyBuilder.invalidInsn("Utility '" + utilityName + "' parameter #" + parameterIndexBaseOne +
-                        " default constructor '" + literal + "' has unsupported argument '" + rawArg.trim() + "'");
+                throw errorReporter.invalid(
+                        "constructor literal '" + literal + "' has unsupported argument '" + rawArg.trim() + "'"
+                );
             }
             inferredTypes.add(inferredType);
         }
@@ -601,6 +646,9 @@ public final class CBuiltinBuilder {
         if ("true".equals(argLiteral) || "false".equals(argLiteral)) {
             return GdBoolType.BOOL;
         }
+        if (isInfinityLiteral(argLiteral)) {
+            return GdFloatType.FLOAT;
+        }
         if (isNumericLiteral(argLiteral)) {
             return argLiteral.contains(".") || argLiteral.contains("e") || argLiteral.contains("E")
                     ? GdFloatType.FLOAT
@@ -621,31 +669,38 @@ public final class CBuiltinBuilder {
         return null;
     }
 
-    private @Nullable CBodyBuilder.ValueRef parseCtorArgumentValueRef(@NotNull CBodyBuilder bodyBuilder,
+    private @NotNull CBodyBuilder.ValueRef parseCtorArgumentValueRef(@NotNull CBodyBuilder bodyBuilder,
                                                                        @NotNull String argLiteral,
                                                                        @NotNull GdType argType) {
-        if (argType instanceof GdStringNameType) {
-            var value = unescapeQuoted(argLiteral.substring(2, argLiteral.length() - 1));
-            return bodyBuilder.valueOfStringNamePtrLiteral(value);
+        switch (argType) {
+            case GdStringNameType _ -> {
+                var value = unescapeQuoted(argLiteral.substring(2, argLiteral.length() - 1));
+                return bodyBuilder.valueOfStringNamePtrLiteral(value);
+            }
+            case GdStringType _ -> {
+                var value = unescapeQuoted(argLiteral.substring(1, argLiteral.length() - 1));
+                return bodyBuilder.valueOfStringPtrLiteral(value);
+            }
+            case GdArrayType _ -> {
+                return bodyBuilder.valueOfExpr("godot_new_Array()", argType);
+            }
+            case GdDictionaryType _ -> {
+                return bodyBuilder.valueOfExpr("godot_new_Dictionary()", argType);
+            }
+            case GdFloatType _ -> {
+                return bodyBuilder.valueOfExpr(normalizeFloatLiteral(argLiteral), argType);
+            }
+            default -> {
+                return bodyBuilder.valueOfExpr(argLiteral, argType);
+            }
         }
-        if (argType instanceof GdStringType) {
-            var value = unescapeQuoted(argLiteral.substring(1, argLiteral.length() - 1));
-            return bodyBuilder.valueOfStringPtrLiteral(value);
-        }
-        if (argType instanceof GdArrayType) {
-            return bodyBuilder.valueOfExpr("godot_new_Array()", argType);
-        }
-        if (argType instanceof GdDictionaryType) {
-            return bodyBuilder.valueOfExpr("godot_new_Dictionary()", argType);
-        }
-        return bodyBuilder.valueOfExpr(argLiteral, argType);
     }
 
     private boolean canMaterializeCtorArg(@NotNull String argLiteral, @NotNull GdType expectedType) {
         return switch (expectedType) {
             case GdBoolType _ -> "true".equals(argLiteral) || "false".equals(argLiteral);
             case GdIntType _ -> isIntegerLiteral(argLiteral);
-            case GdFloatType _ -> isNumericLiteral(argLiteral);
+            case GdFloatType _ -> isNumericLiteral(argLiteral) || isInfinityLiteral(argLiteral);
             case GdStringType _ -> isQuotedStringLiteral(argLiteral);
             case GdStringNameType _ -> isQuotedStringNameLiteral(argLiteral);
             case GdArrayType _ -> "[]".equals(argLiteral);
@@ -654,12 +709,32 @@ public final class CBuiltinBuilder {
         };
     }
 
+    private @NotNull String normalizeFloatLiteral(@NotNull String literal) {
+        var mappedInfinity = mapInfinityLiteral(literal);
+        if (mappedInfinity != null) {
+            return mappedInfinity;
+        }
+        return literal;
+    }
+
+    private boolean isInfinityLiteral(@NotNull String literal) {
+        return mapInfinityLiteral(literal) != null;
+    }
+
+    private @Nullable String mapInfinityLiteral(@NotNull String literal) {
+        return switch (literal.trim().toLowerCase(Locale.ROOT)) {
+            case "inf", "+inf" -> "godot_inf";
+            case "-inf" -> "-godot_inf";
+            default -> null;
+        };
+    }
+
     private boolean isNumericLiteral(@NotNull String value) {
-        return value.matches("[+-]?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?");
+        return NUMERIC_LITERAL_PATTERN.matcher(value).matches();
     }
 
     private boolean isIntegerLiteral(@NotNull String value) {
-        return value.matches("[+-]?\\d+");
+        return INTEGER_LITERAL_PATTERN.matcher(value).matches();
     }
 
     private boolean isQuotedStringLiteral(@NotNull String literal) {
@@ -713,5 +788,14 @@ public final class CBuiltinBuilder {
             }
         }
         return out.toString();
+    }
+
+    @FunctionalInterface
+    private interface LiteralErrorReporter {
+        RuntimeException invalid(@NotNull String detail);
+
+        default RuntimeException malformed(@NotNull String literal, @NotNull IllegalArgumentException ex) {
+            return invalid("literal '" + literal + "' is malformed: " + ex.getMessage());
+        }
     }
 }

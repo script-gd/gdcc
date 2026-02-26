@@ -148,7 +148,7 @@ public final class ExtensionApiLoader {
                     var op = oe.getAsJsonObject();
                     operators.add(new ExtensionBuiltinClass.ClassOperator(
                             op.has("name") ? op.get("name").getAsString() : null,
-                            op.has("right_type") ? op.get("right_type").getAsString() : null,
+                            op.has("right_type") ? op.get("right_type").getAsString() : "",
                             op.has("return_type") ? op.get("return_type").getAsString() : null
                     ));
                 }
@@ -241,7 +241,11 @@ public final class ExtensionApiLoader {
             if (o.has("constants")) {
                 for (var ce : o.getAsJsonArray("constants")) {
                     var co = ce.getAsJsonObject();
-                    constants.add(new ExtensionBuiltinClass.ConstantInfo(co.has("name") ? co.get("name").getAsString() : null, co.has("value") ? co.get("value").getAsString() : null));
+                    constants.add(new ExtensionBuiltinClass.ConstantInfo(
+                            co.has("name") ? co.get("name").getAsString() : null,
+                            co.has("type") ? co.get("type").getAsString() : null,
+                            co.has("value") ? co.get("value").getAsString() : null
+                    ));
                 }
             }
 
