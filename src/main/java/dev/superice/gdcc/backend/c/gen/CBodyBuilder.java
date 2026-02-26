@@ -205,6 +205,14 @@ public final class CBodyBuilder {
         return new VarValue(variable, resolvePtrKind(variable.type()));
     }
 
+    /// Creates a value reference by explicitly casting a variable expression to `castType`.
+    /// This is expression-only and must not be used as an assignment target.
+    public @NotNull ValueRef valueOfCastedVar(@NotNull LirVariable variable, @NotNull GdType castType) {
+        var castTypeCode = helper.renderGdTypeInC(castType);
+        var castExpr = "(" + castTypeCode + ")$" + variable.id();
+        return valueOfExpr(castExpr, castType);
+    }
+
     public @NotNull ValueRef valueOfVar(@NotNull String variableName) {
         var variable = func.getVariableById(variableName);
         if (variable == null) {

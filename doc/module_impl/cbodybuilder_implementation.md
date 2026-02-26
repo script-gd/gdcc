@@ -51,6 +51,9 @@
 - Godot -> GDCC 统一使用：
   - `gdcc_object_from_godot_object_ptr(...)`
 - `convertPtrIfNeeded(...)` 仅做表示转换，不改变所有权类别。
+- 显式类型转换表达式统一由 `CBodyBuilder#valueOfCastedVar(LirVariable, GdType)` 构造：
+  - 返回 `ExprValueRef`（表达式值），不可作为赋值目标使用。
+  - 用于生成器中的“按目标类型强制转换后参与调用参数”的场景，避免手工拼接 cast 字符串。
 
 ## 3. GDCC/Godot 对象指针转换规则（已落地）
 
@@ -99,6 +102,7 @@
 - 指令生成器负责 IR 校验与错误定位，不直接复制生命周期策略。
 - 应优先通过 `assignVar` / `assignExpr` / `callAssign` / `callVoid` 交给 Builder 处理生命周期与转换。
 - 对对象类型，避免在生成器中手工拼 own/release 与指针转换逻辑。
+- 涉及变量强制类型转换时，避免在生成器里手写 `(<ctype>)$<id>` 字符串，统一使用 `valueOfCastedVar(...)`。
 - 生命周期受限指令（`destruct` / `try_own_object` / `try_release_object`）在进入 Builder 前必须通过 provenance 校验。
   - 生成器可做轻量防御断言，但主校验在 `LifecycleInstructionRestrictionValidator`。
   - 对非法来源应 fail-fast，不允许降级为“尽量生成”。

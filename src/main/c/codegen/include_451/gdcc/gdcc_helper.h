@@ -181,13 +181,14 @@ static godot_Projection godot_new_Projection_with_float_float_float_float_float_
 
 /// @param self
 /// @param method
-/// @param argv
-/// @param argc
 /// @param file_name The name of the source file where the call is made, used for error reporting. If NULL, it will be treated as "<unknown>".
 /// @param line_number
+/// @param argv
+/// @param argc
 static godot_Variant godot_Variant_call(
-    godot_Variant* self, const godot_StringName *method, const godot_Variant **argv, godot_int argc,
-    const char* file_name, int line_number
+    godot_Variant* self, const godot_StringName *method,
+    const char* file_name, int line_number,
+    const godot_Variant **argv, godot_int argc
 ) {
     godot_Variant ret;
     GDExtensionCallError error;

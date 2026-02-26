@@ -514,6 +514,96 @@ class CallMethodInsnGenTest {
         assertTrue(body.contains("godot_Array_fetch_packed_vectors(&$array)"), body);
     }
 
+    @Test
+    @DisplayName("CALL_METHOD should emit OBJECT_DYNAMIC dispatch with argument pack and return unpack")
+    void callMethodObjectDynamicShouldPackAndUnpack() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_object_dynamic");
+        func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
+        func.createAndAddVariable("value", GdIntType.INT);
+        func.createAndAddVariable("ret", GdIntType.INT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "compute",
+                "obj",
+                List.of(new LirInstruction.VariableOperand("value"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Object_call($obj, GD_STATIC_SN(u8\"compute\")"), body);
+        assertTrue(body.contains("godot_new_Variant_with_int($value)"), body);
+        assertTrue(body.contains("godot_new_int_with_Variant("), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit VARIANT_DYNAMIC dispatch and keep Variant result")
+    void callMethodVariantDynamicShouldEmitCall() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_variant_dynamic");
+        func.createAndAddVariable("recv", GdVariantType.VARIANT);
+        func.createAndAddVariable("arg", GdIntType.INT);
+        func.createAndAddVariable("ret", GdVariantType.VARIANT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "mystery",
+                "recv",
+                List.of(new LirInstruction.VariableOperand("arg"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Variant_call(&$recv, GD_STATIC_SN(u8\"mystery\")"), body);
+        assertTrue(body.contains("godot_new_Variant_with_int($arg)"), body);
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+        assertFalse(body.contains("variant_call_argv"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should unpack VARIANT_DYNAMIC return into non-Variant target")
+    void callMethodVariantDynamicShouldUnpackReturn() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_variant_dynamic_unpack");
+        func.createAndAddVariable("recv", GdVariantType.VARIANT);
+        func.createAndAddVariable("arg", GdIntType.INT);
+        func.createAndAddVariable("ret", GdIntType.INT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "mystery",
+                "recv",
+                List.of(new LirInstruction.VariableOperand("arg"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Variant_call(&$recv, GD_STATIC_SN(u8\"mystery\")"), body);
+        assertTrue(body.contains("godot_new_int_with_Variant("), body);
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD dynamic paths should reject ref result variable")
+    void callMethodDynamicShouldRejectRefResult() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_object_dynamic_ref_result");
+        func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
+        func.createAndAddRefVariable("ret", GdVariantType.VARIANT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "compute",
+                "obj",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz))
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("cannot be a reference"), ex.getMessage());
+    }
+
     private LirClassDef newClass(String name) {
         return newClass(name, "RefCounted");
     }
