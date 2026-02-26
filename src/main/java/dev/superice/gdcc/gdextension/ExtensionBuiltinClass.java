@@ -339,6 +339,6 @@ public record ExtensionBuiltinClass(
         }
     }
 
-    public record ConstantInfo(String name, String value) {
+    public record ConstantInfo(String name, @Nullable String type, String value) {
     }
 }

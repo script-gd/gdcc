@@ -2,8 +2,8 @@
 
 ## 文档状态
 
-- 状态：Proposed
-- 更新时间：2026-02-25
+- 状态：Implemented（Phase 1 & 2 已完成）
+- 更新时间：2026-02-26
 - 目标：为 `load_static` 增加可落地的 C 后端生成能力
 - 范围约束：
   - 仅支持三类静态读取：
@@ -387,3 +387,33 @@
 2. 支持 engine class 静态字段写入
 3. 放宽 `store_static` 到任何可写路径
 4. 在本阶段引入与 `load_static` 无关的 IR 结构调整
+
+---
+
+## 实施状态同步（2026-02-26）
+
+### 已完成（Phase 1）
+
+1. `ExtensionBuiltinClass.ConstantInfo` 已扩展为 `(name, type, value)`，并在 `ExtensionApiLoader` 中完成 `type` 解析。
+2. 已新增并注册 `LoadStaticInsnGen`，`load_static` 不再落入 unsupported opcode。
+3. 已新增并注册 `StoreStaticInsnGen`，`store_static` 统一 fail-fast。
+4. `load_static` 三路分发已实现：
+   - global enum
+   - builtin constants
+   - engine class integer constants
+
+### 已完成（Phase 2）
+
+1. `load_static` 新增类型兼容校验：
+   - builtin constant 声明类型 vs result 目标类型
+   - engine integer constant (`int`) vs result 目标类型
+2. builtin/static literal 物化与 utility default literal 物化已复用同一入口逻辑（`CBuiltinBuilder` 内部共享实现）。
+3. `inf` / `-inf` 已统一映射到 `godot_inf` / `-godot_inf`，覆盖：
+   - utility default literal 路径
+   - `load_static` builtin constant literal 路径
+
+### 测试同步
+
+1. 新增 `CLoadStaticInsnGenTest`，覆盖 global enum、builtin constants、INF 映射、engine integer constant、错误分支。
+2. 新增 `CStoreStaticInsnGenTest`，覆盖 `store_static` 统一拒绝语义。
+3. 扩展 `ExtensionApiLoaderTest`，验证 builtin constant `type` 字段解析。
