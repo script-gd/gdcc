@@ -8,6 +8,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -141,7 +142,8 @@ public final class CBodyBuilder {
         checkAssignable(value.type(), temp.type());
         var initCode = value.generateCode();
         if (temp.type() instanceof GdObjectType targetObjType) {
-            initCode = convertPtrIfNeeded(initCode, value.ptrKind(), targetObjType);
+            var valueObjType = value.type() instanceof GdObjectType objectType ? objectType : null;
+            initCode = convertPtrIfNeeded(initCode, value.ptrKind(), valueObjType, targetObjType);
         }
         out.append(temp.name()).append(" = ").append(initCode).append(";\n");
         temp.setInitialized(true);
@@ -215,8 +217,12 @@ public final class CBodyBuilder {
             if (sourceObjectType.getTypeName().equals(targetObjectType.getTypeName()) && sourcePtrKind == targetPtrKind) {
                 return valueOfVar(variable);
             }
+            if (sourceObjectType.checkGdccType(classRegistry()) && targetObjectType.checkGdccType(classRegistry())) {
+                var upcastExpr = renderGdccUpcastExpr(variable, sourceObjectType, targetObjectType);
+                return valueOfExpr(upcastExpr, castType, targetPtrKind);
+            }
             var sourceCode = "$" + variable.id();
-            var convertedCode = convertPtrIfNeeded(sourceCode, sourcePtrKind, targetObjectType);
+            var convertedCode = convertPtrIfNeeded(sourceCode, sourcePtrKind, sourceObjectType, targetObjectType);
             if (sourcePtrKind == PtrKind.GODOT_PTR && targetPtrKind == PtrKind.GDCC_PTR) {
                 return valueOfExpr(convertedCode, castType, targetPtrKind);
             }
@@ -231,6 +237,49 @@ public final class CBodyBuilder {
         var castTypeCode = helper.renderGdTypeInC(castType);
         var castExpr = "(" + castTypeCode + ")$" + variable.id();
         return valueOfExpr(castExpr, castType);
+    }
+
+    /// Renders a GDCC -> GDCC upcast expression using `_super` prefix layout chain.
+    /// Fails fast for non-upcast or unverifiable inheritance paths.
+    private @NotNull String renderGdccUpcastExpr(@NotNull LirVariable variable,
+                                                 @NotNull GdObjectType sourceObjectType,
+                                                 @NotNull GdObjectType targetObjectType) {
+        var sourceName = sourceObjectType.getTypeName();
+        var targetName = targetObjectType.getTypeName();
+        if (sourceName.equals(targetName)) {
+            return "$" + variable.id();
+        }
+        if (!classRegistry().checkAssignable(sourceObjectType, targetObjectType)) {
+            throw invalidInsn("GDCC cast must be a safe upcast, but got '" +
+                    sourceName + "' -> '" + targetName + "'");
+        }
+
+        var visited = new HashSet<String>();
+        var currentName = sourceName;
+        var upcastDepth = 0;
+        while (!currentName.equals(targetName)) {
+            if (!visited.add(currentName)) {
+                throw invalidInsn("Detected GDCC inheritance cycle while casting '" +
+                        sourceName + "' -> '" + targetName + "'");
+            }
+            var currentClass = classRegistry().findGdccClass(currentName);
+            if (currentClass == null) {
+                throw invalidInsn("Cannot resolve GDCC class definition '" + currentName +
+                        "' while casting '" + sourceName + "' -> '" + targetName + "'");
+            }
+            var superName = currentClass.getSuperName();
+            if (!classRegistry().isGdccClass(superName)) {
+                throw invalidInsn("Cannot prove GDCC upcast path '" + sourceName + "' -> '" +
+                        targetName + "': parent '" + superName + "' is not a GDCC class");
+            }
+            currentName = superName;
+            upcastDepth++;
+        }
+
+        var sourceCode = "$" + variable.id();
+        return "&(" + sourceCode + "->_super" +
+                "._super".repeat(Math.max(0, upcastDepth - 1)) +
+                ")";
     }
 
     public @NotNull ValueRef valueOfVar(@NotNull String variableName) {
@@ -312,17 +361,18 @@ public final class CBodyBuilder {
 
         if (targetType instanceof GdObjectType objType) {
             // Route all object writes through one ownership-aware slot write path.
-            emitObjectSlotWrite(
-                    targetCode,
-                    objType,
-                    canDestroyOldValue && !checkInPrepareBlock(),
-                    rhsResult.code(),
-                    value.ptrKind(),
-                    value.ownership()
-            );
-        } else {
-            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
-        }
+                emitObjectSlotWrite(
+                        targetCode,
+                        objType,
+                        canDestroyOldValue && !checkInPrepareBlock(),
+                        rhsResult.code(),
+                        value.ptrKind(),
+                        value.type() instanceof GdObjectType objectType ? objectType : null,
+                        value.ownership()
+                );
+            } else {
+                emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
+            }
 
         markTargetInitialized(target);
         emitTempDestroys(rhsResult.temps());
@@ -366,7 +416,7 @@ public final class CBodyBuilder {
     /// Caller is responsible for argument count/type checks.
     /// When `varargs == null`, vararg tail generation is skipped.
     /// When `varargs != null`, the vararg tail is always generated, including the empty case
-    /// (which emits `NULL, (godot_int)0`).
+    /// (which emits `NULL,(godot_int)0`).
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName,
                                           @NotNull List<ValueRef> args,
                                           @Nullable List<ValueRef> varargs) {
@@ -398,7 +448,7 @@ public final class CBodyBuilder {
     /// Caller is responsible for argument count/type checks.
     /// When `varargs == null`, vararg tail generation is skipped.
     /// When `varargs != null`, the vararg tail is always generated, including the empty case
-    /// (which emits `NULL, (godot_int)0`).
+    /// (which emits `NULL,(godot_int)0`).
     public @NotNull CBodyBuilder callAssign(@NotNull TargetRef target,
                                             @NotNull String funcName,
                                             @NotNull GdType returnType,
@@ -465,6 +515,7 @@ public final class CBodyBuilder {
                     canDestroyOldValue && !checkInPrepareBlock(),
                     callExpr,
                     rhsPtrKind,
+                    returnObjType,
                     OwnershipKind.OWNED
             );
             markTargetInitialized(target);
@@ -534,6 +585,7 @@ public final class CBodyBuilder {
                         true,
                         returnCode,
                         value.ptrKind(),
+                        value.type() instanceof GdObjectType objectType ? objectType : null,
                         value.ownership()
                 );
             } else {
@@ -548,7 +600,8 @@ public final class CBodyBuilder {
         }
 
         if (returnType instanceof GdObjectType objType) {
-            returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), objType);
+            var sourceObjType = value.type() instanceof GdObjectType objectType ? objectType : null;
+            returnCode = convertPtrIfNeeded(returnCode, value.ptrKind(), sourceObjType, objType);
         }
 
         if (returnResult.temps().isEmpty()) {
@@ -656,11 +709,13 @@ public final class CBodyBuilder {
         return literal.length() >= 3 && literal.startsWith("$\"") && literal.endsWith("\"");
     }
 
-    @NotNull public static String renderStaticStringLiteral(@NotNull String value) {
+    @NotNull
+    public static String renderStaticStringLiteral(@NotNull String value) {
         return "GD_STATIC_S(u8\"" + escapeStringLiteral(value) + "\")";
     }
 
-    @NotNull public static String renderStaticStringNameLiteral(@NotNull String value) {
+    @NotNull
+    public static String renderStaticStringNameLiteral(@NotNull String value) {
         return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
     }
 
@@ -689,7 +744,7 @@ public final class CBodyBuilder {
     /// - Primitive types and object pointers: pass by value (no &)
     /// - Value-semantic types (String, StringName, Variant, etc.): pass by pointer (&)
     /// When requireGodotRawPtr is true, GDCC object pointers are auto-converted to Godot
-    /// object pointers via `godot_object_from_gdcc_object_ptr(...)`.
+    /// object pointers via `gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`.
     private @NotNull RenderResult renderArgument(@NotNull ValueRef value, boolean requireGodotRawPtr) {
         var type = value.type();
 
@@ -857,6 +912,7 @@ public final class CBodyBuilder {
                                      boolean releaseOldValue,
                                      @NotNull String rhsCode,
                                      @NotNull PtrKind rhsPtrKind,
+                                     @Nullable GdObjectType rhsObjType,
                                      @NotNull OwnershipKind ownership) {
         TempVar oldValueTemp = null;
         if (releaseOldValue) {
@@ -864,7 +920,7 @@ public final class CBodyBuilder {
             oldValueTemp = newTempVariable("old_obj", targetType, targetCode);
             declareTempVar(oldValueTemp);
         }
-        var assignCode = convertPtrIfNeeded(rhsCode, rhsPtrKind, targetType);
+        var assignCode = convertPtrIfNeeded(rhsCode, rhsPtrKind, rhsObjType, targetType);
         out.append(targetCode).append(" = ").append(assignCode).append(";\n");
         if (ownership == OwnershipKind.BORROWED) {
             // BORROWED rhs must be retained by the slot after assignment.
@@ -899,7 +955,7 @@ public final class CBodyBuilder {
 
         if (returnType instanceof GdObjectType objType) {
             var rhsPtrKind = resolveCallResultPtrKind(cFuncName, objType);
-            var assignCode = convertPtrIfNeeded(callExpr, rhsPtrKind, objType);
+            var assignCode = convertPtrIfNeeded(callExpr, rhsPtrKind, objType, objType);
             var discardTemp = newTempVariable("discard", returnType, assignCode);
             declareTempVar(discardTemp);
             // Discarded OWNED object returns are consumed by immediate release.
@@ -928,11 +984,12 @@ public final class CBodyBuilder {
     }
 
     /// Converts a GDCC object pointer to Godot object pointer.
-    /// For GDCC types: use godot_object_from_gdcc_object_ptr(...)
+    /// For GDCC types: use class-specific helper through gdcc_object_to_godot_object_ptr.
     /// For engine types: use as-is
     private @NotNull String toGodotObjectPtr(@NotNull String varCode, @NotNull GdObjectType objType) {
         if (objType.checkGdccType(classRegistry())) {
-            return "godot_object_from_gdcc_object_ptr(" + varCode + ")";
+            var objectPtrHelper = helper.renderGdccObjectPtrHelperName(objType);
+            return "gdcc_object_to_godot_object_ptr(" + varCode + ", " + objectPtrHelper + ")";
         }
         return varCode;
     }
@@ -940,17 +997,22 @@ public final class CBodyBuilder {
     /// Converts an object pointer expression between GDCC and Godot representations if needed.
     ///
     /// - GODOT_PTR value → GDCC_PTR target: wraps with `fromGodotObjectPtr`
-    /// - GDCC_PTR value → GODOT_PTR target: wraps with `godot_object_from_gdcc_object_ptr(...)`
+    /// - GDCC_PTR value → GODOT_PTR target: wraps with `gdcc_object_to_godot_object_ptr(...)`
     /// - Same kind or NON_OBJECT: no conversion
     private @NotNull String convertPtrIfNeeded(@NotNull String code,
                                                @NotNull PtrKind valuePtrKind,
+                                               @Nullable GdObjectType valueObjType,
                                                @NotNull GdObjectType targetObjType) {
         var targetPtrKind = resolvePtrKind(targetObjType);
         if (valuePtrKind == PtrKind.GODOT_PTR && targetPtrKind == PtrKind.GDCC_PTR) {
             return fromGodotObjectPtr(code, targetObjType);
         }
         if (valuePtrKind == PtrKind.GDCC_PTR && targetPtrKind == PtrKind.GODOT_PTR) {
-            return "godot_object_from_gdcc_object_ptr(" + code + ")";
+            if (valueObjType == null || !valueObjType.checkGdccType(classRegistry())) {
+                throw invalidInsn("Cannot convert GDCC_PTR value '" + code +
+                        "' to Godot pointer: missing GDCC static type");
+            }
+            return toGodotObjectPtr(code, valueObjType);
         }
         return code;
     }
@@ -1014,7 +1076,7 @@ public final class CBodyBuilder {
     }
 
     private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,
-                                                       @NotNull GdObjectType returnObjType) {
+                                                      @NotNull GdObjectType returnObjType) {
         if (checkGlobalFuncReturnGodotRawPtr(cFuncName)) {
             // godot_* calls return raw Godot object pointers.
             return PtrKind.GODOT_PTR;

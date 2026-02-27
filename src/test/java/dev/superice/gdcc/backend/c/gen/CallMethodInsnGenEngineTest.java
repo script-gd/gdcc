@@ -193,7 +193,7 @@ class CallMethodInsnGenEngineTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($baseRef), GD_STATIC_SN(u8\"child_only_echo\")"),
+                entrySource.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, GDBaseDynamicWorker_object_ptr), GD_STATIC_SN(u8\"child_only_echo\")"),
                 "Parent-typed GDCC receiver should use OBJECT_DYNAMIC dispatch with GDCC pointer conversion."
         );
         assertFalse(
@@ -255,7 +255,7 @@ class CallMethodInsnGenEngineTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Node_get_child_count((godot_Node*)godot_object_from_gdcc_object_ptr($self)"),
+                entrySource.contains("godot_Node_get_child_count((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDGdccEngineOwnerBridgeNode_object_ptr)"),
                 "Engine dispatch on GDCC receiver should cast after helper conversion."
         );
         assertFalse(

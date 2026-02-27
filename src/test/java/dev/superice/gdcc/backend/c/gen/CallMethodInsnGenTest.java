@@ -105,7 +105,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("godot_Node_queue_free((godot_Node*)godot_object_from_gdcc_object_ptr($self));"), body);
+        assertTrue(body.contains("godot_Node_queue_free((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"), body);
         assertFalse(body.contains("godot_Node_queue_free((godot_Node*)$self);"), body);
     }
 
@@ -133,6 +133,38 @@ class CallMethodInsnGenTest {
         assertTrue(body.contains("Worker_ping($worker);"), body);
         assertFalse(body.contains("godot_Object_call("), body);
         assertFalse(body.contains("godot_Variant_call("), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should upcast GDCC receiver to parent owner via _super chain without bare cast")
+    void callMethodGdccReceiverToParentOwnerShouldUseSuperChainUpcast() {
+        var baseClass = newClass("BaseWorker");
+        var basePing = newFunction("base_ping");
+        basePing.addParameter(new LirParameterDef("self", new GdObjectType("BaseWorker"), null, basePing));
+        entry(basePing).instructions().add(new ReturnInsn(null));
+        baseClass.addFunction(basePing);
+
+        var childClass = newClass("ChildWorker", "BaseWorker");
+        var childOnly = newFunction("child_only");
+        childOnly.addParameter(new LirParameterDef("self", new GdObjectType("ChildWorker"), null, childOnly));
+        entry(childOnly).instructions().add(new ReturnInsn(null));
+        childClass.addFunction(childOnly);
+
+        var hostClass = newClass("Host");
+        var caller = newFunction("run");
+        caller.createAndAddVariable("child", new GdObjectType("ChildWorker"));
+        entry(caller).instructions().add(new CallMethodInsn(
+                null,
+                "base_ping",
+                "child",
+                List.of()
+        ));
+        hostClass.addFunction(caller);
+
+        var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, childClass, baseClass));
+        assertTrue(body.contains("BaseWorker_base_ping(&($child->_super));"), body);
+        assertFalse(body.contains("BaseWorker_base_ping((BaseWorker*)$child);"), body);
+        assertFalse(body.contains("godot_Object_call("), body);
     }
 
     @Test
@@ -170,7 +202,7 @@ class CallMethodInsnGenTest {
         hostClass.addFunction(caller);
 
         var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, workerClass));
-        assertTrue(body.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($worker), GD_STATIC_SN(u8\"missing_method\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($worker, Worker_object_ptr), GD_STATIC_SN(u8\"missing_method\")"), body);
         assertFalse(body.contains("Worker_missing_method("), body);
     }
 
@@ -205,7 +237,7 @@ class CallMethodInsnGenTest {
         hostClass.addFunction(caller);
 
         var body = generateBody(hostClass, caller, newApi(List.of(), List.of()), List.of(hostClass, baseClass, childClass));
-        assertTrue(body.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($baseRef), GD_STATIC_SN(u8\"child_only_echo\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, BaseWorker_object_ptr), GD_STATIC_SN(u8\"child_only_echo\")"), body);
         assertFalse(body.contains("ChildWorker_child_only_echo("), body);
         assertFalse(body.contains("godot_Variant_call("), body);
     }
@@ -250,7 +282,7 @@ class CallMethodInsnGenTest {
                 newApi(List.of(), List.of()),
                 List.of(hostClass, baseClass, childClass, peerClass)
         );
-        assertTrue(body.contains("godot_Object_call(godot_object_from_gdcc_object_ptr($baseRef), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
+        assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, BaseWorker_object_ptr), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
         assertTrue(body.contains("godot_new_Variant_with_gdcc_Object($peer)"), body);
         assertFalse(body.contains("godot_new_Variant_with_Object(godot_object_from_gdcc_object_ptr($peer))"), body);
         assertFalse(body.contains("godot_Variant_call("), body);

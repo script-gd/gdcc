@@ -385,6 +385,14 @@ public final class CGenHelper {
         return context.classRegistry().isGdccClass(className);
     }
 
+    /// Renders generated per-class object pointer helper name for a GDCC object type.
+    public @NotNull String renderGdccObjectPtrHelperName(@NotNull GdObjectType gdObjectType) {
+        if (!gdObjectType.checkGdccType(context.classRegistry())) {
+            throw new IllegalArgumentException("Type " + gdObjectType.getTypeName() + " is not a GDCC object type");
+        }
+        return gdObjectType.getTypeName() + "_object_ptr";
+    }
+
     /// Resolve the nearest constructible native ancestor for a GDCC class.
     /// This walks up GDCC inheritance chain until the first non-GDCC parent.
     public @NotNull String resolveNearestNativeAncestorName(@NotNull ClassDef classDef) {

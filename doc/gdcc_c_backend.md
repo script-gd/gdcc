@@ -52,6 +52,14 @@
   - Do not mix with parent helper unless the value has already been upcast safely.
 - Any touched legacy path that still depends on the deprecated macro must be migrated in the same change or explicitly tracked as migration debt.
 
+### Stage 4 Alignment (2026-02-27)
+
+- `CBodyBuilder` 已对齐到专用 helper 转换基线：
+  - GDCC -> Godot 统一生成 `gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`。
+  - `CALL_METHOD` receiver 为 GDCC 且 owner 为 ENGINE 时，先 helper 转换，再执行 engine 指针 cast。
+  - GDCC 子类 -> GDCC 父类上行由 `_super` 链表达式承载，不走裸 C cast。
+- `CallMethodInsnGen`/`CBodyBuilder` 回归测试文本断言已切到 helper 入口，相关链路不再回退到 `godot_object_from_gdcc_object_ptr(...)`。
+
 ### Implementing a New Instruction Generator
 
 - Each instruction generator implements `CInsnGen`, for those who wants to use FreeMarker templates, they can extend `TemplateInsnGen`.
