@@ -6,6 +6,9 @@
 
 - GDCC types cannot be used directly as a `godot_Object*` or `GDExtensionObjectPtr`, they need to be converted first.
   - Convert into Godot object pointer using generated per-class helper functions.
+  - Preferred conversion macro: `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`.
+    - `obj` must be a GDCC wrapper pointer value.
+    - `Class_object_ptr` must be the generated helper for the static type of `obj`.
   - `godot_object_from_gdcc_object_ptr` is deprecated and must not be used in new or migrated code paths.
   - Convert from Godot object pointer using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)`.
   - `Variant` can be converted to/from GDCC types using `godot_new_Variant_with_gdcc_Object` and `godot_new_gdcc_Object_with_Variant`.
@@ -42,6 +45,11 @@
 - This baseline is effective immediately and must be treated as a gate for follow-up implementation.
 - `godot_object_from_gdcc_object_ptr` is deprecated and must not appear in newly modified code.
 - All GDCC -> Godot pointer conversions must use generated, class-specific helper functions.
+- Standard form for conversion in generated C code:
+  - `gdcc_object_to_godot_object_ptr($value, MyGdccType_object_ptr)`
+- Keep static type and helper matched:
+  - If the value static type is `MyChild*`, use `MyChild_object_ptr`.
+  - Do not mix with parent helper unless the value has already been upcast safely.
 - Any touched legacy path that still depends on the deprecated macro must be migrated in the same change or explicitly tracked as migration debt.
 
 ### Implementing a New Instruction Generator

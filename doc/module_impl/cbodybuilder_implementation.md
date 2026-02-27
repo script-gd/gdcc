@@ -47,7 +47,8 @@
 
 - `PtrKind`：`GDCC_PTR` / `GODOT_PTR` / `NON_OBJECT`
 - GDCC -> Godot 统一使用 helper：
-  - `godot_object_from_gdcc_object_ptr(...)`
+  - 优先：`gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`
+  - 兼容：`godot_object_from_gdcc_object_ptr(...)`（deprecated，存量路径迁移中）
 - Godot -> GDCC 统一使用：
   - `gdcc_object_from_godot_object_ptr(...)`
 - `convertPtrIfNeeded(...)` 仅做表示转换，不改变所有权类别。
@@ -62,11 +63,13 @@
 - 调用 GDExtension API（如 `godot_*`、`*own_object`、`*release_object`、`try_destroy_object`）时，若参数是 GDCC 对象指针，必须转换为 Godot raw ptr。
 - 代码生成侧禁止手写 `->_object` 来做“调用侧转换”；统一走：
   - `CBodyBuilder#toGodotObjectPtr(...)`
-  - `godot_object_from_gdcc_object_ptr(...)`
+  - `gdcc_object_to_godot_object_ptr(...)`（首选）
+  - `godot_object_from_gdcc_object_ptr(...)`（兼容）
 
 ### 3.2 helper 宏语义
 
-- `godot_object_from_gdcc_object_ptr(obj)` 在 `gdcc_helper.h` 中已是 NULL-safe。
+- `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)` 是当前推荐路径，且 NULL-safe。
+- `godot_object_from_gdcc_object_ptr(obj)` 在 `gdcc_helper.h` 中仅保留为兼容路径，语义仍为 NULL-safe。
 - `godot_new_Variant_with_gdcc_Object(obj)` 已复用上述 helper，因此打包 Variant 时不应额外手动转换。
 
 ### 3.3 明确不替换的场景
@@ -128,7 +131,7 @@
 
 ### 7.3 helper 宏可移植性
 
-- `godot_object_from_gdcc_object_ptr` 使用 GNU 扩展（statement expression + `__typeof__`）。
+- `gdcc_object_to_godot_object_ptr` 与 `godot_object_from_gdcc_object_ptr` 都使用 GNU 扩展（statement expression + `__typeof__`）。
 - 当前链路可用，但若未来切换到不支持 GNU 扩展的纯 MSVC 语义环境，需要替代实现方案。
 
 ## 8. 回归校验基线

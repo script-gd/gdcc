@@ -93,12 +93,37 @@ void ${classDef.name}_class_bind_methods() {
 }
 </#list>
 
+// Object pointer helpers for GDCC wrapper layout
+<#list module.classDefs as classDef>
+static inline GDExtensionObjectPtr ${classDef.name}_object_ptr(${classDef.name}* self) {
+    if (self == NULL) {
+        return NULL;
+    }
+    <#if helper.checkGdccClassByName(classDef.superName)>
+        return ${classDef.superName}_object_ptr(&self->_super);
+    <#else>
+        return self->_object;
+    </#if>
+}
+
+static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExtensionObjectPtr obj) {
+    if (self == NULL) {
+        return;
+    }
+    <#if helper.checkGdccClassByName(classDef.superName)>
+        ${classDef.superName}_set_object_ptr(&self->_super, obj);
+    <#else>
+        self->_object = obj;
+    </#if>
+}
+</#list>
+
 // GdExtension Methods for each class
 <#list module.classDefs as classDef>
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
     GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${classDef.superName}"));
     ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));
-    self->_object = obj;
+    ${classDef.name}_set_object_ptr(self, obj);
     godot_object_set_instance(obj, GD_STATIC_SN(u8"${classDef.name}"), self);
     godot_object_set_instance_binding(obj, class_library, self, &${classDef.name}_class_binding_callbacks);
     if (p_notify_postinitialize) {
@@ -119,6 +144,9 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
     if (self == NULL) {
         return;
     }
+    <#if helper.checkGdccClassByName(classDef.superName)>
+        ${classDef.superName}_class_constructor(&self->_super);
+    </#if>
     <#list classDef.properties as property>
         self->${property.name} = ${classDef.name}_${property.initFunc}(self);
     </#list>
@@ -135,7 +163,7 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
         <#if property.type.destroyable>
             <#if property.type.gdExtensionType.name() == "OBJECT">
                 <#if helper.checkGdccType(property.type)>
-                    try_release_object(godot_object_from_gdcc_object_ptr(self->${property.name}));
+                    try_release_object(${helper.renderGdTypeName(property.type)}_object_ptr(self->${property.name}));
                 <#else>
                     try_release_object(self->${property.name});
                 </#if>
@@ -144,6 +172,9 @@ void ${classDef.name}_class_destructor(${classDef.name}* self) {
             </#if>
         </#if>
     </#list>
+    <#if helper.checkGdccClassByName(classDef.superName)>
+        ${classDef.superName}_class_destructor(&self->_super);
+    </#if>
 }
 
 void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance, int32_t p_what, GDExtensionBool p_reversed) {

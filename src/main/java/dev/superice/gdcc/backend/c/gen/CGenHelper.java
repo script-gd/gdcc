@@ -381,6 +381,10 @@ public final class CGenHelper {
         return false;
     }
 
+    public boolean checkGdccClassByName(@NotNull String className) {
+        return context.classRegistry().isGdccClass(className);
+    }
+
     public @NotNull CodegenContext context() {
         return context;
     }
