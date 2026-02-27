@@ -74,6 +74,7 @@
 1. 文件：`src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
 - 移除 `godot_object_from_gdcc_object_ptr` 在生成代码路径中的使用。
 - 提供/保留统一的 helper 调用入口（由模板生成的按类专用 helper 负责最终转换）。
+- 统一入口宏为：`gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`。
 - 明确注释：GDCC 子类不保证存在直接 `_object` 字段，必须通过生成 helper 取对象指针。
 
 ### 阶段 2：实例创建链路修正（避免绑定风险）

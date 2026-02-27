@@ -28,13 +28,20 @@ typedef struct ${classDef.name} ${classDef.name};
 // Class definition for ${classDef.name}
 
 struct ${classDef.name} {
-    GDExtensionObjectPtr _object;
+    <#if helper.checkGdccClassByName(classDef.superName)>
+        ${classDef.superName} _super;
+    <#else>
+        GDExtensionObjectPtr _object;
+    </#if>
     <#list classDef.properties as property>
         <#if !property.static>
             ${helper.renderGdTypeInC(property.type)} ${property.name};
         </#if>
     </#list>
 };
+
+static inline GDExtensionObjectPtr ${classDef.name}_object_ptr(${classDef.name}* self);
+static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExtensionObjectPtr obj);
 
 const GDExtensionInstanceBindingCallbacks ${classDef.name}_class_binding_callbacks = {
     .create_callback = NULL,

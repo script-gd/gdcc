@@ -88,6 +88,8 @@
 ### 4. 指针转换安全约束
 
 - GDCC -> Godot 对象指针转换必须使用“按类生成的专用 helper”；`godot_object_from_gdcc_object_ptr` 视为废弃，不得用于新增或迁移后的路径。
+- 推荐统一写法：`gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`。
+- `value` 的静态类型与 `Type_object_ptr` 必须匹配；若已安全上行转换到父类类型，才允许切换为父类 helper。
 - 当 receiver 是 GDCC wrapper，但目标 owner 为 ENGINE 时，必须先做 GDCC -> Godot raw ptr 转换，再按需要 cast 到 `godot_<Owner>*`。
 - 禁止仅通过 C cast 把 GDCC wrapper 指针伪装成 engine 指针。
 - `CBodyBuilder.renderArgument(...)` 的 ptr kind/type fail-fast 防线属于不可回退约束。

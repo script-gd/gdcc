@@ -129,7 +129,13 @@ static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtension
     return godot_object_get_instance_binding(ptr, class_library, &callbacks);
 }
 
-#define godot_object_from_gdcc_object_ptr(obj) ({ __typeof__(obj) _o = (obj); _o ? _o->_object : NULL; })
+/// Preferred conversion entry for GDCC -> Godot object pointers.
+/// `object_ptr_helper` must be a generated per-class helper like `MyClass_object_ptr`.
+#define gdcc_object_to_godot_object_ptr(obj, object_ptr_helper) ({ __typeof__(obj) _o = (obj); _o ? object_ptr_helper(_o) : NULL; })
+
+/// Deprecated compatibility path.
+/// Kept temporarily for legacy generated code that has not migrated to per-class helpers yet.
+#define godot_object_from_gdcc_object_ptr(obj) ({ __typeof__(obj) _o = (obj); _o ? *((GDExtensionObjectPtr*)(void*)_o) : NULL; })
 
 static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {
     const GDExtensionObjectPtr obj = godot_new_Object_with_Variant(value);
