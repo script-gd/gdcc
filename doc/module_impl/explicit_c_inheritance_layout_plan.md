@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：Planned / Pending Implementation
+- 状态：In Progress（阶段 2 已完成，阶段 3-4 待实施）
 - 更新时间：2026-02-27
 - 适用范围：`backend.c` 中 GDCC 类实例布局、实例创建链路、对象转换与调用生成
 - 关联文档：
@@ -87,6 +87,20 @@
 1. Java 侧辅助（如模板数据不足）
 - 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`、`src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`（按实际结构调整）
 - 为模板提供 `classDef` 对应的“最近 native ancestor”字段，避免模板内复杂推导。
+
+#### 阶段 2 实施同步（2026-02-27）
+
+- 已完成：`src/main/c/codegen/template_451/entry.c.ftl`
+  - `*_class_create_instance` 的 `godot_classdb_construct_object2(...)` 已切换为“最近 native ancestor”而非直接 `superName`。
+  - 具体模板表达式：`${helper.resolveNearestNativeAncestorName(classDef)}`。
+- 已完成：`src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - 新增 `resolveNearestNativeAncestorName(ClassDef classDef)`，沿 GDCC 继承链上溯并返回首个非 GDCC 祖先。
+  - 包含防御性检查：继承环检测、缺失父类定义检测、空祖先 fail-fast。
+- 已完成：`src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
+  - 新增/增强断言，覆盖：
+    - GDCC 子类 `create_instance` 构造目标为最近 native ancestor（例如 `Node`）。
+    - 深层 GDCC 继承链（`Leaf -> Mid -> Root -> Node`）仍稳定构造 `Node`。
+    - `create_instance` 中 `godot_object_set_instance(...)` 与 `godot_object_set_instance_binding(...)` 在最派生创建函数内各出现一次。
 
 ### 阶段 3：收敛 GDCC 上行转换语义
 

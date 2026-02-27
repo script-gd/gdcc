@@ -121,7 +121,7 @@ static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExt
 // GdExtension Methods for each class
 <#list module.classDefs as classDef>
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
-    GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${classDef.superName}"));
+    GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${helper.resolveNearestNativeAncestorName(classDef)}"));
     ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));
     ${classDef.name}_set_object_ptr(self, obj);
     godot_object_set_instance(obj, GD_STATIC_SN(u8"${classDef.name}"), self);

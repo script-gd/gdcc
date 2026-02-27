@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -99,5 +100,70 @@ public class CCodegenTest {
         assertTrue(cCode.contains("try_release_object(GDParentNode_object_ptr(self->peer));"));
         assertTrue(cCode.contains("GDParentNode_class_destructor(&self->_super);"));
         assertFalse(cCode.contains("godot_object_from_gdcc_object_ptr(self->peer)"));
+
+        assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
+        assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));
+        var directParentConstructPattern = Pattern.compile(
+                "GDExtensionObjectPtr\\s+GDChildNode_class_create_instance\\([^)]*\\)\\s*\\{\\s*GDExtensionObjectPtr obj = godot_classdb_construct_object2\\(GD_STATIC_SN\\(u8\"GDParentNode\"\\)\\);",
+                Pattern.DOTALL);
+        assertFalse(directParentConstructPattern.matcher(cCode).find());
+    }
+
+    @Test
+    public void createInstanceUsesSingleBindingAndNearestNativeAncestorForDeepGdccInheritance() throws Exception {
+        var rootClass = new LirClassDef("GDRootNode", "Node");
+        var midClass = new LirClassDef("GDMidNode", "GDRootNode");
+        var leafClass = new LirClassDef("GDLeafNode", "GDMidNode");
+        var module = new LirModule("deep_inheritance_module", List.of(rootClass, midClass, leafClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        assertEquals("Node", resolveConstructTarget(cCode, "GDRootNode"));
+        assertEquals("Node", resolveConstructTarget(cCode, "GDMidNode"));
+        assertEquals("Node", resolveConstructTarget(cCode, "GDLeafNode"));
+
+        var leafCreateInstanceBody = resolveCreateInstanceBody(cCode, "GDLeafNode");
+        assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance("));
+        assertEquals(1, countOccurrences(leafCreateInstanceBody, "godot_object_set_instance_binding("));
+    }
+
+    private static String resolveConstructTarget(String cCode, String className) {
+        var functionPrefix = "GDExtensionObjectPtr\\s+" + Pattern.quote(className) + "_class_create_instance";
+        var pattern = Pattern.compile(functionPrefix +
+                "\\([^)]*\\)\\s*\\{\\s*GDExtensionObjectPtr obj = godot_classdb_construct_object2\\(GD_STATIC_SN\\(u8\"([^\"]+)\"\\)\\);",
+                Pattern.DOTALL);
+        var matcher = pattern.matcher(cCode);
+        assertTrue(matcher.find(), "Missing create_instance construct target for class " + className);
+        return matcher.group(1);
+    }
+
+    private static String resolveCreateInstanceBody(String cCode, String className) {
+        var functionPrefix = "GDExtensionObjectPtr\\s+" + Pattern.quote(className) + "_class_create_instance";
+        var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)return obj;\\s*}", Pattern.DOTALL);
+        var matcher = pattern.matcher(cCode);
+        assertTrue(matcher.find(), "Missing create_instance body for class " + className);
+        return matcher.group(1);
+    }
+
+    private static int countOccurrences(String text, String needle) {
+        var count = 0;
+        var fromIndex = 0;
+        while (true) {
+            var index = text.indexOf(needle, fromIndex);
+            if (index < 0) {
+                return count;
+            }
+            count++;
+            fromIndex = index + needle.length();
+        }
     }
 }

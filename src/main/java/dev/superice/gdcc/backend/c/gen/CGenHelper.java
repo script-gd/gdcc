@@ -336,7 +336,7 @@ public final class CGenHelper {
     /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
     ///
     /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
-    ///                   but the underlying proxy Godot object ptr.
+    ///                                     but the underlying proxy Godot object ptr.
     public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
                                                           @NotNull String targetVarName,
                                                           @NotNull GdType sourceType,
@@ -383,6 +383,28 @@ public final class CGenHelper {
 
     public boolean checkGdccClassByName(@NotNull String className) {
         return context.classRegistry().isGdccClass(className);
+    }
+
+    /// Resolve the nearest constructible native ancestor for a GDCC class.
+    /// This walks up GDCC inheritance chain until the first non-GDCC parent.
+    public @NotNull String resolveNearestNativeAncestorName(@NotNull ClassDef classDef) {
+        var registry = context.classRegistry();
+        var ancestorName = classDef.getSuperName();
+        var visited = new HashSet<String>();
+        while (registry.isGdccClass(ancestorName)) {
+            if (!visited.add(ancestorName)) {
+                throw new IllegalStateException("Detected GDCC inheritance cycle while resolving native ancestor for class " + classDef.getName());
+            }
+            var parentDef = registry.findGdccClass(ancestorName);
+            if (parentDef == null) {
+                throw new IllegalStateException("Missing GDCC class definition for parent " + ancestorName + " while resolving native ancestor for class " + classDef.getName());
+            }
+            ancestorName = parentDef.getSuperName();
+        }
+        if (ancestorName.isEmpty()) {
+            throw new IllegalStateException("Class " + classDef.getName() + " does not have a native ancestor");
+        }
+        return ancestorName;
     }
 
     public @NotNull CodegenContext context() {
