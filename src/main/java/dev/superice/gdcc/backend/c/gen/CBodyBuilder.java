@@ -270,6 +270,11 @@ public final class CBodyBuilder {
         return new StringPtrLiteralValue(value);
     }
 
+    /// Creates a value reference for a C `const char*` string literal.
+    public @NotNull ValueRef valueOfCStringLiteral(@NotNull String value) {
+        return new CStringLiteralValue(value);
+    }
+
     /// Creates a target reference from a variable.
     ///
     /// Throws InvalidInsnException if the variable is a reference variable (ref=true).
@@ -808,7 +813,7 @@ public final class CBodyBuilder {
     /// - expressions are materialized to a temp, then &temp
     /// - string literals use GD_STATIC_S or GD_STATIC_SN macros, which are already pointers
     private @NotNull RenderResult renderValueAddress(@NotNull ValueRef value) {
-        if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue) {
+        if (value instanceof StringNamePtrLiteralValue || value instanceof StringPtrLiteralValue || value instanceof CStringLiteralValue) {
             return new RenderResult(value.generateCode(), List.of());
         }
         if (value instanceof VarValue varValue) {
@@ -1034,7 +1039,7 @@ public final class CBodyBuilder {
         OWNED
     }
 
-    public sealed interface ValueRef permits VarValue, ExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, TempVar {
+    public sealed interface ValueRef permits VarValue, ExprValue, StringNamePtrLiteralValue, StringPtrLiteralValue, CStringLiteralValue, TempVar {
         @NotNull GdType type();
 
         @NotNull String generateCode();
@@ -1124,6 +1129,27 @@ public final class CBodyBuilder {
         @Override
         public @NotNull String generateCode() {
             return renderStaticStringLiteral(value);
+        }
+
+        @Override
+        public @NotNull PtrKind ptrKind() {
+            return PtrKind.NON_OBJECT;
+        }
+    }
+
+    public record CStringLiteralValue(@NotNull String value) implements ValueRef {
+        public CStringLiteralValue {
+            Objects.requireNonNull(value);
+        }
+
+        @Override
+        public @NotNull GdType type() {
+            return GdStringType.STRING;
+        }
+
+        @Override
+        public @NotNull String generateCode() {
+            return "\"" + escapeStringLiteral(value) + "\"";
         }
 
         @Override

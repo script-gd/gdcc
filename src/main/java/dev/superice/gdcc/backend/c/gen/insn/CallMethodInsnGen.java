@@ -6,6 +6,7 @@ import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
+import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -59,6 +60,12 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         }
     }
 
+    private record VariantDynamicSourceLocation(@NotNull String fileName, int lineNumber) {
+        private VariantDynamicSourceLocation {
+            fileName = fileName.isBlank() ? "<unknown>" : fileName;
+        }
+    }
+
     private void emitObjectDynamicCall(@NotNull CBodyBuilder bodyBuilder,
                                        @NotNull CallMethodInsn instruction,
                                        @NotNull LirVariable receiverVar,
@@ -83,11 +90,12 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                                         @NotNull LirVariable receiverVar,
                                         @NotNull List<LirVariable> argVars) {
         var dynamicArgs = materializeDynamicVariantArgs(bodyBuilder, argVars, "variant_dynamic");
+        var sourceLocation = resolveVariantDynamicSourceLocation(bodyBuilder);
         var fixedArgs = List.of(
                 bodyBuilder.valueOfVar(receiverVar),
                 bodyBuilder.valueOfStringNamePtrLiteral(instruction.methodName()),
-                bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR),
-                bodyBuilder.valueOfExpr(Integer.toString(bodyBuilder.currentInsnIndex()), GdIntType.INT)
+                bodyBuilder.valueOfCStringLiteral(sourceLocation.fileName()),
+                bodyBuilder.valueOfExpr(Integer.toString(sourceLocation.lineNumber()), GdIntType.INT)
         );
         emitDynamicCallResult(
                 bodyBuilder,
@@ -97,6 +105,36 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                 dynamicArgs.values(),
                 dynamicArgs.packedTemps()
         );
+    }
+
+    private @NotNull VariantDynamicSourceLocation resolveVariantDynamicSourceLocation(@NotNull CBodyBuilder bodyBuilder) {
+        var classSourceFile = bodyBuilder.clazz().getSourceFile();
+        var baseFileName = classSourceFile != null && !classSourceFile.isBlank()
+                ? classSourceFile
+                : bodyBuilder.clazz().getName();
+        var lineNumber = findNearestLineNumberBeforeCurrentInsn(bodyBuilder);
+        if (lineNumber > 0) {
+            return new VariantDynamicSourceLocation(baseFileName, lineNumber);
+        }
+        var fallbackLine = Math.max(0, bodyBuilder.currentInsnIndex());
+        return new VariantDynamicSourceLocation(baseFileName + "(assemble)", fallbackLine);
+    }
+
+    private int findNearestLineNumberBeforeCurrentInsn(@NotNull CBodyBuilder bodyBuilder) {
+        var block = bodyBuilder.currentBlock();
+        if (block == null) {
+            return -1;
+        }
+        var instructions = block.instructions();
+        var upperBoundExclusive = Math.min(bodyBuilder.currentInsnIndex(), instructions.size());
+        var nearestLine = -1;
+        for (var i = 0; i < upperBoundExclusive; i++) {
+            var insn = instructions.get(i);
+            if (insn instanceof LineNumberInsn(int lineNumber) && lineNumber > 0) {
+                nearestLine = lineNumber;
+            }
+        }
+        return nearestLine;
     }
 
     private void emitDynamicCallResult(@NotNull CBodyBuilder bodyBuilder,

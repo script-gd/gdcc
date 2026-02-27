@@ -15,6 +15,7 @@ import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
+import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
@@ -664,20 +665,26 @@ class CallMethodInsnGenTest {
     @DisplayName("CALL_METHOD should emit VARIANT_DYNAMIC dispatch and keep Variant result")
     void callMethodVariantDynamicShouldEmitCall() {
         var clazz = newClass("Worker");
+        clazz.setSourceFile("worker_dynamic.gd");
         var func = newFunction("call_variant_dynamic");
         func.createAndAddVariable("recv", GdVariantType.VARIANT);
         func.createAndAddVariable("arg", GdIntType.INT);
         func.createAndAddVariable("ret", GdVariantType.VARIANT);
+        entry(func).instructions().add(new LineNumberInsn(11));
+        entry(func).instructions().add(new LineNumberInsn(22));
         entry(func).instructions().add(new CallMethodInsn(
                 "ret",
                 "mystery",
                 "recv",
                 List.of(new LirInstruction.VariableOperand("arg"))
         ));
+        entry(func).instructions().add(new LineNumberInsn(99));
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
         assertTrue(body.contains("godot_Variant_call(&$recv, GD_STATIC_SN(u8\"mystery\")"), body);
+        assertTrue(body.contains("\"worker_dynamic.gd\", 22"), body);
+        assertFalse(body.contains("\"worker_dynamic.gd\", 99"), body);
         assertTrue(body.contains("godot_new_Variant_with_int($arg)"), body);
         assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
         assertFalse(body.contains("variant_call_argv"), body);
@@ -685,9 +692,10 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should unpack VARIANT_DYNAMIC return into non-Variant target")
+    @DisplayName("CALL_METHOD should unpack VARIANT_DYNAMIC return into non-Variant target with assemble fallback location")
     void callMethodVariantDynamicShouldUnpackReturn() {
         var clazz = newClass("Worker");
+        clazz.setSourceFile("worker_dynamic.gd");
         var func = newFunction("call_variant_dynamic_unpack");
         func.createAndAddVariable("recv", GdVariantType.VARIANT);
         func.createAndAddVariable("arg", GdIntType.INT);
@@ -702,8 +710,30 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
         assertTrue(body.contains("godot_Variant_call(&$recv, GD_STATIC_SN(u8\"mystery\")"), body);
+        assertTrue(body.contains("\"worker_dynamic.gd(assemble)\", 0"), body);
         assertTrue(body.contains("godot_new_int_with_Variant("), body);
         assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should fallback to class name when sourceFile is missing in VARIANT_DYNAMIC location")
+    void callMethodVariantDynamicShouldUseClassNameWhenSourceFileMissing() {
+        var clazz = newClass("WorkerNoSource");
+        var func = newFunction("call_variant_dynamic_no_source_file");
+        func.createAndAddVariable("recv", GdVariantType.VARIANT);
+        func.createAndAddVariable("arg", GdIntType.INT);
+        func.createAndAddVariable("ret", GdVariantType.VARIANT);
+        entry(func).instructions().add(new CallMethodInsn(
+                "ret",
+                "mystery",
+                "recv",
+                List.of(new LirInstruction.VariableOperand("arg"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz));
+        assertTrue(body.contains("godot_Variant_call(&$recv, GD_STATIC_SN(u8\"mystery\")"), body);
+        assertTrue(body.contains("\"WorkerNoSource(assemble)\", 0"), body);
     }
 
     @Test
