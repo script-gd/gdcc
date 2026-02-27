@@ -89,6 +89,26 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should convert GDCC self pointer when static dispatch resolves to engine owner")
+    void callMethodGdccSelfToEngineOwnerShouldConvertReceiverPointer() {
+        var clazz = newClass("GDMyNode", "Node");
+        var func = newFunction("dispose_self");
+        func.addParameter(new LirParameterDef("self", new GdObjectType("GDMyNode"), null, func));
+
+        entry(func).instructions().add(new CallMethodInsn(
+                null,
+                "queue_free",
+                "self",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
+        assertTrue(body.contains("godot_Node_queue_free((godot_Node*)godot_object_from_gdcc_object_ptr($self));"), body);
+        assertFalse(body.contains("godot_Node_queue_free((godot_Node*)$self);"), body);
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should emit GDCC static dispatch between known GDCC types")
     void callMethodGdccShouldEmitStaticDispatch() {
         var workerClass = newClass("Worker");

@@ -8,7 +8,7 @@
   - `doc/module_impl/call_global_implementation.md`
   - `doc/module_impl/load_static_implementation.md`
   - `doc/module_impl/cbodybuilder_implementation.md`
-- 更新时间：2026-02-26
+- 更新时间：2026-02-27
 
 ---
 
@@ -80,6 +80,41 @@
   - 本文档阶段状态已收敛为 `implemented/maintained`。
 
 ---
+
+## 维护审计补充（2026-02-27）
+
+> 本节用于把“已确认的问题”与“可执行的解决方案”固化到文档，避免实现与设计目标在维护期发生漂移。
+
+### 审计范围
+
+- 代码：`CallMethodInsnGen` / `MethodCallResolver` / `CBodyBuilder` / `CGenHelper`
+- 模板与运行时辅助：`entry.c.ftl` / `gdcc_helper.h`
+- 测试：`CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest`
+
+### 审计结论（摘要）
+
+1. Phase 1~4 的主体目标已落地且整体覆盖良好：静态分派（GDCC/ENGINE/BUILTIN）、默认参数（literal + `default_value_func`）、
+   typedarray/enum/bitfield 类型规范化、OBJECT/VARIANT 动态分派 pack/unpack、模板侧 hidden/lambda bind 语义均已实现并有回归。
+2. 审计中识别的 **P0 功能 bug（GDCC receiver -> ENGINE owner 指针转换错误）已修复**：
+   `CBodyBuilder#valueOfCastedVar` 已改为“先做指针表示转换，再做目标类型 cast”，并在 `renderArgument` 增加 ptr kind/type 一致性 fail-fast 防线，
+   避免将 GDCC wrapper 指针伪装为 `godot_<Owner>*` 传入。
+3. `VARIANT_DYNAMIC` 的 `file_name/line_number` 目前可按“最小可用”填充，但类型建模与未来扩展点需要明确维护约束（见 4.4.1）。
+4. 维护策略取舍需显式记录：对 “已知 `GdObjectType` 但静态不可决议的方法调用” 统一回退 `OBJECT_DYNAMIC` 可以提升动态兼容性，
+   但会降低拼写/接口错误的编译期可发现性；后续若引入更严格的 fail-fast 策略，需要在文档中明确适用条件与边界。
+5. 测试稳定性提醒：静态方法 warning 当前由 `CallMethodInsnGen` 使用 SLF4J 输出，若单测通过 `System.out` 捕获文本做断言，
+   依赖 logging backend 的输出流配置，存在维护期脆弱性；建议后续改为可控的 appender 捕获或 builder 级诊断事件。
+
+### 审计后修复同步（2026-02-27）
+
+- 已落地 `CBodyBuilder#valueOfCastedVar` 安全实现：
+  - Object cast 路径统一先做 `GDCC_PTR <-> GODOT_PTR` 表示转换，再生成目标类型表达式。
+  - 禁止 object/non-object 混合 cast，直接 fail-fast。
+- 已增强 `CBodyBuilder#renderArgument` 防御：
+  - 对 `requireGodotRawPtr` 且 `ptrKind=GDCC_PTR` 的参数，强制要求类型为 GDCC object；不一致时 fail-fast 报错，防止静默生成 UB 代码。
+- 已补齐回归测试：
+  - `CBodyBuilderPhaseCTest` 增加 cast+参数渲染语义回归（含 fail-fast 负例），用于锁死 `renderArgument` 行为。
+  - `CallMethodInsnGenTest` 增加 `GDMyNode extends Node` 的 `self.queue_free` 断言，锁死 `godot_object_from_gdcc_object_ptr($self)` 转换。
+  - `CallMethodInsnGenEngineTest` 增加引擎集成测试，验证 GDCC receiver 命中 ENGINE owner 的真实运行行为与生成文本。
 
 ## 1. 调研结论（现状）
 
@@ -231,6 +266,15 @@
 4. 调用 `godot_Variant_call` 获取 `Variant` 结果，再按目标类型 unpack（或直接丢弃）。
 5. 若 `godot_Variant_call` 提供 `CallError` 输出，应在生成层保留 fail-fast 钩子（至少可扩展，不吞错）。
 
+#### 4.4.1 `file_name` / `line_number` 参数的维护约束（审计新增，P1）
+
+`godot_Variant_call` 的签名包含 `file_name` 与 `line_number`，用于在运行期错误发生时提供可读诊断。
+
+- 当前实现允许以“最小可用”的方式填充（例如 `file_name=NULL`，`line_number` 使用指令序号），但必须满足：
+  1. **类型建模必须正确**：`file_name` 是 `const char*`，不应复用 `Object` 指针类型作为占位，否则未来把 `NULL` 替换为真实字符串时容易引入隐性类型错误。
+  2. **扩展点必须保留**：后续若引入 `LineNumberInsn` 或 `LirClassDef.sourceFile`，应优先改为真实源文件与行号，使运行期错误定位到 GDScript 源更直观。
+  3. **不得吞错**：`gdcc_helper.h` 中 `godot_Variant_call` 已实现 fail-fast 错误打印并返回 nil，生成层不得再额外屏蔽该信息。
+
 ### 4.5 GDCC `default_value_func` 补参策略
 
 GDCC 方法默认参数不是字面量，而是函数引用（`default_value_func`）。
@@ -263,6 +307,25 @@ GDCC 方法默认参数不是字面量，而是函数引用（`default_value_fun
 3. **typed 容器接收者归一化（P1）**
    - 问题：`Array[T]` / `Dictionary[K,V]` 作为 receiver 时，builtin 查找键可能与 API 元数据键（`Array` / `Dictionary`）不一致。
    - 规则：resolver 在查找 builtin class 前先做 receiver 名称归一化，不改变最终参数/返回类型语义。
+
+4. **GDCC receiver 命中 ENGINE owner 时 receiver 指针转换 bug（P0，审计新增）**
+   - 现象：当 receiver 是 GDCC wrapper（例如 `GDMyNode* self`），但解析到的方法 owner 是 ENGINE 类（例如 `Node.queue_free`），
+     若通过“类型 cast”把 `$self` 直接转成 `godot_Node*`，会绕过 `CBodyBuilder.renderArgument` 的 GDCC→Godot raw ptr 自动转换，
+     最终把 wrapper 指针当作 engine 对象指针传入 `godot_Node_*` API，存在未定义行为/崩溃风险。
+   - 根因（实现层面）：
+     - `CallMethodInsnGen.renderReceiverValue(...)` 在 `ownerType != receiverType` 时使用“表达式强制 cast”，该 cast **不等价于**“取 `_object` 再转换”的语义。
+     - `CBodyBuilder.renderArgument(...)` 仅在参数被识别为 GDCC_PTR 且调用需要 raw ptr 时才插入 `godot_object_from_gdcc_object_ptr(...)`。
+       若 receiver 在上一步被 cast 成 ENGINE 类型，其 `PtrKind` 可能变为 `GODOT_PTR`，转换逻辑被跳过。
+   - 修复规则（必须满足）：
+     1. 当 `resolved.mode == ENGINE` 且 receiver 的静态类型是 GDCC 类型（`checkGdccType == true`）时，receiver 必须先做 GDCC→Godot raw ptr 转换，
+        再按需要 cast 到具体 `godot_<Owner>*`：
+        - 推荐生成：`(godot_<Owner>*)godot_object_from_gdcc_object_ptr($receiver)`。
+     2. 不允许通过单纯的 C cast 把 GDCC wrapper 指针伪装成 engine 指针。
+  - 状态：**已修复（2026-02-27）**。
+  - 已新增测试（强制回归）：
+    - `CallMethodInsnGenTest` 已新增 `GDMyNode extends Node` + `call_method "queue_free" self` 用例，
+      断言生成 `godot_Node_queue_free((godot_Node*)godot_object_from_gdcc_object_ptr($self))`，并禁止纯 C cast 路径。
+    - `CallMethodInsnGenEngineTest` 已新增真实运行覆盖（若 Zig 可用），锁死运行期行为与代码生成语义。
 
 ### 4.7 重载选择规则澄清（新增）
 
@@ -407,6 +470,7 @@ MethodSignatureSpec {
    - 同类实例方法调用
    - 继承链方法调用（验证 owner 符号与 receiver 传递）
    - GDCC 子类调用 engine 父类方法（验证生成 `godot_<Owner>_<method>` 而非 `<Owner>_<method>`）
+     - **审计新增回归断言**：当 receiver 是 GDCC wrapper 时，必须生成 `godot_object_from_gdcc_object_ptr(...)` 转换（必要时 cast 到 `godot_<Owner>*`），禁止仅用 C cast。
    - **两个 GDCC 类型互调时必须生成静态调用符号，不得回退动态路径**
    - `default_value_func` 补参（函数默认值）
 4. 动态路径成功：

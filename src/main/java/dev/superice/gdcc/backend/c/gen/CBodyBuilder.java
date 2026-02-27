@@ -208,6 +208,26 @@ public final class CBodyBuilder {
     /// Creates a value reference by explicitly casting a variable expression to `castType`.
     /// This is expression-only and must not be used as an assignment target.
     public @NotNull ValueRef valueOfCastedVar(@NotNull LirVariable variable, @NotNull GdType castType) {
+        var sourceType = variable.type();
+        if (sourceType instanceof GdObjectType sourceObjectType && castType instanceof GdObjectType targetObjectType) {
+            var sourcePtrKind = resolvePtrKind(sourceObjectType);
+            var targetPtrKind = resolvePtrKind(targetObjectType);
+            if (sourceObjectType.getTypeName().equals(targetObjectType.getTypeName()) && sourcePtrKind == targetPtrKind) {
+                return valueOfVar(variable);
+            }
+            var sourceCode = "$" + variable.id();
+            var convertedCode = convertPtrIfNeeded(sourceCode, sourcePtrKind, targetObjectType);
+            if (sourcePtrKind == PtrKind.GODOT_PTR && targetPtrKind == PtrKind.GDCC_PTR) {
+                return valueOfExpr(convertedCode, castType, targetPtrKind);
+            }
+            var castTypeCode = helper.renderGdTypeInC(castType);
+            var castExpr = "(" + castTypeCode + ")" + convertedCode;
+            return valueOfExpr(castExpr, castType, targetPtrKind);
+        }
+        if (sourceType instanceof GdObjectType || castType instanceof GdObjectType) {
+            throw invalidInsn("Cannot cast between object and non-object types: '" +
+                    sourceType.getTypeName() + "' -> '" + castType.getTypeName() + "'");
+        }
         var castTypeCode = helper.renderGdTypeInC(castType);
         var castExpr = "(" + castTypeCode + ")$" + variable.id();
         return valueOfExpr(castExpr, castType);
@@ -669,8 +689,16 @@ public final class CBodyBuilder {
         var type = value.type();
 
         // Convert GDCC object ptr to Godot raw ptr when calling GDExtension functions
-        if (requireGodotRawPtr && value.ptrKind() == PtrKind.GDCC_PTR && type instanceof GdObjectType objType) {
+        if (requireGodotRawPtr && value.ptrKind() == PtrKind.GDCC_PTR) {
+            if (!(type instanceof GdObjectType objType) || !objType.checkGdccType(classRegistry())) {
+                throw invalidInsn("Internal ptr kind/type mismatch for argument '" + value.generateCode() +
+                        "': ptrKind=GDCC_PTR, type='" + type.getTypeName() + "'");
+            }
             return new RenderResult(toGodotObjectPtr(value.generateCode(), objType), List.of());
+        }
+        if (requireGodotRawPtr && value.ptrKind() == PtrKind.NON_OBJECT && type instanceof GdObjectType) {
+            throw invalidInsn("Internal ptr kind/type mismatch for object argument '" + value.generateCode() +
+                    "': ptrKind=NON_OBJECT, type='" + type.getTypeName() + "'");
         }
 
         // Special handling for variable references that are already refs

@@ -223,6 +223,67 @@ class CallMethodInsnGenEngineTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should run GDCC receiver to engine owner static dispatch with safe pointer conversion")
+    void callMethodGdccReceiverToEngineOwnerShouldRunWithSafePointerConversion() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/call_method_engine_owner_bridge");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "call_method_engine_owner_bridge",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.WINDOWS_X86_64
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var bridgeClass = newGdccEngineOwnerBridgeClass();
+        var module = new LirModule("call_method_engine_owner_bridge_module", List.of(bridgeClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(
+                entrySource.contains("godot_Node_get_child_count((godot_Node*)godot_object_from_gdcc_object_ptr($self)"),
+                "Engine dispatch on GDCC receiver should cast after helper conversion."
+        );
+        assertFalse(
+                entrySource.contains("godot_Node_get_child_count((godot_Node*)$self"),
+                "Engine dispatch must not cast GDCC wrapper pointer directly."
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "GdccEngineOwnerBridgeNode",
+                        bridgeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(gdccEngineOwnerBridgeTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("gdcc receiver engine owner call_method check passed."), "Bridge path should pass.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should run builtin/engine/object_dynamic/variant_dynamic paths in real engine")
     void callMethodPathsShouldRunInRealGodot() throws IOException, InterruptedException {
         if (!hasZig()) {
@@ -330,6 +391,15 @@ class CallMethodInsnGenEngineTest {
 
         var selfType = new GdObjectType(clazz.getName());
         clazz.addFunction(newGdccParentDynamicDispatchFunction(selfType));
+        return clazz;
+    }
+
+    private static LirClassDef newGdccEngineOwnerBridgeClass() {
+        var clazz = new LirClassDef("GDGdccEngineOwnerBridgeNode", "Node");
+        clazz.setSourceFile("call_method_gdcc_engine_owner_bridge.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newGdccEngineOwnerBridgeFunction(selfType));
         return clazz;
     }
 
@@ -493,6 +563,20 @@ class CallMethodInsnGenEngineTest {
         return func;
     }
 
+    private static LirFunctionDef newGdccEngineOwnerBridgeFunction(GdObjectType selfType) {
+        var func = newMethod("call_self_get_child_count", GdIntType.INT, selfType);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).instructions().add(new CallMethodInsn(
+                "result",
+                "get_child_count",
+                "self",
+                List.of()
+        ));
+        entry(func).instructions().add(new ReturnInsn("result"));
+        return func;
+    }
+
     private static LirFunctionDef newMethod(String name, GdType returnType, GdObjectType selfType) {
         var func = new LirFunctionDef(name);
         func.setReturnType(returnType);
@@ -604,6 +688,26 @@ class CallMethodInsnGenEngineTest {
                         print("gdcc parent-typed dynamic call_method check passed.")
                     else:
                         push_error("gdcc parent-typed dynamic call_method check failed.")
+                """;
+    }
+
+    private static String gdccEngineOwnerBridgeTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "GdccEngineOwnerBridgeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var count = int(target.call("call_self_get_child_count"))
+                    if count == 0:
+                        print("gdcc receiver engine owner call_method check passed.")
+                    else:
+                        push_error("gdcc receiver engine owner call_method check failed.")
                 """;
     }
 }

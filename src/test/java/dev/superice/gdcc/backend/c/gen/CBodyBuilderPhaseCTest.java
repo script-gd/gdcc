@@ -3,6 +3,7 @@ package dev.superice.gdcc.backend.c.gen;
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
+import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionEnumValue;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
@@ -912,6 +913,37 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("valueOfCastedVar should convert GDCC receiver to Godot raw ptr before engine cast")
+        void testCastedGdccReceiverToEngineOwnerShouldConvertBeforeCast() {
+            var gdccVar = new LirVariable("self", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var casted = builder.valueOfCastedVar(gdccVar, new GdObjectType("Node"));
+
+            builder.callVoid("godot_Node_queue_free", List.of(casted));
+
+            assertEquals("godot_Node_queue_free((godot_Node*)godot_object_from_gdcc_object_ptr($self));\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("valueOfCastedVar should convert Godot raw ptr when casting engine receiver to GDCC type")
+        void testCastedEngineReceiverToGdccTypeShouldConvertFromGodotPtr() {
+            var engineVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var casted = builder.valueOfCastedVar(engineVar, new GdObjectType("MyGdccClass"));
+
+            builder.callVoid("my_custom_func", List.of(casted));
+
+            assertEquals("my_custom_func((MyGdccClass*)gdcc_object_from_godot_object_ptr($node));\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("renderArgument should fail-fast on inconsistent GDCC_PTR and non-GDCC object type")
+        void testRenderArgumentShouldRejectInconsistentGdccPtrKind() {
+            var mismatched = builder.valueOfExpr("(godot_Node*)$self", new GdObjectType("Node"), CBodyBuilder.PtrKind.GDCC_PTR);
+            var ex = assertThrows(InvalidInsnException.class, () -> builder.callVoid("godot_Node_queue_free", List.of(mismatched)));
+            assertInstanceOf(InvalidInsnException.class, ex);
+            assertTrue(ex.getMessage().contains("ptr kind/type mismatch"), ex.getMessage());
+        }
+
+        @Test
         @DisplayName("GDCC object arg should be converted for own_object function")
         void testGdccObjectArgConvertedForOwnObject() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
@@ -944,6 +976,15 @@ public class CBodyBuilderPhaseCTest {
             builder.callVoid("godot_new_Variant_with_gdcc_Object", List.of(builder.valueOfVar(gdccVar)));
 
             assertEquals("godot_new_Variant_with_gdcc_Object($myObj);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("valueOfCastedVar should reject object and non-object casts")
+        void testValueOfCastedVarShouldRejectObjectNonObjectCast() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var ex = assertThrows(InvalidInsnException.class, () -> builder.valueOfCastedVar(gdccVar, GdIntType.INT));
+            assertInstanceOf(InvalidInsnException.class, ex);
+            assertTrue(ex.getMessage().contains("Cannot cast between object and non-object types"), ex.getMessage());
         }
     }
 
