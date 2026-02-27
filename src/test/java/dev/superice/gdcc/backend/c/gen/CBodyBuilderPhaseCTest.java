@@ -443,7 +443,7 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // GDCC class inherits RefCounted, should use helper conversion
-            assertTrue(result.contains("godot_object_from_gdcc_object_ptr($myObj)"),
+            assertTrue(result.contains("gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
                     "Should use godot_object_from_gdcc_object_ptr for GDCC object");
         }
 
@@ -887,7 +887,7 @@ public class CBodyBuilderPhaseCTest {
 
             builder.callVoid("godot_some_func", List.of(value));
 
-            assertEquals("godot_some_func(godot_object_from_gdcc_object_ptr($myObj));\n", builder.build());
+            assertEquals("godot_some_func(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
         }
 
         @Test
@@ -920,7 +920,7 @@ public class CBodyBuilderPhaseCTest {
 
             builder.callVoid("godot_Node_queue_free", List.of(casted));
 
-            assertEquals("godot_Node_queue_free((godot_Node*)godot_object_from_gdcc_object_ptr($self));\n", builder.build());
+            assertEquals("godot_Node_queue_free((godot_Node*)gdcc_object_to_godot_object_ptr($self, MyGdccClass_object_ptr));\n", builder.build());
         }
 
         @Test
@@ -932,6 +932,34 @@ public class CBodyBuilderPhaseCTest {
             builder.callVoid("my_custom_func", List.of(casted));
 
             assertEquals("my_custom_func((MyGdccClass*)gdcc_object_from_godot_object_ptr($node));\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("valueOfCastedVar should render GDCC upcast via _super chain")
+        void testCastedGdccChildToAncestorShouldUseSuperChain() {
+            builder.classRegistry().addGdccClass(new LirClassDef("GdccGrandParent", "RefCounted"));
+            builder.classRegistry().addGdccClass(new LirClassDef("GdccParent", "GdccGrandParent"));
+            builder.classRegistry().addGdccClass(new LirClassDef("GdccChild", "GdccParent"));
+            var childVar = new LirVariable("child", new GdObjectType("GdccChild"), lirFunctionDef);
+            var casted = builder.valueOfCastedVar(childVar, new GdObjectType("GdccGrandParent"));
+
+            builder.callVoid("my_custom_func", List.of(casted));
+
+            assertEquals("my_custom_func(&($child->_super._super));\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("valueOfCastedVar should reject GDCC non-upcast conversion")
+        void testCastedGdccParentToChildShouldFailFast() {
+            builder.classRegistry().addGdccClass(new LirClassDef("GdccParent", "RefCounted"));
+            builder.classRegistry().addGdccClass(new LirClassDef("GdccChild", "GdccParent"));
+            var parentVar = new LirVariable("parent", new GdObjectType("GdccParent"), lirFunctionDef);
+
+            var ex = assertThrows(InvalidInsnException.class, () ->
+                    builder.valueOfCastedVar(parentVar, new GdObjectType("GdccChild"))
+            );
+            assertInstanceOf(InvalidInsnException.class, ex);
+            assertTrue(ex.getMessage().contains("safe upcast"), ex.getMessage());
         }
 
         @Test
@@ -951,7 +979,7 @@ public class CBodyBuilderPhaseCTest {
 
             builder.callVoid("try_own_object", List.of(value));
 
-            assertEquals("try_own_object(godot_object_from_gdcc_object_ptr($myObj));\n", builder.build());
+            assertEquals("try_own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
         }
 
         @Test
@@ -965,7 +993,7 @@ public class CBodyBuilderPhaseCTest {
                     builder.valueOfVar(strVar)
             ));
 
-            assertEquals("godot_Object_set(godot_object_from_gdcc_object_ptr($myObj), &$name);\n", builder.build());
+            assertEquals("godot_Object_set(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr), &$name);\n", builder.build());
         }
 
         @Test
@@ -1045,9 +1073,9 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // MyGdccClass extends RefCounted; owned call results should not be owned again.
-            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr(__gdcc_tmp_old_obj_0))"),
+            assertTrue(result.contains("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_0, MyGdccClass_object_ptr))"),
                     "Should release captured old GDCC object. Actual:\n" + result);
-            assertFalse(result.contains("own_object(godot_object_from_gdcc_object_ptr($myObj))"),
+            assertFalse(result.contains("own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr))"),
                     "Should consume owned call result without own. Actual:\n" + result);
         }
 
@@ -1063,7 +1091,7 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // Arg should be converted
-            assertTrue(result.contains("godot_object_from_gdcc_object_ptr($input)"),
+            assertTrue(result.contains("gdcc_object_to_godot_object_ptr($input, MyGdccClass_object_ptr)"),
                     "Should convert GDCC arg to godot ptr. Actual:\n" + result);
             // Return should be wrapped
             assertTrue(result.contains("gdcc_object_from_godot_object_ptr"),
@@ -1104,7 +1132,7 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("$obj = godot_object_from_gdcc_object_ptr($myObj)"),
+            assertTrue(result.contains("$obj = gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
                     "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
         }
 
@@ -1123,7 +1151,7 @@ public class CBodyBuilderPhaseCTest {
                     "Should assign directly without conversion. Actual:\n" + result);
             assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
                     "Should NOT wrap with fromGodotObjectPtr. Actual:\n" + result);
-            assertFalse(result.contains("godot_object_from_gdcc_object_ptr($source);"),
+            assertFalse(result.contains("gdcc_object_to_godot_object_ptr($source, MyGdccClass_object_ptr);"),
                     "Should NOT use helper conversion on RHS. Actual:\n" + result);
         }
 
@@ -1155,9 +1183,9 @@ public class CBodyBuilderPhaseCTest {
 
             var result = builder.build();
             // MyGdccClass extends RefCounted, should have own/release with helper conversion
-            assertTrue(result.contains("release_object(godot_object_from_gdcc_object_ptr(__gdcc_tmp_old_obj_0))"),
+            assertTrue(result.contains("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_0, MyGdccClass_object_ptr))"),
                     "Should release captured old GDCC object via helper conversion. Actual:\n" + result);
-            assertTrue(result.contains("own_object(godot_object_from_gdcc_object_ptr($myObj))"),
+            assertTrue(result.contains("own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr))"),
                     "Should own new GDCC object via helper conversion. Actual:\n" + result);
             // Should also convert the assignment value
             assertTrue(result.contains("gdcc_object_from_godot_object_ptr(some_godot_result)"),
@@ -1206,7 +1234,7 @@ public class CBodyBuilderPhaseCTest {
             builder.assignVar(targetRef, value);
 
             var result = builder.build();
-            assertTrue(result.contains("$rc = godot_object_from_gdcc_object_ptr($myObj)"),
+            assertTrue(result.contains("$rc = gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
                     "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
         }
 
@@ -1222,8 +1250,8 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             var captureIndex = result.indexOf("MyGdccClass* __gdcc_tmp_old_obj_0 = $myObj;");
             var assignIndex = result.indexOf("$myObj = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_result);");
-            var ownIndex = result.indexOf("own_object(godot_object_from_gdcc_object_ptr($myObj))");
-            var releaseOldIndex = result.indexOf("release_object(godot_object_from_gdcc_object_ptr(__gdcc_tmp_old_obj_0));");
+            var ownIndex = result.indexOf("own_object(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr))");
+            var releaseOldIndex = result.indexOf("release_object(gdcc_object_to_godot_object_ptr(__gdcc_tmp_old_obj_0, MyGdccClass_object_ptr));");
 
             assertTrue(captureIndex >= 0, "Should capture old slot value. Actual:\n" + result);
             assertTrue(assignIndex >= 0, "Should have converted assignment. Actual:\n" + result);

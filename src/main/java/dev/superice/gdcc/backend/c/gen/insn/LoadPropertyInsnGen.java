@@ -78,7 +78,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             }
             case GENERAL -> {
                 // Pass objectVar directly; renderArgument will auto-convert GDCC ptrs
-                // to Godot raw ptrs via godot_object_from_gdcc_object_ptr(...) since godot_Object_get requires Godot ptrs.
+                // to Godot raw ptrs via gdcc_object_to_godot_object_ptr(value, Type_object_ptr) since godot_Object_get requires Godot ptrs.
                 var objectValue = bodyBuilder.valueOfVar(objectVar);
                 var propertyName = bodyBuilder.valueOfStringNamePtrLiteral(insn.propertyName());
                 var tempVar = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT);

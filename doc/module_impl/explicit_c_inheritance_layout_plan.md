@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 2 已完成，阶段 3-4 待实施）
+- 状态：Completed（阶段 0-4 已完成）
 - 更新时间：2026-02-27
 - 适用范围：`backend.c` 中 GDCC 类实例布局、实例创建链路、对象转换与调用生成
 - 关联文档：
@@ -114,6 +114,28 @@
 - 保持 `renderReceiverValue(...)` 的 `checkAssignable` 预校验。
 - 对 owner/receiver 为 GDCC 对象且存在继承关系时，依赖新的安全上行表达式。
 
+#### 阶段 3 实施同步（2026-02-27）
+
+- 已完成：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+  - `valueOfCastedVar(...)` 新增 GDCC->GDCC 专用路径：
+    - 仅允许可证明的上行转换（`ClassRegistry#checkAssignable(from, to)` 必须为 true）。
+    - 上行表达式通过 `_super` 前缀链生成（例如 `&($child->_super)`、`&($child->_super._super)`）。
+    - 不再使用 `(<Parent*>)$child` 裸 cast 表达 GDCC 子类->父类转换。
+  - 对非上行/不可证明路径 fail-fast，抛出 `InvalidInsnException`。
+  - 对继承链异常（循环、缺失定义、路径断裂）增加防御性 fail-fast。
+
+- 已完成：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
+  - `renderReceiverValue(...)` 继续保留 `checkAssignable` 预校验。
+  - 当静态分派 owner 为 GDCC 父类、receiver 为 GDCC 子类时，已通过 `valueOfCastedVar(...)` 生成 `_super` 链上行表达式参与调用。
+
+- 已完成：测试同步
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CBodyBuilderPhaseCTest.java`
+    - 新增 GDCC 多级上行转换 `_super` 链生成断言。
+    - 新增 GDCC 非上行转换 fail-fast 断言。
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
+    - 新增 `CALL_METHOD` 子类 receiver 调父类 owner 静态分派时的 `_super` 链上行断言。
+    - 断言不存在裸 cast 回退路径。
+
 ### 阶段 4：文档复核与收敛
 
 1. 文件：`doc/gdcc_c_backend.md`
@@ -122,6 +144,27 @@
 
 1. 文件：`doc/module_impl/call_method_implementation.md`
 - 复核 `CALL_METHOD` receiver 上行转换文档与实现保持一致，无宏回退路径。
+
+#### 阶段 4 实施同步（2026-02-27）
+
+- 已完成：`doc/gdcc_c_backend.md`
+  - 复核并固化 “GDCC -> Godot 指针转换必须使用按类 helper（`gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`）” 基线。
+  - 补充实现对齐说明，明确 `CBodyBuilder`/`CALL_METHOD` 相关路径已切换到专用 helper 入口。
+- 已完成：`doc/module_impl/call_method_implementation.md`
+  - `CALL_METHOD` receiver 的对象指针转换与上行转换描述已对齐实现：
+    - GDCC receiver -> ENGINE owner 先做 helper 转换再 cast。
+    - GDCC 子类 receiver -> GDCC 父类 owner 通过 `_super` 链安全上行，不允许裸 cast。
+  - 文档约束与回归测试断言一致，`CALL_METHOD` 路径无 `godot_object_from_gdcc_object_ptr(...)` 回退。
+- 已完成：代码与测试收敛（支撑阶段 4 文档结论）
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+    - GDCC->Godot 转换统一为 `gdcc_object_to_godot_object_ptr(value, <Type>_object_ptr)`。
+    - `convertPtrIfNeeded(...)` 增加源类型约束，缺失 GDCC 静态类型时 fail-fast。
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+    - 新增 `renderGdccObjectPtrHelperName(...)`，统一渲染按类 helper 符号名。
+  - 回归测试已同步并通过：
+    - `CBodyBuilderPhaseCTest`
+    - `CallMethodInsnGenTest`
+    - `CallMethodInsnGenEngineTest`
 
 ## 测试清单（必须完成）
 

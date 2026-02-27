@@ -94,6 +94,16 @@
 - 禁止仅通过 C cast 把 GDCC wrapper 指针伪装成 engine 指针。
 - `CBodyBuilder.renderArgument(...)` 的 ptr kind/type fail-fast 防线属于不可回退约束。
 
+#### 阶段 4 对齐结论（2026-02-27）
+
+- `CALL_METHOD` 相关 receiver 转换已与基线一致：
+  - GDCC receiver -> ENGINE owner：生成 `gdcc_object_to_godot_object_ptr(receiver, ReceiverType_object_ptr)`，随后再 cast 到 `godot_<Owner>*`。
+  - GDCC 子类 receiver -> GDCC 父类 owner：生成 `_super` 链安全上行表达式（例如 `&($child->_super)`），无裸 cast。
+- 回归覆盖已同步到以下测试，且断言与当前实现一致：
+  - `CallMethodInsnGenTest`
+  - `CallMethodInsnGenEngineTest`
+  - `CBodyBuilderPhaseCTest`
+
 ### 5. `VARIANT_DYNAMIC` 诊断定位约束
 
 - `file_name` 优先使用 `LirClassDef.sourceFile`，缺失时回退类名。
