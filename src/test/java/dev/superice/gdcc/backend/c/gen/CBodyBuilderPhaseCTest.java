@@ -444,7 +444,7 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             // GDCC class inherits RefCounted, should use helper conversion
             assertTrue(result.contains("gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
-                    "Should use godot_object_from_gdcc_object_ptr for GDCC object");
+                    "Should use class-specific GDCC object pointer helper conversion");
         }
 
         @Test
@@ -997,13 +997,13 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("GDCC object arg should stay GDCC ptr for godot_new_Variant_with_gdcc_Object")
+        @DisplayName("GDCC object arg should stay GDCC ptr for gdcc_new_Variant_with_gdcc_Object")
         void testGdccObjectArgNotConvertedForGdccVariantPackFunc() {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
 
-            builder.callVoid("godot_new_Variant_with_gdcc_Object", List.of(builder.valueOfVar(gdccVar)));
+            builder.callVoid("gdcc_new_Variant_with_gdcc_Object", List.of(builder.valueOfVar(gdccVar)));
 
-            assertEquals("godot_new_Variant_with_gdcc_Object($myObj);\n", builder.build());
+            assertEquals("gdcc_new_Variant_with_gdcc_Object($myObj);\n", builder.build());
         }
 
         @Test
@@ -1168,7 +1168,7 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertTrue(result.contains("$target = $source;"),
                     "Should assign directly without conversion. Actual:\n" + result);
-            assertFalse(result.contains("godot_object_from_gdcc_object_ptr"),
+            assertFalse(result.contains("gdcc_object_to_godot_object_ptr"),
                     "Should NOT use helper conversion. Actual:\n" + result);
         }
 

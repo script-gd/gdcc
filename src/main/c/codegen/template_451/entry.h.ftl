@@ -82,6 +82,10 @@ typedef struct <@lambdaCaptureName classDef func/> {
 
 </#list>
 
+<#if module.classDefs?size gt 0>
+#define gdcc_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(gdcc_object_to_godot_object_ptr((obj), _Generic((obj), <#list module.classDefs as classDef>${classDef.name}*: ${classDef.name}_object_ptr<#if classDef_has_next>, </#if></#list>)))
+</#if>
+
 // Method binding helpers
 
 <#list helper.bindingDataList as bindingData>

@@ -276,10 +276,9 @@ public final class CGenHelper {
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
         if (type instanceof GdObjectType objectType) {
             if (objectType.checkGdccType(context.classRegistry())) {
-                return "godot_new_Variant_with_gdcc_Object";
-            } else {
-                return "godot_new_Variant_with_Object";
+                return "gdcc_new_Variant_with_gdcc_Object";
             }
+            return "godot_new_Variant_with_Object";
         } else {
             return "godot_new_Variant_with_" + renderGdTypeName(type);
         }

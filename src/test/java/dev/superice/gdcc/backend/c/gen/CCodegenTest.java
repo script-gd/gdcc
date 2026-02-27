@@ -99,7 +99,6 @@ public class CCodegenTest {
         assertTrue(cCode.contains("GDParentNode_class_constructor(&self->_super);"));
         assertTrue(cCode.contains("try_release_object(GDParentNode_object_ptr(self->peer));"));
         assertTrue(cCode.contains("GDParentNode_class_destructor(&self->_super);"));
-        assertFalse(cCode.contains("godot_object_from_gdcc_object_ptr(self->peer)"));
 
         assertEquals("Node", resolveConstructTarget(cCode, "GDParentNode"));
         assertEquals("Node", resolveConstructTarget(cCode, "GDChildNode"));

@@ -283,8 +283,8 @@ class CallMethodInsnGenTest {
                 List.of(hostClass, baseClass, childClass, peerClass)
         );
         assertTrue(body.contains("godot_Object_call(gdcc_object_to_godot_object_ptr($baseRef, BaseWorker_object_ptr), GD_STATIC_SN(u8\"child_only_consume_peer\")"), body);
-        assertTrue(body.contains("godot_new_Variant_with_gdcc_Object($peer)"), body);
-        assertFalse(body.contains("godot_new_Variant_with_Object(godot_object_from_gdcc_object_ptr($peer))"), body);
+        assertTrue(body.contains("gdcc_new_Variant_with_gdcc_Object($peer)"), body);
+        assertFalse(body.contains("godot_new_Variant_with_Object("), body);
         assertFalse(body.contains("godot_Variant_call("), body);
     }
 
