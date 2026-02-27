@@ -319,6 +319,7 @@ class CallMethodInsnGenEngineTest {
         assertTrue(entrySource.contains("godot_Node_get_child_count"), "Engine dispatch should be generated.");
         assertTrue(entrySource.contains("godot_Object_call("), "OBJECT_DYNAMIC dispatch should be generated.");
         assertTrue(entrySource.contains("godot_Variant_call("), "VARIANT_DYNAMIC dispatch should be generated.");
+        assertTrue(entrySource.contains("\"call_method_engine.gd(assemble)\""), "VARIANT_DYNAMIC fallback source location should be generated.");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(

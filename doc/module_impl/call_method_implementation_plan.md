@@ -98,7 +98,10 @@
 2. 审计中识别的 **P0 功能 bug（GDCC receiver -> ENGINE owner 指针转换错误）已修复**：
    `CBodyBuilder#valueOfCastedVar` 已改为“先做指针表示转换，再做目标类型 cast”，并在 `renderArgument` 增加 ptr kind/type 一致性 fail-fast 防线，
    避免将 GDCC wrapper 指针伪装为 `godot_<Owner>*` 传入。
-3. `VARIANT_DYNAMIC` 的 `file_name/line_number` 目前可按“最小可用”填充，但类型建模与未来扩展点需要明确维护约束（见 4.4.1）。
+3. `VARIANT_DYNAMIC` 的 `file_name/line_number` 已完成定位语义增强：
+   - `file_name` 使用真实 `LirClassDef.sourceFile`（缺失时回退类名）
+   - `line_number` 使用当前指令前最近的 `LineNumberInsn`
+   - 若不存在可用 `LineNumberInsn`，回退 `insnIndex` 且 `file_name` 添加 `(assemble)` 标记
 4. 维护策略取舍需显式记录：对 “已知 `GdObjectType` 但静态不可决议的方法调用” 统一回退 `OBJECT_DYNAMIC` 可以提升动态兼容性，
    但会降低拼写/接口错误的编译期可发现性；后续若引入更严格的 fail-fast 策略，需要在文档中明确适用条件与边界。
 5. 测试稳定性提醒：静态方法 warning 当前由 `CallMethodInsnGen` 使用 SLF4J 输出，若单测通过 `System.out` 捕获文本做断言，
@@ -115,6 +118,9 @@
   - `CBodyBuilderPhaseCTest` 增加 cast+参数渲染语义回归（含 fail-fast 负例），用于锁死 `renderArgument` 行为。
   - `CallMethodInsnGenTest` 增加 `GDMyNode extends Node` 的 `self.queue_free` 断言，锁死 `godot_object_from_gdcc_object_ptr($self)` 转换。
   - `CallMethodInsnGenEngineTest` 增加引擎集成测试，验证 GDCC receiver 命中 ENGINE owner 的真实运行行为与生成文本。
+- 已更新 `VARIANT_DYNAMIC` 调试位置信息生成：
+  - `file_name` 使用真实 `sourceFile`，并通过 C 字面量传入 `godot_Variant_call`。
+  - `line_number` 使用当前指令前最近 `LineNumberInsn`，无可用行号时回退 `insnIndex` 并将 `file_name` 标记为 `(assemble)`。
 
 ## 1. 调研结论（现状）
 
@@ -266,14 +272,16 @@
 4. 调用 `godot_Variant_call` 获取 `Variant` 结果，再按目标类型 unpack（或直接丢弃）。
 5. 若 `godot_Variant_call` 提供 `CallError` 输出，应在生成层保留 fail-fast 钩子（至少可扩展，不吞错）。
 
-#### 4.4.1 `file_name` / `line_number` 参数的维护约束（审计新增，P1）
+#### 4.4.1 `file_name` / `line_number` 参数定位规则（维护更新，已落地）
 
 `godot_Variant_call` 的签名包含 `file_name` 与 `line_number`，用于在运行期错误发生时提供可读诊断。
 
-- 当前实现允许以“最小可用”的方式填充（例如 `file_name=NULL`，`line_number` 使用指令序号），但必须满足：
-  1. **类型建模必须正确**：`file_name` 是 `const char*`，不应复用 `Object` 指针类型作为占位，否则未来把 `NULL` 替换为真实字符串时容易引入隐性类型错误。
-  2. **扩展点必须保留**：后续若引入 `LineNumberInsn` 或 `LirClassDef.sourceFile`，应优先改为真实源文件与行号，使运行期错误定位到 GDScript 源更直观。
-  3. **不得吞错**：`gdcc_helper.h` 中 `godot_Variant_call` 已实现 fail-fast 错误打印并返回 nil，生成层不得再额外屏蔽该信息。
+- 当前实现规则：
+  1. `file_name` 优先使用 `LirClassDef.sourceFile`；若缺失则回退 `clazz.name`。
+  2. `line_number` 取“当前指令之前最近的 `LineNumberInsn`”的行号。
+  3. 若不存在可用 `LineNumberInsn`，则回退 `line_number = insnIndex`，并把 `file_name` 组装为 `<name>(assemble)` 以标记汇编回退来源。
+  4. `file_name` 以 C `const char*` 字面量传入，避免复用对象指针占位类型。
+  5. 生成层保持 `gdcc_helper.h` 的 fail-fast 报错语义，不吞错。
 
 ### 4.5 GDCC `default_value_func` 补参策略
 
