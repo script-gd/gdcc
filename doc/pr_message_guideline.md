@@ -1,29 +1,15 @@
 # PR Message Guideline
 
-## 1. Purpose
-
-This guideline defines a consistent PR message format for `gdcc`, based on recent merged PRs:
-- `#7` `feat(backend): implement CALL_METHOD C codegen for static and dynamic dispatch`
-- `#6` `feat(backend): implement load_static codegen and tighten static literal handling`
-- `#1` `feat(backend): stabilize CALL_GLOBAL codegen and ownership semantics`
-
-Goal:
-- Make review scope obvious.
-- Make semantic/risk changes easy to audit.
-- Make validation reproducible with targeted Gradle commands.
-
-## 2. Mandatory Rules
+## Mandatory Rules
 
 1. PR title must use Conventional Commits style:
    - `<type>(<scope>): <imperative summary>`
    - Example: `feat(backend): implement CALL_METHOD C codegen`
 2. PR body must be written in English.
 3. Do not describe only "what"; include "why" and runtime/semantic impact.
-4. For tests, use targeted Gradle commands with required flags:
-   - `--no-daemon --info --console=plain`
-5. If behavior contracts changed (IR validation, ownership lifecycle, type compatibility, codegen semantics), explicitly state them.
+4. If behavior contracts changed, explicitly state them.
 
-## 3. Required Sections
+## Required Sections
 
 Use this section order unless there is a strong reason not to:
 
@@ -67,8 +53,6 @@ Use when applicable:
 
 - `## Key behaviors covered`
   - For compiler semantics (dispatch rules, type checks, lifecycle handling, vararg/default argument contracts).
-- `## Diff stats`
-  - Useful for large PRs to set review expectations.
 - `## Breaking changes`
   - Required when API/behavior compatibility changes.
 - `## Related docs`
