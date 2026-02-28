@@ -36,7 +36,7 @@ A writable storage location, including but not limited to:
 ### 2.3 Representation Conversion
 
 - Conversion between GDCC object pointers (`<Type*>`) and Godot raw object pointers
-- For example: `gdcc_object_from_godot_object_ptr(...)`, `godot_object_from_gdcc_object_ptr(...)`
+- For example: `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`
 
 **Representation conversion does not change ownership category.**
 

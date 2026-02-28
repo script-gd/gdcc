@@ -335,7 +335,7 @@ public final class CGenHelper {
     /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
     ///
     /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
-    ///                                     but the underlying proxy Godot object ptr.
+    ///                                                       but the underlying proxy Godot object ptr.
     public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
                                                           @NotNull String targetVarName,
                                                           @NotNull GdType sourceType,
@@ -352,17 +352,31 @@ public final class CGenHelper {
             throw new InvalidInsnException("Cannot assign value of type " + sourceType.getTypeName() + " to variable " +
                     targetVarName + " of type " + targetVar.type().getTypeName() + " in function " + func.getName());
         }
-        if (targetVar.type() instanceof GdObjectType targetType) {
-            if (targetType.checkGdccType(context.classRegistry())) {
-                return "$" + targetVarName + " = (" + targetType.getTypeName() + "*)gdcc_object_from_godot_object_ptr(" + sourceExpr + ");";
-            } else if (!targetType.getTypeName().equals(sourceType.getTypeName())) {
-                return "$" + targetVarName + " = (" + renderGdTypeInC(targetType) + ")(" + sourceExpr + ");";
-            } else {
-                return "$" + targetVarName + " = " + sourceExpr + ";";
-            }
-        } else {
-            return "$" + targetVarName + " = " + sourceExpr + ";";
+        if (targetVar.type() instanceof GdObjectType targetType && sourceType instanceof GdObjectType sourceObjectType) {
+            var assignExpr = renderObjectAssignExprWithSafeConversion(sourceExpr, sourceObjectType, targetType);
+            return "$" + targetVarName + " = " + assignExpr + ";";
         }
+        return "$" + targetVarName + " = " + sourceExpr + ";";
+    }
+
+    private @NotNull String renderObjectAssignExprWithSafeConversion(@NotNull String sourceExpr,
+                                                                     @NotNull GdObjectType sourceType,
+                                                                     @NotNull GdObjectType targetType) {
+        if (targetType.checkGdccType(context.classRegistry())) {
+            var castType = renderGdTypeInC(targetType);
+            return "(" + castType + ")gdcc_object_from_godot_object_ptr(" + sourceExpr + ")";
+        }
+
+        var convertedSourceExpr = sourceExpr;
+        if (sourceType.checkGdccType(context.classRegistry())) {
+            convertedSourceExpr = "gdcc_object_to_godot_object_ptr(" + sourceExpr + ", " +
+                    renderGdccObjectPtrHelperName(sourceType) + ")";
+        }
+        if (!targetType.getTypeName().equals(sourceType.getTypeName())) {
+            var castType = renderGdTypeInC(targetType);
+            return "(" + castType + ")(" + convertedSourceExpr + ")";
+        }
+        return convertedSourceExpr;
     }
 
     public boolean checkVirtualMethod(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
