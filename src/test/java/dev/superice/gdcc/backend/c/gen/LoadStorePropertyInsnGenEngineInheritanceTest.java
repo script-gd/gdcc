@@ -15,6 +15,7 @@ import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
+import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
@@ -189,6 +190,112 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         assertFalse(output.contains("check failed"), "No check should fail.\nOutput:\n" + output);
     }
 
+    @Test
+    @DisplayName("getter-self on engine-inherited class should run in real engine with correct object lifecycle order")
+    void getterSelfOnEngineInheritedClassShouldRunWithObjectLifecycleOrder() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/getter_self_engine_inheritance");
+        Files.createDirectories(tempDir);
+
+        var hostClass = newSelfAccessorEngineInheritanceHostClass();
+        var module = new LirModule("getter_self_engine_inheritance_module", List.of(hostClass));
+        var buildResult = buildProject(tempDir, "getter_self_engine_inheritance", module);
+
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        var getterSource = extractFunctionSource(
+                entrySource,
+                "GDSelfAccessorEngineInheritanceNode__field_getter_obj"
+        );
+        assertTrue(getterSource.contains("$self->obj"), "Getter-self should read backing field directly.");
+        assertFalse(
+                getterSource.contains("GDSelfAccessorEngineInheritanceNode__field_getter_obj($self)"),
+                "Getter-self path should not recurse into getter call."
+        );
+        assertTrue(
+                getterSource.contains("__gdcc_tmp_old_obj_"),
+                "Second getter-self write should capture old object value."
+        );
+        var firstAssignIndex = getterSource.indexOf("$tmp = $self->obj;");
+        var secondAssignIndex = getterSource.indexOf("$tmp = $self->obj;", firstAssignIndex + 1);
+        assertTrue(firstAssignIndex >= 0, "Getter-self should assign target from backing field.");
+        assertTrue(secondAssignIndex > firstAssignIndex, "Getter-self test should execute field load twice.");
+        var captureOldIndex = getterSource.lastIndexOf(" = $tmp;", secondAssignIndex);
+        assertTrue(captureOldIndex >= 0, "Second getter-self write should capture old target before overwrite.");
+        assertTrue(captureOldIndex < secondAssignIndex, "Old target capture should happen before second assignment.");
+        var ownIndex = getterSource.indexOf("own_object($tmp);", secondAssignIndex);
+        assertTrue(ownIndex > secondAssignIndex, "BORROWED field read should be owned after assignment.");
+        var releaseOldIndex = getterSource.indexOf("release_object(__gdcc_tmp_old_obj_", ownIndex);
+        assertTrue(releaseOldIndex > ownIndex, "Captured old value should be released after owning new value.");
+
+        var runResult = runWithSceneAndScript(
+                buildResult.artifacts(),
+                "GetterSelfEngineInheritanceNode",
+                hostClass.getName(),
+                getterSelfEngineInheritanceScript()
+        );
+        var output = runResult.combinedOutput();
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + output);
+        assertTrue(
+                output.contains("engine inheritance getter-self check passed."),
+                "Getter-self runtime behavior should pass.\nOutput:\n" + output
+        );
+        assertFalse(output.contains("check failed"), "No check should fail.\nOutput:\n" + output);
+    }
+
+    @Test
+    @DisplayName("setter-self on engine-inherited class should run in real engine with correct object lifecycle order")
+    void setterSelfOnEngineInheritedClassShouldRunWithObjectLifecycleOrder() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/setter_self_engine_inheritance");
+        Files.createDirectories(tempDir);
+
+        var hostClass = newSelfAccessorEngineInheritanceHostClass();
+        var module = new LirModule("setter_self_engine_inheritance_module", List.of(hostClass));
+        var buildResult = buildProject(tempDir, "setter_self_engine_inheritance", module);
+
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        var setterSource = extractFunctionSource(
+                entrySource,
+                "GDSelfAccessorEngineInheritanceNode__field_setter_obj"
+        );
+        assertFalse(
+                setterSource.contains("GDSelfAccessorEngineInheritanceNode__field_setter_obj($self, $value)"),
+                "Setter-self path should not recurse into setter call."
+        );
+        assertTrue(setterSource.contains("__gdcc_tmp_old_obj_"), "Setter-self should capture old slot value.");
+        var assignIndex = setterSource.indexOf("$self->obj = $value;");
+        assertTrue(assignIndex >= 0, "Setter-self should write directly to backing field.");
+        var captureOldIndex = setterSource.lastIndexOf(" = $self->obj;", assignIndex);
+        assertTrue(captureOldIndex >= 0, "Setter-self should capture old value before overwrite.");
+        assertTrue(captureOldIndex < assignIndex, "Old value capture must happen before assignment.");
+        var ownIndex = setterSource.indexOf("own_object($self->obj);", assignIndex);
+        assertTrue(ownIndex > assignIndex, "Setter-self should own BORROWED value after assignment.");
+        var releaseOldIndex = setterSource.indexOf("release_object(__gdcc_tmp_old_obj_", ownIndex);
+        assertTrue(releaseOldIndex > ownIndex, "Setter-self should release captured old value last.");
+
+        var runResult = runWithSceneAndScript(
+                buildResult.artifacts(),
+                "SetterSelfEngineInheritanceNode",
+                hostClass.getName(),
+                setterSelfEngineInheritanceScript()
+        );
+        var output = runResult.combinedOutput();
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + output);
+        assertTrue(
+                output.contains("engine inheritance setter-self check passed."),
+                "Setter-self runtime behavior should pass.\nOutput:\n" + output
+        );
+        assertFalse(output.contains("check failed"), "No check should fail.\nOutput:\n" + output);
+    }
+
     private static boolean hasZig() {
         return ZigUtil.findZig() != null;
     }
@@ -291,6 +398,42 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
         return clazz;
     }
 
+    private static LirClassDef newSelfAccessorEngineInheritanceHostClass() {
+        var clazz = new LirClassDef("GDSelfAccessorEngineInheritanceNode", "Node");
+        clazz.setSourceFile("self_accessor_engine_inheritance.gd");
+        clazz.addProperty(new LirPropertyDef(
+                "obj",
+                new GdObjectType("RefCounted"),
+                false,
+                null,
+                "_field_getter_obj",
+                "_field_setter_obj",
+                Map.of()
+        ));
+        clazz.addFunction(newSelfAccessorGetterFunction(clazz));
+        clazz.addFunction(newSelfAccessorSetterFunction(clazz));
+        return clazz;
+    }
+
+    private static LirFunctionDef newSelfAccessorGetterFunction(@NotNull LirClassDef owner) {
+        var func = newLirMethod(owner, "_field_getter_obj", new GdObjectType("RefCounted"));
+        func.createAndAddVariable("tmp", new GdObjectType("RefCounted"));
+        var entry = func.getBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "obj", "self"));
+        entry.instructions().add(new LoadPropertyInsn("tmp", "obj", "self"));
+        entry.instructions().add(new ReturnInsn("tmp"));
+        return func;
+    }
+
+    private static LirFunctionDef newSelfAccessorSetterFunction(@NotNull LirClassDef owner) {
+        var func = newLirMethod(owner, "_field_setter_obj", GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("value", new GdObjectType("RefCounted"), null, func));
+        var entry = func.getBasicBlock("entry");
+        entry.instructions().add(new StorePropertyInsn("obj", "self", "value"));
+        entry.instructions().add(new ReturnInsn(null));
+        return func;
+    }
+
     private static LirFunctionDef newLirMethod(@NotNull LirClassDef owner,
                                                @NotNull String name,
                                                @NotNull GdType returnType) {
@@ -387,6 +530,92 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                         print("gdcc bridge store property check passed.")
                     else:
                         push_error("gdcc bridge store property check failed.")
+                """;
+    }
+
+    private static @NotNull String extractFunctionSource(@NotNull String entrySource,
+                                                         @NotNull String functionName) {
+        var signature = functionName + "(";
+        var startIndex = entrySource.indexOf(signature);
+        assertTrue(startIndex >= 0, "Generated function not found: " + functionName);
+        var braceStart = entrySource.indexOf('{', startIndex);
+        assertTrue(braceStart >= 0, "Cannot locate function body start: " + functionName);
+
+        var braceDepth = 0;
+        for (var i = braceStart; i < entrySource.length(); i++) {
+            var ch = entrySource.charAt(i);
+            if (ch == '{') {
+                braceDepth++;
+                continue;
+            }
+            if (ch == '}') {
+                braceDepth--;
+                if (braceDepth == 0) {
+                    return entrySource.substring(startIndex, i + 1);
+                }
+            }
+        }
+        throw new IllegalStateException("Cannot locate function body end: " + functionName);
+    }
+
+    private static String getterSelfEngineInheritanceScript() {
+        return """
+                extends Node
+                                
+                const TARGET_NODE_NAME = "GetterSelfEngineInheritanceNode"
+                                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var marker = RefCounted.new()
+                    target.obj = marker
+                    var got = target.obj
+                    if got == null:
+                        push_error("engine inheritance getter-self check failed.")
+                        return
+                    if got != marker:
+                        push_error("engine inheritance getter-self check failed.")
+                        return
+                    marker = null
+                    if got == null:
+                        push_error("engine inheritance getter-self check failed.")
+                        return
+                
+                    print("engine inheritance getter-self check passed.")
+                """;
+    }
+
+    private static String setterSelfEngineInheritanceScript() {
+        return """
+                extends Node
+                                
+                const TARGET_NODE_NAME = "SetterSelfEngineInheritanceNode"
+                                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var first = RefCounted.new()
+                    var second = RefCounted.new()
+                    target.obj = first
+                    target.obj = second
+                    first = null
+                
+                    var read_back = target.obj
+                    if read_back != second:
+                        push_error("engine inheritance setter-self check failed.")
+                        return
+                    second = null
+                    if read_back == null:
+                        push_error("engine inheritance setter-self check failed.")
+                        return
+                
+                    print("engine inheritance setter-self check passed.")
                 """;
     }
 }
