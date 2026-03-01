@@ -10,6 +10,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ZigCcCompiler implements CCompiler {
+    private static final String PROJECT_CACHE_DIR_NAME = "compiler-cache";
+    private static final String SHARED_CACHE_DIR_NAME = "shared-compiler-cache";
+
     @Override
     public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
         var zig = ZigUtil.findZig();
@@ -25,7 +28,7 @@ public class ZigCcCompiler implements CCompiler {
         var outName = targetPlatform.sharedLibraryFileName(outputBaseName);
 
         var outputPath = projectDir.resolve(outName).toAbsolutePath();
-        var cachePath = projectDir.resolve("compiler-cache").toAbsolutePath();
+        var cachePath = resolveCompilerCacheRoot(projectDir);
 
         var cmd = new ArrayList<String>();
         cmd.add(zig.toString());
@@ -82,5 +85,20 @@ public class ZigCcCompiler implements CCompiler {
             Thread.currentThread().interrupt();
             return new CBuildResult(false, "Failed to run zig: " + e.getMessage(), List.of());
         }
+    }
+
+    static @NotNull Path resolveCompilerCacheRoot(@NotNull Path projectDir) {
+        var normalizedProjectDir = projectDir.toAbsolutePath().normalize();
+        var projectParent = normalizedProjectDir.getParent();
+        if (projectParent == null) {
+            return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
+        }
+
+        var sharedCacheDir = projectParent.resolve(SHARED_CACHE_DIR_NAME);
+        if (Files.isDirectory(sharedCacheDir)) {
+            return sharedCacheDir.toAbsolutePath().normalize();
+        }
+
+        return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
     }
 }
