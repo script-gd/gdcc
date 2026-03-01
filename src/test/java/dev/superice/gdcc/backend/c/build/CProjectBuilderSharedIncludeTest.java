@@ -83,6 +83,24 @@ public class CProjectBuilderSharedIncludeTest {
         assertFalse(Files.exists(sharedIncludeDir.resolve("gdcc/gdcc_helper.h")));
     }
 
+    @Test
+    public void fallsBackToProjectLocalIncludeWhenSharedIncludePathIsAFile(@TempDir Path tempDir) throws IOException {
+        var workspaceDir = tempDir.resolve("workspace");
+        var projectDir = workspaceDir.resolve("project-a");
+        var sharedIncludePath = workspaceDir.resolve("shared-include");
+        Files.createDirectories(projectDir);
+        Files.createDirectories(sharedIncludePath.getParent());
+        Files.writeString(sharedIncludePath, "not-a-directory");
+
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+
+        builder.initProject(projectInfo);
+
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
+        assertFalse(Files.exists(sharedIncludePath.resolve("gdcc/gdcc_helper.h")));
+    }
+
     private static @NotNull CCodegen prepareCodegen(@NotNull CProjectInfo projectInfo) throws IOException {
         var codegen = new CCodegen();
         var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
