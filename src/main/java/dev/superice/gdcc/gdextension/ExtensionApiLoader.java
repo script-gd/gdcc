@@ -32,7 +32,8 @@ public final class ExtensionApiLoader {
             })
             .create();
 
-    private ExtensionApiLoader() { }
+    private ExtensionApiLoader() {
+    }
 
     private static ExtensionAPI instance;
     private static final ConcurrentHashMap<GodotVersion, ExtensionAPI> versionedInstances = new ConcurrentHashMap<>();
@@ -80,7 +81,7 @@ public final class ExtensionApiLoader {
     }
 
     private static ExtensionHeader parseHeader(JsonObject obj) {
-        if (obj == null) return new ExtensionHeader(0,0,0, "", "", "", "");
+        if (obj == null) return new ExtensionHeader(0, 0, 0, "", "", "", "");
         var versionMajor = obj.has("version_major") ? obj.get("version_major").getAsInt() : 0;
         var versionMinor = obj.has("version_minor") ? obj.get("version_minor").getAsInt() : 0;
         var versionPatch = obj.has("version_patch") ? obj.get("version_patch").getAsInt() : 0;
@@ -334,11 +335,15 @@ public final class ExtensionApiLoader {
             if (o.has("properties")) {
                 for (var pe : o.getAsJsonArray("properties")) {
                     var po = pe.getAsJsonObject();
+                    var hasReadableField = po.has("is_readable");
+                    var hasWritableField = po.has("is_writable");
+                    var isReadable = !hasReadableField || po.get("is_readable").getAsBoolean();
+                    var isWritable = !hasWritableField || po.get("is_writable").getAsBoolean();
                     properties.add(new ExtensionGdClass.PropertyInfo(
                             po.has("name") ? po.get("name").getAsString() : null,
                             po.has("type") ? po.get("type").getAsString() : null,
-                            po.has("is_readable") && po.get("is_readable").getAsBoolean(),
-                            po.has("is_writable") && po.get("is_writable").getAsBoolean(),
+                            isReadable,
+                            isWritable,
                             po.has("default_value") ? po.get("default_value").getAsString() : null
                     ));
                 }

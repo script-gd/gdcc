@@ -412,6 +412,70 @@ public class CStorePropertyInsnGenTest {
     }
 
     @Test
+    @DisplayName("Three-level GDCC chain should call top parent setter via _super._super upcast")
+    void threeLevelGdccChainShouldCallTopParentSetterViaDoubleSuperUpcast() {
+        var parentClass = new LirClassDef("ParentClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_value", Map.of()));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var grandChildClass = new LirClassDef("GrandChildClass", "ChildClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var func = new LirFunctionDef("store_top_parent_value");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("grand", new GdObjectType("GrandChildClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("value", "grand", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, grandChildClass, childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, grandChildClass, childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("ParentClass__field_setter_value(&($grand->_super._super), $value);"), body);
+        assertFalse(body.contains("ParentClass__field_setter_value((ParentClass*)$grand, $value);"), body);
+    }
+
+    @Test
+    @DisplayName("Shadowed property should resolve nearest owner setter on inheritance chain")
+    void shadowedPropertyShouldResolveNearestOwnerSetterOnInheritanceChain() {
+        var parentClass = new LirClassDef("ParentClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_parent_value", Map.of()));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        childClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_child_value", Map.of()));
+
+        var grandChildClass = new LirClassDef("GrandChildClass", "ChildClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var func = new LirFunctionDef("store_shadowed_value");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("grand", new GdObjectType("GrandChildClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("value", "grand", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, grandChildClass, childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, grandChildClass, childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("ChildClass__field_setter_child_value(&($grand->_super), $value);"), body);
+        assertFalse(body.contains("ParentClass__field_setter_parent_value("), body);
+    }
+
+    @Test
     @DisplayName("GDCC receiver should call ENGINE owner setter with GDCC->Godot conversion")
     void gdccReceiverShouldCallEngineOwnerSetterWithConversion() {
         var nodeClass = new ExtensionGdClass(

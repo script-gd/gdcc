@@ -794,3 +794,32 @@ G4 验收结果：
 2. 已补充 `CLoadPropertyInsnGenTest.unreadableEnginePropertyShouldThrow` 负向用例，覆盖 ENGINE 不可读属性 fail-fast。
 3. 已将 `CallMethodInsnGen` 的 receiver 上行渲染切换为复用 `PropertyAccessResolver.renderReceiverValue(...)`，消除与属性路径重复逻辑。
 4. targeted 测试与 `classes` 编译检查通过。
+
+### 9.10 审阅第 2 部分补测记录（2026-03-01）
+变更文件：
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CLoadPropertyInsnGenTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CStorePropertyInsnGenTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/LoadStorePropertyInsnGenEngineInheritanceTest.java`
+- `src/main/java/dev/superice/gdcc/gdextension/ExtensionApiLoader.java`
+
+执行命令：
+```bash
+./gradlew test --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest --tests LoadStorePropertyInsnGenEngineInheritanceTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+执行结果摘要：
+1. 已补齐 `2.2` 纯 GDCC 三级继承链端到端断言：
+   - `CLoadPropertyInsnGenTest.threeLevelGdccChainShouldCallTopParentGetterViaDoubleSuperUpcast`
+   - `CStorePropertyInsnGenTest.threeLevelGdccChainShouldCallTopParentSetterViaDoubleSuperUpcast`
+2. 已补齐 `2.3` 继承链中间层遮蔽属性端到端断言：
+   - `CLoadPropertyInsnGenTest.shadowedPropertyShouldResolveNearestOwnerGetterOnInheritanceChain`
+   - `CStorePropertyInsnGenTest.shadowedPropertyShouldResolveNearestOwnerSetterOnInheritanceChain`
+3. 已新增 `2.5` 端到端引擎继承集成测试类 `LoadStorePropertyInsnGenEngineInheritanceTest`，并拆分为 4 个测试函数覆盖：
+   - ENGINE child -> ENGINE owner 的 LOAD / STORE 两条路径
+   - GDCC receiver -> ENGINE owner 的 LOAD / STORE 两条路径
+4. 集成测试属性已从 `name` 切换为 `process_mode`，并同步更新 C 生成断言与运行时脚本断言，避免 `StringName` 路径的类型歧义。
+5. 为匹配真实 `extension_api_451.json`（类属性缺省 `is_readable`/`is_writable` 字段）更新解析约定：
+   - `ExtensionApiLoader` 在字段缺失时按约定默认 `isReadable=true`、`isWritable=true`；
+   - 若字段存在，仍以显式 `is_readable`/`is_writable` 为准。
+6. 上述 targeted 测试与 `classes` 编译检查均通过。

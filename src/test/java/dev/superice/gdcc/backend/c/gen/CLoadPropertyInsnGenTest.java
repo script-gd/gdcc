@@ -520,6 +520,80 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
+    @DisplayName("Three-level GDCC chain should call top parent getter via _super._super upcast")
+    void threeLevelGdccChainShouldCallTopParentGetterViaDoubleSuperUpcast() {
+        var parentClass = new LirClassDef("ParentClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, "_field_getter_value", null, Map.of()));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var grandChildClass = new LirClassDef("GrandChildClass", "ChildClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var func = new LirFunctionDef("load_top_parent_value");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("grand", new GdObjectType("GrandChildClass"), null, func));
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "grand"));
+        entry.instructions().add(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, grandChildClass, childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, grandChildClass, childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("ParentClass__field_getter_value(&($grand->_super._super));"), body);
+        assertFalse(body.contains("ParentClass__field_getter_value((ParentClass*)$grand);"), body);
+    }
+
+    @Test
+    @DisplayName("Shadowed property should resolve nearest owner getter on inheritance chain")
+    void shadowedPropertyShouldResolveNearestOwnerGetterOnInheritanceChain() {
+        var parentClass = new LirClassDef("ParentClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, "_field_getter_parent_value", null, Map.of()));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        childClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, "_field_getter_child_value", null, Map.of()));
+
+        var grandChildClass = new LirClassDef("GrandChildClass", "ChildClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+
+        var func = new LirFunctionDef("load_shadowed_value");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("grand", new GdObjectType("GrandChildClass"), null, func));
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "value", "grand"));
+        entry.instructions().add(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, grandChildClass, childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, grandChildClass, childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("ChildClass__field_getter_child_value(&($grand->_super));"), body);
+        assertFalse(body.contains("ParentClass__field_getter_parent_value("), body);
+    }
+
+    @Test
     @DisplayName("GDCC receiver should call ENGINE owner getter with GDCC->Godot conversion")
     void gdccReceiverShouldCallEngineOwnerGetterWithConversion() {
         var nodeClass = new ExtensionGdClass(
