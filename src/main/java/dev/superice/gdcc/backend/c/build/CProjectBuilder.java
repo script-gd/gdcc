@@ -97,7 +97,7 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         return cCompiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
     }
 
-    private @NotNull Path resolveIncludeRoot(@NotNull Path projectPath) throws IOException {
+    private @NotNull Path resolveIncludeRoot(@NotNull Path projectPath) {
         var normalizedProjectPath = projectPath.toAbsolutePath().normalize();
         if (ignoreSharedInclude) {
             return normalizedProjectPath.resolve(PROJECT_INCLUDE_DIR_NAME);
@@ -109,10 +109,6 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         }
 
         var sharedInclude = projectParent.resolve(SHARED_INCLUDE_DIR_NAME);
-        if (Files.exists(sharedInclude) && !Files.isDirectory(sharedInclude)) {
-            throw new IOException("Shared include path exists but is not a directory: " + sharedInclude);
-        }
-
         if (Files.isDirectory(sharedInclude)) {
             return sharedInclude;
         }

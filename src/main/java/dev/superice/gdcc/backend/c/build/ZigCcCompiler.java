@@ -95,6 +95,9 @@ public class ZigCcCompiler implements CCompiler {
         }
 
         var sharedCacheDir = projectParent.resolve(SHARED_CACHE_DIR_NAME);
+        if (Files.exists(sharedCacheDir) && !Files.isDirectory(sharedCacheDir)) {
+            return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
+        }
         if (Files.isDirectory(sharedCacheDir)) {
             return sharedCacheDir.toAbsolutePath().normalize();
         }
