@@ -53,28 +53,31 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         var target = bodyBuilder.targetOfVar(resultVar);
 
         switch (genMode) {
-            case GDCC -> {
+            case OBJECT -> {
                 var objectType = (GdObjectType) objectVar.type();
-                var classDef = Objects.requireNonNull(registry.getClassDef(objectType));
-                var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
-                var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, insn, propertyDef);
-                if (inGetterSelf) {
-                    var expr = "$" + objectVar.id() + "->" + insn.propertyName();
-                    bodyBuilder.assignExpr(target, expr, propertyType);
-                } else {
-                    var getterName = propertyDef.getGetterFunc();
-                    if (getterName == null || getterName.isEmpty()) {
-                        throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " + classDef.getName() + " has no getter");
+                if (objectType.checkGdccType(registry)) {
+                    var classDef = Objects.requireNonNull(registry.getClassDef(objectType));
+                    var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
+                    var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, insn, propertyDef);
+                    if (inGetterSelf) {
+                        var expr = "$" + objectVar.id() + "->" + insn.propertyName();
+                        bodyBuilder.assignExpr(target, expr, propertyType);
+                    } else {
+                        var getterName = propertyDef.getGetterFunc();
+                        if (getterName == null || getterName.isEmpty()) {
+                            throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " + classDef.getName() + " has no getter");
+                        }
+                        var getterCall = classDef.getName() + "_" + getterName;
+                        bodyBuilder.callAssign(target, getterCall, propertyType, List.of(bodyBuilder.valueOfVar(objectVar)));
                     }
-                    var getterCall = classDef.getName() + "_" + getterName;
-                    bodyBuilder.callAssign(target, getterCall, propertyType, List.of(bodyBuilder.valueOfVar(objectVar)));
+                } else if (objectType.checkEngineType(registry)) {
+                    var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
+                    var objectValue = bodyBuilder.valueOfVar(objectVar);
+                    bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
+                } else {
+                    throw bodyBuilder.invalidInsn("Unsupported object receiver type '" + objectType.getTypeName() +
+                            "' for LOAD_PROPERTY in OBJECT mode");
                 }
-            }
-            case ENGINE -> {
-                var objectType = (GdObjectType) objectVar.type();
-                var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
-                var objectValue = bodyBuilder.valueOfVar(objectVar);
-                bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
             }
             case GENERAL -> {
                 // Pass objectVar directly; renderArgument will auto-convert GDCC ptrs

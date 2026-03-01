@@ -47,28 +47,38 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "STORE_PROPERTY");
 
         switch (genMode) {
-            case GDCC -> {
+            case OBJECT -> {
                 var objectType = (GdObjectType) objectVar.type();
-                var classDef = Objects.requireNonNull(bodyBuilder.classRegistry().getClassDef(objectType));
-                var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
-                if (isStoringInsideSetterSelf(bodyBuilder, insn, propertyDef)) {
-                    var fieldTarget = bodyBuilder.targetOfExpr(
-                            "$" + objectVar.id() + "->" + insn.propertyName(),
-                            propertyDef.getType()
-                    );
-                    bodyBuilder.assignVar(fieldTarget, bodyBuilder.valueOfVar(valueVar));
-                } else {
-                    var setterName = propertyDef.getSetterFunc();
-                    if (setterName == null || setterName.isEmpty()) {
-                        throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " +
-                                classDef.getName() + " has no setter");
+                var registry = bodyBuilder.classRegistry();
+                if (objectType.checkGdccType(registry)) {
+                    var classDef = Objects.requireNonNull(registry.getClassDef(objectType));
+                    var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
+                    if (isStoringInsideSetterSelf(bodyBuilder, insn, propertyDef)) {
+                        var fieldTarget = bodyBuilder.targetOfExpr(
+                                "$" + objectVar.id() + "->" + insn.propertyName(),
+                                propertyDef.getType()
+                        );
+                        bodyBuilder.assignVar(fieldTarget, bodyBuilder.valueOfVar(valueVar));
+                    } else {
+                        var setterName = propertyDef.getSetterFunc();
+                        if (setterName == null || setterName.isEmpty()) {
+                            throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " +
+                                    classDef.getName() + " has no setter");
+                        }
+                        var setterCall = classDef.getName() + "_" + setterName;
+                        bodyBuilder.callVoid(setterCall,
+                                List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
                     }
-                    var setterCall = classDef.getName() + "_" + setterName;
-                    bodyBuilder.callVoid(setterCall,
+                } else if (objectType.checkEngineType(registry)) {
+                    var setterName = "godot_" + objectType.getTypeName() + "_set_" + insn.propertyName();
+                    bodyBuilder.callVoid(setterName,
                             List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
+                } else {
+                    throw bodyBuilder.invalidInsn("Unsupported object receiver type '" + objectType.getTypeName() +
+                            "' for STORE_PROPERTY in OBJECT mode");
                 }
             }
-            case ENGINE, BUILTIN -> {
+            case BUILTIN -> {
                 var objectType = objectVar.type();
                 var setterName = "godot_" + objectType.getTypeName() + "_set_" + insn.propertyName();
                 bodyBuilder.callVoid(setterName,

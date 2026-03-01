@@ -2,9 +2,9 @@
 
 ## 文档状态
 
-- 状态：In Progress（Phase 0 Completed）
+- 状态：In Progress（Phase 0-1 Completed）
 - 更新时间：2026-03-01
-- 阶段进度：Phase 0 已完成，Phase 1-4 待实施
+- 阶段进度：Phase 0-1 已完成，Phase 2-4 待实施
 - 适用范围：`LoadPropertyInsnGen`、`StorePropertyInsnGen`、`PropertyAccessResolver`
 - 关联文档：
   - `doc/gdcc_low_ir.md`
@@ -306,7 +306,7 @@ Gate：`G0`
 2. `Phase 1`：Resolver 能力落地  
 主要产出：继承链属性 owner 解析能力  
 Gate：`G1`  
-状态：`Pending`
+状态：`Completed`
 3. `Phase 2`：LOAD_PROPERTY 接入  
 主要产出：load 路径 owner 解析与 receiver 上行  
 Gate：`G2`  
@@ -377,7 +377,7 @@ G0 验收结果：
 
 - Phase 0 为文档冻结阶段，无代码实现变更，不执行 Gradle 测试。
 
-### 8.3 Phase 1：Resolver 能力落地
+### 8.3 Phase 1：Resolver 能力落地（Completed）
 
 实施目标：
 
@@ -424,6 +424,39 @@ Gate G1（准出条件）：
   - 继承环 fail-fast
 - 已完成 Godot Extension API 属性模型验证记录，并确认实现保持“向上查找 + 命中即停止”的兼容策略。
 - `findPropertyDef(...)` 已完成收敛（`private` 或 `@Deprecated`）。
+
+#### Phase 1 完成同步（2026-03-01）
+
+完成项：
+
+1. 已在 `PropertyAccessResolver` 落地对象属性继承链解析能力：
+   - 新增 `PropertyOwnerDispatchMode` 与 `ObjectPropertyLookup`。
+   - 新增 `resolveObjectProperty(...)`，支持：
+     - unknown object 返回 `null`
+     - 继承链逐层查找
+     - 命中即停止（最近 owner 优先）
+     - 隐式字段遮蔽（同名取最近命中）
+     - 继承环检测 fail-fast
+     - 中间父类 metadata 缺失 fail-fast
+2. 已完成旧接口收敛：
+   - `findPropertyDef(...)` 已标记 `@Deprecated`，引导迁移到继承链解析入口。
+3. 已新增并通过独立单元测试 `PropertyAccessResolverTest`，覆盖：
+   - 命中即停止
+   - 隐式字段遮蔽
+   - unknown object 返回 `null`
+   - 属性不存在 fail-fast
+   - 继承环 fail-fast
+   - 父类 metadata 缺失 fail-fast
+4. 已完成 Godot Extension API 属性模型验证记录：
+   - 当前仓库未内置固定 `extension_api.json` 样本，无法绑定单一“扁平化/仅本类”假设。
+   - 已按兼容策略实现：ENGINE 路径始终支持向上查找，并在首命中后停止，兼容未来版本字段记录变化。
+
+G1 验收结果：
+
+- [x] `resolveObjectProperty(...)` 行为满足 Gate 要求。
+- [x] `PropertyAccessResolverTest` targeted 用例通过。
+- [x] `findPropertyDef(...)` 已收敛为过渡接口（`@Deprecated`）。
+- [x] `./gradlew classes --no-daemon --info --console=plain` 通过。
 
 ### 8.4 Phase 2：LOAD_PROPERTY 接入
 
@@ -571,3 +604,24 @@ Gate G4（最终验收）：
 2. 已将阶段总览表加入“状态”列并同步当前状态。
 3. 已补充 Phase 0 完成同步清单与 G0 验收结果。
 4. 已记录 Phase 0 为文档冻结阶段，后续实现从 Phase 1 开始。
+
+### 9.5 Phase 1 执行记录（2026-03-01）
+
+变更文件：
+
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolverTest.java`
+- `doc/module_impl/load_store_property_inheritance_access_plan.md`
+
+执行命令：
+
+```bash
+./gradlew test --tests PropertyAccessResolverTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+执行结果摘要：
+
+1. `PropertyAccessResolver` Phase 1 目标能力已实现并通过 targeted 单测。
+2. `classes` 编译检查通过，G1 达成。
+3. Phase 状态已同步更新：Phase 1 Completed，后续实施从 Phase 2 开始。
