@@ -5,17 +5,16 @@ import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
-import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.List;
-import java.util.Objects;
 
 public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
     @Override
@@ -43,39 +42,47 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         }
 
         // Validate property existence/writability and assignment compatibility first.
-        validatePropertyWrite(bodyBuilder, objectVar.type(), valueVar.type(), insn.propertyName());
+        var objectLookup = validatePropertyWrite(bodyBuilder, objectVar.type(), valueVar.type(), insn.propertyName());
         var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "STORE_PROPERTY");
 
         switch (genMode) {
             case OBJECT -> {
                 var objectType = (GdObjectType) objectVar.type();
-                var registry = bodyBuilder.classRegistry();
-                if (objectType.checkGdccType(registry)) {
-                    var classDef = Objects.requireNonNull(registry.getClassDef(objectType));
-                    var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
-                    if (isStoringInsideSetterSelf(bodyBuilder, insn, propertyDef)) {
-                        var fieldTarget = bodyBuilder.targetOfExpr(
-                                "$" + objectVar.id() + "->" + insn.propertyName(),
-                                propertyDef.getType()
-                        );
-                        bodyBuilder.assignVar(fieldTarget, bodyBuilder.valueOfVar(valueVar));
-                    } else {
-                        var setterName = propertyDef.getSetterFunc();
+                if (objectLookup == null) {
+                    throw bodyBuilder.invalidInsn("Missing owner lookup for known object receiver type '" +
+                            objectType.getTypeName() + "' in STORE_PROPERTY");
+                }
+                var receiverValue = PropertyAccessResolver.renderOwnerReceiverValue(
+                        bodyBuilder,
+                        objectVar,
+                        objectLookup,
+                        "STORE_PROPERTY"
+                );
+                switch (objectLookup.ownerDispatchMode()) {
+                    case GDCC -> {
+                        var ownerClassName = objectLookup.ownerClass().getName();
+                        if (isStoringInsideSetterSelf(bodyBuilder, objectVar, objectLookup)) {
+                            var fieldTarget = bodyBuilder.targetOfExpr(
+                                    "$" + objectVar.id() + "->" + insn.propertyName(),
+                                    objectLookup.property().getType()
+                            );
+                            bodyBuilder.assignVar(fieldTarget, bodyBuilder.valueOfVar(valueVar));
+                            break;
+                        }
+                        var setterName = objectLookup.property().getSetterFunc();
                         if (setterName == null || setterName.isEmpty()) {
                             throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " +
-                                    classDef.getName() + " has no setter");
+                                    ownerClassName + " has no setter");
                         }
-                        var setterCall = classDef.getName() + "_" + setterName;
+                        var setterCall = ownerClassName + "_" + setterName;
                         bodyBuilder.callVoid(setterCall,
-                                List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
+                                List.of(receiverValue, bodyBuilder.valueOfVar(valueVar)));
                     }
-                } else if (objectType.checkEngineType(registry)) {
-                    var setterName = "godot_" + objectType.getTypeName() + "_set_" + insn.propertyName();
-                    bodyBuilder.callVoid(setterName,
-                            List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
-                } else {
-                    throw bodyBuilder.invalidInsn("Unsupported object receiver type '" + objectType.getTypeName() +
-                            "' for STORE_PROPERTY in OBJECT mode");
+                    case ENGINE -> {
+                        var setterName = "godot_" + objectLookup.ownerClass().getName() + "_set_" + insn.propertyName();
+                        bodyBuilder.callVoid(setterName,
+                                List.of(receiverValue, bodyBuilder.valueOfVar(valueVar)));
+                    }
                 }
             }
             case BUILTIN -> {
@@ -103,32 +110,34 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         }
     }
 
-    private void validatePropertyWrite(@NotNull CBodyBuilder bodyBuilder,
-                                       @NotNull GdType objectType,
-                                       @NotNull GdType valueType,
-                                       @NotNull String propertyName) {
+    private @Nullable PropertyAccessResolver.ObjectPropertyLookup validatePropertyWrite(@NotNull CBodyBuilder bodyBuilder,
+                                                                                        @NotNull GdType objectType,
+                                                                                        @NotNull GdType valueType,
+                                                                                        @NotNull String propertyName) {
         var registry = bodyBuilder.classRegistry();
         if (objectType instanceof GdObjectType gdObjectType) {
-            var classDef = registry.getClassDef(gdObjectType);
-            if (classDef == null) {
+            var lookup = PropertyAccessResolver.resolveObjectProperty(
+                    bodyBuilder,
+                    gdObjectType,
+                    propertyName,
+                    "STORE_PROPERTY"
+            );
+            if (lookup == null) {
                 // Unknown object types are written through godot_Object_set and resolved at runtime.
-                return;
+                return null;
             }
-            var propertyFound = PropertyAccessResolver.findPropertyDef(classDef, propertyName);
-            if (propertyFound == null) {
-                throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in class " + classDef.getName());
-            }
-            if (propertyFound instanceof ExtensionGdClass.PropertyInfo engineProperty && !engineProperty.isWritable()) {
+            var propertyDef = lookup.property();
+            if (propertyDef instanceof ExtensionGdClass.PropertyInfo engineProperty && !engineProperty.isWritable()) {
                 throw bodyBuilder.invalidInsn("Property '" + propertyName + "' in class " +
-                        classDef.getName() + " is not writable");
+                        lookup.ownerClass().getName() + " is not writable");
             }
-            var propertyType = propertyFound.getType();
+            var propertyType = propertyDef.getType();
             if (!registry.checkAssignable(valueType, propertyType)) {
                 throw bodyBuilder.invalidInsn("Value type " + valueType.getTypeName() +
                         " is not assignable to property '" + propertyName +
                         "' of type " + propertyType.getTypeName());
             }
-            return;
+            return lookup;
         }
 
         var lookup = PropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
@@ -143,11 +152,12 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                     " is not assignable to property '" + propertyName +
                     "' of type " + propertyType.getTypeName());
         }
+        return null;
     }
 
     private boolean isStoringInsideSetterSelf(@NotNull CBodyBuilder bodyBuilder,
-                                              @NotNull StorePropertyInsn instruction,
-                                              @NotNull PropertyDef propertyDef) {
+                                              @NotNull dev.superice.gdcc.lir.LirVariable objectVar,
+                                              @NotNull PropertyAccessResolver.ObjectPropertyLookup lookup) {
         var func = bodyBuilder.func();
         if (func.isAbstract() || func.isStatic() || func.isLambda() || func.isVararg()) {
             return false;
@@ -156,17 +166,20 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         if (func.getParameterCount() != 2) {
             return false;
         }
+        var ownerClassName = lookup.ownerClass().getName();
+        if (!ownerClassName.equals(bodyBuilder.clazz().getName())) {
+            return false;
+        }
         var registry = bodyBuilder.classRegistry();
-        var objectVar = Objects.requireNonNull(func.getVariableById(instruction.objectId()));
         var objectType = objectVar.type();
         if (objectType instanceof GdObjectType gdObjectType) {
             if (!gdObjectType.checkGdccType(registry)) {
                 return false;
             }
-            if (!gdObjectType.getTypeName().equals(bodyBuilder.clazz().getName())) {
+            if (!gdObjectType.getTypeName().equals(ownerClassName)) {
                 return false;
             }
-            var setter = propertyDef.getSetterFunc();
+            var setter = lookup.property().getSetterFunc();
             return setter != null && setter.equals(func.getName());
         }
         return false;

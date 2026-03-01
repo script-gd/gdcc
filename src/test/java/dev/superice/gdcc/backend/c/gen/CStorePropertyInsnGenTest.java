@@ -382,6 +382,228 @@ public class CStorePropertyInsnGenTest {
         assertInstanceOf(InvalidInsnException.class, ex);
     }
 
+    @Test
+    @DisplayName("GDCC child receiver should call parent GDCC setter via _super upcast")
+    void gdccChildReceiverShouldCallParentGdccSetterViaSuperUpcast() {
+        var parentClass = new LirClassDef("ParentClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_value", Map.of()));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("store_parent_value");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("child", new GdObjectType("ChildClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("value", "child", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("ParentClass__field_setter_value(&($child->_super), $value);"), body);
+        assertFalse(body.contains("ParentClass__field_setter_value((ParentClass*)$child, $value);"), body);
+    }
+
+    @Test
+    @DisplayName("GDCC receiver should call ENGINE owner setter with GDCC->Godot conversion")
+    void gdccReceiverShouldCallEngineOwnerSetterWithConversion() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+
+        var userClass = new LirClassDef("MyClass", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("store_engine_parent_prop");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("MyClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("name", "obj", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, userClass));
+        var ctx = newContext(api, List.of(hostClass, userClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("godot_Node_set_name((godot_Node*)gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr), $value);"), body);
+        assertFalse(body.contains("godot_Node_set_name((godot_Node*)$obj, $value);"), body);
+    }
+
+    @Test
+    @DisplayName("ENGINE child receiver should call ENGINE parent setter with owner cast")
+    void engineChildReceiverShouldCallEngineParentSetterWithOwnerCast() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of()
+        );
+        var controlClass = new ExtensionGdClass(
+                "Control", false, true, "Node", "core",
+                List.of(), List.of(), List.of(),
+                List.of(),
+                List.of()
+        );
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(nodeClass, controlClass),
+                List.of(),
+                List.of()
+        );
+
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("store_engine_parent_prop");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("control", new GdObjectType("Control"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("name", "control", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass));
+        var ctx = newContext(api, List.of(hostClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("godot_Node_set_name((godot_Node*)$control, $value);"), body);
+        assertFalse(body.contains("godot_Control_set_name("), body);
+    }
+
+    @Test
+    @DisplayName("Three-level GDCC->GDCC->ENGINE chain should resolve ENGINE owner setter")
+    void threeLevelGdccToEngineChainShouldResolveEngineOwnerSetter() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+
+        var childClass = new LirClassDef("ChildClass", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var grandChildClass = new LirClassDef("GrandChildClass", "ChildClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("store_chain_prop");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("grand", new GdObjectType("GrandChildClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("name", "grand", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, childClass, grandChildClass));
+        var ctx = newContext(api, List.of(hostClass, childClass, grandChildClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(hostClass, func);
+        assertTrue(body.contains("godot_Node_set_name((godot_Node*)gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr), $value);"), body);
+        assertFalse(body.contains("godot_Node_set_name((godot_Node*)$grand, $value);"), body);
+    }
+
+    @Test
+    @DisplayName("Known object receiver should fail-fast when property is absent in hierarchy")
+    void knownObjectReceiverShouldFailFastWhenPropertyAbsentInHierarchy() {
+        var parentClass = new LirClassDef("ParentClass", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("store_missing_prop");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("child", new GdObjectType("ChildClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdStringType.STRING, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("missing_prop", "child", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("class hierarchy"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("ChildClass"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("Store property should fail-fast when value type is not assignable to property type")
+    void storePropertyShouldFailWhenValueTypeNotAssignableToPropertyType() {
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        gdccClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_value", Map.of()));
+
+        var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("store_type_mismatch");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("MyClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdFloatType.FLOAT, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("value", "obj", "value"));
+        hostClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(hostClass, gdccClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(hostClass, gdccClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not assignable to property"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("Setter-self fast path should not trigger when owner is parent class")
+    void setterSelfFastPathShouldNotTriggerWhenOwnerIsParentClass() {
+        var parentClass = new LirClassDef("ParentClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_value", Map.of()));
+
+        var childClass = new LirClassDef("ChildClass", "ParentClass", false, false, Map.of(), List.of(), List.of(), List.of());
+        var childSetter = new LirFunctionDef("_field_setter_value");
+        childSetter.setReturnType(GdVoidType.VOID);
+        childSetter.addParameter(new LirParameterDef("self", new GdObjectType("ChildClass"), null, childSetter));
+        childSetter.addParameter(new LirParameterDef("value", GdStringType.STRING, null, childSetter));
+        addEntryStoreAndReturn(childSetter, new StorePropertyInsn("value", "self", "value"));
+        childClass.addFunction(childSetter);
+
+        var module = new LirModule("test_module", List.of(childClass, parentClass));
+        var ctx = newContext(
+                new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(childClass, parentClass)
+        );
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(childClass, childSetter);
+        assertTrue(body.contains("ParentClass__field_setter_value(&($self->_super), $value);"), body);
+        assertFalse(body.contains("$self->value ="), body);
+    }
+
     private void addEntryStoreAndReturn(LirFunctionDef func, StorePropertyInsn storeInsn) {
         var entry = new LirBasicBlock("entry");
         entry.instructions().add(storeInsn);

@@ -2,9 +2,9 @@
 
 ## 文档状态
 
-- 状态：In Progress（Phase 0-2 Completed）
+- 状态：Implemented（Phase 0-4 Completed）
 - 更新时间：2026-03-01
-- 阶段进度：Phase 0-2 已完成，Phase 3-4 待实施
+- 阶段进度：Phase 0-4 已完成
 - 适用范围：`LoadPropertyInsnGen`、`StorePropertyInsnGen`、`PropertyAccessResolver`
 - 关联文档：
   - `doc/gdcc_low_ir.md`
@@ -314,11 +314,11 @@ Gate：`G2`
 4. `Phase 3`：STORE_PROPERTY 接入  
 主要产出：store 路径 owner 解析与 receiver 上行  
 Gate：`G3`  
-状态：`Pending`
+状态：`Completed`
 5. `Phase 4`：回归与收敛  
 主要产出：全链路回归、文档状态更新、风险收口  
 Gate：`G4`  
-状态：`Pending`
+状态：`Completed`
 
 ### 8.2 Phase 0：基线冻结（Completed）
 
@@ -530,7 +530,7 @@ G2 验收结果：
 - [x] owner getter 符号与 receiver 上行转换符合预期。
 - [x] `checkAssignable(propertyType, resultType)` 方向性负向断言已覆盖并通过。
 
-### 8.5 Phase 3：STORE_PROPERTY 接入
+### 8.5 Phase 3：STORE_PROPERTY 接入（Completed）
 
 实施目标：
 
@@ -569,7 +569,37 @@ Gate G3（准出条件）：
   - subtype assignable 场景断言。
 - `checkAssignable(valueType, propertyType)` 方向性验证通过（含至少 1 个负向断言）。
 
-### 8.6 Phase 4：回归与收敛
+#### Phase 3 完成同步（2026-03-01）
+
+完成项：
+
+1. 已完成 `StorePropertyInsnGen` owner-based 接入：
+   - 对对象路径改为基于 `resolveObjectProperty(...)` 解析 owner。
+   - 代码生成分派改为使用 `lookup.ownerDispatchMode()`，不再按 receiver 静态类型直拼 setter。
+2. 已完成 receiver 上行渲染复用：
+   - 复用 `PropertyAccessResolver.renderOwnerReceiverValue(...)`，统一走 `valueOfCastedVar(...)` 路径。
+   - 覆盖 GDCC -> GDCC `_super` 链上行、GDCC -> ENGINE helper 转换 + owner-cast、ENGINE -> ENGINE owner-cast。
+3. 已完成 setter-self 直写 owner 约束：
+   - 仅当当前类、receiver 静态类型、owner class 三者一致且函数名匹配 setter 时才走 `self->field`。
+4. 已补齐并通过 `CStorePropertyInsnGenTest` 的 Phase 3 关键场景：
+   - GDCC 子类写 GDCC 父类属性（`_super` 上行）
+   - GDCC 子类写 ENGINE 父类属性（helper 转换 + owner-cast）
+   - ENGINE 子类写 ENGINE 父类属性（owner-cast）
+   - 三级跨类别继承链写入
+   - 属性不存在 fail-fast（class hierarchy 文案）
+   - `checkAssignable(valueType, propertyType)` 负向断言
+   - setter-self owner 保护（owner 为父类时不误判直写）
+5. 已完成阶段回归与编译验证：
+   - `./gradlew test --tests CStorePropertyInsnGenTest --no-daemon --info --console=plain`
+   - `./gradlew classes --no-daemon --info --console=plain`
+
+G3 验收结果：
+
+- [x] 新增场景与既有场景均通过。
+- [x] owner setter 符号与 receiver 上行转换符合预期。
+- [x] `checkAssignable(valueType, propertyType)` 方向性负向断言已覆盖并通过。
+
+### 8.6 Phase 4：回归与收敛（Completed）
 
 实施目标：
 
@@ -602,6 +632,26 @@ Gate G4（最终验收）：
   - GDCC 上行不出现裸 cast 回退。
   - GENERAL fallback 与 BUILTIN 路径行为不变。
 - 文档状态与实现状态一致。
+
+#### Phase 4 完成同步（2026-03-01）
+
+完成项：
+
+1. 已完成组合回归：
+   - `CLoadPropertyInsnGenTest`、`CStorePropertyInsnGenTest`、`CallMethodInsnGenTest` targeted 全部通过。
+2. 已完成文档收口：
+   - 顶部状态更新为 `Implemented（Phase 0-4 Completed）`。
+   - 阶段总览中 Phase 3 / Phase 4 状态更新为 `Completed`。
+   - 增补 Phase 3 / Phase 4 完成同步记录与 Gate 验收结果。
+3. 已完成变更审计：
+   - 变更仅位于 Phase 0 冻结范围内的实现/测试文件与本方案文档。
+   - 未引入 build script/config 变更。
+
+G4 验收结果：
+
+- [x] 所有 targeted 测试通过。
+- [x] 代码生成关键断言满足预期（owner 符号、GDCC 上行、GENERAL/BUILTIN 稳定）。
+- [x] 文档状态与实现状态一致。
 
 ## 9. 里程碑验收清单（执行用）
 
@@ -658,3 +708,42 @@ Gate G4（最终验收）：
 1. `PropertyAccessResolver` Phase 1 目标能力已实现并通过 targeted 单测。
 2. `classes` 编译检查通过，G1 达成。
 3. Phase 状态已同步更新：Phase 1 Completed，后续实施从 Phase 2 开始。
+
+### 9.6 Phase 3 执行记录（2026-03-01）
+
+变更文件：
+
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CStorePropertyInsnGenTest.java`
+- `doc/module_impl/load_store_property_inheritance_access_plan.md`
+
+执行命令：
+
+```bash
+./gradlew test --tests CStorePropertyInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+执行结果摘要：
+
+1. `StorePropertyInsnGen` Phase 3 目标能力已实现并通过 targeted 单测。
+2. `classes` 编译检查通过，G3 达成。
+3. Phase 状态已同步更新：Phase 3 Completed，后续实施从 Phase 4 开始。
+
+### 9.7 Phase 4 执行记录（2026-03-01）
+
+变更文件：
+
+- `doc/module_impl/load_store_property_inheritance_access_plan.md`
+
+执行命令：
+
+```bash
+./gradlew test --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest --tests CallMethodInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+执行结果摘要：
+
+1. 组合回归通过，未发现 load/store/call_method 共享路径回归。
+2. 文档状态与阶段总览完成收口，G4 达成。
