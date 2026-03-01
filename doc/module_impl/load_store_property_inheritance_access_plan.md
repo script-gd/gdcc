@@ -2,9 +2,9 @@
 
 ## 文档状态
 
-- 状态：In Progress（Phase 0-1 Completed）
+- 状态：In Progress（Phase 0-2 Completed）
 - 更新时间：2026-03-01
-- 阶段进度：Phase 0-1 已完成，Phase 2-4 待实施
+- 阶段进度：Phase 0-2 已完成，Phase 3-4 待实施
 - 适用范围：`LoadPropertyInsnGen`、`StorePropertyInsnGen`、`PropertyAccessResolver`
 - 关联文档：
   - `doc/gdcc_low_ir.md`
@@ -310,7 +310,7 @@ Gate：`G1`
 3. `Phase 2`：LOAD_PROPERTY 接入  
 主要产出：load 路径 owner 解析与 receiver 上行  
 Gate：`G2`  
-状态：`Pending`
+状态：`Completed`
 4. `Phase 3`：STORE_PROPERTY 接入  
 主要产出：store 路径 owner 解析与 receiver 上行  
 Gate：`G3`  
@@ -496,6 +496,39 @@ Gate G2（准出条件）：
   - getter-self 直读场景。
   - unknown object fallback 场景。
 - `checkAssignable(propertyType, resultType)` 方向性验证通过（含至少 1 个负向断言）。
+
+#### Phase 2 完成同步（2026-03-01）
+
+完成项：
+
+1. 已完成 `LoadPropertyInsnGen` owner-based 接入：
+   - 对对象路径改为基于 `resolveObjectProperty(...)` 解析 owner。
+   - 代码生成分派改为使用 `lookup.ownerDispatchMode()`，不再按 receiver 静态类型直拼 getter。
+2. 已完成 receiver 上行渲染复用：
+   - 在 `PropertyAccessResolver` 新增 `renderOwnerReceiverValue(...)` 与 `toOwnerObjectType(...)`。
+   - `LOAD_PROPERTY` 统一复用 `valueOfCastedVar(...)` 路径，覆盖：
+     - GDCC -> GDCC `_super` 链上行
+     - GDCC -> ENGINE `gdcc_object_to_godot_object_ptr(...)` + owner-cast
+     - ENGINE -> ENGINE owner-cast
+3. 已完成 getter-self 直读 owner 约束：
+   - 仅当当前类、receiver 静态类型、owner class 三者一致且函数名匹配 getter 时才走 `self->field`。
+4. 已补齐并通过 `CLoadPropertyInsnGenTest` 的 Phase 2 关键场景：
+   - GDCC 子类读 GDCC 父类属性（`_super` 上行）
+   - GDCC 子类读 ENGINE 父类属性（helper 转换 + owner-cast）
+   - ENGINE 子类读 ENGINE 父类属性（owner-cast）
+   - 三级跨类别继承链读取
+   - 属性不存在 fail-fast（class hierarchy 文案）
+   - `checkAssignable(propertyType, resultType)` 负向断言
+5. 已完成回归与编译验证：
+   - `./gradlew test --tests CLoadPropertyInsnGenTest --no-daemon --info --console=plain`
+   - `./gradlew test --tests CallMethodInsnGenTest --no-daemon --info --console=plain`
+   - `./gradlew classes --no-daemon --info --console=plain`
+
+G2 验收结果：
+
+- [x] 新增场景与既有场景均通过。
+- [x] owner getter 符号与 receiver 上行转换符合预期。
+- [x] `checkAssignable(propertyType, resultType)` 方向性负向断言已覆盖并通过。
 
 ### 8.5 Phase 3：STORE_PROPERTY 接入
 

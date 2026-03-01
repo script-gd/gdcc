@@ -4,19 +4,26 @@ import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
-import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
 
 public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
+    private record PropertyReadResolution(@NotNull GdType propertyType,
+                                          @Nullable PropertyAccessResolver.ObjectPropertyLookup objectLookup) {
+        private PropertyReadResolution {
+            Objects.requireNonNull(propertyType);
+        }
+    }
+
     @Override
     public @NotNull EnumSet<GdInstruction> getInsnOpcodes() {
         return EnumSet.of(GdInstruction.LOAD_PROPERTY);
@@ -47,36 +54,46 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             throw bodyBuilder.invalidInsn("Object variable ID " + insn.objectId() + " is not a valid property target type, but " + objectVar.type().getTypeName());
         }
 
-        var registry = bodyBuilder.classRegistry();
-        var propertyType = resolvePropertyType(bodyBuilder, objectVar.type(), resultVar.type(), insn.propertyName());
+        var readResolution = resolvePropertyRead(bodyBuilder, objectVar.type(), resultVar.type(), insn.propertyName());
+        var propertyType = readResolution.propertyType();
         var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "LOAD_PROPERTY");
         var target = bodyBuilder.targetOfVar(resultVar);
 
         switch (genMode) {
             case OBJECT -> {
                 var objectType = (GdObjectType) objectVar.type();
-                if (objectType.checkGdccType(registry)) {
-                    var classDef = Objects.requireNonNull(registry.getClassDef(objectType));
-                    var propertyDef = Objects.requireNonNull(PropertyAccessResolver.findPropertyDef(classDef, insn.propertyName()));
-                    var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, insn, propertyDef);
-                    if (inGetterSelf) {
-                        var expr = "$" + objectVar.id() + "->" + insn.propertyName();
-                        bodyBuilder.assignExpr(target, expr, propertyType);
-                    } else {
-                        var getterName = propertyDef.getGetterFunc();
-                        if (getterName == null || getterName.isEmpty()) {
-                            throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " + classDef.getName() + " has no getter");
+                var lookup = readResolution.objectLookup();
+                if (lookup == null) {
+                    throw bodyBuilder.invalidInsn("Missing owner lookup for known object receiver type '" +
+                            objectType.getTypeName() + "' in LOAD_PROPERTY");
+                }
+                var receiverValue = PropertyAccessResolver.renderOwnerReceiverValue(
+                        bodyBuilder,
+                        objectVar,
+                        lookup,
+                        "LOAD_PROPERTY"
+                );
+                switch (lookup.ownerDispatchMode()) {
+                    case GDCC -> {
+                        var ownerClassName = lookup.ownerClass().getName();
+                        var inGetterSelf = isLoadingInsideGetterSelf(bodyBuilder, objectVar, lookup);
+                        if (inGetterSelf) {
+                            var expr = "$" + objectVar.id() + "->" + insn.propertyName();
+                            bodyBuilder.assignExpr(target, expr, propertyType);
+                            break;
                         }
-                        var getterCall = classDef.getName() + "_" + getterName;
-                        bodyBuilder.callAssign(target, getterCall, propertyType, List.of(bodyBuilder.valueOfVar(objectVar)));
+                        var getterName = lookup.property().getGetterFunc();
+                        if (getterName == null || getterName.isEmpty()) {
+                            throw bodyBuilder.invalidInsn("Property '" + insn.propertyName() + "' in class " +
+                                    ownerClassName + " has no getter");
+                        }
+                        var getterCall = ownerClassName + "_" + getterName;
+                        bodyBuilder.callAssign(target, getterCall, propertyType, List.of(receiverValue));
                     }
-                } else if (objectType.checkEngineType(registry)) {
-                    var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
-                    var objectValue = bodyBuilder.valueOfVar(objectVar);
-                    bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
-                } else {
-                    throw bodyBuilder.invalidInsn("Unsupported object receiver type '" + objectType.getTypeName() +
-                            "' for LOAD_PROPERTY in OBJECT mode");
+                    case ENGINE -> {
+                        var getterName = "godot_" + lookup.ownerClass().getName() + "_get_" + insn.propertyName();
+                        bodyBuilder.callAssign(target, getterName, propertyType, List.of(receiverValue));
+                    }
                 }
             }
             case GENERAL -> {
@@ -102,27 +119,28 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         }
     }
 
-    private @NotNull GdType resolvePropertyType(@NotNull CBodyBuilder bodyBuilder,
-                                                @NotNull GdType objectType,
-                                                @NotNull GdType resultType,
-                                                @NotNull String propertyName) {
+    private @NotNull PropertyReadResolution resolvePropertyRead(@NotNull CBodyBuilder bodyBuilder,
+                                                                @NotNull GdType objectType,
+                                                                @NotNull GdType resultType,
+                                                                @NotNull String propertyName) {
         var registry = bodyBuilder.classRegistry();
         if (objectType instanceof GdObjectType gdObjectType) {
-            var classDef = registry.getClassDef(gdObjectType);
-            if (classDef == null) {
+            var lookup = PropertyAccessResolver.resolveObjectProperty(
+                    bodyBuilder,
+                    gdObjectType,
+                    propertyName,
+                    "LOAD_PROPERTY"
+            );
+            if (lookup == null) {
                 // Unknown object types are read through godot_Object_get and unpacked into the expected result type.
-                return resultType;
+                return new PropertyReadResolution(resultType, null);
             }
-            var propertyFound = PropertyAccessResolver.findPropertyDef(classDef, propertyName);
-            if (propertyFound == null) {
-                throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in class " + classDef.getName());
-            }
-            var propertyType = propertyFound.getType();
+            var propertyType = lookup.property().getType();
             if (!registry.checkAssignable(propertyType, resultType)) {
                 throw bodyBuilder.invalidInsn("Result type " + resultType.getTypeName() +
                         " is not assignable from property '" + propertyName + "' of type " + propertyType.getTypeName());
             }
-            return propertyType;
+            return new PropertyReadResolution(propertyType, lookup);
         }
 
         var lookup = PropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
@@ -135,12 +153,12 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             throw bodyBuilder.invalidInsn("Result type " + resultType.getTypeName() +
                     " is not assignable from property '" + propertyName + "' of type " + propertyType.getTypeName());
         }
-        return propertyType;
+        return new PropertyReadResolution(propertyType, null);
     }
 
     private boolean isLoadingInsideGetterSelf(@NotNull CBodyBuilder bodyBuilder,
-                                              @NotNull LoadPropertyInsn instruction,
-                                              @NotNull PropertyDef propertyDef) {
+                                              @NotNull dev.superice.gdcc.lir.LirVariable objectVar,
+                                              @NotNull PropertyAccessResolver.ObjectPropertyLookup lookup) {
         var func = bodyBuilder.func();
         if (func.isAbstract() || func.isStatic() || func.isLambda() || func.isVararg()) {
             return false;
@@ -148,17 +166,20 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         if (func.getParameterCount() != 1) {
             return false;
         }
+        var ownerClassName = lookup.ownerClass().getName();
+        if (!ownerClassName.equals(bodyBuilder.clazz().getName())) {
+            return false;
+        }
         var registry = bodyBuilder.classRegistry();
-        var objectVar = Objects.requireNonNull(func.getVariableById(instruction.objectId()));
         var objectType = objectVar.type();
         if (objectType instanceof GdObjectType gdObjectType) {
             if (!gdObjectType.checkGdccType(registry)) {
                 return false;
             }
-            if (!gdObjectType.getTypeName().equals(bodyBuilder.clazz().getName())) {
+            if (!gdObjectType.getTypeName().equals(ownerClassName)) {
                 return false;
             }
-            var getter = propertyDef.getGetterFunc();
+            var getter = lookup.property().getGetterFunc();
             return getter != null && getter.equals(func.getName());
         }
         return false;

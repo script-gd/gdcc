@@ -3,6 +3,7 @@ package dev.superice.gdcc.backend.c.gen.insn;
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
@@ -125,6 +126,27 @@ final class PropertyAccessResolver {
         throw bodyBuilder.invalidInsn("Property '" + propertyName + "' not found in class hierarchy of '" +
                 receiverType.getTypeName() + "' in " + insnName + ": " +
                 String.join(" -> ", hierarchyNames));
+    }
+
+    static @NotNull GdObjectType toOwnerObjectType(@NotNull ObjectPropertyLookup lookup) {
+        return new GdObjectType(lookup.ownerClass().getName());
+    }
+
+    static @NotNull CBodyBuilder.ValueRef renderOwnerReceiverValue(@NotNull CBodyBuilder bodyBuilder,
+                                                                   @NotNull LirVariable receiverVar,
+                                                                   @NotNull ObjectPropertyLookup lookup,
+                                                                   @NotNull String insnName) {
+        var ownerType = toOwnerObjectType(lookup);
+        if (receiverVar.type() instanceof GdObjectType receiverObjectType &&
+                !ownerType.getTypeName().equals(receiverObjectType.getTypeName())) {
+            if (!bodyBuilder.classRegistry().checkAssignable(receiverObjectType, ownerType)) {
+                throw bodyBuilder.invalidInsn("Receiver type '" + receiverObjectType.getTypeName() +
+                        "' is not assignable to property owner type '" + ownerType.getTypeName() +
+                        "' in " + insnName + " for property '" + lookup.property().getName() + "'");
+            }
+            return bodyBuilder.valueOfCastedVar(receiverVar, ownerType);
+        }
+        return bodyBuilder.valueOfVar(receiverVar);
     }
 
     private static @Nullable PropertyDef findOwnPropertyDef(@NotNull ClassDef classDef,
