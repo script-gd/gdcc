@@ -2,8 +2,9 @@
 
 ## 文档状态
 
-- 状态：Planned
+- 状态：In Progress（Phase 0 Completed）
 - 更新时间：2026-03-01
+- 阶段进度：Phase 0 已完成，Phase 1-4 待实施
 - 适用范围：`LoadPropertyInsnGen`、`StorePropertyInsnGen`、`PropertyAccessResolver`
 - 关联文档：
   - `doc/gdcc_low_ir.md`
@@ -217,10 +218,10 @@ static @Nullable ObjectPropertyLookup resolveObjectProperty(
 1. 风险：继承链 metadata 缺失导致行为变化。
 - 缓解：在“receiver 已知类”场景明确 fail-fast，并在错误文案中包含链路信息。
 
-2. 风险：owner 变化后触发现有测试文本断言不匹配。
+1. 风险：owner 变化后触发现有测试文本断言不匹配。
 - 缓解：先补新增继承用例，再更新旧断言最小化改动。
 
-3. 风险：setter/getter-self 误判导致错误 field 访问表达式。
+1. 风险：setter/getter-self 误判导致错误 field 访问表达式。
 - 缓解：引入 owner class 一致性条件，并覆盖专项回归用例。
 
 ## 7. 验收标准（DoD）
@@ -229,3 +230,257 @@ static @Nullable ObjectPropertyLookup resolveObjectProperty(
 - 属性 owner 解析在继承链上稳定且可诊断（错误信息可定位）。
 - 现有 unknown object fallback、builtin 路径、生命周期顺序无回归。
 - `CLoadPropertyInsnGenTest` 与 `CStorePropertyInsnGenTest` targeted 用例通过。
+
+## 8. 分阶段实施与阶段验收方案
+
+### 8.1 阶段划分总览
+
+1. `Phase 0`：基线冻结  
+主要产出：实施边界、复用边界、回归基线冻结  
+Gate：`G0`  
+状态：`Completed`
+2. `Phase 1`：Resolver 能力落地  
+主要产出：继承链属性 owner 解析能力  
+Gate：`G1`  
+状态：`Pending`
+3. `Phase 2`：LOAD_PROPERTY 接入  
+主要产出：load 路径 owner 解析与 receiver 上行  
+Gate：`G2`  
+状态：`Pending`
+4. `Phase 3`：STORE_PROPERTY 接入  
+主要产出：store 路径 owner 解析与 receiver 上行  
+Gate：`G3`  
+状态：`Pending`
+5. `Phase 4`：回归与收敛  
+主要产出：全链路回归、文档状态更新、风险收口  
+Gate：`G4`  
+状态：`Pending`
+
+### 8.2 Phase 0：基线冻结（Completed）
+
+实施目标：
+
+- 明确“仅支持对象属性继承可见性补齐”，不扩展 Low IR 指令语义。
+- 明确复用边界：复用 `CallMethodInsnGen` 的 receiver 渲染策略，不引入新的指针转换策略。
+- 冻结回归基线测试清单，避免中途范围漂移。
+
+实施项：
+
+1. 文档内冻结以下技术约束：
+   - owner 解析失败继续 fail-fast（已知类型场景）。
+   - unknown object 继续 GENERAL fallback。
+   - lifecycle 写槽顺序不改。
+2. 确认实现文件范围：
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
+   - `src/test/java/dev/superice/gdcc/backend/c/gen/CLoadPropertyInsnGenTest.java`
+   - `src/test/java/dev/superice/gdcc/backend/c/gen/CStorePropertyInsnGenTest.java`
+
+Gate G0（准出条件）：
+
+- 本文档中“目标/非目标/风险/DoD”不再变化。
+- 测试基线与实现文件列表冻结。
+
+#### Phase 0 完成同步（2026-03-01）
+
+完成项：
+
+1. 已冻结实施边界：
+   - 仅补齐 `load_property` / `store_property` 的继承属性可见性。
+   - 不改 Low IR 指令定义，不改模板布局，不扩展 `load_static` / `store_static`。
+2. 已冻结复用边界：
+   - receiver 上行转换复用 `CallMethodInsnGen` + `CBodyBuilder.valueOfCastedVar(...)` 语义。
+   - 不新增独立的对象指针转换策略。
+3. 已冻结回归基线：
+   - 主回归用例锁定为 `CLoadPropertyInsnGenTest`、`CStorePropertyInsnGenTest`。
+   - 冒烟回归锁定为 `CallMethodInsnGenTest`。
+4. 已冻结实现文件范围：
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
+   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
+   - `src/test/java/dev/superice/gdcc/backend/c/gen/CLoadPropertyInsnGenTest.java`
+   - `src/test/java/dev/superice/gdcc/backend/c/gen/CStorePropertyInsnGenTest.java`
+
+G0 验收结果：
+
+- [x] “目标/非目标/风险/DoD”已锁定为实施基线。
+- [x] 测试基线已锁定。
+- [x] 实现文件范围已锁定。
+- [x] 当前工作区仅包含本方案文档变更，未出现范围外代码改动。
+
+备注：
+
+- Phase 0 为文档冻结阶段，无代码实现变更，不执行 Gradle 测试。
+
+### 8.3 Phase 1：Resolver 能力落地
+
+实施目标：
+
+- 提供统一的继承链属性解析能力，返回 owner + property 元信息。
+
+实施项：
+
+1. 在 `PropertyAccessResolver` 新增：
+   - `ObjectPropertyLookup` record。
+   - `resolveObjectProperty(...)`。
+2. 解析策略：
+   - `getClassDef(receiverType) == null` 时返回 `null`（交给调用方走 GENERAL）。
+   - 有 classDef 时沿 `super` 链查找首个 property。
+   - 继承环与中途 metadata 缺失 fail-fast。
+3. 保持 builtin 解析接口不变，避免非对象路径受影响。
+
+建议验证命令：
+
+```bash
+./gradlew classes --no-daemon --info --console=plain
+```
+
+Gate G1（准出条件）：
+
+- 编译通过。
+- `resolveObjectProperty(...)` 对三类场景行为明确：
+  - 找到 owner（返回 lookup）
+  - unknown object（返回 null）
+  - known class 但未找到 property（抛 InvalidInsnException）
+
+### 8.4 Phase 2：LOAD_PROPERTY 接入
+
+实施目标：
+
+- `LoadPropertyInsnGen` 在对象场景使用 owner 解析结果生成调用，支持子类读取父类属性。
+
+实施项：
+
+1. 解析改造：
+   - 用 `resolveObjectProperty(...)` 替换原先局部 `findPropertyDef(...)` 直查。
+   - 对 result type 做 `checkAssignable(propertyType, resultType)` 校验。
+2. GDCC 分支改造：
+   - getter 符号名从 `<ReceiverClass>_...` 改为 `<OwnerClass>_...`。
+   - receiver 参数改为 owner 对齐值（必要时 `valueOfCastedVar`）。
+3. ENGINE 分支改造：
+   - getter 符号名改为 `godot_<OwnerClass>_get_<property>`。
+   - receiver 参数改为 owner 对齐值。
+4. getter-self 直读路径加 owner 约束：
+   - 当前类、当前函数、receiver 静态类型都必须与 owner 一致。
+
+建议验证命令：
+
+```bash
+./gradlew test --tests CLoadPropertyInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+Gate G2（准出条件）：
+
+- 新增用例通过：
+  - GDCC 子类读父类属性（含 `_super` 上行断言）。
+  - ENGINE 子类读父类属性（含 owner getter 符号断言）。
+- 既有用例通过：
+  - getter-self 直读场景。
+  - unknown object fallback 场景。
+
+### 8.5 Phase 3：STORE_PROPERTY 接入
+
+实施目标：
+
+- `StorePropertyInsnGen` 在对象场景使用 owner 解析结果生成调用，支持子类写父类属性。
+
+实施项：
+
+1. 校验改造：
+   - `validatePropertyWrite(...)` 使用 `resolveObjectProperty(...)`。
+   - 保持 engine property writable 校验。
+2. GDCC 分支改造：
+   - setter 符号名改为 `<OwnerClass>_<setter>`。
+   - receiver 参数改为 owner 对齐值。
+   - setter-self 直写路径加 owner 约束。
+3. ENGINE 分支改造：
+   - setter 符号名改为 `godot_<OwnerClass>_set_<property>`。
+   - receiver 参数改为 owner 对齐值。
+4. GENERAL / BUILTIN 路径保持不变，避免副作用扩散。
+
+建议验证命令：
+
+```bash
+./gradlew test --tests CStorePropertyInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+Gate G3（准出条件）：
+
+- 新增用例通过：
+  - GDCC 子类写父类属性（含 `_super` 上行断言）。
+  - ENGINE 子类写父类属性（含 owner setter 符号断言）。
+- 既有用例通过：
+  - setter-self 直写生命周期顺序断言。
+  - subtype assignable 场景断言。
+
+### 8.6 Phase 4：回归与收敛
+
+实施目标：
+
+- 确保对既有指令行为零回归，并完成文档验收收口。
+
+实施项：
+
+1. 组合回归：
+   - `CLoadPropertyInsnGenTest` + `CStorePropertyInsnGenTest` 全量 targeted。
+   - `CallMethodInsnGenTest` targeted 冒烟（验证共享上行语义未被破坏）。
+2. 文档收口：
+   - 本文档状态从 `Planned` 更新为 `Implemented`（仅在代码与测试完成后）。
+   - 在“风险与缓解”后追加“实施完成日期与验证命令”。
+3. 变更审计：
+   - 仅允许修改 Phase 0 冻结文件范围。
+   - 不引入 build script/config 变更。
+
+建议验证命令：
+
+```bash
+./gradlew test --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest --tests CallMethodInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+Gate G4（最终验收）：
+
+- 所有 targeted 测试通过。
+- 代码生成输出满足以下验收断言：
+  - 子类 receiver 访问父类属性时，调用符号 owner 正确。
+  - GDCC 上行不出现裸 cast 回退。
+  - GENERAL fallback 与 BUILTIN 路径行为不变。
+- 文档状态与实现状态一致。
+
+## 9. 里程碑验收清单（执行用）
+
+### 9.1 阶段准入检查
+
+- 分支工作区仅包含本需求相关文件。
+- 已确认不修改 Gradle 构建配置。
+- 已确认 `CallMethodInsnGen` 复用接口不变更语义。
+
+### 9.2 阶段准出检查
+
+- 每阶段结束时记录：
+  - 变更文件列表
+  - 执行命令
+  - 通过结果摘要
+  - 未决风险项
+
+### 9.3 最终交付检查
+
+- DoD 全部满足。
+- 回归命令与结果可复现。
+- PR 描述可直接引用本节作为验收依据。
+
+### 9.4 Phase 0 执行记录（2026-03-01）
+
+变更文件：
+
+- `doc/module_impl/load_store_property_inheritance_access_plan.md`
+
+执行结果摘要：
+
+1. 已将 Phase 0 状态更新为 Completed。
+2. 已将阶段总览表加入“状态”列并同步当前状态。
+3. 已补充 Phase 0 完成同步清单与 G0 验收结果。
+4. 已记录 Phase 0 为文档冻结阶段，后续实现从 Phase 1 开始。
