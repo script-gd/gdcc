@@ -3,6 +3,7 @@ package dev.superice.gdcc.backend.c.gen.insn;
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.backend.c.gen.CInsnGen;
 import dev.superice.gdcc.enums.GdInstruction;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -56,17 +57,11 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
 
         var readResolution = resolvePropertyRead(bodyBuilder, objectVar.type(), resultVar.type(), insn.propertyName());
         var propertyType = readResolution.propertyType();
-        var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "LOAD_PROPERTY");
         var target = bodyBuilder.targetOfVar(resultVar);
 
-        switch (genMode) {
-            case OBJECT -> {
-                var objectType = (GdObjectType) objectVar.type();
-                var lookup = readResolution.objectLookup();
-                if (lookup == null) {
-                    throw bodyBuilder.invalidInsn("Missing owner lookup for known object receiver type '" +
-                            objectType.getTypeName() + "' in LOAD_PROPERTY");
-                }
+        if (objectVar.type() instanceof GdObjectType) {
+            var lookup = readResolution.objectLookup();
+            if (lookup != null) {
                 var receiverValue = PropertyAccessResolver.renderOwnerReceiverValue(
                         bodyBuilder,
                         objectVar,
@@ -95,8 +90,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                         bodyBuilder.callAssign(target, getterName, propertyType, List.of(receiverValue));
                     }
                 }
-            }
-            case GENERAL -> {
+            } else {
                 // Pass objectVar directly; renderArgument will auto-convert GDCC ptrs
                 // to Godot raw ptrs via gdcc_object_to_godot_object_ptr(value, Type_object_ptr) since godot_Object_get requires Godot ptrs.
                 var objectValue = bodyBuilder.valueOfVar(objectVar);
@@ -109,13 +103,10 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                 bodyBuilder.callAssign(target, unpackFunc, resultType, List.of(tempVar));
                 bodyBuilder.destroyTempVar(tempVar);
             }
-            case BUILTIN -> {
-                var objectType = objectVar.type();
-                var getterName = "godot_" + objectType.getTypeName() + "_get_" + insn.propertyName();
-                var objectValue = bodyBuilder.valueOfVar(objectVar);
-                bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
-            }
-            default -> throw bodyBuilder.invalidInsn("Unsupported LOAD_PROPERTY generation mode: " + genMode);
+        } else {
+            var getterName = "godot_" + objectVar.type().getTypeName() + "_get_" + insn.propertyName();
+            var objectValue = bodyBuilder.valueOfVar(objectVar);
+            bodyBuilder.callAssign(target, getterName, propertyType, List.of(objectValue));
         }
     }
 
@@ -134,6 +125,11 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             if (lookup == null) {
                 // Unknown object types are read through godot_Object_get and unpacked into the expected result type.
                 return new PropertyReadResolution(resultType, null);
+            }
+            if (lookup.property() instanceof ExtensionGdClass.PropertyInfo engineProperty &&
+                    !engineProperty.isReadable()) {
+                throw bodyBuilder.invalidInsn("Property '" + propertyName + "' in class " +
+                        lookup.ownerClass().getName() + " is not readable");
             }
             var propertyType = lookup.property().getType();
             if (!registry.checkAssignable(propertyType, resultType)) {

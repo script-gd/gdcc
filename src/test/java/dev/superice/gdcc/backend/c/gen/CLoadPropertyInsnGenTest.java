@@ -132,6 +132,41 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
+    @DisplayName("Unreadable engine property should throw")
+    void unreadableEnginePropertyShouldThrow() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", false, true, "")),
+                List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("use_node");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new LoadPropertyInsn("tmp", "name", "node"));
+        entry.instructions().add(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("is not readable"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("Unknown object type should fallback to godot_Object_get")
     void unknownObjectTypeShouldFallbackToGodotObjectGet() {
         var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());

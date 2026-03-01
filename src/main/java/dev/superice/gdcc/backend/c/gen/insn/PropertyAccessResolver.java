@@ -2,14 +2,11 @@ package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
-import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
-import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -20,17 +17,10 @@ import java.util.Objects;
 /// Shared resolver for load/store property codegen.
 ///
 /// Responsibilities:
-/// - Resolve property access generation mode for a receiver variable.
 /// - Resolve GDCC/engine property definitions from class metadata.
 /// - Resolve builtin property metadata from extension API metadata.
 final class PropertyAccessResolver {
     private PropertyAccessResolver() {
-    }
-
-    enum GenMode {
-        OBJECT,
-        GENERAL,
-        BUILTIN
     }
 
     record BuiltinPropertyLookup(@NotNull ExtensionBuiltinClass builtinClass,
@@ -54,31 +44,6 @@ final class PropertyAccessResolver {
             Objects.requireNonNull(property);
             Objects.requireNonNull(ownerDispatchMode);
         }
-    }
-
-    static @NotNull GenMode resolveGenMode(@NotNull CBodyBuilder bodyBuilder,
-                                           @NotNull LirFunctionDef func,
-                                           @NotNull String objectId,
-                                           @NotNull String insnName) {
-        var objectVar = Objects.requireNonNull(func.getVariableById(objectId));
-        if (objectVar.type() instanceof GdObjectType gdObjectType) {
-            if (gdObjectType.checkGdccType(bodyBuilder.classRegistry())) {
-                return GenMode.OBJECT;
-            }
-            if (gdObjectType.checkEngineType(bodyBuilder.classRegistry())) {
-                return GenMode.OBJECT;
-            }
-            return GenMode.GENERAL;
-        }
-        if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
-            throw new IllegalStateException("Invalid object variable type for " + insnName + " instruction");
-        }
-        return GenMode.BUILTIN;
-    }
-
-    @Deprecated()
-    static @Nullable PropertyDef findPropertyDef(@NotNull ClassDef classDef, @NotNull String propertyName) {
-        return findOwnPropertyDef(classDef, propertyName);
     }
 
     static @Nullable ObjectPropertyLookup resolveObjectProperty(@NotNull CBodyBuilder bodyBuilder,
@@ -128,23 +93,61 @@ final class PropertyAccessResolver {
                 String.join(" -> ", hierarchyNames));
     }
 
+    /// Convert resolved property owner metadata to object type used by cast/upcast rendering.
     static @NotNull GdObjectType toOwnerObjectType(@NotNull ObjectPropertyLookup lookup) {
         return new GdObjectType(lookup.ownerClass().getName());
     }
 
+    /// Render receiver value aligned to resolved property owner.
+    ///
+    /// Receiver Value means the final C argument expression passed as
+    /// the "self/this receiver" in generated method/property calls.
+    /// It may be the original variable expression (`$var`) or an upcast
+    /// expression produced by `valueOfCastedVar(...)`.
+    ///
+    /// This wrapper keeps property-path error wording stable while delegating
+    /// actual cast/upcast logic to `renderReceiverValue`.
     static @NotNull CBodyBuilder.ValueRef renderOwnerReceiverValue(@NotNull CBodyBuilder bodyBuilder,
                                                                    @NotNull LirVariable receiverVar,
                                                                    @NotNull ObjectPropertyLookup lookup,
                                                                    @NotNull String insnName) {
         var ownerType = toOwnerObjectType(lookup);
+        return renderReceiverValue(
+                bodyBuilder,
+                receiverVar,
+                ownerType,
+                insnName,
+                "property owner",
+                " for property '" + lookup.property().getName() + "'"
+        );
+    }
+
+    /// Render a receiver value for a specific owner type.
+    ///
+    /// Receiver Value is an argument-shape concern, not a lifecycle ownership
+    /// concern: this helper only decides which expression to pass as receiver.
+    /// Retain/release semantics are handled by later assignment/call paths.
+    ///
+    /// Behavior:
+    /// - Same static type: return `valueOfVar(receiverVar)`.
+    /// - Different object types: enforce assignability, then return `valueOfCastedVar(...)`
+    ///   so GDCC/ENGINE upcast strategy stays centralized in `CBodyBuilder`.
+    /// - Non-assignable receiver/object owner pair: fail-fast with context-rich `invalidInsn`.
+    static @NotNull CBodyBuilder.ValueRef renderReceiverValue(@NotNull CBodyBuilder bodyBuilder,
+                                                              @NotNull LirVariable receiverVar,
+                                                              @NotNull GdType ownerType,
+                                                              @NotNull String insnName,
+                                                              @NotNull String ownerRole,
+                                                              @NotNull String messageTail) {
         if (receiverVar.type() instanceof GdObjectType receiverObjectType &&
-                !ownerType.getTypeName().equals(receiverObjectType.getTypeName())) {
+                ownerType instanceof GdObjectType ownerObjectType &&
+                !ownerObjectType.getTypeName().equals(receiverObjectType.getTypeName())) {
             if (!bodyBuilder.classRegistry().checkAssignable(receiverObjectType, ownerType)) {
                 throw bodyBuilder.invalidInsn("Receiver type '" + receiverObjectType.getTypeName() +
-                        "' is not assignable to property owner type '" + ownerType.getTypeName() +
-                        "' in " + insnName + " for property '" + lookup.property().getName() + "'");
+                        "' is not assignable to " + ownerRole + " type '" + ownerObjectType.getTypeName() +
+                        "' in " + insnName + messageTail);
             }
-            return bodyBuilder.valueOfCastedVar(receiverVar, ownerType);
+            return bodyBuilder.valueOfCastedVar(receiverVar, ownerObjectType);
         }
         return bodyBuilder.valueOfVar(receiverVar);
     }

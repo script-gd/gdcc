@@ -52,13 +52,35 @@
   - Do not mix with parent helper unless the value has already been upcast safely.
 - Any touched legacy path that still depends on the deprecated macro must be migrated in the same change or explicitly tracked as migration debt.
 
-### Stage 4 Alignment (2026-02-27)
+### Receiver Value Terminology
 
-- `CBodyBuilder` 已对齐到专用 helper 转换基线：
-  - GDCC -> Godot 统一生成 `gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`。
-  - `CALL_METHOD` receiver 为 GDCC 且 owner 为 ENGINE 时，先 helper 转换，再执行 engine 指针 cast。
-  - GDCC 子类 -> GDCC 父类上行由 `_super` 链表达式承载，不走裸 C cast。
-- `CallMethodInsnGen`/`CBodyBuilder` 回归测试文本断言已切到 helper 入口，相关链路不再回退到 `godot_object_from_gdcc_object_ptr(...)`。
+- **Receiver Value** means the final C argument expression used as the receiver (`self/this`) when emitting a method call or property getter/setter call.
+- It is not always the same as the original LIR variable:
+  - It can be a direct variable expression (for example `$obj`).
+  - It can be an owner-aligned expression after safe upcast/cast (for example `&($child->_super)` or `(godot_Node*)...`).
+- Receiver Value is an argument-shape concept, not an ownership-lifecycle concept:
+  - Determining Receiver Value only decides *which pointer expression to pass*.
+  - `own/release/destroy` rules are handled by lifecycle/slot-write logic, not by receiver rendering.
+
+Conventions:
+
+- Always resolve owner first, then render Receiver Value against owner static type.
+- For object receiver alignment, backend must use shared helper paths (`renderReceiverValue` / `renderOwnerReceiverValue`) to avoid conversion drift across generators.
+- When receiver type equals owner type, pass `valueOfVar(receiverVar)` directly.
+- When receiver type differs from owner type, verify assignability first (`ClassRegistry#checkAssignable`), then use `valueOfCastedVar(...)`.
+- Fail fast on non-assignable receiver/owner pairs with instruction context included in error text.
+
+Object category rules:
+
+- GDCC -> GDCC owner:
+  - Use safe `_super` chain upcast emitted by `valueOfCastedVar(...)` (no raw C cast fallback).
+- GDCC -> ENGINE owner:
+  - Convert GDCC pointer to Godot pointer using generated helper path first, then cast to owner engine pointer type.
+- ENGINE -> ENGINE owner:
+  - Use owner-type pointer cast emitted by cast helper path.
+- Unknown object (no class metadata):
+  - This is not an owner-aligned receiver path.
+  - Property access falls back to dynamic/general runtime calls (`godot_Object_get` / `godot_Object_set`).
 
 ### Implementing a New Instruction Generator
 

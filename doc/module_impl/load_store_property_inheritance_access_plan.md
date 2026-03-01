@@ -44,7 +44,7 @@
 
 ### 2.1 属性解析仅查当前类，未查继承链
 
-`PropertyAccessResolver.findPropertyDef(...)` 只遍历 `classDef.getProperties()`，不沿 `getSuperName()` 继续查找。
+历史实现中的 `PropertyAccessResolver.findPropertyDef(...)` 只遍历 `classDef.getProperties()`，不沿 `getSuperName()` 继续查找。
 
 直接影响：
 
@@ -127,7 +127,7 @@ static @Nullable ObjectPropertyLookup resolveObjectProperty(
    - 中间父类 metadata 缺失时 fail-fast（仅在 receiver 已知 classDef 的前提下）
 
 保留 `resolveBuiltinProperty(...)` 不变。
-- `findPropertyDef(...)` 在 Phase 1 内收敛为 `private` 或标记 `@Deprecated`，避免后续绕过继承链解析路径。
+- `findPropertyDef(...)` 在 Phase 1 内收敛为 `private` 或直接删除（优先删除），避免后续绕过继承链解析路径。
 
 ### 4.2 LoadPropertyInsnGen：改为基于 owner 解析生成
 
@@ -280,7 +280,7 @@ static @Nullable ObjectPropertyLookup resolveObjectProperty(
 - 缓解：引入 owner class 一致性条件，并覆盖专项回归用例。
 
 1. 风险：旧 `findPropertyDef(...)` 被误用，绕过继承链 owner 解析。
-- 缓解：Phase 1 内将该方法收敛为 `private` 或 `@Deprecated`，并在代码审查中禁止新增调用点。
+- 缓解：Phase 1 内将该方法收敛为 `private` 或直接删除，并在代码审查中禁止新增调用点。
 
 1. 风险：`checkAssignable` 方向被误用，导致 load/store 类型校验逻辑反转。
 - 缓解：在 Phase 2/3 Gate 中显式验收校验方向，并用负向测试覆盖不兼容赋值。
@@ -400,7 +400,7 @@ G0 验收结果：
    - Phase 1 实施前验证当前 `extension_api.json` 的 `classes[].properties` 是扁平化还是仅本类。
    - 无论验证结果如何，最终实现保持向上查找策略，确保对未来 Godot 版本（可能不再记录父类字段）向后兼容。
 4. 旧接口收敛：
-   - `findPropertyDef(...)` 收敛为 `private` 或标记 `@Deprecated`。
+  - `findPropertyDef(...)` 收敛为 `private` 或直接删除。
 5. 保持 builtin 解析接口不变，避免非对象路径受影响。
 
 建议验证命令：
@@ -423,7 +423,7 @@ Gate G1（准出条件）：
   - 属性不存在 fail-fast
   - 继承环 fail-fast
 - 已完成 Godot Extension API 属性模型验证记录，并确认实现保持“向上查找 + 命中即停止”的兼容策略。
-- `findPropertyDef(...)` 已完成收敛（`private` 或 `@Deprecated`）。
+- `findPropertyDef(...)` 已完成收敛（`private` 或删除）。
 
 #### Phase 1 完成同步（2026-03-01）
 
@@ -439,7 +439,7 @@ Gate G1（准出条件）：
      - 继承环检测 fail-fast
      - 中间父类 metadata 缺失 fail-fast
 2. 已完成旧接口收敛：
-   - `findPropertyDef(...)` 已标记 `@Deprecated`，引导迁移到继承链解析入口。
+   - `findPropertyDef(...)` 已删除，避免后续绕过继承链解析入口。
 3. 已新增并通过独立单元测试 `PropertyAccessResolverTest`，覆盖：
    - 命中即停止
    - 隐式字段遮蔽
@@ -455,7 +455,7 @@ G1 验收结果：
 
 - [x] `resolveObjectProperty(...)` 行为满足 Gate 要求。
 - [x] `PropertyAccessResolverTest` targeted 用例通过。
-- [x] `findPropertyDef(...)` 已收敛为过渡接口（`@Deprecated`）。
+- [x] `findPropertyDef(...)` 已完成最终收敛（已删除）。
 - [x] `./gradlew classes --no-daemon --info --console=plain` 通过。
 
 ### 8.4 Phase 2：LOAD_PROPERTY 接入
@@ -747,3 +747,50 @@ G4 验收结果：
 
 1. 组合回归通过，未发现 load/store/call_method 共享路径回归。
 2. 文档状态与阶段总览完成收口，G4 达成。
+
+### 9.8 审阅问题 1.2 / 1.3 收敛记录（2026-03-01）
+
+变更文件：
+
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
+- `doc/module_impl/load_store_property_inheritance_access_plan.md`
+
+执行命令：
+
+```bash
+./gradlew test --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest --tests CallMethodInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+执行结果摘要：
+
+1. 已删除 `PropertyAccessResolver.GenMode` 与 `resolveGenMode(...)`，对象分派改为由 `resolveObjectProperty(...)` 结果驱动。
+2. 已删除 `findPropertyDef(...)`，避免新增调用绕过继承链解析入口。
+3. `LoadPropertyInsnGen` / `StorePropertyInsnGen` 已清理 `GenMode` 相关遗留与“known object + lookup null”防御分支，保留对象 owner 路径、unknown object GENERAL fallback、builtin 路径三类行为。
+4. targeted 测试与 `classes` 编译检查通过。
+
+### 9.9 审阅问题 1.1 / 1.4 收敛记录（2026-03-01）
+
+变更文件：
+
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CLoadPropertyInsnGenTest.java`
+- `doc/module_impl/load_store_property_inheritance_access_plan.md`
+
+执行命令：
+
+```bash
+./gradlew test --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest --tests CallMethodInsnGenTest --no-daemon --info --console=plain
+./gradlew classes --no-daemon --info --console=plain
+```
+
+执行结果摘要：
+
+1. 已在 `LoadPropertyInsnGen.resolvePropertyRead(...)` 对对象路径补齐 ENGINE `isReadable()` 防御校验（`ExtensionGdClass.PropertyInfo`）。
+2. 已补充 `CLoadPropertyInsnGenTest.unreadableEnginePropertyShouldThrow` 负向用例，覆盖 ENGINE 不可读属性 fail-fast。
+3. 已将 `CallMethodInsnGen` 的 receiver 上行渲染切换为复用 `PropertyAccessResolver.renderReceiverValue(...)`，消除与属性路径重复逻辑。
+4. targeted 测试与 `classes` 编译检查通过。

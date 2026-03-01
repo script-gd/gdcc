@@ -10,7 +10,6 @@ import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
-import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
@@ -258,21 +257,6 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                 bodyBuilder.currentInsnIndex());
     }
 
-    private @NotNull CBodyBuilder.ValueRef renderReceiverValue(@NotNull CBodyBuilder bodyBuilder,
-                                                               @NotNull LirVariable receiverVar,
-                                                               @NotNull GdType ownerType) {
-        if (ownerType instanceof GdObjectType ownerObjectType &&
-                receiverVar.type() instanceof GdObjectType receiverObjectType &&
-                !ownerObjectType.getTypeName().equals(receiverObjectType.getTypeName())) {
-            if (!bodyBuilder.classRegistry().checkAssignable(receiverObjectType, ownerObjectType)) {
-                throw bodyBuilder.invalidInsn("Receiver type '" + receiverObjectType.getTypeName() +
-                        "' is not assignable to method owner type '" + ownerObjectType.getTypeName() + "'");
-            }
-            return bodyBuilder.valueOfCastedVar(receiverVar, ownerObjectType);
-        }
-        return bodyBuilder.valueOfVar(receiverVar);
-    }
-
     private @NotNull CompletedCallArgs validateFixedArgsAndCompleteDefaults(@NotNull CBodyBuilder bodyBuilder,
                                                                             @NotNull LirVariable receiverVar,
                                                                             @NotNull MethodCallResolver.ResolvedMethodCall resolved,
@@ -286,7 +270,14 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var fixedArgs = new ArrayList<CBodyBuilder.ValueRef>(fixedCount + (resolved.isStatic() ? 0 : 1));
         if (!resolved.isStatic()) {
-            fixedArgs.add(renderReceiverValue(bodyBuilder, receiverVar, resolved.ownerType()));
+            fixedArgs.add(PropertyAccessResolver.renderReceiverValue(
+                    bodyBuilder,
+                    receiverVar,
+                    resolved.ownerType(),
+                    "CALL_METHOD",
+                    "method owner",
+                    ""
+            ));
         }
         var defaultTemps = new ArrayList<CBodyBuilder.TempVar>(Math.max(0, fixedCount - providedCount));
 
@@ -368,7 +359,14 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var defaultCallArgs = new ArrayList<CBodyBuilder.ValueRef>(1);
         if (!defaultFunction.isStatic()) {
-            defaultCallArgs.add(renderReceiverValue(bodyBuilder, receiverVar, new GdObjectType(resolved.ownerClassName())));
+            defaultCallArgs.add(PropertyAccessResolver.renderReceiverValue(
+                    bodyBuilder,
+                    receiverVar,
+                    new GdObjectType(resolved.ownerClassName()),
+                    "CALL_METHOD",
+                    "method owner",
+                    ""
+            ));
         }
         var defaultCFunctionName = resolved.ownerClassName() + "_" + defaultFunctionName;
         bodyBuilder.callAssign(temp, defaultCFunctionName, param.type(), defaultCallArgs);

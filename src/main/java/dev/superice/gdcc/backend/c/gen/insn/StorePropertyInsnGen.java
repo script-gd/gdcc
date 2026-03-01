@@ -43,15 +43,9 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
 
         // Validate property existence/writability and assignment compatibility first.
         var objectLookup = validatePropertyWrite(bodyBuilder, objectVar.type(), valueVar.type(), insn.propertyName());
-        var genMode = PropertyAccessResolver.resolveGenMode(bodyBuilder, func, insn.objectId(), "STORE_PROPERTY");
 
-        switch (genMode) {
-            case OBJECT -> {
-                var objectType = (GdObjectType) objectVar.type();
-                if (objectLookup == null) {
-                    throw bodyBuilder.invalidInsn("Missing owner lookup for known object receiver type '" +
-                            objectType.getTypeName() + "' in STORE_PROPERTY");
-                }
+        if (objectVar.type() instanceof GdObjectType) {
+            if (objectLookup != null) {
                 var receiverValue = PropertyAccessResolver.renderOwnerReceiverValue(
                         bodyBuilder,
                         objectVar,
@@ -84,14 +78,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                                 List.of(receiverValue, bodyBuilder.valueOfVar(valueVar)));
                     }
                 }
-            }
-            case BUILTIN -> {
-                var objectType = objectVar.type();
-                var setterName = "godot_" + objectType.getTypeName() + "_set_" + insn.propertyName();
-                bodyBuilder.callVoid(setterName,
-                        List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
-            }
-            case GENERAL -> {
+            } else {
                 var packFunc = helper.renderPackFunctionName(valueVar.type());
                 var tempVariant = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT);
                 bodyBuilder.declareTempVar(tempVariant);
@@ -106,7 +93,10 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                 );
                 bodyBuilder.destroyTempVar(tempVariant);
             }
-            default -> throw bodyBuilder.invalidInsn("Unsupported STORE_PROPERTY generation mode: " + genMode);
+        } else {
+            var setterName = "godot_" + objectVar.type().getTypeName() + "_set_" + insn.propertyName();
+            bodyBuilder.callVoid(setterName,
+                    List.of(bodyBuilder.valueOfVar(objectVar), bodyBuilder.valueOfVar(valueVar)));
         }
     }
 
