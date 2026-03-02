@@ -16,6 +16,7 @@ import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -247,15 +248,15 @@ class COperatorInsnGenTest {
     void binaryNonCompareBuiltinEmitsEvaluatorCall() {
         var body = generateBody(
                 evaluatorIntApi(),
-                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
                 List.of(
                         new VariableSpec("left", GdIntType.INT, false),
                         new VariableSpec("right", GdIntType.INT, false),
-                        new VariableSpec("result", GdIntType.INT, false)
+                        new VariableSpec("result", GdBoolType.BOOL, false)
                 )
         );
 
-        assertTrue(body.contains("$result = gdcc_eval_binary_add_int_int_to_int($left, $right);"), body);
+        assertTrue(body.contains("$result = gdcc_eval_binary_in_int_int_to_bool($left, $right);"), body);
     }
 
     @Test
@@ -263,15 +264,15 @@ class COperatorInsnGenTest {
     void binaryMetadataLookupSkipsMalformedEntries() {
         var body = generateBody(
                 malformedEvaluatorIntApi(),
-                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
                 List.of(
                         new VariableSpec("left", GdIntType.INT, false),
                         new VariableSpec("right", GdIntType.INT, false),
-                        new VariableSpec("result", GdIntType.INT, false)
+                        new VariableSpec("result", GdBoolType.BOOL, false)
                 )
         );
 
-        assertTrue(body.contains("$result = gdcc_eval_binary_add_int_int_to_int($left, $right);"), body);
+        assertTrue(body.contains("$result = gdcc_eval_binary_in_int_int_to_bool($left, $right);"), body);
     }
 
     @Test
@@ -281,17 +282,101 @@ class COperatorInsnGenTest {
                 InvalidInsnException.class,
                 () -> generateBody(
                         evaluatorIntApi(),
-                        new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                        new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
                         List.of(
                                 new VariableSpec("left", GdIntType.INT, false),
                                 new VariableSpec("right", GdIntType.INT, false),
-                                new VariableSpec("result", GdBoolType.BOOL, false)
+                                new VariableSpec("result", GdIntType.INT, false)
                         )
                 )
         );
 
         assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(ex.getMessage().contains("Operator result type 'int' is not assignable"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Operator result type 'bool' is not assignable"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("POWER(float,int) should use pow fast path")
+    void powerFloatIntUsesPowFastPath() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.POWER, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdFloatType.FLOAT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdFloatType.FLOAT, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = pow($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("POWER(int,int) should use pow_int fast path")
+    void powerIntIntUsesPowIntFastPath() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.POWER, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = pow_int($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("MODULE(float,float) should hit primitive fast path with fmod")
+    void moduleFloatFloatUsesFmodFastPath() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.MODULE, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdFloatType.FLOAT, false),
+                        new VariableSpec("right", GdFloatType.FLOAT, false),
+                        new VariableSpec("result", GdFloatType.FLOAT, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = fmod($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("primitive fast path should still fail-fast when metadata is missing")
+    void primitiveFastPathFailsWhenMetadataMissing() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        emptyApi(),
+                        new BinaryOpInsn("result", GodotOperator.POWER, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdIntType.INT, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdIntType.INT, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Primitive fast path metadata is missing"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("XOR(int,int) should use logical xor semantics instead of bit xor")
+    void xorIntIntUsesLogicalXorSemantics() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.XOR, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = (($left ? 1 : 0) != ($right ? 1 : 0));"), body);
     }
 
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
@@ -383,7 +468,7 @@ class COperatorInsnGenTest {
                 false,
                 List.of(
                         new ExtensionBuiltinClass.ClassOperator("unary-", "", "int"),
-                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int")
+                        new ExtensionBuiltinClass.ClassOperator("in", "int", "bool")
                 ),
                 List.of(),
                 List.of(),
@@ -410,9 +495,9 @@ class COperatorInsnGenTest {
                 false,
                 List.of(
                         new ExtensionBuiltinClass.ClassOperator("invalid_op", "int", "int"),
-                        new ExtensionBuiltinClass.ClassOperator("+", "", "int"),
-                        new ExtensionBuiltinClass.ClassOperator("+", "int", ""),
-                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int")
+                        new ExtensionBuiltinClass.ClassOperator("in", "", "bool"),
+                        new ExtensionBuiltinClass.ClassOperator("in", "int", ""),
+                        new ExtensionBuiltinClass.ClassOperator("in", "int", "bool")
                 ),
                 List.of(),
                 List.of(),
@@ -427,6 +512,47 @@ class COperatorInsnGenTest {
                 List.of(),
                 List.of(),
                 List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI primitiveFastPathApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("**", "int", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("%", "int", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("xor", "int", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var floatBuiltin = new ExtensionBuiltinClass(
+                "float",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("%", "float", "float"),
+                        new ExtensionBuiltinClass.ClassOperator("**", "int", "float")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin, floatBuiltin),
                 List.of(),
                 List.of(),
                 List.of()

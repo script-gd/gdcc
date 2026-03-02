@@ -29,6 +29,7 @@ public final class OperatorResolver {
     public enum OperatorPath {
         UNIMPLEMENTED,
         BUILTIN_EVALUATOR,
+        PRIMITIVE_FAST_PATH,
         PRIMITIVE_COMPARISON,
         OBJECT_COMPARISON,
         NIL_COMPARISON
@@ -118,6 +119,23 @@ public final class OperatorResolver {
                         "Primitive compare specialization"
                 );
             }
+        }
+
+        if (leftType instanceof GdPrimitiveType leftPrimitiveType &&
+                rightType instanceof GdPrimitiveType rightPrimitiveType &&
+                isPrimitiveFastPathWhitelisted(leftPrimitiveType, op, rightPrimitiveType)) {
+            var metadataReturnType = resolveOperatorReturnType(bodyBuilder, leftType, op, rightType);
+            if (metadataReturnType == null) {
+                return PathDecision.unresolved(
+                        "Primitive fast path metadata is missing for signature (" +
+                                leftType.getTypeName() + ", " + op.name() + ", " + rightType.getTypeName() + ")"
+                );
+            }
+            return new PathDecision(
+                    OperatorPath.PRIMITIVE_FAST_PATH,
+                    metadataReturnType,
+                    "Primitive fast path"
+            );
         }
 
         var semanticResultType = resolveOperatorReturnType(bodyBuilder, leftType, op, rightType);
@@ -397,6 +415,32 @@ public final class OperatorResolver {
         return sanitized;
     }
 
+    private boolean isPrimitiveFastPathWhitelisted(@NotNull GdPrimitiveType leftType,
+                                                   @NotNull GodotOperator op,
+                                                   @NotNull GdPrimitiveType rightType) {
+        var leftKind = primitiveKind(leftType);
+        var rightKind = primitiveKind(rightType);
+        return switch (op) {
+            case ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULE, POWER -> isNumericKind(leftKind) && isNumericKind(rightKind);
+            case SHIFT_LEFT, SHIFT_RIGHT, BIT_AND, BIT_OR, BIT_XOR ->
+                    leftKind == PrimitiveKind.INT && rightKind == PrimitiveKind.INT;
+            case AND, OR, XOR -> true;
+            default -> false;
+        };
+    }
+
+    private @NotNull PrimitiveKind primitiveKind(@NotNull GdPrimitiveType type) {
+        return switch (type) {
+            case GdBoolType _ -> PrimitiveKind.BOOL;
+            case GdIntType _ -> PrimitiveKind.INT;
+            case GdFloatType _ -> PrimitiveKind.FLOAT;
+        };
+    }
+
+    private boolean isNumericKind(@NotNull PrimitiveKind kind) {
+        return kind == PrimitiveKind.INT || kind == PrimitiveKind.FLOAT;
+    }
+
     private boolean isComparisonOperator(@NotNull GodotOperator op) {
         return switch (op) {
             case EQUAL, NOT_EQUAL, LESS, LESS_EQUAL, GREATER, GREATER_EQUAL -> true;
@@ -406,5 +450,11 @@ public final class OperatorResolver {
 
     private boolean isEqualityOperator(@NotNull GodotOperator op) {
         return op == GodotOperator.EQUAL || op == GodotOperator.NOT_EQUAL;
+    }
+
+    private enum PrimitiveKind {
+        BOOL,
+        INT,
+        FLOAT
     }
 }

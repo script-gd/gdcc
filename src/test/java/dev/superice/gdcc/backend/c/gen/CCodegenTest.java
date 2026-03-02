@@ -18,6 +18,7 @@ import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -110,6 +111,7 @@ public class CCodegenTest {
         System.out.println(hCode);
         System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
+        assertTrue(cCode.contains("#include <math.h>"));
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
     }
 
@@ -120,12 +122,12 @@ public class CCodegenTest {
         func.setReturnType(GdVoidType.VOID);
         func.createAndAddVariable("left", GdIntType.INT);
         func.createAndAddVariable("right", GdIntType.INT);
-        func.createAndAddVariable("tmp", GdIntType.INT);
-        func.createAndAddVariable("result", GdIntType.INT);
+        func.createAndAddVariable("tmp", GdBoolType.BOOL);
+        func.createAndAddVariable("result", GdBoolType.BOOL);
 
         var entry = new LirBasicBlock("entry");
-        entry.instructions().add(new BinaryOpInsn("tmp", GodotOperator.ADD, "left", "right"));
-        entry.instructions().add(new UnaryOpInsn("result", GodotOperator.NEGATE, "tmp"));
+        entry.instructions().add(new BinaryOpInsn("tmp", GodotOperator.IN, "left", "right"));
+        entry.instructions().add(new UnaryOpInsn("result", GodotOperator.NOT, "tmp"));
         entry.instructions().add(new ReturnInsn(null));
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
@@ -144,12 +146,12 @@ public class CCodegenTest {
         var cCode = new String(files.getFirst().contentWriter());
         var hCode = new String(files.getLast().contentWriter());
 
-        assertTrue(hCode.contains("static inline godot_int gdcc_eval_binary_add_int_int_to_int("), hCode);
-        assertTrue(hCode.contains("static inline godot_int gdcc_eval_unary_negate_int_to_int("), hCode);
-        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_ADD"), hCode);
-        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_NEGATE"), hCode);
-        assertTrue(cCode.contains("$tmp = gdcc_eval_binary_add_int_int_to_int($left, $right);"), cCode);
-        assertTrue(cCode.contains("$result = gdcc_eval_unary_negate_int_to_int($tmp);"), cCode);
+        assertTrue(hCode.contains("static inline godot_bool gdcc_eval_binary_in_int_int_to_bool("), hCode);
+        assertTrue(hCode.contains("static inline godot_bool gdcc_eval_unary_not_bool_to_bool("), hCode);
+        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_IN"), hCode);
+        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_NOT"), hCode);
+        assertTrue(cCode.contains("$tmp = gdcc_eval_binary_in_int_int_to_bool($left, $right);"), cCode);
+        assertTrue(cCode.contains("$result = gdcc_eval_unary_not_bool_to_bool($tmp);"), cCode);
     }
 
     @Test
@@ -261,8 +263,19 @@ public class CCodegenTest {
                 "int",
                 false,
                 List.of(
-                        new ExtensionBuiltinClass.ClassOperator("unary-", "", "int"),
-                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int")
+                        new ExtensionBuiltinClass.ClassOperator("in", "int", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var boolBuiltin = new ExtensionBuiltinClass(
+                "bool",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("not", "", "bool")
                 ),
                 List.of(),
                 List.of(),
@@ -276,7 +289,7 @@ public class CCodegenTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(intBuiltin),
+                List.of(intBuiltin, boolBuiltin),
                 List.of(),
                 List.of(),
                 List.of()
