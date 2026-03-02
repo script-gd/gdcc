@@ -100,6 +100,10 @@ public final class CGenHelper {
         return argName;
     }
 
+    public @NotNull String renderDefaultValueExprInC(@NotNull GdType type) {
+        return CBodyBuilder.renderDefaultValueExpr(type);
+    }
+
     private void collectClassOperatorEvaluatorHelperSpecs(@NotNull Map<String, OperatorEvaluatorHelperSpec> specsByName,
                                                           @NotNull LirClassDef classDef) {
         for (var func : classDef.getFunctions()) {
@@ -161,9 +165,11 @@ public final class CGenHelper {
                 decision.semanticResultType() == null) {
             return;
         }
-        var semanticReturnType = decision.semanticResultType();
         var functionName = operatorResolver.renderBinaryEvaluatorHelperName(
-                instruction.op(), leftVar.type(), rightVar.type(), semanticReturnType
+                instruction.op(),
+                leftVar.type(),
+                rightVar.type(),
+                decision.semanticResultType()
         );
         specsByName.putIfAbsent(functionName, new OperatorEvaluatorHelperSpec(
                 functionName,
@@ -171,7 +177,7 @@ public final class CGenHelper {
                 operatorResolver.resolveVariantOperatorEnumLiteral(instruction.op()),
                 leftVar.type(),
                 rightVar.type(),
-                semanticReturnType,
+                decision.semanticResultType(),
                 operatorResolver.resolveVariantTypeEnumLiteral(bodyBuilder, leftVar.type()),
                 operatorResolver.resolveVariantTypeEnumLiteral(bodyBuilder, rightVar.type())
         ));
@@ -484,7 +490,7 @@ public final class CGenHelper {
     /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
     ///
     /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
-    ///                                                                         but the underlying proxy Godot object ptr.
+    ///                                                                                           but the underlying proxy Godot object ptr.
     public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
                                                           @NotNull String targetVarName,
                                                           @NotNull GdType sourceType,

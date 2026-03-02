@@ -127,6 +127,19 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Declares a temp variable without initializer and marks it as uninitialized.
+    /// This is required for APIs that write into out-parameters (for example `godot_variant_evaluate`).
+    public @NotNull CBodyBuilder declareUninitializedTempVar(@NotNull TempVar temp) {
+        if (temp.hasInitializer()) {
+            throw new IllegalArgumentException(
+                    "declareUninitializedTempVar requires temp without initializer: " + temp.name()
+            );
+        }
+        out.append(helper.renderGdTypeInC(temp.type())).append(" ").append(temp.name()).append(";\n");
+        temp.setInitialized(false);
+        return this;
+    }
+
     public @NotNull CBodyBuilder destroyTempVar(@NotNull TempVar temp) {
         if (!temp.initialized()) {
             return this;
@@ -717,6 +730,26 @@ public final class CBodyBuilder {
     @NotNull
     public static String renderStaticStringNameLiteral(@NotNull String value) {
         return "GD_STATIC_SN(u8\"" + escapeStringLiteral(value) + "\")";
+    }
+
+    /// Renders the C expression of one type's zero/default return value.
+    /// This is used by hard-fail runtime branches that must return immediately.
+    @NotNull
+    public static String renderDefaultValueExpr(@NotNull GdType type) {
+        return switch (type) {
+            case GdVoidType _ -> "";
+            case GdBoolType _ -> "false";
+            case GdIntType _ -> "0";
+            case GdFloatType _ -> "0.0";
+            case GdObjectType _ -> "NULL";
+            case GdNilType _, GdVariantType _ -> "godot_new_Variant_nil()";
+            case GdContainerType containerType -> switch (containerType) {
+                case GdArrayType _ -> "godot_new_Array()";
+                case GdDictionaryType _ -> "godot_new_Dictionary()";
+                case GdPackedArrayType packedArrayType -> "godot_new_" + packedArrayType.getTypeName() + "()";
+            };
+            default -> "godot_new_" + type.getTypeName() + "()";
+        };
     }
 
     private @NotNull RenderResult renderVarargArgv(@NotNull List<ValueRef> varargs) {

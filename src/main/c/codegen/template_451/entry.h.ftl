@@ -101,6 +101,10 @@ static inline ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} ${
             ${spec.leftVariantTypeEnumLiteral},
             <#if spec.unary>GDEXTENSION_VARIANT_TYPE_NIL<#else>${spec.rightVariantTypeEnumLiteral}</#if>
         );
+        if (evaluator == NULL) {
+            GDCC_PRINT_RUNTIME_ERROR("operator evaluator is unavailable: ${spec.functionName}", __func__, __FILE__, __LINE__);
+            return ${helper.renderDefaultValueExprInC(spec.returnType)};
+        }
     }
     ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} result;
     evaluator(

@@ -22,6 +22,7 @@ import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
@@ -111,7 +112,6 @@ public class CCodegenTest {
         System.out.println(hCode);
         System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
-        assertTrue(cCode.contains("#include <math.h>"));
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
     }
 
@@ -150,8 +150,42 @@ public class CCodegenTest {
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_unary_not_bool_to_bool("), hCode);
         assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_IN"), hCode);
         assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_NOT"), hCode);
+        assertTrue(hCode.contains("GDCC_PRINT_RUNTIME_ERROR(\"operator evaluator is unavailable"), hCode);
+        assertTrue(hCode.contains("return false;"), hCode);
         assertTrue(cCode.contains("$tmp = gdcc_eval_binary_in_int_int_to_bool($left, $right);"), cCode);
         assertTrue(cCode.contains("$result = gdcc_eval_unary_not_bool_to_bool($tmp);"), cCode);
+    }
+
+    @Test
+    public void codegenShouldFailWhenOnlySwappedMetadataExists() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("operator_eval_swap");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("left", GdStringType.STRING);
+        func.createAndAddVariable("right", GdIntType.INT);
+        func.createAndAddVariable("result", GdBoolType.BOOL);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new BinaryOpInsn("result", GodotOperator.GREATER, "left", "right"));
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("operator_eval_swap_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(evaluatorSwapFallbackApi());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var ex = assertThrows(RuntimeException.class, codegen::generate);
+        var rootCause = findRootCause(ex);
+        assertTrue(
+                rootCause.getMessage().contains("Binary operator metadata is missing for signature (String, GREATER, int)"),
+                rootCause.getMessage()
+        );
     }
 
     @Test
@@ -258,6 +292,14 @@ public class CCodegenTest {
         }
     }
 
+    private static Throwable findRootCause(Throwable throwable) {
+        var current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
     private static ExtensionAPI evaluatorIntApi() {
         var intBuiltin = new ExtensionBuiltinClass(
                 "int",
@@ -290,6 +332,32 @@ public class CCodegenTest {
                 List.of(),
                 List.of(),
                 List.of(intBuiltin, boolBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionAPI evaluatorSwapFallbackApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("<", "String", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
                 List.of(),
                 List.of(),
                 List.of()

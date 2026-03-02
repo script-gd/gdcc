@@ -142,6 +142,26 @@ public class CBodyBuilderPhaseBTest {
     }
 
     @Test
+    void testDeclareUninitializedTempVarLifecycle() {
+        var temp = builder.newTempVariable("variant", GdVariantType.VARIANT);
+
+        builder.declareUninitializedTempVar(temp);
+        builder.callAssign(temp, "some_func", GdVariantType.VARIANT, List.of());
+        builder.destroyTempVar(temp);
+
+        var expected = "godot_Variant " + temp.name() + ";\n" +
+                temp.name() + " = some_func();\n" +
+                "godot_Variant_destroy(&" + temp.name() + ");\n";
+        assertEquals(expected, builder.build());
+    }
+
+    @Test
+    void testDeclareUninitializedTempVarRejectsInitializedTemp() {
+        var temp = builder.newTempVariable("variant", GdVariantType.VARIANT, "godot_new_Variant_nil()");
+        assertThrows(IllegalArgumentException.class, () -> builder.declareUninitializedTempVar(temp));
+    }
+
+    @Test
     void testTempVarFirstCallAssignShouldSkipOldDestroy() {
         var temp = builder.newTempVariable("variant", GdVariantType.VARIANT);
 

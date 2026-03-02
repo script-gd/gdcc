@@ -20,6 +20,12 @@
 #endif
 #endif
 
+#define GDCC_PRINT_RUNTIME_ERROR(desc, function_name, file_name, line_number)                \
+do {                                                                                          \
+    const char* __gdcc_src_file = (file_name) ? (file_name) : "<unknown>";                   \
+    godot_print_error((desc), (function_name), __gdcc_src_file, (line_number), true);        \
+} while (0)
+
 /// Object Property Getters
 
 #define GDCC_DEFINE_OBJECT_GETTER(ReturnType, ReturnTypeName)                                 \

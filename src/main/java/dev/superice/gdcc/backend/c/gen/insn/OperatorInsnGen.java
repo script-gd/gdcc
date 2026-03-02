@@ -14,7 +14,10 @@ import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -95,7 +98,9 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn(
                     "Resolved operator path '" + decision.path() + "' is missing semantic result type");
         }
-        validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
+        if (decision.path() != OperatorResolver.OperatorPath.VARIANT_EVALUATE) {
+            validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
+        }
 
         switch (decision.path()) {
             case PRIMITIVE_FAST_PATH ->
@@ -104,6 +109,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                     emitPrimitiveComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
             case OBJECT_COMPARISON -> emitObjectComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
             case NIL_COMPARISON -> emitNilComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
+            case VARIANT_EVALUATE ->
+                    emitBinaryVariantEvaluate(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
             case BUILTIN_EVALUATOR -> emitBinaryBuiltinEvaluator(
                     bodyBuilder,
                     resultVar,
@@ -193,7 +200,10 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                             @NotNull LirVariable rightVar,
                                             @NotNull GdType semanticResultType) {
         var helperFunctionName = resolver.renderBinaryEvaluatorHelperName(
-                op, leftVar.type(), rightVar.type(), semanticResultType
+                op,
+                leftVar.type(),
+                rightVar.type(),
+                semanticResultType
         );
         bodyBuilder.callAssign(
                 bodyBuilder.targetOfVar(resultVar),
@@ -201,6 +211,98 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                 semanticResultType,
                 List.of(bodyBuilder.valueOfVar(leftVar), bodyBuilder.valueOfVar(rightVar))
         );
+    }
+
+    private void emitBinaryVariantEvaluate(@NotNull CBodyBuilder bodyBuilder,
+                                           @NotNull LirVariable resultVar,
+                                           @NotNull GodotOperator op,
+                                           @NotNull LirVariable leftVar,
+                                           @NotNull LirVariable rightVar) {
+        var leftOperand = materializeVariantOperand(bodyBuilder, leftVar, "left");
+        var rightOperand = materializeVariantOperand(bodyBuilder, rightVar, "right");
+
+        var resultVariant = bodyBuilder.newTempVariable("op_eval_result", GdVariantType.VARIANT);
+        bodyBuilder.declareUninitializedTempVar(resultVariant);
+        var validFlag = bodyBuilder.newTempVariable("op_eval_valid", GdBoolType.BOOL, "false");
+        bodyBuilder.declareTempVar(validFlag);
+        bodyBuilder.appendLine(
+                "godot_variant_evaluate(" +
+                        resolver.resolveVariantOperatorEnumLiteral(op) +
+                        ", &" + leftOperand.variantValue().generateCode() +
+                        ", &" + rightOperand.variantValue().generateCode() +
+                        ", &" + resultVariant.name() +
+                        ", &" + validFlag.name() +
+                        ");"
+        );
+        bodyBuilder.appendLine("if (!" + validFlag.name() + ") {");
+        bodyBuilder.appendLine(
+                "GDCC_PRINT_RUNTIME_ERROR(\"godot_variant_evaluate failed for operator '" + op.name() +
+                        "'\", __func__, __FILE__, __LINE__);"
+        );
+        emitVariantEvaluateFailureReturn(bodyBuilder, resultVariant, leftOperand, rightOperand);
+        bodyBuilder.appendLine("}");
+        resultVariant.setInitialized(true);
+
+        if (resultVar.type() instanceof GdVariantType) {
+            bodyBuilder.assignVar(bodyBuilder.targetOfVar(resultVar), resultVariant);
+        } else {
+            var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
+            bodyBuilder.callAssign(
+                    bodyBuilder.targetOfVar(resultVar),
+                    unpackFunctionName,
+                    resultVar.type(),
+                    List.of(resultVariant)
+            );
+        }
+
+        bodyBuilder.destroyTempVar(resultVariant);
+        if (rightOperand.tempVar() != null) {
+            bodyBuilder.destroyTempVar(rightOperand.tempVar());
+        }
+        if (leftOperand.tempVar() != null) {
+            bodyBuilder.destroyTempVar(leftOperand.tempVar());
+        }
+    }
+
+    private @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
+                                                              @NotNull LirVariable operandVar,
+                                                              @NotNull String role) {
+        if (operandVar.type() instanceof GdVariantType) {
+            return new VariantOperand(bodyBuilder.valueOfVar(operandVar), null);
+        }
+
+        var tempVariant = bodyBuilder.newTempVariable("op_" + role + "_variant", GdVariantType.VARIANT);
+        bodyBuilder.declareTempVar(tempVariant);
+        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(operandVar.type());
+        bodyBuilder.callAssign(
+                tempVariant,
+                packFunctionName,
+                GdVariantType.VARIANT,
+                List.of(bodyBuilder.valueOfVar(operandVar))
+        );
+        return new VariantOperand(tempVariant, tempVariant);
+    }
+
+    private void emitVariantEvaluateFailureReturn(@NotNull CBodyBuilder bodyBuilder,
+                                                  @NotNull CBodyBuilder.TempVar resultVariant,
+                                                  @NotNull VariantOperand leftOperand,
+                                                  @NotNull VariantOperand rightOperand) {
+        bodyBuilder.assignExpr(resultVariant, "godot_new_Variant_nil()", GdVariantType.VARIANT);
+        bodyBuilder.destroyTempVar(resultVariant);
+        if (rightOperand.tempVar() != null) {
+            bodyBuilder.destroyTempVar(rightOperand.tempVar());
+        }
+        if (leftOperand.tempVar() != null) {
+            bodyBuilder.destroyTempVar(leftOperand.tempVar());
+        }
+
+        var returnType = bodyBuilder.func().getReturnType();
+        if (returnType instanceof GdVoidType) {
+            bodyBuilder.returnVoid();
+            return;
+        }
+        var defaultExpr = CBodyBuilder.renderDefaultValueExpr(returnType);
+        bodyBuilder.returnValue(bodyBuilder.valueOfExpr(defaultExpr, returnType));
     }
 
     private void emitPrimitiveComparison(@NotNull CBodyBuilder bodyBuilder,
@@ -333,5 +435,12 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn("Operator " + role + " operand variable ID '" + variableId + "' not found in function");
         }
         return variable;
+    }
+
+    private record VariantOperand(@NotNull CBodyBuilder.ValueRef variantValue,
+                                  @Nullable CBodyBuilder.TempVar tempVar) {
+        private VariantOperand {
+            Objects.requireNonNull(variantValue);
+        }
     }
 }

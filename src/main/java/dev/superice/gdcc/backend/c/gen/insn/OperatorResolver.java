@@ -29,6 +29,7 @@ public final class OperatorResolver {
     public enum OperatorPath {
         UNIMPLEMENTED,
         BUILTIN_EVALUATOR,
+        VARIANT_EVALUATE,
         PRIMITIVE_FAST_PATH,
         PRIMITIVE_COMPARISON,
         OBJECT_COMPARISON,
@@ -81,6 +82,14 @@ public final class OperatorResolver {
         Objects.requireNonNull(op);
         Objects.requireNonNull(leftType);
         Objects.requireNonNull(rightType);
+
+        if (isVariantOperand(leftType, rightType)) {
+            return new PathDecision(
+                    OperatorPath.VARIANT_EVALUATE,
+                    GdVariantType.VARIANT,
+                    "Variant dynamic evaluate path"
+            );
+        }
 
         if (isComparisonOperator(op)) {
             if (leftType instanceof GdNilType || rightType instanceof GdNilType) {
@@ -413,6 +422,10 @@ public final class OperatorResolver {
             return "unknown";
         }
         return sanitized;
+    }
+
+    private boolean isVariantOperand(@NotNull GdType leftType, @NotNull GdType rightType) {
+        return leftType instanceof GdVariantType || rightType instanceof GdVariantType;
     }
 
     private boolean isPrimitiveFastPathWhitelisted(@NotNull GdPrimitiveType leftType,

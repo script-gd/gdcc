@@ -668,13 +668,13 @@ helper 内部：
 
 实施项：
 
-1. 定义注册表结构：`originalOp`、`swappedOp`、`swappable`。
-2. 实现回退流程：
+1. [x] 定义注册表结构：`originalOp`、`swappedOp`、`swappable`。
+2. [x] 实现回退流程：
    - 先查 `A op B`
    - 再查 `B swappedOp A`
-3. 非注册运算保持原顺序，不允许隐式交换。
-4. 为 `IN` 增加硬约束：仅原顺序解析，不回退。
-5. 补齐错误分支：双向都不命中时 fail-fast。
+3. [x] 非注册运算保持原顺序，不允许隐式交换。
+4. [x] 为 `IN` 增加硬约束：仅原顺序解析，不回退。
+5. [x] 补齐错误分支：双向都不命中时 fail-fast。
 
 涉及文件：
 
@@ -708,22 +708,25 @@ helper 内部：
 
 实施项：
 
-1. 实现 Variant 混合路径优先级：
-   - 优先 metadata 可用的 operator 函数指针路径
-   - 不可用时回退 `godot_variant_evaluate`
-2. 在 `CBodyBuilder` 新增未初始化变量声明方法（例如 `declareUninitializedTempVar`）。
-3. 对 `variant_evaluate` 实现固定流程：
+1. [x] 实现 Variant 混合路径策略（按当前收敛语义）：
+   - 只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate` 动态派发
+   - 不再走 operator 函数指针优先路径
+2. [x] 在 `CBodyBuilder` 新增未初始化变量声明方法（`declareUninitializedTempVar`）。
+   - `2026-03-02`：`emitBinaryVariantEvaluate` 中的 `op_eval_result` 已改为未初始化声明，专用于 out-parameter 写入。
+3. [x] 对 `variant_evaluate` 实现固定流程：
    - 写入未初始化临时槽
    - `assignVar/callAssign` 回写目标
    - 必要时执行 `pack/unpack`
-4. 补齐运行时错误风格：`valid == false` 与 `evaluator == NULL` 的统一 hard-fail。
+4. [x] 补齐运行时错误风格：`valid == false` 与 `evaluator == NULL` 的统一 hard-fail。
+   - `2026-03-02`：`emitBinaryVariantEvaluate` 在 `op_eval_valid == false` 时通过 `GDCC_PRINT_RUNTIME_ERROR` 输出错误，并返回当前函数返回类型的默认值。
+   - `2026-03-02`：operator evaluator helper 在 `evaluator == NULL` 时通过同一宏报错并返回类型默认值。
 
 涉及文件：
 
 1. `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
 2. `src/main/java/dev/superice/gdcc/backend/c/gen/insn/OperatorInsnGen.java`
 3. `src/main/java/dev/superice/gdcc/backend/c/gen/insn/OperatorResolver.java`
-4. `src/main/c/codegen/template_451/entry.c.ftl`
+4. `src/main/c/codegen/template_451/entry.h.ftl`
 5. `src/test/java/dev/superice/gdcc/backend/c/gen/COperatorInsnGenTest.java`
 
 验证命令：

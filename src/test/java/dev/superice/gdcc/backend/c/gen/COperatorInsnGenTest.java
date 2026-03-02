@@ -20,7 +20,9 @@ import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
@@ -30,6 +32,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -296,6 +299,146 @@ class COperatorInsnGenTest {
     }
 
     @Test
+    @DisplayName("operators should fail-fast when original-order metadata is missing")
+    void missingOriginalMetadataFailsWithoutSwapFallback() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        dualFallbackApi(),
+                        new BinaryOpInsn("result", GodotOperator.GREATER, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdStringType.STRING, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdBoolType.BOOL, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Binary operator metadata is missing for signature (String, GREATER, int)"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("non-commutative operators should fail-fast without swap fallback")
+    void nonRegisteredOperatorDoesNotSwapFallback() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        nonSwappableFallbackCandidateApi(),
+                        new BinaryOpInsn("result", GodotOperator.SUBTRACT, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdStringType.STRING, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdIntType.INT, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Binary operator metadata is missing for signature (String, SUBTRACT, int)"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("IN should fail-fast when original-order metadata is missing")
+    void inOperatorShouldNotUseSwapFallback() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        inFallbackCandidateApi(),
+                        new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdStringType.STRING, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdBoolType.BOOL, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Binary operator metadata is missing for signature (String, IN, int)"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("comparison operators should fail-fast when original-order metadata is missing")
+    void registeredFallbackOperatorFailsWhenBothDirectionsMiss() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        emptyApi(),
+                        new BinaryOpInsn("result", GodotOperator.GREATER, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdStringType.STRING, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdBoolType.BOOL, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Binary operator metadata is missing for signature (String, GREATER, int)"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("binary op should use variant_evaluate when any operand is Variant")
+    void variantOperandForcesVariantEvaluatePath() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_ADD"), body);
+        assertTrue(body.contains("&$left"), body);
+        assertTrue(body.contains("godot_new_Variant_with_int($right)"), body);
+        assertTrue(body.matches("(?s).*godot_Variant __gdcc_tmp_op_eval_result_\\d+;.*"), body);
+        assertFalse(body.matches("(?s).*godot_Variant __gdcc_tmp_op_eval_result_\\d+\\s*=.*"), body);
+        assertTrue(body.contains("GDCC_PRINT_RUNTIME_ERROR(\"godot_variant_evaluate failed for operator 'ADD'\""), body);
+        assertTrue(body.contains("if (!__gdcc_tmp_op_eval_valid_"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertFalse(body.contains("gdcc_eval_binary_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_evaluate path should unpack to non-Variant result type")
+    void variantEvaluatePathUnpacksToNonVariantResult() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_IN"), body);
+        assertTrue(body.contains("$result = godot_new_bool_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_evaluate failure should return function default value for non-void function")
+    void variantEvaluateFailureReturnsFunctionDefaultValue() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("GDCC_PRINT_RUNTIME_ERROR(\"godot_variant_evaluate failed for operator 'ADD'\""), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+    }
+
+    @Test
     @DisplayName("POWER(float,int) should use pow fast path")
     void powerFloatIntUsesPowFastPath() {
         var body = generateBody(
@@ -382,10 +525,17 @@ class COperatorInsnGenTest {
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
                                          @NotNull LirInstruction instruction,
                                          @NotNull List<VariableSpec> variableSpecs) {
+        return generateBody(api, instruction, variableSpecs, GdVoidType.VOID);
+    }
+
+    private @NotNull String generateBody(@NotNull ExtensionAPI api,
+                                         @NotNull LirInstruction instruction,
+                                         @NotNull List<VariableSpec> variableSpecs,
+                                         @NotNull GdType returnType) {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false,
                 Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("operator_test");
-        func.setReturnType(GdVoidType.VOID);
+        func.setReturnType(returnType);
         for (var variableSpec : variableSpecs) {
             if (variableSpec.ref()) {
                 func.createAndAddRefVariable(variableSpec.id(), variableSpec.type());
@@ -553,6 +703,84 @@ class COperatorInsnGenTest {
                 List.of(),
                 List.of(),
                 List.of(intBuiltin, floatBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI dualFallbackApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("<", "String", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI nonSwappableFallbackCandidateApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("-", "String", "int")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI inFallbackCandidateApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("in", "String", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
                 List.of(),
                 List.of(),
                 List.of()
