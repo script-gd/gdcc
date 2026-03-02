@@ -397,6 +397,11 @@ class COperatorInsnGenTest {
         assertTrue(body.contains("godot_new_Variant_with_int($right)"), body);
         assertTrue(body.matches("(?s).*godot_Variant __gdcc_tmp_op_eval_result_\\d+;.*"), body);
         assertFalse(body.matches("(?s).*godot_Variant __gdcc_tmp_op_eval_result_\\d+\\s*=.*"), body);
+        assertTrue(body.contains("$result = godot_new_Variant_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+        assertFalse(
+                body.matches("(?s).*godot_Variant __gdcc_tmp_variant_\\d+ = godot_new_Variant_with_Variant\\(&__gdcc_tmp_op_eval_result_\\d+\\);.*"),
+                body
+        );
         assertTrue(body.contains("GDCC_PRINT_RUNTIME_ERROR(\"godot_variant_evaluate failed for operator 'ADD'\""), body);
         assertTrue(body.contains("if (!__gdcc_tmp_op_eval_valid_"), body);
         assertTrue(body.contains("goto __finally__;"), body);
@@ -404,20 +409,23 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("variant_evaluate path should unpack to non-Variant result type")
-    void variantEvaluatePathUnpacksToNonVariantResult() {
-        var body = generateBody(
-                emptyApi(),
-                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
-                List.of(
-                        new VariableSpec("left", GdVariantType.VARIANT, false),
-                        new VariableSpec("right", GdIntType.INT, false),
-                        new VariableSpec("result", GdBoolType.BOOL, false)
+    @DisplayName("variant_evaluate path should fail-fast when result type is non-Variant")
+    void variantEvaluatePathFailsWhenResultTypeIsNonVariant() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        emptyApi(),
+                        new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdVariantType.VARIANT, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdBoolType.BOOL, false)
+                        )
                 )
         );
 
-        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_IN"), body);
-        assertTrue(body.contains("$result = godot_new_bool_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Operator result type 'Variant' is not assignable"), ex.getMessage());
     }
 
     @Test
@@ -429,7 +437,7 @@ class COperatorInsnGenTest {
                 List.of(
                         new VariableSpec("left", GdVariantType.VARIANT, false),
                         new VariableSpec("right", GdIntType.INT, false),
-                        new VariableSpec("result", GdBoolType.BOOL, false)
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
                 )
         );
 
@@ -485,6 +493,8 @@ class COperatorInsnGenTest {
                 )
         );
 
+        assertTrue(body.contains("if (false) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'POWER': no guard violation"), body);
         assertTrue(body.contains("$result = pow_int($left, $right);"), body);
     }
 
@@ -501,7 +511,114 @@ class COperatorInsnGenTest {
                 )
         );
 
+        assertTrue(body.contains("if (gdcc_float_division_by_zero($right)) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'MODULE': floating modulo by zero"), body);
         assertTrue(body.contains("$result = fmod($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("ADD(int,int) fast path should emit no-op guard without overflow check")
+    void addIntIntFastPathEmitsNoopGuardWithoutOverflowCheck() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("if (false) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'ADD': no guard violation"), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertTrue(body.contains("$result = ($left + $right);"), body);
+    }
+
+    @Test
+    @DisplayName("DIVIDE(int,int) fast path should emit zero-divisor guard and return function default value")
+    void divideIntIntFastPathEmitsZeroDivisorGuard() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.DIVIDE, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("if (gdcc_int_division_by_zero($right)) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'DIVIDE': integer division by zero"), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertTrue(body.contains("$result = ($left / $right);"), body);
+    }
+
+    @Test
+    @DisplayName("MODULE(int,int) fast path should emit zero-divisor guard and return function default value")
+    void moduleIntIntFastPathEmitsZeroDivisorGuard() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.MODULE, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("if (gdcc_int_division_by_zero($right)) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'MODULE': integer modulo by zero"), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertTrue(body.contains("$result = ($left % $right);"), body);
+    }
+
+    @Test
+    @DisplayName("SHIFT_LEFT(int,int) fast path should emit invalid-shift guard and return function default value")
+    void shiftLeftFastPathEmitsInvalidShiftGuard() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.SHIFT_LEFT, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("if (gdcc_int_shift_left_invalid($left, $right)) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'SHIFT_LEFT': invalid shift amount or negative left operand"), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertTrue(body.contains("$result = ($left << $right);"), body);
+    }
+
+    @Test
+    @DisplayName("SHIFT_RIGHT(int,int) fast path should emit invalid-shift guard and return function default value")
+    void shiftRightFastPathEmitsInvalidShiftGuard() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.SHIFT_RIGHT, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("if (gdcc_int_shift_right_invalid($right)) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'SHIFT_RIGHT': invalid shift amount"), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertTrue(body.contains("$result = ($left >> $right);"), body);
     }
 
     @Test
@@ -537,7 +654,30 @@ class COperatorInsnGenTest {
                 )
         );
 
+        assertTrue(body.contains("if (false) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'XOR': no guard violation"), body);
         assertTrue(body.contains("$result = (($left ? 1 : 0) != ($right ? 1 : 0));"), body);
+    }
+
+    @Test
+    @DisplayName("DIVIDE(float,float) fast path should emit float zero-divisor guard")
+    void divideFloatFloatFastPathEmitsZeroDivisorGuard() {
+        var body = generateBody(
+                primitiveFastPathApi(),
+                new BinaryOpInsn("result", GodotOperator.DIVIDE, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdFloatType.FLOAT, false),
+                        new VariableSpec("right", GdFloatType.FLOAT, false),
+                        new VariableSpec("result", GdFloatType.FLOAT, false)
+                ),
+                GdBoolType.BOOL
+        );
+
+        assertTrue(body.contains("if (gdcc_float_division_by_zero($right)) {"), body);
+        assertTrue(body.contains("Primitive fast path guard failed for operator 'DIVIDE': floating division by zero"), body);
+        assertTrue(body.contains("_return_val = false;"), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+        assertTrue(body.contains("$result = ($left / $right);"), body);
     }
 
     @Test
@@ -710,8 +850,12 @@ class COperatorInsnGenTest {
                 "int",
                 false,
                 List.of(
+                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("/", "int", "int"),
                         new ExtensionBuiltinClass.ClassOperator("**", "int", "int"),
                         new ExtensionBuiltinClass.ClassOperator("%", "int", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("<<", "int", "int"),
+                        new ExtensionBuiltinClass.ClassOperator(">>", "int", "int"),
                         new ExtensionBuiltinClass.ClassOperator("xor", "int", "bool")
                 ),
                 List.of(),
@@ -724,6 +868,7 @@ class COperatorInsnGenTest {
                 "float",
                 false,
                 List.of(
+                        new ExtensionBuiltinClass.ClassOperator("/", "float", "float"),
                         new ExtensionBuiltinClass.ClassOperator("%", "float", "float"),
                         new ExtensionBuiltinClass.ClassOperator("**", "int", "float")
                 ),

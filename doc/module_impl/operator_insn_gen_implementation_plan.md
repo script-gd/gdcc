@@ -6,7 +6,25 @@
 - 更新时间：`2026-03-02`
 - 适用范围：`backend.c` 中 `UNARY_OP`、`BINARY_OP` 的 C 代码生成与校验
 - 本文目标：给出可直接落地的工程计划，不在本轮文档内提交实现代码
-- 收敛说明：`2026-03-02` 起以第 11、12 节为当前实现语义基线（交换/对偶回退与 Variant ptr-evaluator 优先策略已 deferred）。
+- 收敛说明：`2026-03-02` 起以“第 0 节语义基线”为唯一事实源；与基线冲突的历史描述均视为失效。
+
+---
+
+## 0. 当前语义基线（2026-03-02）
+
+1. `swap/dual` 回退当前 **暂不支持**（`unary_op` 与 `binary_op` 均不支持）。
+2. `binary_op` 的 metadata 仅按原顺序 `(leftType, op, rightType)` 匹配；不做隐式交换，不做对偶操作符替换。
+3. “Variant 统一 evaluate”当前仅覆盖 `binary_op`：
+   - 当左右任一操作数为 `Variant` 时，统一走 `godot_variant_evaluate`。
+   - 不再尝试 ptr-evaluator 优先路径。
+4. `unary_op` 当前 **不** 走 `godot_variant_evaluate`，仍走 metadata + builtin evaluator 路径。
+5. `IN` 仅允许原顺序解析（`left IN right`），不支持任何交换/对偶补救。
+6. `variant_evaluate` 路径启用编译期结果类型校验：语义结果类型固定为 `Variant`，`result` 非 `Variant` 时直接 fail-fast。
+7. `Variant -> Variant` 回写必须走构造拷贝（`godot_new_Variant_with_Variant` + `callAssign`），禁止“浅拷贝赋值 + 临时变量销毁”模式。
+8. primitive 快路径当前统一发射 guard，策略为：
+   - `ADD/SUBTRACT/MULTIPLY` 不做整型溢出 guard（仅保留 NOOP guard 占位）。
+   - `DIVIDE/MODULE`：整型仅检查除数为 `0`；浮点同样生成除数为 `0.0` guard。
+   - `SHIFT_LEFT/SHIFT_RIGHT`：检查移位量非法；`SHIFT_LEFT` 额外拒绝负左操作数（避免 C UB）。
 
 ---
 
@@ -26,11 +44,11 @@
    - 对可静态判定的 primitive 快路径直接生成 C 表达式。
    - `POWER` 在快路径中分流为：含浮点使用 `pow`，纯整型使用 `pow_int`。
    - 非快路径 builtin 走 operator evaluator（`godot_variant_get_ptr_operator_evaluator`）。
-   - Variant 参与运算时优先尝试 metadata 支持的 operator 函数指针路径，不可用再回退 `godot_variant_evaluate`。
+   - `binary_op` 中只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate` 动态派发。
+   - `unary_op` 维持 metadata + builtin evaluator，不走 `godot_variant_evaluate`。
    - 比较运算仅对基本类型、`Object`、`Nil` 做特化。
-3. 增加“交换/对偶回退注册表”：支持交换顺序时同步变换为对偶操作符。
-4. 在 `CBodyBuilder` 增加“声明未初始化变量”方法，保障 `Variant evaluate` 返回槽位语义。
-5. 保持全路径 fail-fast：不支持的运算/类型组合抛 `InvalidInsnException`。
+3. 在 `CBodyBuilder` 增加“声明未初始化变量”方法，保障 `Variant evaluate` 返回槽位语义。
+4. 保持全路径 fail-fast：不支持的运算/类型组合抛 `InvalidInsnException`。
 
 ---
 
@@ -84,20 +102,14 @@
 
 - 读取 `(op, operand)`。
 - evaluator 查询时 `type_b` 固定 `GDEXTENSION_VARIANT_TYPE_NIL`。
-- 快路径命中则直接生成表达式，否则走 evaluator 路径。
+- 当前实现统一走 metadata + builtin evaluator 路径（不走 `godot_variant_evaluate`，也不做 unary 快路径特化）。
 
 ### 3.3 `binary_op` 语义
 
 - 读取 `(op, left, right)`。
-- 使用“交换/对偶回退注册表”进行回退：
-  - 若注册表规则存在，先尝试原顺序。
-  - 原顺序不可用时，可交换为 `right (dualOp) left` 再尝试。
-- 若无回退规则，保持原顺序，禁止互换。
-
-补充约束：
-
-- 交换律回退、对偶比较回退、普通不交换是三类独立规则，禁止混用。
-- 比较对偶回退（如 `>` 回退为 `<`）不等价于“交换律不变换操作符”。
+- metadata 仅按原顺序 `(leftType, op, rightType)` 匹配。
+- 不支持隐式交换，不支持对偶操作符回退。
+- 原顺序不命中时直接 fail-fast。
 
 ### 3.4 比较特化范围
 
@@ -141,6 +153,11 @@
 - 快路径白名单必须使用三元矩阵：`(leftType, op, rightType)`。
 - `POWER` 不使用 C 原生运算符写法，统一按 `pow/pow_int` 分流实现快路径。
 - 逻辑 `XOR` 不可直接按位异或泛化，非 `bool` 场景需按逻辑 xor 语义表达式生成。
+- 快路径 guard 规则：
+  - 所有 primitive 快路径都会生成 guard（允许 NOOP guard）。
+  - 不在 guard 中做整型加减乘溢出判定。
+  - `DIVIDE/MODULE` 对整型与浮点路径均生成“除数为 0” guard。
+  - `SHIFT_LEFT` 不做结果溢出判定，仅做 UB 相关前置检查（移位量范围 + 左操作数非负）。
 
 `POWER` 快路径规则：
 
@@ -150,30 +167,13 @@
 
 ### 3.8 Variant 参与运算策略
 
-当任一侧为 `Variant` 时，执行如下策略：
+当前策略按操作类型区分：
 
-1. 优先检查 GDExtension API 是否存在“某类型与 Variant”的 operator 记录。
-2. 若原顺序无记录，且交换/对偶回退后存在记录，则按回退后的顺序与操作符使用 operator 函数指针路径。
-3. 若上述都不可用，回退 `godot_variant_evaluate`。
-4. `IN` 不参与 primitive 快路径，且不使用交换/对偶回退，仅允许原顺序解析（`left IN right`）。
-
-### 3.9 交换/对偶回退注册表（早期范围）
-
-注册表项必须同时记录：
-
-- `originalOp`
-- `swappedOp`（对偶变换后操作符）
-- `swappable` 标志
-
-示例：
-
-- 交换不变：`ADD -> ADD`、`MULTIPLY -> MULTIPLY`、`EQUAL -> EQUAL`、`NOT_EQUAL -> NOT_EQUAL`。
-- 交换后变换：`GREATER -> LESS`、`LESS -> GREATER`、`GREATER_EQUAL -> LESS_EQUAL`、`LESS_EQUAL -> GREATER_EQUAL`。
-
-早期注册范围：
-
-- 基本类型、基本向量类型、`Variant` 之间的基本算数与基础逻辑。
-- 所有内置类型与 `Variant` 之间的比较操作。
+1. `binary_op`：只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate`。
+   - 编译期语义结果类型固定为 `Variant`；`result` 必须是 `Variant` 兼容类型。
+2. `unary_op`：不走 `godot_variant_evaluate`，保持 metadata + builtin evaluator。
+3. `IN` 不参与 primitive 快路径，仅允许原顺序解析（`left IN right`）。
+4. `Variant -> Variant` 回写统一经 `godot_new_Variant_with_Variant` 构造拷贝后写入目标槽位。
 
 ---
 
@@ -187,14 +187,14 @@
 
 - unary 匹配：`rightType` 采用空串语义（归一化后匹配）。
 - binary 匹配：按 `(leftType, op, rightType)` 查找。
-- 回退匹配：若原顺序不命中且存在回退规则，则按 `(rightType, swappedOp, leftType)` 再查一次。
-- 两个方向均不命中：fail-fast。
+- 原顺序不命中：直接 fail-fast（不做交换/对偶补救）。
 - metadata 异常记录（如空类型名、非法操作符字符串）必须按统一容错策略处理：跳过异常条目并输出可定位告警；若最终无可用匹配则 fail-fast。
 
 ### 4.3 结果类型规则
 
 - 快路径、evaluator 路径、Variant evaluate 路径都必须先解析“语义结果类型”。
 - 若结果类型与 `result` 不兼容，直接 fail-fast。
+- 在 `binary_op` 的 Variant evaluate 路径中，语义结果类型固定为 `Variant`；因此该路径不允许写入 `bool/int/String/...` 等非 Variant 结果变量。
 
 建议实现入口：
 
@@ -215,25 +215,26 @@
 
 1. 比较特化（基本类型 / Object / Nil）。
 2. primitive 快路径（含 `POWER -> pow/pow_int`）。
-3. gdextension-lite wrapper 路径（当存在可复用 wrapper 时优先）。
-4. Variant 参与路径：优先 operator 函数指针，失败回退 `godot_variant_evaluate`。
-5. 非 Variant builtin：operator evaluator 路径（含交换/对偶回退）。
-6. 其余 -> fail-fast。
+3. `binary_op` 的 Variant 参与路径：统一走 `godot_variant_evaluate`。
+4. 非 Variant builtin：operator evaluator 路径（严格原顺序 metadata 匹配）。
+5. 其余 -> fail-fast。
 
 补充约束：
 
-- 三层优先级基线：`primitive 快路径 > wrapper > ptr-evaluator fallback`。
-- Variant 参与路径可视为该基线上的专门分支，且不得绕过结果类型与生命周期规则。
+- `swap/dual` 回退当前暂不支持；所有 binary 解析均按原顺序执行。
+- Variant 参与路径不得绕过结果类型与生命周期规则。
 
 ### 5.2 `godot_variant_evaluate` 槽位策略
 
 - `r_return` 使用未初始化槽位语义。
-- 先写入“未初始化临时变量”，再通过 `CBodyBuilder.assignVar/callAssign` 写回目标变量。
+- 先写入“未初始化临时变量”，再通过 `CBodyBuilder.callAssign` 写回目标变量。
 - 禁止直接把 `r_return` 指向已初始化目标槽位。
 
 补充约束：
 
-- 当只有一侧是 `Variant` 时，若回退到 `godot_variant_evaluate`，需按约定完成 `pack -> evaluate -> (optional unpack)` 流程。
+- 当只有一侧是 `Variant` 时，仍需按约定完成 `pack -> evaluate` 流程。
+- 当前语义下，`variant_evaluate` 的结果写回目标变量时不做 `unpack`；非 Variant `result` 在编译期直接 fail-fast。
+- `Variant` 结果写回必须使用 `godot_new_Variant_with_Variant` 构造拷贝，避免浅拷贝后销毁临时值导致悬挂。
 - 对 destroyable/value-semantic 结果，强制经 `assignVar/callAssign` 进入目标槽位，禁止裸写目标变量。
 
 ### 5.3 evaluator helper（缓存）
@@ -261,7 +262,11 @@ helper 内部：
 - `POWER`：
   - 浮点参与 -> `pow`。
   - 双整型 -> `pow_int`。
-- `IN` 永不进入快路径，统一走 wrapper/evaluator/variant_evaluate 默认分流。
+- 快路径 guard：
+  - `DIVIDE/MODULE`：整型 `gdcc_int_division_by_zero`，浮点 `gdcc_float_division_by_zero`。
+  - `SHIFT_LEFT/SHIFT_RIGHT`：使用 `gdcc_int_shift_left_invalid` / `gdcc_int_shift_right_invalid`。
+  - 其他 primitive op 发射 NOOP guard，保持生成结构一致。
+- `IN` 永不进入快路径，统一走原顺序 metadata + evaluator/variant_evaluate 分流。
 
 ---
 
@@ -276,9 +281,7 @@ helper 内部：
 - 新文件：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/OperatorResolver.java`
 - 负责：
   - 类型分流
-  - wrapper 可用性判定与路径优先级决策
   - metadata 匹配
-  - 交换/对偶回退决策
   - 结果类型判定
   - `GdType -> GDExtensionVariantType` 映射
 
@@ -306,13 +309,14 @@ helper 内部：
 1. result 变量缺失 / `ref` 变量作为 result。
 2. 操作数变量缺失。
 3. 结果类型与 `result` 类型不兼容。
-4. metadata 两个方向都不支持且无可用回退。
+4. metadata 原顺序签名不支持（无交换/对偶回退）。
 5. `Object` 使用 `==` / `!=` 以外运算。
 6. `Nil` 比较特化条件不满足却误入特化分支。
 7. `POWER` 快路径分支无法判定应走 `pow` 还是 `pow_int`。
 8. `godot_variant_evaluate` 返回 `valid == false`。
 9. evaluator 查询返回 `NULL`。
 10. 生成路径绕过 `assignVar/callAssign` 生命周期管道。
+11. `variant_evaluate` 语义结果为 `Variant`，但 `result` 为非 Variant 类型（例如 `bool/int/String`）。
 
 ---
 
@@ -327,14 +331,19 @@ helper 内部：
 3. `MODULE(float,float)` 快路径命中。
 4. 原顺序 metadata 严格匹配：`A > B` 原顺序不可用时直接 fail-fast。
 5. 非交换运算（如 `SUBTRACT` / `DIVIDE`）不允许隐式交换。
-6. Variant 混合场景：只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate`（即使 metadata 可用）。
+6. Variant 混合场景（`binary_op`）：只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate`（即使 metadata 可用）。
+   - 且 `result` 必须是 `Variant` 兼容类型；非 Variant `result` 需在编译期 fail-fast。
 7. Variant 运行时失败场景：`godot_variant_evaluate` 返回 `valid == false` 时应 hard-fail 并返回函数默认值。
 8. `Nil == Nil`、`Nil != Nil`。
 9. `Nil == Object(null)` 与 `Nil == 非空 Object`。
 10. `Nil` 与其他非 Object 类型比较（应不等）。
-11. `godot_variant_evaluate` 使用未初始化临时槽并经 `assignVar` 回写。
+11. `godot_variant_evaluate` 使用未初始化临时槽，并经 `callAssign` + `godot_new_Variant_with_Variant` 回写 `Variant` 结果。
 12. result 为 `ref` 时 fail-fast。
 13. `IN(int, Array)` 不走快路径，按原顺序 metadata 命中 evaluator，并通过结果类型校验。
+14. `variant_evaluate` 路径中 `result` 为非 Variant 类型时编译期 fail-fast（类型安全守卫）。
+15. `DIVIDE(float,float)` 与 `MODULE(float,float)` 快路径会生成浮点除零 guard。
+16. `ADD/SUBTRACT/MULTIPLY(int,int)` 快路径不生成溢出 guard（仅 NOOP guard 占位）。
+17. `SHIFT_LEFT(int,int)` guard 仅覆盖 UB 条件（非法移位量、负左操作数），不覆盖结果溢出。
 
 辅助回归：
 
@@ -344,10 +353,10 @@ helper 内部：
 
 引擎集成测试用于验证“生成代码在真实 Godot 运行时中的语义一致性”，重点覆盖单元测试难以发现的问题：
 
-1. `godot_variant_evaluate` / ptr-evaluator 在真实引擎中的可用性与返回语义。
+1. `binary_op` 的 `godot_variant_evaluate` 与 `unary_op` builtin evaluator 在真实引擎中的可用性与返回语义。
 2. `POWER -> pow/pow_int`、比较特化与“原顺序 metadata 严格匹配”在运行时的行为一致性。
 3. 字符串、向量、矩阵等非 primitive 运算在真实引擎中的行为一致性。
-4. `Variant` 回写与生命周期管道（`assignVar/callAssign`）是否在高频调用下稳定。
+4. `binary_op` Variant 回写与生命周期管道（`assignVar/callAssign`）是否在高频调用下稳定。
 5. 运行时失败路径（`valid == false`、`evaluator == NULL`）是否按计划 hard-fail 且可观测。
 
 ### 8.2 测试分层与门禁级别
@@ -355,7 +364,7 @@ helper 内部：
 定义 3 层引擎集成测试，避免一次性把所有场景都放入阻塞门禁：
 
 1. `L1-SMOKE`（阻塞）：
-   - 覆盖最核心路径：primitive 快路径、Object/Nil 比较、Variant 混合 fallback。
+   - 覆盖最核心路径：primitive 快路径、Object/Nil 比较、`binary_op` Variant evaluate。
    - 每次 PR 必跑。
 2. `L2-SEMANTIC`（阻塞）：
    - 覆盖运算语义矩阵与原顺序匹配约束（`IN` 原顺序约束、结果类型一致性）。
@@ -414,8 +423,9 @@ helper 内部：
 4. `E4-IN-NON-SWAP`：
    - 验证 `IN` 仅原顺序解析，不触发交换/对偶回退。
 5. `E5-VARIANT-MIXED`：
-   - 只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate`。
-   - 覆盖 pack/unpack 与结果回写生命周期路径。
+   - `binary_op` 中只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate`。
+   - 覆盖 pack 与 `Variant` 构造拷贝回写生命周期路径。
+   - 覆盖 `Variant("a") + Variant("b") -> Variant` 的字符串拼接语义一致性。
 6. `E6-RUNTIME-FAIL-PATH`：
    - 人工构造 `valid == false` 或 evaluator 缺失场景。
    - 断言 hard-fail 与错误消息格式。
@@ -464,20 +474,20 @@ helper 内部：
 
 1. `L1-SMOKE`、`L2-SEMANTIC` 全部通过。
 2. 阻塞矩阵（Windows Debug/Release）无失败。
-3. 失败信息可直接映射到路径分类：快路径、wrapper、ptr-evaluator、variant_evaluate、比较特化、回退规则。
+3. 失败信息可直接映射到路径分类：快路径、builtin evaluator、variant_evaluate、比较特化、原顺序 metadata 约束。
 
 失败归因顺序（固定）：
 
 1. 先判定是否环境问题（Godot/Zig/动态库加载）。
 2. 再判定是否 metadata 匹配与结果类型判定问题。
-3. 再判定是否路径决策错误（快路径/回退/特化分支）。
+3. 再判定是否路径决策错误（快路径/原顺序匹配/特化分支）。
 4. 最后定位生命周期与运行时 hard-fail 分支。
 
 回归报告最小字段：
 
-1. 用例 ID（如 `E3-SWAP-DUAL-FALLBACK`）。
+1. 用例 ID（如 `E3-METADATA-ORDER-STRICT`）。
 2. 输入类型签名与操作符。
-3. 命中路径与回退信息。
+3. 命中路径与关键约束信息（例如原顺序命中/失败、Variant evaluate 命中）。
 4. Godot 日志摘要与产物路径。
 
 ### 8.9 当前实施进展
@@ -492,9 +502,20 @@ helper 内部：
    - 编译期 fail-fast 场景：`E3`（`String > int` 原顺序 metadata 缺失）、`E4` 反向约束（`Array IN int`）。
 7. `2026-03-02`：执行联合定向命令 `./gradlew test --tests COperatorInsnGenEngineTest --tests COperatorInsnGenTest --tests CCodegenTest --no-daemon --info --console=plain`。
 8. `2026-03-02`：联合回归统计：
-   - `COperatorInsnGenEngineTest` 3/3 通过（`0` skipped / `0` failures / `0` errors）。
+   - `COperatorInsnGenEngineTest` 4/4 通过（`0` skipped / `0` failures / `0` errors）。
    - `COperatorInsnGenTest` 29/29 通过（`0` skipped / `0` failures / `0` errors）。
    - `CCodegenTest` 6/6 通过（`0` skipped / `0` failures / `0` errors）。
+9. `2026-03-02`：修复 `variant_evaluate` 的 `Variant -> Variant` 回写生命周期风险，改为 `godot_new_Variant_with_Variant` 构造拷贝后写回，避免“浅拷贝 + destroy”导致悬挂。
+10. `2026-03-02`：为 `variant_evaluate` 路径补齐编译期结果类型校验；当 `result` 非 Variant 时直接 `InvalidInsnException`。
+11. `2026-03-02`：新增引擎用例覆盖 `Variant("a") + Variant("b") -> Variant`，并新增编译期 fail-fast 用例覆盖 Variant 结果类型守卫。
+12. `2026-03-02`：修复 `pow_int` 负指数死循环问题，负指数场景按 `base=1/-1/other` 分支返回；正指数路径保留快速幂并使用 `__int128` 中间计算提升截断前精度。
+13. `2026-03-02`：primitive 快路径 guard 收敛为“全路径发射 + UB/除零导向”：
+   - 去除 `ADD/SUBTRACT/MULTIPLY` 整型溢出 guard。
+   - `DIVIDE/MODULE` 改为整型/浮点统一除零 guard（`gdcc_int_division_by_zero` / `gdcc_float_division_by_zero`）。
+   - `SHIFT_LEFT` guard 去除结果溢出判定，仅保留非法移位量与负左操作数检查。
+14. `2026-03-02`：执行 `./gradlew test --tests COperatorInsnGenTest --tests COperatorInsnGenEngineTest --no-daemon --info --console=plain`：
+   - `COperatorInsnGenTest` 35/35 通过（`0` skipped / `0` failures / `0` errors）。
+   - `COperatorInsnGenEngineTest` 4/4 通过（`0` skipped / `0` failures / `0` errors）。
 
 ---
 
@@ -509,8 +530,8 @@ helper 内部：
 
 实施项：
 
-1. 在 `OperatorResolver` 设计稿中先列出：分流顺序、回退规则、结果类型判定入口。
-2. 在测试文件中预留分组命名（比较、快路径、回退、Variant 生命周期）。
+1. 在 `OperatorResolver` 设计稿中先列出：分流顺序、原顺序匹配约束、结果类型判定入口。
+2. 在测试文件中预留分组命名（比较、快路径、metadata 顺序约束、Variant 生命周期）。
 3. 梳理受影响文件清单并确认仅触达后端相关代码与模板。
 
 阶段输入：
@@ -686,22 +707,19 @@ helper 内部：
 
 ---
 
-### 阶段 5：交换/对偶回退注册表与匹配执行
+### 阶段 5：原顺序匹配约束收敛
 
 目标：
 
-1. 实现“原顺序失败后按规则回退”的稳定机制。
-2. 区分交换不变与对偶变换两类回退。
+1. 固化 binary metadata 的原顺序匹配语义。
+2. 明确当前版本不支持 `swap/dual` 回退。
 
 实施项：
 
-1. [x] 定义注册表结构：`originalOp`、`swappedOp`、`swappable`。
-2. [x] 实现回退流程：
-   - 先查 `A op B`
-   - 再查 `B swappedOp A`
-3. [x] 非注册运算保持原顺序，不允许隐式交换。
-4. [x] 为 `IN` 增加硬约束：仅原顺序解析，不回退。
-5. [x] 补齐错误分支：双向都不命中时 fail-fast。
+1. [x] 删除 swap/dual 回退决策相关实现与文档入口。
+2. [x] binary 仅匹配 `(leftType, op, rightType)`，原顺序不命中直接 fail-fast。
+3. [x] 为 `IN` 增加硬约束：仅原顺序解析。
+4. [x] 补齐错误分支：metadata 缺失时输出带签名上下文的错误信息。
 
 涉及文件：
 
@@ -717,12 +735,12 @@ helper 内部：
 
 验收标准：
 
-1. `A > B` 回退到 `B < A` 的路径正确且可观测。
-2. `SUBTRACT`/`DIVIDE` 等非回退运算不会被误交换。
+1. 原顺序 metadata 缺失时稳定 fail-fast。
+2. `SUBTRACT`/`DIVIDE` 等运算不存在隐式交换行为。
 
 回退策略：
 
-1. 若对偶映射出现语义争议，先将对应 operator 从注册表移除并保持原顺序 fail-fast。
+1. 当前阶段不引入任何 swap/dual 补救逻辑；若需求恢复需单独立项。
 
 ---
 
@@ -730,23 +748,26 @@ helper 内部：
 
 目标：
 
-1. 打通 Variant 参与场景的完整策略链路。
+1. 打通 `binary_op` 中 Variant 参与场景的完整策略链路。
 2. 确保 `variant_evaluate` 不破坏变量生命周期。
 
 实施项：
 
 1. [x] 实现 Variant 混合路径策略（按当前收敛语义）：
-   - 只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate` 动态派发
+   - `binary_op` 只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate` 动态派发
    - 不再走 operator 函数指针优先路径
 2. [x] 在 `CBodyBuilder` 新增未初始化变量声明方法（`declareUninitializedTempVar`）。
    - `2026-03-02`：`emitBinaryVariantEvaluate` 中的 `op_eval_result` 已改为未初始化声明，专用于 out-parameter 写入。
 3. [x] 对 `variant_evaluate` 实现固定流程：
    - 写入未初始化临时槽
-   - `assignVar/callAssign` 回写目标
-   - 必要时执行 `pack/unpack`
+   - 通过 `callAssign` 回写目标
+   - `Variant -> Variant` 使用 `godot_new_Variant_with_Variant` 构造拷贝写回
+   - 仅输入侧执行必要 `pack`，不对结果做 `unpack`
 4. [x] 补齐运行时错误风格：`valid == false` 与 `evaluator == NULL` 的统一 hard-fail。
    - `2026-03-02`：`emitBinaryVariantEvaluate` 在 `op_eval_valid == false` 时通过 `GDCC_PRINT_RUNTIME_ERROR` 输出错误，并返回当前函数返回类型的默认值。
    - `2026-03-02`：operator evaluator helper 在 `evaluator == NULL` 时通过同一宏报错并返回类型默认值。
+5. [x] 补齐 `variant_evaluate` 路径的编译期结果类型校验。
+   - `2026-03-02`：`emitBinary` 统一执行 `validateResultCompatibility`，`Variant` 语义结果不再允许写入非 Variant `result`。
 
 涉及文件：
 
@@ -764,9 +785,10 @@ helper 内部：
 
 验收标准：
 
-1. Variant 路径命中优先级与文档一致。
-2. `variant_evaluate` 回写全程经 `assignVar/callAssign`，无裸写槽位。
+1. `binary_op` Variant 路径命中优先级与文档一致，`unary_op` 不误入 evaluate。
+2. `variant_evaluate` 回写全程经 `callAssign`，`Variant -> Variant` 使用构造拷贝写回，无裸写槽位。
 3. 生命周期相关用例无泄漏/双析构迹象。
+4. `variant_evaluate` 路径对非 Variant `result` 在编译期稳定 fail-fast。
 
 回退策略：
 
@@ -785,7 +807,7 @@ helper 内部：
 
 1. [x] 对第 8 节测试矩阵逐条对照，补缺失用例。
    - `2026-03-02`：补充 `IN(int, Array)` 原顺序 metadata 解析用例，验证不进入 primitive 快路径且走 builtin evaluator。
-   - `2026-03-02`：补充“metadata 存在时，Variant 参与仍强制走 `godot_variant_evaluate`”回归用例，防止路径回归到 ptr evaluator。
+   - `2026-03-02`：补充“metadata 存在时，`binary_op` 的 Variant 参与仍强制走 `godot_variant_evaluate`”回归用例，防止路径回归到 ptr evaluator。
 2. [x] 运行目标测试并记录命令与关键输出。
    - `2026-03-02`：执行 `./gradlew test --tests COperatorInsnGenTest --tests CCodegenTest --no-daemon --info --console=plain`。
    - 关键结果：`BUILD SUCCESSFUL`。
@@ -795,7 +817,7 @@ helper 内部：
    - `2026-03-02`：运行时错误继续统一走 `GDCC_PRINT_RUNTIME_ERROR`，与阶段 6 的 hard-fail 风格保持一致。
 4. [x] 更新本计划文档中的“状态/风险”与 deferred 项。
    - `2026-03-02`：文档状态更新为 `Active / Stage 7 Completed`。
-   - `2026-03-02`：风险与补充规则收口到当前实现语义（移除交换/对偶回退作为默认行为，Variant 统一 evaluate）。
+   - `2026-03-02`：风险与补充规则收口到当前实现语义（移除交换/对偶回退作为默认行为，`binary_op` Variant 统一 evaluate）。
    - `2026-03-02`：新增 deferred 清单，记录被显式收敛/推迟的能力项。
 
 建议命令：
@@ -815,9 +837,10 @@ helper 内部：
 ## 10. 风险与边界
 
 1. `pow` / `pow_int` 在边界输入下的语义需持续与 Godot 对齐（尤其是负指数、极值输入）。
-2. Variant 路径当前统一使用 `godot_variant_evaluate`，运行时错误分支（`valid == false`）依赖 hard-fail 输出与默认返回值兜底，需继续做引擎级验证。
+2. `binary_op` 的 Variant 路径当前统一使用 `godot_variant_evaluate`，且编译期强制 `result` 与 `Variant` 语义结果兼容；运行时错误分支（`valid == false`）仍依赖 hard-fail 输出与默认返回值兜底，需继续做引擎级验证。
 3. metadata 仍采用原顺序匹配；当元数据缺失时直接 fail-fast，不再做交换/对偶补救。
 4. `Nil` 与 `Object(null)` 的等值特化必须避免与 Object 特化冲突。
+5. primitive 快路径 guard 当前聚焦 UB/除零防护，不覆盖整型算数溢出；后续若要恢复溢出防护需单独评估与 Godot 语义一致性。
 
 ---
 
@@ -826,13 +849,19 @@ helper 内部：
 1. `POWER` 含浮点使用 `pow`，双整型使用 `pow_int`，两种情况都属于快路径。
 2. `gdcc_helper.h` 已提供 `math.h` 与 `gdcc_operator.h`，模板侧不重复显式引入。
 3. `CBodyBuilder` 已新增 `declareUninitializedTempVar`，并用于 `variant_evaluate` out-parameter 槽位。
-4. 只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate` 动态派发。
+4. `binary_op` 中只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate` 动态派发。
 5. runtime hard-fail 统一使用 `GDCC_PRINT_RUNTIME_ERROR`，并在失败分支返回当前函数返回类型默认值。
 6. Nil 比较特化：除 `Object(null)` 例外外，`Nil` 与其他非 Nil 类型均不相等；Nil 的非比较运算走默认规则。
+7. `unary_op` 不走 `godot_variant_evaluate`，保持 metadata + builtin evaluator 路径。
+8. `binary_op` 的 `variant_evaluate` 语义结果固定为 `Variant`，并在编译期执行结果类型兼容性校验；非 Variant `result` 直接 fail-fast。
+9. `Variant -> Variant` 回写统一经 `godot_new_Variant_with_Variant` 构造拷贝，避免浅拷贝 + 临时值销毁导致悬挂。
+10. `pow_int` 对负指数输入不再迭代计算，避免死循环；`base=1/-1` 返回可精确值，其余返回 `0`。
+11. 快路径 guard 当前规则为“全 primitive 快路径均发射 guard”，其中部分算子使用 NOOP guard 以保持结构一致。
+12. guard 实现当前不做整型加减乘和左移结果溢出判定；`DIVIDE/MODULE` 的 guard 覆盖整型与浮点除零场景。
 
 ---
 
 ## 12. Deferred 项
 
 1. 交换/对偶回退注册表能力（含 `A op B -> B dualOp A`）已从当前实现语义中收敛移除，后续如需恢复需单独立项并补充完整语义与回归矩阵。
-2. Variant 混合场景的 ptr-evaluator 优先策略已收敛移除；后续如需恢复，必须与生命周期与错误处理规则一并重新验收。
+2. `binary_op` Variant 混合场景的 ptr-evaluator 优先策略已收敛移除；后续如需恢复，必须与生命周期与错误处理规则一并重新验收。

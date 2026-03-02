@@ -68,15 +68,16 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         }
         validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
 
-        switch (decision.path()) {
-            case BUILTIN_EVALUATOR -> emitUnaryBuiltinEvaluator(
+        if (decision.path() == OperatorResolver.OperatorPath.BUILTIN_EVALUATOR) {
+            emitUnaryBuiltinEvaluator(
                     bodyBuilder,
                     resultVar,
                     instruction.op(),
                     operandVar,
                     decision.semanticResultType()
             );
-            default -> throw bodyBuilder.invalidInsn(
+        } else {
+            throw bodyBuilder.invalidInsn(
                     "Unary operator path '" + decision.path() + "' is not valid in current stage");
         }
     }
@@ -98,9 +99,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn(
                     "Resolved operator path '" + decision.path() + "' is missing semantic result type");
         }
-        if (decision.path() != OperatorResolver.OperatorPath.VARIANT_EVALUATE) {
-            validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
-        }
+        validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
 
         switch (decision.path()) {
             case PRIMITIVE_FAST_PATH ->
@@ -131,6 +130,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         var leftCode = bodyBuilder.valueOfVar(leftVar).generateCode();
         var rightCode = bodyBuilder.valueOfVar(rightVar).generateCode();
         var useFloatMath = isFloatPrimitiveType(leftVar.type()) || isFloatPrimitiveType(rightVar.type());
+        emitPrimitiveFastPathPreCheck(bodyBuilder, op, leftVar, rightVar, leftCode, rightCode, useFloatMath);
         var expression = switch (op) {
             case ADD -> "(" + leftCode + " + " + rightCode + ")";
             case SUBTRACT -> "(" + leftCode + " - " + rightCode + ")";
@@ -153,6 +153,77 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             );
         };
         bodyBuilder.assignExpr(bodyBuilder.targetOfVar(resultVar), expression, semanticResultType);
+    }
+
+    private void emitPrimitiveFastPathPreCheck(@NotNull CBodyBuilder bodyBuilder,
+                                               @NotNull GodotOperator op,
+                                               @NotNull LirVariable leftVar,
+                                               @NotNull LirVariable rightVar,
+                                               @NotNull String leftCode,
+                                               @NotNull String rightCode,
+                                               boolean useFloatMath) {
+        var leftIsInt = leftVar.type() instanceof GdIntType;
+        var rightIsInt = rightVar.type() instanceof GdIntType;
+        var bothInt = leftIsInt && rightIsInt;
+
+        var guardRule = switch (op) {
+            case DIVIDE -> bothInt
+                    ? new PrimitiveFastPathGuardRule(
+                    "gdcc_int_division_by_zero(" + rightCode + ")",
+                    "integer division by zero")
+                    : new PrimitiveFastPathGuardRule(
+                    "gdcc_float_division_by_zero(" + rightCode + ")",
+                    "floating division by zero");
+            case MODULE -> bothInt
+                    ? new PrimitiveFastPathGuardRule(
+                    "gdcc_int_division_by_zero(" + rightCode + ")",
+                    "integer modulo by zero")
+                    : new PrimitiveFastPathGuardRule(
+                    "gdcc_float_division_by_zero(" + rightCode + ")",
+                    "floating modulo by zero");
+            case POWER -> PrimitiveFastPathGuardRule.NOOP;
+            case SHIFT_LEFT -> bothInt
+                    ? new PrimitiveFastPathGuardRule(
+                    "gdcc_int_shift_left_invalid(" + leftCode + ", " + rightCode + ")",
+                    "invalid shift amount or negative left operand")
+                    : PrimitiveFastPathGuardRule.NOOP;
+            case SHIFT_RIGHT -> bothInt
+                    ? new PrimitiveFastPathGuardRule(
+                    "gdcc_int_shift_right_invalid(" + rightCode + ")",
+                    "invalid shift amount")
+                    : PrimitiveFastPathGuardRule.NOOP;
+            default -> PrimitiveFastPathGuardRule.NOOP;
+        };
+        if (!useFloatMath && (op == GodotOperator.DIVIDE || op == GodotOperator.MODULE) && !bothInt) {
+            throw bodyBuilder.invalidInsn(
+                    "Primitive fast path expected integer operands for '" + op.name() + "', but got '" +
+                            leftVar.type().getTypeName() + "' and '" + rightVar.type().getTypeName() + "'"
+            );
+        }
+        emitPrimitiveFastPathGuardFailure(bodyBuilder, guardRule.invalidConditionExpr(), op, guardRule.reason());
+    }
+
+    private void emitPrimitiveFastPathGuardFailure(@NotNull CBodyBuilder bodyBuilder,
+                                                   @NotNull String invalidConditionExpr,
+                                                   @NotNull GodotOperator op,
+                                                   @NotNull String reason) {
+        bodyBuilder.appendLine("if (" + invalidConditionExpr + ") {");
+        bodyBuilder.appendLine(
+                "GDCC_PRINT_RUNTIME_ERROR(\"Primitive fast path guard failed for operator '" +
+                        op.name() + "': " + reason + "\", __func__, __FILE__, __LINE__);"
+        );
+        emitPrimitiveFastPathFailureReturn(bodyBuilder);
+        bodyBuilder.appendLine("}");
+    }
+
+    private void emitPrimitiveFastPathFailureReturn(@NotNull CBodyBuilder bodyBuilder) {
+        var returnType = bodyBuilder.func().getReturnType();
+        if (returnType instanceof GdVoidType) {
+            bodyBuilder.returnVoid();
+            return;
+        }
+        var defaultExpr = CBodyBuilder.renderDefaultValueExpr(returnType);
+        bodyBuilder.returnValue(bodyBuilder.valueOfExpr(defaultExpr, returnType));
     }
 
     private @NotNull String renderPowerFastPathExpr(@NotNull CBodyBuilder bodyBuilder,
@@ -244,7 +315,14 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         resultVariant.setInitialized(true);
 
         if (resultVar.type() instanceof GdVariantType) {
-            bodyBuilder.assignVar(bodyBuilder.targetOfVar(resultVar), resultVariant);
+            // Variant slot write must avoid "copy temp -> plain assignment -> destroy temp".
+            // Use constructor call assignment directly so target owns the copied value safely.
+            bodyBuilder.callAssign(
+                    bodyBuilder.targetOfVar(resultVar),
+                    "godot_new_Variant_with_Variant",
+                    GdVariantType.VARIANT,
+                    List.of(resultVariant)
+            );
         } else {
             var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
             bodyBuilder.callAssign(
@@ -441,6 +519,17 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                   @Nullable CBodyBuilder.TempVar tempVar) {
         private VariantOperand {
             Objects.requireNonNull(variantValue);
+        }
+    }
+
+    private record PrimitiveFastPathGuardRule(@NotNull String invalidConditionExpr,
+                                              @NotNull String reason) {
+        private static final @NotNull PrimitiveFastPathGuardRule NOOP =
+                new PrimitiveFastPathGuardRule("false", "no guard violation");
+
+        private PrimitiveFastPathGuardRule {
+            Objects.requireNonNull(invalidConditionExpr);
+            Objects.requireNonNull(reason);
         }
     }
 }

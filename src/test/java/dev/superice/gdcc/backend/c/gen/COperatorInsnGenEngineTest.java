@@ -93,6 +93,7 @@ class COperatorInsnGenEngineTest {
                 "E2 object/nil compare check passed.",
                 "E4 IN original-order check passed.",
                 "E5 variant mixed check passed.",
+                "E5 variant string->variant check passed.",
                 "E6 runtime fail-path check passed.",
                 "E7 lifecycle stress check passed.",
                 "string concat check passed.",
@@ -161,6 +162,34 @@ class COperatorInsnGenEngineTest {
         assertInstanceOf(InvalidInsnException.class, invalidInsn);
         assertTrue(
                 invalidInsn.getMessage().contains("Binary operator metadata is missing for signature (Array, IN, int)"),
+                invalidInsn.getMessage()
+        );
+    }
+
+    @Test
+    @DisplayName("variant_evaluate should fail-fast when result type is not Variant")
+    void variantEvaluateShouldFailFastWhenResultTypeIsNotVariant() throws IOException {
+        var tempDir = Path.of("tmp/test/operator_engine_variant_type_guard");
+        Files.createDirectories(tempDir);
+
+        var operatorClass = newCompileFailClass(
+                "GDOperatorEngineVariantTypeGuardNode",
+                "variant_in_to_bool",
+                GdBoolType.BOOL,
+                "left",
+                GdVariantType.VARIANT,
+                "right",
+                GdIntType.INT,
+                GodotOperator.IN
+        );
+        var ex = assertThrows(
+                RuntimeException.class,
+                () -> buildProjectWithCompileGuard(tempDir, "operator_engine_variant_type_guard", operatorClass)
+        );
+        var invalidInsn = extractInvalidInsnCause(ex);
+        assertInstanceOf(InvalidInsnException.class, invalidInsn);
+        assertTrue(
+                invalidInsn.getMessage().contains("Operator result type 'Variant' is not assignable"),
                 invalidInsn.getMessage()
         );
     }
@@ -300,20 +329,8 @@ class COperatorInsnGenEngineTest {
                 false
         ));
         clazz.addFunction(newPackedVariantBinaryMethod(
-                "variant_add_to_int",
-                GdIntType.INT,
-                selfType,
-                "left",
-                GdIntType.INT,
-                "right",
-                GdIntType.INT,
-                GodotOperator.ADD,
-                true,
-                false
-        ));
-        clazz.addFunction(newPackedVariantBinaryMethod(
-                "variant_divide_to_int",
-                GdIntType.INT,
+                "variant_divide_to_variant",
+                GdVariantType.VARIANT,
                 selfType,
                 "left",
                 GdStringType.STRING,
@@ -324,8 +341,8 @@ class COperatorInsnGenEngineTest {
                 true
         ));
         clazz.addFunction(newPackedVariantBinaryMethod(
-                "variant_concat_to_string",
-                GdStringType.STRING,
+                "variant_concat_to_variant",
+                GdVariantType.VARIANT,
                 selfType,
                 "left",
                 GdStringType.STRING,
@@ -558,6 +575,7 @@ class COperatorInsnGenEngineTest {
                     _check_e2_object_nil_compare(target)
                     _check_e4_in_original_order(target)
                     _check_e5_variant_mixed(target)
+                    _check_e5_variant_string_to_variant(target)
                     _check_e6_runtime_fail_path(target)
                     _check_e7_lifecycle_stress(target)
                     _check_string_ops(target)
@@ -567,7 +585,8 @@ class COperatorInsnGenEngineTest {
                 func _check_e1_power(target: Node) -> void:
                     var float_result = float(target.call("pow_float_int", 2.5, 3))
                     var int_result = int(target.call("pow_int_int", 3, 4))
-                    if _scalar_close(float_result, 15.625) and int_result == 81:
+                    var int_negative_exp_result = int(target.call("pow_int_int", 2, -3))
+                    if _scalar_close(float_result, 15.625) and int_result == 81 and int_negative_exp_result == 0:
                         print("E1 power check passed.")
                     else:
                         push_error("E1 power check failed.")
@@ -601,15 +620,21 @@ class COperatorInsnGenEngineTest {
                 
                 func _check_e5_variant_mixed(target: Node) -> void:
                     var result_variant = target.call("variant_add_to_variant", 2, 3)
-                    var result_int = int(target.call("variant_add_to_int", 2, 3))
-                    if int(result_variant) == 5 and result_int == 5:
+                    if int(result_variant) == 5:
                         print("E5 variant mixed check passed.")
                     else:
                         push_error("E5 variant mixed check failed.")
                 
+                func _check_e5_variant_string_to_variant(target: Node) -> void:
+                    var result_variant = target.call("variant_concat_to_variant", "a", "b")
+                    if typeof(result_variant) == TYPE_STRING and str(result_variant) == "ab":
+                        print("E5 variant string->variant check passed.")
+                    else:
+                        push_error("E5 variant string->variant check failed.")
+                
                 func _check_e6_runtime_fail_path(target: Node) -> void:
-                    var fallback_value = int(target.call("variant_divide_to_int", "a", "b"))
-                    if fallback_value == 0:
+                    var fallback_value = target.call("variant_divide_to_variant", "a", "b")
+                    if fallback_value == null:
                         print("E6 runtime fail-path check passed.")
                     else:
                         push_error("E6 runtime fail-path check failed.")
@@ -617,7 +642,7 @@ class COperatorInsnGenEngineTest {
                 func _check_e7_lifecycle_stress(target: Node) -> void:
                     var ok = true
                     for _i in range(2000):
-                        var s = str(target.call("variant_concat_to_string", "a", "b"))
+                        var s = str(target.call("variant_concat_to_variant", "a", "b"))
                         if s != "ab":
                             ok = false
                             break
