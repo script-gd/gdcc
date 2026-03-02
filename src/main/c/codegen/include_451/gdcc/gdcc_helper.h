@@ -8,6 +8,7 @@
 #include <gdcc_bind.h>
 #include <gdcc_operator.h>
 #include <stdio.h>
+#include <math.h>
 
 #if !defined(GDE_EXPORT)
 #if defined(_WIN32)

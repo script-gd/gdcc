@@ -9,6 +9,8 @@ import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
@@ -96,6 +98,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
 
         switch (decision.path()) {
+            case PRIMITIVE_FAST_PATH ->
+                    emitPrimitiveFastPath(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar, decision.semanticResultType());
             case PRIMITIVE_COMPARISON ->
                     emitPrimitiveComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
             case OBJECT_COMPARISON -> emitObjectComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
@@ -109,6 +113,63 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                     decision.semanticResultType()
             );
         }
+    }
+
+    private void emitPrimitiveFastPath(@NotNull CBodyBuilder bodyBuilder,
+                                       @NotNull LirVariable resultVar,
+                                       @NotNull GodotOperator op,
+                                       @NotNull LirVariable leftVar,
+                                       @NotNull LirVariable rightVar,
+                                       @NotNull GdType semanticResultType) {
+        var leftCode = bodyBuilder.valueOfVar(leftVar).generateCode();
+        var rightCode = bodyBuilder.valueOfVar(rightVar).generateCode();
+        var useFloatMath = isFloatPrimitiveType(leftVar.type()) || isFloatPrimitiveType(rightVar.type());
+        var expression = switch (op) {
+            case ADD -> "(" + leftCode + " + " + rightCode + ")";
+            case SUBTRACT -> "(" + leftCode + " - " + rightCode + ")";
+            case MULTIPLY -> "(" + leftCode + " * " + rightCode + ")";
+            case DIVIDE -> "(" + leftCode + " / " + rightCode + ")";
+            case MODULE -> useFloatMath
+                    ? "fmod(" + leftCode + ", " + rightCode + ")"
+                    : "(" + leftCode + " % " + rightCode + ")";
+            case POWER -> renderPowerFastPathExpr(bodyBuilder, leftVar, rightVar, leftCode, rightCode, useFloatMath);
+            case SHIFT_LEFT -> "(" + leftCode + " << " + rightCode + ")";
+            case SHIFT_RIGHT -> "(" + leftCode + " >> " + rightCode + ")";
+            case BIT_AND -> "(" + leftCode + " & " + rightCode + ")";
+            case BIT_OR -> "(" + leftCode + " | " + rightCode + ")";
+            case BIT_XOR -> "(" + leftCode + " ^ " + rightCode + ")";
+            case AND -> "((" + leftCode + ") && (" + rightCode + "))";
+            case OR -> "((" + leftCode + ") || (" + rightCode + "))";
+            case XOR -> "((" + leftCode + " ? 1 : 0) != (" + rightCode + " ? 1 : 0))";
+            default -> throw bodyBuilder.invalidInsn(
+                    "Primitive fast path does not support operator '" + op.name() + "'"
+            );
+        };
+        bodyBuilder.assignExpr(bodyBuilder.targetOfVar(resultVar), expression, semanticResultType);
+    }
+
+    private @NotNull String renderPowerFastPathExpr(@NotNull CBodyBuilder bodyBuilder,
+                                                    @NotNull LirVariable leftVar,
+                                                    @NotNull LirVariable rightVar,
+                                                    @NotNull String leftCode,
+                                                    @NotNull String rightCode,
+                                                    boolean useFloatMath) {
+        if (useFloatMath) {
+            return "pow(" + leftCode + ", " + rightCode + ")";
+        }
+        var leftIsInt = leftVar.type() instanceof GdIntType;
+        var rightIsInt = rightVar.type() instanceof GdIntType;
+        if (leftIsInt && rightIsInt) {
+            return "pow_int(" + leftCode + ", " + rightCode + ")";
+        }
+        throw bodyBuilder.invalidInsn(
+                "POWER fast path cannot decide between pow and pow_int for operand types '" +
+                        leftVar.type().getTypeName() + "' and '" + rightVar.type().getTypeName() + "'"
+        );
+    }
+
+    private boolean isFloatPrimitiveType(@NotNull GdType type) {
+        return type instanceof GdFloatType;
     }
 
     private void emitUnaryBuiltinEvaluator(@NotNull CBodyBuilder bodyBuilder,

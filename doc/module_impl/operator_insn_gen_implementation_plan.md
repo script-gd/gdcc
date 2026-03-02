@@ -627,13 +627,13 @@ helper 内部：
 
 实施项：
 
-1. 落地快路径白名单矩阵 `(leftType, op, rightType)`。
-2. 实现基础算数/位/逻辑快路径表达式生成。
-3. 实现 `POWER`：
+1. [x] 落地快路径白名单矩阵 `(leftType, op, rightType)`。
+2. [x] 实现基础算数/位/逻辑快路径表达式生成。
+3. [x] 实现 `POWER`：
    - 含浮点 -> `pow`
    - 双整型 -> `pow_int`
-4. 保留 metadata 前置校验，禁止“C 可编译但 Godot 语义不合法”路径。
-5. 对 `XOR` 在非 `bool` 场景按逻辑 xor 语义生成表达式。
+4. [x] 保留 metadata 前置校验，禁止“C 可编译但 Godot 语义不合法”路径。
+5. [x] 对 `XOR` 在非 `bool` 场景按逻辑 xor 语义生成表达式。
 
 涉及文件：
 
