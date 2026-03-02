@@ -51,11 +51,29 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         var operandVar = resolveOperandVariable(bodyBuilder, instruction.operandId(), "operand");
 
         var decision = resolver.resolveUnaryPath(bodyBuilder, instruction.op(), operandVar.type());
-        if (decision.semanticResultType() != null) {
-            validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
+        if (decision.path() == OperatorResolver.OperatorPath.UNIMPLEMENTED) {
+            throwUnimplementedPath(bodyBuilder, "unary", instruction.op().name(), decision.reason(),
+                    operandVar.type(), null);
+            return;
         }
-        throwUnimplementedPath(bodyBuilder, "unary", instruction.op().name(), decision.reason(),
-                operandVar.type(), null);
+
+        if (decision.semanticResultType() == null) {
+            throw bodyBuilder.invalidInsn(
+                    "Resolved operator path '" + decision.path() + "' is missing semantic result type");
+        }
+        validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
+
+        switch (decision.path()) {
+            case BUILTIN_EVALUATOR -> emitUnaryBuiltinEvaluator(
+                    bodyBuilder,
+                    resultVar,
+                    instruction.op(),
+                    operandVar,
+                    decision.semanticResultType()
+            );
+            default -> throw bodyBuilder.invalidInsn(
+                    "Unary operator path '" + decision.path() + "' is not valid in current stage");
+        }
     }
 
     private void emitBinary(@NotNull CBodyBuilder bodyBuilder,
@@ -82,7 +100,46 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                     emitPrimitiveComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
             case OBJECT_COMPARISON -> emitObjectComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
             case NIL_COMPARISON -> emitNilComparison(bodyBuilder, resultVar, instruction.op(), leftVar, rightVar);
+            case BUILTIN_EVALUATOR -> emitBinaryBuiltinEvaluator(
+                    bodyBuilder,
+                    resultVar,
+                    instruction.op(),
+                    leftVar,
+                    rightVar,
+                    decision.semanticResultType()
+            );
         }
+    }
+
+    private void emitUnaryBuiltinEvaluator(@NotNull CBodyBuilder bodyBuilder,
+                                           @NotNull LirVariable resultVar,
+                                           @NotNull GodotOperator op,
+                                           @NotNull LirVariable operandVar,
+                                           @NotNull GdType semanticResultType) {
+        var helperFunctionName = resolver.renderUnaryEvaluatorHelperName(op, operandVar.type(), semanticResultType);
+        bodyBuilder.callAssign(
+                bodyBuilder.targetOfVar(resultVar),
+                helperFunctionName,
+                semanticResultType,
+                List.of(bodyBuilder.valueOfVar(operandVar))
+        );
+    }
+
+    private void emitBinaryBuiltinEvaluator(@NotNull CBodyBuilder bodyBuilder,
+                                            @NotNull LirVariable resultVar,
+                                            @NotNull GodotOperator op,
+                                            @NotNull LirVariable leftVar,
+                                            @NotNull LirVariable rightVar,
+                                            @NotNull GdType semanticResultType) {
+        var helperFunctionName = resolver.renderBinaryEvaluatorHelperName(
+                op, leftVar.type(), rightVar.type(), semanticResultType
+        );
+        bodyBuilder.callAssign(
+                bodyBuilder.targetOfVar(resultVar),
+                helperFunctionName,
+                semanticResultType,
+                List.of(bodyBuilder.valueOfVar(leftVar), bodyBuilder.valueOfVar(rightVar))
+        );
     }
 
     private void emitPrimitiveComparison(@NotNull CBodyBuilder bodyBuilder,

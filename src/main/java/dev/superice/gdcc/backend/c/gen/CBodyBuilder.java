@@ -361,18 +361,18 @@ public final class CBodyBuilder {
 
         if (targetType instanceof GdObjectType objType) {
             // Route all object writes through one ownership-aware slot write path.
-                emitObjectSlotWrite(
-                        targetCode,
-                        objType,
-                        canDestroyOldValue && !checkInPrepareBlock(),
-                        rhsResult.code(),
-                        value.ptrKind(),
-                        value.type() instanceof GdObjectType objectType ? objectType : null,
-                        value.ownership()
-                );
-            } else {
-                emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
-            }
+            emitObjectSlotWrite(
+                    targetCode,
+                    objType,
+                    canDestroyOldValue && !checkInPrepareBlock(),
+                    rhsResult.code(),
+                    value.ptrKind(),
+                    value.type() instanceof GdObjectType objectType ? objectType : null,
+                    value.ownership()
+            );
+        } else {
+            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
+        }
 
         markTargetInitialized(target);
         emitTempDestroys(rhsResult.temps());
@@ -1064,6 +1064,9 @@ public final class CBodyBuilder {
         if (funcName.equals("gdcc_new_Variant_with_gdcc_Object")) {
             return false;
         }
+        if (funcName.startsWith("gdcc_eval_")) {
+            return true;
+        }
         if (funcName.startsWith("godot_")) {
             return true;
         }
@@ -1074,7 +1077,7 @@ public final class CBodyBuilder {
     }
 
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
-        return funcName.startsWith("godot_");
+        return funcName.startsWith("godot_") || funcName.startsWith("gdcc_eval_");
     }
 
     private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,

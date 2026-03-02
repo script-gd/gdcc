@@ -7,8 +7,12 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /// Shared resolver for operator instruction codegen.
 ///
@@ -19,8 +23,12 @@ import java.util.Objects;
 ///
 /// Stage 2 extends this resolver with compare specializations.
 public final class OperatorResolver {
+    private static final Logger LOGGER = LoggerFactory.getLogger(OperatorResolver.class);
+    private static final Pattern NON_IDENTIFIER_PATTERN = Pattern.compile("[^a-z0-9_]");
+
     public enum OperatorPath {
         UNIMPLEMENTED,
+        BUILTIN_EVALUATOR,
         PRIMITIVE_COMPARISON,
         OBJECT_COMPARISON,
         NIL_COMPARISON
@@ -45,7 +53,23 @@ public final class OperatorResolver {
         Objects.requireNonNull(bodyBuilder);
         Objects.requireNonNull(op);
         Objects.requireNonNull(operandType);
-        return PathDecision.unresolved("Unary operator path is not implemented yet");
+
+        var semanticResultType = resolveOperatorReturnType(bodyBuilder, operandType, op, null);
+        if (semanticResultType == null) {
+            return PathDecision.unresolved(
+                    "Unary operator metadata is missing for signature (" +
+                            operandType.getTypeName() + ", " + op.name() + ", \"\")"
+            );
+        }
+
+        resolveVariantTypeEnumLiteral(bodyBuilder, operandType);
+        resolveVariantTypeEnumLiteral(bodyBuilder, semanticResultType);
+
+        return new PathDecision(
+                OperatorPath.BUILTIN_EVALUATOR,
+                semanticResultType,
+                "Unary builtin evaluator path"
+        );
     }
 
     public @NotNull PathDecision resolveBinaryPath(@NotNull CBodyBuilder bodyBuilder,
@@ -57,48 +81,62 @@ public final class OperatorResolver {
         Objects.requireNonNull(leftType);
         Objects.requireNonNull(rightType);
 
-        if (!isComparisonOperator(op)) {
-            return PathDecision.unresolved("Only compare specialization is implemented in current stage");
+        if (isComparisonOperator(op)) {
+            if (leftType instanceof GdNilType || rightType instanceof GdNilType) {
+                if (!isEqualityOperator(op)) {
+                    return PathDecision.unresolved("Nil specialization currently supports only == and !=");
+                }
+                return new PathDecision(
+                        OperatorPath.NIL_COMPARISON,
+                        GdBoolType.BOOL,
+                        "Nil compare specialization"
+                );
+            }
+
+            if (leftType instanceof GdObjectType && rightType instanceof GdObjectType) {
+                if (!isEqualityOperator(op)) {
+                    return PathDecision.unresolved("Object comparison supports only == and !=");
+                }
+                return new PathDecision(
+                        OperatorPath.OBJECT_COMPARISON,
+                        GdBoolType.BOOL,
+                        "Object compare specialization"
+                );
+            }
+
+            if (leftType instanceof GdPrimitiveType && rightType instanceof GdPrimitiveType) {
+                if (!matchesBinaryMetadata(bodyBuilder, leftType, op, rightType)) {
+                    return PathDecision.unresolved("Primitive compare metadata is missing");
+                }
+                var metadataReturnType = resolveOperatorReturnType(bodyBuilder, leftType, op, rightType);
+                if (!(metadataReturnType instanceof GdBoolType)) {
+                    return PathDecision.unresolved("Primitive compare metadata return type must be bool");
+                }
+                return new PathDecision(
+                        OperatorPath.PRIMITIVE_COMPARISON,
+                        GdBoolType.BOOL,
+                        "Primitive compare specialization"
+                );
+            }
         }
 
-        if (leftType instanceof GdNilType || rightType instanceof GdNilType) {
-            if (!isEqualityOperator(op)) {
-                return PathDecision.unresolved("Nil specialization currently supports only == and !=");
-            }
-            return new PathDecision(
-                    OperatorPath.NIL_COMPARISON,
-                    GdBoolType.BOOL,
-                    "Nil compare specialization"
+        var semanticResultType = resolveOperatorReturnType(bodyBuilder, leftType, op, rightType);
+        if (semanticResultType == null) {
+            return PathDecision.unresolved(
+                    "Binary operator metadata is missing for signature (" +
+                            leftType.getTypeName() + ", " + op.name() + ", " + rightType.getTypeName() + ")"
             );
         }
 
-        if (leftType instanceof GdObjectType && rightType instanceof GdObjectType) {
-            if (!isEqualityOperator(op)) {
-                return PathDecision.unresolved("Object comparison supports only == and !=");
-            }
-            return new PathDecision(
-                    OperatorPath.OBJECT_COMPARISON,
-                    GdBoolType.BOOL,
-                    "Object compare specialization"
-            );
-        }
+        resolveVariantTypeEnumLiteral(bodyBuilder, leftType);
+        resolveVariantTypeEnumLiteral(bodyBuilder, rightType);
+        resolveVariantTypeEnumLiteral(bodyBuilder, semanticResultType);
 
-        if (leftType instanceof GdPrimitiveType && rightType instanceof GdPrimitiveType) {
-            if (!matchesBinaryMetadata(bodyBuilder, leftType, op, rightType)) {
-                return PathDecision.unresolved("Primitive compare metadata is missing");
-            }
-            var metadataReturnType = resolveOperatorReturnType(bodyBuilder, leftType, op, rightType);
-            if (!(metadataReturnType instanceof GdBoolType)) {
-                return PathDecision.unresolved("Primitive compare metadata return type must be bool");
-            }
-            return new PathDecision(
-                    OperatorPath.PRIMITIVE_COMPARISON,
-                    GdBoolType.BOOL,
-                    "Primitive compare specialization"
-            );
-        }
-
-        return PathDecision.unresolved("No compare specialization matched for operand types");
+        return new PathDecision(
+                OperatorPath.BUILTIN_EVALUATOR,
+                semanticResultType,
+                "Binary builtin evaluator path"
+        );
     }
 
     public boolean matchesUnaryMetadata(@NotNull CBodyBuilder bodyBuilder,
@@ -107,23 +145,7 @@ public final class OperatorResolver {
         Objects.requireNonNull(bodyBuilder);
         Objects.requireNonNull(operandType);
         Objects.requireNonNull(op);
-        var builtinClass = findBuiltinClass(bodyBuilder.classRegistry(), operandType);
-        if (builtinClass == null) {
-            return false;
-        }
-        for (var classOperator : builtinClass.operators()) {
-            if (classOperator == null) {
-                continue;
-            }
-            var classOperatorEnum = parseOperator(classOperator);
-            if (classOperatorEnum != op) {
-                continue;
-            }
-            if (normalizeTypeName(classOperator.rightType()).isEmpty()) {
-                return true;
-            }
-        }
-        return false;
+        return resolveUnaryMetadataReturnType(bodyBuilder, operandType, op) != null;
     }
 
     public boolean matchesBinaryMetadata(@NotNull CBodyBuilder bodyBuilder,
@@ -134,24 +156,7 @@ public final class OperatorResolver {
         Objects.requireNonNull(leftType);
         Objects.requireNonNull(op);
         Objects.requireNonNull(rightType);
-        var builtinClass = findBuiltinClass(bodyBuilder.classRegistry(), leftType);
-        if (builtinClass == null) {
-            return false;
-        }
-        var normalizedRightType = normalizeTypeName(rightType.getTypeName());
-        for (var classOperator : builtinClass.operators()) {
-            if (classOperator == null) {
-                continue;
-            }
-            var classOperatorEnum = parseOperator(classOperator);
-            if (classOperatorEnum != op) {
-                continue;
-            }
-            if (normalizedRightType.equals(normalizeTypeName(classOperator.rightType()))) {
-                return true;
-            }
-        }
-        return false;
+        return resolveBinaryMetadataReturnType(bodyBuilder, leftType, op, rightType) != null;
     }
 
     public @Nullable GdType resolveOperatorReturnType(@NotNull CBodyBuilder bodyBuilder,
@@ -161,39 +166,185 @@ public final class OperatorResolver {
         Objects.requireNonNull(bodyBuilder);
         Objects.requireNonNull(leftType);
         Objects.requireNonNull(op);
+        if (rightType == null) {
+            return resolveUnaryMetadataReturnType(bodyBuilder, leftType, op);
+        }
+        return resolveBinaryMetadataReturnType(bodyBuilder, leftType, op, rightType);
+    }
 
-        var builtinClass = findBuiltinClass(bodyBuilder.classRegistry(), leftType);
+    public @NotNull String resolveVariantOperatorEnumLiteral(@NotNull GodotOperator op) {
+        return switch (op) {
+            case EQUAL -> "GDEXTENSION_VARIANT_OP_EQUAL";
+            case NOT_EQUAL -> "GDEXTENSION_VARIANT_OP_NOT_EQUAL";
+            case LESS -> "GDEXTENSION_VARIANT_OP_LESS";
+            case LESS_EQUAL -> "GDEXTENSION_VARIANT_OP_LESS_EQUAL";
+            case GREATER -> "GDEXTENSION_VARIANT_OP_GREATER";
+            case GREATER_EQUAL -> "GDEXTENSION_VARIANT_OP_GREATER_EQUAL";
+            case ADD -> "GDEXTENSION_VARIANT_OP_ADD";
+            case SUBTRACT -> "GDEXTENSION_VARIANT_OP_SUBTRACT";
+            case MULTIPLY -> "GDEXTENSION_VARIANT_OP_MULTIPLY";
+            case DIVIDE -> "GDEXTENSION_VARIANT_OP_DIVIDE";
+            case NEGATE -> "GDEXTENSION_VARIANT_OP_NEGATE";
+            case POSITIVE -> "GDEXTENSION_VARIANT_OP_POSITIVE";
+            case MODULE -> "GDEXTENSION_VARIANT_OP_MODULE";
+            case POWER -> "GDEXTENSION_VARIANT_OP_POWER";
+            case SHIFT_LEFT -> "GDEXTENSION_VARIANT_OP_SHIFT_LEFT";
+            case SHIFT_RIGHT -> "GDEXTENSION_VARIANT_OP_SHIFT_RIGHT";
+            case BIT_AND -> "GDEXTENSION_VARIANT_OP_BIT_AND";
+            case BIT_OR -> "GDEXTENSION_VARIANT_OP_BIT_OR";
+            case BIT_XOR -> "GDEXTENSION_VARIANT_OP_BIT_XOR";
+            case BIT_NOT -> "GDEXTENSION_VARIANT_OP_BIT_NEGATE";
+            case AND -> "GDEXTENSION_VARIANT_OP_AND";
+            case OR -> "GDEXTENSION_VARIANT_OP_OR";
+            case XOR -> "GDEXTENSION_VARIANT_OP_XOR";
+            case NOT -> "GDEXTENSION_VARIANT_OP_NOT";
+            case IN -> "GDEXTENSION_VARIANT_OP_IN";
+        };
+    }
+
+    public @NotNull String resolveVariantTypeEnumLiteral(@NotNull CBodyBuilder bodyBuilder,
+                                                         @NotNull GdType type) {
+        var extensionType = type.getGdExtensionType();
+        if (extensionType == null) {
+            throw bodyBuilder.invalidInsn(
+                    "Cannot map type '" + type.getTypeName() + "' to GDExtensionVariantType"
+            );
+        }
+        return "GDEXTENSION_VARIANT_TYPE_" + extensionType.name();
+    }
+
+    public @NotNull String renderUnaryEvaluatorHelperName(@NotNull GodotOperator op,
+                                                          @NotNull GdType operandType,
+                                                          @NotNull GdType returnType) {
+        return "gdcc_eval_unary_" + sanitizeIdentifier(op.name()) + "_" +
+                sanitizeIdentifier(operandType.getTypeName()) +
+                "_to_" + sanitizeIdentifier(returnType.getTypeName());
+    }
+
+    public @NotNull String renderBinaryEvaluatorHelperName(@NotNull GodotOperator op,
+                                                           @NotNull GdType leftType,
+                                                           @NotNull GdType rightType,
+                                                           @NotNull GdType returnType) {
+        return "gdcc_eval_binary_" + sanitizeIdentifier(op.name()) + "_" +
+                sanitizeIdentifier(leftType.getTypeName()) + "_" +
+                sanitizeIdentifier(rightType.getTypeName()) +
+                "_to_" + sanitizeIdentifier(returnType.getTypeName());
+    }
+
+    private @Nullable GdType resolveUnaryMetadataReturnType(@NotNull CBodyBuilder bodyBuilder,
+                                                            @NotNull GdType operandType,
+                                                            @NotNull GodotOperator op) {
+        var builtinClass = findBuiltinClass(bodyBuilder.classRegistry(), operandType);
         if (builtinClass == null) {
             return null;
         }
-
-        var normalizedRightType = rightType == null ? "" : normalizeTypeName(rightType.getTypeName());
-        for (var classOperator : builtinClass.operators()) {
+        for (var i = 0; i < builtinClass.operators().size(); i++) {
+            var classOperator = builtinClass.operators().get(i);
             if (classOperator == null) {
                 continue;
             }
-            var classOperatorEnum = parseOperator(classOperator);
-            if (classOperatorEnum != op) {
+            var metadataOp = parseOperatorSafely(bodyBuilder, builtinClass, classOperator, i);
+            if (metadataOp != op) {
                 continue;
             }
-            if (!normalizedRightType.equals(normalizeTypeName(classOperator.rightType()))) {
+            if (!normalizeTypeName(classOperator.rightType()).isEmpty()) {
                 continue;
             }
-            var returnTypeName = classOperator.returnType();
-            if (returnTypeName == null || returnTypeName.isBlank()) {
-                return null;
+            var parsedReturnType = parseReturnTypeSafely(bodyBuilder, builtinClass, classOperator, i);
+            if (parsedReturnType == null) {
+                continue;
             }
-            return ClassRegistry.tryParseTextType(returnTypeName);
+            return parsedReturnType;
         }
         return null;
     }
 
-    private @Nullable GodotOperator parseOperator(@NotNull ExtensionBuiltinClass.ClassOperator classOperator) {
-        try {
-            return classOperator.operator();
-        } catch (IllegalArgumentException _) {
+    private @Nullable GdType resolveBinaryMetadataReturnType(@NotNull CBodyBuilder bodyBuilder,
+                                                             @NotNull GdType leftType,
+                                                             @NotNull GodotOperator op,
+                                                             @NotNull GdType rightType) {
+        var builtinClass = findBuiltinClass(bodyBuilder.classRegistry(), leftType);
+        if (builtinClass == null) {
             return null;
         }
+        var normalizedRightType = normalizeTypeName(rightType.getTypeName());
+        for (var i = 0; i < builtinClass.operators().size(); i++) {
+            var classOperator = builtinClass.operators().get(i);
+            if (classOperator == null) {
+                continue;
+            }
+            var metadataOp = parseOperatorSafely(bodyBuilder, builtinClass, classOperator, i);
+            if (metadataOp != op) {
+                continue;
+            }
+            var metadataRightType = normalizeTypeName(classOperator.rightType());
+            if (metadataRightType.isEmpty()) {
+                warnMetadataEntry(
+                        bodyBuilder,
+                        builtinClass,
+                        classOperator,
+                        i,
+                        "binary operator metadata has empty right_type"
+                );
+                continue;
+            }
+            if (!normalizedRightType.equals(metadataRightType)) {
+                continue;
+            }
+            var parsedReturnType = parseReturnTypeSafely(bodyBuilder, builtinClass, classOperator, i);
+            if (parsedReturnType == null) {
+                continue;
+            }
+            return parsedReturnType;
+        }
+        return null;
+    }
+
+    private @Nullable GodotOperator parseOperatorSafely(@NotNull CBodyBuilder bodyBuilder,
+                                                        @NotNull ExtensionBuiltinClass builtinClass,
+                                                        @NotNull ExtensionBuiltinClass.ClassOperator classOperator,
+                                                        int operatorIndex) {
+        try {
+            return classOperator.operator();
+        } catch (RuntimeException ex) {
+            warnMetadataEntry(
+                    bodyBuilder,
+                    builtinClass,
+                    classOperator,
+                    operatorIndex,
+                    "cannot parse metadata operator: " + ex.getMessage()
+            );
+            return null;
+        }
+    }
+
+    private @Nullable GdType parseReturnTypeSafely(@NotNull CBodyBuilder bodyBuilder,
+                                                   @NotNull ExtensionBuiltinClass builtinClass,
+                                                   @NotNull ExtensionBuiltinClass.ClassOperator classOperator,
+                                                   int operatorIndex) {
+        var returnTypeName = normalizeTypeName(classOperator.returnType());
+        if (returnTypeName.isEmpty()) {
+            warnMetadataEntry(
+                    bodyBuilder,
+                    builtinClass,
+                    classOperator,
+                    operatorIndex,
+                    "operator metadata has empty return_type"
+            );
+            return null;
+        }
+        var parsedReturnType = ClassRegistry.tryParseTextType(returnTypeName);
+        if (parsedReturnType == null) {
+            warnMetadataEntry(
+                    bodyBuilder,
+                    builtinClass,
+                    classOperator,
+                    operatorIndex,
+                    "operator metadata return_type '" + returnTypeName + "' cannot be parsed"
+            );
+            return null;
+        }
+        return parsedReturnType;
     }
 
     private @Nullable ExtensionBuiltinClass findBuiltinClass(@NotNull ClassRegistry classRegistry,
@@ -202,11 +353,48 @@ public final class OperatorResolver {
         return classRegistry.findBuiltinClass(typeName);
     }
 
+    private void warnMetadataEntry(@NotNull CBodyBuilder bodyBuilder,
+                                   @NotNull ExtensionBuiltinClass builtinClass,
+                                   @NotNull ExtensionBuiltinClass.ClassOperator classOperator,
+                                   int operatorIndex,
+                                   @NotNull String reason) {
+        var block = bodyBuilder.currentBlock();
+        var blockId = block != null ? block.id() : "<unknown>";
+        LOGGER.warn(
+                "Skip invalid operator metadata: builtin='{}', operatorIndex={}, operator='{}', rightType='{}', returnType='{}', reason='{}', function='{}', block='{}', insnIndex={}",
+                builtinClass.name(),
+                operatorIndex,
+                classOperator.name(),
+                classOperator.rightType(),
+                classOperator.returnType(),
+                reason,
+                bodyBuilder.func().getName(),
+                blockId,
+                bodyBuilder.currentInsnIndex()
+        );
+    }
+
     private @NotNull String normalizeTypeName(@Nullable String typeName) {
         if (typeName == null) {
             return "";
         }
         return typeName.trim();
+    }
+
+    private @NotNull String sanitizeIdentifier(@NotNull String raw) {
+        var normalized = raw.trim().toLowerCase(Locale.ROOT);
+        var sanitized = NON_IDENTIFIER_PATTERN.matcher(normalized).replaceAll("_");
+        sanitized = sanitized.replaceAll("_+", "_");
+        if (sanitized.startsWith("_")) {
+            sanitized = sanitized.substring(1);
+        }
+        if (sanitized.endsWith("_")) {
+            sanitized = sanitized.substring(0, sanitized.length() - 1);
+        }
+        if (sanitized.isBlank()) {
+            return "unknown";
+        }
+        return sanitized;
     }
 
     private boolean isComparisonOperator(@NotNull GodotOperator op) {

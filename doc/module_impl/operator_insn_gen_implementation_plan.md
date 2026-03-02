@@ -588,11 +588,11 @@ helper 内部：
 
 实施项：
 
-1. 实现 unary `rightType=""` 归一化匹配。
-2. 实现 binary `(leftType, op, rightType)` 匹配与异常 metadata 容错。
-3. 实现统一结果类型解析入口（`resolveOperatorReturnType(...)`）。
-4. 实现 `GdType -> GDExtensionVariantType` 映射与 fail-fast。
-5. 打通非快路径 builtin 的 evaluator 代码生成。
+1. [x] 实现 unary `rightType=""` 归一化匹配。
+2. [x] 实现 binary `(leftType, op, rightType)` 匹配与异常 metadata 容错。
+3. [x] 实现统一结果类型解析入口（`resolveOperatorReturnType(...)`）。
+4. [x] 实现 `GdType -> GDExtensionVariantType` 映射与 fail-fast。
+5. [x] 打通非快路径 builtin 的 evaluator 代码生成。
 
 涉及文件：
 

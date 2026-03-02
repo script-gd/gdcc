@@ -86,6 +86,33 @@ typedef struct <@lambdaCaptureName classDef func/> {
 #define gdcc_new_Variant_with_gdcc_Object(obj) godot_new_Variant_with_Object(gdcc_object_to_godot_object_ptr((obj), _Generic((obj), <#list module.classDefs as classDef>${classDef.name}*: ${classDef.name}_object_ptr<#if classDef_has_next>, </#if></#list>)))
 </#if>
 
+<#assign operatorEvaluatorHelperSpecs = helper.collectOperatorEvaluatorHelperSpecs(module)>
+<#if operatorEvaluatorHelperSpecs?size gt 0>
+// Operator evaluator helpers
+<#list operatorEvaluatorHelperSpecs as spec>
+static inline ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} ${spec.functionName}(
+    ${helper.renderOperatorEvaluatorHelperTypeInC(spec.leftType)} left<#if !spec.unary>,
+    ${helper.renderOperatorEvaluatorHelperTypeInC(spec.rightType)} right</#if>
+) {
+    static GDExtensionPtrOperatorEvaluator evaluator = NULL;
+    if (evaluator == NULL) {
+        evaluator = godot_variant_get_ptr_operator_evaluator(
+            ${spec.operatorEnumLiteral},
+            ${spec.leftVariantTypeEnumLiteral},
+            <#if spec.unary>GDEXTENSION_VARIANT_TYPE_NIL<#else>${spec.rightVariantTypeEnumLiteral}</#if>
+        );
+    }
+    ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} result;
+    evaluator(
+        ${helper.renderOperatorEvaluatorArgExpr(spec.leftType, "left")},
+        <#if spec.unary>NULL<#else>${helper.renderOperatorEvaluatorArgExpr(spec.rightType, "right")}</#if>,
+        &result
+    );
+    return result;
+}
+</#list>
+</#if>
+
 // Method binding helpers
 
 <#list helper.bindingDataList as bindingData>

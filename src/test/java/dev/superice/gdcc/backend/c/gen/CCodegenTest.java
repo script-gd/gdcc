@@ -8,12 +8,15 @@ import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.ReturnInsn;
+import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
@@ -111,6 +114,45 @@ public class CCodegenTest {
     }
 
     @Test
+    public void rendersOperatorEvaluatorHelpersAndUsesHelperCallsInFunctionBody() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("operator_eval");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("left", GdIntType.INT);
+        func.createAndAddVariable("right", GdIntType.INT);
+        func.createAndAddVariable("tmp", GdIntType.INT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new BinaryOpInsn("tmp", GodotOperator.ADD, "left", "right"));
+        entry.instructions().add(new UnaryOpInsn("result", GodotOperator.NEGATE, "tmp"));
+        entry.instructions().add(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("operator_eval_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(evaluatorIntApi());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+
+        var cCode = new String(files.getFirst().contentWriter());
+        var hCode = new String(files.getLast().contentWriter());
+
+        assertTrue(hCode.contains("static inline godot_int gdcc_eval_binary_add_int_int_to_int("), hCode);
+        assertTrue(hCode.contains("static inline godot_int gdcc_eval_unary_negate_int_to_int("), hCode);
+        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_ADD"), hCode);
+        assertTrue(hCode.contains("GDEXTENSION_VARIANT_OP_NEGATE"), hCode);
+        assertTrue(cCode.contains("$tmp = gdcc_eval_binary_add_int_int_to_int($left, $right);"), cCode);
+        assertTrue(cCode.contains("$result = gdcc_eval_unary_negate_int_to_int($tmp);"), cCode);
+    }
+
+    @Test
     public void generatesExplicitGdccInheritanceLayoutAndObjectPtrHelpers() throws Exception {
         var parentClass = new LirClassDef("GDParentNode", "Node");
         parentClass.addProperty(new LirPropertyDef("speed", GdFloatType.FLOAT));
@@ -186,7 +228,7 @@ public class CCodegenTest {
     private static String resolveConstructTarget(String cCode, String className) {
         var functionPrefix = "GDExtensionObjectPtr\\s+" + Pattern.quote(className) + "_class_create_instance";
         var pattern = Pattern.compile(functionPrefix +
-                "\\([^)]*\\)\\s*\\{\\s*GDExtensionObjectPtr obj = godot_classdb_construct_object2\\(GD_STATIC_SN\\(u8\"([^\"]+)\"\\)\\);",
+                        "\\([^)]*\\)\\s*\\{\\s*GDExtensionObjectPtr obj = godot_classdb_construct_object2\\(GD_STATIC_SN\\(u8\"([^\"]+)\"\\)\\);",
                 Pattern.DOTALL);
         var matcher = pattern.matcher(cCode);
         assertTrue(matcher.find(), "Missing create_instance construct target for class " + className);
@@ -212,5 +254,32 @@ public class CCodegenTest {
             count++;
             fromIndex = index + needle.length();
         }
+    }
+
+    private static ExtensionAPI evaluatorIntApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("unary-", "", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
     }
 }

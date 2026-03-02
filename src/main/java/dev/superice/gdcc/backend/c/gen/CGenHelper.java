@@ -1,9 +1,15 @@
 package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.backend.c.gen.insn.OperatorResolver;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.exception.NotImplementedException;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.LirVariable;
+import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.FunctionSignature;
@@ -20,6 +26,7 @@ public final class CGenHelper {
 
     private final @NotNull CodegenContext context;
     private final @NotNull CBuiltinBuilder builtinBuilder;
+    private final @NotNull OperatorResolver operatorResolver = new OperatorResolver();
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
 
     public CGenHelper(@NotNull CodegenContext context, @NotNull List<? extends ClassDef> classDefs) {
@@ -36,8 +43,150 @@ public final class CGenHelper {
     ) {
     }
 
+    public record OperatorEvaluatorHelperSpec(
+            @NotNull String functionName,
+            boolean unary,
+            @NotNull String operatorEnumLiteral,
+            @NotNull GdType leftType,
+            @Nullable GdType rightType,
+            @NotNull GdType returnType,
+            @NotNull String leftVariantTypeEnumLiteral,
+            @Nullable String rightVariantTypeEnumLiteral
+    ) {
+        public OperatorEvaluatorHelperSpec {
+            Objects.requireNonNull(functionName);
+            Objects.requireNonNull(operatorEnumLiteral);
+            Objects.requireNonNull(leftType);
+            Objects.requireNonNull(returnType);
+            Objects.requireNonNull(leftVariantTypeEnumLiteral);
+            if (unary && rightType != null) {
+                throw new IllegalArgumentException("Unary evaluator helper must not have rightType");
+            }
+            if (unary && rightVariantTypeEnumLiteral != null) {
+                throw new IllegalArgumentException("Unary evaluator helper must not have rightVariantTypeEnumLiteral");
+            }
+            if (!unary && rightType == null) {
+                throw new IllegalArgumentException("Binary evaluator helper must have rightType");
+            }
+            if (!unary && rightVariantTypeEnumLiteral == null) {
+                throw new IllegalArgumentException("Binary evaluator helper must have rightVariantTypeEnumLiteral");
+            }
+        }
+    }
+
     public @NotNull List<BindingData> getBindingDataList() {
         return List.copyOf(bindingDataSet);
+    }
+
+    public @NotNull List<OperatorEvaluatorHelperSpec> collectOperatorEvaluatorHelperSpecs(@NotNull LirModule module) {
+        var specsByName = new LinkedHashMap<String, OperatorEvaluatorHelperSpec>();
+        for (var classDef : module.getClassDefs()) {
+            collectClassOperatorEvaluatorHelperSpecs(specsByName, classDef);
+        }
+        return List.copyOf(specsByName.values());
+    }
+
+    public @NotNull String renderOperatorEvaluatorHelperTypeInC(@NotNull GdType type) {
+        if (type instanceof GdObjectType) {
+            return "GDExtensionObjectPtr";
+        }
+        return renderGdTypeRefInC(type);
+    }
+
+    public @NotNull String renderOperatorEvaluatorArgExpr(@NotNull GdType type, @NotNull String argName) {
+        if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
+            return "&" + argName;
+        }
+        return argName;
+    }
+
+    private void collectClassOperatorEvaluatorHelperSpecs(@NotNull Map<String, OperatorEvaluatorHelperSpec> specsByName,
+                                                          @NotNull LirClassDef classDef) {
+        for (var func : classDef.getFunctions()) {
+            var bodyBuilder = new CBodyBuilder(this, classDef, func);
+            for (var block : func) {
+                var instructions = block.instructions();
+                for (var i = 0; i < instructions.size(); i++) {
+                    var instruction = instructions.get(i);
+                    bodyBuilder.setCurrentPosition(block, i, instruction);
+                    switch (instruction) {
+                        case UnaryOpInsn unaryOpInsn -> collectUnaryEvaluatorHelperSpec(
+                                specsByName, bodyBuilder, func, unaryOpInsn
+                        );
+                        case BinaryOpInsn binaryOpInsn -> collectBinaryEvaluatorHelperSpec(
+                                specsByName, bodyBuilder, func, binaryOpInsn
+                        );
+                        default -> {
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void collectUnaryEvaluatorHelperSpec(@NotNull Map<String, OperatorEvaluatorHelperSpec> specsByName,
+                                                 @NotNull CBodyBuilder bodyBuilder,
+                                                 @NotNull LirFunctionDef func,
+                                                 @NotNull UnaryOpInsn instruction) {
+        var operandVar = resolveOperatorOperandVariable(func, instruction.operandId(), "operand");
+        var decision = operatorResolver.resolveUnaryPath(bodyBuilder, instruction.op(), operandVar.type());
+        if (decision.path() != OperatorResolver.OperatorPath.BUILTIN_EVALUATOR ||
+                decision.semanticResultType() == null) {
+            return;
+        }
+        var semanticReturnType = decision.semanticResultType();
+        var functionName = operatorResolver.renderUnaryEvaluatorHelperName(
+                instruction.op(), operandVar.type(), semanticReturnType
+        );
+        specsByName.putIfAbsent(functionName, new OperatorEvaluatorHelperSpec(
+                functionName,
+                true,
+                operatorResolver.resolveVariantOperatorEnumLiteral(instruction.op()),
+                operandVar.type(),
+                null,
+                semanticReturnType,
+                operatorResolver.resolveVariantTypeEnumLiteral(bodyBuilder, operandVar.type()),
+                null
+        ));
+    }
+
+    private void collectBinaryEvaluatorHelperSpec(@NotNull Map<String, OperatorEvaluatorHelperSpec> specsByName,
+                                                  @NotNull CBodyBuilder bodyBuilder,
+                                                  @NotNull LirFunctionDef func,
+                                                  @NotNull BinaryOpInsn instruction) {
+        var leftVar = resolveOperatorOperandVariable(func, instruction.leftId(), "left");
+        var rightVar = resolveOperatorOperandVariable(func, instruction.rightId(), "right");
+        var decision = operatorResolver.resolveBinaryPath(bodyBuilder, instruction.op(), leftVar.type(), rightVar.type());
+        if (decision.path() != OperatorResolver.OperatorPath.BUILTIN_EVALUATOR ||
+                decision.semanticResultType() == null) {
+            return;
+        }
+        var semanticReturnType = decision.semanticResultType();
+        var functionName = operatorResolver.renderBinaryEvaluatorHelperName(
+                instruction.op(), leftVar.type(), rightVar.type(), semanticReturnType
+        );
+        specsByName.putIfAbsent(functionName, new OperatorEvaluatorHelperSpec(
+                functionName,
+                false,
+                operatorResolver.resolveVariantOperatorEnumLiteral(instruction.op()),
+                leftVar.type(),
+                rightVar.type(),
+                semanticReturnType,
+                operatorResolver.resolveVariantTypeEnumLiteral(bodyBuilder, leftVar.type()),
+                operatorResolver.resolveVariantTypeEnumLiteral(bodyBuilder, rightVar.type())
+        ));
+    }
+
+    private @NotNull LirVariable resolveOperatorOperandVariable(@NotNull LirFunctionDef func,
+                                                                @NotNull String varId,
+                                                                @NotNull String role) {
+        var variable = func.getVariableById(varId);
+        if (variable == null) {
+            throw new IllegalStateException(
+                    "Operator " + role + " operand variable '" + varId + "' not found in function '" + func.getName() + "'"
+            );
+        }
+        return variable;
     }
 
     private void collectBindingData(@NotNull List<? extends ClassDef> classDefs) {
@@ -335,7 +484,7 @@ public final class CGenHelper {
     /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
     ///
     /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
-    ///                                                       but the underlying proxy Godot object ptr.
+    ///                                                                         but the underlying proxy Godot object ptr.
     public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
                                                           @NotNull String targetVarName,
                                                           @NotNull GdType sourceType,

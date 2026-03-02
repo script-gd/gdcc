@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
@@ -226,6 +227,73 @@ class COperatorInsnGenTest {
         assertTrue(ex.getMessage().contains("cannot be a reference"), ex.getMessage());
     }
 
+    @Test
+    @DisplayName("unary metadata should match with normalized empty rightType and emit evaluator call")
+    void unaryMetadataWithEmptyRightTypeEmitsEvaluatorCall() {
+        var body = generateBody(
+                evaluatorIntApi(),
+                new UnaryOpInsn("result", GodotOperator.NEGATE, "operand"),
+                List.of(
+                        new VariableSpec("operand", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = gdcc_eval_unary_negate_int_to_int($operand);"), body);
+    }
+
+    @Test
+    @DisplayName("binary non-compare builtin should emit ptr evaluator call")
+    void binaryNonCompareBuiltinEmitsEvaluatorCall() {
+        var body = generateBody(
+                evaluatorIntApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = gdcc_eval_binary_add_int_int_to_int($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("binary metadata lookup should skip malformed entries and keep valid match")
+    void binaryMetadataLookupSkipsMalformedEntries() {
+        var body = generateBody(
+                malformedEvaluatorIntApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdIntType.INT, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = gdcc_eval_binary_add_int_int_to_int($left, $right);"), body);
+    }
+
+    @Test
+    @DisplayName("evaluator path should fail-fast when semantic result type is incompatible")
+    void evaluatorPathFailsWhenResultTypeIncompatible() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        evaluatorIntApi(),
+                        new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdIntType.INT, false),
+                                new VariableSpec("right", GdIntType.INT, false),
+                                new VariableSpec("result", GdBoolType.BOOL, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Operator result type 'int' is not assignable"), ex.getMessage());
+    }
+
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
                                          @NotNull LirInstruction instruction,
                                          @NotNull List<VariableSpec> variableSpecs) {
@@ -289,6 +357,62 @@ class COperatorInsnGenTest {
                         new ExtensionBuiltinClass.ClassOperator(">", "int", "bool"),
                         new ExtensionBuiltinClass.ClassOperator("==", "int", "bool"),
                         new ExtensionBuiltinClass.ClassOperator("!=", "int", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI evaluatorIntApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("unary-", "", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI malformedEvaluatorIntApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("invalid_op", "int", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("+", "", "int"),
+                        new ExtensionBuiltinClass.ClassOperator("+", "int", ""),
+                        new ExtensionBuiltinClass.ClassOperator("+", "int", "int")
                 ),
                 List.of(),
                 List.of(),
