@@ -93,6 +93,13 @@ public final class CGenHelper {
         return renderGdTypeRefInC(type);
     }
 
+    public @NotNull String renderOperatorEvaluatorHelperReturnTypeInC(@NotNull GdType type) {
+        if (type instanceof GdObjectType) {
+            return "GDExtensionObjectPtr";
+        }
+        return renderGdTypeInC(type);
+    }
+
     public @NotNull String renderOperatorEvaluatorArgExpr(@NotNull GdType type, @NotNull String argName) {
         if (type instanceof GdPrimitiveType || type instanceof GdObjectType) {
             return "&" + argName;
@@ -490,7 +497,7 @@ public final class CGenHelper {
     /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
     ///
     /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
-    ///                                                                                           but the underlying proxy Godot object ptr.
+    ///                                                                                                             but the underlying proxy Godot object ptr.
     public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
                                                           @NotNull String targetVarName,
                                                           @NotNull GdType sourceType,

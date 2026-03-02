@@ -346,8 +346,9 @@ helper 内部：
 
 1. `godot_variant_evaluate` / ptr-evaluator 在真实引擎中的可用性与返回语义。
 2. `POWER -> pow/pow_int`、比较特化与“原顺序 metadata 严格匹配”在运行时的行为一致性。
-3. `Variant` 回写与生命周期管道（`assignVar/callAssign`）是否在高频调用下稳定。
-4. 运行时失败路径（`valid == false`、`evaluator == NULL`）是否按计划 hard-fail 且可观测。
+3. 字符串、向量、矩阵等非 primitive 运算在真实引擎中的行为一致性。
+4. `Variant` 回写与生命周期管道（`assignVar/callAssign`）是否在高频调用下稳定。
+5. 运行时失败路径（`valid == false`、`evaluator == NULL`）是否按计划 hard-fail 且可观测。
 
 ### 8.2 测试分层与门禁级别
 
@@ -421,6 +422,15 @@ helper 内部：
 7. `E7-LIFECYCLE-STRESS`：
    - 高频调用 destroyable/value-semantic 结果路径。
    - 检查是否出现异常崩溃或明显资源异常增长。
+8. `E8-STRING-OPS`：
+   - 覆盖 `String + String`、`String == String`。
+   - 断言拼接与比较结果与 GDScript 基线一致。
+9. `E9-VECTOR-OPS`：
+   - 覆盖 `Vector2 + Vector2`（可扩展 `Vector3`）。
+   - 断言返回向量分量与引擎直接运算结果一致。
+10. `E10-MATRIX-OPS`：
+   - 覆盖 `Transform2D * Transform2D`（后续可扩展 `Transform3D`）。
+   - 断言矩阵/基向量/平移分量与引擎直接运算结果一致。
 
 ### 8.6 执行流程（单次集成测试）
 
@@ -446,7 +456,7 @@ helper 内部：
 2. 阶段 4 完成后：接入 `E1`（POWER 快路径）。
 3. 阶段 5 收敛后：接入 `E3` + `E4`（原顺序匹配约束与 `IN` 约束）。
 4. 阶段 6 完成后：接入 `E5` + `E6` + `E7`（Variant 与生命周期）。
-5. 阶段 7 收尾：全量 `E1~E7` 作为合并前门禁回归。
+5. 阶段 7 收尾：全量 `E1~E10` 作为合并前门禁回归。
 
 ### 8.8 验收标准与失败归因
 
@@ -469,6 +479,22 @@ helper 内部：
 2. 输入类型签名与操作符。
 3. 命中路径与回退信息。
 4. Godot 日志摘要与产物路径。
+
+### 8.9 当前实施进展
+
+1. `2026-03-02`：已开始落地引擎集成测试，新增 `src/test/java/dev/superice/gdcc/backend/c/gen/COperatorInsnGenEngineTest.java`。
+2. 首批覆盖：字符串运算（`E8`）、向量运算（`E9`）、矩阵运算（`E10`）。
+3. `2026-03-02`：修复 operator evaluator helper 的返回类型渲染错误，新增 `renderOperatorEvaluatorHelperReturnTypeInC`，避免 `String/Vector2/Transform2D` 被错误生成为指针返回类型。
+4. `2026-03-02`：执行 `./gradlew test --tests COperatorInsnGenEngineTest --no-daemon --info --console=plain`，结果 `BUILD SUCCESSFUL`，`COperatorInsnGenEngineTest` 1/1 通过。
+5. `2026-03-02`：执行 `./gradlew test --tests COperatorInsnGenTest --tests CCodegenTest --no-daemon --info --console=plain` 回归验证，结果 `BUILD SUCCESSFUL`，`COperatorInsnGenTest` 29/29、`CCodegenTest` 6/6 通过。
+6. `2026-03-02`：补齐并落地 `E1~E7` 引擎集成测试，统一纳入 `COperatorInsnGenEngineTest`：
+   - 运行时场景：`E1`（POWER 快路径）、`E2`（Object/Nil 比较特化）、`E4`（`IN` 原顺序正向）、`E5`（Variant mixed evaluate）、`E6`（`valid == false` 失败分支）、`E7`（生命周期压力）。
+   - 编译期 fail-fast 场景：`E3`（`String > int` 原顺序 metadata 缺失）、`E4` 反向约束（`Array IN int`）。
+7. `2026-03-02`：执行联合定向命令 `./gradlew test --tests COperatorInsnGenEngineTest --tests COperatorInsnGenTest --tests CCodegenTest --no-daemon --info --console=plain`。
+8. `2026-03-02`：联合回归统计：
+   - `COperatorInsnGenEngineTest` 3/3 通过（`0` skipped / `0` failures / `0` errors）。
+   - `COperatorInsnGenTest` 29/29 通过（`0` skipped / `0` failures / `0` errors）。
+   - `CCodegenTest` 6/6 通过（`0` skipped / `0` failures / `0` errors）。
 
 ---
 

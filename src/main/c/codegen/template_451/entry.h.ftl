@@ -90,7 +90,7 @@ typedef struct <@lambdaCaptureName classDef func/> {
 <#if operatorEvaluatorHelperSpecs?size gt 0>
 // Operator evaluator helpers
 <#list operatorEvaluatorHelperSpecs as spec>
-static inline ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} ${spec.functionName}(
+static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} ${spec.functionName}(
     ${helper.renderOperatorEvaluatorHelperTypeInC(spec.leftType)} left<#if !spec.unary>,
     ${helper.renderOperatorEvaluatorHelperTypeInC(spec.rightType)} right</#if>
 ) {
@@ -106,7 +106,7 @@ static inline ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} ${
             return ${helper.renderDefaultValueExprInC(spec.returnType)};
         }
     }
-    ${helper.renderOperatorEvaluatorHelperTypeInC(spec.returnType)} result;
+    ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnType)} result;
     evaluator(
         ${helper.renderOperatorEvaluatorArgExpr(spec.leftType, "left")},
         <#if spec.unary>NULL<#else>${helper.renderOperatorEvaluatorArgExpr(spec.rightType, "right")}</#if>,
