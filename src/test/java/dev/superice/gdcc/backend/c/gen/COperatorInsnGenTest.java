@@ -18,6 +18,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
@@ -420,6 +421,23 @@ class COperatorInsnGenTest {
     }
 
     @Test
+    @DisplayName("variant operand should still use variant_evaluate even when metadata exists")
+    void variantOperandStillUsesVariantEvaluateWhenMetadataExists() {
+        var body = generateBody(
+                evaluatorIntApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_IN"), body);
+        assertFalse(body.contains("gdcc_eval_binary_in_int_int_to_bool"), body);
+    }
+
+    @Test
     @DisplayName("variant_evaluate failure should return function default value for non-void function")
     void variantEvaluateFailureReturnsFunctionDefaultValue() {
         var body = generateBody(
@@ -520,6 +538,25 @@ class COperatorInsnGenTest {
         );
 
         assertTrue(body.contains("$result = (($left ? 1 : 0) != ($right ? 1 : 0));"), body);
+    }
+
+    @Test
+    @DisplayName("IN(int, Array) should bypass primitive fast path and resolve by metadata in original order")
+    void inIntArrayBypassesPrimitiveFastPathAndUsesEvaluator() {
+        var body = generateBody(
+                inIntArrayApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdIntType.INT, false),
+                        new VariableSpec("right", new GdArrayType(GdVariantType.VARIANT), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = gdcc_eval_binary_in_int_array_to_bool($left, &$right);"), body);
+        assertFalse(body.contains("godot_variant_evaluate"), body);
+        assertFalse(body.contains("pow("), body);
+        assertFalse(body.contains("pow_int("), body);
     }
 
     private @NotNull String generateBody(@NotNull ExtensionAPI api,
@@ -767,6 +804,32 @@ class COperatorInsnGenTest {
                 false,
                 List.of(
                         new ExtensionBuiltinClass.ClassOperator("in", "String", "bool")
+                ),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI inIntArrayApi() {
+        var intBuiltin = new ExtensionBuiltinClass(
+                "int",
+                false,
+                List.of(
+                        new ExtensionBuiltinClass.ClassOperator("in", "Array", "bool")
                 ),
                 List.of(),
                 List.of(),

@@ -94,7 +94,10 @@ public final class OperatorResolver {
         if (isComparisonOperator(op)) {
             if (leftType instanceof GdNilType || rightType instanceof GdNilType) {
                 if (!isEqualityOperator(op)) {
-                    return PathDecision.unresolved("Nil specialization currently supports only == and !=");
+                    return PathDecision.unresolved(
+                            withBinarySignature("Nil specialization currently supports only == and !=",
+                                    leftType, op, rightType)
+                    );
                 }
                 return new PathDecision(
                         OperatorPath.NIL_COMPARISON,
@@ -105,7 +108,10 @@ public final class OperatorResolver {
 
             if (leftType instanceof GdObjectType && rightType instanceof GdObjectType) {
                 if (!isEqualityOperator(op)) {
-                    return PathDecision.unresolved("Object comparison supports only == and !=");
+                    return PathDecision.unresolved(
+                            withBinarySignature("Object comparison supports only == and !=",
+                                    leftType, op, rightType)
+                    );
                 }
                 return new PathDecision(
                         OperatorPath.OBJECT_COMPARISON,
@@ -116,11 +122,22 @@ public final class OperatorResolver {
 
             if (leftType instanceof GdPrimitiveType && rightType instanceof GdPrimitiveType) {
                 if (!matchesBinaryMetadata(bodyBuilder, leftType, op, rightType)) {
-                    return PathDecision.unresolved("Primitive compare metadata is missing");
+                    return PathDecision.unresolved(
+                            withBinarySignature("Primitive compare metadata is missing",
+                                    leftType, op, rightType)
+                    );
                 }
                 var metadataReturnType = resolveOperatorReturnType(bodyBuilder, leftType, op, rightType);
                 if (!(metadataReturnType instanceof GdBoolType)) {
-                    return PathDecision.unresolved("Primitive compare metadata return type must be bool");
+                    var resolvedType = metadataReturnType == null ? "<null>" : metadataReturnType.getTypeName();
+                    return PathDecision.unresolved(
+                            withBinarySignature(
+                                    "Primitive compare metadata return type must be bool, but got '" + resolvedType + "'",
+                                    leftType,
+                                    op,
+                                    rightType
+                            )
+                    );
                 }
                 return new PathDecision(
                         OperatorPath.PRIMITIVE_COMPARISON,
@@ -463,6 +480,14 @@ public final class OperatorResolver {
 
     private boolean isEqualityOperator(@NotNull GodotOperator op) {
         return op == GodotOperator.EQUAL || op == GodotOperator.NOT_EQUAL;
+    }
+
+    private @NotNull String withBinarySignature(@NotNull String reason,
+                                                @NotNull GdType leftType,
+                                                @NotNull GodotOperator op,
+                                                @NotNull GdType rightType) {
+        return reason + " for signature (" +
+                leftType.getTypeName() + ", " + op.name() + ", " + rightType.getTypeName() + ")";
     }
 
     private enum PrimitiveKind {
