@@ -511,11 +511,11 @@ helper 内部：
 
 实施项：
 
-1. 新增 `OperatorInsnGen`，接入指令分派入口。
-2. 新增 `OperatorResolver` 空框架，提供接口：路径决策、metadata 查询、结果类型解析。
-3. 在 `CCodegen` 注册 `OperatorInsnGen`。
-4. 完成基础参数校验：`resultId`、操作数存在性、`ref` result 拒绝。
-5. 对未实现路径统一抛 `InvalidInsnException`（含明确信息）。
+1. [x] 新增 `OperatorInsnGen`，接入指令分派入口。
+2. [x] 新增 `OperatorResolver` 空框架，提供接口：路径决策、metadata 查询、结果类型解析。
+3. [x] 在 `CCodegen` 注册 `OperatorInsnGen`。
+4. [x] 完成基础参数校验：`resultId`、操作数存在性、`ref` result 拒绝。
+5. [x] 对未实现路径统一抛 `InvalidInsnException`（含明确信息）。
 
 涉及文件：
 
@@ -550,11 +550,11 @@ helper 内部：
 
 实施项：
 
-1. 实现 primitive 比较特化（仅 `bool/int/float` 且满足 metadata）。
-2. 实现 Object `==/!=`：双空/单空/双非空 `instance_id` 比较。
-3. 实现 Nil 比较特化：`Nil==Nil`、`Nil!=Nil`、`Nil` 与 `Object(null)` 等值规则。
-4. 明确排斥路径：Object 非 `==/!=` 直接 fail-fast。
-5. 增加比较路径结果类型校验（必须兼容 `bool` 结果）。
+1. [x] 实现 primitive 比较特化（仅 `bool/int/float` 且满足 metadata）。
+2. [x] 实现 Object `==/!=`：双空/单空/双非空 `instance_id` 比较。
+3. [x] 实现 Nil 比较特化：`Nil==Nil`、`Nil!=Nil`、`Nil` 与 `Object(null)` 等值规则。
+4. [x] 明确排斥路径：Object 非 `==/!=` 直接 fail-fast。
+5. [x] 增加比较路径结果类型校验（必须兼容 `bool` 结果）。
 
 涉及文件：
 

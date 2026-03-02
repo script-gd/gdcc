@@ -1068,7 +1068,9 @@ public final class CBodyBuilder {
             return true;
         }
         return funcName.endsWith("own_object") || funcName.endsWith("release_object") ||
-                funcName.equals("try_destroy_object") || funcName.equals("gdcc_object_from_godot_object_ptr");
+                funcName.equals("try_destroy_object") ||
+                funcName.equals("gdcc_object_from_godot_object_ptr") ||
+                funcName.equals("gdcc_cmp_object");
     }
 
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {

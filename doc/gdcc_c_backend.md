@@ -52,6 +52,13 @@
   - Do not mix with parent helper unless the value has already been upcast safely.
 - Any touched legacy path that still depends on the deprecated macro must be migrated in the same change or explicitly tracked as migration debt.
 
+### Global Helper Raw Pointer Contract
+
+- `CBodyBuilder#checkGlobalFuncRequireGodotRawPtr` is the single gate for global C helper calls whose object arguments must be Godot raw object pointers.
+- If a new helper is defined to accept `GDExtensionObjectPtr` (for example `gdcc_cmp_object`), add its function name to `checkGlobalFuncRequireGodotRawPtr`.
+- Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
+- Do not duplicate per-generator object pointer normalization helpers for this case.
+
 ### Receiver Value Terminology
 
 - **Receiver Value** means the final C argument expression used as the receiver (`self/this`) when emitting a method call or property getter/setter call.

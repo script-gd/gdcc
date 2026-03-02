@@ -4,13 +4,21 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.GeneratedFile;
 import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
+import dev.superice.gdcc.enums.GodotOperator;
+import dev.superice.gdcc.exception.InvalidInsnException;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirPropertyDef;
+import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -20,9 +28,49 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CCodegenTest {
+    @Test
+    public void binaryOperatorOpcodeIsRegisteredAndFailFastIsControlled() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("operator_fail_fast");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("left", GdIntType.INT);
+        func.createAndAddVariable("right", GdIntType.INT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("operator_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Operator path is not implemented"));
+    }
+
     @Test
     public void generatesEntryFiles() throws Exception {
         // build a simple LirModule
