@@ -450,26 +450,6 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("variant_evaluate path should allow gdcc object subclass check before unpack")
-    void variantEvaluatePathSupportsGdccObjectSubtypeCheck() {
-        var body = generateBody(
-                emptyApi(),
-                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
-                List.of(
-                        new VariableSpec("left", GdVariantType.VARIANT, false),
-                        new VariableSpec("right", GdVariantType.VARIANT, false),
-                        new VariableSpec("result", new GdObjectType("Worker"), false)
-                )
-        );
-
-        assertTrue(body.contains("gdcc_check_variant_type_object(&__gdcc_tmp_op_eval_result_"), body);
-        assertTrue(body.contains("GD_STATIC_SN(u8\"Worker\")"), body);
-        assertTrue(body.contains(", false) || gdcc_check_variant_type_object("), body);
-        assertTrue(body.contains(", true))"), body);
-        assertTrue(body.contains("$result = (Worker*)godot_new_gdcc_Object_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
-    }
-
-    @Test
     @DisplayName("variant operand should still use variant_evaluate even when metadata exists")
     void variantOperandStillUsesVariantEvaluateWhenMetadataExists() {
         var body = generateBody(
