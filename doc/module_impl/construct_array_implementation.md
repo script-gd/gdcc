@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0-4 已完成）
+- 状态：Completed（阶段 0-6 已完成）
 - 更新时间：2026-03-03
 - 范围：`construct_array` 在 C Backend 的语义、实现与验证
 - 关联模块：Low IR / Type System / backend.c / module_impl
@@ -25,6 +25,17 @@
 - 2026-03-03 阶段 4 完成：
   - `CCodegen` 两处自动初始化分支已为 `GdPackedArrayType` 注入 `new ConstructArrayInsn(varId, null)`。
   - 回归通过：`./gradlew test --tests CConstructInsnGenTest --no-daemon --info --console=plain`。
+- 2026-03-03 阶段 5 完成：
+  - 新增额外引擎集成测试：`constructPackedArrayInsnsShouldRunInRealGodot`（覆盖 `PackedInt32Array` 的 explicit/prepare 两条路径）。
+  - 回归通过：`./gradlew test --tests CConstructInsnGenEngineTest --no-daemon --info --console=plain`。
+- 2026-03-03 阶段 6 完成：
+  - 回归通过：`./gradlew test --tests CConstructInsnGenTest --no-daemon --info --console=plain`。
+  - 回归通过：`./gradlew test --tests CConstructInsnGenEngineTest --no-daemon --info --console=plain`。
+  - 回归通过：`./gradlew test --tests CallMethodInsnGenTest --no-daemon --info --console=plain`。
+  - 回归通过：`./gradlew test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain`。
+  - 计划命令 `CGenHelperUtilityResolutionTest` 无匹配测试类（`No tests found for given includes`），已以现有测试类 `CGenHelperTest` 完成等价回归：
+    `./gradlew test --tests CGenHelperTest --no-daemon --info --console=plain`。
+  - 回归通过：`./gradlew classes --no-daemon --info --console=plain`。
 
 ## 合并后的硬性约束（最终口径）
 
@@ -122,9 +133,10 @@
   - 新增显式 packed 构造函数（手写 `ConstructArrayInsn(var, null)`）。
   - 新增 prepare packed 构造函数（依赖自动注入）。
   - 测试脚本新增 packed 类型断言（`typeof` / 容器属性检查）。
+  - 新增独立引擎集成测试 `constructPackedArrayInsnsShouldRunInRealGodot`，专项验证 `PackedInt32Array` 的 explicit/prepare 路径。
 - `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
   - 回归验证 `typedarray::Packed*Array` 与 `typedarray::T` 解析语义未回退。
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperUtilityResolutionTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CGenHelperTest.java`
   - 新增/迁移 `parseExtensionType` 的正反向测试，覆盖 malformed/unsupported 输入。
 
 ## 分阶段执行与验收计划
@@ -185,7 +197,7 @@
 ./gradlew test --tests CConstructInsnGenEngineTest --no-daemon --info --console=plain
 ./gradlew test --tests CallMethodInsnGenTest --no-daemon --info --console=plain
 ./gradlew test --tests CPhaseAControlFlowAndFinallyTest --no-daemon --info --console=plain
-./gradlew test --tests CGenHelperUtilityResolutionTest --no-daemon --info --console=plain
+./gradlew test --tests CGenHelperTest --no-daemon --info --console=plain
 ./gradlew classes --no-daemon --info --console=plain
 ```
 
@@ -211,4 +223,4 @@
 - [x] `MethodCallResolver#parseExtensionType` 已抽取到 `CGenHelper`。
 - [x] `CCodegen` 两处自动初始化对 packed 改为注入 `ConstructArrayInsn(..., null)`。
 - [x] 文档同步完成：`gdcc_low_ir`、`gdcc_type_system`、`gdcc_c_backend`、module_impl。
-- [ ] 目标测试命令全部通过（或按规则 skip）。
+- [x] 目标测试命令全部通过（或按规则 skip）。

@@ -26,6 +26,7 @@ import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdTransform2DType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -110,6 +111,65 @@ class CConstructInsnGenEngineTest {
         assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
     }
 
+    @Test
+    @DisplayName("construct_array packed insns should generate runnable PackedInt32Array constructors in real engine")
+    void constructPackedArrayInsnsShouldRunInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/construct_engine_packed_extra");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo(
+                "construct_engine_packed_extra",
+                GodotVersion.V451,
+                tempDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var constructClass = newPackedConstructEngineClass();
+        var module = new LirModule("construct_engine_packed_extra_module", List.of(constructClass));
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, new ClassRegistry(api)), module);
+
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+        assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(entrySource.contains("make_packed_int32_array_explicit"), "Explicit packed method should be emitted.");
+        assertTrue(entrySource.contains("make_packed_int32_array_prepare"), "Prepare packed method should be emitted.");
+        assertTrue(
+                entrySource.contains("godot_new_PackedInt32Array()"),
+                "PackedInt32Array constructor call should be generated in C source."
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ConstructNode",
+                        constructClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(packedTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("explicit packed int32 array check passed."), "explicit packed check should pass.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("prepare packed int32 array check passed."), "prepare packed check should pass.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
+    }
+
     private static boolean hasZig() {
         return ZigUtil.findZig() != null;
     }
@@ -129,6 +189,16 @@ class CConstructInsnGenEngineTest {
         clazz.addFunction(newPrepareTypedArrayFunction(selfType));
         clazz.addFunction(newExplicitTypedDictionaryFunction(selfType));
         clazz.addFunction(newPrepareTypedDictionaryFunction(selfType));
+        return clazz;
+    }
+
+    private static LirClassDef newPackedConstructEngineClass() {
+        var clazz = new LirClassDef("GDConstructPackedEngineNode", "Node");
+        clazz.setSourceFile("construct_engine_packed_extra.gd");
+
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newExplicitPackedInt32ArrayFunction(selfType));
+        clazz.addFunction(newPreparePackedInt32ArrayFunction(selfType));
         return clazz;
     }
 
@@ -239,6 +309,23 @@ class CConstructInsnGenEngineTest {
         return func;
     }
 
+    private static LirFunctionDef newExplicitPackedInt32ArrayFunction(GdObjectType selfType) {
+        var packedType = GdPackedNumericArrayType.PACKED_INT32_ARRAY;
+        var func = newMethod("make_packed_int32_array_explicit", packedType, selfType);
+        func.createAndAddVariable("packed", packedType);
+        entry(func).instructions().add(new ConstructArrayInsn("packed", null));
+        entry(func).instructions().add(new ReturnInsn("packed"));
+        return func;
+    }
+
+    private static LirFunctionDef newPreparePackedInt32ArrayFunction(GdObjectType selfType) {
+        var packedType = GdPackedNumericArrayType.PACKED_INT32_ARRAY;
+        var func = newMethod("make_packed_int32_array_prepare", packedType, selfType);
+        func.createAndAddVariable("packed", packedType);
+        entry(func).instructions().add(new ReturnInsn("packed"));
+        return func;
+    }
+
     private static LirFunctionDef newMethod(String name, dev.superice.gdcc.type.GdType returnType, GdObjectType selfType) {
         var func = new LirFunctionDef(name);
         func.setReturnType(returnType);
@@ -333,6 +420,38 @@ class CConstructInsnGenEngineTest {
                         return false
                     var dict: Dictionary = value
                     return not dict.is_typed() and dict.is_empty()
+                """;
+    }
+
+    private static String packedTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "ConstructNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var packed_explicit = target.call("make_packed_int32_array_explicit")
+                    if _check_packed_int32_array(packed_explicit):
+                        print("explicit packed int32 array check passed.")
+                    else:
+                        push_error("explicit packed int32 array check failed.")
+                
+                    var packed_prepare = target.call("make_packed_int32_array_prepare")
+                    if _check_packed_int32_array(packed_prepare):
+                        print("prepare packed int32 array check passed.")
+                    else:
+                        push_error("prepare packed int32 array check failed.")
+                
+                func _check_packed_int32_array(value: Variant) -> bool:
+                    if typeof(value) != TYPE_PACKED_INT32_ARRAY:
+                        return false
+                    var packed: PackedInt32Array = value
+                    return packed.size() == 0
                 """;
     }
 }
