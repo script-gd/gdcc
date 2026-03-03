@@ -12,6 +12,7 @@ import dev.superice.gdcc.lir.insn.ConstructionInstruction;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdPackedArrayType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -47,11 +48,19 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                     bodyBuilder.helper().builtinBuilder().constructBuiltin(bodyBuilder, target, ctorArgs);
                 }
                 case ConstructArrayInsn(_, var className) -> {
-                    if (!(resultVar.type() instanceof GdArrayType arrayType)) {
-                        throw bodyBuilder.invalidInsn("Result variable ID '" + resultVar.id() + "' must be Array type");
+                    switch (resultVar.type()) {
+                        case GdArrayType arrayType -> {
+                            validateArrayTypeHint(bodyBuilder, className, arrayType);
+                            bodyBuilder.helper().builtinBuilder().constructBuiltin(bodyBuilder, target, List.of());
+                        }
+                        case GdPackedArrayType _ -> {
+                            validatePackedArrayTypeHint(bodyBuilder, className);
+                            bodyBuilder.helper().builtinBuilder().constructBuiltin(bodyBuilder, target, List.of());
+                        }
+                        default -> throw bodyBuilder.invalidInsn(
+                                "Result variable ID '" + resultVar.id() + "' must be Array or Packed*Array type"
+                        );
                     }
-                    validateArrayTypeHint(bodyBuilder, className, arrayType);
-                    bodyBuilder.helper().builtinBuilder().constructBuiltin(bodyBuilder, target, List.of());
                 }
                 case ConstructDictionaryInsn(_, var keyClassName, var valueClassName) -> {
                     if (!(resultVar.type() instanceof GdDictionaryType dictionaryType)) {
@@ -117,6 +126,16 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                             renderTypeName(bodyBuilder, expectedElementType) +
                             "' does not match result variable element type '" +
                             renderTypeName(bodyBuilder, actualElementType) + "'"
+            );
+        }
+    }
+
+    private void validatePackedArrayTypeHint(@NotNull CBodyBuilder bodyBuilder,
+                                             String className) {
+        if (className != null) {
+            throw bodyBuilder.invalidInsn(
+                    "construct_array for Packed*Array must not provide class_name; " +
+                            "packed array construction is inferred from result variable type"
             );
         }
     }

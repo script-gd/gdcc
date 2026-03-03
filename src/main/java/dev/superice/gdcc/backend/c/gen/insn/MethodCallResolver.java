@@ -10,10 +10,8 @@ import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
-import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
-import dev.superice.gdcc.type.GdPackedArrayType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
@@ -468,7 +466,7 @@ public final class MethodCallResolver {
                                                               @NotNull ParameterDef parameter,
                                                               int parameterIndexBaseOne) {
         if (parameter instanceof ExtensionFunctionArgument extensionArgument) {
-            return parseExtensionType(
+            return parseExtensionTypeWithHelper(
                     bodyBuilder,
                     extensionArgument.type(),
                     "method parameter #" + parameterIndexBaseOne + " of '" +
@@ -485,7 +483,7 @@ public final class MethodCallResolver {
             var rawReturnType = builtinMethod.returnValue() != null
                     ? builtinMethod.returnValue().type()
                     : builtinMethod.returnType();
-            return parseExtensionType(
+            return parseExtensionTypeWithHelper(
                     bodyBuilder,
                     rawReturnType,
                     "return type of '" + ownerClass.getName() + "." + function.getName() + "'"
@@ -494,7 +492,7 @@ public final class MethodCallResolver {
         if (function instanceof ExtensionGdClass.ClassMethod gdMethod) {
             var returnInfo = gdMethod.returnValue();
             var rawReturnType = returnInfo == null ? "void" : returnInfo.type();
-            return parseExtensionType(
+            return parseExtensionTypeWithHelper(
                     bodyBuilder,
                     rawReturnType,
                     "return type of '" + ownerClass.getName() + "." + function.getName() + "'"
@@ -503,32 +501,14 @@ public final class MethodCallResolver {
         return function.getReturnType();
     }
 
-    private static @NotNull GdType parseExtensionType(@NotNull CBodyBuilder bodyBuilder,
-                                                      @Nullable String rawTypeName,
-                                                      @NotNull String typeUseSite) {
-        if (rawTypeName == null || rawTypeName.isBlank()) {
-            return GdVoidType.VOID;
+    private static @NotNull GdType parseExtensionTypeWithHelper(@NotNull CBodyBuilder bodyBuilder,
+                                                                @Nullable String rawTypeName,
+                                                                @NotNull String typeUseSite) {
+        try {
+            return bodyBuilder.helper().parseExtensionType(rawTypeName, typeUseSite);
+        } catch (IllegalArgumentException ex) {
+            throw bodyBuilder.invalidInsn(ex.getMessage());
         }
-        var normalized = rawTypeName.trim();
-        if (normalized.startsWith("enum::") || normalized.startsWith("bitfield::")) {
-            return GdIntType.INT;
-        }
-        if (normalized.startsWith("typedarray::")) {
-            var elementTypeName = normalized.substring("typedarray::".length()).trim();
-            if (elementTypeName.isBlank()) {
-                throw bodyBuilder.invalidInsn(typeUseSite + " has malformed typedarray metadata: '" + rawTypeName + "'");
-            }
-            var elementType = parseExtensionType(bodyBuilder, elementTypeName, typeUseSite);
-            if (elementType instanceof GdPackedArrayType) {
-                return elementType;
-            }
-            return new GdArrayType(elementType);
-        }
-        var parsed = dev.superice.gdcc.scope.ClassRegistry.tryParseTextType(normalized);
-        if (parsed == null) {
-            throw bodyBuilder.invalidInsn(typeUseSite + " has unsupported type metadata: '" + rawTypeName + "'");
-        }
-        return parsed;
     }
 
     private static @NotNull GdType resolveOwnerType(@NotNull CBodyBuilder bodyBuilder,

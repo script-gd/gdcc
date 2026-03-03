@@ -150,6 +150,7 @@ public class CCodegen implements Codegen {
                         case GdStringNameType _ -> bb.instructions().add(new LiteralStringNameInsn(tmpVar.id(), ""));
                         case GdArrayType gdArrayType ->
                                 bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), gdArrayType.getValueType().getTypeName()));
+                        case GdPackedArrayType _ -> bb.instructions().add(new ConstructArrayInsn(tmpVar.id(), null));
                         case GdDictionaryType gdDictionaryType ->
                                 bb.instructions().add(new ConstructDictionaryInsn(tmpVar.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName()));
                         default -> bb.instructions().add(new ConstructBuiltinInsn(tmpVar.id(), List.of()));
@@ -181,16 +182,15 @@ public class CCodegen implements Codegen {
                     }
                     var initInsn = switch (variable.type()) {
                         case GdObjectType _ -> new LiteralNullInsn(variable.id());
-                        case GdVariantType _, GdNilType _ ->
-                                new LiteralNilInsn(variable.id());
+                        case GdVariantType _, GdNilType _ -> new LiteralNilInsn(variable.id());
                         case GdBoolType _ -> new LiteralBoolInsn(variable.id(), false);
                         case GdIntType _ -> new LiteralIntInsn(variable.id(), 0);
                         case GdFloatType _ -> new LiteralFloatInsn(variable.id(), 0.0);
                         case GdStringType _ -> new LiteralStringInsn(variable.id(), "");
-                        case GdStringNameType _ ->
-                                new LiteralStringNameInsn(variable.id(), "");
+                        case GdStringNameType _ -> new LiteralStringNameInsn(variable.id(), "");
                         case GdArrayType gdArrayType ->
                                 new ConstructArrayInsn(variable.id(), gdArrayType.getValueType().getTypeName());
+                        case GdPackedArrayType _ -> new ConstructArrayInsn(variable.id(), null);
                         case GdDictionaryType gdDictionaryType ->
                                 new ConstructDictionaryInsn(variable.id(), gdDictionaryType.getKeyType().getTypeName(), gdDictionaryType.getValueType().getTypeName());
                         default -> new ConstructBuiltinInsn(variable.id(), List.of());

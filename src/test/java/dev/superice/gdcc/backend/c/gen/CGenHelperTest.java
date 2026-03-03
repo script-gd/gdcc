@@ -8,8 +8,11 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedNumericArrayType;
+import dev.superice.gdcc.type.GdStringNameType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,6 +24,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CGenHelperTest {
     private CGenHelper helper;
@@ -121,5 +125,59 @@ class CGenHelperTest {
         );
 
         assertInstanceOf(InvalidInsnException.class, ex);
+    }
+
+    @Test
+    @DisplayName("parseExtensionType should normalize typedarray PackedByteArray to packed type")
+    void parseExtensionTypeShouldNormalizeTypedarrayPackedByteArray() {
+        var parsed = helper.parseExtensionType(
+                "typedarray::PackedByteArray",
+                "test typedarray packed parameter"
+        );
+
+        assertEquals(GdPackedNumericArrayType.PACKED_BYTE_ARRAY, parsed);
+    }
+
+    @Test
+    @DisplayName("parseExtensionType should normalize typedarray StringName to Array[StringName]")
+    void parseExtensionTypeShouldNormalizeTypedarrayStringName() {
+        var parsed = helper.parseExtensionType(
+                "typedarray::StringName",
+                "test typedarray parameter"
+        );
+
+        assertEquals(new GdArrayType(GdStringNameType.STRING_NAME), parsed);
+    }
+
+    @Test
+    @DisplayName("parseExtensionType should normalize enum and bitfield metadata to int")
+    void parseExtensionTypeShouldNormalizeEnumAndBitfield() {
+        var enumType = helper.parseExtensionType("enum::Variant.Type", "test enum return type");
+        var bitfieldType = helper.parseExtensionType("bitfield::MethodFlags", "test bitfield parameter");
+
+        assertEquals(GdIntType.INT, enumType);
+        assertEquals(GdIntType.INT, bitfieldType);
+    }
+
+    @Test
+    @DisplayName("parseExtensionType should reject malformed typedarray metadata")
+    void parseExtensionTypeShouldRejectMalformedTypedarrayMetadata() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.parseExtensionType("typedarray::   ", "test malformed typedarray")
+        );
+
+        assertTrue(ex.getMessage().contains("malformed typedarray metadata"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("parseExtensionType should reject unsupported metadata type")
+    void parseExtensionTypeShouldRejectUnsupportedMetadataType() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.parseExtensionType("typedarray::Array[]", "test unsupported typedarray")
+        );
+
+        assertTrue(ex.getMessage().contains("unsupported type metadata"), ex.getMessage());
     }
 }

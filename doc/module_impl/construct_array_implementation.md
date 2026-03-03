@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 0-1 已完成）
+- 状态：In Progress（阶段 0-4 已完成）
 - 更新时间：2026-03-03
 - 范围：`construct_array` 在 C Backend 的语义、实现与验证
 - 关联模块：Low IR / Type System / backend.c / module_impl
@@ -15,6 +15,16 @@
 - 2026-03-03 阶段 1 完成：
   - 已更新 `gdcc_low_ir.md`、`gdcc_type_system.md`、`gdcc_c_backend.md` 的语义文档。
   - 已同步 module_impl 引用：`c_builtin_builder_refactor.md`、`call_method_implementation.md`。
+- 2026-03-03 阶段 2 完成：
+  - `MethodCallResolver` 已移除私有 `parseExtensionType`，改为复用 `CGenHelper.parseExtensionType(...)`。
+  - 新增 helper 级解析测试并通过：`./gradlew test --tests CGenHelperTest --no-daemon --info --console=plain`。
+  - 回归通过：`./gradlew test --tests CallMethodInsnGenTest --no-daemon --info --console=plain`。
+- 2026-03-03 阶段 3 完成：
+  - `ConstructInsnGen` 的 `construct_array` 已支持 `GdArrayType` + `GdPackedArrayType` 分流。
+  - `GdPackedArrayType` 场景新增 `class_name` 非法校验并 fail-fast。
+- 2026-03-03 阶段 4 完成：
+  - `CCodegen` 两处自动初始化分支已为 `GdPackedArrayType` 注入 `new ConstructArrayInsn(varId, null)`。
+  - 回归通过：`./gradlew test --tests CConstructInsnGenTest --no-daemon --info --console=plain`。
 
 ## 合并后的硬性约束（最终口径）
 
@@ -195,10 +205,10 @@
 
 ## 最终验收清单（逐项打勾）
 
-- [ ] `construct_array` 已支持 `GdPackedArrayType`（仅依赖结果类型）。
-- [ ] `Packed*Array` 场景出现 `class_name` 会 fail-fast。
-- [ ] `ConstructBuiltinInsn` 无行为改动。
-- [ ] `MethodCallResolver#parseExtensionType` 已抽取到 `CGenHelper`。
-- [ ] `CCodegen` 两处自动初始化对 packed 改为注入 `ConstructArrayInsn(..., null)`。
-- [ ] 文档同步完成：`gdcc_low_ir`、`gdcc_type_system`、`gdcc_c_backend`、module_impl。
+- [x] `construct_array` 已支持 `GdPackedArrayType`（仅依赖结果类型）。
+- [x] `Packed*Array` 场景出现 `class_name` 会 fail-fast。
+- [x] `ConstructBuiltinInsn` 无行为改动。
+- [x] `MethodCallResolver#parseExtensionType` 已抽取到 `CGenHelper`。
+- [x] `CCodegen` 两处自动初始化对 packed 改为注入 `ConstructArrayInsn(..., null)`。
+- [x] 文档同步完成：`gdcc_low_ir`、`gdcc_type_system`、`gdcc_c_backend`、module_impl。
 - [ ] 目标测试命令全部通过（或按规则 skip）。

@@ -5,6 +5,7 @@ import dev.superice.gdcc.backend.ProjectInfo;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -18,6 +19,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdTransform2DType;
@@ -34,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class CConstructInsnGenTest {
     @Test
@@ -110,6 +113,34 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_array type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_array should emit Packed*Array constructor when result type is packed and class_name is omitted")
+    void constructArrayShouldEmitPackedCtorWhenClassNameOmitted() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_packed_array");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+
+        entry(func).instructions().add(new ConstructArrayInsn("packed", null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_PackedInt32Array()"));
+    }
+
+    @Test
+    @DisplayName("construct_array should reject class_name when result type is Packed*Array")
+    void constructArrayShouldRejectClassNameForPackedArray() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_packed_array_with_class_name");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+
+        entry(func).instructions().add(new ConstructArrayInsn("packed", "PackedInt32Array"));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("must not provide class_name"));
     }
 
     @Test
@@ -192,6 +223,34 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("generate should inject construct_array with null class_name into __prepare__ for Packed*Array variables")
+    void generateShouldInjectPackedConstructArrayIntoPrepareBlock() {
+        var clazz = newTestClass();
+        var func = newFunction("prepare_inject_packed_construct");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).instructions().add(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var prepare = func.getBasicBlock("__prepare__");
+        assertNotNull(prepare);
+        var hasPackedArrayInsn = prepare.instructions().stream()
+                .filter(ConstructArrayInsn.class::isInstance)
+                .map(ConstructArrayInsn.class::cast)
+                .anyMatch(insn -> "packed".equals(insn.resultId()) && insn.className() == null);
+        assertTrue(hasPackedArrayInsn);
+
+        var hasPackedBuiltinInsn = prepare.instructions().stream()
+                .filter(ConstructBuiltinInsn.class::isInstance)
+                .map(ConstructBuiltinInsn.class::cast)
+                .anyMatch(insn -> "packed".equals(insn.resultId()));
+        assertFalse(hasPackedBuiltinInsn);
+    }
+
+    @Test
     @DisplayName("__prepare__ generated typed construct instructions should emit typed constructor C calls")
     void generatedPrepareConstructsShouldEmitTypedConstructorCalls() {
         var clazz = newTestClass();
@@ -209,6 +268,24 @@ class CConstructInsnGenTest {
         assertTrue(body.contains("__prepare__: // __prepare__"));
         assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+    }
+
+    @Test
+    @DisplayName("__prepare__ generated Packed*Array construct instruction should emit packed constructor C call")
+    void generatedPreparePackedConstructShouldEmitPackedConstructorCall() {
+        var clazz = newTestClass();
+        var func = newFunction("prepare_emit_packed_ctor_call");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).instructions().add(new ReturnInsn(null));
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var body = codegen.generateFuncBody(clazz, func);
+        assertTrue(body.contains("__prepare__: // __prepare__"));
+        assertTrue(body.contains("godot_new_PackedInt32Array()"));
     }
 
     @Test
@@ -275,7 +352,7 @@ class CConstructInsnGenTest {
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {
-        var classRegistry = new ClassRegistry(emptyApi());
+        var classRegistry = new ClassRegistry(apiWithPackedConstructors());
         for (var gdccClass : gdccClasses) {
             classRegistry.addGdccClass(gdccClass);
         }
@@ -287,14 +364,24 @@ class CConstructInsnGenTest {
         return codegen;
     }
 
-    private ExtensionAPI emptyApi() {
+    private ExtensionAPI apiWithPackedConstructors() {
+        var packedInt32ArrayClass = new ExtensionBuiltinClass(
+                "PackedInt32Array",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.ConstructorInfo("PackedInt32Array", 0, List.of())),
+                List.of(),
+                List.of()
+        );
         return new ExtensionAPI(
                 null,
                 List.of(),
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(),
+                List.of(packedInt32ArrayClass),
                 List.of(),
                 List.of(),
                 List.of()
