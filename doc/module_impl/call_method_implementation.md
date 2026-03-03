@@ -111,8 +111,9 @@
 - 无可用行号时回退 `insnIndex`，并将 `file_name` 标记为 `(assemble)`。
 - `file_name` 必须以 C 字面量传递给 `godot_Variant_call`，不复用对象指针占位类型。
 
-### 6. 类型规范化约束（resolver 内局部实现）
+### 6. 类型规范化约束（CGenHelper 共享实现）
 
+- `MethodCallResolver` 必须复用 `CGenHelper.parseExtensionType(...)`，不再维护私有解析实现。
 - `enum::...` / `bitfield::...` 规范化为 `int`
 - `typedarray::Packed*Array` 规范化为对应 `GdPacked*ArrayType`
 - 非 packed 的 `typedarray::T` 规范化为 `GdArrayType(T)`

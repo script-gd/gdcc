@@ -38,6 +38,15 @@
     - `GdMetaType`: holds annotations/metadata to assist code generation and IDE features.
     - `GdExtensionTypeEnum`: enumerated extension options.
 
+## Container Type Boundaries
+
+- `GdArrayType` and `GdPackedArrayType` are different container families:
+  - `GdArrayType` models `Array[T]` with optional element typing metadata.
+  - `GdPackedArrayType` models concrete packed containers (for example `PackedInt32Array`, `PackedVector3Array`), and is not represented as `Array[T]`.
+- For extension metadata normalization in backend type parsing:
+  - `typedarray::Packed*Array` maps to the corresponding `GdPacked*ArrayType`.
+  - non-packed `typedarray::T` maps to `GdArrayType(T)`.
+
 ## Size & Layout
 - `PrimitiveSize.java` provides size references for basic types used by binary serialization, alignment, and packed array optimizations.
 - Packed arrays aim for compact binary layout for memory/disk efficiency.

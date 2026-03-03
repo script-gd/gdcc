@@ -182,6 +182,16 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - For non-object type constructor, generate a c constructor function call, see more details in `gdextension-lite.md`.
 - For `$"..."`, generate NodePath constructor with utf8_chars.
 
+### Extension Type Metadata Parsing Ownership
+
+- `parseExtensionType` is a shared helper capability owned by `CGenHelper`.
+- Resolver/generator code (including `MethodCallResolver`) must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
+- Required normalization behavior remains:
+  - `enum::...` / `bitfield::...` -> `int`
+  - `typedarray::Packed*Array` -> `GdPacked*ArrayType`
+  - non-packed `typedarray::T` -> `GdArrayType(T)`
+  - malformed or unsupported text -> fail fast
+
 ### Validation Logic
 
 - `CBodyBuilder` and `CBuiltinBuilder` is only for generating code, they are NOT responsible for validating IR correctness, so they should assume the IR is already valid and throw `InvalidInsnException` when they encounter invalid IR.
