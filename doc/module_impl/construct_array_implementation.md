@@ -79,6 +79,20 @@
   - 构造目标完全由结果变量类型决定（如 `PackedInt32Array`、`PackedVector3Array`）。
   - 若传入 `class_name`（包含空白字符串），直接 fail-fast。
 
+## 下游代码路由说明（显式记录）
+
+- `ConstructInsnGen` 的 `construct_array` 分支中：
+  - `GdArrayType` 与 `GdPackedArrayType` 都会在完成指令级校验后调用 `builtinBuilder.constructBuiltin(bodyBuilder, target, List.of())`。
+- `CBuiltinBuilder.constructBuiltin(...)` 的实际分发为：
+  - `GdArrayType` -> `constructArray(...)`（容器专用 typed 路径）
+  - `GdDictionaryType` -> `constructDictionary(...)`（容器专用 typed 路径）
+  - 其他类型（包含 `GdPackedArrayType`）-> `constructRegularBuiltin(...)`（通用 builtin 路径）
+- 因此，`Packed*Array` 与 `Array/Dictionary` 存在“路由不对称”是当前设计中的显式事实，不是遗漏：
+  - `Packed*Array` 的构造函数解析依赖 `ExtensionBuiltinClass` 元数据中的构造签名（当前为零参构造）。
+  - 当元数据缺失或签名不匹配时，按既有策略 fail-fast，抛出 builtin constructor validation 错误。
+- 维护约束：
+  - 若后续为 `Packed*Array` 增加专用构造路径（类似 `constructArray`），必须同步更新本文档“语义定义/路由说明/风险与防线/验收清单”四处内容，并补充回归测试。
+
 ## 需要改动的文档（必须同步）
 
 - `doc/gdcc_low_ir.md`
@@ -109,6 +123,9 @@
   - `generateDefaultGetterSetterInitialization()` 中新增 `GdPackedArrayType` 分支，注入 `new ConstructArrayInsn(varId, null)`。
   - `generateFunctionPrepareBlock()` 中新增 `GdPackedArrayType` 分支，注入 `new ConstructArrayInsn(varId, null)`。
   - `default -> new ConstructBuiltinInsn(... )` 保持不变，仅覆盖非容器 builtin 路径。
+- `src/main/java/dev/superice/gdcc/backend/c/gen/CBuiltinBuilder.java`
+  - 记录并确认当前路由：`GdPackedArrayType` 通过 `constructBuiltin(...)` 的 `default` 分支进入 `constructRegularBuiltin(...)`，不走 `constructArray(...)` 容器专用分支。
+  - 本次不改变该路由行为，仅将其文档化并纳入验收约束。
 - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
   - 新增共享扩展类型解析方法（建议命名：`parseExtensionType`）。
   - 规则与现有 resolver 保持一致：
@@ -214,6 +231,8 @@
   - 防线：在 helper 级与 call-method 级同时加测试，覆盖 typedarray/enum/bitfield/非法输入。
 - 风险：自动注入路径切换影响 `__prepare__` 既有顺序。
   - 防线：保持仅分支替换，不改变注入顺序与 `appendInsnIfAbsent` 语义。
+- 风险：`Packed*Array` 依赖 `constructRegularBuiltin` 的元数据校验路径，若 API 元数据构造签名缺失/变更会导致构造失败。
+  - 防线：保留 fail-fast 文案并通过引擎集成测试覆盖 explicit/prepare 路径；升级 Godot API 版本时优先执行该测试集。
 
 ## 最终验收清单（逐项打勾）
 
@@ -223,4 +242,5 @@
 - [x] `MethodCallResolver#parseExtensionType` 已抽取到 `CGenHelper`。
 - [x] `CCodegen` 两处自动初始化对 packed 改为注入 `ConstructArrayInsn(..., null)`。
 - [x] 文档同步完成：`gdcc_low_ir`、`gdcc_type_system`、`gdcc_c_backend`、module_impl。
+- [x] 已在实施文档显式记录 `Packed*Array` 的 `CBuiltinBuilder` 路由不对称性（`constructRegularBuiltin` 路径）与维护约束。
 - [x] 目标测试命令全部通过（或按规则 skip）。

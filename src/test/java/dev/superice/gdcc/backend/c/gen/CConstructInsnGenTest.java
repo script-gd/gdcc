@@ -144,6 +144,13 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_array should reject empty or blank class_name when result type is Packed*Array")
+    void constructArrayShouldRejectEmptyOrBlankClassNameForPackedArray() {
+        assertPackedArrayClassNameRejected("");
+        assertPackedArrayClassNameRejected("   ");
+    }
+
+    @Test
     @DisplayName("construct_dictionary should emit typed Dictionary constructor when key/value operands match result types")
     void constructDictionaryShouldEmitTypedCtor() {
         var clazz = newTestClass();
@@ -349,6 +356,17 @@ class CConstructInsnGenTest {
         var module = new LirModule("test_module", List.of(clazz));
         var codegen = newCodegen(module, List.of(clazz));
         return codegen.generateFuncBody(clazz, func);
+    }
+
+    private void assertPackedArrayClassNameRejected(String className) {
+        var clazz = newTestClass();
+        var func = newFunction("construct_packed_array_with_blank_class_name");
+        func.createAndAddVariable("packed", GdPackedNumericArrayType.PACKED_INT32_ARRAY);
+        entry(func).instructions().add(new ConstructArrayInsn("packed", className));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("must not provide class_name"));
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {

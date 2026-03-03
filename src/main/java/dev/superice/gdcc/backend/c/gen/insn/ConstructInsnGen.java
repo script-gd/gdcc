@@ -132,12 +132,13 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
 
     private void validatePackedArrayTypeHint(@NotNull CBodyBuilder bodyBuilder,
                                              String className) {
-        if (className != null) {
-            throw bodyBuilder.invalidInsn(
-                    "construct_array for Packed*Array must not provide class_name; " +
-                            "packed array construction is inferred from result variable type"
-            );
+        if (className == null) {
+            return;
         }
+        throw bodyBuilder.invalidInsn(
+                "construct_array for Packed*Array must not provide class_name; " +
+                        "packed array construction is inferred from result variable type"
+        );
     }
 
     private void validateDictionaryTypeHint(@NotNull CBodyBuilder bodyBuilder,
