@@ -10,11 +10,7 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
-import dev.superice.gdcc.scope.ClassDef;
-import dev.superice.gdcc.scope.FunctionDef;
-import dev.superice.gdcc.scope.FunctionSignature;
-import dev.superice.gdcc.scope.ParameterDef;
-import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.scope.*;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -496,8 +492,7 @@ public final class CGenHelper {
     /// Renders a variable assignment statement in C, handling Godot object return types properly.
     /// Mainly used for preventing direct assignment of Godot object ptr to GDCC object ptr.
     ///
-    /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr,
-    ///                                                                                                             but the underlying proxy Godot object ptr.
+    /// @param sourceExpr This expr is in C which is a GDExtension function call. It never returns direct GDCC type ptr, but the underlying proxy Godot object ptr.
     public @NotNull String renderVarAssignWithGodotReturn(@NotNull LirFunctionDef func,
                                                           @NotNull String targetVarName,
                                                           @NotNull GdType sourceType,

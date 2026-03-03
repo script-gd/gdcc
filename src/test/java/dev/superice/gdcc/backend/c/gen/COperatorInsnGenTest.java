@@ -7,6 +7,7 @@ import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -409,23 +410,63 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("variant_evaluate path should fail-fast when result type is non-Variant")
-    void variantEvaluatePathFailsWhenResultTypeIsNonVariant() {
-        var ex = assertThrows(
-                InvalidInsnException.class,
-                () -> generateBody(
-                        emptyApi(),
-                        new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
-                        List.of(
-                                new VariableSpec("left", GdVariantType.VARIANT, false),
-                                new VariableSpec("right", GdIntType.INT, false),
-                                new VariableSpec("result", GdBoolType.BOOL, false)
-                        )
+    @DisplayName("variant_evaluate path should unpack to non-Variant builtin result with runtime type check")
+    void variantEvaluatePathUnpacksToBuiltinResultWithRuntimeTypeCheck() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.IN, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdIntType.INT, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
                 )
         );
 
-        assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(ex.getMessage().contains("Operator result type 'Variant' is not assignable"), ex.getMessage());
+        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_IN"), body);
+        assertTrue(body.contains("gdcc_check_variant_type_builtin(&__gdcc_tmp_op_eval_result_"), body);
+        assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_BOOL"), body);
+        assertTrue(body.contains("$result = godot_new_bool_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+        assertTrue(body.contains("variant_evaluate type check failed for operator 'IN': expected bool"), body);
+    }
+
+    @Test
+    @DisplayName("variant_evaluate path should allow engine object subclass check before unpack")
+    void variantEvaluatePathSupportsEngineObjectSubtypeCheck() {
+        var body = generateBody(
+                engineObjectApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdVariantType.VARIANT, false),
+                        new VariableSpec("result", new GdObjectType("Node"), false)
+                )
+        );
+
+        assertTrue(body.contains("gdcc_check_variant_type_object(&__gdcc_tmp_op_eval_result_"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"Node\")"), body);
+        assertTrue(body.contains(", false) || gdcc_check_variant_type_object("), body);
+        assertTrue(body.contains(", true))"), body);
+        assertTrue(body.contains("$result = (godot_Node*)godot_new_Object_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_evaluate path should allow gdcc object subclass check before unpack")
+    void variantEvaluatePathSupportsGdccObjectSubtypeCheck() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right", GdVariantType.VARIANT, false),
+                        new VariableSpec("result", new GdObjectType("Worker"), false)
+                )
+        );
+
+        assertTrue(body.contains("gdcc_check_variant_type_object(&__gdcc_tmp_op_eval_result_"), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"Worker\")"), body);
+        assertTrue(body.contains(", false) || gdcc_check_variant_type_object("), body);
+        assertTrue(body.contains(", true))"), body);
+        assertTrue(body.contains("$result = (Worker*)godot_new_gdcc_Object_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
     }
 
     @Test
@@ -784,6 +825,44 @@ class COperatorInsnGenTest {
                 List.of(),
                 List.of(intBuiltin),
                 List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull ExtensionAPI engineObjectApi() {
+        var objectClass = new ExtensionGdClass(
+                "Object",
+                false,
+                true,
+                "",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var nodeClass = new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(objectClass, nodeClass),
                 List.of(),
                 List.of()
         );

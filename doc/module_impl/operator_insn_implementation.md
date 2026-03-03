@@ -40,7 +40,7 @@
 3. `binary_op` 只要任一操作数为 `Variant`，统一走 `godot_variant_evaluate`。
 4. `unary_op` 不走 `godot_variant_evaluate`，保持 metadata + builtin evaluator 路径。
 5. `IN` 仅允许原顺序解析（`left IN right`），不支持任何交换/对偶补救。
-6. `variant_evaluate` 路径启用编译期结果类型校验：语义结果类型固定为 `Variant`，`result` 非 `Variant` 时直接 fail-fast。
+6. `variant_evaluate` 的语义结果类型仍固定为 `Variant`，但 `result` 可为非 `Variant`：在运行时通过类型检查后自动 `unpack` 到目标类型。
 7. `Variant -> Variant` 回写必须走构造拷贝（`godot_new_Variant_with_Variant` + `callAssign`），禁止“浅拷贝赋值 + 临时变量销毁”模式。
 8. primitive 快路径统一发射 guard：
    - `ADD/SUBTRACT/MULTIPLY` 不做整型溢出 guard（使用 NOOP guard 占位）。
@@ -56,7 +56,7 @@
 
 1. `resultId` 必须存在且对应非 `ref` 变量。
 2. 操作数变量必须存在。
-3. `result` 类型必须可接收运算语义结果类型（`ClassRegistry#checkAssignable`）。
+3. `result` 类型校验分路径执行：非 `variant_evaluate` 路径使用 `ClassRegistry#checkAssignable`；`variant_evaluate` 非 `Variant` 结果走运行时类型检查 + `unpack`。
 4. 任一校验失败立即抛 `InvalidInsnException`。
 
 ### 3.2 `unary_op`
@@ -125,7 +125,8 @@
 1. `binary_op`：任一操作数为 `Variant` 即命中 `godot_variant_evaluate`。
 2. `unary_op`：不使用 `godot_variant_evaluate`。
 3. `IN`：不参与 primitive 快路径，仅按原顺序 metadata 解析。
-4. `Variant` 结果回写：统一构造拷贝写回（`godot_new_Variant_with_Variant`）。
+4. `Variant -> Variant` 结果回写：统一构造拷贝写回（`godot_new_Variant_with_Variant`）。
+5. `Variant -> 非 Variant` 结果回写：先做运行时类型检查（`gdcc_check_variant_type_builtin` / `gdcc_check_variant_type_object`），通过后再 `unpack` 到目标类型。
 
 ---
 
@@ -146,7 +147,7 @@
 
 1. 快路径、evaluator、Variant evaluate 都必须先解析语义结果类型。
 2. 结果类型与 `result` 不兼容时，编译期 fail-fast。
-3. `binary_op` 的 Variant evaluate 语义结果固定为 `Variant`，因此不允许写入非 Variant `result`。
+3. `binary_op` 的 Variant evaluate 语义结果固定为 `Variant`；当 `result` 为非 `Variant` 时，改为运行时类型检查后 `unpack`，不再在编译期直接拒绝。
 
 ### 4.4 `GdType -> GDExtensionVariantType`
 
@@ -171,8 +172,13 @@
 1. `r_return` 使用未初始化临时槽位（`declareUninitializedTempVar`）。
 2. evaluate 后通过 `callAssign` 写回目标。
 3. 禁止直接把 `r_return` 指向已初始化目标槽位。
-4. 输入侧按需 `pack`，结果侧不 `unpack`（当前语义）。
+4. 输入侧按需 `pack`；结果侧按目标类型分流：
+   - `Variant -> Variant`：构造拷贝写回；
+   - `Variant -> 非 Variant`：运行时类型检查通过后 `unpack`。
 5. `Variant -> Variant` 必须构造拷贝写回，避免浅拷贝 + 临时销毁导致悬挂。
+6. `Variant -> 非 Variant` 的类型检查规则：
+   - builtin：要求 `GDExtensionVariantType` 精确匹配（`gdcc_check_variant_type_builtin`）；
+   - Object：先做精确类名匹配，再按目标类型类别允许子类匹配（engine / gdcc，`gdcc_check_variant_type_object`）。
 
 ### 5.3 evaluator helper（缓存）
 
@@ -205,13 +211,13 @@
 
 1. result 变量缺失或 result 为 `ref`。
 2. 操作数变量缺失。
-3. 结果类型与 `result` 不兼容。
+3. 非 `variant_evaluate` 路径中，结果类型与 `result` 不兼容。
 4. metadata 原顺序签名不支持。
 5. `Object` 使用 `==` / `!=` 以外运算。
 6. `Nil` 比较特化条件不满足却误入特化分支。
 7. `POWER` 快路径无法确定 `pow` 或 `pow_int`。
 8. 生成路径绕过 `assignVar/callAssign` 生命周期管道。
-9. `variant_evaluate` 语义结果为 `Variant`，但 `result` 为非 Variant。
+9. `variant_evaluate` 目标类型无法映射到合法类型检查/`unpack` 路径。
 
 ---
 
@@ -224,7 +230,7 @@
 1. `POWER(float,int)` -> `pow`；`POWER(int,int)` -> `pow_int`。
 2. `MODULE(float,float)` 快路径 + 浮点除零 guard。
 3. 原顺序 metadata 严格匹配（无交换回退）。
-4. Variant 参与场景统一 evaluate，且编译期结果类型守卫生效。
+4. Variant 参与场景统一 evaluate；`Variant -> 非 Variant` 通过运行时类型检查与 `unpack` 回写。
 5. `IN(int, Array)` 不走快路径。
 6. guard 覆盖规则：浮点除零、整型除零、移位 UB、防护 NOOP 占位。
 
@@ -246,7 +252,7 @@
 
 ### 7.3 最近有效回归结果（快照）
 
-1. `COperatorInsnGenTest`：`35/35` 通过。
+1. `COperatorInsnGenTest`：`37/37` 通过。
 2. `COperatorInsnGenEngineTest`：`4/4` 通过。
 3. `CCodegenTest`：`6/6` 通过。
 
@@ -257,7 +263,7 @@
 ### 8.1 当前风险边界
 
 1. `pow` / `pow_int` 的边界语义仍需持续与 Godot 对齐（负指数与极值输入尤需关注）。
-2. `binary_op` Variant 路径依赖运行时 hard-fail 分支兜底，需持续做引擎级回归。
+2. `binary_op` Variant 路径依赖运行时 hard-fail 分支兜底，且 `Variant -> 非 Variant` 依赖运行时类型检查，需持续做引擎级回归。
 3. metadata 原顺序严格匹配提高了确定性，但会放大 metadata 缺失时的编译期失败暴露。
 4. 目前 guard 策略不覆盖整型算数溢出，这是显式取舍而非遗漏。
 

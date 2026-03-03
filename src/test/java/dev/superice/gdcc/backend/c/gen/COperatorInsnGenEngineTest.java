@@ -70,6 +70,12 @@ class COperatorInsnGenEngineTest {
         assertTrue(entrySource.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_ADD"), entrySource);
         assertTrue(entrySource.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_DIVIDE"), entrySource);
         assertTrue(entrySource.contains("gdcc_eval_binary_in_int_array_to_bool"), entrySource);
+        assertTrue(entrySource.contains("GDEXTENSION_VARIANT_TYPE_INT"), entrySource);
+        assertTrue(entrySource.contains("GDEXTENSION_VARIANT_TYPE_STRING"), entrySource);
+        assertTrue(entrySource.contains("GDEXTENSION_VARIANT_TYPE_VECTOR2"), entrySource);
+        assertTrue(entrySource.contains("godot_new_int_with_Variant"), entrySource);
+        assertTrue(entrySource.contains("godot_new_String_with_Variant"), entrySource);
+        assertTrue(entrySource.contains("godot_new_Vector2_with_Variant"), entrySource);
         assertFalse(entrySource.contains("gdcc_eval_binary_add_variant"), entrySource);
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
@@ -94,6 +100,8 @@ class COperatorInsnGenEngineTest {
                 "E4 IN original-order check passed.",
                 "E5 variant mixed check passed.",
                 "E5 variant string->variant check passed.",
+                "E5 variant->bool unpack check passed.",
+                "E5 variant->concrete unpack check passed.",
                 "E6 runtime fail-path check passed.",
                 "E7 lifecycle stress check passed.",
                 "string concat check passed.",
@@ -167,31 +175,25 @@ class COperatorInsnGenEngineTest {
     }
 
     @Test
-    @DisplayName("variant_evaluate should fail-fast when result type is not Variant")
-    void variantEvaluateShouldFailFastWhenResultTypeIsNotVariant() throws IOException {
+    @DisplayName("variant_evaluate should compile non-Variant result and emit runtime unpack type check")
+    void variantEvaluateShouldCompileNonVariantResultWithRuntimeUnpackCheck() throws IOException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+
         var tempDir = Path.of("tmp/test/operator_engine_variant_type_guard");
         Files.createDirectories(tempDir);
 
-        var operatorClass = newCompileFailClass(
-                "GDOperatorEngineVariantTypeGuardNode",
-                "variant_in_to_bool",
-                GdBoolType.BOOL,
-                "left",
-                GdVariantType.VARIANT,
-                "right",
-                GdIntType.INT,
-                GodotOperator.IN
-        );
-        var ex = assertThrows(
-                RuntimeException.class,
-                () -> buildProjectWithCompileGuard(tempDir, "operator_engine_variant_type_guard", operatorClass)
-        );
-        var invalidInsn = extractInvalidInsnCause(ex);
-        assertInstanceOf(InvalidInsnException.class, invalidInsn);
-        assertTrue(
-                invalidInsn.getMessage().contains("Operator result type 'Variant' is not assignable"),
-                invalidInsn.getMessage()
-        );
+        var operatorClass = newVariantToBoolClass();
+        var buildResult = buildProject(tempDir, "operator_engine_variant_type_guard", operatorClass);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+
+        var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(entrySource.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL"), entrySource);
+        assertTrue(entrySource.contains("gdcc_check_variant_type_builtin"), entrySource);
+        assertTrue(entrySource.contains("GDEXTENSION_VARIANT_TYPE_BOOL"), entrySource);
+        assertTrue(entrySource.contains("godot_new_bool_with_Variant"), entrySource);
     }
 
     private static boolean hasZig() {
@@ -329,6 +331,54 @@ class COperatorInsnGenEngineTest {
                 false
         ));
         clazz.addFunction(newPackedVariantBinaryMethod(
+                "variant_equal_to_bool",
+                GdBoolType.BOOL,
+                selfType,
+                "left",
+                GdIntType.INT,
+                "right",
+                GdIntType.INT,
+                GodotOperator.EQUAL,
+                true,
+                true
+        ));
+        clazz.addFunction(newPackedVariantBinaryMethod(
+                "variant_add_to_int",
+                GdIntType.INT,
+                selfType,
+                "left",
+                GdIntType.INT,
+                "right",
+                GdIntType.INT,
+                GodotOperator.ADD,
+                true,
+                false
+        ));
+        clazz.addFunction(newPackedVariantBinaryMethod(
+                "variant_concat_to_string_unpack",
+                GdStringType.STRING,
+                selfType,
+                "left",
+                GdStringType.STRING,
+                "right",
+                GdStringType.STRING,
+                GodotOperator.ADD,
+                true,
+                false
+        ));
+        clazz.addFunction(newPackedVariantBinaryMethod(
+                "variant_add_vec2_to_vec2",
+                GdFloatVectorType.VECTOR2,
+                selfType,
+                "left",
+                GdFloatVectorType.VECTOR2,
+                "right",
+                GdFloatVectorType.VECTOR2,
+                GodotOperator.ADD,
+                true,
+                false
+        ));
+        clazz.addFunction(newPackedVariantBinaryMethod(
                 "variant_divide_to_variant",
                 GdVariantType.VARIANT,
                 selfType,
@@ -415,6 +465,25 @@ class COperatorInsnGenEngineTest {
                 rightName,
                 rightType,
                 operator
+        ));
+        return clazz;
+    }
+
+    private static @NotNull LirClassDef newVariantToBoolClass() {
+        var clazz = new LirClassDef("GDOperatorEngineVariantTypeGuardNode", "Node");
+        clazz.setSourceFile("operator_engine_variant_type_guard.gd");
+        var selfType = new GdObjectType(clazz.getName());
+        clazz.addFunction(newPackedVariantBinaryMethod(
+                "variant_equal_to_bool",
+                GdBoolType.BOOL,
+                selfType,
+                "left",
+                GdIntType.INT,
+                "right",
+                GdIntType.INT,
+                GodotOperator.EQUAL,
+                true,
+                true
         ));
         return clazz;
     }
@@ -576,6 +645,8 @@ class COperatorInsnGenEngineTest {
                     _check_e4_in_original_order(target)
                     _check_e5_variant_mixed(target)
                     _check_e5_variant_string_to_variant(target)
+                    _check_e5_variant_to_bool_unpack(target)
+                    _check_e5_variant_to_concrete_unpack(target)
                     _check_e6_runtime_fail_path(target)
                     _check_e7_lifecycle_stress(target)
                     _check_string_ops(target)
@@ -631,6 +702,26 @@ class COperatorInsnGenEngineTest {
                         print("E5 variant string->variant check passed.")
                     else:
                         push_error("E5 variant string->variant check failed.")
+                
+                func _check_e5_variant_to_bool_unpack(target: Node) -> void:
+                    var equal_true = bool(target.call("variant_equal_to_bool", 7, 7))
+                    var equal_false = bool(target.call("variant_equal_to_bool", 7, 9))
+                    if equal_true and not equal_false:
+                        print("E5 variant->bool unpack check passed.")
+                    else:
+                        push_error("E5 variant->bool unpack check failed.")
+                
+                func _check_e5_variant_to_concrete_unpack(target: Node) -> void:
+                    var int_result = int(target.call("variant_add_to_int", 2, 3))
+                    var string_result = str(target.call("variant_concat_to_string_unpack", "a", "b"))
+                    var vec_result = target.call("variant_add_vec2_to_vec2", Vector2(1.0, 2.0), Vector2(3.0, 4.0))
+                    var ok = int_result == 5
+                    ok = ok and string_result == "ab"
+                    ok = ok and typeof(vec_result) == TYPE_VECTOR2 and _vec2_close(vec_result, Vector2(4.0, 6.0))
+                    if ok:
+                        print("E5 variant->concrete unpack check passed.")
+                    else:
+                        push_error("E5 variant->concrete unpack check failed.")
                 
                 func _check_e6_runtime_fail_path(target: Node) -> void:
                     var fallback_value = target.call("variant_divide_to_variant", "a", "b")

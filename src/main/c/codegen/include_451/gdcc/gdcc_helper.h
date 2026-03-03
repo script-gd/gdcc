@@ -198,6 +198,59 @@ static GDExtensionInt gdcc_string_name_to_utf8(const godot_StringName *sn, char 
     return len;
 }
 
+/// Runtime type guard for Variant -> builtin unpack.
+/// Requires exact GDExtensionVariantType match.
+static godot_bool gdcc_check_variant_type_builtin(const godot_Variant *value,
+                                                  GDExtensionVariantType expected_type) {
+    if (value == NULL) {
+        return false;
+    }
+    return godot_variant_get_type(value) == expected_type;
+}
+
+/// Runtime type guard for Variant -> Object unpack.
+/// - exact type match always passes.
+/// - subclass match is optional via `allow_subclass`.
+/// - null object payload is accepted for object targets.
+static godot_bool gdcc_check_variant_type_object(const godot_Variant *value,
+                                                 const godot_StringName *expected_class_name,
+                                                 godot_bool allow_subclass) {
+    if (value == NULL || expected_class_name == NULL) {
+        return false;
+    }
+    if (godot_variant_get_type(value) != GDEXTENSION_VARIANT_TYPE_OBJECT) {
+        return false;
+    }
+
+    GDExtensionObjectPtr object_value = godot_new_Object_with_Variant(value);
+    if (object_value == NULL) {
+        return true;
+    }
+
+    godot_StringName actual_class_name;
+    if (!godot_object_get_class_name(object_value, class_library, &actual_class_name)) {
+        return false;
+    }
+
+    godot_bool exact_match = godot_StringName_op_equal_StringName(&actual_class_name, expected_class_name);
+    if (exact_match) {
+        godot_StringName_destroy(&actual_class_name);
+        return true;
+    }
+    if (!allow_subclass) {
+        godot_StringName_destroy(&actual_class_name);
+        return false;
+    }
+
+    godot_bool subclass_match = godot_ClassDB_is_parent_class(
+        godot_ClassDB_singleton(),
+        &actual_class_name,
+        expected_class_name
+    );
+    godot_StringName_destroy(&actual_class_name);
+    return subclass_match;
+}
+
 /// @param self
 /// @param method
 /// @param file_name The name of the source file where the call is made, used for error reporting. If NULL, it will be treated as "<unknown>".

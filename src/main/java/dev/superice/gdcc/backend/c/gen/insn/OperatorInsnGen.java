@@ -66,7 +66,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn(
                     "Resolved operator path '" + decision.path() + "' is missing semantic result type");
         }
-        validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
+        validateResultCompatibility(bodyBuilder, decision.path(), decision.semanticResultType(), resultVar);
 
         if (decision.path() == OperatorResolver.OperatorPath.BUILTIN_EVALUATOR) {
             emitUnaryBuiltinEvaluator(
@@ -99,7 +99,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn(
                     "Resolved operator path '" + decision.path() + "' is missing semantic result type");
         }
-        validateResultCompatibility(bodyBuilder, decision.semanticResultType(), resultVar);
+        validateResultCompatibility(bodyBuilder, decision.path(), decision.semanticResultType(), resultVar);
 
         switch (decision.path()) {
             case PRIMITIVE_FAST_PATH ->
@@ -324,6 +324,14 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                     List.of(resultVariant)
             );
         } else {
+            emitVariantUnpackTypeCheck(
+                    bodyBuilder,
+                    op,
+                    resultVariant,
+                    resultVar.type(),
+                    leftOperand,
+                    rightOperand
+            );
             var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
             bodyBuilder.callAssign(
                     bodyBuilder.targetOfVar(resultVar),
@@ -340,6 +348,69 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         if (leftOperand.tempVar() != null) {
             bodyBuilder.destroyTempVar(leftOperand.tempVar());
         }
+    }
+
+    private void emitVariantUnpackTypeCheck(@NotNull CBodyBuilder bodyBuilder,
+                                            @NotNull GodotOperator op,
+                                            @NotNull CBodyBuilder.TempVar resultVariant,
+                                            @NotNull GdType targetType,
+                                            @NotNull VariantOperand leftOperand,
+                                            @NotNull VariantOperand rightOperand) {
+        var typeCheckExpr = renderVariantUnpackTypeCheckExpr(bodyBuilder, resultVariant, targetType);
+        bodyBuilder.appendLine("if (!(" + typeCheckExpr + ")) {");
+        bodyBuilder.appendLine(
+                "GDCC_PRINT_RUNTIME_ERROR(\"variant_evaluate type check failed for operator '" + op.name() +
+                        "': expected " + targetType.getTypeName() + "\", __func__, __FILE__, __LINE__);"
+        );
+        emitVariantEvaluateTypeCheckFailureReturn(bodyBuilder, resultVariant, leftOperand, rightOperand);
+        bodyBuilder.appendLine("}");
+    }
+
+    private @NotNull String renderVariantUnpackTypeCheckExpr(@NotNull CBodyBuilder bodyBuilder,
+                                                             @NotNull CBodyBuilder.TempVar resultVariant,
+                                                             @NotNull GdType targetType) {
+        if (targetType instanceof GdObjectType objectType) {
+            return renderVariantObjectTypeCheckExpr(bodyBuilder, resultVariant, objectType);
+        }
+        var expectedTypeLiteral = resolver.resolveVariantTypeEnumLiteral(bodyBuilder, targetType);
+        return "gdcc_check_variant_type_builtin(&" + resultVariant.name() + ", " + expectedTypeLiteral + ")";
+    }
+
+    private @NotNull String renderVariantObjectTypeCheckExpr(@NotNull CBodyBuilder bodyBuilder,
+                                                             @NotNull CBodyBuilder.TempVar resultVariant,
+                                                             @NotNull GdObjectType targetObjectType) {
+        var expectedClassLiteral = CBodyBuilder.renderStaticStringNameLiteral(targetObjectType.getTypeName());
+        var exactMatchExpr = "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
+                expectedClassLiteral + ", false)";
+
+        var isEngineType = targetObjectType.checkEngineType(bodyBuilder.classRegistry());
+        if (isEngineType) {
+            var subclassMatchExpr = "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
+                    expectedClassLiteral + ", true)";
+            return "(" + exactMatchExpr + " || " + subclassMatchExpr + ")";
+        }
+        return exactMatchExpr;
+    }
+
+    private void emitVariantEvaluateTypeCheckFailureReturn(@NotNull CBodyBuilder bodyBuilder,
+                                                           @NotNull CBodyBuilder.TempVar resultVariant,
+                                                           @NotNull VariantOperand leftOperand,
+                                                           @NotNull VariantOperand rightOperand) {
+        bodyBuilder.destroyTempVar(resultVariant);
+        if (rightOperand.tempVar() != null) {
+            bodyBuilder.destroyTempVar(rightOperand.tempVar());
+        }
+        if (leftOperand.tempVar() != null) {
+            bodyBuilder.destroyTempVar(leftOperand.tempVar());
+        }
+
+        var returnType = bodyBuilder.func().getReturnType();
+        if (returnType instanceof GdVoidType) {
+            bodyBuilder.returnVoid();
+            return;
+        }
+        var defaultExpr = CBodyBuilder.renderDefaultValueExpr(returnType);
+        bodyBuilder.returnValue(bodyBuilder.valueOfExpr(defaultExpr, returnType));
     }
 
     private @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
@@ -480,14 +551,31 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
     }
 
     private void validateResultCompatibility(@NotNull CBodyBuilder bodyBuilder,
+                                             @NotNull OperatorResolver.OperatorPath resolvedPath,
                                              @NotNull GdType semanticResultType,
                                              @NotNull LirVariable resultVar) {
+        if (resolvedPath == OperatorResolver.OperatorPath.VARIANT_EVALUATE) {
+            validateVariantEvaluateResultTarget(bodyBuilder, resultVar);
+            return;
+        }
         if (!bodyBuilder.classRegistry().checkAssignable(semanticResultType, resultVar.type())) {
             throw bodyBuilder.invalidInsn(
                     "Operator result type '" + semanticResultType.getTypeName() +
                             "' is not assignable to result variable '" + resultVar.id() +
                             "' of type '" + resultVar.type().getTypeName() + "'");
         }
+    }
+
+    private void validateVariantEvaluateResultTarget(@NotNull CBodyBuilder bodyBuilder,
+                                                     @NotNull LirVariable resultVar) {
+        if (resultVar.type() instanceof GdVoidType) {
+            throw bodyBuilder.invalidInsn("variant_evaluate result variable cannot be void");
+        }
+        if (resultVar.type() instanceof GdVariantType) {
+            return;
+        }
+        // Variant result is unpacked at runtime. Ensure target type is mappable to GDExtension enum first.
+        resolver.resolveVariantTypeEnumLiteral(bodyBuilder, resultVar.type());
     }
 
     private @NotNull LirVariable resolveRequiredResultVariable(@NotNull CBodyBuilder bodyBuilder,
