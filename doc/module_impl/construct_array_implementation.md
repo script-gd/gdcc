@@ -2,10 +2,19 @@
 
 ## 文档状态
 
-- 状态：Planned
+- 状态：In Progress（阶段 0-1 已完成）
 - 更新时间：2026-03-03
 - 范围：`construct_array` 在 C Backend 的语义、实现与验证
 - 关联模块：Low IR / Type System / backend.c / module_impl
+
+## 执行记录
+
+- 2026-03-03 阶段 0 完成：
+  - 基线 `HEAD`：`f2f4103aa2baa709701f776272e585432a1b89cc`
+  - 基线测试：`./gradlew test --tests CConstructInsnGenTest --no-daemon --info --console=plain` 通过。
+- 2026-03-03 阶段 1 完成：
+  - 已更新 `gdcc_low_ir.md`、`gdcc_type_system.md`、`gdcc_c_backend.md` 的语义文档。
+  - 已同步 module_impl 引用：`c_builtin_builder_refactor.md`、`call_method_implementation.md`。
 
 ## 合并后的硬性约束（最终口径）
 

@@ -85,8 +85,17 @@ $<result_id> = construct_builtin $<arg1_id> $<arg2_id> ...
 ```
 
 #### construct_array
-Constructs a new TypedArray of a specific class / type.
-If the class_name is omitted, constructs a generic Array.
+Constructs a new `Array` or `Packed*Array` depending on the result variable type.
+
+Rules:
+- If result variable type is `Array` (`GdArrayType`):
+  - `class_name` is optional.
+  - If omitted, constructs generic `Array[Variant]`.
+  - If provided, it is a typed hint and must match the result variable element type.
+- If result variable type is `Packed*Array` (`GdPackedArrayType`):
+  - Construction type is inferred only from the result variable type.
+  - `class_name` must not be provided; providing it is invalid and should fail fast.
+
 ```
 $<result_id> = construct_array "<class_name>"?
 ```

@@ -364,3 +364,11 @@ shim 构造函数也应被纳入考虑。
 - `Array[T]([])` 默认值在表达式内完成：
   1) 先以逗号表达式初始化 `godot_new_Array()`
   2) 再调用 `godot_new_Array_with_Array_int_StringName_Variant(...)` 返回 typed array
+
+### 实施补充记录（2026-03-03，construct_array 语义收敛）
+
+- 本轮 `construct_array` 重构不改变 `ConstructBuiltinInsn` 的既有行为与职责边界。
+- `Packed*Array` 的构造策略统一收敛到 `construct_array`：
+  - 仅根据结果变量类型构造。
+  - 出现 `class_name` 操作数时 fail-fast。
+- 扩展类型文本规范化由 `CGenHelper.parseExtensionType(...)` 统一提供，避免 resolver 层重复实现。
