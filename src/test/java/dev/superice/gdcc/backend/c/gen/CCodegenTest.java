@@ -17,12 +17,14 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
+import dev.superice.gdcc.lir.insn.VariantGetInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +40,44 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CCodegenTest {
+    @Test
+    public void variantGetOpcodeIsRegisteredAndGeneratesBody() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("index_load_codegen");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("self", GdVariantType.VARIANT);
+        func.createAndAddVariable("key", GdVariantType.VARIANT);
+        func.createAndAddVariable("result", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new VariantGetInsn("result", "self", "key"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("index_load_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_variant_get(&$self, &$key"), body);
+        assertTrue(body.contains("$result = godot_new_Variant_with_Variant"), body);
+    }
+
     @Test
     public void binaryOperatorOpcodeIsRegisteredAndFailFastIsControlled() {
         var workerClass = new LirClassDef("Worker", "RefCounted");

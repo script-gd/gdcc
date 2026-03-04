@@ -4,10 +4,11 @@
 
 ## 文档状态
 
-- 状态：`Plan / Pending`
+- 状态：`Plan / In Progress`
 - 文档类型：`实施计划`
 - 创建时间：`2026-03-04`
 - 适用范围：`backend.c` 中 8 条 `variant_get*` / `variant_set*` 指令的 C 代码生成
+- 当前进度：`✅ 步骤 1 已完成；✅ 步骤 3 已完成（IndexLoad 注册）；✅ 步骤 4 已完成；✅ named/indexed 操作数模型修正（字面量 → VARIABLE）已完成；✅ returnDefault 抽取与调用点替换已完成；步骤 2/5/6 待执行`
 
 ## 1. 背景与目标
 
@@ -19,12 +20,12 @@ Indexing Instructions 分类包含 8 条指令，分为 Load（4 条 GET）和 S
 |---|---|---|---|---|
 | `variant_get` | `VARIANT_GET` | REQUIRED | `(VARIABLE, VARIABLE)` | 通用 Variant 键读取 |
 | `variant_get_keyed` | `VARIANT_GET_KEYED` | REQUIRED | `(VARIABLE, VARIABLE)` | 字典式键读取 |
-| `variant_get_named` | `VARIANT_GET_NAMED` | REQUIRED | `(VARIABLE, STRING)` | 属性名读取（StringName） |
-| `variant_get_indexed` | `VARIANT_GET_INDEXED` | REQUIRED | `(VARIABLE, INT)` | 整数索引读取 |
+| `variant_get_named` | `VARIANT_GET_NAMED` | REQUIRED | `(VARIABLE, VARIABLE)` | 属性名读取（StringName 变量） |
+| `variant_get_indexed` | `VARIANT_GET_INDEXED` | REQUIRED | `(VARIABLE, VARIABLE)` | 整数索引读取（index 变量） |
 | `variant_set` | `VARIANT_SET` | NONE | `(VARIABLE, VARIABLE, VARIABLE)` | 通用 Variant 键写入 |
 | `variant_set_keyed` | `VARIANT_SET_KEYED` | NONE | `(VARIABLE, VARIABLE, VARIABLE)` | 字典式键写入 |
-| `variant_set_named` | `VARIANT_SET_NAMED` | NONE | `(VARIABLE, STRING, VARIABLE)` | 属性名写入（StringName） |
-| `variant_set_indexed` | `VARIANT_SET_INDEXED` | NONE | `(VARIABLE, INT, VARIABLE)` | 整数索引写入 |
+| `variant_set_named` | `VARIANT_SET_NAMED` | NONE | `(VARIABLE, VARIABLE, VARIABLE)` | 属性名写入（StringName 变量） |
+| `variant_set_indexed` | `VARIANT_SET_INDEXED` | NONE | `(VARIABLE, VARIABLE, VARIABLE)` | 整数索引写入（index 变量） |
 
 ### 1.2 LIR 指令类（已实现）
 
@@ -32,12 +33,12 @@ Indexing Instructions 分类包含 8 条指令，分为 Load（4 条 GET）和 S
 
 - `VariantGetInsn(resultId, variantId, keyId)` → `IndexingInstruction`
 - `VariantGetKeyedInsn(resultId, keyedVariantId, keyId)` → `IndexingInstruction`
-- `VariantGetNamedInsn(resultId, namedVariantId, name)` → `IndexingInstruction`
-- `VariantGetIndexedInsn(resultId, variantId, index)` → `IndexingInstruction`
+- `VariantGetNamedInsn(resultId, namedVariantId, nameId)` → `IndexingInstruction`
+- `VariantGetIndexedInsn(resultId, variantId, indexId)` → `IndexingInstruction`
 - `VariantSetInsn(variantId, keyId, valueId)` → `IndexingInstruction`
 - `VariantSetKeyedInsn(keyedVariantId, keyId, valueId)` → `IndexingInstruction`
-- `VariantSetNamedInsn(namedVariantId, name, valueId)` → `IndexingInstruction`
-- `VariantSetIndexedInsn(variantId, index, valueId)` → `IndexingInstruction`
+- `VariantSetNamedInsn(namedVariantId, nameId, valueId)` → `IndexingInstruction`
+- `VariantSetIndexedInsn(variantId, indexId, valueId)` → `IndexingInstruction`
 
 公共标记接口：`IndexingInstruction extends LirInstruction`。
 
@@ -217,8 +218,8 @@ IndexStoreInsnGen implements CInsnGen<IndexingInstruction>
 |---|---|---|---|
 | `variant_get` | 任意类型（pack 为 Variant） | 任意类型（pack 为 Variant） | 任意类型（unpack 自 Variant） |
 | `variant_get_keyed` | 任意类型（pack 为 Variant） | 任意类型（pack 为 Variant） | 任意类型（unpack 自 Variant） |
-| `variant_get_named` | 任意类型（pack 为 Variant） | STRING 字面量 → StringName | 任意类型（unpack 自 Variant） |
-| `variant_get_indexed` | 任意类型（pack 为 Variant） | INT 字面量 | 任意类型（unpack 自 Variant） |
+| `variant_get_named` | 任意类型（pack 为 Variant） | `StringName` 类型变量 | 任意类型（unpack 自 Variant） |
+| `variant_get_indexed` | 任意类型（pack 为 Variant） | `int` 类型变量 | 任意类型（unpack 自 Variant） |
 
 #### SET 指令操作数约束
 
@@ -226,8 +227,8 @@ IndexStoreInsnGen implements CInsnGen<IndexingInstruction>
 |---|---|---|---|---|
 | `variant_set` | `Variant` / 可 pack 且支持 set 的类型 | 任意类型（pack 为 Variant） | 任意类型（pack 为 Variant） | 值语义 self 需回写；不支持类型 fail-fast |
 | `variant_set_keyed` | `Variant` / `Object` / `Dictionary`（或可 pack 到这些运行时类型） | 任意类型（pack 为 Variant） | 任意类型（pack 为 Variant） | 非 keyed 支持类型 fail-fast |
-| `variant_set_named` | `Variant` / 支持 named-set 的类型 | STRING 字面量 → StringName | 任意类型（pack 为 Variant） | 值语义 self 需回写 |
-| `variant_set_indexed` | `Variant` / 支持 indexed-set 的类型 | INT 字面量 | 任意类型（pack 为 Variant） | 值语义 self 需回写 |
+| `variant_set_named` | `Variant` / 支持 named-set 的类型 | `StringName` 类型变量 | 任意类型（pack 为 Variant） | 值语义 self 需回写 |
+| `variant_set_indexed` | `Variant` / 支持 indexed-set 的类型 | `int` 类型变量 | 任意类型（pack 为 Variant） | 值语义 self 需回写 |
 
 ### 2.6 GET 指令的 Variant 打包/拆包策略
 
@@ -266,7 +267,7 @@ godot_Variant __gdcc_tmp_idx_ret_0;
 GDExtensionBool __gdcc_tmp_idx_valid_1 = false;
 godot_variant_get(&$self, &$key, &__gdcc_tmp_idx_ret_0, &__gdcc_tmp_idx_valid_1);
 if (!__gdcc_tmp_idx_valid_1) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_get failed", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_get failed: self=$self, key=$key, result=$result", __func__, __FILE__, __LINE__);
     __gdcc_tmp_idx_ret_0 = godot_new_Variant_nil();  // 初始化以便安全析构
     godot_variant_destroy(&__gdcc_tmp_idx_ret_0);
     // 销毁临时 pack 变量...
@@ -281,11 +282,11 @@ if (!__gdcc_tmp_idx_valid_1) {
 GDExtensionBool __gdcc_tmp_idx_oob_2 = false;
 godot_variant_get_indexed(&$self, index, &__gdcc_tmp_idx_ret_0, &__gdcc_tmp_idx_valid_1, &__gdcc_tmp_idx_oob_2);
 if (!__gdcc_tmp_idx_valid_1) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed failed", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed failed: self=$self, index=$idx, result=$result", __func__, __FILE__, __LINE__);
     // ... 安全返回
 }
 if (__gdcc_tmp_idx_oob_2) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed: index out of bounds", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed index out of bounds: index=$idx", __func__, __FILE__, __LINE__);
     // ... 安全返回（此时 r_ret 已被写入，需销毁）
 }
 ```
@@ -302,6 +303,7 @@ if (__gdcc_tmp_idx_oob_2) {
 ### 步骤 1：创建 IndexLoadInsnGen
 
 **文件**：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/IndexLoadInsnGen.java`
+- 状态：`✅ 已完成（2026-03-04）`
 
 **类结构**：
 
@@ -342,28 +344,28 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
    - 两者代码结构几乎相同（API 签名一致），仅 C 函数名不同（`godot_variant_get` vs `godot_variant_get_keyed`）。
    - 可抽取公共方法 `emitVariantGetCommon(bodyBuilder, cFuncName, selfVar, keyVar, resultVar)`。
 5. **`emitVariantGetNamed`**：
-   - key 为 STRING 字面量，使用 `bodyBuilder.valueOfStringNamePtrLiteral(name)` 生成静态 StringName 指针。
-   - C 调用为 `godot_variant_get_named(&self_variant, GD_STATIC_SN(u8"name"), &r_ret, &r_valid)`。
+   - key 为 `StringName` 变量（`nameId`），按变量引用渲染参数（支持普通变量和 ref 变量）。
+   - C 调用为 `godot_variant_get_named(<self_arg>, <name_arg>, &r_ret, &r_valid)`。
 6. **`emitVariantGetIndexed`**：
-   - index 为 INT 字面量，直接作为 `(GDExtensionInt)index` 传入。
+   - index 为 `int` 类型变量，使用 `bodyBuilder.renderArgument(...)` 渲染参数后作为 `(GDExtensionInt)<index_expr>` 传入。
    - 额外声明 `r_oob` 标志并检查。
 7. **result 回写**：
    - Variant→Variant：构造拷贝（`godot_new_Variant_with_Variant` + `callAssign`）。
    - Variant→非 Variant：调用 unpack 函数（`bodyBuilder.helper().renderUnpackFunctionName(resultType)`）+ `callAssign`。
-8. **错误返回路径**：使用与 OperatorInsnGen 一致的模式——销毁临时变量后 return void 或 return 默认值。
+8. **错误返回路径**：统一使用 `CBodyBuilder.returnDefault()`，并在分支代码生成后恢复临时变量初始化状态，保证后续路径仍能正确析构。
 
 #### 验收标准
 
-- [ ] 编译通过，无 warning
-- [ ] 4 条 GET 指令均可生成正确的 C 代码
-- [ ] self 为 Variant 类型时无多余 pack/unpack
-- [ ] self 为非 Variant 类型时正确 pack 并在结束后销毁
-- [ ] key 为 Variant 类型时无多余 pack
-- [ ] result 为 Variant 类型时使用构造拷贝回写
-- [ ] result 为非 Variant 类型时正确 unpack
-- [ ] r_valid 检查失败时正确打印错误并安全返回
-- [ ] variant_get_indexed 的 r_oob 检查失败时正确打印错误并安全返回
-- [ ] 所有临时变量在所有路径（正常/错误）上均被正确销毁
+- [x] 编译通过，无 warning
+- [x] 4 条 GET 指令均可生成正确的 C 代码
+- [x] self 为 Variant 类型时无多余 pack/unpack
+- [x] self 为非 Variant 类型时正确 pack 并在结束后销毁
+- [x] key 为 Variant 类型时无多余 pack
+- [x] result 为 Variant 类型时使用构造拷贝回写
+- [x] result 为非 Variant 类型时正确 unpack
+- [x] r_valid 检查失败时正确打印错误并安全返回
+- [x] variant_get_indexed 的 r_oob 检查失败时正确打印错误并安全返回
+- [x] 所有临时变量在所有路径（正常/错误）上均被正确销毁
 
 ---
 
@@ -410,9 +412,9 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
    - key 打包策略与 GET 一致。
    - 可抽取公共方法 `emitVariantSetCommon(bodyBuilder, cFuncName, selfVar, keyVar, valueVar)`。
 4. **`emitVariantSetNamed`**：
-   - key 为 STRING 字面量，生成静态 StringName 指针。
+   - key 为 `StringName` 类型变量（`nameId`），通过 `renderArgument` 渲染参数。
 5. **`emitVariantSetIndexed`**：
-   - index 为 INT 字面量。
+   - index 为 `int` 类型变量。
    - 额外声明并检查 `r_oob` 标志。
 6. **self 回写**：仅当 self 属于“值语义 pack+回写”策略时，将临时 self Variant unpack 回原 self 变量。
 7. **无 result 回写**：SET 指令 `ReturnKind=NONE`，无 resultId。
@@ -437,6 +439,7 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
 ### 步骤 3：注册生成器到 CCodegen
 
 **文件**：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+- 状态：`✅ 已完成（2026-03-04，已注册 IndexLoadInsnGen）`
 
 **修改内容**：在 static 块中添加两行注册：
 
@@ -455,21 +458,27 @@ static {
 
 #### 验收标准
 
-- [ ] 编译通过
-- [ ] `INSN_GENS` 包含 8 条新的 opcode → generator 映射
-- [ ] 不影响现有 15 个生成器的注册
+- [x] 编译通过
+- [x] `INSN_GENS` 已包含 `IndexLoadInsnGen` 的 4 条 GET opcode 映射
+- [x] 不影响现有 15 个生成器的注册
+
+> 注：`IndexStoreInsnGen` 的注册将在步骤 2 完成后补充。
+
+**同步单测更新**：
+- 在 `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java` 新增 `variantGetOpcodeIsRegisteredAndGeneratesBody`，验证 `variant_get` 已通过 `CCodegen` 分发到 `IndexLoadInsnGen`。
 
 ---
 
 ### 步骤 4：创建 IndexLoadInsnGen 单元测试
 
 **文件**：`src/test/java/dev/superice/gdcc/backend/c/gen/IndexLoadInsnGenTest.java`
+- 状态：`✅ 已完成（2026-03-04）`
 
 **测试类结构**（参照 `COperatorInsnGenTest` / `CConstructInsnGenTest` 模式）：
 
 ```java
 class IndexLoadInsnGenTest {
-    // Helper methods: generateBody, newTestClass, newFunction, entry, newCodegen, emptyApi
+    // Helper methods: generateBody, newTestClass, newFunction, entry, newBodyBuilder, emptyApi
     // Record: VariableSpec(String id, GdType type, boolean ref)
 }
 ```
@@ -487,34 +496,42 @@ class IndexLoadInsnGenTest {
 6. `variant_get_ref_result_fails` — result 变量为 ref → `InvalidInsnException`
 7. `variant_get_missing_variant_operand_fails` — variantId 不存在 → `InvalidInsnException`
 8. `variant_get_missing_key_operand_fails` — keyId 不存在 → `InvalidInsnException`
+9. `variant_get_indexed_non_int_index_fails` — index 变量不是 int → `InvalidInsnException`
 
 **variant_get_keyed 正向用例：**
 9. `variant_get_keyed_basic` — 类似 variant_get，验证生成 `godot_variant_get_keyed`
 
 **variant_get_named 正向用例：**
-10. `variant_get_named_basic` — self=Variant, name="property", result=Variant → 生成 `godot_variant_get_named` + `GD_STATIC_SN`
-11. `variant_get_named_non_variant_self` — self=Dictionary, result=int → pack self, unpack result
+10. `variant_get_named_basic` — self=Variant, name=`$name:StringName`, result=Variant → 生成 `godot_variant_get_named`
+11. `variant_get_named_ref_name_var` — name 为 ref StringName 变量，参数应直接用 `$name_ref`（禁止多余 `&`）
+12. `variant_get_named_non_variant_self` — self=Dictionary, result=int → pack self, unpack result
 
 **variant_get_indexed 正向用例：**
-12. `variant_get_indexed_basic` — self=Variant, index=0, result=Variant → 生成 `godot_variant_get_indexed` + r_oob 检查
-13. `variant_get_indexed_non_variant_self` — self=Array, index=2, result=int → pack self, unpack result
+13. `variant_get_indexed_basic` — self=Variant, index=`$idx:int`, result=Variant → 生成 `godot_variant_get_indexed` + r_oob 检查
+14. `variant_get_indexed_non_variant_self` — self=Array, index=`$idx:int`, result=int → pack self, unpack result
 
 **r_valid / r_oob 错误处理验证：**
-14. `variant_get_emits_valid_check` — 验证生成的代码包含 r_valid 检查和 GDCC_PRINT_RUNTIME_ERROR
-15. `variant_get_indexed_emits_oob_check` — 验证生成的代码包含 r_oob 检查
+15. `variant_get_emits_valid_check` — 验证生成的代码包含 r_valid 检查和 GDCC_PRINT_RUNTIME_ERROR
+16. `variant_get_indexed_emits_oob_check` — 验证生成的代码包含 r_oob 检查
+17. `variant_get_invalid_branch_destroy_order` — 验证无效分支析构顺序（ret → key temp → self temp）
+18. `variant_get_indexed_oob_destroy_order` — 验证 OOB 分支析构顺序（ret → self temp）
 
 **生命周期验证：**
-16. `variant_get_destroys_temp_pack_vars` — 验证临时 pack Variant 被正确析构
-17. `variant_get_destroys_ret_variant` — 验证 r_ret Variant 被正确析构
+19. `variant_get_destroys_temp_pack_vars` — 验证临时 pack Variant 被正确析构
+20. `variant_get_destroys_ret_variant` — 验证 r_ret Variant 被正确析构
+
+**否定断言（禁止多余 pack）**：
+21. `variant_get_variant_key_variant_result` — self/key 已是 Variant 时，断言不生成 `idx_self_variant`/`idx_key_variant` 临时 pack
+22. `variant_get_keyed_ref_key_var` — key 为 ref Variant 时，断言不生成 key 临时 pack
 
 #### 验收标准
 
-- [ ] 全部测试用例通过
-- [ ] 覆盖 4 种 GET 指令
-- [ ] 覆盖 Variant/非 Variant self、key、result 组合
-- [ ] 覆盖错误路径（缺失变量、ref 变量）
-- [ ] 覆盖 r_valid 和 r_oob 检查
-- [ ] 覆盖临时变量生命周期
+- [x] 全部测试用例通过
+- [x] 覆盖 4 种 GET 指令
+- [x] 覆盖 Variant/非 Variant self、key、result 组合
+- [x] 覆盖错误路径（缺失变量、ref 变量）
+- [x] 覆盖 r_valid 和 r_oob 检查
+- [x] 覆盖临时变量生命周期
 
 ---
 
@@ -541,16 +558,16 @@ class IndexLoadInsnGenTest {
 1. `variant_set_keyed_basic` — 验证生成 `godot_variant_set_keyed`
 
 **variant_set_named 正向用例：**
-1. `variant_set_named_basic` — self=Variant, name="property", value=Variant → 生成 `godot_variant_set_named` + `GD_STATIC_SN`
+1. `variant_set_named_basic` — self=Variant, name=`$name:StringName`, value=Variant → 生成 `godot_variant_set_named`
 2. `variant_set_named_non_variant_value` — value=int → pack value
 
 **variant_set_named 错误用例：**
 1. `variant_set_named_unsupported_self_fails` — self=int（不支持 named-set）→ fail-fast
 
 **variant_set_indexed 正向用例：**
-1. `variant_set_indexed_basic` — self=Variant, index=0, value=Variant → 生成 `godot_variant_set_indexed` + r_oob 检查
+1. `variant_set_indexed_basic` — self=Variant, index=`$idx:int`, value=Variant → 生成 `godot_variant_set_indexed` + r_oob 检查
 2. `variant_set_indexed_non_variant_value` — value=int → pack value
-3. `variant_set_indexed_array_self_pack_succeeds` — self=Array, index=0, value=Variant → 引用语义路径
+3. `variant_set_indexed_array_self_pack_succeeds` — self=Array, index=`$idx:int`, value=Variant → 引用语义路径
 
 **r_valid / r_oob 错误处理验证：**
 1. `variant_set_emits_valid_check` — 验证 r_valid 检查
@@ -644,20 +661,20 @@ godot_variant_destroy(&__gdcc_tmp_idx_key_1);
 godot_variant_destroy(&__gdcc_tmp_idx_self_0);
 ```
 
-### 4.3 variant_get_named（self=Variant, name="position", result=Vector3）
+### 4.3 variant_get_named（self=Variant, name=$name:StringName, result=Vector3）
 
 LIR:
 ```
-$result = variant_get_named $obj "position"
+$result = variant_get_named $obj $name
 ```
 
 生成 C 代码：
 ```c
 godot_Variant __gdcc_tmp_idx_ret_0;
 GDExtensionBool __gdcc_tmp_idx_valid_1 = false;
-godot_variant_get_named(&$obj, GD_STATIC_SN(u8"position"), &__gdcc_tmp_idx_ret_0, &__gdcc_tmp_idx_valid_1);
+godot_variant_get_named(&$obj, &$name, &__gdcc_tmp_idx_ret_0, &__gdcc_tmp_idx_valid_1);
 if (!__gdcc_tmp_idx_valid_1) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_get_named 'position' failed", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_get_named failed: self=$obj, name=$name, result=$result", __func__, __FILE__, __LINE__);
     __gdcc_tmp_idx_ret_0 = godot_new_Variant_nil();
     godot_variant_destroy(&__gdcc_tmp_idx_ret_0);
     goto __finally__;
@@ -666,11 +683,11 @@ $result = godot_new_Vector3_with_Variant(&__gdcc_tmp_idx_ret_0);
 godot_variant_destroy(&__gdcc_tmp_idx_ret_0);
 ```
 
-### 4.4 variant_get_indexed（self=Variant, index=2, result=Variant）
+### 4.4 variant_get_indexed（self=Variant, index=$idx:int, result=Variant）
 
 LIR:
 ```
-$result = variant_get_indexed $arr 2
+$result = variant_get_indexed $arr $idx
 ```
 
 生成 C 代码：
@@ -678,15 +695,15 @@ $result = variant_get_indexed $arr 2
 godot_Variant __gdcc_tmp_idx_ret_0;
 GDExtensionBool __gdcc_tmp_idx_valid_1 = false;
 GDExtensionBool __gdcc_tmp_idx_oob_2 = false;
-godot_variant_get_indexed(&$arr, (GDExtensionInt)2, &__gdcc_tmp_idx_ret_0, &__gdcc_tmp_idx_valid_1, &__gdcc_tmp_idx_oob_2);
+godot_variant_get_indexed(&$arr, (GDExtensionInt)$idx, &__gdcc_tmp_idx_ret_0, &__gdcc_tmp_idx_valid_1, &__gdcc_tmp_idx_oob_2);
 if (!__gdcc_tmp_idx_valid_1) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed failed", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed failed: self=$arr, index=$idx, result=$result", __func__, __FILE__, __LINE__);
     __gdcc_tmp_idx_ret_0 = godot_new_Variant_nil();
     godot_variant_destroy(&__gdcc_tmp_idx_ret_0);
     goto __finally__;
 }
 if (__gdcc_tmp_idx_oob_2) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed: index out of bounds", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_get_indexed index out of bounds: index=$idx", __func__, __FILE__, __LINE__);
     godot_variant_destroy(&__gdcc_tmp_idx_ret_0);
     goto __finally__;
 }
@@ -711,31 +728,31 @@ if (!__gdcc_tmp_idx_valid_0) {
 }
 ```
 
-### 4.6 variant_set_named（self=Variant, name="health", value=int）
+### 4.6 variant_set_named（self=Variant, name=$name:StringName, value=int）
 
 LIR:
 ```
-variant_set_named $obj "health" $hp
+variant_set_named $obj $name $hp
 ```
 
 生成 C 代码：
 ```c
 godot_Variant __gdcc_tmp_idx_val_0 = godot_new_Variant_with_int($hp);
 GDExtensionBool __gdcc_tmp_idx_valid_1 = false;
-godot_variant_set_named(&$obj, GD_STATIC_SN(u8"health"), &__gdcc_tmp_idx_val_0, &__gdcc_tmp_idx_valid_1);
+godot_variant_set_named(&$obj, &$name, &__gdcc_tmp_idx_val_0, &__gdcc_tmp_idx_valid_1);
 if (!__gdcc_tmp_idx_valid_1) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_set_named 'health' failed", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_set_named failed: self=$obj, name=$name, value=$hp", __func__, __FILE__, __LINE__);
     godot_variant_destroy(&__gdcc_tmp_idx_val_0);
     goto __finally__;
 }
 godot_variant_destroy(&__gdcc_tmp_idx_val_0);
 ```
 
-### 4.7 variant_set_indexed（self=Variant, index=0, value=int）
+### 4.7 variant_set_indexed（self=Variant, index=$idx:int, value=int）
 
 LIR:
 ```
-variant_set_indexed $arr 0 $val
+variant_set_indexed $arr $idx $val
 ```
 
 生成 C 代码：
@@ -743,14 +760,14 @@ variant_set_indexed $arr 0 $val
 godot_Variant __gdcc_tmp_idx_val_0 = godot_new_Variant_with_int($val);
 GDExtensionBool __gdcc_tmp_idx_valid_1 = false;
 GDExtensionBool __gdcc_tmp_idx_oob_2 = false;
-godot_variant_set_indexed(&$arr, (GDExtensionInt)0, &__gdcc_tmp_idx_val_0, &__gdcc_tmp_idx_valid_1, &__gdcc_tmp_idx_oob_2);
+godot_variant_set_indexed(&$arr, (GDExtensionInt)$idx, &__gdcc_tmp_idx_val_0, &__gdcc_tmp_idx_valid_1, &__gdcc_tmp_idx_oob_2);
 if (!__gdcc_tmp_idx_valid_1) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_set_indexed failed", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_set_indexed failed: self=$arr, index=$idx, value=$val", __func__, __FILE__, __LINE__);
     godot_variant_destroy(&__gdcc_tmp_idx_val_0);
     goto __finally__;
 }
 if (__gdcc_tmp_idx_oob_2) {
-    GDCC_PRINT_RUNTIME_ERROR("variant_set_indexed: index out of bounds", __func__, __FILE__, __LINE__);
+    GDCC_PRINT_RUNTIME_ERROR("variant_set_indexed index out of bounds: index=$idx", __func__, __FILE__, __LINE__);
     godot_variant_destroy(&__gdcc_tmp_idx_val_0);
     goto __finally__;
 }
@@ -815,9 +832,14 @@ bodyBuilder.callAssign(bodyBuilder.targetOfVar(resultVar), "godot_new_Variant_wi
 // 销毁临时变量
 bodyBuilder.destroyTempVar(retTemp);
 
-// StringName 字面量
-bodyBuilder.valueOfStringNamePtrLiteral("property_name")
-// 渲染为 GD_STATIC_SN(u8"property_name")
+// StringName 变量参数
+var nameVarRef = bodyBuilder.valueOfVar(nameVar);
+
+// 统一参数渲染（避免在生成器中分散实现 & / ref / ptr 逻辑）
+var renderedArg = bodyBuilder.renderArgument(bodyBuilder.valueOfVar(selfVar), false);
+var selfArgCode = renderedArg.code();
+var renderedNameArg = bodyBuilder.renderArgument(nameVarRef, false);
+var nameArgCode = renderedNameArg.code();
 
 // 手动行发射（用于低级 C 调用和条件检查）
 bodyBuilder.appendLine("godot_variant_get(&..., &..., &..., &...);");
@@ -826,9 +848,8 @@ bodyBuilder.appendLine("if (!__gdcc_tmp_idx_valid_0) {");
 // 错误报告
 bodyBuilder.appendLine("GDCC_PRINT_RUNTIME_ERROR(\"...\", __func__, __FILE__, __LINE__);");
 
-// 安全返回
-bodyBuilder.returnVoid();  // void 函数
-bodyBuilder.returnValue(bodyBuilder.valueOfExpr(CBodyBuilder.renderDefaultValueExpr(returnType), returnType));
+// 安全返回（统一）
+bodyBuilder.returnDefault();
 ```
 
 ### 6.2 `renderStaticStringNameLiteral` 用法
@@ -838,6 +859,8 @@ bodyBuilder.returnValue(bodyBuilder.valueOfExpr(CBodyBuilder.renderDefaultValueE
 CBodyBuilder.renderStaticStringNameLiteral("property_name")
 // → GD_STATIC_SN(u8"property_name")
 ```
+
+> 说明：Indexing 指令中的 `_named` 变体已改为 `StringName` 变量操作数，不再在生成器中使用静态字面量路径。
 
 ---
 
@@ -898,6 +921,22 @@ CBodyBuilder.renderStaticStringNameLiteral("property_name")
 - GET 和 SET 分属两个独立生成器（`IndexLoadInsnGen` / `IndexStoreInsnGen`）。
 - 如果未来增加新的 indexing 指令，按 ReturnKind（REQUIRED/NONE）分配到对应生成器。
 
+### 8.4 named/indexed 操作数建模
+
+- `variant_get_named` / `variant_set_named` 的 key 操作数必须是 `StringName` 变量（`VARIABLE`），不再使用字符串字面量操作数。
+- `variant_get_indexed` / `variant_set_indexed` 的 index 操作数必须是 `int` 变量（`VARIABLE`），不再使用整数字面量操作数。
+- 解析器与序列化器需保持该模型一致性，文本 IR 形态为 `$name` / `$idx`。
+
+### 8.5 运行时错误诊断信息
+
+- `GDCC_PRINT_RUNTIME_ERROR` 的消息必须包含足够上下文，至少带上指令名和关键操作数 ID（如 self/key/name/index/result/value）。
+- 禁止仅输出泛化字符串（如仅 `"... failed"`），避免诊断信息不足。
+
+### 8.6 默认返回策略
+
+- 生成器中的失败分支统一调用 `CBodyBuilder.returnDefault()`，禁止在生成器中重复拼装 `renderDefaultValueExpr(...)` 逻辑。
+- 若失败分支会临时析构变量，需要保证分支代码生成后不破坏后续路径的临时变量初始化状态。
+
 ---
 
 ## 9. 回归测试基线
@@ -930,8 +969,8 @@ CBodyBuilder.renderStaticStringNameLiteral("property_name")
 
 ## 10. 非目标（当前不做）
 
-- 不修改现有 8 个 LIR `IndexingInstruction` record 类。
-- 不修改 `GdInstruction` 枚举定义。
+- 不新增/重构除 named/indexed 操作数建模修正外的其他 LIR `IndexingInstruction` record。
+- 不修改除 named/indexed operand pattern 修正外的其他 `GdInstruction` 枚举定义。
 - 不修改 `IndexingInstruction` 接口。
 - 不在 `gdcc_helper.h` 中添加 C helper 包装函数（直接使用 gdextension-lite 提供的 API）。
 - 不添加引擎集成测试（本计划仅覆盖单元测试；引擎集成测试作为后续单独任务）。

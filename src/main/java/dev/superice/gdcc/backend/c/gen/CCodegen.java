@@ -45,6 +45,7 @@ public class CCodegen implements Codegen {
         registerInsnGen(new OperatorInsnGen());
         registerInsnGen(new LoadStaticInsnGen());
         registerInsnGen(new StoreStaticInsnGen());
+        registerInsnGen(new IndexLoadInsnGen());
     }
 
     public CodegenContext ctx;

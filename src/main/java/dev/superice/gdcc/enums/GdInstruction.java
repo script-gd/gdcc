@@ -33,12 +33,12 @@ public enum GdInstruction {
     // Indexing
     VARIANT_GET("variant_get", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE), 2, 2),
     VARIANT_GET_KEYED("variant_get_keyed", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE), 2, 2),
-    VARIANT_GET_NAMED("variant_get_named", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.STRING), 2, 2),
-    VARIANT_GET_INDEXED("variant_get_indexed", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.INT), 2, 2),
+    VARIANT_GET_NAMED("variant_get_named", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE), 2, 2),
+    VARIANT_GET_INDEXED("variant_get_indexed", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE), 2, 2),
     VARIANT_SET("variant_set", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
     VARIANT_SET_KEYED("variant_set_keyed", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
-    VARIANT_SET_NAMED("variant_set_named", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.STRING, OperandKind.VARIABLE), 3, 3),
-    VARIANT_SET_INDEXED("variant_set_indexed", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.INT, OperandKind.VARIABLE), 3, 3),
+    VARIANT_SET_NAMED("variant_set_named", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
+    VARIANT_SET_INDEXED("variant_set_indexed", ReturnKind.NONE, List.of(OperandKind.VARIABLE, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
 
     // Type Instructions
     GET_VARIANT_TYPE("get_variant_type", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
@@ -92,11 +92,25 @@ public enum GdInstruction {
         this(opcode, returnKind, operandKinds, operandKinds.size(), operandKinds.size());
     }
 
-    public String opcode() { return opcode; }
-    public ReturnKind returnKind() { return returnKind; }
-    public List<OperandKind> operandKinds() { return operandKinds; }
-    public int minOperands() { return minOperands; }
-    public int maxOperands() { return maxOperands; }
+    public String opcode() {
+        return opcode;
+    }
+
+    public ReturnKind returnKind() {
+        return returnKind;
+    }
+
+    public List<OperandKind> operandKinds() {
+        return operandKinds;
+    }
+
+    public int minOperands() {
+        return minOperands;
+    }
+
+    public int maxOperands() {
+        return maxOperands;
+    }
 
     public enum ReturnKind {
         NONE,

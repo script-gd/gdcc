@@ -566,6 +566,18 @@ public final class CBodyBuilder {
         return this;
     }
 
+    /// Returns default value for current function return type.
+    /// - void: emits `goto __finally__` (or `return` when already in `__finally__`)
+    /// - non-void: emits return with `renderDefaultValueExpr(returnType)` semantics
+    public @NotNull CBodyBuilder returnDefault() {
+        var returnType = func.getReturnType();
+        if (returnType instanceof GdVoidType) {
+            return returnVoid();
+        }
+        var defaultExpr = renderDefaultValueExpr(returnType);
+        return returnValue(valueOfExpr(defaultExpr, returnType));
+    }
+
     public @NotNull CBodyBuilder returnTerminal() {
         var returnType = func.getReturnType();
         if (!checkInFinallyBlock()) {
@@ -778,7 +790,7 @@ public final class CBodyBuilder {
     /// - Value-semantic types (String, StringName, Variant, etc.): pass by pointer (&)
     /// When requireGodotRawPtr is true, GDCC object pointers are auto-converted to Godot
     /// object pointers via `gdcc_object_to_godot_object_ptr(value, Type_object_ptr)`.
-    private @NotNull RenderResult renderArgument(@NotNull ValueRef value, boolean requireGodotRawPtr) {
+    public @NotNull RenderResult renderArgument(@NotNull ValueRef value, boolean requireGodotRawPtr) {
         var type = value.type();
 
         // Convert GDCC object ptr to Godot raw ptr when calling GDExtension functions
@@ -1397,14 +1409,14 @@ public final class CBodyBuilder {
         }
     }
 
-    private record RenderResult(@NotNull String code,
-                                @NotNull List<TempVar> temps,
-                                @Nullable String preCode) {
+    public record RenderResult(@NotNull String code,
+                               @NotNull List<TempVar> temps,
+                               @Nullable String preCode) {
         private RenderResult(@NotNull String code, @NotNull List<TempVar> temps) {
             this(code, temps, null);
         }
 
-        private RenderResult {
+        public RenderResult {
             Objects.requireNonNull(code);
             Objects.requireNonNull(temps);
         }

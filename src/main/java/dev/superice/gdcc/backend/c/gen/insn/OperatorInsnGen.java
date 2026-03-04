@@ -212,18 +212,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                 "GDCC_PRINT_RUNTIME_ERROR(\"Primitive fast path guard failed for operator '" +
                         op.name() + "': " + reason + "\", __func__, __FILE__, __LINE__);"
         );
-        emitPrimitiveFastPathFailureReturn(bodyBuilder);
+        bodyBuilder.returnDefault();
         bodyBuilder.appendLine("}");
-    }
-
-    private void emitPrimitiveFastPathFailureReturn(@NotNull CBodyBuilder bodyBuilder) {
-        var returnType = bodyBuilder.func().getReturnType();
-        if (returnType instanceof GdVoidType) {
-            bodyBuilder.returnVoid();
-            return;
-        }
-        var defaultExpr = CBodyBuilder.renderDefaultValueExpr(returnType);
-        bodyBuilder.returnValue(bodyBuilder.valueOfExpr(defaultExpr, returnType));
     }
 
     private @NotNull String renderPowerFastPathExpr(@NotNull CBodyBuilder bodyBuilder,
@@ -404,13 +394,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             bodyBuilder.destroyTempVar(leftOperand.tempVar());
         }
 
-        var returnType = bodyBuilder.func().getReturnType();
-        if (returnType instanceof GdVoidType) {
-            bodyBuilder.returnVoid();
-            return;
-        }
-        var defaultExpr = CBodyBuilder.renderDefaultValueExpr(returnType);
-        bodyBuilder.returnValue(bodyBuilder.valueOfExpr(defaultExpr, returnType));
+        bodyBuilder.returnDefault();
     }
 
     private @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
@@ -445,13 +429,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             bodyBuilder.destroyTempVar(leftOperand.tempVar());
         }
 
-        var returnType = bodyBuilder.func().getReturnType();
-        if (returnType instanceof GdVoidType) {
-            bodyBuilder.returnVoid();
-            return;
-        }
-        var defaultExpr = CBodyBuilder.renderDefaultValueExpr(returnType);
-        bodyBuilder.returnValue(bodyBuilder.valueOfExpr(defaultExpr, returnType));
+        bodyBuilder.returnDefault();
     }
 
     private void emitPrimitiveComparison(@NotNull CBodyBuilder bodyBuilder,

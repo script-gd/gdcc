@@ -1,12 +1,11 @@
 package dev.superice.gdcc.lir.insn;
 
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.lir.LirInstruction;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
 
-public record VariantSetIndexedInsn(@NotNull String variantId, int index,
+public record VariantSetIndexedInsn(@NotNull String variantId, @NotNull String indexId,
                                     @NotNull String valueId) implements IndexingInstruction {
 
     @Override
@@ -21,7 +20,7 @@ public record VariantSetIndexedInsn(@NotNull String variantId, int index,
 
     @Override
     public @NotNull List<Operand> operands() {
-        return List.of(new VariableOperand(variantId), new IntOperand(index), new VariableOperand(valueId));
+        return List.of(new VariableOperand(variantId), new VariableOperand(indexId), new VariableOperand(valueId));
     }
 }
 

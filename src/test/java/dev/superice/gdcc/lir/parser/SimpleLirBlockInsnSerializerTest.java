@@ -57,4 +57,36 @@ public class SimpleLirBlockInsnSerializerTest {
         // Unknown stays backward-compatible with old syntax.
         assertTrue(out.contains("destruct $1;"));
     }
+
+    @Test
+    public void serialize_indexedInstructionsUseVariableIndexOperand() throws Exception {
+        var insnList = List.<LirInstruction>of(
+                new VariantGetIndexedInsn("result", "arr", "idx"),
+                new VariantSetIndexedInsn("arr", "idx", "value")
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+        var out = sw.toString();
+
+        assertTrue(out.contains("$result = variant_get_indexed $arr $idx;"), out);
+        assertTrue(out.contains("variant_set_indexed $arr $idx $value;"), out);
+    }
+
+    @Test
+    public void serialize_namedInstructionsUseStringNameVariableOperand() throws Exception {
+        var insnList = List.<LirInstruction>of(
+                new VariantGetNamedInsn("result", "obj", "name"),
+                new VariantSetNamedInsn("obj", "name", "value")
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+        var out = sw.toString();
+
+        assertTrue(out.contains("$result = variant_get_named $obj $name;"), out);
+        assertTrue(out.contains("variant_set_named $obj $name $value;"), out);
+    }
 }

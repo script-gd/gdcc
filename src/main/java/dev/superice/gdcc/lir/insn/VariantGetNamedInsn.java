@@ -1,14 +1,13 @@
 package dev.superice.gdcc.lir.insn;
 
 import dev.superice.gdcc.enums.GdInstruction;
-import dev.superice.gdcc.lir.LirInstruction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
 public record VariantGetNamedInsn(@Nullable String resultId, @NotNull String namedVariantId,
-                                  @NotNull String name) implements IndexingInstruction {
+                                  @NotNull String nameId) implements IndexingInstruction {
 
     @Override
     public GdInstruction opcode() {
@@ -17,7 +16,7 @@ public record VariantGetNamedInsn(@Nullable String resultId, @NotNull String nam
 
     @Override
     public @NotNull List<Operand> operands() {
-        return List.of(new VariableOperand(namedVariantId), new StringOperand(name));
+        return List.of(new VariableOperand(namedVariantId), new VariableOperand(nameId));
     }
 }
 

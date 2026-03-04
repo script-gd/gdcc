@@ -101,26 +101,39 @@ public record ParsedLirInstruction(
                     yield new BinaryOpInsn(resultId, op, left, right);
                 }
 
-                case VARIANT_GET -> new VariantGetInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id());
-                case VARIANT_GET_KEYED -> new VariantGetKeyedInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id());
-                case VARIANT_GET_NAMED -> new VariantGetNamedInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((StringOperand) operands.get(1)).value());
-                case VARIANT_GET_INDEXED -> new VariantGetIndexedInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((IntOperand) operands.get(1)).value());
-                case VARIANT_SET -> new VariantSetInsn(((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
-                case VARIANT_SET_KEYED -> new VariantSetKeyedInsn(((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
-                case VARIANT_SET_NAMED -> new VariantSetNamedInsn(((VariableOperand) operands.getFirst()).id(), ((StringOperand) operands.get(1)).value(), ((VariableOperand) operands.get(2)).id());
-                case VARIANT_SET_INDEXED -> new VariantSetIndexedInsn(((VariableOperand) operands.getFirst()).id(), ((IntOperand) operands.get(1)).value(), ((VariableOperand) operands.get(2)).id());
+                case VARIANT_GET ->
+                        new VariantGetInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id());
+                case VARIANT_GET_KEYED ->
+                        new VariantGetKeyedInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id());
+                case VARIANT_GET_NAMED ->
+                        new VariantGetNamedInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id());
+                case VARIANT_GET_INDEXED ->
+                        new VariantGetIndexedInsn(resultId, ((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id());
+                case VARIANT_SET ->
+                        new VariantSetInsn(((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
+                case VARIANT_SET_KEYED ->
+                        new VariantSetKeyedInsn(((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
+                case VARIANT_SET_NAMED ->
+                        new VariantSetNamedInsn(((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
+                case VARIANT_SET_INDEXED ->
+                        new VariantSetIndexedInsn(((VariableOperand) operands.getFirst()).id(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
 
                 case GET_VARIANT_TYPE -> new GetVariantTypeInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case GET_CLASS_NAME -> new GetClassNameInsn(resultId, ((VariableOperand) operands.getFirst()).id());
-                case OBJECT_CAST -> new ObjectCastInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
-                case IS_INSTANCE_OF -> new IsInstanceOfInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
-                case PACK_VARIANT -> new PackVariantInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
-                case UNPACK_VARIANT -> new UnpackVariantInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
+                case OBJECT_CAST ->
+                        new ObjectCastInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
+                case IS_INSTANCE_OF ->
+                        new IsInstanceOfInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
+                case PACK_VARIANT ->
+                        new PackVariantInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
+                case UNPACK_VARIANT ->
+                        new UnpackVariantInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
                 case VARIANT_IS_NIL -> new VariantIsNilInsn(resultId, ((VariableOperand) operands.getFirst()).id());
                 case OBJECT_IS_NULL -> new ObjectIsNullInsn(resultId, ((VariableOperand) operands.getFirst()).id());
 
                 case GOTO -> new GotoInsn(((BasicBlockOperand) operands.getFirst()).bbId());
-                case GO_IF -> new GoIfInsn(((VariableOperand) operands.getFirst()).id(), ((BasicBlockOperand) operands.get(1)).bbId(), ((BasicBlockOperand) operands.get(2)).bbId());
+                case GO_IF ->
+                        new GoIfInsn(((VariableOperand) operands.getFirst()).id(), ((BasicBlockOperand) operands.get(1)).bbId(), ((BasicBlockOperand) operands.get(2)).bbId());
                 case RETURN -> {
                     if (operands.isEmpty()) yield new ReturnInsn(null);
                     yield new ReturnInsn(((VariableOperand) operands.getFirst()).id());
@@ -160,10 +173,14 @@ public record ParsedLirInstruction(
                     yield new CallIntrinsicInsn(resultId, iname, args);
                 }
 
-                case LOAD_PROPERTY -> new LoadPropertyInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
-                case STORE_PROPERTY -> new StorePropertyInsn(((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
-                case LOAD_STATIC -> new LoadStaticInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((StringOperand) operands.get(1)).value());
-                case STORE_STATIC -> new StoreStaticInsn(((StringOperand) operands.getFirst()).value(), ((StringOperand) operands.get(1)).value(), ((VariableOperand) operands.get(2)).id());
+                case LOAD_PROPERTY ->
+                        new LoadPropertyInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id());
+                case STORE_PROPERTY ->
+                        new StorePropertyInsn(((StringOperand) operands.getFirst()).value(), ((VariableOperand) operands.get(1)).id(), ((VariableOperand) operands.get(2)).id());
+                case LOAD_STATIC ->
+                        new LoadStaticInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((StringOperand) operands.get(1)).value());
+                case STORE_STATIC ->
+                        new StoreStaticInsn(((StringOperand) operands.getFirst()).value(), ((StringOperand) operands.get(1)).value(), ((VariableOperand) operands.get(2)).id());
 
                 case NOP -> new NopInsn();
                 case LINE_NUMBER -> new LineNumberInsn(((IntOperand) operands.getFirst()).value());

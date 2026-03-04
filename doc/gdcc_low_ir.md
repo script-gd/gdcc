@@ -230,13 +230,13 @@ $<result_id> = variant_get_keyed $<keyed_variant_id> $<Variant>
 #### variant_get_named
 Gets a value from a named Variant (usually Object) by StringName.
 ```
-$<result_id> = variant_get_named $<named_variant_id> $<StringName>
+$<result_id> = variant_get_named $<named_variant_id> $<name_id:StringName>
 ```
 
 #### variant_get_indexed
-Sets a value in a Variant by int.
+Gets a value in a Variant by an int variable.
 ```
-$<result_id> = variant_get_indexed $<variant_id> $<int>
+$<result_id> = variant_get_indexed $<variant_id> $<index_id:int>
 ```
 
 #### variant_set
@@ -254,13 +254,13 @@ variant_set_keyed $<keyed_variant_id> $<key> $<value>
 #### variant_set_named
 Sets a value in a named Variant (usually Object) by StringName.
 ```
-variant_set_named $<named_variant_id> $<key:StringName> $<value>
+variant_set_named $<named_variant_id> $<name_id:StringName> $<value>
 ```
 
 #### variant_set_indexed
-Sets a value in a Variant by int.
+Sets a value in a Variant by an int variable.
 ```
-variant_set_indexed $<variant_id:Variant> $<index:int> $<value>
+variant_set_indexed $<variant_id> $<index_id:int> $<value>
 ```
 
 ### Type Instructions

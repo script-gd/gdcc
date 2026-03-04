@@ -88,6 +88,46 @@ public class SimpleLirBlockInsnParserTest {
         assertInstanceOf(BinaryOpInsn.class, insns.get(4));
     }
 
+    @Test
+    public void parse_indexedInstructionsUseVariableIndexOperand() {
+        var input = """
+                $result = variant_get_indexed $arr $idx;
+                variant_set_indexed $arr $idx $value;
+                """;
+        var insns = parse(input);
+        assertEquals(2, insns.size());
+
+        var getInsn = assertInstanceOf(VariantGetIndexedInsn.class, insns.getFirst());
+        assertEquals("result", getInsn.resultId());
+        assertEquals("arr", getInsn.variantId());
+        assertEquals("idx", getInsn.indexId());
+
+        var setInsn = assertInstanceOf(VariantSetIndexedInsn.class, insns.getLast());
+        assertEquals("arr", setInsn.variantId());
+        assertEquals("idx", setInsn.indexId());
+        assertEquals("value", setInsn.valueId());
+    }
+
+    @Test
+    public void parse_namedInstructionsUseStringNameVariableOperand() {
+        var input = """
+                $result = variant_get_named $obj $name;
+                variant_set_named $obj $name $value;
+                """;
+        var insns = parse(input);
+        assertEquals(2, insns.size());
+
+        var getInsn = assertInstanceOf(VariantGetNamedInsn.class, insns.getFirst());
+        assertEquals("result", getInsn.resultId());
+        assertEquals("obj", getInsn.namedVariantId());
+        assertEquals("name", getInsn.nameId());
+
+        var setInsn = assertInstanceOf(VariantSetNamedInsn.class, insns.getLast());
+        assertEquals("obj", setInsn.namedVariantId());
+        assertEquals("name", setInsn.nameId());
+        assertEquals("value", setInsn.valueId());
+    }
+
     @SuppressWarnings("TrailingWhitespacesInTextBlock")
     @Test
     public void parse_whitespaceVariants() {
