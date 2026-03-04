@@ -288,6 +288,21 @@ class IndexLoadInsnGenTest {
     }
 
     @Test
+    @DisplayName("variant_get_indexed should accept ref int index")
+    void variantGetIndexedRefIntIndex() {
+        var body = generateBody(
+                new VariantGetIndexedInsn("result", "self", "idx_ref"),
+                List.of(
+                        new VariableSpec("self", GdVariantType.VARIANT, false),
+                        new VariableSpec("idx_ref", GdIntType.INT, true),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertTrue(body.contains("godot_variant_get_indexed(&$self, (GDExtensionInt)$idx_ref"), body);
+    }
+
+    @Test
     @DisplayName("variant_get_indexed should pack non-Variant self and unpack non-Variant result")
     void variantGetIndexedNonVariantSelf() {
         var body = generateBody(

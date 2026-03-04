@@ -18,6 +18,7 @@ import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.lir.insn.VariantGetInsn;
+import dev.superice.gdcc.lir.insn.VariantSetInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdFloatType;
@@ -76,6 +77,43 @@ public class CCodegenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_variant_get(&$self, &$key"), body);
         assertTrue(body.contains("$result = godot_new_Variant_with_Variant"), body);
+    }
+
+    @Test
+    public void variantSetOpcodeIsRegisteredAndGeneratesBody() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("index_store_codegen");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("self", GdVariantType.VARIANT);
+        func.createAndAddVariable("key", GdVariantType.VARIANT);
+        func.createAndAddVariable("value", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.instructions().add(new VariantSetInsn("self", "key", "value"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("index_store_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_variant_set(&$self, &$key, &$value"), body);
     }
 
     @Test

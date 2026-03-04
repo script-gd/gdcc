@@ -4,11 +4,11 @@
 
 ## 文档状态
 
-- 状态：`Plan / In Progress`
+- 状态：`Completed`
 - 文档类型：`实施计划`
 - 创建时间：`2026-03-04`
 - 适用范围：`backend.c` 中 8 条 `variant_get*` / `variant_set*` 指令的 C 代码生成
-- 当前进度：`✅ 步骤 1 已完成；✅ 步骤 3 已完成（IndexLoad 注册）；✅ 步骤 4 已完成；✅ named/indexed 操作数模型修正（字面量 → VARIABLE）已完成；✅ returnDefault 抽取与调用点替换已完成；步骤 2/5/6 待执行`
+- 当前进度：`✅ 步骤 1 已完成；✅ 步骤 2 已完成（IndexStoreInsnGen）；✅ 步骤 3 已完成（IndexLoad + IndexStore 注册）；✅ 步骤 4 已完成；✅ 步骤 5 已完成（IndexStoreInsnGenTest + 引擎锚定测试）；✅ 步骤 6 已完成（编译与回归验证）；✅ named/indexed 操作数模型修正（字面量 → VARIABLE）已完成；✅ returnDefault 抽取与调用点替换已完成；✅ ref self 放行策略已收敛（仅放行无需回写类型）；✅ ref key/value/index 约束已按最新语义放开并补齐回归测试`
 
 ## 1. 背景与目标
 
@@ -152,8 +152,8 @@ IndexStoreInsnGen implements CInsnGen<IndexingInstruction>
 | self 类别 | 典型类型（gdcc） | 允许策略 | 是否需要 self 回写 |
 |---|---|---|---|
 | 已是 Variant 变量 | `GdVariantType` | 直接传 `&$self` 给 `godot_variant_set*` | 否 |
-| 引用语义容器/对象 | `GdArrayType` / `GdDictionaryType` / `GdPacked*ArrayType` / `GdObjectType` | 可临时 pack 为 Variant 后调用 set；底层对象共享，修改可见 | 否 |
-| 值语义但支持 set 的类型 | `GdStringType`、向量/颜色/矩阵等值类型 | 临时 pack 后调用 set；随后必须 unpack 写回原 self 变量 | 是 |
+| 引用语义容器/对象 | `GdArrayType` / `GdDictionaryType` / `GdObjectType` | 可临时 pack 为 Variant 后调用 set；底层对象共享，修改可见 | 否 |
+| 值语义但支持 set 的类型 | `GdStringType`、向量/颜色/矩阵等值类型、`GdPacked*ArrayType` | 临时 pack 后调用 set；随后必须 unpack 写回原 self 变量 | 是 |
 | 不支持 set 的类型 | `GdIntType`/`GdFloatType`/`GdBoolType`/`GdNilType`/`GdStringNameType`/`GdNodePathType`/`GdRidType`/`GdCallableType`/`GdSignalType`/`GdVoidType` | 编译期 fail-fast | - |
 
 > 注：`GDExtensionVariantPtr p_self` 仅表示“传入的是可变 Variant 指针”，不等价于“源 IR 变量必须是 `GdVariantType`”。
@@ -251,7 +251,9 @@ GDExtension 的 variant_get* API 全部通过 Variant 指针操作。当 LIR 操
 对于 `variant_set*`：
 
 - `self` 为 `GdVariantType`：直接传 `&$self`，无需回写。
-- `self` 为引用语义类型（`Array`/`Dictionary`/`Packed*Array`/`Object`）：可 pack 为临时 Variant，执行 set 后无需回写。
+- `self` 为引用语义类型（`Array`/`Dictionary`/`Object`）：可 pack 为临时 Variant，执行 set 后无需回写。
+- `self` 为 `Packed*Array`：按值语义处理，需要 writeback（`pack -> variant_set_indexed -> unpack`）。
+- `self` 为 `ref Packed*Array`：当前实现 fail-fast（需要 writeback，但 ref 目标不可安全回写）。
 - `self` 为值语义但支持 set 的类型（例如 `String`、向量、`Color`、`Transform2D`、`Basis`、`Projection` 等）：执行 set 后必须将临时 self Variant unpack 回原 self 变量。
 - `self` 为不支持 set 的类型：编译期 fail-fast，不生成调用。
 
@@ -372,6 +374,7 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
 ### 步骤 2：创建 IndexStoreInsnGen
 
 **文件**：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/IndexStoreInsnGen.java`
+- 状态：`✅ 已完成（2026-03-04）`
 
 **类结构**：
 
@@ -422,24 +425,24 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
 
 #### 验收标准
 
-- [ ] 编译通过，无 warning
-- [ ] 4 条 SET 指令均可生成正确的 C 代码
-- [ ] self 分类策略正确：直接 Variant / 引用语义 pack / 值语义 pack+回写 / 不支持类型 fail-fast
-- [ ] key 为 Variant 类型时无多余 pack
-- [ ] value 为 Variant 类型时无多余 pack
-- [ ] value 为非 Variant 类型时正确 pack 并在结束后销毁
-- [ ] 值语义 self 在 set 后正确 unpack 回写
-- [ ] r_valid 检查失败时正确打印错误并安全返回
-- [ ] variant_set_indexed 的 r_oob 检查失败时正确打印错误并安全返回
-- [ ] 所有临时变量在所有路径（正常/错误）上均被正确销毁
-- [ ] 不意外设置 resultId（SET 不返回值）
+- [x] 编译通过，无 warning
+- [x] 4 条 SET 指令均可生成正确的 C 代码
+- [x] self 分类策略正确：直接 Variant / 引用语义 pack / 值语义 pack+回写 / 不支持类型 fail-fast
+- [x] key 为 Variant 类型时无多余 pack
+- [x] value 为 Variant 类型时无多余 pack
+- [x] value 为非 Variant 类型时正确 pack 并在结束后销毁
+- [x] 值语义 self 在 set 后正确 unpack 回写
+- [x] r_valid 检查失败时正确打印错误并安全返回
+- [x] variant_set_indexed 的 r_oob 检查失败时正确打印错误并安全返回
+- [x] 所有临时变量在所有路径（正常/错误）上均被正确销毁
+- [x] 不意外设置 resultId（SET 不返回值）
 
 ---
 
 ### 步骤 3：注册生成器到 CCodegen
 
 **文件**：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
-- 状态：`✅ 已完成（2026-03-04，已注册 IndexLoadInsnGen）`
+- 状态：`✅ 已完成（2026-03-04，已注册 IndexLoadInsnGen + IndexStoreInsnGen）`
 
 **修改内容**：在 static 块中添加两行注册：
 
@@ -460,12 +463,12 @@ static {
 
 - [x] 编译通过
 - [x] `INSN_GENS` 已包含 `IndexLoadInsnGen` 的 4 条 GET opcode 映射
+- [x] `INSN_GENS` 已包含 `IndexStoreInsnGen` 的 4 条 SET opcode 映射
 - [x] 不影响现有 15 个生成器的注册
-
-> 注：`IndexStoreInsnGen` 的注册将在步骤 2 完成后补充。
 
 **同步单测更新**：
 - 在 `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java` 新增 `variantGetOpcodeIsRegisteredAndGeneratesBody`，验证 `variant_get` 已通过 `CCodegen` 分发到 `IndexLoadInsnGen`。
+- 在 `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java` 新增 `variantSetOpcodeIsRegisteredAndGeneratesBody`，验证 `variant_set` 已通过 `CCodegen` 分发到 `IndexStoreInsnGen`。
 
 ---
 
@@ -508,21 +511,22 @@ class IndexLoadInsnGenTest {
 
 **variant_get_indexed 正向用例：**
 13. `variant_get_indexed_basic` — self=Variant, index=`$idx:int`, result=Variant → 生成 `godot_variant_get_indexed` + r_oob 检查
-14. `variant_get_indexed_non_variant_self` — self=Array, index=`$idx:int`, result=int → pack self, unpack result
+14. `variant_get_indexed_ref_int_index` — self=Variant, index=ref int, result=Variant → index 允许 ref
+15. `variant_get_indexed_non_variant_self` — self=Array, index=`$idx:int`, result=int → pack self, unpack result
 
 **r_valid / r_oob 错误处理验证：**
-15. `variant_get_emits_valid_check` — 验证生成的代码包含 r_valid 检查和 GDCC_PRINT_RUNTIME_ERROR
-16. `variant_get_indexed_emits_oob_check` — 验证生成的代码包含 r_oob 检查
-17. `variant_get_invalid_branch_destroy_order` — 验证无效分支析构顺序（ret → key temp → self temp）
-18. `variant_get_indexed_oob_destroy_order` — 验证 OOB 分支析构顺序（ret → self temp）
+16. `variant_get_emits_valid_check` — 验证生成的代码包含 r_valid 检查和 GDCC_PRINT_RUNTIME_ERROR
+17. `variant_get_indexed_emits_oob_check` — 验证生成的代码包含 r_oob 检查
+18. `variant_get_invalid_branch_destroy_order` — 验证无效分支析构顺序（ret → key temp → self temp）
+19. `variant_get_indexed_oob_destroy_order` — 验证 OOB 分支析构顺序（ret → self temp）
 
 **生命周期验证：**
-19. `variant_get_destroys_temp_pack_vars` — 验证临时 pack Variant 被正确析构
-20. `variant_get_destroys_ret_variant` — 验证 r_ret Variant 被正确析构
+20. `variant_get_destroys_temp_pack_vars` — 验证临时 pack Variant 被正确析构
+21. `variant_get_destroys_ret_variant` — 验证 r_ret Variant 被正确析构
 
 **否定断言（禁止多余 pack）**：
-21. `variant_get_variant_key_variant_result` — self/key 已是 Variant 时，断言不生成 `idx_self_variant`/`idx_key_variant` 临时 pack
-22. `variant_get_keyed_ref_key_var` — key 为 ref Variant 时，断言不生成 key 临时 pack
+22. `variant_get_variant_key_variant_result` — self/key 已是 Variant 时，断言不生成 `idx_self_variant`/`idx_key_variant` 临时 pack
+23. `variant_get_keyed_ref_key_var` — key 为 ref Variant 时，断言不生成 key 临时 pack
 
 #### 验收标准
 
@@ -538,15 +542,19 @@ class IndexLoadInsnGenTest {
 ### 步骤 5：创建 IndexStoreInsnGen 单元测试
 
 **文件**：`src/test/java/dev/superice/gdcc/backend/c/gen/IndexStoreInsnGenTest.java`
+- 状态：`✅ 已完成（2026-03-04）`
 
 **测试用例清单**：
 
 **variant_set 正向用例：**
 1. `variant_set_variant_key_variant_value` — self=Variant, key=Variant, value=Variant → 无 pack 开销
 2. `variant_set_non_variant_key_pack` — self=Variant, key=int, value=Variant → key 需 pack
-3. `variant_set_non_variant_value_pack` — self=Variant, key=Variant, value=int → value 需 pack
-4. `variant_set_array_self_pack_succeeds` — self=Array, key=int, value=Variant → self 允许 pack 且无需回写
-5. `variant_set_value_semantic_self_emits_writeback` — self=Vector3（或 Color），set 后应生成 unpack 回写
+3. `variant_set_ref_int_key_pack` — self=Variant, key=ref int, value=Variant → key 允许 ref 并正确 pack
+4. `variant_set_non_variant_value_pack` — self=Variant, key=Variant, value=int → value 需 pack
+5. `variant_set_ref_string_value_pack` — self=Variant, key=Variant, value=ref String → value 允许 ref 并正确 pack
+6. `variant_set_array_self_pack_succeeds` — self=Array, key=int, value=Variant → self 允许 pack 且无需回写
+7. `variant_set_ref_dictionary_self_pack_succeeds_without_writeback` — self=ref Dictionary, key=int, value=Variant → self 允许 ref 且无需回写
+8. `variant_set_value_semantic_self_emits_writeback` — self=Vector3（或 Color），set 后应生成 unpack 回写
 
 **variant_set 错误用例：**
 1. `variant_set_unsupported_self_fails` — self=int（或 bool）→ `InvalidInsnException`
@@ -566,8 +574,13 @@ class IndexLoadInsnGenTest {
 
 **variant_set_indexed 正向用例：**
 1. `variant_set_indexed_basic` — self=Variant, index=`$idx:int`, value=Variant → 生成 `godot_variant_set_indexed` + r_oob 检查
-2. `variant_set_indexed_non_variant_value` — value=int → pack value
-3. `variant_set_indexed_array_self_pack_succeeds` — self=Array, index=`$idx:int`, value=Variant → 引用语义路径
+2. `variant_set_indexed_ref_int_index` — self=Variant, index=ref int, value=Variant → index 允许 ref
+3. `variant_set_indexed_non_variant_value` — value=int → pack value
+4. `variant_set_indexed_array_self_pack_succeeds` — self=Array, index=`$idx:int`, value=Variant → 引用语义路径
+5. `variant_set_indexed_ref_array_self_pack_succeeds` — self=ref Array, index=`$idx:int`, value=Variant → 允许 ref 且无需回写
+6. `variant_set_indexed_dictionary_self_pack_succeeds` — self=Dictionary, index=`$idx:int`, value=int → 引用语义路径
+7. `variant_set_indexed_packed_int32_self_writes_back` — self=PackedInt32Array（非 ref），验证 writeback 代码生成
+8. `variant_set_indexed_ref_packed_int32_self_fails` — self=ref PackedInt32Array，验证 fail-fast（requires writeback）
 
 **r_valid / r_oob 错误处理验证：**
 1. `variant_set_emits_valid_check` — 验证 r_valid 检查
@@ -576,20 +589,31 @@ class IndexLoadInsnGenTest {
 **生命周期验证：**
 1. `variant_set_destroys_temp_pack_vars` — 验证临时 pack 的 key/value Variant 被正确析构
 2. `variant_set_value_semantic_writeback_path_destroys_self_temp` — 验证值语义回写路径中的 self 临时 Variant 被正确析构
+3. `variant_set_ref_array_and_ref_dictionary_no_writeback` — 验证 ref Array/ref Dictionary 均可走“无回写”路径
+
+**引擎集成锚定：**
+1. `IndexStoreInsnGenEngineTest.index store ref semantics should read back correctly in real engine`
+2. 锚定点（ref self）：ref `Array` / ref `Dictionary` 无需回写即可读到更新；`Packed*Array` 采用局部变量 writeback 路径验证正确读回
+3. 锚定点（ref index/value）：`variant_set_indexed` 接收 ref `int` index + ref `int` value，运行时写入并读回一致
+4. 锚定点（ref key/value）：`variant_set` 接收 ref `int` key + ref `int` value，运行时写入并通过 `variant_get` 读回一致
+5. 锚定点（ref named）：`variant_set_named` / `variant_get_named` 在 ref `StringName` key + ref `int` value 下运行时读写一致
+6. 锚定点（ref String key/value）：`variant_set_keyed` / `variant_get_keyed` 在 ref `String` key + ref `String` value 下运行时读写一致
 
 #### 验收标准
 
-- [ ] 全部测试用例通过
-- [ ] 覆盖 4 种 SET 指令
-- [ ] 覆盖 self 分类策略（直接 Variant / 引用语义 / 值语义回写 / 不支持类型）
-- [ ] 覆盖 Variant/非 Variant key、value 组合
-- [ ] 覆盖错误路径
-- [ ] 覆盖 r_valid 和 r_oob 检查
-- [ ] 覆盖临时变量生命周期
+- [x] 全部测试用例通过
+- [x] 覆盖 4 种 SET 指令
+- [x] 覆盖 self 分类策略（直接 Variant / 引用语义 / 值语义回写 / 不支持类型）
+- [x] 覆盖 Variant/非 Variant key、value 组合
+- [x] 覆盖 ref key / ref value / ref index 组合（按最新 ref 语义）
+- [x] 覆盖错误路径
+- [x] 覆盖 r_valid 和 r_oob 检查
+- [x] 覆盖临时变量生命周期
 
 ---
 
 ### 步骤 6：编译验证与现有测试回归
+- 状态：`✅ 已完成（2026-03-04，全部命令通过）`
 
 **执行命令**：
 
@@ -601,11 +625,25 @@ class IndexLoadInsnGenTest {
 ./gradlew test --no-daemon --info --console=plain
 ```
 
+**本次执行结果（2026-03-04）**：
+- ✅ `./gradlew classes --no-daemon --info --console=plain`
+- ✅ `./gradlew test --tests IndexLoadInsnGenTest --no-daemon --info --console=plain`
+- ✅ `./gradlew test --tests IndexStoreInsnGenTest --no-daemon --info --console=plain`
+- ✅ `./gradlew test --tests CCodegenTest --no-daemon --info --console=plain`
+- ✅ `./gradlew test --no-daemon --info --console=plain`
+
+**本轮补充验证（2026-03-04，ref 语义对齐）**：
+- ✅ `./gradlew test --tests IndexStoreInsnGenTest --no-daemon --info --console=plain`
+- ✅ `./gradlew test --tests IndexLoadInsnGenTest --no-daemon --info --console=plain`
+- ✅ `./gradlew test --tests IndexStoreInsnGenEngineTest --no-daemon --info --console=plain`
+- ✅ `./gradlew test --tests CCodegenTest --no-daemon --info --console=plain`
+- ✅ `./gradlew classes --no-daemon --info --console=plain`
+
 #### 验收标准
 
-- [ ] 编译无错误
-- [ ] 新增测试全部通过
-- [ ] 现有测试无回归
+- [x] 编译无错误
+- [x] 新增测试全部通过
+- [x] 现有测试无回归
 
 ---
 
@@ -885,6 +923,14 @@ CBodyBuilder.renderStaticStringNameLiteral("property_name")
   2. 不支持类型编译期 fail-fast 并给出清晰错误信息。
   3. 值语义路径强制执行 unpack 回写，并通过单元测试覆盖。
 
+### 7.5 风险：ref 参数在 call 路径下的回写安全性
+
+- **描述**：Godot `call` 路径会把参数解包到局部临时对象再传给绑定函数。对 `ref` 值语义类型直接写回会触发未定义行为风险（历史上对 `ref Packed*Array` 的直接回写出现过崩溃）。
+- **防线**：
+  1. 仅放行“无需回写”的 `ref self` 类型（`Variant` / `Array` / `Dictionary` / `Object`）。
+  2. 对“需要回写”的 `ref self`（例如 `ref Packed*Array`、`ref String`、`ref Vector*`）维持编译期 fail-fast。
+  3. 通过 `IndexStoreInsnGenEngineTest` 锚定运行时行为，避免回归到不安全路径。
+
 ### 7.3 风险：`variant_get_indexed` / `variant_set_indexed` 的 r_oob 语义
 
 - **描述**：`_indexed` 变体在 r_valid=true 但 r_oob=true 时的行为需要明确。Godot 引擎在 OOB 时仍会写入 `r_ret`（对 GET 来说是默认值）。
@@ -907,6 +953,9 @@ CBodyBuilder.renderStaticStringNameLiteral("property_name")
 ### 8.1 SET 指令的 self 类型约束
 
 - `variant_set*` 指令的 self 按策略分类处理：`GdVariantType` 直传、引用语义类型可 pack、值语义类型 pack+回写。
+- `ref self` 仅允许“无需回写”类型（`Variant` / `Array` / `Dictionary` / `Object`）。
+- 所有非 ref self 均允许按策略生成（包含值语义 writeback 路径）。
+- `Packed*Array` 当前归类为“值语义 + 需要回写”；`ref Packed*Array` 编译期 fail-fast。
 - 对不支持 set 的类型保持编译期 fail-fast。
 - 该约定优先于“self 必须是 Variant”这一旧规则。
 
@@ -945,6 +994,7 @@ CBodyBuilder.renderStaticStringNameLiteral("property_name")
 
 - `src/test/java/dev/superice/gdcc/backend/c/gen/IndexLoadInsnGenTest.java`
 - `src/test/java/dev/superice/gdcc/backend/c/gen/IndexStoreInsnGenTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/gen/IndexStoreInsnGenEngineTest.java`
 
 ### 9.2 建议执行命令
 
@@ -973,5 +1023,5 @@ CBodyBuilder.renderStaticStringNameLiteral("property_name")
 - 不修改除 named/indexed operand pattern 修正外的其他 `GdInstruction` 枚举定义。
 - 不修改 `IndexingInstruction` 接口。
 - 不在 `gdcc_helper.h` 中添加 C helper 包装函数（直接使用 gdextension-lite 提供的 API）。
-- 不添加引擎集成测试（本计划仅覆盖单元测试；引擎集成测试作为后续单独任务）。
+- 不在本轮扩展到“所有 indexed/named 失败分支（如 `r_valid=false`/`r_oob=true`）的引擎级故障注入测试”；当前引擎集成测试以 ref 语义主路径正确性锚定为目标。
 - 不处理 variant_get*/set* 结果类型的编译期类型检查（运行时 r_valid 检查已足够）。

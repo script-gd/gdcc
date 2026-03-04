@@ -17,16 +17,41 @@
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
 - Engine types and GDCC types are all Objects, built-in types are not Objects.
 - Only `godot_bool`, `godot_int` and `godot_float` can be used directly as C primitive types, they are always passed by value.
+- Variable `ref` semantics in generated C (mandatory):
+  - LIR invariant:
+    - Function parameters are always `ref=true`.
+    - Function local variables are always `ref=false`.
+  - Primitive types (`godot_bool`, `godot_int`, `godot_float`) are always value types, regardless of `ref`.
+  - Object types are always pointer types, regardless of `ref`:
+    - Engine object types use `godot_<Type>*` / `GDExtensionObjectPtr`.
+    - GDCC object types use `<GdccClass>*`.
+  - Other built-in types are the only category affected by `ref`:
+    - `ref=true` means pointer type in C.
+    - `ref=false` means non-pointer value type in C.
+  - In short:
+    - Primitive types are always by value.
+    - Object types are always object pointers.
+    - Only other built-in types change C type shape based on `ref`.
 - For `String`, `StringName`, `NodePath`, `Callable`, `Signal`, `Packed*Array`:
-  - Though they are syntax passed by value, however the C implementation is a struct that hold an opaque pointer to the actual C++ class inside the engine.
-  - When passing them into functions, we need to pass their pointers of the struct.
+  - They are value-semantic wrapper structs that hold opaque engine-side state.
+  - Their C type shape follows the `ref` rule above:
+    - `ref=true` variable is a pointer to the wrapper struct.
+    - `ref=false` variable is the wrapper struct value itself.
+  - When a callee expects a pointer argument:
+    - pass `ref` variable directly (already a pointer),
+    - or pass `&` of a non-`ref` variable.
   - When returning them from functions, we need to return the struct by value.
   - When assigning them to variables or using them to call functions, we have to copy them using `godot_new_<TypeName>_with_<TypeName>(TypeName* value)`.
   - When a value of these types are no longer used, call `godot_destroy_<TypeName>(TypeName* value)` to destroy them properly.
 - For `Dictionary`, `Array` and `Variant`:
-  - They are passed by ref, however the C implementation is a struct that hold an opaque pointer and other stuff to the actual C++ class inside the engine.
-  - Though they are ref-counted, the passing and returning conventions are the same as `String` etc.
-  - We still need to pass their pointers when passing into functions, and return the struct by value when returning from functions.
+  - They are wrapper structs with shared/ref-counted internals (not raw C pointers).
+  - Their C type shape also follows the `ref` rule above:
+    - `ref=true` variable is pointer form.
+    - `ref=false` variable is struct value form.
+  - For pointer-typed call arguments, use the same rule as other built-ins:
+    - pass `ref` variable directly,
+    - or pass `&` of non-`ref` variable.
+  - Return value convention remains struct-by-value.
   - The copy function of these actually creates a new struct pointing to the same underlying C++ object, so we still need to use `godot_new_<TypeName>_with_<TypeName>(TypeName* value)` to copy them.
   - Destroying them using `godot_destroy_<TypeName>(TypeName* value)` is also needed which will decrease the reference count, and actually destroy the underlying C++ object only when the reference count reaches zero.
 - Especially for `Variant` & `Object`gdcc_object_from_godot_object_ptr the copy, construct and destroy function name use `variant` and `object` (lowercase).
