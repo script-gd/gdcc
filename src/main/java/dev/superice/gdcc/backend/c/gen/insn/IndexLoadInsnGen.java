@@ -335,9 +335,6 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
     private @NotNull LirVariable resolveIndexedOperandVariable(@NotNull CBodyBuilder bodyBuilder,
                                                                @NotNull String indexId) {
         var indexVar = resolveOperandVariable(bodyBuilder, indexId, "index");
-        if (indexVar.ref()) {
-            throw bodyBuilder.invalidInsn("Index load index operand variable ID '" + indexId + "' cannot be a reference");
-        }
         if (!(indexVar.type() instanceof GdIntType)) {
             throw bodyBuilder.invalidInsn("Index load index operand variable ID '" + indexId +
                     "' must be int, got '" + indexVar.type().getTypeName() + "'");
