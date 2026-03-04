@@ -17,7 +17,6 @@ import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -279,18 +278,20 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                            @NotNull GodotOperator op,
                                            @NotNull LirVariable leftVar,
                                            @NotNull LirVariable rightVar) {
-        var leftOperand = materializeVariantOperand(bodyBuilder, leftVar, "left");
-        var rightOperand = materializeVariantOperand(bodyBuilder, rightVar, "right");
+        var leftOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, leftVar, "op_left_variant");
+        var rightOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, rightVar, "op_right_variant");
 
         var resultVariant = bodyBuilder.newTempVariable("op_eval_result", GdVariantType.VARIANT);
         bodyBuilder.declareUninitializedTempVar(resultVariant);
         var validFlag = bodyBuilder.newTempVariable("op_eval_valid", GdBoolType.BOOL, "false");
         bodyBuilder.declareTempVar(validFlag);
+        var leftArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, leftOperand.variantValue(), "operator instruction");
+        var rightArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, rightOperand.variantValue(), "operator instruction");
         bodyBuilder.appendLine(
                 "godot_variant_evaluate(" +
                         resolver.resolveVariantOperatorEnumLiteral(op) +
-                        ", &" + leftOperand.variantValue().generateCode() +
-                        ", &" + rightOperand.variantValue().generateCode() +
+                        ", " + leftArgCode +
+                        ", " + rightArgCode +
                         ", &" + resultVariant.name() +
                         ", &" + validFlag.name() +
                         ");"
@@ -344,8 +345,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                             @NotNull GodotOperator op,
                                             @NotNull CBodyBuilder.TempVar resultVariant,
                                             @NotNull GdType targetType,
-                                            @NotNull VariantOperand leftOperand,
-                                            @NotNull VariantOperand rightOperand) {
+                                            @NotNull InsnGenSupport.VariantOperand leftOperand,
+                                            @NotNull InsnGenSupport.VariantOperand rightOperand) {
         var typeCheckExpr = renderVariantUnpackTypeCheckExpr(bodyBuilder, resultVariant, targetType);
         bodyBuilder.appendLine("if (!(" + typeCheckExpr + ")) {");
         bodyBuilder.appendLine(
@@ -384,8 +385,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
 
     private void emitVariantEvaluateTypeCheckFailureReturn(@NotNull CBodyBuilder bodyBuilder,
                                                            @NotNull CBodyBuilder.TempVar resultVariant,
-                                                           @NotNull VariantOperand leftOperand,
-                                                           @NotNull VariantOperand rightOperand) {
+                                                           @NotNull InsnGenSupport.VariantOperand leftOperand,
+                                                           @NotNull InsnGenSupport.VariantOperand rightOperand) {
         bodyBuilder.destroyTempVar(resultVariant);
         if (rightOperand.tempVar() != null) {
             bodyBuilder.destroyTempVar(rightOperand.tempVar());
@@ -397,29 +398,10 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         bodyBuilder.returnDefault();
     }
 
-    private @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
-                                                              @NotNull LirVariable operandVar,
-                                                              @NotNull String role) {
-        if (operandVar.type() instanceof GdVariantType) {
-            return new VariantOperand(bodyBuilder.valueOfVar(operandVar), null);
-        }
-
-        var tempVariant = bodyBuilder.newTempVariable("op_" + role + "_variant", GdVariantType.VARIANT);
-        bodyBuilder.declareTempVar(tempVariant);
-        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(operandVar.type());
-        bodyBuilder.callAssign(
-                tempVariant,
-                packFunctionName,
-                GdVariantType.VARIANT,
-                List.of(bodyBuilder.valueOfVar(operandVar))
-        );
-        return new VariantOperand(tempVariant, tempVariant);
-    }
-
     private void emitVariantEvaluateFailureReturn(@NotNull CBodyBuilder bodyBuilder,
                                                   @NotNull CBodyBuilder.TempVar resultVariant,
-                                                  @NotNull VariantOperand leftOperand,
-                                                  @NotNull VariantOperand rightOperand) {
+                                                  @NotNull InsnGenSupport.VariantOperand leftOperand,
+                                                  @NotNull InsnGenSupport.VariantOperand rightOperand) {
         bodyBuilder.assignExpr(resultVariant, "godot_new_Variant_nil()", GdVariantType.VARIANT);
         bodyBuilder.destroyTempVar(resultVariant);
         if (rightOperand.tempVar() != null) {
@@ -579,13 +561,6 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn("Operator " + role + " operand variable ID '" + variableId + "' not found in function");
         }
         return variable;
-    }
-
-    private record VariantOperand(@NotNull CBodyBuilder.ValueRef variantValue,
-                                  @Nullable CBodyBuilder.TempVar tempVar) {
-        private VariantOperand {
-            Objects.requireNonNull(variantValue);
-        }
     }
 
     private record PrimitiveFastPathGuardRule(@NotNull String invalidConditionExpr,

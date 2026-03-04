@@ -69,8 +69,8 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         var valueVar = resolveOperandVariable(bodyBuilder, insn.valueId(), "value");
 
         var selfOperand = materializeSelfOperand(bodyBuilder, selfVar, SelfMode.VARIANT_SET);
-        var keyOperand = materializeVariantOperand(bodyBuilder, keyVar, "idx_key_variant");
-        var valueOperand = materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
+        var keyOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, keyVar, "idx_key_variant");
+        var valueOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
 
         emitVariantSetByVariantKey(
                 bodyBuilder,
@@ -92,8 +92,8 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         var valueVar = resolveOperandVariable(bodyBuilder, insn.valueId(), "value");
 
         var selfOperand = materializeSelfOperand(bodyBuilder, selfVar, SelfMode.VARIANT_SET_KEYED);
-        var keyOperand = materializeVariantOperand(bodyBuilder, keyVar, "idx_key_variant");
-        var valueOperand = materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
+        var keyOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, keyVar, "idx_key_variant");
+        var valueOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
 
         emitVariantSetByVariantKey(
                 bodyBuilder,
@@ -115,11 +115,11 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
                                             @NotNull LirVariable keyVar,
                                             @NotNull LirVariable valueVar,
                                             @NotNull SelfOperand selfOperand,
-                                            @NotNull VariantOperand keyOperand,
-                                            @NotNull VariantOperand valueOperand) {
-        var selfArgCode = renderArgumentCode(bodyBuilder, selfOperand.variantValue());
-        var keyArgCode = renderArgumentCode(bodyBuilder, keyOperand.variantValue());
-        var valueArgCode = renderArgumentCode(bodyBuilder, valueOperand.variantValue());
+                                            @NotNull InsnGenSupport.VariantOperand keyOperand,
+                                            @NotNull InsnGenSupport.VariantOperand valueOperand) {
+        var selfArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, selfOperand.variantValue(), "index store instruction");
+        var keyArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, keyOperand.variantValue(), "index store instruction");
+        var valueArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, valueOperand.variantValue(), "index store instruction");
         var validFlag = bodyBuilder.newTempVariable("idx_valid", GdBoolType.BOOL, "false");
         bodyBuilder.declareTempVar(validFlag);
 
@@ -163,10 +163,10 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         var valueVar = resolveOperandVariable(bodyBuilder, insn.valueId(), "value");
 
         var selfOperand = materializeSelfOperand(bodyBuilder, selfVar, SelfMode.VARIANT_SET_NAMED);
-        var valueOperand = materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
-        var selfArgCode = renderArgumentCode(bodyBuilder, selfOperand.variantValue());
-        var keyArgCode = renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(nameVar));
-        var valueArgCode = renderArgumentCode(bodyBuilder, valueOperand.variantValue());
+        var valueOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
+        var selfArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, selfOperand.variantValue(), "index store instruction");
+        var keyArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(nameVar), "index store instruction");
+        var valueArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, valueOperand.variantValue(), "index store instruction");
         var validFlag = bodyBuilder.newTempVariable("idx_valid", GdBoolType.BOOL, "false");
         bodyBuilder.declareTempVar(validFlag);
 
@@ -206,10 +206,10 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         var valueVar = resolveOperandVariable(bodyBuilder, insn.valueId(), "value");
 
         var selfOperand = materializeSelfOperand(bodyBuilder, selfVar, SelfMode.VARIANT_SET_INDEXED);
-        var valueOperand = materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
-        var selfArgCode = renderArgumentCode(bodyBuilder, selfOperand.variantValue());
-        var indexArgCode = renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(indexVar));
-        var valueArgCode = renderArgumentCode(bodyBuilder, valueOperand.variantValue());
+        var valueOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, valueVar, "idx_val_variant");
+        var selfArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, selfOperand.variantValue(), "index store instruction");
+        var indexArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(indexVar), "index store instruction");
+        var valueArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, valueOperand.variantValue(), "index store instruction");
         var validFlag = bodyBuilder.newTempVariable("idx_valid", GdBoolType.BOOL, "false");
         bodyBuilder.declareTempVar(validFlag);
         var oobFlag = bodyBuilder.newTempVariable("idx_oob", GdBoolType.BOOL, "false");
@@ -375,38 +375,6 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
                 type instanceof GdPackedArrayType;
     }
 
-    private @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
-                                                              @NotNull LirVariable operandVar,
-                                                              @NotNull String tempPrefix) {
-        if (operandVar.type() instanceof GdVariantType) {
-            return new VariantOperand(bodyBuilder.valueOfVar(operandVar), null);
-        }
-
-        var tempVariant = bodyBuilder.newTempVariable(tempPrefix, GdVariantType.VARIANT);
-        bodyBuilder.declareTempVar(tempVariant);
-        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(operandVar.type());
-        bodyBuilder.callAssign(
-                tempVariant,
-                packFunctionName,
-                GdVariantType.VARIANT,
-                List.of(bodyBuilder.valueOfVar(operandVar))
-        );
-        return new VariantOperand(tempVariant, tempVariant);
-    }
-
-    private @NotNull String renderArgumentCode(@NotNull CBodyBuilder bodyBuilder,
-                                               @NotNull CBodyBuilder.ValueRef valueRef) {
-        var rendered = bodyBuilder.renderArgument(valueRef, false);
-        if (rendered.preCode() != null && !rendered.preCode().isBlank()) {
-            bodyBuilder.appendRaw(rendered.preCode());
-        }
-        if (!rendered.temps().isEmpty()) {
-            throw bodyBuilder.invalidInsn("Unexpected temporary variables in argument code for index store instruction: " +
-                    rendered.temps().stream().map(CBodyBuilder.TempVar::name).toList());
-        }
-        return rendered.code();
-    }
-
     private void emitFailureReturn(@NotNull CBodyBuilder bodyBuilder,
                                    @Nullable CBodyBuilder.TempVar... tempsToDestroy) {
         if (tempsToDestroy != null) {
@@ -494,10 +462,4 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         }
     }
 
-    private record VariantOperand(@NotNull CBodyBuilder.ValueRef variantValue,
-                                  @Nullable CBodyBuilder.TempVar tempVar) {
-        private VariantOperand {
-            Objects.requireNonNull(variantValue);
-        }
-    }
 }

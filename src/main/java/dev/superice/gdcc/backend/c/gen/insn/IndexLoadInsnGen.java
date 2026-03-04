@@ -18,7 +18,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.List;
-import java.util.Objects;
 
 /// C code generator for indexing load instructions:
 /// - variant_get
@@ -85,10 +84,10 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
                                             @NotNull LirVariable resultVar,
                                             @NotNull LirVariable selfVar,
                                             @NotNull LirVariable keyVar) {
-        var selfOperand = materializeVariantOperand(bodyBuilder, selfVar, "idx_self_variant");
-        var keyOperand = materializeVariantOperand(bodyBuilder, keyVar, "idx_key_variant");
-        var selfArgCode = renderArgumentCode(bodyBuilder, selfOperand.variantValue());
-        var keyArgCode = renderArgumentCode(bodyBuilder, keyOperand.variantValue());
+        var selfOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, selfVar, "idx_self_variant");
+        var keyOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, keyVar, "idx_key_variant");
+        var selfArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, selfOperand.variantValue(), "index load instruction");
+        var keyArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, keyOperand.variantValue(), "index load instruction");
         var retTemp = bodyBuilder.newTempVariable("idx_ret", GdVariantType.VARIANT);
         bodyBuilder.declareUninitializedTempVar(retTemp);
         var validFlag = bodyBuilder.newTempVariable("idx_valid", GdBoolType.BOOL, "false");
@@ -134,13 +133,13 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
         var resultVar = resolveRequiredResultVariable(bodyBuilder, insn.resultId());
         var selfVar = resolveOperandVariable(bodyBuilder, insn.namedVariantId(), "self");
         var nameVar = resolveStringNameOperandVariable(bodyBuilder, insn.nameId());
-        var selfOperand = materializeVariantOperand(bodyBuilder, selfVar, "idx_self_variant");
-        var selfArgCode = renderArgumentCode(bodyBuilder, selfOperand.variantValue());
+        var selfOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, selfVar, "idx_self_variant");
+        var selfArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, selfOperand.variantValue(), "index load instruction");
         var retTemp = bodyBuilder.newTempVariable("idx_ret", GdVariantType.VARIANT);
         bodyBuilder.declareUninitializedTempVar(retTemp);
         var validFlag = bodyBuilder.newTempVariable("idx_valid", GdBoolType.BOOL, "false");
         bodyBuilder.declareTempVar(validFlag);
-        var keyArgCode = renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(nameVar));
+        var keyArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(nameVar), "index load instruction");
 
         bodyBuilder.appendLine(
                 "godot_variant_get_named(" +
@@ -175,9 +174,9 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
         var resultVar = resolveRequiredResultVariable(bodyBuilder, insn.resultId());
         var selfVar = resolveOperandVariable(bodyBuilder, insn.variantId(), "self");
         var indexVar = resolveIndexedOperandVariable(bodyBuilder, insn.indexId());
-        var selfOperand = materializeVariantOperand(bodyBuilder, selfVar, "idx_self_variant");
-        var selfArgCode = renderArgumentCode(bodyBuilder, selfOperand.variantValue());
-        var indexArgCode = renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(indexVar));
+        var selfOperand = InsnGenSupport.materializeVariantOperand(bodyBuilder, selfVar, "idx_self_variant");
+        var selfArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, selfOperand.variantValue(), "index load instruction");
+        var indexArgCode = InsnGenSupport.renderArgumentCode(bodyBuilder, bodyBuilder.valueOfVar(indexVar), "index load instruction");
         var retTemp = bodyBuilder.newTempVariable("idx_ret", GdVariantType.VARIANT);
         bodyBuilder.declareUninitializedTempVar(retTemp);
         var validFlag = bodyBuilder.newTempVariable("idx_valid", GdBoolType.BOOL, "false");
@@ -274,38 +273,6 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
         bodyBuilder.returnDefault();
     }
 
-    private @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
-                                                              @NotNull LirVariable operandVar,
-                                                              @NotNull String tempPrefix) {
-        if (operandVar.type() instanceof GdVariantType) {
-            return new VariantOperand(bodyBuilder.valueOfVar(operandVar), null);
-        }
-
-        var tempVariant = bodyBuilder.newTempVariable(tempPrefix, GdVariantType.VARIANT);
-        bodyBuilder.declareTempVar(tempVariant);
-        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(operandVar.type());
-        bodyBuilder.callAssign(
-                tempVariant,
-                packFunctionName,
-                GdVariantType.VARIANT,
-                List.of(bodyBuilder.valueOfVar(operandVar))
-        );
-        return new VariantOperand(tempVariant, tempVariant);
-    }
-
-    private @NotNull String renderArgumentCode(@NotNull CBodyBuilder bodyBuilder,
-                                               @NotNull CBodyBuilder.ValueRef valueRef) {
-        var rendered = bodyBuilder.renderArgument(valueRef, false);
-        if (rendered.preCode() != null && !rendered.preCode().isBlank()) {
-            bodyBuilder.appendRaw(rendered.preCode());
-        }
-        if (!rendered.temps().isEmpty()) {
-            throw bodyBuilder.invalidInsn("Unexpected temporary variables in argument code for index load instruction: " +
-                    rendered.temps().stream().map(CBodyBuilder.TempVar::name).toList());
-        }
-        return rendered.code();
-    }
-
     private @NotNull LirVariable resolveRequiredResultVariable(@NotNull CBodyBuilder bodyBuilder,
                                                                @Nullable String resultId) {
         if (resultId == null || resultId.isBlank()) {
@@ -352,10 +319,4 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
         return nameVar;
     }
 
-    private record VariantOperand(@NotNull CBodyBuilder.ValueRef variantValue,
-                                  @Nullable CBodyBuilder.TempVar tempVar) {
-        private VariantOperand {
-            Objects.requireNonNull(variantValue);
-        }
-    }
 }
