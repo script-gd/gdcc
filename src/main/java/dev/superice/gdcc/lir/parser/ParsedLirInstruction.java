@@ -181,6 +181,8 @@ public record ParsedLirInstruction(
                         new LoadStaticInsn(resultId, ((StringOperand) operands.getFirst()).value(), ((StringOperand) operands.get(1)).value());
                 case STORE_STATIC ->
                         new StoreStaticInsn(((StringOperand) operands.getFirst()).value(), ((StringOperand) operands.get(1)).value(), ((VariableOperand) operands.get(2)).id());
+                case ASSIGN ->
+                        new AssignInsn(Objects.requireNonNull(resultId), ((VariableOperand) operands.getFirst()).id());
 
                 case NOP -> new NopInsn();
                 case LINE_NUMBER -> new LineNumberInsn(((IntOperand) operands.getFirst()).value());

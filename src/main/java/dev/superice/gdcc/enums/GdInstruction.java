@@ -67,6 +67,7 @@ public enum GdInstruction {
     STORE_PROPERTY("store_property", ReturnKind.NONE, List.of(OperandKind.STRING, OperandKind.VARIABLE, OperandKind.VARIABLE), 3, 3),
     LOAD_STATIC("load_static", ReturnKind.REQUIRED, List.of(OperandKind.STRING, OperandKind.STRING), 2, 2),
     STORE_STATIC("store_static", ReturnKind.NONE, List.of(OperandKind.STRING, OperandKind.STRING, OperandKind.VARIABLE), 3, 3),
+    ASSIGN("assign", ReturnKind.REQUIRED, List.of(OperandKind.VARIABLE), 1, 1),
 
     // Misc
     NOP("nop", ReturnKind.NONE, List.of(), 0, 0),

@@ -75,6 +75,13 @@ Create a new Object null constant.
 $<result_id> = literal_null
 ```
 
+#### assign
+Assign one variable to another. 
+The source variable must be of the same type as the result variable or be implicitly convertible to the result variable type.
+```
+$<result_id> = assign $<source_id>
+```
+
 ### Construction & Destruction Instructions
 
 #### construct_builtin

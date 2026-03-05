@@ -89,4 +89,16 @@ public class SimpleLirBlockInsnSerializerTest {
         assertTrue(out.contains("$result = variant_get_named $obj $name;"), out);
         assertTrue(out.contains("variant_set_named $obj $name $value;"), out);
     }
+
+    @Test
+    public void serialize_assignInstruction() throws Exception {
+        var insnList = List.<LirInstruction>of(new AssignInsn("a", "b"));
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+        var out = sw.toString();
+
+        assertTrue(out.contains("$a = assign $b;"), out);
+    }
 }

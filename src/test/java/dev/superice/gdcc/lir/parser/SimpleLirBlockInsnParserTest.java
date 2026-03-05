@@ -128,6 +128,17 @@ public class SimpleLirBlockInsnParserTest {
         assertEquals("value", setInsn.valueId());
     }
 
+    @Test
+    public void parse_assignInstruction() {
+        var input = "$a = assign $b;";
+        var insns = parse(input);
+        assertEquals(1, insns.size());
+
+        var assignInsn = assertInstanceOf(AssignInsn.class, insns.getFirst());
+        assertEquals("a", assignInsn.resultId());
+        assertEquals("b", assignInsn.sourceId());
+    }
+
     @SuppressWarnings("TrailingWhitespacesInTextBlock")
     @Test
     public void parse_whitespaceVariants() {
