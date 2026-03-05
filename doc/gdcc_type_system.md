@@ -52,11 +52,15 @@
 - Packed arrays aim for compact binary layout for memory/disk efficiency.
 
 ## Compatibility & Promotion Rules
-- Each type implementation provides compatibility rules. Common rules:
-    - `GdVariantType` is compatible with any type.
-    - Numeric promotion: e.g., `int` promoted to `float` when required by an operation; reverse may require explicit cast.
-    - Containers: arrays with compatible element types can be assigned (e.g., `Array<int>` to `Array<variant>`).
-    - Object types: compatibility is typically by class name or inheritance relationship; `GdObjectType` can include class constraints.
+- Backend assignment compatibility (used by `ClassRegistry#checkAssignable` globally):
+    - Same type is assignable.
+    - Object types support inheritance upcast.
+    - Container covariance is limited to:
+      - `Array[T]` -> `Array` / `Array[Variant]`
+      - `Array[SubClass]` -> `Array[SuperClass]`
+      - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
+      - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
+    - Other implicit promotions (for example numeric promotion) are not part of generic assignment compatibility and must be handled by dedicated lowering/instruction semantics.
 - For "TypeType", which is a type representing another type:
   - e.g. `var N = Node` where `N` is a "TypeType" representing the `Node` type.
   - We do not explicitly model "TypeType" in the type system; instead, we use a `StringName` to represent the type name as the implementation detail.

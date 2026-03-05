@@ -122,8 +122,13 @@ Object category rules:
 - CGenHelper has many helper functions to generate C code snippets, read all the code and use them when possible.
 - When generating variable assignments in C code, always check the followings:
   - If the result variable exists and its type is compatible with the assigned value type. (`ClassRegistry#checkAssignable` helps)
-    - For built-in types, types are compatible only if they are exactly the same type.
-    - For engine types and GDCC types, types are compatible if the assigned value type is the same or a subclass of the result variable type.
+    - By default, non-object built-in types are compatible only when exactly the same type.
+    - For engine types and GDCC types, compatibility includes inheritance upcast.
+    - `ClassRegistry#checkAssignable` globally supports limited container covariance:
+      - `Array[T]` -> `Array` / `Array[Variant]`
+      - `Array[SubClass]` -> `Array[SuperClass]`
+      - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
+      - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
     - Always remember if the value that is assigning into a result variable whose type is a GDCC object is returned from a GDExtension function, it is always a `godot_Object*` that needs to be converted to the correct GDCC type.
 - When assigning a value to a variable, it implies that we destroy the old value in the variable and replace it with the new value. 
   If they are `Object`, that means we have to release the ownership of the old value and obtain the ownership of the new value properly, 

@@ -1,8 +1,10 @@
-# `assign` 指令（Low IR）C 后端实现计划
+# `assign` 指令（Low IR）C 后端实现记录
 
 > 目标：为 Low IR 新增 `assign` 指令补齐从 **IR 解析/序列化 → LIR 指令模型 → C 后端指令生成器 → 单测验收** 的完整链路。
 >
-> 校对基线：2026-03-05（以当前代码库为准；本文是实施计划，不包含实现产物）
+> 状态：Phase A/B/C 已落地，本文按当前代码库更新为实现记录。
+>
+> 校对基线：2026-03-05（以当前代码库为准）
 
 ---
 
@@ -32,19 +34,23 @@ $<result_id> = assign $<source_id>
 
 ---
 
-## 2. 现状调研（差距清单）
+## 2. 当前实现状态（2026-03-05）
 
 基于当前代码库（2026-03-05）检索结果：
 
-1. 文档已出现 `assign`（`doc/gdcc_low_ir.md`），但 **代码侧缺口**：
-   - `src/main/java/dev/superice/gdcc/enums/GdInstruction.java` 中 **没有** `ASSIGN` opcode。
-   - `src/main/java/dev/superice/gdcc/lir/insn/` 中 **没有** `AssignInsn`（或等价 record）。
-   - `src/main/java/dev/superice/gdcc/lir/parser/ParsedLirInstruction.java` 的 `toConcrete()` switch 中 **没有** `ASSIGN` 分支。
-   - C 后端 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/` 中 **没有**对应 `CInsnGen`。
-2. 但后端已有成熟“赋值语义管道”：
-   - `CBodyBuilder#assignVar(...)` 已集中实现对象/非对象写入、类型可赋值性校验与 ptr 转换。
-
-因此：本次实现需要补齐“指令建模 + 解析/序列化 + generator + 单测”，而不是重写赋值语义。
+1. `assign` 链路已完整落地：
+   - `src/main/java/dev/superice/gdcc/enums/GdInstruction.java` 已包含 `ASSIGN` opcode。
+   - `src/main/java/dev/superice/gdcc/lir/insn/AssignInsn.java` 已实现。
+   - `src/main/java/dev/superice/gdcc/lir/parser/ParsedLirInstruction.java` 已包含 `case ASSIGN` concrete 映射。
+   - C 后端 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/AssignInsnGen.java` 已实现并注册到 `CCodegen`。
+2. 赋值语义继续收敛到 `CBodyBuilder#assignVar(...)`：
+   - 对象/非对象写槽、生命周期、ptr 转换由 Builder 单点管理。
+   - `assign` 生成器保持薄封装，不重复实现生命周期细节。
+3. `ClassRegistry#checkAssignable(...)` 现已承载全局可赋值语义扩展：
+   - `Array[T] -> Array` / `Array[Variant]`
+   - `Array[SubClass] -> Array[SuperClass]`
+   - `Dictionary[K, V] -> Dictionary` / `Dictionary[Variant, Variant]`
+   - `Dictionary[K1, V1] -> Dictionary[K2, V2]`（key/value 均可赋值）
 
 ---
 
@@ -189,7 +195,7 @@ $<result_id> = assign $<source_id>
    - 若未来需求出现，建议新增专用指令/Builder API，而不是扩写 `assign`。
 2. **隐式转换矩阵的归属**：
    - `assign` 不负责定义“哪些类型可隐式转换”；
-   - 统一以 `ClassRegistry#checkAssignable(...)` 为准（生成器只触发 fail-fast）。
+   - 统一以 `ClassRegistry#checkAssignable(...)` 为准（包含对象上行与容器协变规则），生成器只做 fail-fast 触发。
 3. **对象 ptrKind 与 helper 匹配**：
    - 生成器必须只用 `valueOfVar(...)` + `assignVar(...)`，避免手写转换导致 helper 不匹配或 NULL 解引用风险。
 4. **回归断言过于脆弱**：
@@ -211,4 +217,3 @@ $<result_id> = assign $<source_id>
 | CBodyBuilder 赋值管道 | `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java` |
 | 参考生成器（Pack/Unpack） | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PackUnpackVariantInsnGen.java` |
 | 参考生成器（NewData） | `src/main/java/dev/superice/gdcc/backend/c/gen/insn/NewDataInsnGen.java` |
-

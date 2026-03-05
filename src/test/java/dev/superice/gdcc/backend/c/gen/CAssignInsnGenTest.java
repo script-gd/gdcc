@@ -13,9 +13,14 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -130,6 +135,210 @@ public class CAssignInsnGenTest {
         assertInstanceOf(InvalidInsnException.class, ex);
     }
 
+    @Test
+    @DisplayName("assign should fail-fast when target variable is ref")
+    void assignShouldFailWhenTargetIsRefVariable() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_ref_target");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddRefVariable("a", GdIntType.INT);
+        func.createAndAddVariable("b", GdIntType.INT);
+        addEntryAssignAndReturn(func, new AssignInsn("a", "b"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Cannot assign to reference variable"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("assign GDCC object to engine object should convert pointer kind")
+    void assignGdccObjectToEngineObjectShouldConvertPointerKind() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var gdccNodeClass = new LirClassDef("MyGdccNode", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_gdcc_to_engine");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdObjectType("Node"));
+        func.createAndAddVariable("src", new GdObjectType("MyGdccNode"));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(nodeClass), List.of(), List.of()
+        );
+        var module = new LirModule("test_module", List.of(workerClass, gdccNodeClass));
+        var codegen = newCodegen(module, api, List.of(workerClass, gdccNodeClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("gdcc_object_to_godot_object_ptr($src, MyGdccNode_object_ptr)"), body);
+        assertTrue(body.contains("$dst = gdcc_object_to_godot_object_ptr($src, MyGdccNode_object_ptr);"), body);
+    }
+
+    @Test
+    @DisplayName("assign unknown object should use try_own_object and try_release_object")
+    void assignUnknownObjectShouldUseTryOwnRelease() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_unknown_object");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdObjectType("UnknownObject"));
+        func.createAndAddVariable("src", new GdObjectType("UnknownObject"));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("try_own_object($dst);"), body);
+        assertTrue(body.contains("try_release_object(__gdcc_tmp_old_obj_"), body);
+        assertFalse(body.contains("\nown_object($dst);\n"), body);
+        assertFalse(body.contains("\nrelease_object(__gdcc_tmp_old_obj_"), body);
+    }
+
+    @Test
+    @DisplayName("assign should allow Array[T] to Array[Variant] covariance")
+    void assignShouldAllowArrayToVariantArrayCovariance() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_array_to_variant_array");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdArrayType(GdVariantType.VARIANT));
+        func.createAndAddVariable("src", new GdArrayType(GdIntType.INT));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_new_Array_with_Array(&$src);"), body);
+        assertTrue(body.contains("$dst = __gdcc_tmp_array_"), body);
+    }
+
+    @Test
+    @DisplayName("assign should allow Array[SubClass] to Array[SuperClass] covariance")
+    void assignShouldAllowArrayObjectCovariance() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_array_object_covariance");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdArrayType(new GdObjectType("Node")));
+        func.createAndAddVariable("src", new GdArrayType(new GdObjectType("Node3D")));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var node3dClass = new ExtensionGdClass(
+                "Node3D", false, true, "Node", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(nodeClass, node3dClass), List.of(), List.of()
+        );
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, api, List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_new_Array_with_Array(&$src);"), body);
+        assertTrue(body.contains("$dst = __gdcc_tmp_array_"), body);
+    }
+
+    @Test
+    @DisplayName("assign should still reject non-covariant Array element mismatch")
+    void assignShouldRejectNonCovariantArrayElementMismatch() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_array_mismatch");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdArrayType(GdFloatType.FLOAT));
+        func.createAndAddVariable("src", new GdArrayType(GdIntType.INT));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+    }
+
+    @Test
+    @DisplayName("assign should allow Dictionary[K, V] to Dictionary[Variant, Variant] covariance")
+    void assignShouldAllowDictionaryToVariantDictionaryCovariance() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_dictionary_to_variant_dictionary");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT));
+        func.createAndAddVariable("src", new GdDictionaryType(GdStringNameType.STRING_NAME, GdIntType.INT));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_new_Dictionary_with_Dictionary(&$src);"), body);
+        assertTrue(body.contains("$dst = __gdcc_tmp_dictionary_"), body);
+    }
+
+    @Test
+    @DisplayName("assign should allow Dictionary value object covariance")
+    void assignShouldAllowDictionaryObjectValueCovariance() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_dictionary_object_covariance");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node")));
+        func.createAndAddVariable("src", new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node3D")));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var node3dClass = new ExtensionGdClass(
+                "Node3D", false, true, "Node", "core",
+                List.of(), List.of(), List.of(), List.of(), List.of()
+        );
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(nodeClass, node3dClass), List.of(), List.of()
+        );
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, api, List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_new_Dictionary_with_Dictionary(&$src);"), body);
+        assertTrue(body.contains("$dst = __gdcc_tmp_dictionary_"), body);
+    }
+
+    @Test
+    @DisplayName("assign should still reject non-covariant Dictionary key/value mismatch")
+    void assignShouldRejectNonCovariantDictionaryMismatch() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_dictionary_mismatch");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", new GdDictionaryType(GdStringType.STRING, GdFloatType.FLOAT));
+        func.createAndAddVariable("src", new GdDictionaryType(GdIntType.INT, GdIntType.INT));
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+    }
+
     private void addEntryAssignAndReturn(LirFunctionDef func, AssignInsn assignInsn) {
         var entry = new LirBasicBlock("entry");
         entry.instructions().add(assignInsn);
@@ -155,4 +364,3 @@ public class CAssignInsnGenTest {
         return codegen;
     }
 }
-

@@ -77,7 +77,15 @@ $<result_id> = literal_null
 
 #### assign
 Assign one variable to another. 
-The source variable must be of the same type as the result variable or be implicitly convertible to the result variable type.
+The source variable must be assignable to the result variable type.
+Current assignability rules in backend codegen are:
+- Same type.
+- Object inheritance upcast.
+- Container covariance (limited):
+  - `Array[T]` to `Array` / `Array[Variant]`.
+  - `Array[SubClass]` to `Array[SuperClass]`.
+  - `Dictionary[K, V]` to `Dictionary` / `Dictionary[Variant, Variant]`.
+  - `Dictionary[K1, V1]` to `Dictionary[K2, V2]` when `K1` is assignable to `K2` and `V1` is assignable to `V2`.
 ```
 $<result_id> = assign $<source_id>
 ```

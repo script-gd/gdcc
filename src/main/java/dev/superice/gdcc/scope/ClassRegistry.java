@@ -42,25 +42,39 @@ public final class ClassRegistry {
     }
 
     /// Check whether a name refers to a builtin class from API.
-    public boolean isBuiltinClass(@NotNull String name) { return builtinByName.containsKey(name); }
+    public boolean isBuiltinClass(@NotNull String name) {
+        return builtinByName.containsKey(name);
+    }
 
     /// Return a builtin class definition by name if present.
-    public @Nullable ExtensionBuiltinClass findBuiltinClass(@NotNull String name) { return builtinByName.get(name); }
+    public @Nullable ExtensionBuiltinClass findBuiltinClass(@NotNull String name) {
+        return builtinByName.get(name);
+    }
 
     /// Check whether a name refers to a GdClass (script-exposed Godot class from API).
-    public boolean isGdClass(@NotNull String name) { return gdClassByName.containsKey(name); }
+    public boolean isGdClass(@NotNull String name) {
+        return gdClassByName.containsKey(name);
+    }
 
     /// Check whether a name refers to a global utility function.
-    public boolean isUtilityFunction(@NotNull String name) { return utilityByName.containsKey(name); }
+    public boolean isUtilityFunction(@NotNull String name) {
+        return utilityByName.containsKey(name);
+    }
 
     /// Check whether a name refers to a global enum.
-    public boolean isGlobalEnum(@NotNull String name) { return globalEnumByName.containsKey(name); }
+    public boolean isGlobalEnum(@NotNull String name) {
+        return globalEnumByName.containsKey(name);
+    }
 
     /// Check whether a name refers to a singleton.
-    public boolean isSingleton(@NotNull String name) { return singletonByName.containsKey(name); }
+    public boolean isSingleton(@NotNull String name) {
+        return singletonByName.containsKey(name);
+    }
 
     /// Check whether a name refers to a user-defined gdcc class.
-    public boolean isGdccClass(@NotNull String name) { return gdccClassByName.containsKey(name); }
+    public boolean isGdccClass(@NotNull String name) {
+        return gdccClassByName.containsKey(name);
+    }
 
     public boolean isContainerClass(@NotNull String name) {
         return name.equals("Array") || name.equals("Dictionary") || name.startsWith("Array[") || name.startsWith("Dictionary[");
@@ -127,47 +141,90 @@ public final class ClassRegistry {
         var t = typeName.trim();
         if (t.isEmpty()) return null;
         switch (t) {
-            case "AABB": return GdAABBType.AABB;
-            case "Array": return new GdArrayType(GdVariantType.VARIANT);
-            case "Basis": return GdBasisType.BASIS;
-            case "bool": return GdBoolType.BOOL;
-            case "Callable": return new GdCallableType();
-            case "Color": return GdColorType.COLOR;
-            case "Dictionary": return new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
-            case "float": return GdFloatType.FLOAT;
-            case "Vector2": return GdFloatVectorType.VECTOR2;
-            case "Vector2i": return GdIntVectorType.VECTOR2I;
-            case "Vector3": return GdFloatVectorType.VECTOR3;
-            case "Vector3i": return GdIntVectorType.VECTOR3I;
-            case "Vector4": return GdFloatVectorType.VECTOR4;
-            case "Vector4i": return GdIntVectorType.VECTOR4I;
-            case "int": return GdIntType.INT;
-            case "Nil": case "null": return GdNilType.NIL;
-            case "NodePath": return GdNodePathType.NODE_PATH;
-            case "Object": return GdObjectType.OBJECT;
-            case "PackedByteArray": return GdPackedNumericArrayType.PACKED_BYTE_ARRAY;
-            case "PackedInt32Array": return GdPackedNumericArrayType.PACKED_INT32_ARRAY;
-            case "PackedInt64Array": return GdPackedNumericArrayType.PACKED_INT64_ARRAY;
-            case "PackedFloat32Array": return GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY;
-            case "PackedFloat64Array": return GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY;
-            case "PackedStringArray": return GdPackedStringArrayType.PACKED_STRING_ARRAY;
-            case "PackedVector2Array": return GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY;
-            case "PackedVector3Array": return GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY;
-            case "PackedVector4Array": return GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY;
-            case "PackedColorArray": return GdPackedVectorArrayType.PACKED_COLOR_ARRAY;
-            case "Plane": return GdPlaneType.PLANE;
-            case "Projection": return GdProjectionType.PROJECTION;
-            case "Quaternion": return GdQuaternionType.QUATERNION;
-            case "Rect2": return GdRect2Type.RECT2;
-            case "Rect2i": return GdRect2iType.RECT2I;
-            case "RID": return GdRidType.RID;
-            case "Signal": return new GdSignalType();
-            case "String": return GdStringType.STRING;
-            case "StringName": return GdStringNameType.STRING_NAME;
-            case "Transform2D": return GdTransform2DType.TRANSFORM2D;
-            case "Transform3D": return GdTransform3DType.TRANSFORM3D;
-            case "void": case "Void": return GdVoidType.VOID;
-            case "Variant": return GdVariantType.VARIANT;
+            case "AABB":
+                return GdAABBType.AABB;
+            case "Array":
+                return new GdArrayType(GdVariantType.VARIANT);
+            case "Basis":
+                return GdBasisType.BASIS;
+            case "bool":
+                return GdBoolType.BOOL;
+            case "Callable":
+                return new GdCallableType();
+            case "Color":
+                return GdColorType.COLOR;
+            case "Dictionary":
+                return new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+            case "float":
+                return GdFloatType.FLOAT;
+            case "Vector2":
+                return GdFloatVectorType.VECTOR2;
+            case "Vector2i":
+                return GdIntVectorType.VECTOR2I;
+            case "Vector3":
+                return GdFloatVectorType.VECTOR3;
+            case "Vector3i":
+                return GdIntVectorType.VECTOR3I;
+            case "Vector4":
+                return GdFloatVectorType.VECTOR4;
+            case "Vector4i":
+                return GdIntVectorType.VECTOR4I;
+            case "int":
+                return GdIntType.INT;
+            case "Nil":
+            case "null":
+                return GdNilType.NIL;
+            case "NodePath":
+                return GdNodePathType.NODE_PATH;
+            case "Object":
+                return GdObjectType.OBJECT;
+            case "PackedByteArray":
+                return GdPackedNumericArrayType.PACKED_BYTE_ARRAY;
+            case "PackedInt32Array":
+                return GdPackedNumericArrayType.PACKED_INT32_ARRAY;
+            case "PackedInt64Array":
+                return GdPackedNumericArrayType.PACKED_INT64_ARRAY;
+            case "PackedFloat32Array":
+                return GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY;
+            case "PackedFloat64Array":
+                return GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY;
+            case "PackedStringArray":
+                return GdPackedStringArrayType.PACKED_STRING_ARRAY;
+            case "PackedVector2Array":
+                return GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY;
+            case "PackedVector3Array":
+                return GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY;
+            case "PackedVector4Array":
+                return GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY;
+            case "PackedColorArray":
+                return GdPackedVectorArrayType.PACKED_COLOR_ARRAY;
+            case "Plane":
+                return GdPlaneType.PLANE;
+            case "Projection":
+                return GdProjectionType.PROJECTION;
+            case "Quaternion":
+                return GdQuaternionType.QUATERNION;
+            case "Rect2":
+                return GdRect2Type.RECT2;
+            case "Rect2i":
+                return GdRect2iType.RECT2I;
+            case "RID":
+                return GdRidType.RID;
+            case "Signal":
+                return new GdSignalType();
+            case "String":
+                return GdStringType.STRING;
+            case "StringName":
+                return GdStringNameType.STRING_NAME;
+            case "Transform2D":
+                return GdTransform2DType.TRANSFORM2D;
+            case "Transform3D":
+                return GdTransform3DType.TRANSFORM3D;
+            case "void":
+            case "Void":
+                return GdVoidType.VOID;
+            case "Variant":
+                return GdVariantType.VARIANT;
         }
 
         // Generic forms: Array[T], Dictionary[K, V]
@@ -262,10 +319,35 @@ public final class ClassRegistry {
         return classDef;
     }
 
+    /// Global assignability rules used across backend validation/codegen:
+    /// - same type
+    /// - object inheritance upcast
+    /// - limited container covariance for Array/Dictionary
     public boolean checkAssignable(@NotNull GdType from, @NotNull GdType to) {
         if (from.getTypeName().equals(to.getTypeName())) {
             return true;
         }
+        if (from instanceof GdArrayType fromArray && to instanceof GdArrayType toArray) {
+            return checkContainerCovariantAssignable(fromArray.getValueType(), toArray.getValueType());
+        }
+        if (from instanceof GdDictionaryType fromDictionary && to instanceof GdDictionaryType toDictionary) {
+            return checkContainerCovariantAssignable(fromDictionary.getKeyType(), toDictionary.getKeyType()) &&
+                    checkContainerCovariantAssignable(fromDictionary.getValueType(), toDictionary.getValueType());
+        }
+        return checkObjectAssignable(from, to);
+    }
+
+    /// Container covariance:
+    /// - target `Variant` accepts any source element/key/value type.
+    /// - otherwise delegate to the general assignability rules recursively.
+    private boolean checkContainerCovariantAssignable(@NotNull GdType fromType, @NotNull GdType toType) {
+        if (toType instanceof GdVariantType) {
+            return true;
+        }
+        return checkAssignable(fromType, toType);
+    }
+
+    private boolean checkObjectAssignable(@NotNull GdType from, @NotNull GdType to) {
         if (!(from instanceof GdObjectType(var fromClassName)) || !(to instanceof GdObjectType(var toClassName))) {
             return false;
         }

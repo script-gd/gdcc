@@ -55,6 +55,19 @@
   - 返回 `ExprValueRef`（表达式值），不可作为赋值目标使用。
   - 用于生成器中的“按目标类型强制转换后参与调用参数”的场景，避免手工拼接 cast 字符串。
 
+### 2.4 赋值可兼容性（`ClassRegistry#checkAssignable`）
+
+- `assignVar` / `assignExpr` / `callAssign` / `returnValue` 的可赋值性检查由 `CBodyBuilder#checkAssignable` 触发，并委托给 `ClassRegistry#checkAssignable`。
+- 基础规则：
+  - 同类型可赋值。
+  - 对象类型允许继承上行转换。
+- 容器协变扩展（全局语义，不限于 CBodyBuilder）：
+  - `Array[T] -> Array`（等价 `Array[Variant]`）允许。
+  - `Array[SubClass] -> Array[SuperClass]` 允许。
+  - `Dictionary[K, V] -> Dictionary`（等价 `Dictionary[Variant, Variant]`）允许。
+  - `Dictionary[K1, V1] -> Dictionary[K2, V2]` 在 key/value 均可赋值时允许。
+  - 除上述规则外，不引入其他容器协变或数值提升。
+
 ## 3. GDCC/Godot 对象指针转换规则（已落地）
 
 ### 3.1 统一约束

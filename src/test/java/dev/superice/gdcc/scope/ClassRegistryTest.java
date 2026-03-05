@@ -1,7 +1,14 @@
 package dev.superice.gdcc.scope;
 
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -26,7 +33,7 @@ public class ClassRegistryTest {
         // builtin types should resolve to concrete GdType singletons, but some names may resolve to GdObjectType as engine classes
         if (t instanceof GdObjectType) {
             assertInstanceOf(GdObjectType.class, t);
-            assertTrue(((GdObjectType)t).checkEngineType(registry));
+            assertTrue(((GdObjectType) t).checkEngineType(registry));
         }
 
         // Check a known gd class exists (take first class from API)
@@ -37,7 +44,7 @@ public class ClassRegistryTest {
         assertNotNull(tg, () -> "GdClass type for " + someGd.name() + " should be resolvable");
         assertEquals(someGd.name(), tg.getTypeName());
         assertInstanceOf(GdObjectType.class, tg);
-        assertTrue(((GdObjectType)tg).checkEngineType(registry));
+        assertTrue(((GdObjectType) tg).checkEngineType(registry));
 
         // Utility function signature (if present)
         if (!api.utilityFunctions().isEmpty()) {
@@ -131,6 +138,44 @@ public class ClassRegistryTest {
         for (var expectName : expectSet) {
             assertTrue(vMethodMap.containsKey(expectName), () -> "Expected virtual method not found: " + expectName);
         }
+    }
+
+    @Test
+    void checkAssignableSupportsContainerCovariance() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        assertTrue(registry.checkAssignable(
+                new GdArrayType(GdIntType.INT),
+                new GdArrayType(GdVariantType.VARIANT)
+        ));
+        assertTrue(registry.checkAssignable(
+                new GdArrayType(new GdObjectType("Node3D")),
+                new GdArrayType(new GdObjectType("Node"))
+        ));
+        assertTrue(registry.checkAssignable(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdIntType.INT),
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)
+        ));
+        assertTrue(registry.checkAssignable(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node3D")),
+                new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"))
+        ));
+    }
+
+    @Test
+    void checkAssignableRejectsNonCovariantContainerMismatch() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        assertFalse(registry.checkAssignable(
+                new GdArrayType(GdIntType.INT),
+                new GdArrayType(GdFloatType.FLOAT)
+        ));
+        assertFalse(registry.checkAssignable(
+                new GdDictionaryType(GdIntType.INT, GdIntType.INT),
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT)
+        ));
+        assertFalse(registry.checkAssignable(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdFloatType.FLOAT),
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdIntType.INT)
+        ));
     }
 
     @Test
