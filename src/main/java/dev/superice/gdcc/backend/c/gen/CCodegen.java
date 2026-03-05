@@ -34,6 +34,7 @@ public class CCodegen implements Codegen {
         registerInsnGen(new LineNumberInsnGen());
         registerInsnGen(new ControlFlowInsnGen());
         registerInsnGen(new NewDataInsnGen());
+        registerInsnGen(new AssignInsnGen());
         registerInsnGen(new LoadPropertyInsnGen());
         registerInsnGen(new StorePropertyInsnGen());
         registerInsnGen(new OwnReleaseObjectInsnGen());
