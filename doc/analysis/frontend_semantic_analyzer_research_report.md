@@ -926,8 +926,7 @@ frontend 要做的是根据 receiver type + key type 选择最合适的语义通
 2. **把注意力从“gdparser 还缺什么 AST 节点”转移到“如何消费已经补齐的 AST”**。
 3. **立即把 `AnnotationStatement`、`TypeRef`、`ClassDeclaration`、`ConstructorDeclaration`、`BaseCallExpression` 纳入 side-table 设计**。
 4. **调用、属性、索引、所有权语义继续以后端现有 resolver/document 为事实源**。
-5. **尽快修正文档中关于 unknown method fallback 的旧说法**。
-6. **对 `AwaitExpression`、`PreloadExpression`、`GetNodeExpression` 采取“已识别、边界明确”的策略**：
+5. **对 `AwaitExpression`、`PreloadExpression`、`GetNodeExpression` 采取“已识别、边界明确”的策略**：
    - 能分析就分析
    - 暂不能 lower 的就稳定报 unsupported
    - 不要再退回 unknown node 思路
