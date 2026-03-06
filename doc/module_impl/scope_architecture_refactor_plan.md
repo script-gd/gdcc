@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：Proposed
+- 状态：进行中（Phase 0 已完成，Phase 1+ 待实施）
 - 更新时间：2026-03-06
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/scope/**`
@@ -471,6 +471,41 @@ frontend 使用方式建议：
 
 ### 4.6.1 Phase 0：冻结现状与回归基线
 
+**当前状态（2026-03-06）**
+
+- 状态：已完成
+- 结论：当前仓库的“共享查找逻辑”与“backend 专属发射逻辑”边界已经冻结，可作为后续 Phase 1+ 的行为基线。
+
+**本阶段产出**
+
+1. 已盘点并冻结当前主要入口与现有调用点：
+   - `ClassRegistry`
+     - 公共查询入口保持以 `findType(...)`、`findUtilityFunctionSignature(...)`、`findGlobalEnum(...)`、`findSingletonType(...)`、`getClassDef(...)`、`checkAssignable(...)` 为主；其中 `checkAssignable(...)` 明确冻结为后续 shared resolver 的类型兼容事实源。
+   - `MethodCallResolver`
+     - 当前共享抽取候选入口实际集中在 `resolve(...)` 内部的 `tryResolveKnownObjectMethod(...)`、`collectMethodCandidates(...)`、`chooseBestCandidate(...)`、`matchesArguments(...)`、`resolveOwnerDispatchMode(...)`、`normalizeBuiltinReceiverLookupName(...)`。
+     - 当前生产调用点已冻结为 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`。
+   - `PropertyAccessResolver`
+     - 当前共享抽取候选入口实际集中在 `resolveObjectProperty(...)`、`resolveBuiltinProperty(...)`，以及 backend 专属的 `renderOwnerReceiverValue(...)`、`renderReceiverValue(...)`、`toOwnerObjectType(...)`。
+     - 当前生产调用点已冻结为 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`、`src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`，以及 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java` 中的 receiver 渲染路径。
+2. 已冻结 shared resolver 需要遵守的失败协议：
+   - `metadata unknown`
+     - method：对象接收者在 `ClassRegistry#getClassDef(...)` 无法取到 metadata 时，当前行为是返回 unresolved，随后由 caller 回落到 `OBJECT_DYNAMIC`。
+     - property：对象接收者在 `ClassRegistry#getClassDef(...)` 无法取到 metadata 时，当前行为是返回 `null`，随后由 caller 走 `godot_Object_get/set` 的运行时路径。
+   - `inheritance cycle / malformed metadata`
+     - property：当前 `resolveObjectProperty(...)` 会 fail-fast，直接抛出 `invalidInsn(...)`。
+     - method：当前 `collectMethodCandidates(...)` 对继承环仅停止向上遍历；Phase 1+ 不应偷偷改变这一行为，若未来要升级为显式 hard failure，必须在独立阶段连同 parity 测试一起调整。
+   - `member missing`
+     - method：已知对象缺失 method 时，当前行为冻结为 `OBJECT_DYNAMIC`，而不是强制先转 `Variant`。
+     - property：已知对象缺失 property 时，当前行为冻结为 fail-fast，不做 backend 自动动态回退。
+   - `ambiguous overload`
+     - object receiver：当前 `MethodCallResolver` 在同优先级最佳候选冲突时返回 unresolved，caller 最终走 `OBJECT_DYNAMIC`。
+     - builtin receiver：当前保持 compile-time hard failure，不做动态回退。
+3. 已冻结本次重构的边界：
+   - shared：只承载 metadata 查找、候选收集、owner 解析、参数兼容与排序规则。
+   - backend：继续承载 `invalidInsn(...)` 文案装配、receiver 渲染、pack/unpack、默认值物化、最终 C 发射。
+   - frontend：后续承载 AST side-table、诊断分类、`scopeByNode`、binding/call/member 语义解释。
+4. 已建立并验证最小回归测试基线。
+
 **目标**
 
 - 在开始抽取前，先把当前 `scope` / backend resolver 的真实行为冻结成基线，避免后续重构时不知道哪里属于行为变化、哪里只是代码搬迁。
@@ -499,6 +534,29 @@ frontend 使用方式建议：
   - `CallMethodInsnGenTest`
   - `CallMethodInsnGenEngineTest`
 - `scope_architecture_refactor_plan.md` 中的 shared / backend / frontend 边界已经固定，不再在实施中反复改口。
+
+**实际验收结果（2026-03-06）**
+
+- 结果：通过。
+- 已执行命令：
+
+```powershell
+.\gradlew.bat test \
+  --tests dev.superice.gdcc.scope.ClassRegistryTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
+  --no-daemon --info --console=plain
+```
+
+- 结果摘要：
+  - `ClassRegistryTest`：通过
+  - `ClassRegistryGdccTest`：通过
+  - `PropertyAccessResolverTest`：通过
+  - `CallMethodInsnGenTest`：通过
+  - `CallMethodInsnGenEngineTest`：通过
+- 基线结论：Phase 1 之前不得改变上述测试所覆盖的行为；若后续阶段必须调整行为，需要先在本节补充新的迁移说明与 parity 策略。
 
 ### 4.6.2 Phase 1：补齐 `Scope` 协议层
 
