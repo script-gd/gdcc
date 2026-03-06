@@ -23,7 +23,7 @@ dependencies {
     implementation("com.github.abrarsyed.jastyle:jAstyle:1.3")
     implementation("org.slf4j:slf4j-api:2.0.17")
     implementation("info.picocli:picocli:4.7.7")
-    implementation("com.github.SuperIceCN:gdparser:29c427370e")
+    implementation("com.github.SuperIceCN:gdparser:0.3.0")
 }
 
 tasks.test {
