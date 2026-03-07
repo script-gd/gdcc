@@ -1,8 +1,6 @@
 # GDCC 前端语义分析器调研报告
 
-- 日期：2026-03-06
-- 作者：Codex
-- 目标：基于 `gdcc` 当前代码、`doc/` 中的实现文档、本地 `gdparser` 最新 AST 现状，以及 GitHub 上 `godotengine/godot` / `godotengine/godot-docs` 的最新内容，给出一份可直接指导 `frontend` 语义分析器设计与分阶段落地的调研结论。
+- 日期：2026-03-07
 
 ---
 

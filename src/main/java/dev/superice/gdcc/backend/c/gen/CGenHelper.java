@@ -11,6 +11,7 @@ import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.*;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -393,33 +394,7 @@ public final class CGenHelper {
     /// This is a thin layer
     public @NotNull GdType parseExtensionType(@Nullable String rawTypeName,
                                               @NotNull String typeUseSite) {
-        if (rawTypeName == null || rawTypeName.isBlank()) {
-            return GdVoidType.VOID;
-        }
-        var normalized = rawTypeName.trim();
-        if (normalized.startsWith("enum::") || normalized.startsWith("bitfield::")) {
-            return GdIntType.INT;
-        }
-        if (normalized.startsWith("typedarray::")) {
-            var elementTypeName = normalized.substring("typedarray::".length()).trim();
-            if (elementTypeName.isBlank()) {
-                throw new IllegalArgumentException(
-                        typeUseSite + " has malformed typedarray metadata: '" + rawTypeName + "'"
-                );
-            }
-            var elementType = parseExtensionType(elementTypeName, typeUseSite);
-            if (elementType instanceof GdPackedArrayType) {
-                return elementType;
-            }
-            return new GdArrayType(elementType);
-        }
-        var parsed = ClassRegistry.tryParseTextType(normalized);
-        if (parsed == null) {
-            throw new IllegalArgumentException(
-                    typeUseSite + " has unsupported type metadata: '" + rawTypeName + "'"
-            );
-        }
-        return parsed;
+        return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite);
     }
 
     public @NotNull String renderFuncBindName(@Nullable GdType returnType,

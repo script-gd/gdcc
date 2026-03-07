@@ -41,7 +41,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         var receiverVar = resolveReceiverVar(bodyBuilder, instruction.objectId());
         var argVars = resolveArgumentVariables(bodyBuilder, instruction, instruction.args());
 
-        var resolved = MethodCallResolver.resolve(bodyBuilder, receiverVar, instruction.methodName(), argVars);
+        var resolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, instruction.methodName(), argVars);
         switch (resolved.mode()) {
             case OBJECT_DYNAMIC -> emitObjectDynamicCall(bodyBuilder, instruction, receiverVar, argVars);
             case VARIANT_DYNAMIC -> emitVariantDynamicCall(bodyBuilder, instruction, receiverVar, argVars);
@@ -200,7 +200,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                                         @NotNull CallMethodInsn instruction,
                                         @NotNull LirVariable receiverVar,
                                         @NotNull List<LirVariable> argVars,
-                                        @NotNull MethodCallResolver.ResolvedMethodCall resolved) {
+                                        @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
         if (resolved.isStatic()) {
             warnStaticMethodCall(bodyBuilder, receiverVar, resolved);
         }
@@ -244,7 +244,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
     private void warnStaticMethodCall(@NotNull CBodyBuilder bodyBuilder,
                                       @NotNull LirVariable receiverVar,
-                                      @NotNull MethodCallResolver.ResolvedMethodCall resolved) {
+                                      @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
         var block = bodyBuilder.currentBlock();
         var blockId = block != null ? block.id() : "unknown";
         LOGGER.warn("call_method on receiver '{}' resolved static method '{}.{}'; emitting static call '{}' (function='{}', block='{}', insnIndex={})",
@@ -259,7 +259,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
     private @NotNull CompletedCallArgs validateFixedArgsAndCompleteDefaults(@NotNull CBodyBuilder bodyBuilder,
                                                                             @NotNull LirVariable receiverVar,
-                                                                            @NotNull MethodCallResolver.ResolvedMethodCall resolved,
+                                                                            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
                                                                             @NotNull List<LirVariable> argVars) {
         var providedCount = argVars.size();
         var fixedCount = resolved.parameters().size();
@@ -270,7 +270,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var fixedArgs = new ArrayList<CBodyBuilder.ValueRef>(fixedCount + (resolved.isStatic() ? 0 : 1));
         if (!resolved.isStatic()) {
-            fixedArgs.add(PropertyAccessResolver.renderReceiverValue(
+            fixedArgs.add(BackendPropertyAccessResolver.renderReceiverValue(
                     bodyBuilder,
                     receiverVar,
                     resolved.ownerType(),
@@ -318,8 +318,8 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     }
 
     private void materializeLiteralDefault(@NotNull CBodyBuilder bodyBuilder,
-                                           @NotNull MethodCallResolver.ResolvedMethodCall resolved,
-                                           @NotNull MethodCallResolver.MethodParamSpec param,
+                                           @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                           @NotNull BackendMethodCallResolver.MethodParamSpec param,
                                            @NotNull CBodyBuilder.TempVar temp,
                                            int parameterIndexBaseOne) {
         var literal = param.defaultLiteral();
@@ -338,8 +338,8 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
     private void materializeFunctionDefault(@NotNull CBodyBuilder bodyBuilder,
                                             @NotNull LirVariable receiverVar,
-                                            @NotNull MethodCallResolver.ResolvedMethodCall resolved,
-                                            @NotNull MethodCallResolver.MethodParamSpec param,
+                                            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
+                                            @NotNull BackendMethodCallResolver.MethodParamSpec param,
                                             @NotNull CBodyBuilder.TempVar temp,
                                             int parameterIndexBaseOne) {
         var defaultFunctionName = param.defaultFunctionName();
@@ -359,7 +359,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
         var defaultCallArgs = new ArrayList<CBodyBuilder.ValueRef>(1);
         if (!defaultFunction.isStatic()) {
-            defaultCallArgs.add(PropertyAccessResolver.renderReceiverValue(
+            defaultCallArgs.add(BackendPropertyAccessResolver.renderReceiverValue(
                     bodyBuilder,
                     receiverVar,
                     new GdObjectType(resolved.ownerClassName()),
@@ -374,7 +374,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
     private @NotNull FunctionDef findDefaultFunction(@NotNull CBodyBuilder bodyBuilder,
                                                      @NotNull List<? extends FunctionDef> ownerFunctions,
-                                                     @NotNull MethodCallResolver.ResolvedMethodCall resolved,
+                                                     @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
                                                      @NotNull String defaultFunctionName) {
         FunctionDef found = null;
         for (var function : ownerFunctions) {
@@ -397,9 +397,9 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     }
 
     private void validateDefaultFunctionContract(@NotNull CBodyBuilder bodyBuilder,
-                                                 @NotNull MethodCallResolver.ResolvedMethodCall resolved,
+                                                 @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
                                                  @NotNull LirVariable receiverVar,
-                                                 @NotNull MethodCallResolver.MethodParamSpec param,
+                                                 @NotNull BackendMethodCallResolver.MethodParamSpec param,
                                                  @NotNull FunctionDef defaultFunction,
                                                  int parameterIndexBaseOne) {
         if (defaultFunction.isVararg()) {
@@ -438,7 +438,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
     }
 
     private void validateVarargs(@NotNull CBodyBuilder bodyBuilder,
-                                 @NotNull MethodCallResolver.ResolvedMethodCall resolved,
+                                 @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved,
                                  @NotNull List<LirVariable> argVars,
                                  int fixedCount) {
         for (var i = fixedCount; i < argVars.size(); i++) {
@@ -484,7 +484,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
     private @NotNull CBodyBuilder.TargetRef resolveResultTarget(@NotNull CBodyBuilder bodyBuilder,
                                                                 @NotNull CallMethodInsn instruction,
-                                                                @NotNull MethodCallResolver.ResolvedMethodCall resolved) {
+                                                                @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
         var resultId = instruction.resultId();
         if (resultId == null) {
             return bodyBuilder.discardRef();

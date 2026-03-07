@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.*;
+import dev.superice.gdcc.exception.FrontendSemanticException;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;

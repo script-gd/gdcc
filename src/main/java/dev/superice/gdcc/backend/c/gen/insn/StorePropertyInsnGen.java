@@ -46,7 +46,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
 
         if (objectVar.type() instanceof GdObjectType) {
             if (objectLookup != null) {
-                var receiverValue = PropertyAccessResolver.renderOwnerReceiverValue(
+                var receiverValue = BackendPropertyAccessResolver.renderOwnerReceiverValue(
                         bodyBuilder,
                         objectVar,
                         objectLookup,
@@ -100,13 +100,13 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         }
     }
 
-    private @Nullable PropertyAccessResolver.ObjectPropertyLookup validatePropertyWrite(@NotNull CBodyBuilder bodyBuilder,
-                                                                                        @NotNull GdType objectType,
-                                                                                        @NotNull GdType valueType,
-                                                                                        @NotNull String propertyName) {
+    private @Nullable BackendPropertyAccessResolver.ObjectPropertyLookup validatePropertyWrite(@NotNull CBodyBuilder bodyBuilder,
+                                                                                               @NotNull GdType objectType,
+                                                                                               @NotNull GdType valueType,
+                                                                                               @NotNull String propertyName) {
         var registry = bodyBuilder.classRegistry();
         if (objectType instanceof GdObjectType gdObjectType) {
-            var lookup = PropertyAccessResolver.resolveObjectProperty(
+            var lookup = BackendPropertyAccessResolver.resolveObjectProperty(
                     bodyBuilder,
                     gdObjectType,
                     propertyName,
@@ -130,7 +130,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
             return lookup;
         }
 
-        var lookup = PropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
+        var lookup = BackendPropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
         var builtinClass = lookup.builtinClass();
         if (!lookup.property().isWritable()) {
             throw bodyBuilder.invalidInsn("Property '" + propertyName + "' in builtin class " +
@@ -147,7 +147,7 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
 
     private boolean isStoringInsideSetterSelf(@NotNull CBodyBuilder bodyBuilder,
                                               @NotNull dev.superice.gdcc.lir.LirVariable objectVar,
-                                              @NotNull PropertyAccessResolver.ObjectPropertyLookup lookup) {
+                                              @NotNull BackendPropertyAccessResolver.ObjectPropertyLookup lookup) {
         var func = bodyBuilder.func();
         if (func.isAbstract() || func.isStatic() || func.isLambda() || func.isVararg()) {
             return false;

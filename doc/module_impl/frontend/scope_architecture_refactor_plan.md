@@ -1,4 +1,4 @@
-# Scope 架构与共享 Resolver 重构计划
+﻿# Scope 架构与共享 Resolver 重构计划
 
 > 本文档定义 `dev.superice.gdcc.scope` 包的下一阶段目标架构，重点解决两件事：
 > 1. 把目前埋在 backend `MethodCallResolver` / `PropertyAccessResolver` 中、未来前后端都需要复用的“元数据解析逻辑”抽到 `scope` 包。
@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：进行中（Phase 0-4 已完成，Phase 5+ 待实施）
+- 状态：进行中（Phase 0-6 已完成，Phase 7+ 待实施）
 - 更新时间：2026-03-07
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/scope/**`
@@ -580,15 +580,20 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-```powershell
+`````powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
   --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
-  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.BackendPropertyAccessResolverTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
+` 
+` 
+` 
+` 
+` 
 
 - 结果摘要：
   - `ClassRegistryTest`：通过
@@ -652,16 +657,21 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-```powershell
+`````powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ScopeProtocolTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
   --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
-  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.BackendPropertyAccessResolverTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
+` 
+` 
+` 
+` 
+` 
 
 - 结果摘要：
   - `ScopeProtocolTest`：通过
@@ -737,17 +747,22 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-```powershell
+`````powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ScopeProtocolTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTypeMetaTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
   --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
-  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.BackendPropertyAccessResolverTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
+` 
+` 
+` 
+` 
+` 
 
 - 结果摘要：
   - `ScopeProtocolTest`：通过
@@ -850,18 +865,23 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-```powershell
+`````powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ScopeProtocolTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
   --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTypeMetaTest \
   --tests dev.superice.gdcc.scope.ClassRegistryScopeTest \
-  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.BackendPropertyAccessResolverTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
+` 
+` 
+` 
+` 
+` 
 
 - 结果摘要：
   - `ScopeProtocolTest`：通过
@@ -982,7 +1002,7 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-```powershell
+`````powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.frontend.scope.ScopeChainTest \
   --tests dev.superice.gdcc.frontend.scope.ScopeTypeMetaChainTest \
@@ -993,11 +1013,16 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.scope.ClassRegistryTypeMetaTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
   --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
-  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.BackendPropertyAccessResolverTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
+` 
+` 
+` 
+` 
+` 
 
 - 结果摘要：
   - `ScopeChainTest`：通过
@@ -1014,7 +1039,12 @@ frontend 使用方式建议：
   - `CallMethodInsnGenEngineTest`：通过
 - 阶段结论：Phase 4 已完成；frontend 已具备可供 binder 建图使用的 lexical scope 链，但成员解析与调用决议的共享事实源仍待 Phase 5 / Phase 6 抽取完成。
 
-### 4.6.6 Phase 5：抽取 `ScopePropertyResolver`
+### 4.6.6 Phase 5：抽取 ScopePropertyResolver
+
+**当前状态（2026-03-07）**
+
+- 状态：已完成
+- 结论：共享 ScopePropertyResolver 已落地，backend PropertyAccessResolver 已改造成 adapter。
 
 **目标**
 
@@ -1055,9 +1085,39 @@ frontend 使用方式建议：
   - inheritance cycle
   - 输入来自 strict type parse 后 `instanceType` 的 receiver 时，行为仍稳定
 - 现有 `PropertyAccessResolverTest` 继续通过。
-- `load_store_property_implementation.md` 与 `load_static_implementation.md` 中描述的边界仍然成立，不因抽取 shared resolver 而漂移。
+- load_store_property_implementation.md 与 load_static_implementation.md 中描述的边界仍然成立，不因抽取 shared resolver 而漂移。
 
-### 4.6.7 Phase 6：抽取 `ScopeMethodResolver` 并接入 `TypeMeta` 驱动的 static receiver
+**实际验收结果（2026-03-07）**
+
+- 结果：通过。
+- 已执行命令：
+
+```powershell
+.\gradlew.bat test \
+  --tests dev.superice.gdcc.scope.resolver.ScopePropertyResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyResolverParityTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.BackendPropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.CLoadPropertyInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CStorePropertyInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CGenHelperTest \
+  --no-daemon --info --console=plain
+`
+
+- 结果摘要：
+  - ScopePropertyResolverTest：通过
+  - PropertyResolverParityTest：通过
+  - PropertyAccessResolverTest：通过
+  - CLoadPropertyInsnGenTest：通过
+  - CStorePropertyInsnGenTest：通过
+  - CGenHelperTest：通过
+- 阶段结论：Phase 5 已完成；instance property lookup 的共享事实源已从 backend 中拆出。
+
+### 4.6.7 Phase 6：抽取 ScopeMethodResolver 并接入 TypeMeta 驱动的 static receiver
+
+**当前状态（2026-03-07）**
+
+- 状态：已完成
+- 结论：共享 ScopeMethodResolver 已落地，backend MethodCallResolver 已改造成 adapter。
 
 **目标**
 
@@ -1105,6 +1165,29 @@ frontend 使用方式建议：
   - `ScopeTypeMeta` 作为 static receiver 的候选选择
 - 现有 `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest` 继续通过。
 - 新增 parity 测试，保证 backend adapter 与 shared resolver 选出的 owner/function 一致；若 static receiver 暂无 backend 对应实现，则至少保证 frontend/shared 结果与文档约定一致。
+
+**实际验收结果（2026-03-07）**
+
+- 结果：通过。
+- 已执行命令：
+
+```powershell
+.\gradlew.bat test \
+  --tests dev.superice.gdcc.scope.resolver.ScopeMethodResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.MethodResolverParityTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineInheritanceTest \
+  --no-daemon --info --console=plain
+`
+
+- 结果摘要：
+  - ScopeMethodResolverTest：通过
+  - MethodResolverParityTest：通过
+  - CallMethodInsnGenTest：通过
+  - CallMethodInsnGenEngineTest：通过
+  - CallMethodInsnGenEngineInheritanceTest：通过
+- 阶段结论：Phase 6 已完成；method lookup 的共享事实源已从 backend 中拆出，并补齐了 static/type-meta receiver 入口。
 
 ### 4.6.8 Phase 7：frontend 接入准备、`TypeMeta` 试点与 static access 落地
 
@@ -1381,3 +1464,11 @@ shared resolver 与 `TypeMeta` 解析至少要明确区分：
   - `https://github.com/godotengine/godot/blob/master/modules/gdscript/gdscript_parser.cpp`
   - `https://github.com/godotengine/godot/blob/master/modules/gdscript/gdscript_analyzer.cpp`
   - `https://github.com/godotengine/godot-docs/blob/master/tutorials/scripting/gdscript/static_typing.rst`
+
+
+
+
+
+
+
+
