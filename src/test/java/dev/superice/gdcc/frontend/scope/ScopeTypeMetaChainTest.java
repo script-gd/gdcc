@@ -1,0 +1,120 @@
+package dev.superice.gdcc.frontend.scope;
+
+import dev.superice.gdcc.scope.ScopeTypeMetaKind;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdStringType;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+public class ScopeTypeMetaChainTest {
+    @Test
+    void classLocalTypeMetaOverridesGlobalTypeMeta() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        registry.addGdccClass(FrontendScopeTestSupport.createClass("SharedType", "Object", java.util.List.of(), java.util.List.of()));
+        var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(classDef);
+
+        var classScope = new ClassScope(registry, registry, classDef);
+        var localTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "SharedType",
+                GdStringType.STRING,
+                ScopeTypeMetaKind.GLOBAL_ENUM,
+                "class-local enum",
+                true
+        );
+        classScope.defineTypeMeta(localTypeMeta);
+
+        assertEquals(localTypeMeta, classScope.resolveTypeMeta("SharedType"));
+        assertEquals("SharedType", registry.resolveTypeMeta("SharedType").name());
+    }
+
+    @Test
+    void callableAndBlockResolveTypeMetaThroughParentChain() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(classDef);
+
+        var classScope = new ClassScope(registry, registry, classDef);
+        var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "InnerType",
+                GdStringType.STRING,
+                ScopeTypeMetaKind.GDCC_CLASS,
+                "inner class",
+                false
+        );
+        classScope.defineTypeMeta(outerTypeMeta);
+
+        var callable = new CallableScope(classScope);
+        var block = new BlockScope(callable);
+
+        assertEquals(outerTypeMeta, callable.resolveTypeMeta("InnerType"));
+        assertEquals(outerTypeMeta, block.resolveTypeMeta("InnerType"));
+
+        var localAlias = FrontendScopeTestSupport.createTypeMeta(
+                "LocalAlias",
+                GdIntType.INT,
+                ScopeTypeMetaKind.GLOBAL_ENUM,
+                "local enum",
+                true
+        );
+        block.defineTypeMeta(localAlias);
+        assertEquals(localAlias, block.resolveTypeMeta("LocalAlias"));
+    }
+
+    @Test
+    void valueNamespaceAndTypeNamespaceStayIsolated() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(classDef);
+
+        var classScope = new ClassScope(registry, registry, classDef);
+        classScope.defineConstant("TypeOnly", GdIntType.INT, "const value");
+        var localTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "TypeOnly",
+                GdStringType.STRING,
+                ScopeTypeMetaKind.GLOBAL_ENUM,
+                "enum view",
+                true
+        );
+        classScope.defineTypeMeta(localTypeMeta);
+
+        var valueBinding = classScope.resolveValue("TypeOnly");
+        assertNotNull(valueBinding);
+        assertEquals(GdIntType.INT, valueBinding.type());
+
+        var typeBinding = classScope.resolveTypeMeta("TypeOnly");
+        assertEquals(localTypeMeta, typeBinding);
+        assertNull(classScope.resolveValue("MissingTypeOnly"));
+        assertNull(classScope.resolveTypeMeta("MissingTypeOnly"));
+    }
+
+    @Test
+    void duplicateLocalTypeMetaBindingIsRejected() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(classDef);
+
+        var classScope = new ClassScope(registry, registry, classDef);
+        classScope.defineTypeMeta(FrontendScopeTestSupport.createTypeMeta(
+                "InnerType",
+                GdStringType.STRING,
+                ScopeTypeMetaKind.GDCC_CLASS,
+                "inner class",
+                false
+        ));
+
+        assertThrows(IllegalArgumentException.class, () -> classScope.defineTypeMeta(
+                FrontendScopeTestSupport.createTypeMeta(
+                        "InnerType",
+                        GdIntType.INT,
+                        ScopeTypeMetaKind.GLOBAL_ENUM,
+                        "duplicate",
+                        true
+                )
+        ));
+    }
+}

@@ -2,16 +2,17 @@
 
 > 本文档定义 `dev.superice.gdcc.scope` 包的下一阶段目标架构，重点解决两件事：
 > 1. 把目前埋在 backend `MethodCallResolver` / `PropertyAccessResolver` 中、未来前后端都需要复用的“元数据解析逻辑”抽到 `scope` 包。
-> 2. 在 `scope` 包内建立真正可供 frontend 语义分析使用的作用域链模型，使 AST 语义分析可以对“每个会引入新作用域的节点”显式创建 `Scope`，并通过 parent 链完成标识符解析。
+> 2. 基于 `dev.superice.gdcc.scope.Scope` 协议，在 `dev.superice.gdcc.frontend.scope` 包内建立真正可供 frontend 语义分析使用的作用域链模型，使 AST 语义分析可以对“每个会引入新作用域的节点”显式创建 `Scope`，并通过 parent 链完成标识符解析。
 
 ## 文档状态
 
-- 状态：进行中（Phase 0-3 已完成，Phase 4+ 待实施）
+- 状态：进行中（Phase 0-4 已完成，Phase 5+ 待实施）
 - 更新时间：2026-03-07
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/scope/**`
   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/MethodCallResolver.java`
   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+  - `src/main/java/dev/superice/gdcc/frontend/scope/**`
   - 后续 `src/main/java/dev/superice/gdcc/frontend/sema/**`
 - 关联文档：
   - `doc/module_impl/frontend_implementation_plan.md`
@@ -875,9 +876,53 @@ frontend 使用方式建议：
 
 ### 4.6.5 Phase 4：补齐 frontend 可用的链式 scope 实现
 
+**当前状态（2026-03-07）**
+
+- 状态：已完成
+- 结论：frontend 专用链式作用域已落地到 `dev.superice.gdcc.frontend.scope` 包，并继续统一实现 `dev.superice.gdcc.scope.Scope` 协议；value / function / type-meta 三个 namespace 的词法链与 shadowing 规则已通过 targeted tests 固化。
+
+**本阶段产出**
+
+1. 已新增 frontend 专用作用域实现：
+   - `src/main/java/dev/superice/gdcc/frontend/scope/AbstractFrontendScope.java`
+   - `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
+   - `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
+   - `src/main/java/dev/superice/gdcc/frontend/scope/BlockScope.java`
+2. 已为这些作用域补齐最小注册 API：
+   - `defineLocal(...)`
+   - `defineParameter(...)`
+   - `defineCapture(...)`
+   - `defineProperty(...)`
+   - `defineConstant(...)`
+   - `defineFunction(...)`
+   - `defineTypeMeta(...)`
+3. 已把三套 namespace 的独立规则落实到实现与测试：
+   - value：`BlockScope` local > `CallableScope` parameter > `CallableScope` capture > `ClassScope` member > global scope
+   - function：继续遵守 `Scope.resolveFunctions(...)` 的最近非空层优先
+   - type-meta：最近命中优先，但只沿 type namespace 递归，不污染 value/function
+4. 已让 `ClassScope` 承担当前类成员上下文：
+   - 自动索引当前类 direct property / method
+   - direct 成员优先于 inherited 成员
+   - inherited property / method 只在 direct miss 时才回退查询
+   - class-local type-meta 继续只走 lexical namespace，不沿继承链扩散
+5. 已让 `CallableScope` / `BlockScope` 默认继承 parent 的 type namespace，同时保留显式 `defineTypeMeta(...)` 扩展入口，以承接未来的 preload alias / const alias / local enum。
+6. 已明确 Phase 4 对 `self` 的决定：
+   - 当前版本 **不** 把 `self` 建模成隐式 `ScopeValue`
+   - 是否暴露 `self`、static context 下是否允许访问成员，继续由 frontend binder 在后续阶段决定
+7. 已保持这些 scope 实现纯 metadata/lookup，不依赖 AST 节点；AST -> Scope / declaration -> TypeMeta 的映射仍留给 frontend side-table。
+8. 已明确并落实 lexical type namespace 与继承成员查找的边界：
+   - inner class / class-local enum 走 `defineTypeMeta(...)` + lexical scope
+   - class property / method 走 class member lookup
+   - 父类 inner type 不会因为继承关系自动进入当前类的 type namespace
+9. 已新增并通过 Phase 4 targeted tests：
+   - `src/test/java/dev/superice/gdcc/frontend/scope/ScopeChainTest.java`
+   - `src/test/java/dev/superice/gdcc/frontend/scope/ScopeTypeMetaChainTest.java`
+   - `src/test/java/dev/superice/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
+   - `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeResolutionTest.java`
+
 **目标**
 
-- 在 `scope` 包中提供 frontend 真正会实例化的类作用域 / 可调用作用域 / 块级作用域，实现“按 AST 节点建 scope，再通过 parent 链递归解析”的模型，并让 `TypeMeta` 在这条 lexical scope 链上也能得到严格递归解析。
+- 在 `src/main/java/dev/superice/gdcc/frontend/scope/**` 中提供 frontend 真正会实例化的类作用域 / 可调用作用域 / 块级作用域，实现“按 AST 节点建 scope，再通过 parent 链递归解析”的模型，并让 `TypeMeta` 在这条 lexical scope 链上也能得到严格递归解析。
 
 **具体任务**
 
@@ -931,6 +976,43 @@ frontend 使用方式建议：
   - 当前类优先于继承成员
   - 同名方法/属性在类作用域中的组织方式
   - 当前脚本直定义 type / enum 的注册与查询形状
+
+**实际验收结果（2026-03-07）**
+
+- 结果：通过。
+- 已执行命令：
+
+```powershell
+.\gradlew.bat test \
+  --tests dev.superice.gdcc.frontend.scope.ScopeChainTest \
+  --tests dev.superice.gdcc.frontend.scope.ScopeTypeMetaChainTest \
+  --tests dev.superice.gdcc.frontend.scope.ScopeCaptureShapeTest \
+  --tests dev.superice.gdcc.frontend.scope.ClassScopeResolutionTest \
+  --tests dev.superice.gdcc.scope.ScopeProtocolTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryScopeTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryTypeMetaTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
+  --no-daemon --info --console=plain
+```
+
+- 结果摘要：
+  - `ScopeChainTest`：通过
+  - `ScopeTypeMetaChainTest`：通过
+  - `ScopeCaptureShapeTest`：通过
+  - `ClassScopeResolutionTest`：通过
+  - `ScopeProtocolTest`：通过
+  - `ClassRegistryScopeTest`：通过
+  - `ClassRegistryTypeMetaTest`：通过
+  - `ClassRegistryTest`：通过
+  - `ClassRegistryGdccTest`：通过
+  - `PropertyAccessResolverTest`：通过
+  - `CallMethodInsnGenTest`：通过
+  - `CallMethodInsnGenEngineTest`：通过
+- 阶段结论：Phase 4 已完成；frontend 已具备可供 binder 建图使用的 lexical scope 链，但成员解析与调用决议的共享事实源仍待 Phase 5 / Phase 6 抽取完成。
 
 ### 4.6.6 Phase 5：抽取 `ScopePropertyResolver`
 
