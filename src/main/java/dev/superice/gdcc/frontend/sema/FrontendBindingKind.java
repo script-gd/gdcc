@@ -10,5 +10,6 @@ public enum FrontendBindingKind {
     CONSTANT,
     SINGLETON,
     GLOBAL_ENUM,
+    TYPE_META,
     UNKNOWN
 }

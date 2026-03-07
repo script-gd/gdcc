@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：进行中（Phase 0 已完成，Phase 1+ 待实施）
+- 状态：进行中（Phase 0-2 已完成，Phase 3+ 待实施）
 - 更新时间：2026-03-06
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/scope/**`
@@ -147,6 +147,8 @@ public interface Scope {
 
     @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name);
 
+    @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name);
+
     default @Nullable ScopeValue resolveValue(@NotNull String name) {
         var value = resolveValueHere(name);
         if (value != null) {
@@ -163,6 +165,15 @@ public interface Scope {
         }
         var parent = getParentScope();
         return parent != null ? parent.resolveFunctions(name) : List.of();
+    }
+
+    default @Nullable ScopeTypeMeta resolveTypeMeta(@NotNull String name) {
+        var typeMeta = resolveTypeMetaHere(name);
+        if (typeMeta != null) {
+            return typeMeta;
+        }
+        var parent = getParentScope();
+        return parent != null ? parent.resolveTypeMeta(name) : null;
     }
 }
 ```
@@ -205,8 +216,8 @@ public record ScopeValue(
 
 注意：
 
-- **`TYPE_META` 不建议在 `Scope` v1 强塞进 `resolveValue(...)`**。
-- 当前 `doc/gdcc_type_system.md` 已明确项目没有显式建模 `TypeType`；因此 type/meta 名字空间更适合作为后续 `resolveTypeMeta(...)` 扩展，而不是一开始混进 value namespace。
+- **`TYPE_META` 不建议强塞进 `resolveValue(...)`**。
+- 当前 `doc/gdcc_type_system.md` 已明确项目没有显式建模 `TypeType`；因此 type/meta 名字空间更适合作为独立的 `resolveTypeMeta(...)` 扩展，而不是混进 value namespace。
 
 这能避免第一版 `Scope` 因为同时处理 value/function/type 三个命名空间而过度复杂。
 
@@ -560,6 +571,27 @@ frontend 使用方式建议：
 
 ### 4.6.2 Phase 1：补齐 `Scope` 协议层
 
+**当前状态（2026-03-06）**
+
+- 状态：已完成
+- 结论：最小 `Scope` 协议层已经落地，当前生产代码行为保持不变；`ClassRegistry implements Scope` 与任何抽象基类的引入均继续延后到 Phase 2+。
+
+**本阶段产出**
+
+1. 已新增最小协议类型：
+   - `src/main/java/dev/superice/gdcc/scope/Scope.java`
+   - `src/main/java/dev/superice/gdcc/scope/ScopeValue.java`
+   - `src/main/java/dev/superice/gdcc/scope/ScopeValueKind.java`
+   - `src/main/java/dev/superice/gdcc/scope/ScopeOwnerKind.java`
+2. 已把 `Scope` v1 默认语义落实到接口默认方法：
+   - `resolveValue(...)`：最近命中优先
+   - `resolveFunctions(...)`：最近非空层优先
+3. 已明确 `Scope` v1 的 value/function namespace 不把 `TYPE_META` 混入 `resolveValue(...)`。
+4. 已评估 `AbstractScope`：当前没有引入，避免在尚未有 `ClassScope` / `CallableScope` / `BlockScope` 之前过早抽象。
+5. 已新增最小协议测试：
+   - `src/test/java/dev/superice/gdcc/scope/ScopeProtocolTest.java`
+   - 覆盖 value 递归查找、function 递归查找、root 空结果语义。
+
 **目标**
 
 - 先建立最小但稳定的 `Scope` 抽象，确保后续所有 scope 实现与 frontend 作用域树都能站在同一套协议之上。
@@ -586,7 +618,119 @@ frontend 使用方式建议：
   - function lookup 递归规则
   - parent 为 `null` 时的空结果语义
 
-### 4.6.3 Phase 2：让 `ClassRegistry` 成为真正的 global scope
+**实际验收结果（2026-03-06）**
+
+- 结果：通过。
+- 已执行命令：
+
+```powershell
+.\gradlew.bat test \
+  --tests dev.superice.gdcc.scope.ScopeProtocolTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
+  --no-daemon --info --console=plain
+```
+
+- 结果摘要：
+  - `ScopeProtocolTest`：通过
+  - `ClassRegistryTest`：通过
+  - `ClassRegistryGdccTest`：通过
+  - `PropertyAccessResolverTest`：通过
+  - `CallMethodInsnGenTest`：通过
+  - `CallMethodInsnGenEngineTest`：通过
+- 阶段结论：Phase 1 已完成，并为后续独立 `TypeMeta` namespace 与 `ClassRegistry` 接入 `Scope` 铺平了协议边界。
+
+### 4.6.3 Phase 2：最小 `TypeMeta` 支持
+
+**当前状态（2026-03-06）**
+
+- 状态：已完成
+- 结论：`scope` 已具备独立的 type namespace，不再要求把 `TYPE_META` 混进 `resolveValue(...)`；当前只支持严格解析全局类型、GDCC 直接定义的类以及全局 enum。
+
+**本阶段产出**
+
+1. 已为 `Scope` 增加独立的 `TypeMeta` 解析入口：
+   - `resolveTypeMetaHere(...)`
+   - `resolveTypeMeta(...)`
+2. 已新增最小协议类型：
+   - `src/main/java/dev/superice/gdcc/scope/ScopeTypeMeta.java`
+   - `src/main/java/dev/superice/gdcc/scope/ScopeTypeMetaKind.java`
+3. 已在 `ClassRegistry` 中落地严格的全局 TypeMeta 解析：
+   - `resolveTypeMetaHere(...)`
+   - `resolveTypeMeta(...)`
+   - `tryParseStrictTextType(...)`
+4. 当前最小支持范围已固定为：
+   - builtin/global type（含 `Array[T]`、`Dictionary[K, V]` 的严格递归解析）
+   - engine class
+   - GDCC class（即用户在当前编译输入中直接定义并已注册到 `ClassRegistry` 的类）
+   - global enum
+5. 当前明确 **不** 在本阶段支持：
+   - `preload(...)` 导出的 type alias
+   - local/global const 中保存的 type alias
+   - inner class / class enum / local enum
+   - 把 singleton / utility name 当作 type namespace 的合法来源
+6. 已新增并通过最小回归测试：
+   - `ScopeProtocolTest`：覆盖 `resolveTypeMeta(...)` 的递归与严格未命中行为
+   - `ClassRegistryTypeMetaTest`：覆盖 builtin / engine / gdcc / global enum / typed container 的严格解析
+
+**目标**
+
+- 在不提前实现完整 binder/type inference 的前提下，先为 `scope` 提供最小可用的 `TYPE_META` 解析能力，避免后续 frontend 继续把 `findType(...)` 当成 binder 级最终判定器。
+
+**具体任务**
+
+1. 在 `Scope` 上引入独立的 type namespace，而不是把 `TYPE_META` 合并进 `resolveValue(...)`。
+2. 设计最小 `ScopeTypeMeta` 结果类型，至少保留：
+   - meta 名称
+   - instance-side `GdType`
+   - kind（builtin / engine / gdcc / global enum）
+   - 是否 pseudo type
+3. 在 `ClassRegistry` 中提供严格解析入口：
+   - 未知名字返回 `null`
+   - 不再像 `findType(...)` 那样把未知名字宽松降级成 `new GdObjectType(name)`
+4. 为 typed container hint 提供严格递归解析：
+   - `Array[T]`
+   - `Dictionary[K, V]`
+5. 明确第一轮不支持 `preload` / const type alias / inner class / class enum，避免把依赖解析与作用域链改造绑死在同一阶段。
+
+**验收标准**
+
+- `TYPE_META` 通过独立 namespace 暴露，而不是污染现有 value/function 查找协议。
+- `ClassRegistry` 能严格解析 builtin / engine / gdcc / global enum type meta。
+- 未知名字、utility name、非类型来源不被错误识别为 type meta。
+- typed container hint 在其内部元素/键值类型可解析时能够递归通过。
+
+**实际验收结果（2026-03-06）**
+
+- 结果：通过。
+- 已执行命令：
+
+```powershell
+.\gradlew.bat test \
+  --tests dev.superice.gdcc.scope.ScopeProtocolTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryTypeMetaTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryTest \
+  --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
+  --tests dev.superice.gdcc.backend.c.gen.insn.PropertyAccessResolverTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenTest \
+  --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
+  --no-daemon --info --console=plain
+```
+
+- 结果摘要：
+  - `ScopeProtocolTest`：通过
+  - `ClassRegistryTypeMetaTest`：通过
+  - `ClassRegistryTest`：通过
+  - `ClassRegistryGdccTest`：通过
+  - `PropertyAccessResolverTest`：通过
+  - `CallMethodInsnGenTest`：通过
+  - `CallMethodInsnGenEngineTest`：通过
+- 阶段结论：最小 `TypeMeta` 支持已落地；后续让 `ClassRegistry` 实现 `Scope` 时，应直接复用这套独立的 type namespace，而不是再造第二套严格类型解析规则。
+
+### 4.6.4 Phase 3：让 `ClassRegistry` 成为真正的 global scope
 
 **目标**
 
@@ -617,7 +761,7 @@ frontend 使用方式建议：
   - utility function 可通过 `resolveFunctions(...)` 命中
   - 未命中时返回空结果而不是抛异常
 
-### 4.6.4 Phase 3：补齐 frontend 可用的链式 scope 实现
+### 4.6.5 Phase 4：补齐 frontend 可用的链式 scope 实现
 
 **目标**
 
@@ -655,7 +799,7 @@ frontend 使用方式建议：
   - 当前类优先于继承成员
   - 同名方法/属性在类作用域中的组织方式
 
-### 4.6.5 Phase 4：抽取 `ScopePropertyResolver`
+### 4.6.6 Phase 5：抽取 `ScopePropertyResolver`
 
 **目标**
 
@@ -689,7 +833,7 @@ frontend 使用方式建议：
 - 现有 `PropertyAccessResolverTest` 继续通过。
 - `load_store_property_implementation.md` 中描述的长期事实仍然成立，不因抽取 shared resolver 而漂移。
 
-### 4.6.6 Phase 5：抽取 `ScopeMethodResolver`
+### 4.6.7 Phase 6：抽取 `ScopeMethodResolver`
 
 **目标**
 
@@ -725,7 +869,7 @@ frontend 使用方式建议：
 - 现有 `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest` 继续通过。
 - 新增 parity 测试，保证 backend adapter 与 shared resolver 选出的 owner/function 一致。
 
-### 4.6.7 Phase 6：frontend 接入准备与最小试点
+### 4.6.8 Phase 7：frontend 接入准备与最小试点
 
 **目标**
 
@@ -744,7 +888,7 @@ frontend 使用方式建议：
 4. 再在 call/member analysis 中试点接入：
    - known object method -> `ScopeMethodResolver`
    - known object property -> `ScopePropertyResolver`
-5. 保持 `TYPE_META` 仍由 `ClassRegistry` 的专门 API 处理，避免第一轮 frontend 接入过重。
+5. `TYPE_META` 优先走 `Scope.resolveTypeMeta(...)` / `ClassRegistry.resolveTypeMeta(...)` 这套独立 namespace，避免再退回宽松的 `findType(...)` 语义。
 
 **验收标准**
 
@@ -756,7 +900,7 @@ frontend 使用方式建议：
   - `FrontendDynamicPropertyFallbackTest`
 - frontend 在试点阶段不需要完成完整 lowering，但必须能基于 `Scope` 链稳定产出绑定结论。
 
-### 4.6.8 阶段切换门槛
+### 4.6.9 阶段切换门槛
 
 为避免重构中途“半抽不抽”的状态长期存在，建议每阶段切换前都满足以下门槛：
 
@@ -844,9 +988,9 @@ frontend 使用方式建议：
 
 建议：
 
-- `Scope` v1 只承载 value/function；
-- `TYPE_META` 暂时继续由 `ClassRegistry` 专用 API 支持；
-- 等 frontend binder 真正进入 `TYPE_META` 实现时，再决定是否扩展 `Scope`。
+- `Scope` 的 value/function namespace 继续保持独立；
+- `TYPE_META` 通过独立 `resolveTypeMeta(...)` namespace 支持，而不是并入 `resolveValue(...)`；
+- 等 frontend binder 真正进入 const alias / preload / inner enum 等场景时，再决定是否继续扩展 type namespace 的来源集合。
 
 ## 7.2 不要把 backend receiver 渲染逻辑错误地下沉到 `scope`
 

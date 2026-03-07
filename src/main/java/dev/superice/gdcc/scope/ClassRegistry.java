@@ -95,6 +95,62 @@ public final class ClassRegistry {
         return gdccClassByName.get(name);
     }
 
+    /// Strict type-meta lookup for the global namespace.
+    ///
+    /// Unlike `findType(...)`, this method does not guess unknown names as object types.
+    /// It only resolves names that are already known to the registry or supported by the
+    /// strict textual builtin/container parser.
+    public @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name) {
+        var trimmed = name.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
+        if (isGlobalEnum(trimmed)) {
+            return new ScopeTypeMeta(
+                    trimmed,
+                    GdIntType.INT,
+                    ScopeTypeMetaKind.GLOBAL_ENUM,
+                    findGlobalEnum(trimmed),
+                    true
+            );
+        }
+        if (isGdccClass(trimmed)) {
+            return new ScopeTypeMeta(
+                    trimmed,
+                    new GdObjectType(trimmed),
+                    ScopeTypeMetaKind.GDCC_CLASS,
+                    findGdccClass(trimmed),
+                    false
+            );
+        }
+        if (isGdClass(trimmed)) {
+            return new ScopeTypeMeta(
+                    trimmed,
+                    new GdObjectType(trimmed),
+                    ScopeTypeMetaKind.ENGINE_CLASS,
+                    getClassDef(new GdObjectType(trimmed)),
+                    false
+            );
+        }
+
+        var builtinType = tryParseStrictTextType(trimmed, this);
+        if (builtinType != null) {
+            return new ScopeTypeMeta(
+                    trimmed,
+                    builtinType,
+                    ScopeTypeMetaKind.BUILTIN,
+                    findBuiltinClass(trimmed),
+                    false
+            );
+        }
+        return null;
+    }
+
+    public @Nullable ScopeTypeMeta resolveTypeMeta(@NotNull String name) {
+        return resolveTypeMetaHere(name);
+    }
+
     /// Return a GdType instance for the given type name if known.
     /// Rules:
     /// - Prefer textual parsing which maps builtin and container types to concrete GdType instances.
@@ -108,7 +164,7 @@ public final class ClassRegistry {
     /// - If none of the above matched, return a plain non-engine GdObjectType(name) (represents a user type reference).
     public @Nullable GdType findType(@NotNull String name) {
         // textual parsing first, including built-in type and container built-in type
-        var parsed = tryParseTextType(name);
+        var parsed = tryParseStrictTextType(name, this);
         if (parsed != null && !(parsed instanceof GdObjectType)) {
             return parsed;
         }
@@ -138,119 +194,120 @@ public final class ClassRegistry {
 
     /// Textual mapping (exact, case-sensitive). Returns a concrete GdType or GdObjectType as fallback.
     public static @Nullable GdType tryParseTextType(@NotNull String typeName) {
+        var strict = tryParseStrictTextType(typeName, null);
+        if (strict != null) {
+            return strict;
+        }
         var t = typeName.trim();
         if (t.isEmpty()) return null;
-        switch (t) {
-            case "AABB":
-                return GdAABBType.AABB;
-            case "Array":
-                return new GdArrayType(GdVariantType.VARIANT);
-            case "Basis":
-                return GdBasisType.BASIS;
-            case "bool":
-                return GdBoolType.BOOL;
-            case "Callable":
-                return new GdCallableType();
-            case "Color":
-                return GdColorType.COLOR;
-            case "Dictionary":
-                return new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
-            case "float":
-                return GdFloatType.FLOAT;
-            case "Vector2":
-                return GdFloatVectorType.VECTOR2;
-            case "Vector2i":
-                return GdIntVectorType.VECTOR2I;
-            case "Vector3":
-                return GdFloatVectorType.VECTOR3;
-            case "Vector3i":
-                return GdIntVectorType.VECTOR3I;
-            case "Vector4":
-                return GdFloatVectorType.VECTOR4;
-            case "Vector4i":
-                return GdIntVectorType.VECTOR4I;
-            case "int":
-                return GdIntType.INT;
-            case "Nil":
-            case "null":
-                return GdNilType.NIL;
-            case "NodePath":
-                return GdNodePathType.NODE_PATH;
-            case "Object":
-                return GdObjectType.OBJECT;
-            case "PackedByteArray":
-                return GdPackedNumericArrayType.PACKED_BYTE_ARRAY;
-            case "PackedInt32Array":
-                return GdPackedNumericArrayType.PACKED_INT32_ARRAY;
-            case "PackedInt64Array":
-                return GdPackedNumericArrayType.PACKED_INT64_ARRAY;
-            case "PackedFloat32Array":
-                return GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY;
-            case "PackedFloat64Array":
-                return GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY;
-            case "PackedStringArray":
-                return GdPackedStringArrayType.PACKED_STRING_ARRAY;
-            case "PackedVector2Array":
-                return GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY;
-            case "PackedVector3Array":
-                return GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY;
-            case "PackedVector4Array":
-                return GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY;
-            case "PackedColorArray":
-                return GdPackedVectorArrayType.PACKED_COLOR_ARRAY;
-            case "Plane":
-                return GdPlaneType.PLANE;
-            case "Projection":
-                return GdProjectionType.PROJECTION;
-            case "Quaternion":
-                return GdQuaternionType.QUATERNION;
-            case "Rect2":
-                return GdRect2Type.RECT2;
-            case "Rect2i":
-                return GdRect2iType.RECT2I;
-            case "RID":
-                return GdRidType.RID;
-            case "Signal":
-                return new GdSignalType();
-            case "String":
-                return GdStringType.STRING;
-            case "StringName":
-                return GdStringNameType.STRING_NAME;
-            case "Transform2D":
-                return GdTransform2DType.TRANSFORM2D;
-            case "Transform3D":
-                return GdTransform3DType.TRANSFORM3D;
-            case "void":
-            case "Void":
-                return GdVoidType.VOID;
-            case "Variant":
-                return GdVariantType.VARIANT;
-        }
+        return new GdObjectType(t);
+    }
 
-        // Generic forms: Array[T], Dictionary[K, V]
-        if (t.startsWith("Array[") && t.endsWith("]")) {
-            var inner = t.substring(6, t.length() - 1).trim();
-            if (inner.isEmpty()) return null;
-            var innerType = tryParseTextType(inner);
-            if (innerType == null) innerType = new GdObjectType(inner);
-            return new GdArrayType(innerType);
+    /// Strict textual parsing used by TypeMeta resolution.
+    ///
+    /// Returns null for unknown identifiers instead of guessing `GdObjectType(name)`.
+    public static @Nullable GdType tryParseStrictTextType(@NotNull String typeName,
+                                                          @Nullable ClassRegistry registry) {
+        var t = typeName.trim();
+        if (t.isEmpty()) {
+            return null;
         }
-        if (t.startsWith("Dictionary[") && t.endsWith("]")) {
-            var inner = t.substring(11, t.length() - 1);
-            var parts = inner.split(",");
-            if (parts.length == 2) {
-                var kt = tryParseTextType(parts[0].trim());
-                var vt = tryParseTextType(parts[1].trim());
-                if (kt == null) kt = GdVariantType.VARIANT;
-                if (vt == null) vt = GdVariantType.VARIANT;
-                return new GdDictionaryType(kt, vt);
-            } else {
+        return switch (t) {
+            case "AABB" -> GdAABBType.AABB;
+            case "Array" -> new GdArrayType(GdVariantType.VARIANT);
+            case "Basis" -> GdBasisType.BASIS;
+            case "bool" -> GdBoolType.BOOL;
+            case "Callable" -> new GdCallableType();
+            case "Color" -> GdColorType.COLOR;
+            case "Dictionary" -> new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+            case "float" -> GdFloatType.FLOAT;
+            case "Vector2" -> GdFloatVectorType.VECTOR2;
+            case "Vector2i" -> GdIntVectorType.VECTOR2I;
+            case "Vector3" -> GdFloatVectorType.VECTOR3;
+            case "Vector3i" -> GdIntVectorType.VECTOR3I;
+            case "Vector4" -> GdFloatVectorType.VECTOR4;
+            case "Vector4i" -> GdIntVectorType.VECTOR4I;
+            case "int" -> GdIntType.INT;
+            case "Nil", "null" -> GdNilType.NIL;
+            case "NodePath" -> GdNodePathType.NODE_PATH;
+            case "Object" -> GdObjectType.OBJECT;
+            case "PackedByteArray" -> GdPackedNumericArrayType.PACKED_BYTE_ARRAY;
+            case "PackedInt32Array" -> GdPackedNumericArrayType.PACKED_INT32_ARRAY;
+            case "PackedInt64Array" -> GdPackedNumericArrayType.PACKED_INT64_ARRAY;
+            case "PackedFloat32Array" -> GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY;
+            case "PackedFloat64Array" -> GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY;
+            case "PackedStringArray" -> GdPackedStringArrayType.PACKED_STRING_ARRAY;
+            case "PackedVector2Array" -> GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY;
+            case "PackedVector3Array" -> GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY;
+            case "PackedVector4Array" -> GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY;
+            case "PackedColorArray" -> GdPackedVectorArrayType.PACKED_COLOR_ARRAY;
+            case "Plane" -> GdPlaneType.PLANE;
+            case "Projection" -> GdProjectionType.PROJECTION;
+            case "Quaternion" -> GdQuaternionType.QUATERNION;
+            case "Rect2" -> GdRect2Type.RECT2;
+            case "Rect2i" -> GdRect2iType.RECT2I;
+            case "RID" -> GdRidType.RID;
+            case "Signal" -> new GdSignalType();
+            case "String" -> GdStringType.STRING;
+            case "StringName" -> GdStringNameType.STRING_NAME;
+            case "Transform2D" -> GdTransform2DType.TRANSFORM2D;
+            case "Transform3D" -> GdTransform3DType.TRANSFORM3D;
+            case "void", "Void" -> GdVoidType.VOID;
+            case "Variant" -> GdVariantType.VARIANT;
+            default -> tryParseStrictContainerType(t, registry);
+        };
+    }
+
+    private static @Nullable GdType tryParseStrictContainerType(@NotNull String textType,
+                                                                @Nullable ClassRegistry registry) {
+        if (textType.startsWith("Array[") && textType.endsWith("]")) {
+            var inner = textType.substring(6, textType.length() - 1).trim();
+            if (inner.isEmpty()) {
                 return null;
             }
+            var innerType = resolveStrictNestedType(inner, registry);
+            return innerType != null ? new GdArrayType(innerType) : null;
         }
+        if (textType.startsWith("Dictionary[") && textType.endsWith("]")) {
+            var inner = textType.substring(11, textType.length() - 1).trim();
+            var parts = splitDictionaryTypeArgs(inner);
+            if (parts == null) {
+                return null;
+            }
+            var keyType = resolveStrictNestedType(parts.getFirst(), registry);
+            var valueType = resolveStrictNestedType(parts.getLast(), registry);
+            if (keyType == null || valueType == null) {
+                return null;
+            }
+            return new GdDictionaryType(keyType, valueType);
+        }
+        return null;
+    }
 
-        // fallback: treat as object/class name
-        return new GdObjectType(t);
+    private static @Nullable GdType resolveStrictNestedType(@NotNull String typeText,
+                                                            @Nullable ClassRegistry registry) {
+        var strictType = tryParseStrictTextType(typeText, registry);
+        if (strictType != null) {
+            return strictType;
+        }
+        if (registry == null) {
+            return null;
+        }
+        var typeMeta = registry.resolveTypeMetaHere(typeText);
+        return typeMeta != null ? typeMeta.instanceType() : null;
+    }
+
+    private static @Nullable List<String> splitDictionaryTypeArgs(@NotNull String argsText) {
+        var commaIndex = argsText.indexOf(',');
+        if (commaIndex < 0) {
+            return null;
+        }
+        var keyText = argsText.substring(0, commaIndex).trim();
+        var valueText = argsText.substring(commaIndex + 1).trim();
+        if (keyText.isEmpty() || valueText.isEmpty()) {
+            return null;
+        }
+        return List.of(keyText, valueText);
     }
 
     /// Return the function signature for a global utility function by name.
