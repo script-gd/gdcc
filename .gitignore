@@ -13,6 +13,7 @@ tmp/
 out/
 !**/src/main/**/out/
 !**/src/test/**/out/
+hs_err_*.log
 
 ### Eclipse ###
 .apt_generated
