@@ -1,11 +1,13 @@
 package dev.superice.gdcc.frontend.scope;
 
+import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdStringType;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -28,8 +30,10 @@ public class ScopeTypeMetaChainTest {
         );
         classScope.defineTypeMeta(localTypeMeta);
 
-        assertEquals(localTypeMeta, classScope.resolveTypeMeta("SharedType"));
-        assertEquals("SharedType", registry.resolveTypeMeta("SharedType").name());
+        var classLocalTypeMeta = classScope.resolveTypeMeta("SharedType", ResolveRestriction.unrestricted()).requireValue();
+        assertEquals(localTypeMeta, classLocalTypeMeta);
+        var globalTypeMeta = registry.resolveTypeMeta("SharedType", ResolveRestriction.unrestricted()).requireValue();
+        assertEquals("SharedType", globalTypeMeta.name());
     }
 
     @Test
@@ -63,6 +67,34 @@ public class ScopeTypeMetaChainTest {
         );
         block.defineTypeMeta(localAlias);
         assertEquals(localAlias, block.resolveTypeMeta("LocalAlias"));
+    }
+
+    @Test
+    void typeMetaLookupStaysRestrictionInvariantAcrossFrontendScopes() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var classDef = FrontendScopeTestSupport.createClass("Hero", "Object", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(classDef);
+
+        var classScope = new ClassScope(registry, registry, classDef);
+        var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
+                "InnerType",
+                GdStringType.STRING,
+                ScopeTypeMetaKind.GDCC_CLASS,
+                "inner class",
+                false
+        );
+        classScope.defineTypeMeta(outerTypeMeta);
+
+        var callable = new CallableScope(classScope);
+        var block = new BlockScope(callable);
+
+        var staticResult = block.resolveTypeMeta("InnerType", ResolveRestriction.staticContext());
+        var instanceResult = block.resolveTypeMeta("InnerType", ResolveRestriction.instanceContext());
+
+        assertFalse(staticResult.isBlocked());
+        assertFalse(instanceResult.isBlocked());
+        assertEquals(outerTypeMeta, staticResult.allowedValueOrNull());
+        assertEquals(outerTypeMeta, instanceResult.allowedValueOrNull());
     }
 
     @Test

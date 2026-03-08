@@ -1,12 +1,12 @@
 package dev.superice.gdcc.scope;
 
 import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionEnumValue;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
 import dev.superice.gdcc.gdextension.ExtensionHeader;
 import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
-import dev.superice.gdcc.gdextension.ExtensionEnumValue;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdIntType;
@@ -19,7 +19,15 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ClassRegistryScopeTest {
     @Test
@@ -59,6 +67,42 @@ public class ClassRegistryScopeTest {
         assertNull(registry.resolveValue("print_line"));
         assertTrue(registry.resolveFunctions("GameSingleton").isEmpty());
         assertNull(registry.resolveTypeMeta("print_line"));
+    }
+
+    @Test
+    void restrictionAwareLookupKeepsGlobalBindingsAllowed() {
+        var registry = new ClassRegistry(createScopeFixtureApi());
+
+        var singletonResult = registry.resolveValue("GameSingleton", ResolveRestriction.staticContext());
+        assertTrue(singletonResult.isAllowed());
+        assertEquals(ScopeValueKind.SINGLETON, singletonResult.requireValue().kind());
+
+        var functionResult = registry.resolveFunctions("print_line", ResolveRestriction.staticContext());
+        assertTrue(functionResult.isAllowed());
+        assertEquals("print_line", functionResult.requireValue().getFirst().getName());
+
+        var missingResult = registry.resolveValue("Missing", ResolveRestriction.staticContext());
+        assertTrue(missingResult.isNotFound());
+    }
+
+    @Test
+    void restrictionAwareTypeMetaLookupStaysAllowedAtGlobalRoot() {
+        var registry = new ClassRegistry(createScopeFixtureApi());
+        registry.addGdccClass(new LirClassDef("InventoryItem", "Object"));
+
+        var unrestrictedResult = registry.resolveTypeMeta("InventoryItem", ResolveRestriction.unrestricted());
+        var staticResult = registry.resolveTypeMeta("InventoryItem", ResolveRestriction.staticContext());
+        var instanceResult = registry.resolveTypeMeta("InventoryItem", ResolveRestriction.instanceContext());
+
+        assertTrue(unrestrictedResult.isAllowed());
+        assertTrue(staticResult.isAllowed());
+        assertTrue(instanceResult.isAllowed());
+        assertFalse(unrestrictedResult.isBlocked());
+        assertFalse(staticResult.isBlocked());
+        assertFalse(instanceResult.isBlocked());
+        assertEquals("InventoryItem", unrestrictedResult.requireValue().name());
+        assertEquals("InventoryItem", staticResult.requireValue().name());
+        assertEquals("InventoryItem", instanceResult.requireValue().name());
     }
 
     @Test
@@ -145,18 +189,29 @@ public class ClassRegistryScopeTest {
         }
 
         @Override
-        public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
-            return new ScopeValue(name, GdVariantType.VARIANT, ScopeValueKind.LOCAL, null, false, false);
+        public @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+                @NotNull String name,
+                @NotNull ResolveRestriction restriction
+        ) {
+            return ScopeLookupResult.foundAllowed(
+                    new ScopeValue(name, GdVariantType.VARIANT, ScopeValueKind.LOCAL, null, false, false)
+            );
         }
 
         @Override
-        public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
-            return List.of();
+        public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+                @NotNull String name,
+                @NotNull ResolveRestriction restriction
+        ) {
+            return ScopeLookupResult.notFound();
         }
 
         @Override
-        public @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name) {
-            return null;
+        public @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMetaHere(
+                @NotNull String name,
+                @NotNull ResolveRestriction restriction
+        ) {
+            return ScopeLookupResult.notFound();
         }
     }
 }

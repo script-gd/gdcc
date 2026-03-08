@@ -1,7 +1,9 @@
 package dev.superice.gdcc.frontend.scope;
 
 import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeValue;
 import org.jetbrains.annotations.NotNull;
@@ -14,14 +16,14 @@ import java.util.Objects;
 
 /// Shared base for frontend-owned lexical scope implementations.
 ///
-/// This base only owns the parts that are genuinely common across `ClassScope`, `CallableScope`,
+/// This base owns only the parts that are genuinely common across `ClassScope`, `CallableScope`,
 /// and `BlockScope`:
 /// - the lexical parent pointer
 /// - the opt-in local type/meta namespace used by frontend binding
 ///
-/// Value and function namespaces intentionally stay in concrete subclasses because their lookup
-/// shape differs by scope kind:
-/// - `ClassScope` mixes direct members with inheritance-aware member lookup
+/// Restriction-aware value/function semantics stay in concrete subclasses because their lookup shape
+/// differs by scope kind:
+/// - `ClassScope` mixes direct members, inherited members, and class-member restrictions
 /// - `CallableScope` prioritizes parameters over captures
 /// - `BlockScope` only contains block-local bindings
 public abstract class AbstractFrontendScope implements Scope {
@@ -55,17 +57,34 @@ public abstract class AbstractFrontendScope implements Scope {
         }
     }
 
+    /// Resolves a local type/meta binding owned by the current frontend scope layer.
+    ///
+    /// Current Phase 4 contract keeps type/meta lookup on an explicit always-allowed policy:
+    /// - `restriction` is accepted only for signature uniformity with value/function lookup
+    /// - today's type/meta bindings may resolve only to `FOUND_ALLOWED` or `NOT_FOUND`
+    /// - any later legality split belongs to binder/static-access consumption, not this lookup step
     @Override
-    public @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMetaHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
-        return typeMetasByName.get(name);
+        Objects.requireNonNull(restriction, "restriction");
+        var typeMeta = typeMetasByName.get(name);
+        return typeMeta != null ? ScopeLookupResult.foundAllowed(typeMeta) : ScopeLookupResult.notFound();
     }
 
     @Override
-    public abstract @Nullable ScopeValue resolveValueHere(@NotNull String name);
+    public abstract @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    );
 
     @Override
-    public abstract @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name);
+    public abstract @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    );
 
     /// Creates a deterministic duplicate-binding error for same-scope namespace conflicts.
     protected final @NotNull IllegalArgumentException duplicateNamespaceBinding(

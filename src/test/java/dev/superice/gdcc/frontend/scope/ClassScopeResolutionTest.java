@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.scope;
 
+import dev.superice.gdcc.exception.ScopeLookupException;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdBoolType;
@@ -147,6 +148,6 @@ public class ClassScopeResolutionTest {
         registry.addGdccClass(cycleB);
         var cycleScope = new ClassScope(registry, registry, cycleA);
 
-        assertThrows(IllegalStateException.class, () -> cycleScope.resolveValueHere("anything"));
+        assertThrows(ScopeLookupException.class, () -> cycleScope.resolveValueHere("anything"));
     }
 }

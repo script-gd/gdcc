@@ -59,12 +59,31 @@ final class FrontendScopeTestSupport {
     }
 
     static @NotNull LirPropertyDef createProperty(@NotNull String name, @NotNull GdType type) {
-        return new LirPropertyDef(name, type);
+        return createProperty(name, type, false);
+    }
+
+    static @NotNull LirPropertyDef createProperty(
+            @NotNull String name,
+            @NotNull GdType type,
+            boolean isStatic
+    ) {
+        var property = new LirPropertyDef(name, type);
+        property.setStatic(isStatic);
+        return property;
     }
 
     static @NotNull LirFunctionDef createFunction(@NotNull String name, @NotNull GdType returnType) {
+        return createFunction(name, returnType, false);
+    }
+
+    static @NotNull LirFunctionDef createFunction(
+            @NotNull String name,
+            @NotNull GdType returnType,
+            boolean isStatic
+    ) {
         var function = new LirFunctionDef(name);
         function.setReturnType(returnType);
+        function.setStatic(isStatic);
         return function;
     }
 

@@ -1,7 +1,9 @@
 package dev.superice.gdcc.frontend.scope;
 
 import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdType;
@@ -25,6 +27,10 @@ import java.util.Objects;
 /// - value lookup only covers bindings defined in the current block
 /// - function lookup always falls through to outer scopes
 /// - type/meta lookup defaults to the parent chain unless the caller explicitly adds a local type
+///
+/// The follow-up restriction work simply forwards the restriction through this layer. Block-owned
+/// locals/constants are always legal once found here because class-member static/instance rules do
+/// not apply to block-local bindings.
 public final class BlockScope extends AbstractFrontendScope {
     private final Map<String, ScopeValue> valuesByName = new LinkedHashMap<>();
 
@@ -51,15 +57,24 @@ public final class BlockScope extends AbstractFrontendScope {
     }
 
     @Override
-    public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
-        return valuesByName.get(name);
+        Objects.requireNonNull(restriction, "restriction");
+        var value = valuesByName.get(name);
+        return value != null ? ScopeLookupResult.foundAllowed(value) : ScopeLookupResult.notFound();
     }
 
     @Override
-    public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
-        return List.of();
+        Objects.requireNonNull(restriction, "restriction");
+        return ScopeLookupResult.notFound();
     }
 
     private void defineValue(

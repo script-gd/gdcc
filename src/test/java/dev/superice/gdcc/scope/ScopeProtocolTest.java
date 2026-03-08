@@ -14,7 +14,9 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ScopeProtocolTest {
@@ -43,8 +45,8 @@ public class ScopeProtocolTest {
         middleScope.setParentScope(rootScope);
         leafScope.setParentScope(middleScope);
 
-        var rootFunctions = List.of(new TestFunctionDef("foo", "root"));
-        var middleFunctions = List.of(new TestFunctionDef("foo", "middle"));
+        var rootFunctions = List.<FunctionDef>of(new TestFunctionDef("foo", "root"));
+        var middleFunctions = List.<FunctionDef>of(new TestFunctionDef("foo", "middle"));
         rootScope.defineFunctions("foo", rootFunctions);
         middleScope.defineFunctions("foo", middleFunctions);
 
@@ -100,22 +102,91 @@ public class ScopeProtocolTest {
         assertNull(leafScope.resolveTypeMeta("UnknownType"));
     }
 
+    @Test
+    void blockedValueStillShadowsOuterValue() {
+        var rootScope = new TestScope();
+        var middleScope = new TestScope();
+        var leafScope = new TestScope();
+        middleScope.setParentScope(rootScope);
+        leafScope.setParentScope(middleScope);
+
+        var blockedValue = new ScopeValue("player", GdIntType.INT, ScopeValueKind.PROPERTY, "blocked", false, false);
+        var outerValue = new ScopeValue("player", GdStringType.STRING, ScopeValueKind.SINGLETON, "outer", true, false);
+        middleScope.defineBlockedValue(blockedValue);
+        rootScope.defineValue(outerValue);
+
+        var result = leafScope.resolveValue("player", ResolveRestriction.staticContext());
+        assertTrue(result.isBlocked());
+        assertSame(blockedValue, result.requireValue());
+        assertNull(result.allowedValueOrNull());
+    }
+
+    @Test
+    void blockedFunctionSetStillShadowsOuterFunctions() {
+        var rootScope = new TestScope();
+        var middleScope = new TestScope();
+        var leafScope = new TestScope();
+        middleScope.setParentScope(rootScope);
+        leafScope.setParentScope(middleScope);
+
+        var blockedFunctions = List.<FunctionDef>of(new TestFunctionDef("tick", "blocked"));
+        var outerFunctions = List.<FunctionDef>of(new TestFunctionDef("tick", "outer"));
+        middleScope.defineBlockedFunctions("tick", blockedFunctions);
+        rootScope.defineFunctions("tick", outerFunctions);
+
+        var result = leafScope.resolveFunctions("tick", ResolveRestriction.staticContext());
+        assertTrue(result.isBlocked());
+        assertEquals(blockedFunctions, result.requireValue());
+    }
+
+    @Test
+    void typeMetaLookupStaysRestrictionInvariantAndNeverBlocked() {
+        var rootScope = new TestScope();
+        var childScope = new TestScope();
+        childScope.setParentScope(rootScope);
+
+        var typeMeta = new ScopeTypeMeta("ScopedType", GdIntType.INT, ScopeTypeMetaKind.GLOBAL_ENUM, "enum", true);
+        rootScope.defineTypeMeta(typeMeta);
+
+        var unrestrictedResult = childScope.resolveTypeMeta("ScopedType", ResolveRestriction.unrestricted());
+        var staticResult = childScope.resolveTypeMeta("ScopedType", ResolveRestriction.staticContext());
+        var instanceResult = childScope.resolveTypeMeta("ScopedType", ResolveRestriction.instanceContext());
+
+        assertTrue(unrestrictedResult.isAllowed());
+        assertTrue(staticResult.isAllowed());
+        assertTrue(instanceResult.isAllowed());
+        assertFalse(unrestrictedResult.isBlocked());
+        assertFalse(staticResult.isBlocked());
+        assertFalse(instanceResult.isBlocked());
+        assertEquals(typeMeta, unrestrictedResult.requireValue());
+        assertEquals(typeMeta, staticResult.requireValue());
+        assertEquals(typeMeta, instanceResult.requireValue());
+    }
+
     private static final class TestScope implements Scope {
-        private final Map<String, ScopeValue> valuesByName = new HashMap<>();
-        private final Map<String, List<? extends FunctionDef>> functionsByName = new HashMap<>();
-        private final Map<String, ScopeTypeMeta> typeMetasByName = new HashMap<>();
+        private final Map<String, ScopeLookupResult<ScopeValue>> valuesByName = new HashMap<>();
+        private final Map<String, ScopeLookupResult<List<FunctionDef>>> functionsByName = new HashMap<>();
+        private final Map<String, ScopeLookupResult<ScopeTypeMeta>> typeMetasByName = new HashMap<>();
         private @Nullable Scope parentScope;
 
         void defineValue(@NotNull ScopeValue value) {
-            valuesByName.put(value.name(), value);
+            valuesByName.put(value.name(), ScopeLookupResult.foundAllowed(value));
         }
 
-        void defineFunctions(@NotNull String name, @NotNull List<? extends FunctionDef> functions) {
-            functionsByName.put(name, List.copyOf(functions));
+        void defineBlockedValue(@NotNull ScopeValue value) {
+            valuesByName.put(value.name(), ScopeLookupResult.foundBlocked(value));
+        }
+
+        void defineFunctions(@NotNull String name, @NotNull List<FunctionDef> functions) {
+            functionsByName.put(name, ScopeLookupResult.foundAllowed(List.copyOf(functions)));
+        }
+
+        void defineBlockedFunctions(@NotNull String name, @NotNull List<FunctionDef> functions) {
+            functionsByName.put(name, ScopeLookupResult.foundBlocked(List.copyOf(functions)));
         }
 
         void defineTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
-            typeMetasByName.put(typeMeta.name(), typeMeta);
+            typeMetasByName.put(typeMeta.name(), ScopeLookupResult.foundAllowed(typeMeta));
         }
 
         @Override
@@ -129,18 +200,27 @@ public class ScopeProtocolTest {
         }
 
         @Override
-        public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
-            return valuesByName.get(name);
+        public @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+                @NotNull String name,
+                @NotNull ResolveRestriction restriction
+        ) {
+            return valuesByName.getOrDefault(name, ScopeLookupResult.notFound());
         }
 
         @Override
-        public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
-            return functionsByName.getOrDefault(name, List.of());
+        public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+                @NotNull String name,
+                @NotNull ResolveRestriction restriction
+        ) {
+            return functionsByName.getOrDefault(name, ScopeLookupResult.notFound());
         }
 
         @Override
-        public @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name) {
-            return typeMetasByName.get(name);
+        public @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMetaHere(
+                @NotNull String name,
+                @NotNull ResolveRestriction restriction
+        ) {
+            return typeMetasByName.getOrDefault(name, ScopeLookupResult.notFound());
         }
     }
 

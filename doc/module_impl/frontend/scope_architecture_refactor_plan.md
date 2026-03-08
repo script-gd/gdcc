@@ -1,7 +1,7 @@
 ﻿# Scope 架构与共享 Resolver 重构计划
 
 > 本文档定义 `dev.superice.gdcc.scope` 包的下一阶段目标架构，重点解决两件事：
-> 1. 把目前埋在 backend `MethodCallResolver` / `PropertyAccessResolver` 中、未来前后端都需要复用的“元数据解析逻辑”抽到 `scope` 包。
+> 1. 把目前埋在 backend `BackendMethodCallResolver` / `BackendPropertyAccessResolver` 中、未来前后端都需要复用的“元数据解析逻辑”抽到 `scope` 包。
 > 2. 基于 `dev.superice.gdcc.scope.Scope` 协议，在 `dev.superice.gdcc.frontend.scope` 包内建立真正可供 frontend 语义分析使用的作用域链模型，使 AST 语义分析可以对“每个会引入新作用域的节点”显式创建 `Scope`，并通过 parent 链完成标识符解析。
 
 ## 文档状态
@@ -10,8 +10,8 @@
 - 更新时间：2026-03-07
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/scope/**`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/MethodCallResolver.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
   - 后续 `src/main/java/dev/superice/gdcc/frontend/sema/**`
 - 关联文档：
@@ -32,9 +32,9 @@
 
 与此同时，backend 中已经存在两段未来 frontend 也一定会复用的核心语义：
 
-1. `MethodCallResolver`
+1. `BackendMethodCallResolver`
    - 已实现对象/内建类型的方法候选收集、owner 距离比较、默认参数/vararg 兼容、`OBJECT_DYNAMIC` / `VARIANT_DYNAMIC` 回退边界。
-2. `PropertyAccessResolver`
+2. `BackendPropertyAccessResolver`
    - 已实现对象类型的继承链 owner 解析、属性 owner 分类、builtin/object 两条查询路径。
 
 问题在于，这两套逻辑目前都放在 `backend.c.gen.insn` 包里，和 `CBodyBuilder`、`LirVariable`、`invalidInsn(...)`、receiver 渲染等 backend 专用概念耦合在一起，导致：
@@ -67,9 +67,9 @@
 
 同时也要注意：Phase 2 虽然已经为它补齐了独立的严格 `resolveTypeMeta(...)` 入口，但这套 type namespace 还没有和 `Scope` 协议、局部 scope 链、frontend binder 的上下文敏感解析真正接起来。
 
-## 2.2 `MethodCallResolver` 中真正可抽共享的部分
+## 2.2 `BackendMethodCallResolver` 中真正可抽共享的部分
 
-按当前实现与文档，对 frontend/backend 共用价值最大的并不是整个 `MethodCallResolver`，而是以下逻辑：
+按当前实现与文档，对 frontend/backend 共用价值最大的并不是整个 `BackendMethodCallResolver`，而是以下逻辑：
 
 1. **receiver 静态类别判断**
    - known object
@@ -97,7 +97,7 @@
 - dynamic path 的 pack/unpack 与临时变量管理；
 - default literal 物化与 helper 调用。
 
-## 2.3 `PropertyAccessResolver` 中真正可抽共享的部分
+## 2.3 `BackendPropertyAccessResolver` 中真正可抽共享的部分
 
 可供前后端共用的部分主要是：
 
@@ -453,7 +453,7 @@ public enum ScopeOwnerKind {
 ### 验收
 
 - 新增 `ScopePropertyResolverTest`
-- 现有 `PropertyAccessResolverTest` 继续通过，且主要变成 adapter 回归测试
+- 现有 `BackendPropertyAccessResolverTest` 继续通过，且主要变成 adapter 回归测试
 
 ## 4.4 Step D：再抽 `ScopeMethodResolver`
 
@@ -521,10 +521,10 @@ frontend 使用方式建议：
 1. 已盘点并冻结当前主要入口与现有调用点：
    - `ClassRegistry`
      - 公共查询入口保持以 `findType(...)`、`findUtilityFunctionSignature(...)`、`findGlobalEnum(...)`、`findSingletonType(...)`、`getClassDef(...)`、`checkAssignable(...)` 为主；其中 `checkAssignable(...)` 明确冻结为后续 shared resolver 的类型兼容事实源。
-   - `MethodCallResolver`
+   - `BackendMethodCallResolver`
      - 当前共享抽取候选入口实际集中在 `resolve(...)` 内部的 `tryResolveKnownObjectMethod(...)`、`collectMethodCandidates(...)`、`chooseBestCandidate(...)`、`matchesArguments(...)`、`resolveOwnerDispatchMode(...)`、`normalizeBuiltinReceiverLookupName(...)`。
      - 当前生产调用点已冻结为 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`。
-   - `PropertyAccessResolver`
+   - `BackendPropertyAccessResolver`
      - 当前共享抽取候选入口实际集中在 `resolveObjectProperty(...)`、`resolveBuiltinProperty(...)`，以及 backend 专属的 `renderOwnerReceiverValue(...)`、`renderReceiverValue(...)`、`toOwnerObjectType(...)`。
      - 当前生产调用点已冻结为 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`、`src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`，以及 `src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java` 中的 receiver 渲染路径。
 2. 已冻结 shared resolver 需要遵守的失败协议：
@@ -538,7 +538,7 @@ frontend 使用方式建议：
      - method：已知对象缺失 method 时，当前行为冻结为 `OBJECT_DYNAMIC`，而不是强制先转 `Variant`。
      - property：已知对象缺失 property 时，当前行为冻结为 fail-fast，不做 backend 自动动态回退。
    - `ambiguous overload`
-     - object receiver：当前 `MethodCallResolver` 在同优先级最佳候选冲突时返回 unresolved，caller 最终走 `OBJECT_DYNAMIC`。
+     - object receiver：当前 `BackendMethodCallResolver` 在同优先级最佳候选冲突时返回 unresolved，caller 最终走 `OBJECT_DYNAMIC`。
      - builtin receiver：当前保持 compile-time hard failure，不做动态回退。
 3. 已冻结本次重构的边界：
    - shared：只承载 metadata 查找、候选收集、owner 解析、参数兼容与排序规则。
@@ -552,7 +552,7 @@ frontend 使用方式建议：
 
 **具体任务**
 
-1. 盘点现有 `ClassRegistry` / `MethodCallResolver` / `PropertyAccessResolver` 的公开入口与调用点。
+1. 盘点现有 `ClassRegistry` / `BackendMethodCallResolver` / `BackendPropertyAccessResolver` 的公开入口与调用点。
 2. 明确并记录 shared resolver 的失败协议：
    - metadata unknown
    - inheritance cycle / malformed metadata
@@ -570,7 +570,7 @@ frontend 使用方式建议：
 - 以下现有测试被明确列为回归基线，并在后续每阶段保持通过：
   - `ClassRegistryTest`
   - `ClassRegistryGdccTest`
-  - `PropertyAccessResolverTest`
+  - `BackendPropertyAccessResolverTest`
   - `CallMethodInsnGenTest`
   - `CallMethodInsnGenEngineTest`
 - `scope_architecture_refactor_plan.md` 中的 shared / backend / frontend 边界已经固定，不再在实施中反复改口。
@@ -580,7 +580,7 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-`````powershell
+```powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
   --tests dev.superice.gdcc.scope.ClassRegistryGdccTest \
@@ -589,16 +589,11 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
-` 
-` 
-` 
-` 
-` 
 
 - 结果摘要：
   - `ClassRegistryTest`：通过
   - `ClassRegistryGdccTest`：通过
-  - `PropertyAccessResolverTest`：通过
+  - `BackendPropertyAccessResolverTest`：通过
   - `CallMethodInsnGenTest`：通过
   - `CallMethodInsnGenEngineTest`：通过
 - 基线结论：Phase 1 之前不得改变上述测试所覆盖的行为；若后续阶段必须调整行为，需要先在本节补充新的迁移说明与 parity 策略。
@@ -657,7 +652,7 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-`````powershell
+```powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ScopeProtocolTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
@@ -667,17 +662,12 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
-` 
-` 
-` 
-` 
-` 
 
 - 结果摘要：
   - `ScopeProtocolTest`：通过
   - `ClassRegistryTest`：通过
   - `ClassRegistryGdccTest`：通过
-  - `PropertyAccessResolverTest`：通过
+  - `BackendPropertyAccessResolverTest`：通过
   - `CallMethodInsnGenTest`：通过
   - `CallMethodInsnGenEngineTest`：通过
 - 阶段结论：Phase 1 已完成，并为后续独立 `TypeMeta` namespace 与 `ClassRegistry` 接入 `Scope` 铺平了协议边界。
@@ -747,7 +737,7 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-`````powershell
+```powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ScopeProtocolTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTypeMetaTest \
@@ -758,18 +748,13 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
-` 
-` 
-` 
-` 
-` 
 
 - 结果摘要：
   - `ScopeProtocolTest`：通过
   - `ClassRegistryTypeMetaTest`：通过
   - `ClassRegistryTest`：通过
   - `ClassRegistryGdccTest`：通过
-  - `PropertyAccessResolverTest`：通过
+  - `BackendPropertyAccessResolverTest`：通过
   - `CallMethodInsnGenTest`：通过
   - `CallMethodInsnGenEngineTest`：通过
 - 阶段结论：最小 `TypeMeta` 支持已落地；后续让 `ClassRegistry` 实现 `Scope` 时，应直接复用这套独立的 type namespace，而不是再造第二套严格类型解析规则。
@@ -865,7 +850,7 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-`````powershell
+```powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.scope.ScopeProtocolTest \
   --tests dev.superice.gdcc.scope.ClassRegistryTest \
@@ -877,11 +862,6 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
-` 
-` 
-` 
-` 
-` 
 
 - 结果摘要：
   - `ScopeProtocolTest`：通过
@@ -889,7 +869,7 @@ frontend 使用方式建议：
   - `ClassRegistryGdccTest`：通过
   - `ClassRegistryTypeMetaTest`：通过
   - `ClassRegistryScopeTest`：通过
-  - `PropertyAccessResolverTest`：通过
+  - `BackendPropertyAccessResolverTest`：通过
   - `CallMethodInsnGenTest`：通过
   - `CallMethodInsnGenEngineTest`：通过
 - 阶段结论：Phase 3 已完成；后续 Phase 4 可以直接在 `ClassRegistry` 之上叠加 `ClassScope` / `CallableScope` / `BlockScope`，无需再补一套全局 lookup 协议。
@@ -899,7 +879,7 @@ frontend 使用方式建议：
 **当前状态（2026-03-07）**
 
 - 状态：已完成
-- 结论：frontend 专用链式作用域已落地到 `dev.superice.gdcc.frontend.scope` 包，并继续统一实现 `dev.superice.gdcc.scope.Scope` 协议；value / function / type-meta 三个 namespace 的词法链与 shadowing 规则已通过 targeted tests 固化。
+- 结论：frontend 专用链式作用域已落地到 `dev.superice.gdcc.frontend.scope` 包，并继续统一实现 `dev.superice.gdcc.scope.Scope` 协议；value / function / type-meta 三个 namespace 的词法链与 shadowing 规则已通过 targeted tests 固化，且在 Phase 4 follow-up 中补齐了 inner class 的 value/function 隔离与 restriction-aware lookup。
 
 **本阶段产出**
 
@@ -926,9 +906,10 @@ frontend 使用方式建议：
    - inherited property / method 只在 direct miss 时才回退查询
    - class-local type-meta 继续只走 lexical namespace，不沿继承链扩散
 5. 已让 `CallableScope` / `BlockScope` 默认继承 parent 的 type namespace，同时保留显式 `defineTypeMeta(...)` 扩展入口，以承接未来的 preload alias / const alias / local enum。
-6. 已明确 Phase 4 对 `self` 的决定：
+6. 已明确 Phase 4 对 `self` 与 restriction 的决定：
    - 当前版本 **不** 把 `self` 建模成隐式 `ScopeValue`
-   - 是否暴露 `self`、static context 下是否允许访问成员，继续由 frontend binder 在后续阶段决定
+   - class member 的 static/instance 合法性已通过 `ResolveRestriction` 进入 `Scope` 协议
+   - `self` / signal 的完整语义与诊断文本仍由 frontend binder 在后续阶段决定
 7. 已保持这些 scope 实现纯 metadata/lookup，不依赖 AST 节点；AST -> Scope / declaration -> TypeMeta 的映射仍留给 frontend side-table。
 8. 已明确并落实 lexical type namespace 与继承成员查找的边界：
    - inner class / class-local enum 走 `defineTypeMeta(...)` + lexical scope
@@ -1002,7 +983,7 @@ frontend 使用方式建议：
 - 结果：通过。
 - 已执行命令：
 
-`````powershell
+```powershell
 .\gradlew.bat test \
   --tests dev.superice.gdcc.frontend.scope.ScopeChainTest \
   --tests dev.superice.gdcc.frontend.scope.ScopeTypeMetaChainTest \
@@ -1018,11 +999,6 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --no-daemon --info --console=plain
 ```
-` 
-` 
-` 
-` 
-` 
 
 - 结果摘要：
   - `ScopeChainTest`：通过
@@ -1034,17 +1010,25 @@ frontend 使用方式建议：
   - `ClassRegistryTypeMetaTest`：通过
   - `ClassRegistryTest`：通过
   - `ClassRegistryGdccTest`：通过
-  - `PropertyAccessResolverTest`：通过
+  - `BackendPropertyAccessResolverTest`：通过
   - `CallMethodInsnGenTest`：通过
   - `CallMethodInsnGenEngineTest`：通过
 - 阶段结论：Phase 4 已完成；frontend 已具备可供 binder 建图使用的 lexical scope 链，但成员解析与调用决议的共享事实源仍待 Phase 5 / Phase 6 抽取完成。
+
+**Phase 4 follow-up 落地补记（2026-03-07）**
+
+- `Scope` 已从“仅 lexical skeleton”升级为“带最小上下文限制能力的 lexical binding protocol”。
+- `ClassScope` 现在在 value/function lexical miss 时跳过连续 outer `ClassScope` ancestor；因此 inner class 可以继续继承 outer lexical type-meta，但不会无 base 继承 outer value/function 绑定。
+- 未限定类成员解析已由 `ResolveRestriction` + tri-state lookup (`FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND`) 下沉到 scope 层；被 restriction 阻止的当前层命中仍然构成 shadowing，与 Godot 当前 `static_context` 行为对齐。
+- `type-meta` 当前采用“统一签名 + 显式 always-allowed”契约：`Scope.resolveTypeMeta(..., restriction)` 对现有 `ScopeTypeMetaKind` 集合只允许返回 `FOUND_ALLOWED` / `NOT_FOUND`，不产生 `FOUND_BLOCKED`；`TYPE_META` 的后续合法性继续由 frontend binder 在 static access / constructor / `load_static` 消费阶段处理。
+- Phase 4 follow-up 对 Godot 的对齐范围仍限于 class const / property / method；`self` / signal 仍待 Phase 7 binder 补齐。
 
 ### 4.6.6 Phase 5：抽取 ScopePropertyResolver
 
 **当前状态（2026-03-07）**
 
 - 状态：已完成
-- 结论：共享 ScopePropertyResolver 已落地，backend PropertyAccessResolver 已改造成 adapter。
+- 结论：共享 ScopePropertyResolver 已落地，backend BackendPropertyAccessResolver 已改造成 adapter。
 
 **目标**
 
@@ -1065,7 +1049,7 @@ frontend 使用方式建议：
    - metadata unknown
    - property missing
    - hard failure（如 inheritance cycle）
-4. 把 `PropertyAccessResolver` 改造成 backend adapter：
+4. 把 `BackendPropertyAccessResolver` 改造成 backend adapter：
    - 共享 lookup 委托给 `ScopePropertyResolver`
    - backend 仅保留 receiver 渲染、类型校验、C 发射
 5. 显式写清非目标范围：
@@ -1084,7 +1068,7 @@ frontend 使用方式建议：
   - missing metadata
   - inheritance cycle
   - 输入来自 strict type parse 后 `instanceType` 的 receiver 时，行为仍稳定
-- 现有 `PropertyAccessResolverTest` 继续通过。
+- 现有 `BackendPropertyAccessResolverTest` 继续通过。
 - load_store_property_implementation.md 与 load_static_implementation.md 中描述的边界仍然成立，不因抽取 shared resolver 而漂移。
 
 **实际验收结果（2026-03-07）**
@@ -1101,23 +1085,30 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CStorePropertyInsnGenTest \
   --tests dev.superice.gdcc.backend.c.gen.CGenHelperTest \
   --no-daemon --info --console=plain
-`
+```
 
 - 结果摘要：
   - ScopePropertyResolverTest：通过
   - PropertyResolverParityTest：通过
-  - PropertyAccessResolverTest：通过
+  - BackendPropertyAccessResolverTest：通过
   - CLoadPropertyInsnGenTest：通过
   - CStorePropertyInsnGenTest：通过
   - CGenHelperTest：通过
 - 阶段结论：Phase 5 已完成；instance property lookup 的共享事实源已从 backend 中拆出。
+
+**审阅补记 / 修订建议（2026-03-07）**
+
+- 本阶段结论建议补一句限定语：共享的是“显式 instance property lookup 的事实源”，不是“所有成员访问形态的最终事实源”。
+- 需要新增后续任务：对 builtin receiver 的 property lookup 补齐与 method resolver 一致的 receiver 名规范化，特别是 `Array[T]` / `Dictionary[K, V]` -> `Array` / `Dictionary` 的对齐，避免 property/method 在 typed container 上出现不对称行为。
+- 需要在文档中明确：Godot 存在 `self.CONSTANT`、`self.NamedEnum`、`self.InnerClass` 这类“实例语法访问静态成员”的表面；这些访问不应被简单等同为普通 instance property，也不能只靠 `ScopeTypeMeta` 直达路径覆盖，需在 frontend static binding 阶段单独建模。
+- 建议补写一致性风险：当前 `ClassScope` 对 missing super metadata 采取“停止继承链并返回 miss”，而 `ScopePropertyResolver` 对显式 property access 采取 hard failure；这是已知策略差异，不应让文档继续暗示它们已经共享同一套失败语义。
 
 ### 4.6.7 Phase 6：抽取 ScopeMethodResolver 并接入 TypeMeta 驱动的 static receiver
 
 **当前状态（2026-03-07）**
 
 - 状态：已完成
-- 结论：共享 ScopeMethodResolver 已落地，backend MethodCallResolver 已改造成 adapter。
+- 结论：共享 ScopeMethodResolver 已落地，backend BackendMethodCallResolver 已改造成 adapter。
 
 **目标**
 
@@ -1149,7 +1140,7 @@ frontend 使用方式建议：
    - ambiguity
    - hard failure（metadata malformed）
    - static vs instance receiver mode
-6. 把现有 backend `MethodCallResolver` 改造成 adapter：
+6. 把现有 backend `BackendMethodCallResolver` 改造成 adapter：
    - shared candidate selection 委托给 `ScopeMethodResolver`
    - backend 仅保留 `LirVariable` 形状校验、C 发射字段组装、dynamic path 形态决策
 7. 尽量保留现有 `ResolvedMethodCall` 结构，减少 backend 侧改动面；若为 static receiver 引入新 shared 结果类型，也要保证 backend adapter 不再维护第二套选择规则。
@@ -1179,7 +1170,7 @@ frontend 使用方式建议：
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineTest \
   --tests dev.superice.gdcc.backend.c.gen.CallMethodInsnGenEngineInheritanceTest \
   --no-daemon --info --console=plain
-`
+```
 
 - 结果摘要：
   - ScopeMethodResolverTest：通过
@@ -1188,6 +1179,13 @@ frontend 使用方式建议：
   - CallMethodInsnGenEngineTest：通过
   - CallMethodInsnGenEngineInheritanceTest：通过
 - 阶段结论：Phase 6 已完成；method lookup 的共享事实源已从 backend 中拆出，并补齐了 static/type-meta receiver 入口。
+
+**审阅补记 / 修订建议（2026-03-07）**
+
+- 本阶段“已完成”的准确含义应明确为：已统一当前 backend 基线下的 method candidate collection / filtering / ranking，而非已经完成 frontend 未来所需的全部调用语义闭包。
+- 需要在文档中明确：当前 overload 选择规则以 parity 为优先目标，仍是“适用性过滤 + ownerDistance + instance 优先 + non-vararg 优先”的基线规则；若后续 frontend 需要更细粒度的 specificity / diagnostics，不应误认为这里已经封顶。
+- 需要新增后续测试任务：补齐 static/type-meta receiver 的负面场景覆盖，例如 pseudo type / global enum 拒绝、static receiver metadata 缺失、builtin static lookup 边界，以及 constructor route 与 static member access 的分流。
+- 建议在本阶段和 Phase 7 的衔接处明确：Godot 允许通过实例语法访问 static method，但这属于 frontend 绑定与诊断策略问题，不应回流污染 `ScopeMethodResolver` 的 receiver-mode 设计；shared resolver 继续只回答“若按 instance/static 路径求值，哪组 metadata 候选成立”。
 
 ### 4.6.8 Phase 7：frontend 接入准备、`TypeMeta` 试点与 static access 落地
 
@@ -1332,9 +1330,9 @@ frontend 使用方式建议：
 6. `ScopeMethodResolverTest`
    - ownerDistance、default args、vararg、ambiguity、builtin receiver、static type-meta receiver
 7. `MethodResolverParityTest`
-   - shared resolver 与 backend `MethodCallResolver` 结果一致（至少覆盖 instance path；static path 若有 backend adapter 也应纳入）
+   - shared resolver 与 backend `BackendMethodCallResolver` 结果一致（至少覆盖 instance path；static path 若有 backend adapter 也应纳入）
 8. `PropertyResolverParityTest`
-   - shared resolver 与 backend `PropertyAccessResolver` 结果一致
+   - shared resolver 与 backend `BackendPropertyAccessResolver` 结果一致
 9. 后续 frontend 测试
    - `FrontendScopeBindingTest`
    - `FrontendScopeCaptureTest`
@@ -1452,8 +1450,8 @@ shared resolver 与 `TypeMeta` 解析至少要明确区分：
   - `src/main/java/dev/superice/gdcc/scope/ScopeTypeMeta.java`
   - `src/main/java/dev/superice/gdcc/scope/ScopeTypeMetaKind.java`
   - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/MethodCallResolver.java`
-  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/PropertyAccessResolver.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
   - `doc/module_impl/call_method_implementation.md`
   - `doc/module_impl/load_store_property_implementation.md`
   - `doc/module_impl/backend/load_static_implementation.md`

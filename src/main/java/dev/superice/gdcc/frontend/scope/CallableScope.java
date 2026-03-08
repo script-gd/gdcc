@@ -3,7 +3,9 @@ package dev.superice.gdcc.frontend.scope;
 import dev.superice.gdcc.scope.CaptureDef;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdType;
@@ -22,9 +24,11 @@ import java.util.Objects;
 /// - captures
 /// - future callable-local type aliases through the inherited `defineTypeMeta(...)` API
 ///
-/// `self` is intentionally not modeled as an implicit value binding in Phase 4.
-/// The binder still owns the policy decision of whether `self` should be explicit, forbidden in
-/// static contexts, or represented by a dedicated binding kind.
+/// `self` is intentionally not modeled as an implicit value binding in Phase 4 follow-up.
+///
+/// This scope now participates in restriction-aware lookup, but parameters/captures themselves are
+/// not filtered by class-member static/instance restrictions. The frontend binder still owns the
+/// policy decision of whether `self` should be explicit or represented by a dedicated binding kind.
 public final class CallableScope extends AbstractFrontendScope {
     private final Map<String, ScopeValue> parametersByName = new LinkedHashMap<>();
     private final Map<String, ScopeValue> capturesByName = new LinkedHashMap<>();
@@ -70,23 +74,33 @@ public final class CallableScope extends AbstractFrontendScope {
     }
 
     @Override
-    public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
+
         // Parameters outrank captures in the callable layer.
         //
         // In real GDScript this shape appears when an inner callable would otherwise capture a name
         // from an outer scope, but the current callable already declares the same parameter.
         var parameter = parametersByName.get(name);
         if (parameter != null) {
-            return parameter;
+            return ScopeLookupResult.foundAllowed(parameter);
         }
-        return capturesByName.get(name);
+        var capture = capturesByName.get(name);
+        return capture != null ? ScopeLookupResult.foundAllowed(capture) : ScopeLookupResult.notFound();
     }
 
     @Override
-    public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
-        return List.of();
+        Objects.requireNonNull(restriction, "restriction");
+        return ScopeLookupResult.notFound();
     }
 
     private void ensureCallableValueSlotAvailable(@NotNull String name) {

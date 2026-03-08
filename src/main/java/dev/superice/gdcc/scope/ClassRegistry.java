@@ -13,12 +13,15 @@ import java.util.*;
 ///
 /// Today it still plays two roles at once:
 /// - legacy loose lookup such as `findType(...)`, which may guess unknown object names
-/// - new strict scope lookup such as `resolveValueHere(...)`, `resolveFunctionsHere(...)`, and
-///   `resolveTypeMetaHere(...)`
+/// - new strict scope lookup such as restriction-aware `resolveValueHere(...)`,
+///   `resolveFunctionsHere(...)`, and `resolveTypeMetaHere(...)`
 ///
 /// As a `Scope`, `ClassRegistry` is always the global root:
 /// - it never has a parent scope
 /// - value/function/type namespaces remain independent
+/// - restrictions do not currently filter global value/function bindings
+/// - global type/meta lookup currently follows an explicit always-allowed policy and therefore never
+///   returns `FOUND_BLOCKED`
 /// - legacy `findXxx(...)` helpers stay available for compatibility callers
 public final class ClassRegistry implements Scope {
     /// Built-in type are language built-in types, they are not engine defined types.
@@ -119,31 +122,45 @@ public final class ClassRegistry implements Scope {
     }
 
     @Override
-    public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
 
         var singleton = singletonByName.get(name);
         if (singleton != null) {
             var singletonType = findSingletonType(name);
             if (singletonType != null) {
-                return new ScopeValue(name, singletonType, ScopeValueKind.SINGLETON, singleton, true, false);
+                return ScopeLookupResult.foundAllowed(
+                        new ScopeValue(name, singletonType, ScopeValueKind.SINGLETON, singleton, true, false)
+                );
             }
         }
 
         var globalEnum = globalEnumByName.get(name);
         if (globalEnum != null) {
-            return new ScopeValue(name, GdIntType.INT, ScopeValueKind.GLOBAL_ENUM, globalEnum, true, false);
+            return ScopeLookupResult.foundAllowed(
+                    new ScopeValue(name, GdIntType.INT, ScopeValueKind.GLOBAL_ENUM, globalEnum, true, false)
+            );
         }
 
-        return null;
+        return ScopeLookupResult.notFound();
     }
 
     @Override
-    public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
 
         var utilityFunction = utilityByName.get(name);
-        return utilityFunction != null ? List.of(utilityFunction) : List.of();
+        return utilityFunction != null
+                ? ScopeLookupResult.foundAllowed(List.<FunctionDef>of(utilityFunction))
+                : ScopeLookupResult.notFound();
     }
 
     /// Strict type-meta lookup for the global namespace.
@@ -156,53 +173,61 @@ public final class ClassRegistry implements Scope {
     ///
     /// Unlike `findType(...)`, this method never guesses that an unknown identifier is an object type.
     /// If the name is not already known to the registry and cannot be parsed as a strict builtin/container
-    /// type expression, the method returns `null`.
+    /// type expression, the method returns `ScopeLookupResult.notFound()`.
+    ///
+    /// The supplied `ResolveRestriction` is accepted only for protocol uniformity. Under the current
+    /// Phase 4 contract, global type/meta bindings are always restriction-allowed, so this method may
+    /// return only `FOUND_ALLOWED` or `NOT_FOUND`.
     @Override
-    public @Nullable ScopeTypeMeta resolveTypeMetaHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<ScopeTypeMeta> resolveTypeMetaHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
+        Objects.requireNonNull(restriction, "restriction");
         var trimmed = name.trim();
         if (trimmed.isEmpty()) {
-            return null;
+            return ScopeLookupResult.notFound();
         }
 
         if (isGlobalEnum(trimmed)) {
-            return new ScopeTypeMeta(
+            return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
                     GdIntType.INT,
                     ScopeTypeMetaKind.GLOBAL_ENUM,
                     findGlobalEnum(trimmed),
                     true
-            );
+            ));
         }
         if (isGdccClass(trimmed)) {
-            return new ScopeTypeMeta(
+            return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
                     new GdObjectType(trimmed),
                     ScopeTypeMetaKind.GDCC_CLASS,
                     findGdccClass(trimmed),
                     false
-            );
+            ));
         }
         if (isGdClass(trimmed)) {
-            return new ScopeTypeMeta(
+            return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
                     new GdObjectType(trimmed),
                     ScopeTypeMetaKind.ENGINE_CLASS,
                     getClassDef(new GdObjectType(trimmed)),
                     false
-            );
+            ));
         }
 
         var builtinType = tryParseStrictTextType(trimmed, this);
         if (builtinType != null) {
-            return new ScopeTypeMeta(
+            return ScopeLookupResult.foundAllowed(new ScopeTypeMeta(
                     trimmed,
                     builtinType,
                     ScopeTypeMetaKind.BUILTIN,
                     findBuiltinClass(trimmed),
                     false
-            );
+            ));
         }
-        return null;
+        return ScopeLookupResult.notFound();
     }
 
     /// Recursive type-meta lookup entry for the current global scope root.

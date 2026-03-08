@@ -1,10 +1,13 @@
 package dev.superice.gdcc.frontend.scope;
 
+import dev.superice.gdcc.exception.ScopeLookupException;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdObjectType;
@@ -19,25 +22,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/// Frontend lexical scope for a class body and the member view seen from inside that class.
+/// Frontend lexical scope for a class body and the unqualified member view seen from inside that class.
 ///
-/// This scope has two parallel responsibilities:
-/// - lexical scope chaining through `parentScope`, typically pointing at `ClassRegistry`
-/// - member lookup for unqualified identifiers inside the current class, including inherited members
+/// This scope now carries three intertwined policies that Phase 4 follow-up needs to freeze:
+/// - lexical chaining for type/meta lookup
+/// - current/inherited class-member lookup for values/functions
+/// - minimal static-vs-instance restrictions for unqualified member access
 ///
-/// The important boundary is that only value/function members walk the inheritance chain here.
-/// Type/meta lookup stays lexical on purpose, so a parent class's inner type or class-local enum does
-/// not silently leak into the current class just because the current class inherits from it.
+/// Important boundaries:
+/// - type/meta lookup stays purely lexical, so outer classes may still contribute inner types/enums
+/// - value/function lookup walks the current class plus inheritance, but skips continuous outer
+///   `ClassScope` ancestors when it recurses lexically
+/// - restriction blocks still shadow outer/global names, matching Godot's static-context behavior
 ///
-/// Nested-class shape in the current architecture:
-/// - the outer class can register direct inner classes or class-local enums through `defineTypeMeta(...)`
-/// - the inner class itself can still be modeled by creating another `ClassScope`
-/// - however, `Scope` currently has a single parent chain shared by value/function/type namespaces
+/// This means GDCC intentionally diverges from Godot on one axis in this phase:
+/// - inner classes keep outer lexical type-meta visibility
+/// - inner classes do not inherit outer unqualified value/function bindings
 ///
-/// This means nested classes are supported best as **lexical type-meta declarations** in Phase 4.
-/// If a future binder wants an inner class body to see outer type-meta names without also inheriting
-/// outer value/function bindings, it will need an extra adapter layer instead of reusing the outer
-/// `ClassScope` directly as the inner class's parent.
+/// The difference is deliberate and documented in the follow-up plan as an engineering compromise.
 public final class ClassScope extends AbstractFrontendScope {
     private final ClassRegistry classRegistry;
     private final ClassDef currentClass;
@@ -127,30 +129,68 @@ public final class ClassScope extends AbstractFrontendScope {
     }
 
     @Override
-    public @Nullable ScopeValue resolveValueHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<ScopeValue> resolveValueHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
 
         var directValue = directValuesByName.get(name);
         if (directValue != null) {
-            return directValue;
+            return toClassValueResult(directValue, restriction);
         }
 
         // Inherited members are part of the class scope layer, not separate lexical parents.
         //
         // This mirrors Godot's identifier reduction order: locals first, then current/inherited
         // members, then global names. We keep type/meta lookup separate from this inheritance walk.
-        return resolveInheritedProperty(name);
+        return resolveInheritedProperty(name, restriction);
     }
 
     @Override
-    public @NotNull List<? extends FunctionDef> resolveFunctionsHere(@NotNull String name) {
+    public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctionsHere(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
 
         var directFunctions = directFunctionsByName.get(name);
         if (directFunctions != null && !directFunctions.isEmpty()) {
-            return List.copyOf(directFunctions);
+            return toFunctionLookupResult(List.copyOf(directFunctions), restriction);
         }
-        return resolveInheritedFunctions(name);
+        return resolveInheritedFunctions(name, restriction);
+    }
+
+    @Override
+    public @NotNull ScopeLookupResult<ScopeValue> resolveValue(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
+        var value = resolveValueHere(name, restriction);
+        if (value.isFound()) {
+            return value;
+        }
+        var parentScope = findFirstNonClassScopeAncestor();
+        return parentScope != null ? parentScope.resolveValue(name, restriction) : ScopeLookupResult.notFound();
+    }
+
+    @Override
+    public @NotNull ScopeLookupResult<List<FunctionDef>> resolveFunctions(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(restriction, "restriction");
+        var functions = resolveFunctionsHere(name, restriction);
+        if (functions.isFound()) {
+            return functions;
+        }
+        var parentScope = findFirstNonClassScopeAncestor();
+        return parentScope != null ? parentScope.resolveFunctions(name, restriction) : ScopeLookupResult.notFound();
     }
 
     private void indexDirectMembers(@NotNull ClassDef classDef) {
@@ -170,29 +210,36 @@ public final class ClassScope extends AbstractFrontendScope {
         }
     }
 
-    private @Nullable ScopeValue resolveInheritedProperty(@NotNull String name) {
+    private @NotNull ScopeLookupResult<ScopeValue> resolveInheritedProperty(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         var inheritedClasses = walkInheritedClasses(name, "property");
         for (var inheritedClass : inheritedClasses) {
             for (var property : inheritedClass.getProperties()) {
                 if (property.getName().equals(name)) {
-                    return toPropertyScopeValue(property);
+                    return toClassValueResult(toPropertyScopeValue(property), restriction);
                 }
             }
         }
-        return null;
+        return ScopeLookupResult.notFound();
     }
 
-    private @NotNull List<? extends FunctionDef> resolveInheritedFunctions(@NotNull String name) {
+    private @NotNull ScopeLookupResult<List<FunctionDef>> resolveInheritedFunctions(
+            @NotNull String name,
+            @NotNull ResolveRestriction restriction
+    ) {
         var inheritedClasses = walkInheritedClasses(name, "function");
         for (var inheritedClass : inheritedClasses) {
             var functions = inheritedClass.getFunctions().stream()
                     .filter(function -> function.getName().equals(name))
+                    .map(function -> (FunctionDef) function)
                     .toList();
             if (!functions.isEmpty()) {
-                return functions;
+                return toFunctionLookupResult(functions, restriction);
             }
         }
-        return List.of();
+        return ScopeLookupResult.notFound();
     }
 
     /// Walks the inheritance chain for member lookup.
@@ -209,7 +256,7 @@ public final class ClassScope extends AbstractFrontendScope {
         var nextClassName = currentClass.getSuperName();
         while (!nextClassName.isBlank()) {
             if (!visitedClassNames.add(nextClassName)) {
-                throw new IllegalStateException(
+                throw new ScopeLookupException(
                         "Detected inheritance cycle while resolving " + memberKind + " '" + memberName
                                 + "' for class '" + currentClass.getName() + "'"
                 );
@@ -234,5 +281,67 @@ public final class ClassScope extends AbstractFrontendScope {
                 false,
                 property.isStatic()
         );
+    }
+
+    /// Finds the lexical continuation point for value/function lookup.
+    ///
+    /// Phase 4 follow-up keeps a single parent chain for all namespaces, so inner-class isolation is
+    /// implemented by explicitly skipping continuous `ClassScope` ancestors here instead of changing
+    /// the shared parent pointer itself. Type/meta lookup continues to use the ordinary parent chain.
+    private @Nullable Scope findFirstNonClassScopeAncestor() {
+        var parentScope = getParentScope();
+        while (parentScope instanceof ClassScope classScope) {
+            parentScope = classScope.getParentScope();
+        }
+        return parentScope;
+    }
+
+    /// Applies the current restriction to a class-owned value binding.
+    ///
+    /// A blocked hit still returns `FOUND_BLOCKED` instead of `NOT_FOUND`, because the current class
+    /// member must continue to shadow outer/global names even when the current context cannot legally
+    /// consume it.
+    private @NotNull ScopeLookupResult<ScopeValue> toClassValueResult(
+            @NotNull ScopeValue value,
+            @NotNull ResolveRestriction restriction
+    ) {
+        return isClassValueAllowed(value, restriction)
+                ? ScopeLookupResult.foundAllowed(value)
+                : ScopeLookupResult.foundBlocked(value);
+    }
+
+    /// Applies the current restriction to a same-name overload set owned by one class layer.
+    ///
+    /// The result must distinguish three cases:
+    /// - some overloads remain legal -> `FOUND_ALLOWED`
+    /// - overloads exist but all are illegal -> `FOUND_BLOCKED`
+    /// - no overloads at this layer -> `NOT_FOUND`
+    private @NotNull ScopeLookupResult<List<FunctionDef>> toFunctionLookupResult(
+            @NotNull List<FunctionDef> functions,
+            @NotNull ResolveRestriction restriction
+    ) {
+        if (functions.isEmpty()) {
+            return ScopeLookupResult.notFound();
+        }
+        var allowedFunctions = functions.stream()
+                .filter(function -> isFunctionAllowed(function, restriction))
+                .toList();
+        return !allowedFunctions.isEmpty()
+                ? ScopeLookupResult.foundAllowed(allowedFunctions)
+                : ScopeLookupResult.foundBlocked(List.copyOf(functions));
+    }
+
+    private boolean isClassValueAllowed(@NotNull ScopeValue value, @NotNull ResolveRestriction restriction) {
+        return switch (value.kind()) {
+            case CONSTANT -> restriction.allowClassConstants();
+            case PROPERTY -> value.staticMember()
+                    ? restriction.allowStaticProperties()
+                    : restriction.allowInstanceProperties();
+            default -> true;
+        };
+    }
+
+    private boolean isFunctionAllowed(@NotNull FunctionDef function, @NotNull ResolveRestriction restriction) {
+        return function.isStatic() ? restriction.allowStaticMethods() : restriction.allowInstanceMethods();
     }
 }
