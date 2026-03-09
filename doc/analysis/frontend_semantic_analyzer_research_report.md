@@ -1,1000 +1,502 @@
-# GDCC 前端语义分析器调研报告
+# GDCC 前端语义分析器调研报告（按当前代码库校对）
 
-- 日期：2026-03-07
+- 日期：2026-03-09
+- 校对范围：本报告只依据当前仓库中的文档、源码、测试，以及当前工作区已存在的代码文件进行修订；不再把仓库外 `E:/Projects/gdparser` 本地副本或旧的 GitHub 快照当作本报告的直接事实源。
 
 ---
 
 ## 1. 执行摘要
 
-这次重写后的核心结论可以先压缩成 14 条：
+基于当前代码库，旧版报告里最需要修正的结论有 8 点：
 
-1. **GDCC 前端仍然应该采用 Godot 同款阶段顺序**：`inheritance -> interface -> body -> lowering`。上游 `GDScriptAnalyzer` 到 2026-03-06 仍然保持 `resolve_inheritance()`、`resolve_interface()`、`resolve_body()`、`resolve_dependencies()` 的整体结构。
-2. **Godot 仍然使用“语义可写 AST”**。`gdscript_parser.h` 里的节点直接挂 `datatype`、`reduced_value`、`resolved_interface`、`resolved_body`、`resolved_signature`、`default_arg_values`、`captures`、`usages` 等字段；GDCC 不能照搬，仍应采用 side-table。
-3. **GDCC 当前前端落地状态没有本质变化**：仍只有 parse 服务、统一诊断、class skeleton builder，以及少量 parse/skeleton 测试；还没有真正的 body-level semantic analyzer。
-4. **GDCC backend 仍然是前端的事实源**。调用语义以 `BackendMethodCallResolver` / 共享 `ScopeMethodResolver` 为准，属性语义以 `BackendPropertyAccessResolver` / 共享 `ScopePropertyResolver` 为准，索引/操作符/所有权规则以 `doc/` 与现有代码为准；front-end 不应自行创造第二套语义。
-5. **“已知对象缺失 method” 与 “已知对象缺失 property” 的策略必须区分**：
-   - method：当前 backend 已支持 `OBJECT_DYNAMIC`，前端不必强行先 pack 成 `Variant`。
-   - property：当前 backend 已知对象缺失 property 时仍 fail-fast，前端若选择 warning + 动态回退，就必须主动 lower 成 `variant_get_named` / `variant_set_named`。
-6. **`ClassRegistry.findType(...)` 仍然过于宽松，不能直接拿来做绑定结论**。它适合做类型解析辅助，不适合当成 identifier binder 的最终判定器。
-7. **与旧版报告最大的变化是：`gdparser` AST 已经明显补齐。** 当前本地 `gdparser` 已有 `SelfExpression`、`GetNodeExpression`、`PreloadExpression`、`CastExpression`、`TypeTestExpression`、`AwaitExpression`、`AnnotationStatement`、`AssertStatement`、`ClassDeclaration`、`ConstructorDeclaration`、`BaseCallExpression` 等节点，且 lowering 与测试已接入。
-8. **但 `gdparser` 仍不等于 Godot 原生 parser AST**。几个关键结构差异仍然存在：
-   - 注解在 `gdparser` 中是独立的 `AnnotationStatement`，不是挂在目标节点上的 `annotations` 列表。
-   - 类型提示是 `TypeRef`，不是 Godot `TYPE` 节点。
-   - `match` 的 `PATTERN` / `MATCH_BRANCH` / `SUITE` 被简化成 `MatchSection` + `PatternBindingExpression` + `Block`。
-   - 这意味着语义分析器需要自己恢复“注解归属”“模式绑定”“block/suite 语义”。
-9. **新增 AST 节点并不等于新增 feature 已经可编译。** 例如 `AwaitExpression` 现在已经能进 AST，但 GDCC 当前仍没有通用 coroutine 方案，因此前端仍应显式报 unsupported，或把它明确列为后续里程碑。
-10. **前端设计重点应从“AST 还缺什么”转向“如何消费已经补齐的 AST”**。尤其是 `AnnotationStatement`、`ClassDeclaration`、`ConstructorDeclaration`、`BaseCallExpression`、`SelfExpression`、`CastExpression`、`TypeTestExpression` 这些节点，已经足够影响 semantic analyzer 的数据结构设计。
-11. **最稳妥的实现路径仍然不是直接写 lowering，而是先把语义 side-table 设计完整。** 至少应有：绑定表、表达式类型表、调用决议表、成员访问表、注解归属表、作用域树、控制流合流结果表、构造器/基类调用语义表。
-12. **相对于旧版报告，GDCC 第一阶段的边界应当被重新定义**：不是“AST 缺口很大，所以只能做极小 MVP”，而是“AST 主干已经足够支撑更完整的 binder/type/call/member 设计，但 backend/LIR 能力仍决定近期真正可 lower 的子集”。
-13. **Godot 当前 `static_context` 明确要求“blocked hit 继续构成 shadowing”**：当前层/local/member 一旦命中，即使随后因为 static context 非法而报错，也不会继续回退 outer/global；GDCC 的 `Scope` 协议因此需要显式区分 `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND`。
-14. **`type-meta` 对 restriction 的当前语义必须被显式冻结为“统一签名 + always-allowed”**：`Scope.resolveTypeMeta(..., restriction)` 目前只是为了统一三套 namespace 的调用形状；对现有 `ScopeTypeMetaKind` 集合，它只允许返回 `FOUND_ALLOWED` / `NOT_FOUND`，不会产生 `FOUND_BLOCKED`。真正的 `TYPE_META` 消费合法性应留给 binder 在 static access / constructor / `load_static` 分流阶段处理，而不是由 type lookup 本身承担。
+1. **`gdparser` 版本已经明确升级到 `0.4.0`。** 当前事实源是 `build.gradle.kts`，而不是旧报告里引用的仓库外本地副本路径。
+2. **GDCC frontend 已不再只是“parse + 少量 skeleton 测试”。** 目前除了解析和类骨架构建，还已经落地了 `Scope` 协议、`ClassScope` / `CallableScope` / `BlockScope`、restriction-aware lookup、signal 的 unqualified scope 语义，以及一批 frontend/scope/shared-resolver 测试。
+3. **但 frontend 仍然没有真正的 body-level semantic analyzer。** 当前仍缺 binder、assignable analyzer、表达式类型推断、调用/成员访问分析结果、统一 `AnalysisResult`、AST body lowering。
+4. **`FrontendBindingKind` 的旧结论已经过时。** 当前代码里已经有 `SIGNAL` 和 `TYPE_META`，旧报告中“缺少 `TYPE_META`”“signal 还未补位”的说法不成立。
+5. **`ClassRegistry` 现在同时承载“宽松旧接口”和“严格新协议”。** `findType(...)` 仍是宽松兼容入口；真正适合未来 binder/type namespace 的，是严格的 `resolveTypeMeta(...)` 与 `Scope` 协议。
+6. **`FrontendClassSkeletonBuilder` 的现状应描述得更准确。** 它不只是收集 `class_name / extends / signal / var / func`；还会做派生类名、重复类名检查、继承环检测、宽松类型解析降级，以及对 `export_variable_statement` / `onready_variable_statement` 的有限注解保留。
+7. **signal 相关状态比旧报告更前进。** `ClassScope` 的 unqualified signal lookup 已经落地并有测试；当前工作区还出现了 `ScopeSignalResolver` / `ScopeResolvedSignal` 及对应测试，说明 receiver-based signal metadata lookup 已经开始落代码，虽然 frontend binder 仍未接上。
+8. **旧报告里大量“按外部 `gdparser` AST 全量节点覆盖面下结论”的段落，应当降级或删除。** 当前仓库能直接证明的是：frontend 已依赖 `gdparser:0.4.0`，并消费了 AST 通用模型与少量声明节点；至于 `gdparser` 全量 AST 形态，若要继续做跨仓库调研，应单独写附录，而不应混进这份“按当前代码库校对”的报告里。
 
 ---
 
-## 2. 相对旧版报告的关键修订
+## 2. 本次校对依据
 
-本次重写最重要的不是改措辞，而是修正了几项已经变化的事实。
+### 2.1 代码事实源
 
-### 2.1 `gdparser` AST 覆盖面已不再适合被描述为“明显小于 Godot 原生 parser AST”
-
-旧版报告中将 `SELF / PRELOAD / CAST / TYPE_TEST / AWAIT / ASSERT / ANNOTATION / CLASS(inner class)` 视为缺失节点；这在当前本地 `gdparser` 已经不成立。
-
-截至本次调研，本地 `E:/Projects/gdparser` 已包含并接入 lowering 的节点至少有：
-
-- `SelfExpression`
-- `GetNodeExpression`
-- `PreloadExpression`
-- `CastExpression`
-- `TypeTestExpression`
-- `AwaitExpression`
-- `AnnotationStatement`
-- `AssertStatement`
-- `ClassDeclaration`
-- `ConstructorDeclaration`
-- `BaseCallExpression`
-- `PatternBindingExpression`
-- `RegionDirectiveStatement`
-- `BreakpointStatement`
-
-而且 `CstToAstMapperTest` 已有针对这些节点的覆盖，说明它们不是“仅定义 AST record 未接线”的半成品。
-
-### 2.2 真正需要强调的，不再是“节点有没有”，而是“结构差异怎么影响语义分析”
-
-`gdparser` 虽然补齐了很多节点，但与 Godot 原生 parser 的建模差异依旧显著：
-
-1. **注解归属模型不同**
-   - Godot：注解挂在 `stmt->annotations` 上。
-   - `gdparser`：注解会以独立 `AnnotationStatement` 出现在被注解语句之前。
-   - 含义：GDCC semantic analyzer 需要显式做“注解收集并附着到下一个声明/语句”的预处理，不能像 Godot 一样直接从节点字段读取。
-
-2. **类型引用模型不同**
-   - Godot：`TYPE` 是 parser node 体系中的一等节点。
-   - `gdparser`：类型提示统一是 `TypeRef(String sourceText, Range range)`。
-   - 含义：`resolve_datatype(...)` 一类逻辑在 GDCC 中更适合做成 `TypeRef -> FrontendTypeFact` 的 side-table，而不是 AST node mutation。
-
-3. **match/pattern/suite 模型更轻量**
-   - Godot：有 `PATTERN`、`MATCH_BRANCH`、`SUITE` 等更细的节点层次。
-   - `gdparser`：`MatchStatement` + `MatchSection` + `List<Expression> patterns` + `PatternBindingExpression` + `Block`。
-   - 含义：GDCC 做基础绑定和类型流没问题，但想做 Godot 那种细粒度 pattern diagnostics / exhaustiveness，会更依赖自建语义中间结构。
-
-### 2.3 “AST 已支持”不等于“近期 frontend 应立即支持 lowering”
-
-几个现在需要明确写入报告的边界：
-
-- `AwaitExpression`：AST 已支持，但当前 `gdcc` LIR / backend 仍没有通用 coroutine lowering，近期仍应视为 recognized but unsupported。
-- `PreloadExpression`：AST 已支持，但项目已确认“第一阶段不把 `preload(...)` 当作类型来源”。
-- `GetNodeExpression`：AST 已支持，但当前 GDCC 没有场景树元数据，静态类型通常只能保守降级。
-- `ClassDeclaration` / `ConstructorDeclaration` / `BaseCallExpression`：AST 已支持，但当前 `FrontendClassSkeletonBuilder` 仍完全没有消费这些节点。
-
-所以本报告的更新方向不是“把一切 feature 都标成已可做”，而是“哪些现在该纳入 semantic 设计，哪些仍应先诊断或延后 lowering”。
-
----
-
-## 3. 调研范围与方法
-
-本次调研覆盖 3 个事实源。
-
-### 3.1 `gdcc` 本地仓库与文档
-
-重点阅读了：
-
-- `doc/module_impl/frontend_implementation_plan.md`
-- `doc/gdcc_low_ir.md`
-- `doc/gdcc_type_system.md`
-- `doc/gdcc_c_backend.md`
-- `doc/gdcc_ownership_lifecycle_spec.md`
-- `doc/module_impl/call_method_implementation.md`
-- `doc/module_impl/load_store_property_implementation.md`
-- `doc/module_impl/index_insn_implementation.md`
-- `doc/module_impl/operator_insn_implementation.md`
+- `build.gradle.kts`
 - `src/main/java/dev/superice/gdcc/frontend/parse/GdScriptParserService.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendModuleSkeleton.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/AbstractFrontendScope.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/BlockScope.java`
 - `src/main/java/dev/superice/gdcc/scope/ClassRegistry.java`
+- `src/main/java/dev/superice/gdcc/scope/ResolveRestriction.java`
+- `src/main/java/dev/superice/gdcc/scope/Scope.java`
+- `src/main/java/dev/superice/gdcc/scope/ScopeLookupResult.java`
+- `src/main/java/dev/superice/gdcc/scope/ScopeLookupStatus.java`
+- `src/main/java/dev/superice/gdcc/scope/ScopeValueKind.java`
+- `src/main/java/dev/superice/gdcc/scope/ScopeTypeMetaKind.java`
 - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
 - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
 - `src/main/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolver.java`
 - `src/main/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolver.java`
-- 相关 backend / frontend 测试
+- 当前工作区新增文件：`src/main/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolver.java`、`src/main/java/dev/superice/gdcc/scope/resolver/ScopeResolvedSignal.java`
 
-### 3.2 本地 `gdparser` 副本
+### 2.2 文档事实源
 
-重点确认：
+- `doc/module_impl/common_rules.md`
+- `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
+- `doc/gdcc_type_system.md`
+- `doc/gdcc_low_ir.md`
+- `doc/gdcc_c_backend.md`
+- `doc/gdcc_ownership_lifecycle_spec.md`
+- `doc/module_impl/backend/load_static_implementation.md`
 
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/*`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/lowering/CstToAstMapper.java`
-- `E:/Projects/gdparser/src/test/java/dev/superice/gdparser/frontend/lowering/CstToAstMapperTest.java`
+### 2.3 测试事实源
 
-重点问题是：
+- `src/test/java/dev/superice/gdcc/frontend/parse/FrontendParseSmokeTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeResolutionTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextValueRestrictionTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextFunctionRestrictionTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextShadowingTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendInnerClassScopeIsolationTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendNestedInnerClassScopeIsolationTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeChainTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeTypeMetaChainTest.java`
+- `src/test/java/dev/superice/gdcc/scope/ScopeProtocolTest.java`
+- `src/test/java/dev/superice/gdcc/scope/ClassRegistryTypeMetaTest.java`
+- `src/test/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolverTest.java`
+- `src/test/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolverTest.java`
+- 当前工作区测试：`src/test/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolverTest.java`
 
-- 现在 AST 实际覆盖了哪些 Godot 语义分析会用到的节点？
-- 新节点是否已经被 lowering 使用，而不是只有 record 定义？
-- 这些节点的结构和 Godot 原生 parser 有哪些不一致？
+### 2.4 明确移除的旧依据
 
-### 3.3 GitHub 上游 Godot / Godot Docs 最新事实
+以下内容不再作为本报告的直接事实源：
 
-本次通过 GitHub 原始文件核对了：
+- 仓库外 `E:/Projects/gdparser/**` 的文件路径罗列
+- “某天手工核对 GitHub 上游 Godot/Godot Docs 原始文件”的逐项结论
+- 仓库中并不存在的 `doc/module_impl/frontend_implementation_plan.md`
 
-- `godotengine/godot`：`modules/gdscript/gdscript_analyzer.cpp`
-- `godotengine/godot`：`modules/gdscript/gdscript_parser.h`
-- `godotengine/godot-docs`：`tutorials/scripting/gdscript/static_typing.rst`
-
-核对时间为 **2026-03-07**，并额外核对了 `gdscript_analyzer.cpp` 中 `reduce_identifier(...)` / `reduce_identifier_from_base(...)` 的 `static_context` shadowing 行为。
-
----
-
-## 4. 当前 GDCC 代码库的真实状态
-
-## 4.1 已落地能力仍只到“解析 + 类骨架”
-
-`gdcc` 当前 frontend 实际已经落地的部分仍然很小：
-
-1. `GdScriptParserService`
-   - 调 `gdparser` 做 CST -> AST。
-   - 把 lowering diagnostics 统一转成 `FrontendDiagnostic`。
-
-2. `FrontendClassSkeletonBuilder`
-   - 提取 `class_name / extends / signal / var / func` 的浅层骨架。
-   - 注入 `ClassRegistry.addGdccClass(...)`。
-   - 检测重复类名和继承环。
-
-3. frontend 测试
-   - 目前只有 parse smoke、class skeleton、inheritance cycle 三类。
-
-还没有实现的关键能力包括：
-
-- identifier binding
-- scope tree / capture analysis
-- assignable analysis
-- expression type inference
-- call resolution
-- property/index semantics
-- CFG / suite / return merge
-- AST -> LIR body lowering
-
-也就是说，当前 frontend 仍更接近“parser + declaration collector”，还没有进入真正的 `semantic analyzer` 阶段。
-
-## 4.2 当前 skeleton builder 的边界比 AST 能力更窄
-
-`FrontendClassSkeletonBuilder` 当前只消费：
-
-- `ClassNameStatement`
-- `ExtendsStatement`
-- `SignalStatement`
-- `VariableDeclaration(kind == VAR)`
-- `FunctionDeclaration`
-
-它 **不会处理** 以下已经存在于 AST 中的重要节点：
-
-- `ClassDeclaration`
-- `ConstructorDeclaration`
-- `EnumDeclaration`
-- `AnnotationStatement`
-- `AssertStatement`
-- `ReturnStatement` / 其它 body-level 语句
-- `BaseCallExpression`
-- `SelfExpression` / `CastExpression` / `TypeTestExpression` 等所有 body-level expression
-
-这意味着一个非常重要的结论：
-
-> 当前 frontend 的限制主要已经不是 `gdparser` AST 的限制，而是 `gdcc` 自己尚未消费这些 AST 节点。
-
-## 4.3 `FrontendBindingKind` 仍然不完整
-
-当前 `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java` 里有：
-
-- `LOCAL_VAR`
-- `PARAMETER`
-- `CAPTURE`
-- `PROPERTY`
-- `UTILITY_FUNCTION`
-- `CONSTANT`
-- `SINGLETON`
-- `GLOBAL_ENUM`
-- `UNKNOWN`
-
-但仍然缺少一个在 frontend 设计里很关键的绑定种类：
-
-- `TYPE_META`
-
-而 `gdparser` 现在已经有 `SelfExpression`、`CastExpression`、`TypeTestExpression`、`PreloadExpression` 等会直接推动“类型对象 / 类型引用”分析的节点；没有 `TYPE_META` 会让 binder 很快变得混乱。
-
-## 4.4 `ClassRegistry` 仍是重要基础设施，但不能直接当 binder
-
-`ClassRegistry` 对 frontend 很重要，但必须明确它的适用边界。
-
-### 4.4.1 `findType(...)` 很宽松
-
-当前行为依旧是：
-
-1. builtin / container 尽量解析成具体 `GdType`
-2. engine class / GDCC class -> `GdObjectType`
-3. global enum / utility function -> `null`
-4. 未知名字 -> 仍返回 `new GdObjectType(name)`
-
-这对“宽松类型引用解析”很好，但对“identifier 到底是不是 type meta”并不可靠。否则会造成：
-
-- 拼写错误类型名被误当成对象类型
-- singleton 与 type name 混淆
-- 未来 preload/global class/type import 路径难以区分
-
-### 4.4.2 `checkAssignable(...)` 是 backend 事实，不等于 Godot 编辑器规则
-
-当前 `ClassRegistry.checkAssignable(...)` 仍是：
-
-- 同类型可赋值
-- 对象支持继承上行
-- `Array` / `Dictionary` 有限协变
-
-这与 Godot typed collection 的静态规则不完全一致；frontend 若服务于 lowering，应优先对齐 backend 事实，而不是机械照搬 Godot 的编辑器诊断标准。
-
-## 4.5 backend 仍然定义了 frontend 必须遵守的语义合同
-
-### 4.5.1 方法调用：`BackendMethodCallResolver`
-
-当前 backend 明确支持：
-
-- `GDCC`
-- `ENGINE`
-- `BUILTIN`
-- `OBJECT_DYNAMIC`
-- `VARIANT_DYNAMIC`
-
-且测试已覆盖：
-
-- 已知 engine 类型调用未知 method -> `OBJECT_DYNAMIC`
-- 已知 GDCC 类型调用未知 method -> `OBJECT_DYNAMIC`
-- 父类静态类型变量调用子类方法 -> `OBJECT_DYNAMIC`
-
-因此：
-
-> “已知对象缺失 method 必须先 pack 成 Variant 才能避免 fail-fast”这条说法，已经不符合当前 backend 事实。
-
-### 4.5.2 属性访问：`BackendPropertyAccessResolver`
-
-当前 backend 明确是：
-
-- 已知对象类型会沿继承链静态找 property
-- 缺 metadata / inheritance cycle / owner 非法 / property 不存在时，直接 fail-fast
-- 只有 object type 本身未知时，frontend/backend 才能退回更动态的路径
-
-因此：
-
-> 如果 frontend 仍坚持“已知对象缺失 property -> warning + 动态回退”，那就不能直接发 `load_property` / `store_property`，而必须主动改写为 `variant_get_named` / `variant_set_named` 路径。
+这些信息如果未来仍然需要，应以单独“跨仓库调研附录”维护，而不是混入当前仓库状态报告。
 
 ---
 
-## 5. Godot `GDScriptAnalyzer` 最新设计要点
+## 3. 当前 GDCC frontend 的真实状态
 
-## 5.1 上游阶段结构没有变，而且仍然非常值得直接借鉴
+## 3.1 解析层已经稳定接入 `gdparser:0.4.0`
 
-截至本次调研，`gdscript_analyzer.cpp` 仍然有：
+当前 `build.gradle.kts` 明确声明：
 
-- `resolve_inheritance()`
-- `resolve_interface()`
-- `resolve_body()`
-- `resolve_dependencies()`
-- `analyze()` 串联整体流程
+- `implementation("com.github.SuperIceCN:gdparser:0.4.0")`
 
-这说明 GDCC 继续采用 `inheritance -> interface -> body -> lowering` 是正确方向，不需要重新发明阶段划分。
+`GdScriptParserService` 当前职责非常清晰：
 
-还有一个工程上很重要的观察：
+1. 调 `GdParserFacade` 解析 CST
+2. 调 `CstToAstMapper` 生成 AST
+3. 把 lowering diagnostics 映射为 `FrontendDiagnostic`
+4. 出错时返回空 `SourceFile` 与 `parse.internal` 诊断，而不是直接把异常抛给调用方
 
-- `analyze()` 在 `resolve_inheritance()` 失败时会立即返回；
-- 但 `resolve_interface()` 即便产生错误，也不会立刻短路 `resolve_body()`。
+因此，当前 parse phase 的准确描述应当是：
 
-这说明 Godot 的策略是：
+- **已经有稳定的 tolerant parse + diagnostic mapping 服务**
+- **frontend 对 `gdparser` 的依赖点目前主要是 parse service 与 AST record 使用**
+- **报告不应再把“具体有哪些 AST 节点已在仓库外副本中出现”当作这份文档的中心结论**
 
-> inheritance 是硬前置；interface/body 则尽量继续跑，以收集更多诊断。
+## 3.2 类骨架阶段已经超出“只收集声明名字”的程度
 
-GDCC 若希望做“tolerant but explainable” 的 analyzer，这一点很值得学。
+`FrontendClassSkeletonBuilder` 现在已经完成这些事情：
 
-## 5.2 Godot 仍然把大量语义事实直接写回 AST
+- 从 `class_name` 或文件名推导类名
+- 从 `class_name extends` 或顶层 `extends` 推导父类名
+- 收集 `signal`、`var`、`func` 并注入 `LirClassDef`
+- 将结果注册进 `ClassRegistry`
+- 检查重复类名
+- 检查继承环，并在发现环时抛出 `FrontendSemanticException`
+- 用宽松 `findType(...)` 解析类型提示；解析失败时降级到 `Variant` 并发出 `sema.type_resolution` warning
+- 对 `export_variable_statement` / `onready_variable_statement` 做有限注解保留
 
-从 `gdscript_parser.h` 仍能看到这些字段：
+所以，旧报告把它描述成“非常浅的 declaration collector”并不完全准确。更准确的说法是：
 
-- 所有 `Node` 上的 `datatype`
-- `ExpressionNode` 上的 `is_constant` / `reduced_value`
-- class/function 上的 `resolved_interface` / `resolved_body` / `resolved_signature`
-- function 上的 `default_arg_values`
-- lambda 上的 `captures`
-- 多种声明节点上的 `usages`
+- **它仍然只是 skeleton/interface 之前的浅层阶段**
+- **但已经包含一部分容错、诊断、注解保留和继承合法性检查逻辑**
 
-这再次证明：
+## 3.3 frontend scope 架构已经从“计划”变成了已落地基础设施
 
-> Godot analyzer 的实现方式本质上是“边遍历 AST，边把语义结果写回 AST 节点”。
+当前仓库里已经有完整的 frontend lexical scope 实现：
 
-GDCC 无法这样做，因为 `gdparser` AST 是 immutable record 风格；因此 side-table 仍然是正确方案。
+- `ClassScope`
+- `CallableScope`
+- `BlockScope`
+- 公共基类 `AbstractFrontendScope`
 
-## 5.3 `resolve_assignable(...)` 仍然是 Godot 里极其关键的统一入口
+以及 shared `Scope` 协议：
 
-上游当前仍然通过 `resolve_assignable(...)` 统一处理：
+- 独立的 value / function / type-meta 三套 namespace
+- `ScopeLookupResult<T>` + `ScopeLookupStatus` 的 tri-state 结果
+- `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND`
+- `ResolveRestriction.unrestricted()` / `instanceContext()` / `staticContext()`
 
-- variable
-- constant
-- parameter
+这意味着旧报告里这些说法已经不成立：
 
-它仍然负责：
+- “scope tree 还没有真正实现”
+- “static-context shadowing 还只是设计设想”
+- “type-meta restriction 语义还没有冻结”
 
-- 显式类型提示
-- initializer 降解/归约
-- typed array / dictionary literal 元素类型传播
-- `:=` 推断
-- `null` 推断失败
-- 常量表达式约束
-- 指定类型与 initializer 的兼容性检查
-- `use_conversion_assign`
-- `INFERRED_DECLARATION` / `UNTYPED_DECLARATION` / `NARROWING_CONVERSION` 等诊断
+当前更准确的状态是：
 
-对 GDCC 的直接启发仍然是：
+- **协议层已经冻结并有测试锚定**
+- **frontend binder 还没实现，但它未来应直接消费现有 scope/resolver 基础设施，而不是重造一套名字解析逻辑**
 
-> 不应为“局部变量 / 常量 / 参数 / 字段”各写一套彼此分叉的类型规则，而应抽象出统一的 assignable analyzer。
+## 3.4 `FrontendBindingKind` 与 `ScopeValueKind` 的旧结论需要修正
 
-## 5.4 identifier 解析顺序与 capture/static-context 处理仍然很有参考价值
+当前代码里：
 
-当前上游仍然体现出大体顺序：
+- `FrontendBindingKind` 已经包含 `SIGNAL` 与 `TYPE_META`
+- `ScopeValueKind` 也已经包含 `SIGNAL` 与 `TYPE_META`
 
-1. enum 当前作用域
-2. local / parameter / bind / iterator / local constant
-3. member / inherited member / signal / member class
-4. builtin meta type
-5. native class
-6. global class
-7. singleton / autoload
-8. global constant
-9. global enum
-10. utility function
-11. 未找到则错误
+因此，旧报告中“binding kind 仍缺 `TYPE_META`”“signal 还没有稳定分类”的说法已经过期。
 
-同时它还明确处理了：
+更准确的描述应当是：
 
-- static context 禁止访问 instance variable / instance function / signal
-- lambda 引用 outer local / parameter / bind 时，加入 capture
-- lambda 访问 member 时视为“使用 self”，而不是 capture
+- **枚举层面的语义占位已经补齐**
+- **但这些 binding kind 还没有被真正的 frontend binder 消费，因为 binder 本身尚未落地**
 
-这些规则对 GDCC 仍可直接映射。
+## 3.5 `ClassRegistry` 现在是“宽松兼容接口 + 严格新协议”的并存体
 
-## 5.5 `get_function_signature(...)` + `validate_call_arg(...)` 的分工仍然是最佳参考
+当前 `ClassRegistry` 既保留了旧接口，也已经提供严格语义入口：
 
-上游当前仍然采用两步法：
+### 3.5.1 宽松入口：`findType(...)`
 
-1. 先取签名：构造器、builtin、native、script、meta type、utility 等
-2. 再做参数校验：数量、默认参数、vararg、hard mismatch、unsafe warning、窄化 warning
+它仍适合：
 
-GDCC 当前 backend 的 `BackendMethodCallResolver` 已经承担了大量“签名挑选”工作；frontend 需要补足的是：
+- skeleton 阶段的容错类型提示解析
+- 旧调用方的兼容需求
 
-- 面向诊断的 `unsafe reason`
-- 面向 lowering 的默认参数补全计划
-- 更丰富的 AST-side semantic facts
+它不适合：
 
-## 5.6 suite 类型合流与 lambda 延迟分析依旧成立
+- identifier binder 的最终 type-meta 判定
+- 静态语义中的严格 namespace 决议
 
-上游当前仍保留：
+### 3.5.2 严格入口：`resolveTypeMeta(...)`
 
-- `decide_suite_type(...)`
-- `resolve_suite(...)`
-- `resolve_pending_lambda_bodies()`
+当前测试已经明确覆盖：
 
-关键点没有变化：
+- builtin 类型
+- engine class
+- gdcc class
+- global enum
+- 严格容器类型，如 `Array[T]`、`Dictionary[K, V]`
+- singleton / utility function / unknown name 不应误判为 type-meta
 
-1. `if / for / match / return / while` 的 suite 类型会被归并；混合不兼容时回退成 `Variant`
-2. lambda body 会被延迟解析，等外层 suite 推进后再统一处理
-3. capture 会在后续被物化进 lambda 参数前部
+因此这份报告应把重心放在：
 
-对 GDCC 来说，这仍然是最值得借鉴的工程策略。
+- **未来 interface/body phase 应优先走 `resolveTypeMeta(...)` 与 `Scope` 协议**
+- **`findType(...)` 只应继续服务于当前 skeleton 的 tolerant 需求**
+
+## 3.6 backend 与 shared resolver 仍然是 frontend 的语义事实源
+
+这点旧报告总体方向是对的，但需要按当前仓库状态写得更精确。
+
+### 3.6.1 方法调用
+
+`BackendMethodCallResolver` 仍然体现出当前 lowering 事实：
+
+- 支持 `GDCC` / `ENGINE` / `BUILTIN`
+- 支持 `OBJECT_DYNAMIC` / `VARIANT_DYNAMIC`
+- 实例方法解析实际委托给 `ScopeMethodResolver`
+
+因此，frontend 将来做 call analysis 时：
+
+- **不应另起一套与 backend 脱节的 dispatch 语义**
+- **已知对象 method miss 允许进入 `OBJECT_DYNAMIC` 路径，这一点仍然成立**
+
+### 3.6.2 属性访问
+
+`BackendPropertyAccessResolver` 仍然体现出当前 lowering 事实：
+
+- 已知对象 property 沿继承链静态查找
+- metadata 缺失 / inheritance cycle / property miss / owner 非法时 fail-fast
+- builtin 与 object property 路径分离
+
+因此，frontend 若将来保留“宽松属性动态回退”策略，就必须在 frontend 侧显式改写到动态路径，而不是把一个静态 miss 直接交给 backend。
+
+## 3.7 signal 状态比旧报告更前进，但仍未形成完整前端闭环
+
+按照当前代码与文档的交集，可以把 signal 状态描述为三层：
+
+### 3.7.1 已落地：unqualified signal scope 语义
+
+当前 `ClassScope` 已经支持：
+
+- direct signal 进入 value namespace
+- inherited signal 查找
+- static context 下 signal 命中后返回 `FOUND_BLOCKED`
+- blocked hit 继续构成 shadowing，不回退 global 同名绑定
+
+这一点已被 `ClassScopeSignalResolutionTest` 等测试锚定。
+
+### 3.7.2 当前工作区已出现：receiver-based signal metadata resolver
+
+当前工作区代码中已经有：
+
+- `ScopeSignalResolver`
+- `ScopeResolvedSignal`
+- `ScopeSignalResolverTest`
+
+这说明相对 `scope_architecture_refactor_plan.md` 中仍写作 S2/S3 边界的文字描述，代码侧已经开始落地 receiver-based signal metadata lookup。
+
+更准确的结论应写成：
+
+- **shared signal resolver 已在当前工作区出现并有测试**
+- **frontend binder 接入 signal binding 仍未落地**
+
+### 3.7.3 仍未落地：frontend binder 消费 signal 事实
+
+当前仍然没有：
+
+- `my_signal` / `self.my_signal` / `obj.some_signal` 的统一 frontend binding result
+- signal member access 与 property/member access 的统一分析结果表
+- signal 相关 lowering / `.emit(...)` 语义闭环
 
 ---
 
-## 6. `gdparser` 当前 AST 的最新状态与直接影响
+## 4. 旧版报告中不再符合事实的部分
 
-## 6.1 当前 AST 已经覆盖前端语义分析的大部分主干节点
+下面这些结论应从旧版报告中移除或改写。
 
-本地 `gdparser` 当前至少已经有：
+## 4.1 “frontend 只有 parse 服务、统一诊断、class skeleton builder，以及少量 parse/skeleton 测试”不再成立
 
-### 6.1.1 声明/语句类
+当前代码库至少还已经有：
 
-- `VariableDeclaration`
-- `FunctionDeclaration`
-- `ConstructorDeclaration`
-- `ClassDeclaration`
-- `EnumDeclaration`
-- `SignalStatement`
-- `AnnotationStatement`
-- `AssertStatement`
-- `IfStatement` / `ForStatement` / `WhileStatement` / `MatchStatement`
-- `ReturnStatement` / `ExpressionStatement` / `PassStatement`
-- `BreakStatement` / `ContinueStatement` / `BreakpointStatement`
-- `RegionDirectiveStatement`
-- `UnknownStatement`
+- frontend scope 三层实现
+- shared `Scope` 协议与 tri-state lookup
+- static/instance restriction 语义
+- inner class lexical isolation 测试
+- signal scope 解析测试
+- shared resolver 级别的方法/属性/signal 测试
 
-### 6.1.2 表达式类
+更准确的说法是：
 
-- `IdentifierExpression`
-- `SelfExpression`
-- `LiteralExpression`
-- `GetNodeExpression`
-- `PreloadExpression`
-- `CallExpression`
-- `BaseCallExpression`
-- `AttributeExpression`
-- `SubscriptExpression`
-- `BinaryExpression`
-- `CastExpression`
-- `TypeTestExpression`
-- `UnaryExpression`
-- `ConditionalExpression`
-- `AssignmentExpression`
-- `ArrayExpression`
-- `DictionaryExpression`
-- `LambdaExpression`
-- `AwaitExpression`
-- `PatternBindingExpression`
-- `UnknownExpression`
+- **真正的 body analyzer 还没有**
+- **但它所依赖的 scope/protocol/resolver 底座已经形成**
 
-从 frontend semantic analyzer 的角度看，这个覆盖面已经足以支撑比旧版报告更完整的设计。
+## 4.2 “`FrontendBindingKind` 缺少 `TYPE_META` / `SIGNAL`”不再成立
 
-## 6.2 这些节点不只是定义了 record，而是已经接入 lowering 与测试
-
-`CstToAstMapper` 当前已明确把：
-
-- `annotation` / `annotations` -> `AnnotationStatement`
-- `class_definition` -> `ClassDeclaration`
-- `constructor_definition` -> `ConstructorDeclaration`
-- `assert(...)` -> `AssertStatement`
-- `$...` / `%...` -> `GetNodeExpression`
-- `preload(...)` -> `PreloadExpression`
-- identifier `self` -> `SelfExpression`
-- `await_expression` -> `AwaitExpression`
-- binary `as` -> `CastExpression`
-- binary `is` / `is not` -> `TypeTestExpression`
-- `.foo(...)` -> `BaseCallExpression`
-
-而 `CstToAstMapperTest` 已有针对这些节点的存在性断言。这说明：
-
-> GDCC frontend 现在完全可以把这些节点纳入语义设计假设，不应该继续把它们当成“未来 AST 扩展后再说”。
-
-## 6.3 但它与 Godot parser 的结构差异仍然会直接塑造 frontend 设计
-
-### 6.3.1 `AnnotationStatement` 是独立语句，而不是节点附属属性
-
-这会直接影响 semantic analyzer：
-
-- 需要在 parse 结果上做一层“annotation attachment”预处理
-- 或者在 body/interface 遍历时维护一个 pending annotation buffer
-- 语义结果里最好显式有一张 `attachedAnnotations` side-table
-
-否则 `@export`、`@onready`、未来的其它 annotation 都会变得很难正确消费。
-
-### 6.3.2 `TypeRef` 是文本型类型引用，不是可变 AST type node
-
-这意味着：
-
-- `TypeRef` 解析应成为独立阶段/独立 helper
-- 结果适合存成 `IdentityHashMap<TypeRef, FrontendTypeFact>` 或等价结构
-- 不能期待像 Godot 那样直接对 `TYPE` node 做状态推进
-
-### 6.3.3 `match` / pattern 的 AST 仍然是语义轻量化版本
-
-当前 `MatchSection` 只包含：
-
-- `List<Expression> patterns`
-- `@Nullable Expression guard`
-- `Block body`
-
-`var` 模式绑定通过 `PatternBindingExpression` 表达。
-
-这足以做：
-
-- 基础绑定
-- guard 表达式分析
-- 局部作用域建立
-
-但不适合一开始就承诺：
-
-- 复杂 pattern exhaustiveness
-- 精细化 pattern type narrowing
-- 与 Godot 原生 analyzer 完全同级别的 match diagnostics
-
-### 6.3.4 `GetNodeExpression` 只保留 `sourceText`
-
-当前 `GetNodeExpression` 是：
-
-- `String sourceText`
-- `Range range`
-
-它没有进一步拆出：
-
-- `$` 还是 `%`
-- `NodePath` 分段结构
-- 目标节点的已知场景类型
-
-所以 frontend 即便开始支持这个节点，也应默认采用保守策略，除非未来引入 scene metadata。
-
-### 6.3.5 `PreloadExpression` 已有独立节点，但仍不等于项目现在就支持 preload-based typing
-
-当前节点是 `PreloadExpression(Expression path, Range range)`，说明 parser 已经能表达它。
-
-但结合项目现有策略，本阶段更合理的处理仍然是：
-
-- 先把它当作独立语义节点处理
-- 允许常量字符串路径检查
-- 暂不把它纳入类型来源
-- 若 lowering 暂无对应路径，则给出稳定的 unsupported diagnostic
-
-## 6.4 新节点对 frontend 设计的具体影响
-
-### 6.4.1 `SelfExpression`
-
-这意味着 frontend 不再需要把 `self` 当普通 `IdentifierExpression("self")` 特判；可以直接：
-
-- 绑定为当前类实例
-- 在 static context 下报错
-- 在 lambda 中标记“uses self”而不是 capture
-
-### 6.4.2 `BaseCallExpression` + `ConstructorDeclaration`
-
-这两者会直接推动以下设计需求：
-
-- `_init` 的 skeleton / signature 收集
-- 基类构造调用语义
-- 基类方法调用（super/base call）语义
-- constructor 默认参数与 base arguments 分析
-
-### 6.4.3 `CastExpression` / `TypeTestExpression`
-
-这两者已经足以支持：
-
-- `as` 的结果类型 = target type
-- `is` / `is not` 的结果类型 = `bool`
-- 将来在 `if` / `match guard` 中做类型收窄
-
-哪怕第一版不做完整 flow-sensitive narrowing，也应该在语义结果结构上预留扩展位。
-
-### 6.4.4 `AwaitExpression`
-
-这说明 parser 层面已经准备好了 coroutine 语法，但 GDCC 当前后端链路还没有。
-
-因此推荐做法是：
-
-- analyzer 识别它
-- 不把它降成 `UnknownExpression`
-- 在当前 milestone 发出明确的“语义已识别但 lowering 尚不支持”的诊断
-
-这会比“静默忽略”或“unknown node”更稳定。
-
----
-
-## 7. 面向 GDCC 的推荐语义分析架构（更新版）
-
-## 7.1 总体阶段顺序
-
-仍建议固定为：
-
-### Phase 0：Parse
-
-输出：
-
-- `FrontendSourceUnit`
-- AST
-- parse/lowering diagnostics
-
-### Phase 1：Inheritance
-
-负责：
-
-- `class_name`
-- `extends`
-- 稳定类名派生
-- class skeleton 注入 `ClassRegistry`
-- inheritance cycle
-- 顶层 / inner class 的最小命名与挂接策略
-
-### Phase 2：Interface
-
-负责：
-
-- property / const / signal / function / constructor / enum 的签名面
-- 注解归属（至少 declaration-level）
-- 类型引用解析（`TypeRef`）
-- `_field_init_*` / `_default_*` / `_init` 隐式函数声明策略
-
-### Phase 3：Body
-
-负责：
-
-- scope tree
-- identifier binding
-- assignable analysis
-- expression typing
-- call resolution
-- property/index/member semantics
-- suite/block/return merge
-- lambda capture
-- recognized-but-not-yet-lowerable feature diagnostics（如 `await`）
-
-### Phase 4：Lowering
-
-只消费 `AnalysisResult`，不重新发明语义。
-
-## 7.2 `AnalysisResult` 应当比旧版设计再补两类表
-
-旧版报告中的 side-table 思路仍然正确，但在当前 `gdparser` 形态下，建议至少补充：
-
-1. **注解归属表**
-2. **`TypeRef` 解析结果表**
-3. **构造器 / base call 语义表**
-
-建议字段至少包括：
-
-```java
-public record FrontendAnalysisResult(
-        @NotNull String moduleName,
-        @NotNull List<FrontendSourceUnit> units,
-        @NotNull List<FrontendDiagnostic> diagnostics,
-        @NotNull FrontendModuleSkeleton skeleton,
-        @NotNull IdentityHashMap<Expression, FrontendTypeFact> expressionTypes,
-        @NotNull IdentityHashMap<TypeRef, FrontendTypeFact> resolvedTypeRefs,
-        @NotNull IdentityHashMap<IdentifierExpression, ResolvedSymbol> symbolBindings,
-        @NotNull IdentityHashMap<Node, ResolvedCall> resolvedCalls,
-        @NotNull IdentityHashMap<Node, ResolvedMemberAccess> resolvedMembers,
-        @NotNull IdentityHashMap<Node, FrontendScope> scopeByNode,
-        @NotNull IdentityHashMap<Expression, Object> constantValues,
-        @NotNull IdentityHashMap<Node, List<AnnotationStatement>> attachedAnnotations,
-        @NotNull IdentityHashMap<ConstructorDeclaration, ResolvedConstructor> resolvedConstructors,
-        @NotNull IdentityHashMap<BaseCallExpression, ResolvedCall> resolvedBaseCalls
-) {}
-```
-
-这里不要求名字完全一致，但职责应明确存在。
-
-## 7.3 绑定优先级建议（GDCC 版，更新）
-
-建议最终固定为：
-
-1. local variable
-2. parameter
-3. capture
-4. current class property / constant / function / signal / enum / inner class
-5. singleton
-6. global enum
-7. utility function
-8. type meta（builtin / engine / gdcc class）
-9. unknown
-
-并把 `FrontendBindingKind` 至少补成：
+当前 `FrontendBindingKind` 已经有：
 
 - `LOCAL_VAR`
 - `PARAMETER`
 - `CAPTURE`
 - `PROPERTY`
 - `SIGNAL`
+- `UTILITY_FUNCTION`
 - `CONSTANT`
 - `SINGLETON`
 - `GLOBAL_ENUM`
-- `UTILITY_FUNCTION`
 - `TYPE_META`
 - `UNKNOWN`
 
-`signal` 不应再归入“后续再细分”的 deferred 桶。当前建议直接补齐 `FrontendBindingKind.SIGNAL`；若后续还要显式支持类内 `enum` / `function-as-callable`，可以继续细分，但 `TYPE_META` 与 `SIGNAL` 现在都应补。
+因此，旧版相关段落应删除，而不是继续把它当成待办事项。
 
-## 7.4 assignable analyzer 仍应保持统一入口
+## 4.3 “scope tree / static-context shadowing / type-meta restriction 还只是设计草案”不再成立
 
-建议抽象成：
+当前：
 
-```java
-public interface FrontendAssignableAnalyzer {
-    @NotNull AnalyzedAssignable analyze(@NotNull AssignableInput input);
-}
-```
+- `ResolveRestriction` 已有稳定 API
+- `ScopeProtocolTest` 已验证 blocked hit shadowing 行为
+- `ScopeTypeMeta` lookup 的 restriction-invariant 语义已有测试
 
-统一覆盖：
+因此这些内容应从“建议”改写为“当前已落地协议”。
 
-- property declaration
-- local var
-- const
-- parameter
-- constructor parameter
+## 4.4 “signal 仍只停留在计划文字里”不再成立
 
-并在输出中至少给出：
+当前准确状态是：
 
-- 最终类型
-- 类型来源（显式 / 推断 / 回退）
-- 是否常量
-- 是否需要 conversion assign
-- 诊断
+- S0/S1：已落地
+- receiver-based resolver：当前工作区已出现实现与测试
+- binder：仍未落地
 
-## 7.5 新 AST 节点对应的语义建议
+也就是说，signal 现在不应再被写成“纯计划”，而应写成“部分落地、尚未闭环”。
 
-### 7.5.1 `AnnotationStatement`
+## 4.5 “仓库内存在 `doc/module_impl/frontend_implementation_plan.md`”不成立
 
-建议做一个 very-early pass：
+当前仓库里并没有这个文件。frontend 相关的事实源文档应以：
 
-- 线性扫描 `SourceFile.statements()` / `Block.statements()`
-- 收集连续的 `AnnotationStatement`
-- 绑定到其后的第一个非注解 statement
-- 若注解后没有有效目标，发诊断
+- `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
 
-这样后续 interface/body phase 都可以像“目标节点自带注解列表”那样消费。
+为主。
 
-### 7.5.2 `ClassDeclaration`
+## 4.6 基于仓库外 `gdparser` 副本的全量 AST 节点结论，应从主报告移除
 
-建议第一版先支持：
+旧报告里大量段落围绕：
 
-- 识别 inner class
-- 给稳定名字 / FQCN
-- 注入 module skeleton 或 class tree
+- 某些 `gdparser` AST 节点是否存在
+- 是否接入 lowering
+- 与 Godot 原生 parser 的结构差异
 
-如果暂不做 lowering，也应显式给出 supported-but-not-emitted 的边界，而不是静默忽略。
+这些内容在“跨仓库调研”里可以有价值，但它们不属于“按当前代码库校对”的主报告事实源。
 
-### 7.5.3 `ConstructorDeclaration`
+当前更稳妥的写法应当是：
 
-建议第一版至少完成：
+- `gdcc` 已依赖 `gdparser:0.4.0`
+- 当前 frontend 已稳定消费 AST 通用结构与浅层声明节点
+- 未来若要展开 `gdparser` AST 形态评估，应另开附录或单独报告
 
-- `_init` 签名采集
-- 参数类型与默认参数分析
-- `baseArguments` 的类型检查
-- 与 `BaseCallExpression` 的一致性约束
+## 4.7 旧版末尾 signal 附录存在编码损坏，应修正
 
-### 7.5.4 `BaseCallExpression`
-
-建议把它视为独立的 call kind，而不是普通 `CallExpression` 特判。
-
-例如：
-
-```java
-public enum ResolvedCallKind {
-    GLOBAL,
-    METHOD,
-    STATIC_METHOD,
-    BASE_METHOD,
-    CONSTRUCTOR_BUILTIN,
-    CONSTRUCTOR_OBJECT,
-    LAMBDA,
-    OBJECT_DYNAMIC,
-    VARIANT_DYNAMIC
-}
-```
-
-### 7.5.5 `AwaitExpression`
-
-当前建议：
-
-- analyzer 识别节点
-- body phase 标记 async requirement / unsupported feature
-- lowering 阶段在当前 milestone 直接拒绝
-
-不要把它当 `UnknownExpression`，否则未来切入 coroutine 会很痛苦。
-
-## 7.6 调用与成员访问策略仍然以后端 resolver 为准
-
-### 7.6.1 调用
-
-- 能静态决议时，与 `BackendMethodCallResolver` 对齐
-- 已知对象缺失 method：warning + `OBJECT_DYNAMIC`
-- `Variant` receiver：`VARIANT_DYNAMIC`
-- 明显参数不兼容：error
-
-### 7.6.2 property
-
-- 已知对象类型 + property 存在：`load_property` / `store_property`
-- 已知对象类型 + property 不存在：
-  - `strictMemberAccess=true` -> error
-  - `strictMemberAccess=false` -> warning + `variant_get_named` / `variant_set_named`
-
-### 7.6.3 index
-
-按当前 `gdcc_low_ir.md` 与 `index_insn_implementation.md`：
-
-- `variant_get_indexed` / `variant_set_indexed`
-- `variant_get_keyed` / `variant_set_keyed`
-- `variant_get_named` / `variant_set_named`
-- `variant_get` / `variant_set`
-
-frontend 要做的是根据 receiver type + key type 选择最合适的语义通道，而不是只看语法外形。
+原文件末尾 signal 附录出现乱码，不能再作为可维护内容保留。本次修订已直接删除乱码表述，并把相关事实合并回正文的 signal 状态章节。
 
 ---
 
-## 8. 当前实现与计划中的关键风险（更新版）
+## 5. 当前仍然缺失的关键语义能力
 
-## 8.1 `gdparser` 已经认识的新节点，`gdcc` frontend 目前会“静默掉过去”一部分
+尽管基础设施比旧报告描述得更成熟，但真正的 semantic analyzer 仍未落地。当前缺口主要有：
 
-这比旧版报告中的“节点缺失”更危险。
-
-例如：
-
-- `ClassDeclaration`
-- `ConstructorDeclaration`
-- `AnnotationStatement`
-
-这些节点现在已在 AST 中稳定存在，但当前 `FrontendClassSkeletonBuilder` 不会消费它们。如果继续不显式处理，就会出现“语法被成功解析，但 frontend 没有任何语义反馈”的静默遗漏。
-
-## 8.2 `frontend_implementation_plan.md` 关于 method 动态回退的表述仍与 backend 现状不一致
-
-当前 frontend plan 仍保留“method 动态回退要先把 receiver 降成 Variant”的旧说法，而 backend 代码与测试已经证明：
-
-- 已知对象缺失 method -> 可以直接 `OBJECT_DYNAMIC`
-
-这一点建议尽快修订，否则会误导后续实现者。
-
-## 8.3 property fallback 与 backend 现状的冲突仍然存在
-
-这一点没有变化：
-
-- backend 的已知对象 property 缺失 -> fail-fast
-- frontend plan 的宽松策略 -> warning + 动态回退
-
-所以 frontend 必须主动 lower 为 `variant_get_named` / `variant_set_named`，不能把问题留给 backend。
-
-## 8.4 `AwaitExpression` 是“已可解析，但尚无 lowering 合同”的典型节点
-
-这类节点最容易造成设计混乱：
-
-- 如果忽略，会让用户误以为编译器支持了它
-- 如果当 unknown，会污染未来扩展路径
-
-建议尽快建立“recognized but unsupported” 的诊断分类。
-
-## 8.5 `GetNodeExpression` / `PreloadExpression` 的静态类型能力仍受项目元数据边界限制
-
-即便 AST 已有它们，frontend 也不能凭空知道：
-
-- `$Node` 最终对应什么节点类型
-- `preload("res://...")` 资源到底是什么 script / scene / resource
-
-所以近期更合理的是：
-
-- 保守 typing
-- 限制为 warning / unsupported / runtime path
-- 不承诺 Godot 编辑器级别的静态精度
-
-## 8.6 当前诊断体系仍缺少稳定的 warning category 命名空间
-
-在引入更多已识别 AST 节点后，这个问题更明显了。至少应规划：
-
-- `sema.unsafe_method_access`
-- `sema.unsafe_property_access`
-- `sema.inferred_declaration`
-- `sema.untyped_declaration`
-- `sema.narrowing_conversion`
-- `sema.unsupported.await`
-- `sema.unsupported.annotation_target`
+1. **没有独立的 frontend interface phase。** 当前只有 skeleton builder，还没有统一的 declaration/interface analysis 结果层。
+2. **没有 frontend body phase。** 当前没有 AST 级 binder、表达式类型推断、assignable analyzer、return/suite merge、lambda capture 分析器。
+3. **没有统一的 `FrontendAnalysisResult`。** 还没有一套 side-table 容器承载 symbol binding、expression type、resolved call、resolved member、scope-by-node 等分析结果。
+4. **没有 frontend binder 对现有 scope/resolver 的正式接线。** `FrontendBindingKind`、`ClassScope`、`ResolveRestriction`、shared resolver 仍主要停留在基础设施层。
+5. **没有 AST body -> LIR lowering。** 当前 `FrontendClassSkeletonBuilder` 只产生 `LirClassDef` 的声明骨架，并不生成函数体 LIR。
+6. **没有前端级 feature boundary 诊断框架。** 对 `await`、更完整 annotation 语义、constructor/base-call/self/cast/type-test 等节点，还没有统一的“recognized but unsupported / deferred” 诊断策略。
 
 ---
 
-## 9. 建议新增或调整的测试组
+## 6. 修订后的建议路线
 
-除了旧版报告中的绑定/调用/返回合流测试，这次建议再补 6 组与新 AST 相关的测试。
+基于当前仓库状态，后续实现路径建议这样表述。
 
-### 9.1 前端语义测试
+## 6.1 阶段顺序建议
 
-1. `FrontendAnnotationAttachmentTest`
-   - 连续注解绑定到下一个 declaration/statement
-   - 无目标注解报错
+建议将 frontend 的近期阶段写成：
 
-2. `FrontendSelfBindingTest`
-   - `SelfExpression` 在 instance context 绑定为当前类实例
-   - static context 报错
+1. `Parse`
+2. `Skeleton / Inheritance`
+3. `Interface`
+4. `Body`
+5. `Lowering`
 
-3. `FrontendCastAndTypeTestTest`
-   - `as` 的结果类型
-   - `is` / `is not` 的结果类型
-   - 未来可逐步扩到 branch narrowing
+这一定义的理由不再需要依赖外部 Godot 快照，而是直接来自当前仓库自己的分层现实：
 
-4. `FrontendConstructorAndBaseCallTest`
-   - `_init` 参数类型
-   - `BaseCallExpression` 的 owner / signature 选择
+- parse 已稳定
+- skeleton 已存在
+- scope/resolver 基础设施已具备
+- body analyzer 与 lowering 之间仍然有明显语义断层
 
-5. `FrontendSignalBindingTest`
-   - `my_signal` / `self.my_signal` / `obj.some_signal` 的绑定结果稳定，且不再把 signal 临时伪装成 property 或 unknown
-   - static context 下访问 signal 命中后报错，不回退 outer/global 同名绑定
+## 6.2 `ClassRegistry.findType(...)` 只保留给 skeleton 容错
 
-6. `FrontendAwaitUnsupportedDiagnosticTest`
-   - `AwaitExpression` 应给稳定 unsupported diagnostic，而不是 unknown node
+当前 `FrontendClassSkeletonBuilder` 使用 `findType(...)` 是合理的，因为它的目标是：
 
-7. `FrontendInnerClassSkeletonTest`
-   - `ClassDeclaration` 至少要么被纳入 skeleton，要么显式报 unsupported；不能静默丢失
+- 尽量完成类骨架收集
+- 对未知类型发 warning 并降级到 `Variant`
 
-### 9.2 现有 parity / fallback 测试仍然应该保留
+但从 interface/body phase 开始，建议切换到：
 
-1. `FrontendCallResolutionParityTest`
-2. `FrontendDynamicPropertyFallbackTest`
-3. `FrontendKnownMethodDynamicFallbackTest`
-4. `FrontendReturnTypeMergeTest`
-5. `FrontendScopeCaptureTest`
-6. `FrontendTypedCollectionCompatibilityTest`
+- `resolveTypeMeta(...)`
+- `Scope.resolveTypeMeta(...)`
+
+不要再把宽松 `findType(...)` 直接带入未来 binder。
+
+## 6.3 未来 binder 应直接接现有 scope / resolver，而不是重写一套规则
+
+当前仓库已经有：
+
+- `ClassScope` / `CallableScope` / `BlockScope`
+- `ResolveRestriction`
+- `ScopeMethodResolver`
+- `ScopePropertyResolver`
+- 当前工作区的 `ScopeSignalResolver`
+
+所以未来 binder 最合适的职责是：
+
+- 根据 AST 语法上下文选择正确 namespace / resolver
+- 产出 binding、type、call、member side-table
+- 负责用户可见诊断
+
+而不是重新发明：
+
+- 名字查找顺序
+- static-context blocking 规则
+- dynamic fallback 边界
+
+## 6.4 signal 的下一步应是“接线”，不是“重做模型”
+
+signal 相关模型和 scope 语义已经有明显进展，因此下一步重点应当是：
+
+1. 把 `ScopeSignalResolver` 正式纳入 shared resolver 事实源
+2. 把 signal binding 接入 frontend binder 结果
+3. 明确 `my_signal` / `self.my_signal` / `obj.some_signal` 的分析分流
+4. 保持当前 static-context blocked-hit shadowing 语义不回退
+
+不建议再回到“是否要把 signal 先伪装成 property/function”的旧思路。
+
+## 6.5 建议新增的测试重心也应随之调整
+
+当前最值得补的测试，不再是 scope 协议本身，而是基础设施接线后的 frontend 语义测试：
+
+- binder 对 `Scope` / resolver 的接线测试
+- strict `TYPE_META` 消费测试
+- signal binding 与 signal member access 测试
+- constructor / base-call 分析测试
+- annotation attachment / annotation target 测试
+- recognized-but-unsupported feature 诊断测试
 
 ---
 
-## 10. 最终建议
+## 7. 最终结论
 
-如果目标是“参考 Godot 当前 `GDScriptAnalyzer` 创建 GDCC 前端语义分析器”，我建议你按下面这条路线推进：
+如果只按当前仓库与当前工作区代码来下结论，那么最准确的描述应当是：
 
-1. **继续借鉴 Godot 的阶段结构与安全思想**，不要照搬其 mutable AST 实现方式。
-2. **把注意力从“gdparser 还缺什么 AST 节点”转移到“如何消费已经补齐的 AST”**。
-3. **立即把 `AnnotationStatement`、`TypeRef`、`ClassDeclaration`、`ConstructorDeclaration`、`BaseCallExpression` 纳入 side-table 设计**。
-4. **调用、属性、索引、所有权语义继续以后端现有 resolver/document 为事实源**。
-5. **对 `AwaitExpression`、`PreloadExpression`、`GetNodeExpression` 采取“已识别、边界明确”的策略**：
-   - 能分析就分析
-   - 暂不能 lower 的就稳定报 unsupported
-   - 不要再退回 unknown node 思路
-
-一句话总结：
-
-> 现在最适合 GDCC 的 frontend 方案，已经不再是“围绕 AST 缺口做极小 MVP”，而是“利用已经补齐的 `gdparser` AST，构建一个以 side-table 为核心、以后端语义合同为边界、阶段划分对齐 Godot 的语义分析器”。
+> GDCC frontend 已经完成了 `gdparser:0.4.0` 接入、容错解析、类骨架构建、严格/宽松 type lookup 共存、restriction-aware scope 协议、signal 的 unqualified scope 语义，以及一套较完整的 scope/shared-resolver 基础设施；但真正的 frontend semantic analyzer 仍未落地，当前最大的工程任务已经不再是“AST 还缺什么”，而是“如何把现有 scope、type-meta、method/property/signal resolver 正式接入 interface/body 分析结果，并形成稳定的 AST -> LIR 语义闭环”。
 
 ---
 
-## 11. 参考资料
+## 8. 参考资料
 
-### 11.1 `gdcc` 本地仓库
+### 8.1 当前仓库中的文档
 
-- `doc/module_impl/frontend_implementation_plan.md`
-- `doc/gdcc_low_ir.md`
+- `doc/module_impl/common_rules.md`
+- `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
 - `doc/gdcc_type_system.md`
+- `doc/gdcc_low_ir.md`
 - `doc/gdcc_c_backend.md`
 - `doc/gdcc_ownership_lifecycle_spec.md`
-- `doc/module_impl/call_method_implementation.md`
-- `doc/module_impl/load_store_property_implementation.md`
-- `doc/module_impl/index_insn_implementation.md`
-- `doc/module_impl/operator_insn_implementation.md`
+- `doc/module_impl/backend/load_static_implementation.md`
+
+### 8.2 当前仓库中的实现
+
+- `build.gradle.kts`
 - `src/main/java/dev/superice/gdcc/frontend/parse/GdScriptParserService.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendBindingKind.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/ClassScope.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/CallableScope.java`
+- `src/main/java/dev/superice/gdcc/frontend/scope/BlockScope.java`
 - `src/main/java/dev/superice/gdcc/scope/ClassRegistry.java`
+- `src/main/java/dev/superice/gdcc/scope/ResolveRestriction.java`
 - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
 - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolver.java`
-- `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenTest.java`
-- `src/test/java/dev/superice/gdcc/backend/c/gen/insn/BackendPropertyAccessResolverTest.java`
+- `src/main/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolver.java`
+- `src/main/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolver.java`
+- 当前工作区新增实现：`src/main/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolver.java`、`src/main/java/dev/superice/gdcc/scope/resolver/ScopeResolvedSignal.java`
 
-### 11.2 本地 `gdparser`
+### 8.3 当前仓库中的测试
 
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/Expression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/Statement.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/TypeRef.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/SelfExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/GetNodeExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/PreloadExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/CastExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/TypeTestExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/AwaitExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/AnnotationStatement.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/AssertStatement.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/ClassDeclaration.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/ConstructorDeclaration.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/BaseCallExpression.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/ast/MatchSection.java`
-- `E:/Projects/gdparser/src/main/java/dev/superice/gdparser/frontend/lowering/CstToAstMapper.java`
-- `E:/Projects/gdparser/src/test/java/dev/superice/gdparser/frontend/lowering/CstToAstMapperTest.java`
-
-### 11.3 Godot / Godot Docs（2026-03-06 核对）
-
-- `godotengine/godot`：`modules/gdscript/gdscript_analyzer.cpp`
-- `godotengine/godot`：`modules/gdscript/gdscript_parser.h`
-- `godotengine/godot-docs`：`tutorials/scripting/gdscript/static_typing.rst`
-
-### 11.4 Signal scope status (2026-03-09)
-
-- `signal` scope �����Ķ�����ʵԴΪ `doc/module_impl/frontend/scope_architecture_refactor_plan.md`��
-- ���ڶ� `godotengine/godot` �� `modules/gdscript/gdscript_parser.h`��`modules/gdscript/gdscript_analyzer.cpp` �Լ� analyzer ���Խű� `modules/gdscript/tests/scripts/analyzer/features/static_non_static_access.gd` �Ķ��գ�GDCC ��ǰ�������á�signal ����ֵ��ʵ����Ա��static context ���к������ֹ���Ա��� shadowing���Ľ��ۡ�
-- ���� 2026-03-09��GDCC ����� signal �ƻ��� S0/S1��ģ�Ͳ�λ�����ɱ� `GdSignalType`��`ClassScope` �� receiver signal �������Ӧ targeted tests ����ء�
-- ��������� receiver-based signal metadata lookup �� frontend binder ���룬���������ѭ `scope_architecture_refactor_plan.md` �� S2+ �Ľ׶α߽磬���ð� signal ����Ϊ property/function ����ʱ��֧��
+- `src/test/java/dev/superice/gdcc/frontend/parse/FrontendParseSmokeTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendInheritanceCycleTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ClassScopeSignalResolutionTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/FrontendStaticContextShadowingTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/scope/ScopeCaptureShapeTest.java`
+- `src/test/java/dev/superice/gdcc/scope/ScopeProtocolTest.java`
+- `src/test/java/dev/superice/gdcc/scope/ClassRegistryTypeMetaTest.java`
+- `src/test/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolverTest.java`
+- `src/test/java/dev/superice/gdcc/scope/resolver/ScopePropertyResolverTest.java`
+- 当前工作区测试：`src/test/java/dev/superice/gdcc/scope/resolver/ScopeSignalResolverTest.java`
