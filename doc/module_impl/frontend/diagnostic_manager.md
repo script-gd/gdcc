@@ -115,9 +115,10 @@ frontend 当前已经冻结的诊断承载方式如下：
 - analyzer 及后续 phase 之间共享的前端分析数据对象
 - 内部统一拥有完整 side-table 集合
 - 不再通过构造流程单独传各个 side-table
-- 通过 `publishPhaseBoundary(...)` 在阶段边界发布：
-    - `FrontendModuleSkeleton`
-    - `DiagnosticSnapshot`
+- 通过显式 `updateXXX(...)` 方法更新共享分析数据字段
+    - `updateModuleSkeleton(...)`
+    - `updateDiagnostics(...)`
+    - side-table 更新方法保持各自独立
 
 当前稳定拥有的 side-table 拓扑包括：
 
@@ -206,9 +207,9 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
-- analyze 阶段结束时通过 `publishPhaseBoundary(...)` 发布：
-    - `FrontendModuleSkeleton`
-    - analyze 边界的 `DiagnosticSnapshot`
+- analyze 阶段结束时通过显式字段更新方法写回：
+    - `updateModuleSkeleton(...)`
+    - `updateDiagnostics(...)`
 
 ### 3.4 exception
 

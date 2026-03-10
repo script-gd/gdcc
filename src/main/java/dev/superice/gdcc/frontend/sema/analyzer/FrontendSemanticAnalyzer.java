@@ -1,7 +1,9 @@
-package dev.superice.gdcc.frontend.sema;
+package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
+import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import dev.superice.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 
@@ -50,7 +52,8 @@ public final class FrontendSemanticAnalyzer {
                 diagnosticManager,
                 analysisData
         );
-        analysisData.publishPhaseBoundary(moduleSkeleton, diagnosticManager.snapshot());
+        analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }
 }

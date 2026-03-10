@@ -27,16 +27,32 @@ class FrontendAnalysisDataTest {
     }
 
     @Test
-    void publishPhaseBoundaryMakesSkeletonAndDiagnosticsReadable() {
+    void updatePublishedFieldsMakesSkeletonAndDiagnosticsReadable() {
         var analysisData = FrontendAnalysisData.bootstrap();
         var diagnostics = new DiagnosticSnapshot(List.of(
                 FrontendDiagnostic.warning("sema.unsupported_annotation", "warning", null, null)
         ));
         var moduleSkeleton = new FrontendModuleSkeleton("test_module", List.of(), List.of(), diagnostics);
 
-        analysisData.publishPhaseBoundary(moduleSkeleton, diagnostics);
+        analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnostics);
 
         assertSame(moduleSkeleton, analysisData.moduleSkeleton());
         assertEquals(diagnostics, analysisData.diagnostics());
+    }
+
+    @Test
+    void updateAnnotationsByAstCopiesContentsWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.annotationsByAst();
+        var replacement = new FrontendAstSideTable<List<FrontendGdAnnotation>>();
+        var astNode = new Object();
+        var annotation = new FrontendGdAnnotation("tool", List.of(), null);
+        replacement.put(astNode, List.of(annotation));
+
+        analysisData.updateAnnotationsByAst(replacement);
+
+        assertSame(originalSideTable, analysisData.annotationsByAst());
+        assertEquals(List.of(annotation), analysisData.annotationsByAst().get(astNode));
     }
 }

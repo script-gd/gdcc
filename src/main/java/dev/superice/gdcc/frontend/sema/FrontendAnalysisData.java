@@ -11,10 +11,10 @@ import java.util.Objects;
 
 /// Unified frontend analysis data container shared across semantic phases.
 ///
-/// The object is created early with a complete set of mutable side tables, then later phase
-/// boundaries publish the stable `moduleSkeleton` and diagnostic snapshot once those results
+/// The object is created early with a complete set of mutable side tables, then later phases
+/// update each published field through explicit `updateXxx(...)` methods once those results
 /// exist. This keeps downstream helpers passing one semantic data object instead of threading
-/// individual side tables through every call.
+/// individual side tables through every call while still making each mutation site obvious.
 public final class FrontendAnalysisData {
     private @Nullable FrontendModuleSkeleton moduleSkeleton;
     private @Nullable DiagnosticSnapshot diagnostics;
@@ -53,16 +53,36 @@ public final class FrontendAnalysisData {
         );
     }
 
-    /// Publishes the latest completed phase boundary into this shared analysis data object.
-    ///
-    /// Later semantic phases can refresh the boundary snapshot again after they mutate the
-    /// underlying side tables or append additional diagnostics to the shared manager.
-    public void publishPhaseBoundary(
-            @NotNull FrontendModuleSkeleton moduleSkeleton,
-            @NotNull DiagnosticSnapshot diagnostics
-    ) {
+    public void updateModuleSkeleton(@NotNull FrontendModuleSkeleton moduleSkeleton) {
         this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
+    }
+
+    public void updateDiagnostics(@NotNull DiagnosticSnapshot diagnostics) {
         this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics must not be null");
+    }
+
+    public void updateAnnotationsByAst(@NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst) {
+        replaceSideTableContents(this.annotationsByAst, annotationsByAst, "annotationsByAst");
+    }
+
+    public void updateScopesByAst(@NotNull FrontendAstSideTable<Scope> scopesByAst) {
+        replaceSideTableContents(this.scopesByAst, scopesByAst, "scopesByAst");
+    }
+
+    public void updateSymbolBindings(@NotNull FrontendAstSideTable<FrontendBinding> symbolBindings) {
+        replaceSideTableContents(this.symbolBindings, symbolBindings, "symbolBindings");
+    }
+
+    public void updateExpressionTypes(@NotNull FrontendAstSideTable<GdType> expressionTypes) {
+        replaceSideTableContents(this.expressionTypes, expressionTypes, "expressionTypes");
+    }
+
+    public void updateResolvedMembers(@NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers) {
+        replaceSideTableContents(this.resolvedMembers, resolvedMembers, "resolvedMembers");
+    }
+
+    public void updateResolvedCalls(@NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls) {
+        replaceSideTableContents(this.resolvedCalls, resolvedCalls, "resolvedCalls");
     }
 
     public @NotNull FrontendModuleSkeleton moduleSkeleton() {
@@ -102,5 +122,19 @@ public final class FrontendAnalysisData {
             throw new IllegalStateException(fieldName + " has not been published yet");
         }
         return value;
+    }
+
+    private static <V> void replaceSideTableContents(
+            @NotNull FrontendAstSideTable<V> target,
+            @NotNull FrontendAstSideTable<? extends V> source,
+            @NotNull String fieldName
+    ) {
+        Objects.requireNonNull(target, "target must not be null");
+        Objects.requireNonNull(fieldName, "fieldName must not be null");
+        if (target == Objects.requireNonNull(source, fieldName + " must not be null")) {
+            return;
+        }
+        target.clear();
+        target.putAll(source);
     }
 }
