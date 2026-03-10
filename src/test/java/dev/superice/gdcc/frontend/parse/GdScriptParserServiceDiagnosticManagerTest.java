@@ -47,7 +47,7 @@ class GdScriptParserServiceDiagnosticManagerTest {
                 """, diagnostics);
 
         assertFalse(unit.parseDiagnostics().isEmpty());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
         assertTrue(unit.parseDiagnostics().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
         assertTrue(unit.parseDiagnostics().stream().anyMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
@@ -88,7 +88,7 @@ class GdScriptParserServiceDiagnosticManagerTest {
         var unit = parserService.parseUnit(Path.of("tmp", "internal_failure.gd"), "class_name Broken", diagnostics);
 
         assertEquals(1, unit.parseDiagnostics().size());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
 
         var diagnostic = unit.parseDiagnostics().getFirst();
         assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());

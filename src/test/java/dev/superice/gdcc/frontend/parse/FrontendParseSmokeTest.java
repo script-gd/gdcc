@@ -28,7 +28,7 @@ class FrontendParseSmokeTest {
         assertFalse(unit.ast().statements().isEmpty());
         assertNotNull(unit.parseDiagnostics());
         assertEquals(sourcePath, unit.path());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
     }
 
     @Test
@@ -48,7 +48,7 @@ class FrontendParseSmokeTest {
 
         assertNotNull(unit.ast());
         assertFalse(unit.parseDiagnostics().isEmpty());
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
         assertTrue(
                 unit.parseDiagnostics().stream()
                         .anyMatch(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)

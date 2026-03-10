@@ -5,10 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.Arrays;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class DiagnosticManagerTest {
     @Test
@@ -23,7 +20,7 @@ class DiagnosticManagerTest {
 
         assertEquals(1, beforeSecond.size());
         assertEquals(first, beforeSecond.getFirst());
-        assertEquals(Arrays.asList(first, second), manager.snapshot());
+        assertEquals(Arrays.asList(first, second), manager.snapshot().asList());
     }
 
     @Test
@@ -32,7 +29,7 @@ class DiagnosticManagerTest {
         manager.report(FrontendDiagnostic.warning("parse.lowering", "immutable", null, null));
 
         var snapshot = manager.snapshot();
-        assertThrows(UnsupportedOperationException.class, () -> snapshot.add(
+        assertThrows(UnsupportedOperationException.class, () -> snapshot.asList().add(
                 FrontendDiagnostic.error("parse.internal", "should fail", null, null)
         ));
     }
@@ -84,6 +81,22 @@ class DiagnosticManagerTest {
         assertEquals("parse.internal", error.category());
         assertEquals("error", error.message());
         assertEquals(sourcePath, error.sourcePath());
-        assertEquals(null, error.range());
+        assertNull(error.range());
+    }
+
+    @Test
+    void snapshotProvidesConvenientSummaryQueriesWithoutRequiringRawListAccess() {
+        var manager = new DiagnosticManager();
+        manager.warning("parse.lowering", "warning", null, null);
+
+        var warningOnly = manager.snapshot();
+        assertFalse(warningOnly.isEmpty());
+        assertEquals(1, warningOnly.size());
+        assertFalse(warningOnly.hasErrors());
+
+        manager.error("parse.internal", "error", null, null);
+        var withError = manager.snapshot();
+        assertTrue(withError.hasErrors());
+        assertEquals(2, withError.size());
     }
 }

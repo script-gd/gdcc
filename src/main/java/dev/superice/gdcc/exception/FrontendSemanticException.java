@@ -1,9 +1,8 @@
 package dev.superice.gdcc.exception;
 
-import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.List;
 import java.util.Objects;
 
 /// Exception thrown when frontend semantic analysis must fail-fast.
@@ -11,14 +10,14 @@ import java.util.Objects;
 /// Kept in the shared exception package so semantic failures follow the same
 /// repository-wide exception contract as backend and scope failures.
 public final class FrontendSemanticException extends GdccException {
-    private final @NotNull List<FrontendDiagnostic> diagnostics;
+    private final @NotNull DiagnosticSnapshot diagnostics;
 
-    public FrontendSemanticException(@NotNull String message, @NotNull List<FrontendDiagnostic> diagnostics) {
+    public FrontendSemanticException(@NotNull String message, @NotNull DiagnosticSnapshot diagnostics) {
         super(message);
-        this.diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics must not be null");
     }
 
-    public @NotNull List<FrontendDiagnostic> diagnostics() {
+    public @NotNull DiagnosticSnapshot diagnostics() {
         return diagnostics;
     }
 }

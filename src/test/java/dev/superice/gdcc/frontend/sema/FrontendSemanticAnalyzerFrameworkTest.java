@@ -3,6 +3,8 @@ package dev.superice.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -12,6 +14,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,6 +23,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     @Test
     void analyzeBootstrapsSideTablesAndCollectsSemanticallyRelevantAnnotations() throws Exception {
         var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "annotated_player.gd"), """
                 @tool
                 class_name AnnotatedPlayer
@@ -36,11 +40,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 
                 @warning_ignore_restore("unused_variable")
                 var keep := 2
-                """, new DiagnosticManager());
+                """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry);
+        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
         var topLevelStatements = unit.ast().statements();
         var hpProperty = findVariable(topLevelStatements, "hp");
         var tmpProperty = findVariable(topLevelStatements, "tmp");
@@ -61,6 +65,97 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
         assertNotNull(result.diagnostics());
+        assertEquals(diagnostics.snapshot(), result.diagnostics());
+        assertEquals(result.moduleSkeleton().diagnostics(), result.diagnostics());
+    }
+
+    @Test
+    void analyzeCollectsNestedBlockAnnotationsAndStillIgnoresRegionAnnotations() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "nested_annotations.gd"), """
+                class_name NestedAnnotations
+                extends Node
+                
+                func ping(value):
+                    @warning_ignore("unused_variable")
+                    var inner := 1
+                    @warning_ignore_start("unused_variable")
+                    var region_ignored := 2
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+
+        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var bodyStatements = pingFunction.body().statements();
+        var innerVariable = findVariable(bodyStatements, "inner");
+        var regionIgnoredVariable = findVariable(bodyStatements, "region_ignored");
+
+        assertEquals(diagnostics.snapshot(), result.diagnostics());
+        assertEquals(List.of("warning_ignore"), annotationNames(result.annotationsByAst().get(innerVariable)));
+        assertNull(result.annotationsByAst().get(regionIgnoredVariable));
+    }
+
+    @Test
+    void analyzeDoesNotAutoImportUnitParseDiagnosticsOutsideSharedManagerPipeline() throws Exception {
+        var parserService = new GdScriptParserService();
+        var parsed = parserService.parseUnit(Path.of("tmp", "manual_unit.gd"), """
+                class_name ManualUnit
+                extends Node
+                
+                func ping():
+                    pass
+                """, new DiagnosticManager());
+        var unit = new FrontendSourceUnit(
+                parsed.path(),
+                parsed.source(),
+                parsed.ast(),
+                List.of(FrontendDiagnostic.error(
+                        "parse.lowering",
+                        "manually attached parse diagnostic",
+                        parsed.path(),
+                        null
+                ))
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+        var diagnostics = new DiagnosticManager();
+
+        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+
+        assertEquals(1, result.moduleSkeleton().classDefs().size());
+        assertTrue(diagnostics.isEmpty());
+        assertTrue(result.moduleSkeleton().diagnostics().isEmpty());
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    /// Anchors the phase-boundary snapshot rule: the analysis data captures the shared
+    /// manager state once, and later manager mutations must not retroactively rewrite either
+    /// `FrontendAnalysisData` or its nested `FrontendModuleSkeleton`.
+    @Test
+    void analyzePublishesStableDiagnosticsSnapshotEvenIfManagerChangesLater() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "stable_snapshot.gd"), """
+                class_name StableSnapshot
+                extends Node
+                
+                func _ready(
+                    pass
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analyzer = new FrontendSemanticAnalyzer();
+
+        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var beforeMutation = result.diagnostics();
+        diagnostics.error("sema.synthetic", "late diagnostic", unit.path(), null);
+
+        assertFalse(beforeMutation.isEmpty());
+        assertEquals(unit.parseDiagnostics(), beforeMutation.asList());
+        assertEquals(beforeMutation, result.diagnostics());
+        assertEquals(beforeMutation, result.moduleSkeleton().diagnostics());
+        assertEquals(beforeMutation.size() + 1, diagnostics.snapshot().size());
     }
 
     private VariableDeclaration findVariable(List<?> statements, String name) {
@@ -79,32 +174,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 .filter(functionDeclaration -> functionDeclaration.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Function not found: " + name));
-    }
-
-    @Test
-    void analyzeCollectsNestedBlockAnnotationsAndStillIgnoresRegionAnnotations() throws Exception {
-        var parserService = new GdScriptParserService();
-        var unit = parserService.parseUnit(Path.of("tmp", "nested_annotations.gd"), """
-                class_name NestedAnnotations
-                extends Node
-                
-                func ping(value):
-                    @warning_ignore("unused_variable")
-                    var inner := 1
-                    @warning_ignore_start("unused_variable")
-                    var region_ignored := 2
-                """, new DiagnosticManager());
-        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var analyzer = new FrontendSemanticAnalyzer();
-
-        var result = analyzer.analyze("test_module", List.of(unit), registry);
-        var pingFunction = findFunction(unit.ast().statements(), "ping");
-        var bodyStatements = pingFunction.body().statements();
-        var innerVariable = findVariable(bodyStatements, "inner");
-        var regionIgnoredVariable = findVariable(bodyStatements, "region_ignored");
-
-        assertEquals(List.of("warning_ignore"), annotationNames(result.annotationsByAst().get(innerVariable)));
-        assertNull(result.annotationsByAst().get(regionIgnoredVariable));
     }
 
     private List<String> annotationNames(List<FrontendGdAnnotation> annotations) {

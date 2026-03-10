@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Phase 0 / Phase 1 / Phase 2 已完成，Phase 3+ 待实施
+- 状态：Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4 已完成，Phase 5+ 待实施
 - 更新时间：2026-03-10
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
@@ -34,12 +34,12 @@
 - binder 的 context-sensitive diagnostics
 - deferred / unsupported feature diagnostics
 - signal / type-meta / static-context 的统一错误分流
-- 基于 `FrontendAnalysisResult` 的多 side-table 分析结果构建
+- 基于 `FrontendAnalysisData` 的多 side-table 分析结果构建
 
 因此，本次实施的目标不是再引入一种新的 diagnostic 数据模型，而是引入一个统一的、显式拥有生命周期的 `DiagnosticManager`，并把 frontend 诊断流程重构为：
 
 - 过程态：`DiagnosticManager`
-- 产物态：`FrontendSourceUnit` / `FrontendModuleSkeleton` / `FrontendAnalysisResult` / `FrontendSemanticException`
+- 产物态：`FrontendSourceUnit` / `FrontendModuleSkeleton` / `FrontendAnalysisData` / `FrontendSemanticException`
 
 ---
 
@@ -76,7 +76,9 @@
 
 ### 2.3 结果对象已经隐含“两层语义”，但没有统一抽象
 
-`FrontendSourceUnit`、`FrontendModuleSkeleton`、`FrontendAnalysisResult`、`FrontendSemanticException` 都以不可变 `List<FrontendDiagnostic>` 作为结果暴露。
+`FrontendSourceUnit` 仍以不可变 `List<FrontendDiagnostic>` 暴露 parse-phase 局部快照，而
+`FrontendModuleSkeleton`、`FrontendAnalysisData`、`FrontendSemanticException` 已收敛为显式的
+`DiagnosticSnapshot` 结果包装。
 
 这说明当前代码已经事实性区分了：
 
@@ -163,7 +165,7 @@
 - `ClassRegistry classRegistry`
 - `DiagnosticManager diagnostics`
 - `Path sourcePath`
-- `FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst`
+- `FrontendAnalysisData analysisData`
 
 若后续 skeleton/interface phase 需要扩展更多环境信息，应继续追加到 `SkeletonBuildContext`，而不是恢复散装参数传递。
 
@@ -200,7 +202,7 @@
 2. 各 phase 只通过 manager 追加诊断
 3. 阶段结果对象在边界上导出快照
 4. 异常对象只持有抛出时的诊断快照
-5. `FrontendAnalysisResult` 持有最终分析阶段的诊断快照
+5. `FrontendAnalysisData` 持有最终分析阶段的 `DiagnosticSnapshot`
 
 推荐接口轮廓如下：
 
@@ -212,7 +214,7 @@ public final class DiagnosticManager {
     public void error(@NotNull String category, @NotNull String message, @Nullable Path sourcePath, @Nullable FrontendRange range);
     public boolean hasErrors();
     public boolean isEmpty();
-    public @NotNull List<FrontendDiagnostic> snapshot();
+    public @NotNull DiagnosticSnapshot snapshot();
 }
 ```
 
@@ -223,7 +225,7 @@ private record SkeletonBuildContext(
         @NotNull ClassRegistry classRegistry,
         @NotNull DiagnosticManager diagnostics,
         @NotNull Path sourcePath,
-        @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
+        @NotNull FrontendAnalysisData analysisData
 ) {
 }
 ```
@@ -400,12 +402,27 @@ private record SkeletonBuildContext(
   - `ClassRegistry`
   - `DiagnosticManager`
   - `Path sourcePath`
-  - `annotationsByAst`
+  - `FrontendAnalysisData`（从而携带完整 side-table 集合）
 - skeleton 相关测试继续通过：
   - `FrontendClassSkeletonTest`
   - `FrontendClassSkeletonAnnotationTest`
-  - `FrontendInheritanceCycleTest`
+- `FrontendInheritanceCycleTest`
 - 类型降级 warning、重复类名 error、继承环 error 都由 manager 收集
+
+### 当前状态（2026-03-10）
+
+- [x] 已完成：`FrontendClassSkeletonBuilder.build(...)` 已改为显式接收 `DiagnosticManager`，无 manager 兼容入口已删除
+- [x] 已完成：builder 顶层不再创建局部 `ArrayList<FrontendDiagnostic>`，正常路径与 fail-fast 路径统一写入共享 manager
+- [x] 已完成：新增私有 `SkeletonBuildContext`，统一封装 `ClassRegistry`、`DiagnosticManager`、`Path sourcePath`、`FrontendAnalysisData`
+- [x] 已完成：`SkeletonBuildContext` 现在通过 `FrontendAnalysisData` 携带完整 side-table 集合，skeleton phase 不再只看到局部 annotation table
+- [x] 已完成：`buildClassCandidate(...)`、`toLirSignal(...)`、`toLirProperty(...)`、`toLirFunction(...)`、`resolveTypeOrVariant(...)` 等 helper 已迁移为基于上下文对象工作，不再裸传 diagnostics list
+- [x] 已完成：duplicate class 与 inheritance cycle 路径会先写入 manager，再以 `diagnosticManager.snapshot()` 构造 `FrontendSemanticException`
+- [x] 已完成：`FrontendModuleSkeleton` 现在持有 skeleton 阶段边界的 `DiagnosticSnapshot`；builder 不会重新导入 `FrontendSourceUnit.parseDiagnostics()`
+- [x] 已完成：测试已锚定以下 Phase 3 行为：
+  - builder 可在共享 parse->skeleton pipeline 中保留 parse diagnostics，且不会重复导入
+  - 手工构造 `FrontendSourceUnit` 且未向 manager 导入 `parseDiagnostics` 时，builder 不会擅自补导入
+  - builder 会把 annotation side-table 写入共享 `FrontendAnalysisData`，供后续 phase 继续复用
+  - registry 注入、注解收集、继承环 fail-fast 语义保持稳定
 
 ---
 
@@ -413,7 +430,7 @@ private record SkeletonBuildContext(
 
 ### 目标
 
-把 analyzer 入口也切换到显式 manager 驱动，让 `FrontendAnalysisResult` 成为 manager 的结果快照，而不是隐式拼装产物。
+把 analyzer 入口也切换到显式 manager 驱动，让 `FrontendAnalysisData` 成为 manager 的结果快照，而不是隐式拼装产物。
 
 ### 执行清单
 
@@ -423,17 +440,31 @@ private record SkeletonBuildContext(
 - 冻结 parse diagnostics 导入规则：
   - parse 与 analyze 处于同一 manager 流程时，不重复导入
   - 若调用方手工构造 `FrontendSourceUnit`，则必须在进入 analyzer 前自行决定是否导入其 parse diagnostics
-- 调整 `FrontendAnalysisResult.bootstrap(...)` 或相关构造流程，使其从 manager 快照获得 diagnostics
+- 调整 `FrontendAnalysisData` 构造流程，使其先建立完整 side-table 拓扑，再通过 phase-boundary publish API 接收 manager 快照
 - `FrontendModuleSkeleton` 仍保存 skeleton 阶段的诊断快照
-- `FrontendAnalysisResult` 保存 analyze 阶段完成时的诊断快照
+- `FrontendAnalysisData` 保存 analyze 阶段完成时的诊断快照
 
 ### 验收标准
 
 - `FrontendSemanticAnalyzer` 不再存在无 manager 入口
-- `FrontendAnalysisResult.diagnostics()` 与 analyze 完成时的 manager 快照一致
+- `FrontendAnalysisData.diagnostics()` 与 analyze 完成时的 manager 快照一致
 - `FrontendSemanticAnalyzerFrameworkTest` 继续通过，并补充验证：
   - manager 中的诊断与 result 中一致
   - analyzer 不会重复导入 parse diagnostics
+
+### 当前状态（2026-03-10）
+
+- [x] 已完成：`FrontendSemanticAnalyzer.analyze(...)` 已改为显式接收 `DiagnosticManager`，无 manager 版本已删除
+- [x] 已完成：analyzer 已冻结“不自动导入 `FrontendSourceUnit.parseDiagnostics()`”规则，手工构造 unit 的调用方必须自行决定是否向 manager 导入 parse diagnostics
+- [x] 已完成：analyzer 现在返回共享 `FrontendAnalysisData`，并在整个 analyze 流程中围绕同一份完整分析数据对象推进，而不是在阶段末单独拼装 side-table
+- [x] 已完成：已将 `FrontendAnalysisResult` 重命名为 `FrontendAnalysisData`，并将其语义收口为共享 frontend 分析数据载体
+- [x] 已完成：`FrontendAnalysisData` 不再通过构造流程单独传递各个 side-table，而是在对象内部统一拥有完整 side-table 集合
+- [x] 已完成：`FrontendAnalysisData.bootstrap()` 现在只负责建立完整 side-table 拓扑，`publishPhaseBoundary(...)` 负责在阶段边界发布 `moduleSkeleton` 与 diagnostics snapshot
+- [x] 已完成：`FrontendAnalysisData.diagnostics()` 与 analyze 完成时的 manager 快照一致，`FrontendModuleSkeleton` 继续保留 skeleton 阶段 `DiagnosticSnapshot`
+- [x] 已完成：测试已锚定以下 Phase 4 行为：
+  - 共享 manager 的 parse->analyze 流程不会重复导入 parse diagnostics
+  - 手工构造带 `parseDiagnostics` 的 unit 且未导入 manager 时，analyzer 不会擅自补导入
+  - result/moduleSkeleton 的 diagnostics 快照在分析结束后保持稳定，不会被后续 manager 追加改写
 
 ---
 
@@ -445,7 +476,7 @@ private record SkeletonBuildContext(
 
 ### 执行清单
 
-- 保持 `FrontendSemanticException` 构造参数为不可变 `List<FrontendDiagnostic>`
+- 保持 `FrontendSemanticException` 构造参数为不可变 `DiagnosticSnapshot`
 - 所有抛出 `FrontendSemanticException` 的路径改为传入 `manager.snapshot()`
 - 明确异常语义：
   - 异常对象只表示“抛出瞬间”的诊断快照
@@ -458,6 +489,7 @@ private record SkeletonBuildContext(
 ### 验收标准
 
 - `FrontendSemanticException` 不依赖 `DiagnosticManager`
+- `FrontendSemanticException.diagnostics()` 返回抛出瞬间的 `DiagnosticSnapshot`
 - 抛出异常时，异常中的 diagnostics 与当时 manager 快照一致
 - `FrontendInheritanceCycleTest` 保持通过
 - 未来新增 fail-fast 场景时，不需要重新发明“异常附带诊断”的机制
@@ -484,6 +516,16 @@ private record SkeletonBuildContext(
 - 新增 feature-boundary diagnostics 时，不再需要新增独立的诊断列表
 - category 命名在 parser/sema/binder 内部可预测、可测试
 - 文档中列出的 deferred 场景能落到统一 manager 通道
+
+### 当前状态（2026-03-10）
+
+- [x] 已完成：`FrontendClassSkeletonBuilder` 中原先的 unsupported annotation TODO 已替换为正式的 manager warning 输出
+- [x] 已完成：property 上出现 skeleton phase 已识别但尚未支持的 annotation 时，现在会产出 `sema.unsupported_annotation` warning
+- [x] 已完成：unsupported annotation 在发出 warning 的同时，仍然保留在共享 `FrontendAnalysisData.annotationsByAst()` 中，供后续 phase 决定是否继续消费
+- [x] 已完成：测试已锚定以下行为：
+  - `export` / `onready` 仍正常映射到 property skeleton annotations
+  - region annotations 仍被忽略，不会制造噪声诊断
+  - unsupported property annotation 会产生结构化 warning，且 diagnostic metadata 与 side-table 保持稳定
 
 ---
 
@@ -588,7 +630,7 @@ private record SkeletonBuildContext(
 2. `GdScriptParserService`、`FrontendClassSkeletonBuilder`、`FrontendSemanticAnalyzer` 全部显式接收 manager
 3. frontend 内部不再保留无 manager 的兼容方法
 4. `FrontendClassSkeletonBuilder` 已使用 `SkeletonBuildContext`，不再裸传 `List<FrontendDiagnostic>`
-5. `FrontendSourceUnit`、`FrontendModuleSkeleton`、`FrontendAnalysisResult`、`FrontendSemanticException` 全部只暴露不可变快照
+5. `FrontendSourceUnit` 暴露 parse-phase 不可变 `List` 快照，其余 frontend 主结果对象暴露 `DiagnosticSnapshot`
 6. parser / skeleton / analyzer / exception 都有对应 targeted tests
 7. `DiagnosticManager` 未渗入 `scope` / shared resolver
 8. 文档与代码状态同步
@@ -602,7 +644,7 @@ private record SkeletonBuildContext(
 1. 在 interface/body phase 中继续沿用 `DiagnosticManager`
 2. 为 deferred / unsupported feature 建立稳定 category 约定
 3. 把 signal、type-meta、static-context、member/call 解析失败统一接入 frontend binder diagnostics
-4. 在 `FrontendAnalysisResult` 中补齐真正的 binding/type/member/call side-table 产物
+4. 在 `FrontendAnalysisData` 中补齐真正的 binding/type/member/call side-table 产物
 
 届时 `DiagnosticManager` 的职责仍应保持稳定：
 

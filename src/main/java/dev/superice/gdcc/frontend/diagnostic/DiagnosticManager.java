@@ -16,8 +16,8 @@ import java.util.Objects;
 /// - it exposes immutable snapshots at phase boundaries
 /// - it does not attempt to deduplicate, sort, or reinterpret diagnostics
 ///
-/// The immutable result objects in the frontend should continue to expose
-/// `List<FrontendDiagnostic>` snapshots instead of this mutable manager.
+/// The immutable result objects in the frontend should continue to expose detached
+/// diagnostics captured from this mutable manager at explicit phase boundaries.
 public final class DiagnosticManager {
     private final @NotNull List<FrontendDiagnostic> diagnostics = new ArrayList<>();
 
@@ -74,9 +74,9 @@ public final class DiagnosticManager {
 
     /// Exports an immutable snapshot of the current diagnostic state.
     ///
-    /// The returned list is detached from future mutations, so later reports do not
+    /// The returned wrapper is detached from future mutations, so later reports do not
     /// rewrite diagnostics that were already published at an earlier phase boundary.
-    public @NotNull List<FrontendDiagnostic> snapshot() {
-        return List.copyOf(diagnostics);
+    public @NotNull DiagnosticSnapshot snapshot() {
+        return new DiagnosticSnapshot(diagnostics);
     }
 }

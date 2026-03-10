@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.*;
 import dev.superice.gdcc.exception.FrontendSemanticException;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
@@ -23,30 +24,49 @@ import java.util.*;
 public final class FrontendClassSkeletonBuilder {
     private static final String DEFAULT_SUPER_CLASS_NAME = "Object";
 
+    /// Builds the module skeleton while appending all newly discovered skeleton diagnostics
+    /// into the shared pipeline manager.
+    ///
+    /// The manager is expected to already own any parse-phase diagnostics collected from the
+    /// same `FrontendSourceUnit`s. This builder therefore must not re-import
+    /// `FrontendSourceUnit.parseDiagnostics()` or it would duplicate diagnostics that the parse
+    /// phase already published earlier in the pipeline.
     public @NotNull FrontendModuleSkeleton build(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,
-            @NotNull ClassRegistry classRegistry
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendAnalysisData analysisData
     ) {
         Objects.requireNonNull(moduleName, "moduleName must not be null");
         Objects.requireNonNull(units, "units must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+        Objects.requireNonNull(analysisData, "analysisData must not be null");
 
-        var diagnostics = new ArrayList<FrontendDiagnostic>();
         var classByName = new LinkedHashMap<String, ClassSkeletonCandidate>();
         var classOrder = new ArrayList<ClassSkeletonCandidate>();
+        var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
-            diagnostics.addAll(unit.parseDiagnostics());
-            var classCandidate = buildClassCandidate(unit, classRegistry, diagnostics);
+            // Reuse the shared analysis data side table so later phases see one stable
+            // annotation ownership map instead of per-phase copies.
+            analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
+            var context = new SkeletonBuildContext(
+                    classRegistry,
+                    diagnosticManager,
+                    unit.path(),
+                    analysisData
+            );
+            var classCandidate = buildClassCandidate(unit, context);
             var existing = classByName.putIfAbsent(classCandidate.classDef().getName(), classCandidate);
             if (existing != null) {
-                throw duplicateClassException(existing, classCandidate, diagnostics);
+                throw duplicateClassException(existing, classCandidate, diagnosticManager);
             }
             classOrder.add(classCandidate);
         }
 
-        detectInheritanceCycles(classByName, diagnostics);
+        detectInheritanceCycles(classByName, diagnosticManager);
 
         for (var classCandidate : classOrder) {
             classRegistry.addGdccClass(classCandidate.classDef());
@@ -55,13 +75,15 @@ public final class FrontendClassSkeletonBuilder {
         var classDefs = classOrder.stream()
                 .map(ClassSkeletonCandidate::classDef)
                 .toList();
-        return new FrontendModuleSkeleton(moduleName, units, classDefs, diagnostics);
+        return new FrontendModuleSkeleton(moduleName, units, classDefs, diagnosticManager.snapshot());
     }
 
+    /// Builds one class candidate using a per-unit context that bundles stable skeleton
+    /// construction inputs together. This keeps helper signatures small and prevents the
+    /// builder from slipping back to the old “pass diagnostics list through every helper” shape.
     private @NotNull ClassSkeletonCandidate buildClassCandidate(
             @NotNull FrontendSourceUnit unit,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull SkeletonBuildContext context
     ) {
         var classNameStatement = firstClassNameStatement(unit.ast().statements());
         var className = resolveClassName(unit.path(), classNameStatement);
@@ -69,27 +91,17 @@ public final class FrontendClassSkeletonBuilder {
 
         var classDef = new LirClassDef(className, superClassName);
         classDef.setSourceFile(unit.path().toString().replace('\\', '/'));
-        var annotationsByAst = new FrontendAnnotationCollector().collect(unit);
 
         for (var statement : unit.ast().statements()) {
             switch (statement) {
-                case SignalStatement signalStatement -> classDef.addSignal(
-                        toLirSignal(signalStatement, classRegistry, unit.path(), diagnostics)
-                );
+                case SignalStatement signalStatement -> classDef.addSignal(toLirSignal(signalStatement, context));
                 case VariableDeclaration variableDeclaration -> {
                     if (variableDeclaration.kind() == DeclarationKind.VAR) {
-                        classDef.addProperty(toLirProperty(
-                                variableDeclaration,
-                                classRegistry,
-                                unit.path(),
-                                diagnostics,
-                                annotationsByAst
-                        ));
+                        classDef.addProperty(toLirProperty(variableDeclaration, context));
                     }
                 }
-                case FunctionDeclaration functionDeclaration -> classDef.addFunction(
-                        toLirFunction(functionDeclaration, classRegistry, unit.path(), diagnostics)
-                );
+                case FunctionDeclaration functionDeclaration ->
+                        classDef.addFunction(toLirFunction(functionDeclaration, context));
                 default -> {
                 }
             }
@@ -136,18 +148,11 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull LirSignalDef toLirSignal(
             @NotNull SignalStatement signalStatement,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull Path sourcePath,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull SkeletonBuildContext context
     ) {
         var signalDef = new LirSignalDef(signalStatement.name().trim());
         for (var parameter : signalStatement.parameters()) {
-            var parameterType = resolveTypeOrVariant(
-                    parameter.type(),
-                    classRegistry,
-                    sourcePath,
-                    diagnostics
-            );
+            var parameterType = resolveTypeOrVariant(parameter.type(), context);
             signalDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
                     parameterType,
@@ -160,60 +165,56 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull LirPropertyDef toLirProperty(
             @NotNull VariableDeclaration variableDeclaration,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull Path sourcePath,
-            @NotNull List<FrontendDiagnostic> diagnostics,
-            @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
+            @NotNull SkeletonBuildContext context
     ) {
-        var propertyType = resolveTypeOrVariant(
-                variableDeclaration.type(),
-                classRegistry,
-                sourcePath,
-                diagnostics
-        );
+        var propertyType = resolveTypeOrVariant(variableDeclaration.type(), context);
         var propertyDef = new LirPropertyDef(variableDeclaration.name().trim(), propertyType);
         propertyDef.setStatic(variableDeclaration.isStatic());
-        applyPropertyAnnotations(variableDeclaration, propertyDef, annotationsByAst);
+        applyPropertyAnnotations(variableDeclaration, propertyDef, context);
         return propertyDef;
     }
 
     private void applyPropertyAnnotations(
             @NotNull VariableDeclaration variableDeclaration,
             @NotNull LirPropertyDef propertyDef,
-            @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
+            @NotNull SkeletonBuildContext context
     ) {
-        for (var annotation : annotationsByAst.getOrDefault(variableDeclaration, List.of())) {
+        for (var annotation : context.analysisData().annotationsByAst().getOrDefault(variableDeclaration, List.of())) {
             switch (annotation.name()) {
                 case "export" -> propertyDef.getAnnotations().put("export", "");
                 case "onready" -> propertyDef.getAnnotations().put("onready", "");
-                default -> {
-                    // TODO: emit diagnostic for annotation that is not supported.
-                }
+                default -> reportUnsupportedPropertyAnnotation(annotation, variableDeclaration, context);
             }
         }
     }
 
+    /// Skeleton build only understands the small property annotation subset that already maps to
+    /// stable LIR metadata. Other parsed annotations are preserved in the shared side tables, but
+    /// diagnosed here so later phases do not silently lose that unsupported semantic input.
+    private void reportUnsupportedPropertyAnnotation(
+            @NotNull FrontendGdAnnotation annotation,
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull SkeletonBuildContext context
+    ) {
+        context.diagnostics().warning(
+                "sema.unsupported_annotation",
+                "Property annotation '@" + annotation.name()
+                        + "' on '" + variableDeclaration.name()
+                        + "' is not supported during skeleton build",
+                context.sourcePath(),
+                annotation.range()
+        );
+    }
+
     private @NotNull LirFunctionDef toLirFunction(
             @NotNull FunctionDeclaration functionDeclaration,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull Path sourcePath,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull SkeletonBuildContext context
     ) {
         var functionDef = new LirFunctionDef(functionDeclaration.name().trim());
-        functionDef.setReturnType(resolveTypeOrVariant(
-                functionDeclaration.returnType(),
-                classRegistry,
-                sourcePath,
-                diagnostics
-        ));
+        functionDef.setReturnType(resolveTypeOrVariant(functionDeclaration.returnType(), context));
 
         for (var parameter : functionDeclaration.parameters()) {
-            var parameterType = resolveTypeOrVariant(
-                    parameter.type(),
-                    classRegistry,
-                    sourcePath,
-                    diagnostics
-            );
+            var parameterType = resolveTypeOrVariant(parameter.type(), context);
             functionDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
                     parameterType,
@@ -229,16 +230,14 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull GdType resolveTypeOrVariant(
             @Nullable TypeRef typeRef,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull Path sourcePath,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull SkeletonBuildContext context
     ) {
         if (typeRef == null || typeRef.sourceText().isBlank()) {
             return GdVariantType.VARIANT;
         }
 
         try {
-            var resolvedType = classRegistry.findType(typeRef.sourceText().trim());
+            var resolvedType = context.classRegistry().findType(typeRef.sourceText().trim());
             if (resolvedType != null) {
                 return resolvedType;
             }
@@ -246,23 +245,23 @@ public final class FrontendClassSkeletonBuilder {
             // Preserve tolerant frontend behavior: downgrade to Variant with warning.
         }
 
-        diagnostics.add(FrontendDiagnostic.warning(
+        context.diagnostics().warning(
                 "sema.type_resolution",
                 "Unknown type '" + typeRef.sourceText() + "', fallback to Variant",
-                sourcePath,
+                context.sourcePath(),
                 FrontendRange.fromAstRange(typeRef.range())
-        ));
+        );
         return GdVariantType.VARIANT;
     }
 
     private void detectInheritanceCycles(
             @NotNull Map<String, ClassSkeletonCandidate> classByName,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull DiagnosticManager diagnosticManager
     ) {
         var states = new HashMap<String, VisitState>();
         var visitStack = new ArrayList<String>();
         for (var className : classByName.keySet()) {
-            detectInheritanceCyclesDfs(className, classByName, states, visitStack, diagnostics);
+            detectInheritanceCyclesDfs(className, classByName, states, visitStack, diagnosticManager);
         }
     }
 
@@ -271,14 +270,14 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Map<String, ClassSkeletonCandidate> classByName,
             @NotNull Map<String, VisitState> states,
             @NotNull List<String> visitStack,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull DiagnosticManager diagnosticManager
     ) {
         var state = states.getOrDefault(className, VisitState.UNVISITED);
         if (state == VisitState.VISITED) {
             return;
         }
         if (state == VisitState.VISITING) {
-            throw buildInheritanceCycleException(className, classByName, visitStack, diagnostics);
+            throw buildInheritanceCycleException(className, classByName, visitStack, diagnosticManager);
         }
 
         states.put(className, VisitState.VISITING);
@@ -286,7 +285,7 @@ public final class FrontendClassSkeletonBuilder {
 
         var superName = classByName.get(className).classDef().getSuperName();
         if (classByName.containsKey(superName)) {
-            detectInheritanceCyclesDfs(superName, classByName, states, visitStack, diagnostics);
+            detectInheritanceCyclesDfs(superName, classByName, states, visitStack, diagnosticManager);
         }
 
         visitStack.removeLast();
@@ -297,7 +296,7 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull String reenteredClassName,
             @NotNull Map<String, ClassSkeletonCandidate> classByName,
             @NotNull List<String> visitStack,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull DiagnosticManager diagnosticManager
     ) {
         var cycleStart = visitStack.indexOf(reenteredClassName);
         var cyclePath = new ArrayList<>(visitStack.subList(cycleStart, visitStack.size()));
@@ -317,25 +316,25 @@ public final class FrontendClassSkeletonBuilder {
                     classCandidate.range()
             ));
         }
-        diagnostics.addAll(cycleDiagnostics);
-        return new FrontendSemanticException("Detected inheritance cycle: " + chainText, diagnostics);
+        diagnosticManager.reportAll(cycleDiagnostics);
+        return new FrontendSemanticException("Detected inheritance cycle: " + chainText, diagnosticManager.snapshot());
     }
 
     private @NotNull FrontendSemanticException duplicateClassException(
             @NotNull ClassSkeletonCandidate existing,
             @NotNull ClassSkeletonCandidate duplicate,
-            @NotNull List<FrontendDiagnostic> diagnostics
+            @NotNull DiagnosticManager diagnosticManager
     ) {
         var className = duplicate.classDef().getName();
         var message = "Duplicate class name '" + className + "' found in "
                 + existing.sourcePath() + " and " + duplicate.sourcePath();
-        diagnostics.add(FrontendDiagnostic.error(
+        diagnosticManager.error(
                 "sema.class_skeleton",
                 message,
                 duplicate.sourcePath(),
                 duplicate.range()
-        ));
-        return new FrontendSemanticException(message, diagnostics);
+        );
+        return new FrontendSemanticException(message, diagnosticManager.snapshot());
     }
 
     private @NotNull String deriveClassNameFromFileName(@NotNull Path sourcePath) {
@@ -380,6 +379,19 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Path sourcePath,
             @Nullable FrontendRange range,
             @NotNull LirClassDef classDef
+    ) {
+    }
+
+    /// Stable per-unit skeleton build environment shared by private helpers.
+    ///
+    /// Keeping these inputs bundled together avoids reintroducing the old anti-pattern where
+    /// diagnostics, registry access, source path, and side tables were all threaded through
+    /// helper signatures separately.
+    private record SkeletonBuildContext(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnostics,
+            @NotNull Path sourcePath,
+            @NotNull FrontendAnalysisData analysisData
     ) {
     }
 }

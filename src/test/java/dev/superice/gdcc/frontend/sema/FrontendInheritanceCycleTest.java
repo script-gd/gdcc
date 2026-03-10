@@ -20,6 +20,8 @@ class FrontendInheritanceCycleTest {
         var parserService = new GdScriptParserService();
         var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
 
         var sourceA = """
                 class_name A
@@ -37,21 +39,22 @@ class FrontendInheritanceCycleTest {
                 """;
 
         var units = List.of(
-                parserService.parseUnit(Path.of("tmp", "a.gd"), sourceA, new DiagnosticManager()),
-                parserService.parseUnit(Path.of("tmp", "b.gd"), sourceB, new DiagnosticManager())
+                parserService.parseUnit(Path.of("tmp", "a.gd"), sourceA, diagnostics),
+                parserService.parseUnit(Path.of("tmp", "b.gd"), sourceB, diagnostics)
         );
 
         var exception = assertThrows(
                 FrontendSemanticException.class,
-                () -> classSkeletonBuilder.build("cycle_module", units, registry)
+                () -> classSkeletonBuilder.build("cycle_module", units, registry, diagnostics, analysisData)
         );
         assertTrue(exception.getMessage().contains("A"));
         assertTrue(exception.getMessage().contains("B"));
         assertTrue(exception.getMessage().contains("->"));
 
+        assertEquals(diagnostics.snapshot(), exception.diagnostics());
         assertFalse(exception.diagnostics().isEmpty());
         assertEquals(FrontendDiagnosticSeverity.ERROR, exception.diagnostics().getFirst().severity());
-        assertTrue(exception.diagnostics().stream().anyMatch(diagnostic ->
+        assertTrue(exception.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.inheritance_cycle")
         ));
     }

@@ -1,21 +1,23 @@
 package dev.superice.gdcc.frontend.sema;
 
-import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.Objects;
 
-/// Unified semantic-analysis result container backed by multiple AST side tables.
+/// Unified frontend analysis data container shared across semantic phases.
 ///
-/// For now this result only has one populated table: annotations attached to AST objects.
-/// The remaining tables are created up front so later interface/body work can extend the
-/// analyzer without changing the public result topology again.
-public final class FrontendAnalysisResult {
-    private final @NotNull FrontendModuleSkeleton moduleSkeleton;
-    private final @NotNull List<FrontendDiagnostic> diagnostics;
+/// The object is created early with a complete set of mutable side tables, then later phase
+/// boundaries publish the stable `moduleSkeleton` and diagnostic snapshot once those results
+/// exist. This keeps downstream helpers passing one semantic data object instead of threading
+/// individual side tables through every call.
+public final class FrontendAnalysisData {
+    private @Nullable FrontendModuleSkeleton moduleSkeleton;
+    private @Nullable DiagnosticSnapshot diagnostics;
     private final @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
@@ -23,9 +25,7 @@ public final class FrontendAnalysisResult {
     private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
     private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
 
-    public FrontendAnalysisResult(
-            @NotNull FrontendModuleSkeleton moduleSkeleton,
-            @NotNull List<FrontendDiagnostic> diagnostics,
+    private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
             @NotNull FrontendAstSideTable<Scope> scopesByAst,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
@@ -33,8 +33,6 @@ public final class FrontendAnalysisResult {
             @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
             @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls
     ) {
-        this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
-        this.diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics must not be null"));
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
         this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
@@ -43,15 +41,10 @@ public final class FrontendAnalysisResult {
         this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
     }
 
-    public static @NotNull FrontendAnalysisResult bootstrap(
-            @NotNull FrontendModuleSkeleton moduleSkeleton,
-            @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst
-    ) {
-        Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
-        return new FrontendAnalysisResult(
-                moduleSkeleton,
-                moduleSkeleton.diagnostics(),
-                Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null"),
+    /// Creates an empty analysis data carrier with the full side-table topology already present.
+    public static @NotNull FrontendAnalysisData bootstrap() {
+        return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -60,12 +53,24 @@ public final class FrontendAnalysisResult {
         );
     }
 
-    public @NotNull FrontendModuleSkeleton moduleSkeleton() {
-        return moduleSkeleton;
+    /// Publishes the latest completed phase boundary into this shared analysis data object.
+    ///
+    /// Later semantic phases can refresh the boundary snapshot again after they mutate the
+    /// underlying side tables or append additional diagnostics to the shared manager.
+    public void publishPhaseBoundary(
+            @NotNull FrontendModuleSkeleton moduleSkeleton,
+            @NotNull DiagnosticSnapshot diagnostics
+    ) {
+        this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
+        this.diagnostics = Objects.requireNonNull(diagnostics, "diagnostics must not be null");
     }
 
-    public @NotNull List<FrontendDiagnostic> diagnostics() {
-        return diagnostics;
+    public @NotNull FrontendModuleSkeleton moduleSkeleton() {
+        return requirePublished(moduleSkeleton, "moduleSkeleton");
+    }
+
+    public @NotNull DiagnosticSnapshot diagnostics() {
+        return requirePublished(diagnostics, "diagnostics");
     }
 
     public @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst() {
@@ -90,5 +95,12 @@ public final class FrontendAnalysisResult {
 
     public @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls() {
         return resolvedCalls;
+    }
+
+    private <T> @NotNull T requirePublished(@Nullable T value, @NotNull String fieldName) {
+        if (value == null) {
+            throw new IllegalStateException(fieldName + " has not been published yet");
+        }
+        return value;
     }
 }

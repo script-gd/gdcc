@@ -123,7 +123,7 @@ class FrontendAnnotationParseBehaviorTest {
     private FrontendSourceUnit parse(String fileName, String source) {
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot());
+        assertEquals(unit.parseDiagnostics(), diagnostics.snapshot().asList());
         return unit;
     }
 }
