@@ -14,7 +14,7 @@ import java.util.function.BiConsumer;
 
 /// Identity-based side table keyed by AST node identity instead of structural equality.
 ///
-/// Since `gdparser 0.5.0`, every frontend AST node, including `SourceFile`, implements `Node`.
+/// Since `gdparser 0.5.x`, every frontend AST node, including `SourceFile`, implements `Node`.
 /// Frontend semantic side tables therefore key directly on `Node` and reject non-node objects
 /// instead of pretending arbitrary helper objects are valid AST keys.
 ///

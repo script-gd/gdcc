@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.parse;
 
+import dev.superice.gdparser.frontend.ast.UnknownStatement;
 import dev.superice.gdparser.frontend.lowering.CstToAstMapper;
 import dev.superice.gdparser.infra.treesitter.GdParserFacade;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
@@ -79,6 +80,43 @@ class GdScriptParserServiceDiagnosticManagerTest {
         assertFalse(firstSnapshot.isEmpty());
         assertNotNull(second.ast());
         assertTrue(diagnostics.snapshot().size() > firstSnapshot.size());
+    }
+
+    @Test
+    void parseUnitReportsRemovedImplicitConstructorBaseArgumentsSyntaxAsLoweringError() {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var sourcePath = Path.of("tmp", "legacy_constructor_header.gd");
+
+        var unit = parserService.parseUnit(sourcePath, """
+                class_name LegacyConstructorHeader
+                extends Node
+                
+                func _init(seed).(seed):
+                    pass
+                """, diagnostics);
+        var snapshot = diagnostics.snapshot();
+
+        assertNotNull(unit.ast());
+        assertTrue(diagnostics.hasErrors());
+        assertFalse(snapshot.isEmpty());
+
+        var legacyDiagnostic = snapshot.asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("parse.lowering"))
+                .filter(diagnostic -> diagnostic.severity() == FrontendDiagnosticSeverity.ERROR)
+                .filter(diagnostic -> diagnostic.message().contains("Implicit constructor base arguments"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected legacy constructor syntax diagnostic"));
+        assertEquals(sourcePath, legacyDiagnostic.sourcePath());
+        assertNotNull(legacyDiagnostic.range());
+
+        var legacyStatement = unit.ast().statements().stream()
+                .filter(UnknownStatement.class::isInstance)
+                .map(UnknownStatement.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected rejected legacy constructor statement"));
+        assertEquals("constructor_definition", legacyStatement.nodeType());
+        assertTrue(legacyStatement.sourceText().contains("func _init(seed).(seed):"));
     }
 
     @Test

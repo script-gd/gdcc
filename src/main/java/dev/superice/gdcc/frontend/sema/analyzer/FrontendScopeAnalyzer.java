@@ -148,21 +148,14 @@ public class FrontendScopeAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
-            var parentScope = currentScope();
-            var constructorScope = new CallableScope(parentScope, CallableScopeKind.CONSTRUCTOR_DECLARATION);
             visitCallableBoundary(
                     constructorDeclaration,
                     constructorDeclaration.parameters(),
                     constructorDeclaration.returnType(),
                     constructorDeclaration.body(),
-                    constructorScope,
+                    new CallableScope(currentScope(), CallableScopeKind.CONSTRUCTOR_DECLARATION),
                     BlockScopeKind.CONSTRUCTOR_BODY
             );
-
-            // `gdparser` still exposes legacy inherited-constructor header arguments via
-            // `baseArguments()`. When such compatibility AST nodes are present, they observe the
-            // constructor header scope and still execute before the body `BlockScope` exists.
-            withCurrentScope(constructorScope, () -> walkNodes(constructorDeclaration.baseArguments()));
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

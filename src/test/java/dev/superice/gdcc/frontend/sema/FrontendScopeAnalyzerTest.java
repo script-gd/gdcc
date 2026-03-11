@@ -166,7 +166,6 @@ class FrontendScopeAnalyzerTest {
         assertSame(sourceScope, constructorScope.getParentScope());
         assertSame(constructorScope, scopesByAst.get(constructor.parameters().getFirst()));
         assertSame(constructorScope, scopesByAst.get(constructor.parameters().getLast().defaultValue()));
-        assertTrue(constructor.baseArguments().isEmpty());
 
         var constructorBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(constructor.body()));
         assertEquals(BlockScopeKind.CONSTRUCTOR_BODY, constructorBodyScope.kind());
@@ -193,7 +192,6 @@ class FrontendScopeAnalyzerTest {
 
         var constructor = findStatement(unit.ast().statements(), ConstructorDeclaration.class, _ -> true);
         assertEquals(2, constructor.parameters().size());
-        assertTrue(constructor.baseArguments().isEmpty());
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
@@ -216,56 +214,6 @@ class FrontendScopeAnalyzerTest {
                 variable -> variable.name().equals("typed_local")
         );
         assertSame(constructorBodyScope, scopesByAst.get(typedLocal.type()));
-    }
-
-    @Test
-    void semanticAnalysisAssignsConstructorHeaderScopeToLegacyBaseArgumentsWhenAstCarriesThem() throws Exception {
-        var seedDefault = new IdentifierExpression("seed", SYNTHETIC_RANGE);
-        var seedBaseArgument = new IdentifierExpression("seed", SYNTHETIC_RANGE);
-        var mirrorBaseArgument = new IdentifierExpression("mirror", SYNTHETIC_RANGE);
-        var constructor = new ConstructorDeclaration(
-                List.of(
-                        new Parameter("seed", new TypeRef("int", SYNTHETIC_RANGE), null, false, SYNTHETIC_RANGE),
-                        new Parameter("mirror", null, seedDefault, false, SYNTHETIC_RANGE)
-                ),
-                List.of(seedBaseArgument, mirrorBaseArgument),
-                null,
-                new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
-                SYNTHETIC_RANGE
-        );
-        var unit = new FrontendSourceUnit(
-                java.nio.file.Path.of("tmp", "legacy_constructor_scope_probe.gd"),
-                """
-                        class_name LegacyConstructorScopeProbe
-                        extends Node
-                        """,
-                new SourceFile(
-                        List.of(
-                                new ClassNameStatement("LegacyConstructorScopeProbe", null, null, SYNTHETIC_RANGE),
-                                new ExtendsStatement("Node", SYNTHETIC_RANGE),
-                                constructor
-                        ),
-                        SYNTHETIC_RANGE
-                )
-        );
-        var diagnostics = new DiagnosticManager();
-        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var analysisData = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
-        var scopesByAst = analysisData.scopesByAst();
-
-        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(unit.ast()));
-        var constructorScope = assertInstanceOf(CallableScope.class, scopesByAst.get(constructor));
-        assertEquals(CallableScopeKind.CONSTRUCTOR_DECLARATION, constructorScope.kind());
-        assertSame(sourceScope, constructorScope.getParentScope());
-        assertEquals(2, constructor.baseArguments().size());
-        assertSame(constructorScope, scopesByAst.get(constructor.parameters().getFirst()));
-        assertSame(constructorScope, scopesByAst.get(constructor.parameters().getLast().defaultValue()));
-        assertSame(constructorScope, scopesByAst.get(seedBaseArgument));
-        assertSame(constructorScope, scopesByAst.get(mirrorBaseArgument));
-
-        var constructorBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(constructor.body()));
-        assertEquals(BlockScopeKind.CONSTRUCTOR_BODY, constructorBodyScope.kind());
-        assertSame(constructorScope, constructorBodyScope.getParentScope());
     }
 
     @Test

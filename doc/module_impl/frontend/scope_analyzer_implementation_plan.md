@@ -236,7 +236,7 @@ scope analyzer 的推荐接线方式如下：
 
 > 某个 AST 节点在后续语义分析中应使用的当前 lexical scope。
 
-这意味着 side-table 的 key 不仅应覆盖 scope owner，还应覆盖后续 binder 需要在其上发起名称解析的 AST 节点。随着 `gdparser 0.5.0` 把 `SourceFile` 也纳入 `Node` 体系，`scopesByAst` 的 key 类型现在应直接收敛为 `Node`。
+这意味着 side-table 的 key 不仅应覆盖 scope owner，还应覆盖后续 binder 需要在其上发起名称解析的 AST 节点。随着 `gdparser 0.5.x` 把 `SourceFile` 也纳入 `Node` 体系，`scopesByAst` 的 key 类型现在应直接收敛为 `Node`。
 
 ### 5.2 按阶段覆盖的 AST 节点类别
 
@@ -530,13 +530,13 @@ scope analyzer 实施计划纳入以下内容：
 
 ### 实施内容
 
-- 复用 `gdparser 0.5.0` 内置 `ASTWalker` / `ASTNodeHandler` / `FrontendASTTraversalDirective`
+- 复用 `gdparser 0.5.1` 内置 `ASTWalker` / `ASTNodeHandler` / `FrontendASTTraversalDirective`
 - 新增 `CallableScopeKind` / `BlockScopeKind`，并把它们作为 `CallableScope` / `BlockScope` 的 final 字段
 - 为 `SourceFile` 写入顶层 `ClassScope`
 - 为 `FunctionDeclaration`、`ConstructorDeclaration`、`LambdaExpression` 建 `CallableScope`
 - 为 callable body 建独立 `BlockScope`
 - 为 `FunctionDeclaration`、`ConstructorDeclaration`、`LambdaExpression` 及其 body block 写入正确的 scope kind
-- 为参数、返回类型、函数体中表达式和类型引用挂载当前 scope；若兼容性 AST 仍携带 constructor `baseArguments()`，也要把它们挂到 constructor header 的 `CallableScope`
+- 为参数、返回类型、函数体中表达式和类型引用挂载当前 scope
 
 ### 设计要求
 
@@ -558,14 +558,14 @@ scope analyzer 实施计划纳入以下内容：
 ### 当前状态（2026-03-11）
 
 - [x] 已新增 `CallableScopeKind` / `BlockScopeKind`，并把它们接入 `CallableScope` / `BlockScope` 的 final 字段、显式构造器与只读访问器；现有 `frontend.scope` 协议测试已补 kind 断言。
-- [x] 在 `gdparser` 升级到 `0.5.0` 后，已回退本地 `FrontendASTWalker` / `FrontendASTNodeHandler` / `FrontendASTTraversalDirective` 封装，并改为直接复用 parser 库内置的 `ASTWalker` 族 API，避免在 gdcc 中重复维护一套 AST 遍历基础设施。
-- [x] 随着 `gdparser 0.5.0` 把 `SourceFile` 也纳入 `Node` 体系，`FrontendAstSideTable` 及其相关语义 side-table 已统一收敛为 `Node` key；测试中原先依赖裸 `Object` key 的旧假设也已回退。
+- [x] 在 `gdparser` 升级到 `0.5.1` 后，已回退本地 `FrontendASTWalker` / `FrontendASTNodeHandler` / `FrontendASTTraversalDirective` 封装，并改为直接复用 parser 库内置的 `ASTWalker` 族 API，避免在 gdcc 中重复维护一套 AST 遍历基础设施。
+- [x] 随着 `gdparser 0.5.x` 把 `SourceFile` 也纳入 `Node` 体系，`FrontendAstSideTable` 及其相关语义 side-table 已统一收敛为 `Node` key；测试中原先依赖裸 `Object` key 的旧假设也已回退。
 - [x] `FrontendScopeAnalyzer` 已迁移到基于 `gdparser ASTWalker` 的实现，并以 `moduleSkeleton.units()` 与 `moduleSkeleton.classDefs()` 的一一对应关系，为每个 `SourceFile` 物化顶层脚本 `ClassScope`。
 - [x] 已为 `FunctionDeclaration`、`ConstructorDeclaration`、`LambdaExpression` 建立独立 `CallableScope`，并为 callable body 建立独立 `BlockScope`；两层 scope 不再复用同一对象。
 - [x] 已把 callable source kind 稳定写入 side-table：`FUNCTION_DECLARATION`、`CONSTRUCTOR_DECLARATION`、`LAMBDA_EXPRESSION` 以及 `FUNCTION_BODY`、`CONSTRUCTOR_BODY`、`LAMBDA_BODY` 均通过单元测试锚定。
 - [x] 已把 constructor 的 parse-to-scope 端到端回归测试收敛到合法 Godot 4 `_init(...)` 源码，避免再用旧版 GDScript 3.x 的 `func _init(...).(...)` 语法去伪装“标准语义”。
-- [x] `gdparser` 当前 vendor grammar 仍会把旧版 inherited-constructor header 形态映射到 `ConstructorDeclaration.baseArguments()`；对应的 scope 行为现已改由手工 AST 兼容性测试锚定，不再混入 parse-based 标准语法用例。
-- [x] `scopesByAst()` 在非空 module 上已不再为空；`SourceFile`、顶层声明、callable 节点、callable body、`Parameter`、callable 返回类型 `TypeRef`、parameter default value 表达式，以及兼容性 AST 中的 constructor `baseArguments()` 和 callable/body 中当前已纳入覆盖的表达式节点都能回溯到正确 lexical scope。
+- [x] `gdparser 0.5.1` 已在 lowering 阶段把旧版 inherited-constructor header 语法直接报告为 parse error，`ConstructorDeclaration` AST 形状中不再保留 `baseArguments()`；对应的 gdcc scope 构建分支与相关兼容性测试已回退删除。
+- [x] `scopesByAst()` 在非空 module 上已不再为空；`SourceFile`、顶层声明、callable 节点、callable body、`Parameter`、callable 返回类型 `TypeRef`、parameter default value 表达式，以及 callable/body 中当前已纳入覆盖的表达式节点都能回溯到正确 lexical scope。
 - [x] parameter default value 表达式的当前行为已不再隐式：Phase 2 明确把它们挂载到所属 callable 的 `CallableScope`，后续若语言规范收敛到不同模型，需要以文档和测试一起迁移。
 - [x] 已通过正反测试明确 Phase 2 的边界：控制流 body block、`MatchSection` branch scope、inner class lexical boundary 与 parameter prefill 仍保持 deferred，没有在本阶段被伪装成“已支持”。
 - [x] 通用 walker 的遍历语义现由 `gdparser` 本地副本中的 `frontend.ast.ASTWalkerTest` 负责 upstream 覆盖；gdcc 侧通过 `FrontendScopeAnalyzerTest` 的正反场景锚定集成行为，不再复制维护一套本地 walker 单元测试。
