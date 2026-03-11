@@ -219,6 +219,105 @@ class ScopeMethodResolverTest {
         assertTrue(failed.message().contains("constructor resolution"), failed.message());
     }
 
+    @Test
+    @DisplayName("shared method resolver should resolve canonical container metadata against registry")
+    void resolveInstanceMethodShouldResolveCanonicalContainerMetadataAgainstRegistry() {
+        var registry = newRegistry(
+                apiWith(
+                        List.of(),
+                        List.of(
+                                simpleEngineClass("PipelineConstant", "RefCounted"),
+                                engineClassWithCanonicalContainerMetadata(
+                                        "PipelineOwner",
+                                        "accept_constants",
+                                        "Array[PipelineConstant]",
+                                        "Array[PipelineConstant]"
+                                )
+                        )
+                ),
+                List.of()
+        );
+
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("PipelineOwner"),
+                "accept_constants",
+                List.of(new GdArrayType(new GdObjectType("PipelineConstant")))
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals(
+                new GdArrayType(new GdObjectType("PipelineConstant")),
+                resolved.method().parameters().getFirst().type()
+        );
+        assertEquals(
+                new GdArrayType(new GdObjectType("PipelineConstant")),
+                resolved.method().returnType()
+        );
+    }
+
+    @Test
+    @DisplayName("shared method resolver should reject unknown canonical container parameter metadata")
+    void resolveInstanceMethodShouldRejectUnknownCanonicalContainerParameterMetadata() {
+        var registry = newRegistry(
+                apiWith(
+                        List.of(),
+                        List.of(
+                                engineClassWithCanonicalContainerMetadata(
+                                        "PipelineOwner",
+                                        "accept_constants",
+                                        "void",
+                                        "Array[MissingConstant]"
+                                )
+                        )
+                ),
+                List.of()
+        );
+
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("PipelineOwner"),
+                "accept_constants",
+                List.of(new GdArrayType(new GdObjectType("MissingConstant")))
+        );
+
+        var failed = assertInstanceOf(ScopeMethodResolver.Failed.class, result);
+        assertEquals(ScopeMethodResolver.FailureKind.MALFORMED_METADATA, failed.kind());
+        assertTrue(failed.message().contains("Array[MissingConstant]"), failed.message());
+        assertTrue(failed.message().contains("method parameter #1"), failed.message());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should reject unknown canonical container return metadata")
+    void resolveInstanceMethodShouldRejectUnknownCanonicalContainerReturnMetadata() {
+        var registry = newRegistry(
+                apiWith(
+                        List.of(),
+                        List.of(
+                                engineClassWithCanonicalContainerMetadata(
+                                        "PipelineOwner",
+                                        "load_constants",
+                                        "Array[MissingConstant]",
+                                        null
+                                )
+                        )
+                ),
+                List.of()
+        );
+
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("PipelineOwner"),
+                "load_constants",
+                List.of()
+        );
+
+        var failed = assertInstanceOf(ScopeMethodResolver.Failed.class, result);
+        assertEquals(ScopeMethodResolver.FailureKind.MALFORMED_METADATA, failed.kind());
+        assertTrue(failed.message().contains("Array[MissingConstant]"), failed.message());
+        assertTrue(failed.message().contains("return type"), failed.message());
+    }
+
     private static ClassRegistry newRegistry(ExtensionAPI api, List<LirClassDef> gdccClasses) {
         var registry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
@@ -441,6 +540,53 @@ class ScopeMethodResolverTest {
                 "core",
                 List.of(),
                 List.of(make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass engineClassWithCanonicalContainerMetadata(String className,
+                                                                              String methodName,
+                                                                              String returnType,
+                                                                              String parameterType) {
+        var args = parameterType == null
+                ? List.<ExtensionFunctionArgument>of()
+                : List.of(new ExtensionFunctionArgument("values", parameterType, null, null));
+        var method = new ExtensionGdClass.ClassMethod(
+                methodName,
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn(returnType),
+                args
+        );
+        return new ExtensionGdClass(
+                className,
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass simpleEngineClass(String name, String superName) {
+        return new ExtensionGdClass(
+                name,
+                false,
+                true,
+                superName,
+                "core",
+                List.of(),
+                List.of(),
                 List.of(),
                 List.of(),
                 List.of()

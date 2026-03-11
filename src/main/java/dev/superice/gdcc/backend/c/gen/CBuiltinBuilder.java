@@ -1,6 +1,6 @@
 package dev.superice.gdcc.backend.c.gen;
 
-import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBasisType;
 import dev.superice.gdcc.type.GdBoolType;
@@ -95,7 +95,7 @@ public final class CBuiltinBuilder {
             }
             var matches = true;
             for (var i = 0; i < ctor.arguments().size(); i++) {
-                var parsedType = ClassRegistry.tryParseTextType(ctor.arguments().get(i).type());
+                var parsedType = parseBuiltinConstructorMetadataType(ctor.arguments().get(i).type());
                 if (parsedType == null || !helper.renderGdTypeName(parsedType).equals(expectedTypeNames.get(i))) {
                     matches = false;
                     break;
@@ -484,7 +484,7 @@ public final class CBuiltinBuilder {
         }
         var expectedType = target.type();
         var ctorTypeName = literal.substring(0, leftParen).trim();
-        var ctorType = ClassRegistry.tryParseTextType(ctorTypeName);
+        var ctorType = helper.context().classRegistry().tryResolveDeclaredType(ctorTypeName);
         if (ctorType == null) {
             throw errorReporter.invalid("constructor type '" + ctorTypeName + "' is unknown");
         }
@@ -521,9 +521,9 @@ public final class CBuiltinBuilder {
     }
 
     private @NotNull List<GdType> resolveCtorArgTypes(@NotNull GdType ctorType,
-                                                       @NotNull List<String> rawArgs,
-                                                       @NotNull LiteralErrorReporter errorReporter,
-                                                       @NotNull String literal) {
+                                                      @NotNull List<String> rawArgs,
+                                                      @NotNull LiteralErrorReporter errorReporter,
+                                                      @NotNull String literal) {
         var ctorArgCount = rawArgs.size();
         var candidates = new ArrayList<List<GdType>>();
 
@@ -536,7 +536,7 @@ public final class CBuiltinBuilder {
                 var argTypes = new ArrayList<GdType>(ctorArgCount);
                 var malformedMetadata = false;
                 for (var ctorArg : ctor.arguments()) {
-                    var parsedType = ClassRegistry.tryParseTextType(ctorArg.type());
+                    var parsedType = parseBuiltinConstructorMetadataType(ctorArg.type());
                     if (parsedType == null) {
                         malformedMetadata = true;
                         break;
@@ -578,6 +578,23 @@ public final class CBuiltinBuilder {
             inferredTypes.add(inferredType);
         }
         return inferredTypes;
+    }
+
+    /// Reuse the same registry-aware metadata parser as other API-backed resolution paths so
+    /// constructor overload matching does not silently diverge for typed containers or engine classes.
+    private @Nullable GdType parseBuiltinConstructorMetadataType(@Nullable String rawTypeName) {
+        if (rawTypeName == null || rawTypeName.isBlank()) {
+            return null;
+        }
+        try {
+            return ScopeTypeParsers.parseExtensionTypeMetadata(
+                    rawTypeName,
+                    "builtin constructor metadata",
+                    helper.context().classRegistry()
+            );
+        } catch (IllegalArgumentException _) {
+            return null;
+        }
     }
 
     private @NotNull List<String> splitCtorArguments(@NotNull String argsLiteral) {
@@ -665,8 +682,8 @@ public final class CBuiltinBuilder {
     }
 
     private @NotNull CBodyBuilder.ValueRef parseCtorArgumentValueRef(@NotNull CBodyBuilder bodyBuilder,
-                                                                       @NotNull String argLiteral,
-                                                                       @NotNull GdType argType) {
+                                                                     @NotNull String argLiteral,
+                                                                     @NotNull GdType argType) {
         switch (argType) {
             case GdStringNameType _ -> {
                 var value = unescapeQuoted(argLiteral.substring(2, argLiteral.length() - 1));

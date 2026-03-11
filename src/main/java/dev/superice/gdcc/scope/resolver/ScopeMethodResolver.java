@@ -261,7 +261,7 @@ public final class ScopeMethodResolver {
                 if (!function.getName().equals(methodName)) {
                     continue;
                 }
-                out.add(new MethodCandidate(toResolvedMethod(ownerKind, current, function, ownerDistance)));
+                out.add(new MethodCandidate(toResolvedMethod(registry, ownerKind, current, function, ownerDistance)));
             }
             var superName = current.getSuperName();
             if (superName.isBlank()) {
@@ -473,7 +473,8 @@ public final class ScopeMethodResolver {
         };
     }
 
-    private static @NotNull ScopeResolvedMethod toResolvedMethod(@NotNull ScopeOwnerKind ownerKind,
+    private static @NotNull ScopeResolvedMethod toResolvedMethod(@NotNull ClassRegistry registry,
+                                                                 @NotNull ScopeOwnerKind ownerKind,
                                                                  @NotNull ClassDef ownerClass,
                                                                  @NotNull FunctionDef function,
                                                                  int ownerDistance) {
@@ -499,7 +500,7 @@ public final class ScopeMethodResolver {
                                 ownerClass.getName() + "." + function.getName() + "'"
                 );
             }
-            var parameterType = resolveMethodParameterType(ownerClass, function, parameter, i + 1);
+            var parameterType = resolveMethodParameterType(registry, ownerClass, function, parameter, i + 1);
             var defaultKind = resolveDefaultArgKind(parameter);
             var defaultLiteral = defaultKind == ScopeDefaultArgKind.LITERAL && parameter instanceof ExtensionFunctionArgument extensionArgument
                     ? extensionArgument.defaultValue()
@@ -517,7 +518,7 @@ public final class ScopeMethodResolver {
         }
 
         var ownerType = resolveOwnerType(ownerKind, ownerClass.getName());
-        var returnType = resolveMethodReturnType(ownerClass, function);
+        var returnType = resolveMethodReturnType(registry, ownerClass, function);
         return new ScopeResolvedMethod(
                 ownerKind,
                 ownerClass,
@@ -541,12 +542,14 @@ public final class ScopeMethodResolver {
         return ScopeDefaultArgKind.NONE;
     }
 
-    private static @NotNull GdType resolveMethodParameterType(@NotNull ClassDef ownerClass,
+    private static @NotNull GdType resolveMethodParameterType(@NotNull ClassRegistry registry,
+                                                              @NotNull ClassDef ownerClass,
                                                               @NotNull FunctionDef function,
                                                               @NotNull ParameterDef parameter,
                                                               int parameterIndexBaseOne) {
         if (parameter instanceof ExtensionFunctionArgument extensionArgument) {
             return parseExtensionTypeWithScopeHelper(
+                    registry,
                     extensionArgument.type(),
                     "method parameter #" + parameterIndexBaseOne + " of '" +
                             ownerClass.getName() + "." + function.getName() + "'"
@@ -555,13 +558,15 @@ public final class ScopeMethodResolver {
         return parameter.getType();
     }
 
-    private static @NotNull GdType resolveMethodReturnType(@NotNull ClassDef ownerClass,
+    private static @NotNull GdType resolveMethodReturnType(@NotNull ClassRegistry registry,
+                                                           @NotNull ClassDef ownerClass,
                                                            @NotNull FunctionDef function) {
         if (function instanceof ExtensionBuiltinClass.ClassMethod builtinMethod) {
             var rawReturnType = builtinMethod.returnValue() != null
                     ? builtinMethod.returnValue().type()
                     : builtinMethod.returnType();
             return parseExtensionTypeWithScopeHelper(
+                    registry,
                     rawReturnType,
                     "return type of '" + ownerClass.getName() + "." + function.getName() + "'"
             );
@@ -570,6 +575,7 @@ public final class ScopeMethodResolver {
             var returnInfo = gdMethod.returnValue();
             var rawReturnType = returnInfo == null ? "void" : returnInfo.type();
             return parseExtensionTypeWithScopeHelper(
+                    registry,
                     rawReturnType,
                     "return type of '" + ownerClass.getName() + "." + function.getName() + "'"
             );
@@ -577,10 +583,11 @@ public final class ScopeMethodResolver {
         return function.getReturnType();
     }
 
-    private static @NotNull GdType parseExtensionTypeWithScopeHelper(@Nullable String rawTypeName,
+    private static @NotNull GdType parseExtensionTypeWithScopeHelper(@NotNull ClassRegistry registry,
+                                                                     @Nullable String rawTypeName,
                                                                      @NotNull String typeUseSite) {
         try {
-            return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite);
+            return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite, registry);
         } catch (IllegalArgumentException ex) {
             throw new ScopeMethodResolutionException(FailureKind.MALFORMED_METADATA, ex.getMessage());
         }

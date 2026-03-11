@@ -2,6 +2,7 @@ package dev.superice.gdcc.scope;
 
 import dev.superice.gdcc.exception.TypeParsingException;
 import dev.superice.gdcc.gdextension.*;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -281,6 +282,26 @@ public final class ClassRegistry implements Scope {
         return findType(typeName);
     }
 
+    /// Resolve an explicitly written type name without inventing unknown object types.
+    ///
+    /// This is the registry-aware counterpart to `tryParseTextType(...)`:
+    /// - builtins and builtin containers are parsed strictly
+    /// - known engine / GDCC classes and global enums may participate through `resolveTypeMetaHere(...)`
+    /// - unknown identifiers return `null` instead of degrading into `new GdObjectType(name)`
+    public @Nullable GdType tryResolveDeclaredType(@NotNull String typeName) {
+        Objects.requireNonNull(typeName, "typeName");
+        var trimmed = typeName.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        var strict = tryParseStrictTextType(trimmed, this);
+        if (strict != null) {
+            return strict;
+        }
+        var typeMeta = resolveTypeMetaHere(trimmed);
+        return typeMeta != null ? typeMeta.instanceType() : null;
+    }
+
     /// Compatibility-oriented textual type parsing.
     ///
     /// This is the older, looser parser used by existing code paths. It first attempts strict parsing,
@@ -430,13 +451,28 @@ public final class ClassRegistry implements Scope {
         if (uf == null) return null;
         var params = new ArrayList<FunctionSignature.Parameter>();
         if (uf.arguments() != null) {
-            for (var a : uf.arguments()) {
-                var ptype = resolveTypeName(a.type());
+            for (var i = 0; i < uf.arguments().size(); i++) {
+                var a = uf.arguments().get(i);
+                var ptype = parseUtilityMetadataTypeOrNull(
+                        a.type(),
+                        "utility parameter #" + (i + 1) + " of '" + uf.name() + "'"
+                );
                 params.add(new FunctionSignature.Parameter(a.name(), ptype, a.defaultValue()));
             }
         }
-        var rtype = resolveTypeName(uf.returnType());
+        var rtype = parseUtilityMetadataTypeOrNull(
+                uf.returnType(),
+                "return type of utility '" + uf.name() + "'"
+        );
         return new FunctionSignature(uf.name(), params, uf.isVararg(), rtype);
+    }
+
+    private @Nullable GdType parseUtilityMetadataTypeOrNull(@Nullable String rawTypeName,
+                                                            @NotNull String typeUseSite) {
+        if (rawTypeName == null || rawTypeName.isBlank()) {
+            return null;
+        }
+        return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite, this);
     }
 
     /// Return the ExtensionGlobalEnum object for a global enum name.

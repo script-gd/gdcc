@@ -1,6 +1,10 @@
 package dev.superice.gdcc.scope;
 
+import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
@@ -194,5 +198,61 @@ public class ClassRegistryTest {
         }
         IO.println("Found " + defaultValueSet.size() + " unique default values across all API methods");
         IO.println(defaultValueSet);
+    }
+
+    @Test
+    void utilitySignatureShouldNormalizeTypedarrayMetadataThroughRegistry() throws IOException {
+        var registry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionUtilityFunction(
+                                "typedarray_default_utility",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument(
+                                                "specialization_constants",
+                                                "typedarray::RDPipelineSpecializationConstant",
+                                                "Array[RDPipelineSpecializationConstant]([])",
+                                                null
+                                        )
+                                )
+                        )
+                ),
+                List.of(),
+                List.of(
+                        new ExtensionGdClass(
+                                "RDPipelineSpecializationConstant",
+                                false,
+                                true,
+                                "RefCounted",
+                                "servers",
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        )
+                ),
+                List.of(),
+                List.of()
+        ));
+
+        var signature = registry.findUtilityFunctionSignature("typedarray_default_utility");
+        assertNotNull(signature);
+        assertEquals(1, signature.parameterCount());
+        assertEquals(
+                new GdArrayType(new GdObjectType("RDPipelineSpecializationConstant")),
+                signature.parameters().getFirst().type()
+        );
+        assertEquals(
+                "Array[RDPipelineSpecializationConstant]([])",
+                signature.parameters().getFirst().defaultValue()
+        );
     }
 }

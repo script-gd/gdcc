@@ -33,6 +33,16 @@ public final class ScopeTypeParsers {
     /// - all other names fall back to the existing compatibility parser in `ClassRegistry`
     public static @NotNull GdType parseExtensionTypeMetadata(@Nullable String rawTypeName,
                                                              @NotNull String typeUseSite) {
+        return parseExtensionTypeMetadata(rawTypeName, typeUseSite, null);
+    }
+
+    /// Parse extension metadata with optional access to the active class registry.
+    ///
+    /// When a registry is available, class-like names and typedarray element types are resolved
+    /// against the already indexed engine/GDCC classes instead of degrading into guessed object types.
+    public static @NotNull GdType parseExtensionTypeMetadata(@Nullable String rawTypeName,
+                                                             @NotNull String typeUseSite,
+                                                             @Nullable ClassRegistry registry) {
         if (rawTypeName == null || rawTypeName.isBlank()) {
             return GdVoidType.VOID;
         }
@@ -55,13 +65,15 @@ public final class ScopeTypeParsers {
                         typeUseSite + " has unsupported type metadata: '" + rawTypeName + "'"
                 );
             }
-            var elementType = parseExtensionTypeMetadata(elementTypeName, typeUseSite);
+            var elementType = parseExtensionTypeMetadata(elementTypeName, typeUseSite, registry);
             if (elementType instanceof GdPackedArrayType) {
                 return elementType;
             }
             return new GdArrayType(elementType);
         }
-        var parsed = ClassRegistry.tryParseTextType(normalized);
+        var parsed = registry != null
+                ? registry.tryResolveDeclaredType(normalized)
+                : ClassRegistry.tryParseTextType(normalized);
         if (parsed == null) {
             throw new IllegalArgumentException(
                     typeUseSite + " has unsupported type metadata: '" + rawTypeName + "'"

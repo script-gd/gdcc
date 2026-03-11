@@ -394,7 +394,7 @@ public final class CGenHelper {
     /// This is a thin layer
     public @NotNull GdType parseExtensionType(@Nullable String rawTypeName,
                                               @NotNull String typeUseSite) {
-        return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite);
+        return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite, context.classRegistry());
     }
 
     public @NotNull String renderFuncBindName(@Nullable GdType returnType,
