@@ -385,14 +385,24 @@ class FrontendScopeAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsInnerClassLexicalBoundaryDeferredAfterPhase3() throws Exception {
+    void analyzeBuildsInnerClassScopesFromExplicitSourceRelations() throws Exception {
         var analyzed = analyze("""
-                class_name DeferredInnerClassBoundary
+                class_name MaterializedInnerClassBoundary
                 extends Node
                 
+                var outer_prop: int = 1
+                
                 class Inner:
-                    func nested():
-                        pass
+                    var inner_prop: int = 2
+                
+                    func nested(value: int) -> int:
+                        if value > 0:
+                            return value
+                        return inner_prop
+                
+                    class Deep:
+                        func deeper() -> int:
+                            return 1
                 
                 func ping(value: int) -> int:
                     if value > 0:
@@ -401,11 +411,44 @@ class FrontendScopeAnalyzerTest {
                 """);
         var sourceFile = analyzed.unit().ast();
         var scopesByAst = analyzed.analysisData().scopesByAst();
+        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
 
         var innerClass = findStatement(sourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
-        assertFalse(scopesByAst.containsKey(innerClass));
+        var innerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerClass));
+        assertSame(sourceScope, innerScope.getParentScope());
+        assertEquals("Inner", innerScope.getCurrentClass().getName());
+        assertSame(innerScope, scopesByAst.get(innerClass.body()));
+        assertNull(innerScope.resolveValue("outer_prop"));
+
         var nestedFunction = findStatement(innerClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("nested"));
-        assertFalse(scopesByAst.containsKey(nestedFunction));
+        var nestedFunctionScope = assertInstanceOf(CallableScope.class, scopesByAst.get(nestedFunction));
+        assertEquals(CallableScopeKind.FUNCTION_DECLARATION, nestedFunctionScope.kind());
+        assertSame(innerScope, nestedFunctionScope.getParentScope());
+        assertSame(nestedFunctionScope, scopesByAst.get(nestedFunction.parameters().getFirst()));
+        assertSame(nestedFunctionScope, scopesByAst.get(nestedFunction.returnType()));
+
+        var nestedFunctionBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(nestedFunction.body()));
+        assertEquals(BlockScopeKind.FUNCTION_BODY, nestedFunctionBodyScope.kind());
+        assertSame(nestedFunctionScope, nestedFunctionBodyScope.getParentScope());
+
+        var nestedIf = findStatement(nestedFunction.body().statements(), IfStatement.class, _ -> true);
+        var nestedIfBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(nestedIf.body()));
+        assertEquals(BlockScopeKind.IF_BODY, nestedIfBodyScope.kind());
+        assertSame(nestedFunctionBodyScope, nestedIfBodyScope.getParentScope());
+        var fallbackReturn = assertInstanceOf(ReturnStatement.class, nestedFunction.body().statements().getLast());
+        assertSame(nestedFunctionBodyScope, scopesByAst.get(fallbackReturn.value()));
+
+        var deepClass = findStatement(innerClass.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Deep"));
+        var deepScope = assertInstanceOf(ClassScope.class, scopesByAst.get(deepClass));
+        assertSame(innerScope, deepScope.getParentScope());
+        assertEquals("Deep", deepScope.getCurrentClass().getName());
+        assertSame(deepScope, scopesByAst.get(deepClass.body()));
+
+        var deeperFunction = findStatement(deepClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("deeper"));
+        var deeperFunctionScope = assertInstanceOf(CallableScope.class, scopesByAst.get(deeperFunction));
+        assertSame(deepScope, deeperFunctionScope.getParentScope());
+        var deeperBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(deeperFunction.body()));
+        assertSame(deeperFunctionScope, deeperBodyScope.getParentScope());
 
         var pingFunction = findStatement(sourceFile.statements(), FunctionDeclaration.class, function -> function.name().equals("ping"));
         var pingBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(pingFunction.body()));
@@ -413,6 +456,48 @@ class FrontendScopeAnalyzerTest {
         var ifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(ifStatement.body()));
         assertEquals(BlockScopeKind.IF_BODY, ifBodyScope.kind());
         assertSame(pingBodyScope, ifBodyScope.getParentScope());
+    }
+
+    @Test
+    void analyzeSkipsOnlyInnerClassSubtreeWhenSourceRelationDoesNotPublishItsSkeleton() throws Exception {
+        var nestedFunctionBody = new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE);
+        var nestedFunction = new FunctionDeclaration("nested", List.of(), null, false, nestedFunctionBody, SYNTHETIC_RANGE);
+        var innerClassBody = new Block(List.of(nestedFunction), SYNTHETIC_RANGE);
+        var innerClass = new ClassDeclaration("Inner", null, innerClassBody, SYNTHETIC_RANGE);
+        var pingBody = new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE);
+        var pingFunction = new FunctionDeclaration("ping", List.of(), null, false, pingBody, SYNTHETIC_RANGE);
+        var sourceFile = new SourceFile(List.of(innerClass, pingFunction), SYNTHETIC_RANGE);
+        var unit = new FrontendSourceUnit(java.nio.file.Path.of("tmp", "synthetic_missing_inner_relation.gd"), "", sourceFile);
+
+        var boundaryDiagnostics = new DiagnosticSnapshot(List.of());
+        var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.updateModuleSkeleton(
+                new FrontendModuleSkeleton(
+                        "test_module",
+                        List.of(new FrontendSourceClassRelation(
+                                unit,
+                                new dev.superice.gdcc.lir.LirClassDef("SyntheticMissingInner", "Node"),
+                                List.of()
+                        )),
+                        boundaryDiagnostics
+                )
+        );
+        analysisData.updateDiagnostics(boundaryDiagnostics);
+
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        new FrontendScopeAnalyzer().analyze(registry, analysisData, new DiagnosticManager());
+
+        var scopesByAst = analysisData.scopesByAst();
+        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
+        var pingScope = assertInstanceOf(CallableScope.class, scopesByAst.get(pingFunction));
+        assertSame(sourceScope, pingScope.getParentScope());
+        var pingBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(pingBody));
+        assertSame(pingScope, pingBodyScope.getParentScope());
+
+        assertFalse(scopesByAst.containsKey(innerClass));
+        assertFalse(scopesByAst.containsKey(innerClassBody));
+        assertFalse(scopesByAst.containsKey(nestedFunction));
+        assertFalse(scopesByAst.containsKey(nestedFunctionBody));
     }
 
     @Test

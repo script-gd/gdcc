@@ -24,9 +24,10 @@ import java.util.Objects;
 
 /// Scope-phase worker that sits between skeleton publication and future binder/body passes.
 ///
-/// Phase 3 extends the lexical scope graph described in
+/// Phase 4 extends the lexical scope graph described in
 /// `scope_analyzer_implementation_plan.md`:
 /// - top-level script `ClassScope` per `SourceFile`
+/// - nested `ClassDeclaration` -> `ClassScope` boundaries driven by source-local skeleton relations
 /// - callable `CallableScope` for functions, constructors, and lambdas
 /// - dedicated callable-body `BlockScope`
 /// - dedicated control-flow `BlockScope`s for `if` / `elif` / `else`, `while`, `for`, and
@@ -35,7 +36,6 @@ import java.util.Objects;
 ///   control-flow conditions, loop iterables, and match patterns/guards
 ///
 /// It still intentionally defers:
-/// - inner-class lexical boundaries
 /// - parameter prefill, captures, and other bindings
 ///
 /// Keeping this class separate from `frontend.scope` preserves the layering boundary between
@@ -84,7 +84,7 @@ public class FrontendScopeAnalyzer {
         private final @NotNull ClassRegistry classRegistry;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull List<SourceFile> sourceFilesInOrder;
-        private final @NotNull IdentityHashMap<SourceFile, ClassDef> topLevelClassBySourceFile = new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Node, ClassDef> classByAstOwner = new IdentityHashMap<>();
         private final @NotNull ArrayDeque<Scope> scopeStack = new ArrayDeque<>();
         private final @NotNull ASTWalker astWalker;
 
@@ -95,7 +95,7 @@ public class FrontendScopeAnalyzer {
         ) {
             this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
-            sourceFilesInOrder = indexTopLevelClassesBySourceFile(
+            sourceFilesInOrder = indexClassDefsByAstOwner(
                     Objects.requireNonNull(moduleSkeleton, "moduleSkeleton")
             );
             astWalker = new ASTWalker(this);
@@ -117,15 +117,17 @@ public class FrontendScopeAnalyzer {
         }
 
         /// Each parsed source unit now carries an explicit skeleton relation with exactly one
-        /// top-level script class and zero or more nested classes. Phase 3 still materializes the
-        /// source-wide `ClassScope` only from the top-level script class; nested classes remain a
-        /// later-phase concern.
+        /// top-level script class and zero or more nested `ClassDeclaration -> ClassDef` pairs.
+        ///
+        /// The source-wide `ClassScope` still materializes from the top-level script class, but
+        /// inner classes are no longer guessed from source order or silently skipped. Their exact
+        /// AST owner is indexed up front so later traversal can reopen the correct class boundary.
         @Override
         public @NotNull FrontendASTTraversalDirective handleSourceFile(@NotNull SourceFile sourceFile) {
             var sourceFileScope = new ClassScope(
                     classRegistry,
                     classRegistry,
-                    requireTopLevelClassDef(sourceFile)
+                    requireClassDef(sourceFile)
             );
             recordScope(sourceFile, sourceFileScope);
             withCurrentScope(sourceFileScope, () -> walkChildren(sourceFile));
@@ -232,6 +234,22 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleClassDeclaration(@NotNull ClassDeclaration node) {
+            var classDef = classByAstOwner.get(node);
+            if (classDef == null) {
+                // Skeleton build may already have rejected this subtree because its class metadata
+                // could not be published. Scope build should keep the pipeline alive by skipping
+                // only that subtree instead of escalating to a whole-module failure.
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+
+            var classScope = new ClassScope(currentScope(), classRegistry, classDef);
+            recordScope(node, classScope);
+
+            // `ClassDeclaration.body` is a `Block` in the AST, but semantically it is only the
+            // member container of the class boundary. It must reuse the enclosing `ClassScope`
+            // instead of materializing an extra `BlockScope`.
+            recordScope(node.body(), classScope);
+            withCurrentScope(classScope, () -> walkNodes(node.body().statements()));
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -323,17 +341,20 @@ public class FrontendScopeAnalyzer {
             return scope;
         }
 
-        private @NotNull ClassDef requireTopLevelClassDef(@NotNull SourceFile sourceFile) {
-            var classDef = topLevelClassBySourceFile.get(sourceFile);
+        private @NotNull ClassDef requireClassDef(@NotNull Node astOwner) {
+            var classDef = classByAstOwner.get(astOwner);
             if (classDef == null) {
                 throw new IllegalStateException(
-                        "No top-level class skeleton was indexed for SourceFile@" + System.identityHashCode(sourceFile)
+                        "No class skeleton was indexed for "
+                                + astOwner.getClass().getSimpleName()
+                                + "@"
+                                + System.identityHashCode(astOwner)
                 );
             }
             return classDef;
         }
 
-        private @NotNull List<SourceFile> indexTopLevelClassesBySourceFile(
+        private @NotNull List<SourceFile> indexClassDefsByAstOwner(
                 @NotNull FrontendModuleSkeleton moduleSkeleton
         ) {
             var sourceClassRelations = moduleSkeleton.sourceClassRelations();
@@ -341,14 +362,21 @@ public class FrontendScopeAnalyzer {
             for (var sourceClassRelation : sourceClassRelations) {
                 var sourceFile = sourceClassRelation.unit().ast();
                 sourceFiles.add(sourceFile);
-                var previous = topLevelClassBySourceFile.put(sourceFile, sourceClassRelation.topLevelClassDef());
-                if (previous != null) {
-                    throw new IllegalStateException(
-                        "Duplicate SourceFile encountered while indexing top-level classes"
-                    );
+                indexClassOwner(sourceFile, sourceClassRelation.topLevelClassDef());
+                for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
+                    indexClassOwner(innerClassRelation.declaration(), innerClassRelation.classDef());
                 }
             }
             return List.copyOf(sourceFiles);
+        }
+
+        private void indexClassOwner(@NotNull Node astOwner, @NotNull ClassDef classDef) {
+            var previous = classByAstOwner.put(astOwner, classDef);
+            if (previous != null) {
+                throw new IllegalStateException(
+                        "Duplicate AST class owner encountered while indexing class skeletons"
+                );
+            }
         }
     }
 }

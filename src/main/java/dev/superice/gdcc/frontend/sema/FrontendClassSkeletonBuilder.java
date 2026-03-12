@@ -90,7 +90,8 @@ public final class FrontendClassSkeletonBuilder {
 
     /// Builds one source-owned skeleton relation:
     /// - exactly one top-level script class
-    /// - zero or more nested classes discovered under `ClassDeclaration` subtrees
+    /// - zero or more nested `ClassDeclaration -> LirClassDef` ownership pairs discovered under
+    ///   `ClassDeclaration` subtrees
     ///
     /// The relation is stable even when later phases need more than one class skeleton from the
     /// same source file; callers no longer have to recover that ownership through list indexes.
@@ -108,8 +109,8 @@ public final class FrontendClassSkeletonBuilder {
                 unit.ast().statements(),
                 context
         );
-        var innerClassDefs = collectInnerClassDefs(unit.ast().statements(), context);
-        return new FrontendSourceClassRelation(unit, topLevelClassDef, innerClassDefs);
+        var innerClassRelations = collectInnerClassRelations(unit.ast().statements(), context);
+        return new FrontendSourceClassRelation(unit, topLevelClassDef, innerClassRelations);
     }
 
     private @Nullable ClassNameStatement firstClassNameStatement(@NotNull List<Statement> statements) {
@@ -185,11 +186,13 @@ public final class FrontendClassSkeletonBuilder {
     /// - it is not injected into `ClassRegistry` yet, because global registration semantics for
     ///   nested classes remain a separate design question
     /// - malformed nested classes are diagnosed and skipped together with their own subtrees
-    private @NotNull List<LirClassDef> collectInnerClassDefs(
+    /// - each entry keeps both the parsed `ClassDeclaration` owner and its built skeleton so later
+    ///   phases can materialize inner-class scope/binding state without guessing
+    private @NotNull List<FrontendInnerClassRelation> collectInnerClassRelations(
             @NotNull List<Statement> statements,
             @NotNull SkeletonBuildContext context
     ) {
-        var innerClassDefs = new ArrayList<LirClassDef>();
+        var innerClassRelations = new ArrayList<FrontendInnerClassRelation>();
         for (var statement : statements) {
             if (!(statement instanceof ClassDeclaration classDeclaration)) {
                 continue;
@@ -205,10 +208,10 @@ public final class FrontendClassSkeletonBuilder {
                     classDeclaration.body().statements(),
                     context
             );
-            innerClassDefs.add(innerClassDef);
-            innerClassDefs.addAll(collectInnerClassDefs(classDeclaration.body().statements(), context));
+            innerClassRelations.add(new FrontendInnerClassRelation(classDeclaration, innerClassDef));
+            innerClassRelations.addAll(collectInnerClassRelations(classDeclaration.body().statements(), context));
         }
-        return List.copyOf(innerClassDefs);
+        return List.copyOf(innerClassRelations);
     }
 
     private @NotNull String resolveInnerClassSuperName(@NotNull ClassDeclaration classDeclaration) {

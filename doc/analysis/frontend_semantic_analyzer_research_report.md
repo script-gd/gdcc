@@ -14,7 +14,7 @@
 3. **但 frontend 仍然没有真正的 body-level semantic analyzer。** 当前仍缺 binder、assignable analyzer、表达式类型推断、调用/成员访问分析结果、统一 `AnalysisResult`、AST body lowering。
 4. **`FrontendBindingKind` 的旧结论已经过时。** 当前代码里已经有 `SIGNAL` 和 `TYPE_META`，旧报告中“缺少 `TYPE_META`”“signal 还未补位”的说法不成立。
 5. **`ClassRegistry` 现在同时承载“宽松旧接口”和“严格新协议”。** `findType(...)` 仍是宽松兼容入口；真正适合未来 binder/type namespace 的，是严格的 `resolveTypeMeta(...)` 与 `Scope` 协议。
-6. **`FrontendClassSkeletonBuilder` 与 `FrontendModuleSkeleton` 的现状应描述得更准确。** 它们不只是收集 `class_name / extends / signal / var / func`；现在还会通过 `FrontendSourceClassRelation` 显式记录每个 `FrontendSourceUnit` 对一个顶层类和多个同源 inner class skeleton 的归属，并保留 `classDefs()` 作为仅顶层类的兼容视图。
+6. **`FrontendClassSkeletonBuilder` 与 `FrontendModuleSkeleton` 的现状应描述得更准确。** 它们不只是收集 `class_name / extends / signal / var / func`；现在还会通过 `FrontendSourceClassRelation` 与 `FrontendInnerClassRelation` 显式记录每个 `FrontendSourceUnit` 对一个顶层类和多个同源 inner `ClassDeclaration -> skeleton` pair 的归属，并保留 `classDefs()` 作为仅顶层类的兼容视图。
 7. **signal 相关状态比旧报告更前进。** `ClassScope` 的 unqualified signal lookup 已经落地并有测试；当前工作区还出现了 `ScopeSignalResolver` / `ScopeResolvedSignal` 及对应测试，说明 receiver-based signal metadata lookup 已经开始落代码，虽然 frontend binder 仍未接上。
 8. **旧报告里大量“按外部 `gdparser` AST 全量节点覆盖面下结论”的段落，应当降级或删除。** 当前仓库能直接证明的是：frontend 已依赖 `gdparser:0.5.1`，并消费了 AST 通用模型与少量声明节点；至于 `gdparser` 全量 AST 形态，若要继续做跨仓库调研，应单独写附录，而不应混进这份“按当前代码库校对”的报告里。
 
@@ -119,7 +119,7 @@
 - 从 `class_name` 或文件名推导类名
 - 从 `class_name extends` 或顶层 `extends` 推导父类名；未显式 `extends` 时按 Godot 当前语义默认收口到 `RefCounted`
 - 收集 `signal`、`var`、`func` 并注入 `LirClassDef`
-- 通过 `FrontendSourceClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner class skeleton
+- 通过 `FrontendSourceClassRelation` / `FrontendInnerClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner `ClassDeclaration -> skeleton` pair
 - 仅将 top-level class 注册进 `ClassRegistry`，inner class 暂时保持 source-local metadata
 - 检查重复类名
 - 检查继承环，并以 diagnostics 形式拒绝 cyclic class subtree
@@ -133,7 +133,7 @@
 - **其隐式继承语义也必须与上游 Godot 保持一致：无 `extends` 的脚本类默认基类是 `RefCounted`，而不是 `Object`**
 - **对普通源码错误的恢复策略也已经开始收口：skeleton phase 更倾向于发 diagnostic 并跳过坏 subtree，而不是直接抛 frontend 异常打断整条 pipeline**
 
-与之对应，`FrontendScopeAnalyzer` 当前也不再通过 `moduleSkeleton.units()` 和 `moduleSkeleton.classDefs()` 的索引对齐来恢复来源关系，而是直接消费 `sourceClassRelations()` 中的 `topLevelClassDef()`。不过 inner class 的独立 lexical boundary 仍处于 deferred 状态，尚未在 analyzer 阶段被真正物化。
+与之对应，`FrontendScopeAnalyzer` 当前也不再通过 `moduleSkeleton.units()` 和 `moduleSkeleton.classDefs()` 的索引对齐来恢复来源关系，而是直接消费 `sourceClassRelations()` 中显式发布的顶层类和 inner `ClassDeclaration -> skeleton` pair。inner class 的独立 lexical boundary 现已在 analyzer 阶段被真正物化；当某个 inner class subtree 没有已发布 relation 时，analyzer 会局部跳过该 subtree，而不是扩大成整条 source 的失败。
 
 ## 3.3 frontend scope 架构已经从“计划”变成了已落地基础设施
 

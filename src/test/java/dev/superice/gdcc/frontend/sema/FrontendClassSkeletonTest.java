@@ -7,11 +7,14 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.Statement;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -119,9 +122,22 @@ class FrontendClassSkeletonTest {
         assertEquals(1, result.sourceClassRelations().size());
         assertSame(unit, relation.unit());
         assertEquals("OuterWithInner", relation.topLevelClassDef().getName());
+        assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassRelations().stream()
+                .map(innerClassRelation -> innerClassRelation.declaration().name())
+                .toList());
+        assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassRelations().stream()
+                .map(innerClassRelation -> innerClassRelation.classDef().getName())
+                .toList());
         assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassDefs().stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("OuterWithInner"), result.classDefs().stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("OuterWithInner", "InnerA", "Deep", "InnerB"), result.allClassDefs().stream().map(LirClassDef::getName).toList());
+
+        var innerADeclaration = findStatement(unit.ast().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("InnerA"));
+        var deepDeclaration = findStatement(innerADeclaration.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Deep"));
+        var innerBDeclaration = findStatement(unit.ast().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("InnerB"));
+        assertSame(innerADeclaration, relation.innerClassRelations().get(0).declaration());
+        assertSame(deepDeclaration, relation.innerClassRelations().get(1).declaration());
+        assertSame(innerBDeclaration, relation.innerClassRelations().get(2).declaration());
 
         var innerA = findClassByName(relation.innerClassDefs(), "InnerA");
         assertEquals("RefCounted", innerA.getSuperName());
@@ -256,5 +272,18 @@ class FrontendClassSkeletonTest {
                 .filter(classDef -> classDef.getName().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Class not found: " + className));
+    }
+
+    private <T extends Statement> T findStatement(
+            List<Statement> statements,
+            Class<T> statementType,
+            Predicate<T> predicate
+    ) {
+        return statements.stream()
+                .filter(statementType::isInstance)
+                .map(statementType::cast)
+                .filter(predicate)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Statement not found: " + statementType.getSimpleName()));
     }
 }
