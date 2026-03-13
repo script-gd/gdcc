@@ -32,6 +32,8 @@
 
 但在本轮启动前，代码存在三个结构性缺口：
 
+> 历史注记：以下 3 条描述的是 Phase 1 启动前的事实基线，而不是当前实现状态；其中注册时序问题已在 Phase 3 收回，declared type 的 `findType(...)` 依赖已在 Phase 4 收回，单名 `ScopeTypeMeta` 问题已在 Phase 1 收回。
+
 1. `FrontendClassSkeletonBuilder` 仍在“收集完所有顶层 class 后才批量注册顶层 class”，而 inner class 仍完全不注册到 `ClassRegistry`。
 2. `FrontendClassSkeletonBuilder#resolveTypeOrVariant(...)` 仍直接走 `ClassRegistry#findType(...)`，这会把 declared type 解析与“未知名字猜测为对象类型”的兼容路径混在一起。
 3. `ScopeTypeMeta` 仍只有单一 `name` 字段，无法同时表达：
@@ -376,12 +378,28 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
    - 保持当前 tolerant 策略，必要时回退 `Variant`
    - 不得静默猜测为未知 object type
 
+本阶段当前进度：
+
+- [x] `FrontendClassSkeletonBuilder` 成员填充阶段已显式携带“source-wide class relation + current owning class relation”上下文，不再把 declared type 当成纯全局名字处理。
+- [x] `resolveTypeOrVariant(...)` 已改为 strict frontend 路径：
+  - 顶层 `Array[T]` / `Dictionary[K, V]` 先做 strict 解析
+  - 叶子 gdcc 类型先按当前 lexical class 链用 `sourceName` 查找，再回落到 `ClassRegistry#resolveTypeMetaHere(...)`
+  - 命中的 gdcc 类型统一写回 canonical `GdObjectType`
+- [x] frontend declared type 位置已不再直接依赖 `ClassRegistry#findType(...)`；unknown type 也不再静默猜测为 object type，而是统一发出 `sema.type_resolution` warning 并回退 `Variant`
+- [x] 已补齐针对性测试，覆盖：
+  - 同 module 顶层类引用
+  - top-level 对直接 inner class 的引用
+  - inner / deep inner 对 self / outer / sibling-inner 的引用
+  - builtin / engine / strict container 的保留行为
+  - 非法 lexical 上下文下 inner sourceName 解析失败
+  - unknown declared type 在 signal / property / function / constructor 各 surface 的恢复行为
+
 验收清单：
 
-- [ ] 字段、方法参数、返回类型、signal 参数、constructor 参数中的 gdcc 类型解析不再依赖 `findType(...)`
-- [ ] inner class 在合法 lexical 上下文内可通过 sourceName 解析，并最终归一到 canonical name
-- [ ] 非法或未知 declared type 会发出诊断，而不是静默猜测为任意 object type
-- [ ] 现有 builtin / engine / strict container 的 declared type 行为不回退
+- [x] 字段、方法参数、返回类型、signal 参数、constructor 参数中的 gdcc 类型解析不再依赖 `findType(...)`
+- [x] inner class 在合法 lexical 上下文内可通过 sourceName 解析，并最终归一到 canonical name
+- [x] 非法或未知 declared type 会发出诊断，而不是静默猜测为任意 object type
+- [x] 现有 builtin / engine / strict container 的 declared type 行为不回退
 
 ## Phase 5. 将 inner class 双名语义接入 scope/type-meta
 
@@ -450,10 +468,10 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 验收清单：
 
-- [ ] `FrontendClassSkeletonTest` 覆盖 module/top-level/inner/self/outer 多种 declared type 组合
+- [x] `FrontendClassSkeletonTest` 覆盖 module/top-level/inner/self/outer 多种 declared type 组合
 - [ ] `FrontendScopeAnalyzerTest` 与 inner-class scope tests 覆盖 sourceName -> canonicalName 的 lexical 绑定
 - [ ] 至少有一组 negative test 锚定“diagnostic + skip subtree + sibling subtree continues”
-- [ ] 文档、实现注释、测试断言三者不再互相冲突
+- [x] 文档、实现注释、测试断言三者不再互相冲突
 
 ---
 

@@ -120,10 +120,10 @@
 - 从 `class_name extends` 或顶层 `extends` 推导父类名；未显式 `extends` 时按 Godot 当前语义默认收口到 `RefCounted`
 - 收集 `signal`、`var`、`func` 并注入 `LirClassDef`
 - 通过 `FrontendSourceClassRelation` / `FrontendInnerClassRelation` 显式记录每个 source file 的顶层 skeleton 与同源 inner `ClassDeclaration -> skeleton` pair
-- 当前仍仅将 top-level class 注册进 `ClassRegistry`，但 inner class 已不再只是“匿名 source-local skeleton”：`FrontendInnerClassRelation` 现已显式保存 `lexicalOwner`、`sourceName`、`canonicalName`，其 `LirClassDef#getName()` 也已冻结为 canonical name，供后续 registry publish phase 继续消费
+- 已在成员填充前把 accepted top-level / inner class shell 一并注册进 `ClassRegistry`；inner class 继续通过 relation 显式保存 `lexicalOwner`、`sourceName`、`canonicalName`，其 `LirClassDef#getName()` 冻结为 canonical name
 - 检查重复类名
 - 检查继承环，并以 diagnostics 形式拒绝 cyclic class subtree
-- 用宽松 `findType(...)` 解析类型提示；解析失败时降级到 `Variant` 并发出 `sema.type_resolution` warning
+- 用 strict frontend declared-type 路径解析类型提示：先查 lexical gdcc 可见类型，再查 `ClassRegistry` strict type-meta；无法解析时降级到 `Variant` 并发出 `sema.type_resolution` warning
 - 对 `export_variable_statement` / `onready_variable_statement` 做有限注解保留
 
 所以，旧报告把它描述成“非常浅的 declaration collector”并不完全准确。更准确的说法是：
@@ -186,11 +186,12 @@
 
 它仍适合：
 
-- skeleton 阶段的容错类型提示解析
 - 旧调用方的兼容需求
+- 与 frontend declared type 无关的历史宽松调用点
 
 它不适合：
 
+- frontend declared type 的最终解析
 - identifier binder 的最终 type-meta 判定
 - 静态语义中的严格 namespace 决议
 
@@ -208,7 +209,7 @@
 因此这份报告应把重心放在：
 
 - **未来 interface/body phase 应优先走 `resolveTypeMeta(...)` 与 `Scope` 协议**
-- **`findType(...)` 只应继续服务于当前 skeleton 的 tolerant 需求**
+- **frontend declared type 已经切到 strict resolver；`findType(...)` 只应保留给旧兼容入口，不应再回流进 frontend binder 或 skeleton type hint**
 
 ## 3.6 backend 与 shared resolver 仍然是 frontend 的语义事实源
 
@@ -399,14 +400,15 @@
 - scope/resolver 基础设施已具备
 - body analyzer 与 lowering 之间仍然有明显语义断层
 
-## 6.2 `ClassRegistry.findType(...)` 只保留给 skeleton 容错
+## 6.2 `ClassRegistry.findType(...)` 不应再回流进 frontend declared type
 
-当前 `FrontendClassSkeletonBuilder` 使用 `findType(...)` 是合理的，因为它的目标是：
+`FrontendClassSkeletonBuilder` 的 declared type 解析现在已经切到 strict frontend 路径：
 
-- 尽量完成类骨架收集
-- 对未知类型发 warning 并降级到 `Variant`
+- lexical gdcc 类型先按 source-local relation + `sourceName` 解析
+- builtin / engine / global enum / strict container 再通过 strict registry/type-meta 落地
+- unknown type 继续 warning + `Variant` 恢复，但不再猜测为任意 object type
 
-但从 interface/body phase 开始，建议切换到：
+从 interface/body phase 开始，仍建议继续沿用：
 
 - `resolveTypeMeta(...)`
 - `Scope.resolveTypeMeta(...)`

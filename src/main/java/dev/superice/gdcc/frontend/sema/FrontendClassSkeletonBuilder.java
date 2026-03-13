@@ -2,7 +2,6 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
 import dev.superice.gdparser.frontend.ast.*;
-import dev.superice.gdcc.exception.TypeParsingException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
@@ -12,6 +11,9 @@ import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.LirSignalDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -137,14 +139,14 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         fillClassMembers(
-                sourceClassRelation.topLevelClassDef(),
                 sourceClassRelation.unit().ast().statements(),
+                new DeclaredTypeResolutionScope(sourceClassRelation, sourceClassRelation),
                 context
         );
         for (var innerClassRelation : sourceClassRelation.innerClassRelations()) {
             fillClassMembers(
-                    innerClassRelation.classDef(),
                     innerClassRelation.declaration().body().statements(),
+                    new DeclaredTypeResolutionScope(sourceClassRelation, innerClassRelation),
                     context
             );
         }
@@ -218,33 +220,45 @@ public final class FrontendClassSkeletonBuilder {
     /// directly in its own statement list. Constructors are lowered into the special `_init`
     /// function slot on `ClassDef` so later phases can keep using one shared member surface.
     private void fillClassMembers(
-            @NotNull LirClassDef classDef,
             @NotNull List<Statement> statements,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
+        var classDef = declaredTypeScope.currentClassRelation().classDef();
         for (var statement : statements) {
             switch (statement) {
-                case SignalStatement signalStatement -> classDef.addSignal(toLirSignal(signalStatement, context));
+                case SignalStatement signalStatement -> classDef.addSignal(
+                        toLirSignal(signalStatement, declaredTypeScope, context)
+                );
                 case VariableDeclaration variableDeclaration -> {
                     if (variableDeclaration.kind() == DeclarationKind.VAR) {
-                        classDef.addProperty(toLirProperty(variableDeclaration, context));
+                        classDef.addProperty(
+                                toLirProperty(variableDeclaration, declaredTypeScope, context)
+                        );
                     }
                 }
                 case FunctionDeclaration functionDeclaration -> addFunctionMember(
                         classDef,
                         functionDeclaration.name().trim().equals("_init")
-                                ? toLirInitFunction(functionDeclaration.parameters(), context)
-                                : toLirFunction(functionDeclaration, context),
+                                ? toLirInitFunction(
+                                functionDeclaration.parameters(),
+                                declaredTypeScope,
+                                context
+                        )
+                                : toLirFunction(functionDeclaration, declaredTypeScope, context),
                         functionDeclaration,
                         context
                 );
-                case ConstructorDeclaration constructorDeclaration ->
-                        addFunctionMember(
-                                classDef,
-                                toLirInitFunction(constructorDeclaration.parameters(), context),
-                                constructorDeclaration,
+                case ConstructorDeclaration constructorDeclaration -> addFunctionMember(
+                        classDef,
+                        toLirInitFunction(
+                                constructorDeclaration.parameters(),
+                                declaredTypeScope,
                                 context
-                        );
+                        ),
+                        constructorDeclaration,
+                        context
+                );
                 default -> {
                 }
             }
@@ -291,11 +305,16 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull LirSignalDef toLirSignal(
             @NotNull SignalStatement signalStatement,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
         var signalDef = new LirSignalDef(signalStatement.name().trim());
         for (var parameter : signalStatement.parameters()) {
-            var parameterType = resolveTypeOrVariant(parameter.type(), context);
+            var parameterType = resolveTypeOrVariant(
+                    parameter.type(),
+                    declaredTypeScope,
+                    context
+            );
             signalDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
                     parameterType,
@@ -308,9 +327,14 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull LirPropertyDef toLirProperty(
             @NotNull VariableDeclaration variableDeclaration,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
-        var propertyType = resolveTypeOrVariant(variableDeclaration.type(), context);
+        var propertyType = resolveTypeOrVariant(
+                variableDeclaration.type(),
+                declaredTypeScope,
+                context
+        );
         var propertyDef = new LirPropertyDef(variableDeclaration.name().trim(), propertyType);
         propertyDef.setStatic(variableDeclaration.isStatic());
         applyPropertyAnnotations(variableDeclaration, propertyDef, context);
@@ -351,11 +375,21 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull LirFunctionDef toLirFunction(
             @NotNull FunctionDeclaration functionDeclaration,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
         var functionDef = new LirFunctionDef(functionDeclaration.name().trim());
-        functionDef.setReturnType(resolveTypeOrVariant(functionDeclaration.returnType(), context));
-        fillFunctionParameters(functionDef, functionDeclaration.parameters(), context);
+        functionDef.setReturnType(resolveTypeOrVariant(
+                functionDeclaration.returnType(),
+                declaredTypeScope,
+                context
+        ));
+        fillFunctionParameters(
+                functionDef,
+                functionDeclaration.parameters(),
+                declaredTypeScope,
+                context
+        );
         return functionDef;
     }
 
@@ -368,20 +402,26 @@ public final class FrontendClassSkeletonBuilder {
     /// function surface.
     private @NotNull LirFunctionDef toLirInitFunction(
             @NotNull List<Parameter> parameters,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
         var functionDef = new LirFunctionDef("_init");
-        fillFunctionParameters(functionDef, parameters, context);
+        fillFunctionParameters(functionDef, parameters, declaredTypeScope, context);
         return functionDef;
     }
 
     private void fillFunctionParameters(
             @NotNull LirFunctionDef functionDef,
             @NotNull List<Parameter> parameters,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
         for (var parameter : parameters) {
-            var parameterType = resolveTypeOrVariant(parameter.type(), context);
+            var parameterType = resolveTypeOrVariant(
+                    parameter.type(),
+                    declaredTypeScope,
+                    context
+            );
             functionDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
                     parameterType,
@@ -420,6 +460,7 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull GdType resolveTypeOrVariant(
             @Nullable TypeRef typeRef,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
         if (typeRef == null) {
@@ -432,13 +473,13 @@ public final class FrontendClassSkeletonBuilder {
             return GdVariantType.VARIANT;
         }
 
-        try {
-            var resolvedType = context.classRegistry().findType(typeText);
-            if (resolvedType != null) {
-                return resolvedType;
-            }
-        } catch (TypeParsingException ignored) {
-            // Preserve tolerant frontend behavior: downgrade to Variant with warning.
+        var resolvedType = resolveStrictDeclaredType(
+                typeText,
+                declaredTypeScope,
+                context.classRegistry()
+        );
+        if (resolvedType != null) {
+            return resolvedType;
         }
 
         context.diagnostics().warning(
@@ -448,6 +489,156 @@ public final class FrontendClassSkeletonBuilder {
                 FrontendRange.fromAstRange(typeRef.range())
         );
         return GdVariantType.VARIANT;
+    }
+
+    /// Declared type sites now follow the same strict protocol shape planned for later binder work:
+    /// - first resolve lexical gdcc classes visible from the current owning class chain
+    /// - then fall back to the global strict registry namespace for builtin/engine/global/module names
+    /// - never route declared positions through `findType(...)`, which may invent unknown objects
+    ///
+    /// The parser remains intentionally minimal:
+    /// - top-level `Array[T]` / `Dictionary[K, V]` are supported
+    /// - nested structured containers are still rejected to match the current strict registry rules
+    /// - successful gdcc hits are always rewritten to canonical object names
+    private @Nullable GdType resolveStrictDeclaredType(
+            @NotNull String typeText,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var trimmed = typeText.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        if (trimmed.startsWith("Array[") && trimmed.endsWith("]")) {
+            var innerText = trimmed.substring(6, trimmed.length() - 1).trim();
+            if (innerText.isEmpty()) {
+                return null;
+            }
+            var innerType = resolveStrictNestedDeclaredType(
+                    innerText,
+                    declaredTypeScope,
+                    classRegistry
+            );
+            return innerType != null ? new GdArrayType(innerType) : null;
+        }
+        if (trimmed.startsWith("Dictionary[") && trimmed.endsWith("]")) {
+            var innerText = trimmed.substring(11, trimmed.length() - 1).trim();
+            var dictionaryArgs = splitDictionaryTypeArgs(innerText);
+            if (dictionaryArgs == null) {
+                return null;
+            }
+            var keyType = resolveStrictNestedDeclaredType(
+                    dictionaryArgs.getFirst(),
+                    declaredTypeScope,
+                    classRegistry
+            );
+            var valueType = resolveStrictNestedDeclaredType(
+                    dictionaryArgs.getLast(),
+                    declaredTypeScope,
+                    classRegistry
+            );
+            if (keyType == null || valueType == null) {
+                return null;
+            }
+            return new GdDictionaryType(keyType, valueType);
+        }
+        return resolveStrictDeclaredLeafType(trimmed, declaredTypeScope, classRegistry);
+    }
+
+    /// Nested container arguments stay stricter than the top-level type slot: once we are already
+    /// inside `Array[...]` or `Dictionary[..., ...]`, another structured container declaration is
+    /// rejected instead of being recursively flattened. Bare container family names like `Array`
+    /// remain legal leaf types and still resolve through the ordinary leaf path below.
+    private @Nullable GdType resolveStrictNestedDeclaredType(
+            @NotNull String typeText,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var trimmed = typeText.trim();
+        if (trimmed.isEmpty() || looksStructuredTypeText(trimmed)) {
+            return null;
+        }
+        return resolveStrictDeclaredLeafType(trimmed, declaredTypeScope, classRegistry);
+    }
+
+    private @Nullable GdType resolveStrictDeclaredLeafType(
+            @NotNull String typeText,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var builtinType = ClassRegistry.tryParseStrictTextType(typeText, null);
+        if (builtinType != null) {
+            return builtinType;
+        }
+
+        var lexicalType = resolveLexicalGdccDeclaredType(typeText, declaredTypeScope);
+        if (lexicalType != null) {
+            return lexicalType;
+        }
+
+        var globalTypeMeta = classRegistry.resolveTypeMetaHere(typeText);
+        return globalTypeMeta != null ? globalTypeMeta.instanceType() : null;
+    }
+
+    /// Replays the same lexical type visibility planned for frontend scopes, but locally inside the
+    /// skeleton builder where the final scope graph does not exist yet:
+    /// - the current class can name itself by `sourceName`
+    /// - each class layer exposes only its immediate inner classes
+    /// - walking outward through lexical owners makes outer/self/sibling-inner references visible
+    ///
+    /// The returned object type is always canonicalized so downstream `ClassDef` metadata and the
+    /// global registry continue to agree on one stable gdcc class identity.
+    private @Nullable GdObjectType resolveLexicalGdccDeclaredType(
+            @NotNull String sourceName,
+            @NotNull DeclaredTypeResolutionScope declaredTypeScope
+    ) {
+        FrontendOwnedClassRelation currentRelation = declaredTypeScope.currentClassRelation();
+        while (currentRelation != null) {
+            if (currentRelation.sourceName().equals(sourceName)) {
+                return new GdObjectType(currentRelation.canonicalName());
+            }
+            for (var immediateInnerRelation : declaredTypeScope
+                    .sourceClassRelation()
+                    .findImmediateInnerRelations(currentRelation.astOwner())) {
+                if (immediateInnerRelation.sourceName().equals(sourceName)) {
+                    return new GdObjectType(immediateInnerRelation.canonicalName());
+                }
+            }
+            currentRelation = findEnclosingOwnedRelation(
+                    declaredTypeScope.sourceClassRelation(),
+                    currentRelation
+            );
+        }
+        return null;
+    }
+
+    private @Nullable FrontendOwnedClassRelation findEnclosingOwnedRelation(
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull FrontendOwnedClassRelation currentRelation
+    ) {
+        if (currentRelation == sourceClassRelation) {
+            return null;
+        }
+        return sourceClassRelation.findRelation(currentRelation.lexicalOwner());
+    }
+
+    private boolean looksStructuredTypeText(@NotNull String typeText) {
+        return typeText.indexOf('[') >= 0
+                || typeText.indexOf(']') >= 0
+                || typeText.indexOf(',') >= 0;
+    }
+
+    private @Nullable List<String> splitDictionaryTypeArgs(@NotNull String argsText) {
+        var commaIndex = argsText.indexOf(',');
+        if (commaIndex < 0) {
+            return null;
+        }
+        var keyText = argsText.substring(0, commaIndex).trim();
+        var valueText = argsText.substring(commaIndex + 1).trim();
+        if (keyText.isEmpty() || valueText.isEmpty()) {
+            return null;
+        }
+        return List.of(keyText, valueText);
     }
 
     /// Phase-2 discovery pass:
@@ -1292,6 +1483,20 @@ public final class FrontendClassSkeletonBuilder {
         private boolean isActive() {
             return state == HeaderCandidateState.ACTIVE;
         }
+    }
+
+    /// Stable relation pair used while filling member signatures.
+    ///
+    /// Declared type sites need both:
+    /// - the current owning class relation for self/outer lexical lookup
+    /// - the source-wide relation graph so immediate inner-class visibility can be recovered
+    ///
+    /// Bundling them avoids threading two separate relation arguments through every property,
+    /// function, signal, and constructor helper involved in member filling.
+    private record DeclaredTypeResolutionScope(
+            @NotNull FrontendSourceClassRelation sourceClassRelation,
+            @NotNull FrontendOwnedClassRelation currentClassRelation
+    ) {
     }
 
     /// Stable per-unit skeleton build environment shared by private helpers.

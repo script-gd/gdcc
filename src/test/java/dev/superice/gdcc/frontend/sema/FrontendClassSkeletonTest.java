@@ -6,9 +6,12 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.scope.SignalDef;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
-import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
@@ -217,32 +220,178 @@ class FrontendClassSkeletonTest {
     }
 
     @Test
-    void buildPreservesContainerTypesWhenLeafTypeFallsBackToUnknownObject() throws IOException {
+    void buildResolvesDeclaredTypesThroughLexicalAndStrictRegistryPaths() throws IOException {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
         var diagnostics = new DiagnosticManager();
         var analysisData = FrontendAnalysisData.bootstrap();
-        var unit = parserService.parseUnit(Path.of("tmp", "inventory_owner.gd"), """
-                class_name InventoryOwner
+        var outerUnit = parserService.parseUnit(Path.of("tmp", "outer_types.gd"), """
+                class_name OuterTypes
                 extends RefCounted
                 
-                var items: Array[FutureItem]
-                var item_lookup: Dictionary[String, FutureItem]
+                var direct_inner: DirectInner
+                var module_item: ModuleItem
+                var node_lookup: Dictionary[String, Node]
+                signal produced(payload: ModuleItem)
+                
+                func wrap(value: DirectInner) -> ModuleItem:
+                    pass
+                
+                class DirectInner:
+                    var self_ref: DirectInner
+                    var outer_ref: OuterTypes
+                    var module_ref: ModuleItem
+                    var helper_ref: Helper
+                    var helpers: Array[Helper]
+                
+                    class Deep:
+                        var self_ref: Deep
+                        var parent_ref: DirectInner
+                        var outer_ref: OuterTypes
+                        var helper_ref: Helper
+                
+                class Helper:
+                    var marker: int = 1
+                """, diagnostics);
+        var moduleItemUnit = parserService.parseUnit(Path.of("tmp", "module_item.gd"), """
+                class_name ModuleItem
+                extends RefCounted
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var owner = findClassByName(result.classDefs(), "InventoryOwner");
+        var result = classSkeletonBuilder.build(
+                "test_module",
+                List.of(outerUnit, moduleItemUnit),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var outer = findClassByName(result.classDefs(), "OuterTypes");
+        var directInner = findClassByName(result.allClassDefs(), "OuterTypes$DirectInner");
+        var deep = findClassByName(result.allClassDefs(), "OuterTypes$DirectInner$Deep");
 
-        var itemsType = assertInstanceOf(GdArrayType.class, owner.getProperties().get(0).getType());
-        assertEquals(new GdObjectType("FutureItem"), itemsType.getValueType());
+        assertObjectTypeName(findPropertyByName(outer, "direct_inner").getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(findPropertyByName(outer, "module_item").getType(), "ModuleItem");
+        var nodeLookupType = assertInstanceOf(
+                GdDictionaryType.class,
+                findPropertyByName(outer, "node_lookup").getType()
+        );
+        assertEquals(GdStringType.STRING, nodeLookupType.getKeyType());
+        assertObjectTypeName(nodeLookupType.getValueType(), "Node");
 
-        var lookupType = assertInstanceOf(GdDictionaryType.class, owner.getProperties().get(1).getType());
-        assertEquals(GdStringType.STRING, lookupType.getKeyType());
-        assertEquals(new GdObjectType("FutureItem"), lookupType.getValueType());
+        var producedSignal = findSignalByName(outer, "produced");
+        assertObjectTypeName(producedSignal.getParameter(0).getType(), "ModuleItem");
+
+        var wrapFunction = findFunctionByName(outer, "wrap");
+        assertObjectTypeName(wrapFunction.getParameter(0).getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(wrapFunction.getReturnType(), "ModuleItem");
+
+        assertObjectTypeName(findPropertyByName(directInner, "self_ref").getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(findPropertyByName(directInner, "outer_ref").getType(), "OuterTypes");
+        assertObjectTypeName(findPropertyByName(directInner, "module_ref").getType(), "ModuleItem");
+        assertObjectTypeName(findPropertyByName(directInner, "helper_ref").getType(), "OuterTypes$Helper");
+        var helpersType = assertInstanceOf(
+                GdArrayType.class,
+                findPropertyByName(directInner, "helpers").getType()
+        );
+        assertObjectTypeName(helpersType.getValueType(), "OuterTypes$Helper");
+
+        assertObjectTypeName(findPropertyByName(deep, "self_ref").getType(), "OuterTypes$DirectInner$Deep");
+        assertObjectTypeName(findPropertyByName(deep, "parent_ref").getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(findPropertyByName(deep, "outer_ref").getType(), "OuterTypes");
+        assertObjectTypeName(findPropertyByName(deep, "helper_ref").getType(), "OuterTypes$Helper");
 
         assertTrue(diagnostics.isEmpty());
         assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void buildDoesNotResolveInnerClassSourceNamesOutsideOwningLexicalChain() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var outerUnit = parserService.parseUnit(Path.of("tmp", "outer_visibility.gd"), """
+                class_name OuterVisibility
+                extends RefCounted
+                
+                class HiddenInner:
+                    pass
+                """, diagnostics);
+        var consumerUnit = parserService.parseUnit(Path.of("tmp", "external_consumer.gd"), """
+                class_name ExternalConsumer
+                extends RefCounted
+                
+                var leaked: HiddenInner
+                var allowed: OuterVisibility
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                "test_module",
+                List.of(outerUnit, consumerUnit),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var consumer = findClassByName(result.classDefs(), "ExternalConsumer");
+
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(consumer, "leaked").getType());
+        assertObjectTypeName(findPropertyByName(consumer, "allowed").getType(), "OuterVisibility");
+        assertNotNull(registry.findGdccClass("OuterVisibility$HiddenInner"));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.type_resolution")
+                        && diagnostic.message().contains("HiddenInner")
+                        && diagnostic.sourcePath() != null
+                        && diagnostic.sourcePath().endsWith("external_consumer.gd")
+        ));
+    }
+
+    @Test
+    void buildReportsUnknownDeclaredTypesAcrossMemberSurfacesAndFallsBackToVariant() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "unknown_type_surface.gd"), """
+                class_name UnknownTypeSurface
+                extends RefCounted
+                
+                signal changed(payload: MissingSignal)
+                var field: MissingField
+                var bag: Array[MissingArray]
+                
+                func ping(arg: MissingParam) -> MissingReturn:
+                    pass
+                
+                func _init(seed: MissingCtor):
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var unknownTypeSurface = findClassByName(result.classDefs(), "UnknownTypeSurface");
+        var changedSignal = findSignalByName(unknownTypeSurface, "changed");
+        var pingFunction = findFunctionByName(unknownTypeSurface, "ping");
+        var initFunction = findFunctionByName(unknownTypeSurface, "_init");
+
+        assertEquals(GdVariantType.VARIANT, changedSignal.getParameter(0).getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "field").getType());
+        assertEquals(GdVariantType.VARIANT, findPropertyByName(unknownTypeSurface, "bag").getType());
+        assertEquals(GdVariantType.VARIANT, pingFunction.getParameter(0).getType());
+        assertEquals(GdVariantType.VARIANT, pingFunction.getReturnType());
+        assertEquals(GdVariantType.VARIANT, initFunction.getParameter(0).getType());
+
+        var typeResolutionDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_resolution"))
+                .toList();
+        assertEquals(6, typeResolutionDiagnostics.size());
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingSignal")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingField")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingArray")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingParam")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingReturn")));
+        assertTrue(typeResolutionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("MissingCtor")));
     }
 
     @Test
@@ -584,12 +733,31 @@ class FrontendClassSkeletonTest {
                 .orElseThrow(() -> new AssertionError("Class not found: " + className));
     }
 
+    private PropertyDef findPropertyByName(LirClassDef classDef, String propertyName) {
+        return classDef.getProperties().stream()
+                .filter(propertyDef -> propertyDef.getName().equals(propertyName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Property not found: " + propertyName));
+    }
+
+    private SignalDef findSignalByName(LirClassDef classDef, String signalName) {
+        return classDef.getSignals().stream()
+                .filter(signalDef -> signalDef.getName().equals(signalName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Signal not found: " + signalName));
+    }
+
     private LirFunctionDef findFunctionByName(LirClassDef classDef, String functionName) {
         return classDef.getFunctions().stream()
                 .filter(functionDef -> functionDef.getName().equals(functionName))
                 .findFirst()
                 .map(functionDef -> assertInstanceOf(LirFunctionDef.class, functionDef))
                 .orElseThrow(() -> new AssertionError("Function not found: " + functionName));
+    }
+
+    private void assertObjectTypeName(GdType type, String expectedTypeName) {
+        var objectType = assertInstanceOf(GdObjectType.class, type);
+        assertEquals(new GdObjectType(expectedTypeName), objectType);
     }
 
     private Object newSkeletonBuildContext(
