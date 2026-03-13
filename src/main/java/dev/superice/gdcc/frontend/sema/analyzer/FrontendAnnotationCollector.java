@@ -1,5 +1,7 @@
-package dev.superice.gdcc.frontend.sema;
+package dev.superice.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
+import dev.superice.gdcc.frontend.sema.FrontendGdAnnotation;
 import dev.superice.gdparser.frontend.ast.AnnotationStatement;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;

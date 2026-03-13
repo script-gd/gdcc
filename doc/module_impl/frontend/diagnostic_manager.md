@@ -197,7 +197,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 ### 3.2 skeleton
 
 - `FrontendClassSkeletonBuilder` 已不再使用裸 `List<FrontendDiagnostic>` 透传
-- duplicate class / inheritance cycle / malformed nested class 现在统一先写入 manager，再跳过受影响 subtree，而不是直接中断整个 module skeleton 过程
+- skeleton 现先进行 module 级 class header discovery；duplicate class、inner class source-name/canonical-name 冲突、inheritance cycle、malformed nested class 都统一先写入 manager，再跳过受影响 subtree，而不是直接中断整个 module skeleton 过程
 - skeleton 会把 annotation side-table 写入共享 `FrontendAnalysisData`
 - builder 不会创造或重复导入第二份 parse diagnostics
 

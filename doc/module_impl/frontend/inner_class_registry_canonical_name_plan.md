@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：Phase 1 已完成，Phase 2+ 待实施
+- 状态：Phase 1 / Phase 2 已完成，Phase 3+ 待实施
 - 更新时间：2026-03-13
 - 基线提交：`c74d37e fix(scope): preserve container leaf types in text parsing`
 - 本轮范围：
@@ -277,34 +277,38 @@ source-facing 名字不再试图塞回 `ClassDef`，而是由：
 
 执行项：
 
-1. 在 `FrontendClassSkeletonBuilder` 中引入独立的 class header discovery pass。
-2. discovery pass 对每个 source unit 收集：
-   - 顶层 class 统一 `name`
-   - 所有 inner class 的 source/canonical 名
-   - immediate lexical owner
-   - 原始 `extends` 文本
-   - source range
-3. 在 discovery 阶段完成以下验证：
-   - 顶层 class 重名
-   - 同一 lexical owner 下 inner class `sourceName` 冲突
-   - canonical name 冲突
-   - 缺失 inner class 名
-   - 可在 header 层确定的继承循环
-4. discovery 产出必须显式区分：
-   - accepted candidate
-   - rejected candidate
-   - rejected subtree
-5. 被拒绝 subtree 必须继续符合 frontend 恢复策略：
-   - 发出 diagnostic
-   - 仅跳过该 subtree
-   - 同 module 中其他合法 class 继续工作
+- [x] 在 `FrontendClassSkeletonBuilder` 中引入独立的 class header discovery pass。
+- [x] discovery pass 对每个 source unit 收集：
+  - 顶层 class 统一 `name`
+  - 所有 inner class 的 source/canonical 名
+  - immediate lexical owner
+  - 原始 `extends` 文本
+  - source range
+- [x] 在 discovery 阶段完成以下验证：
+  - 顶层 class 重名
+  - 同一 lexical owner 下 inner class `sourceName` 冲突
+  - canonical name 冲突
+  - 缺失 inner class 名
+  - 可在 header 层确定的继承循环
+- [x] discovery 产出显式区分 accepted candidate、rejected candidate 与 rejected subtree。
+- [x] 被拒绝 subtree 继续符合 frontend 恢复策略：
+  - 发出 diagnostic
+  - 仅跳过该 subtree
+  - 同 module 中其他合法 class 继续工作
+
+本阶段已落地说明：
+
+- `FrontendClassSkeletonBuilder` 现先构建 module 级 header 图，再基于 accepted header 构建 `FrontendSourceClassRelation` 与 inner relation。
+- discovery 内部使用 accepted header、rejected candidate、rejected subtree root 三种结果视图显式区分恢复状态。
+- header-level 继承检查已扩展到 inner class，可拒绝 cycle 参与者及依赖被拒绝 super 的后续 class subtree。
+- Phase 2 仍保持 Phase 3 之前的发布时序：accepted top-level skeleton 仍在成员填充后统一注入 `ClassRegistry`，未提前注册。
 
 验收清单：
 
-- [ ] `FrontendClassSkeletonBuilder` 在填充成员前就能拿到完整的 module 级 class header 图
-- [ ] 重名、缺名、循环等错误都能锚定到对应 AST range，并保持“diagnostic + skip subtree”
-- [ ] rejected class 不会进入后续 shell publish 列表
-- [ ] 仍然保留现有 top-level duplicate / inheritance-cycle 的恢复能力，且 inner class 新增错误不会打断整 module
+- [x] `FrontendClassSkeletonBuilder` 在填充成员前就能拿到完整的 module 级 class header 图
+- [x] 重名、缺名、循环等错误都能锚定到对应 AST range，并保持“diagnostic + skip subtree”
+- [x] rejected class 不会进入后续 shell publish 列表
+- [x] 仍然保留现有 top-level duplicate / inheritance-cycle 的恢复能力，且 inner class 新增错误不会打断整 module
 
 ## Phase 3. 两阶段 skeleton 发布：先注册 shell，再填充成员
 

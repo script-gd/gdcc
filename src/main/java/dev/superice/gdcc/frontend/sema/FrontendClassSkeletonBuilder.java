@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
 import dev.superice.gdparser.frontend.ast.*;
 import dev.superice.gdcc.exception.TypeParsingException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
@@ -19,7 +20,8 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 import java.util.*;
 
-/// Build class skeletons from parsed AST units and inject top-level ones into ClassRegistry.
+/// Build class skeletons from parsed AST units via a module-level header discovery pass and inject
+/// accepted top-level ones into `ClassRegistry`.
 public final class FrontendClassSkeletonBuilder {
     /// Matches upstream Godot GDScript behavior: scripts/classes without an explicit `extends`
     /// default to `RefCounted`.
@@ -44,81 +46,66 @@ public final class FrontendClassSkeletonBuilder {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
 
-        var classByName = new LinkedHashMap<String, ClassSkeletonCandidate>();
-        var topLevelClassOrder = new ArrayList<ClassSkeletonCandidate>();
-        var acceptedSourceRelationsByName = new LinkedHashMap<String, FrontendSourceClassRelation>();
         var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
             // Reuse the shared analysis data side table so later phases see one stable
             // annotation ownership map instead of per-phase copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
+        }
+        var headerDiscovery = discoverModuleClassHeaders(units, diagnosticManager);
+        var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
+
+        // Phase 2 stops short of Phase 3's early shell publication. We still build every accepted
+        // source relation against the preexisting registry state first, then publish accepted
+        // top-level skeletons afterward.
+        for (var sourceUnitGraph : headerDiscovery.sourceUnitGraphs()) {
+            if (sourceUnitGraph.topLevelHeader() == null) {
+                continue;
+            }
             var context = new SkeletonBuildContext(
                     classRegistry,
                     diagnosticManager,
-                    unit.path(),
+                    sourceUnitGraph.unit().path(),
                     analysisData
             );
-            var relation = buildSourceClassRelation(unit, context);
-
-            var topLevelCandidate = new ClassSkeletonCandidate(
-                    unit.path(),
-                    FrontendRange.fromAstRange(topLevelClassRange(unit)),
-                    relation.topLevelClassDef()
-            );
-            var existing = classByName.putIfAbsent(topLevelCandidate.classDef().getName(), topLevelCandidate);
-            if (existing != null) {
-                reportDuplicateTopLevelClass(existing, topLevelCandidate, diagnosticManager);
-                continue;
-            }
-            acceptedSourceRelationsByName.put(topLevelCandidate.classDef().getName(), relation);
-            topLevelClassOrder.add(topLevelCandidate);
+            sourceClassRelations.add(buildSourceClassRelation(sourceUnitGraph, context));
         }
-
-        var rejectedClassNames = detectRejectedTopLevelClasses(classByName, diagnosticManager);
-        var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
-
-        for (var classCandidate : topLevelClassOrder) {
-            if (rejectedClassNames.contains(classCandidate.classDef().getName())) {
-                continue;
-            }
-            classRegistry.addGdccClass(classCandidate.classDef());
-            sourceClassRelations.add(acceptedSourceRelationsByName.get(classCandidate.classDef().getName()));
+        for (var sourceClassRelation : sourceClassRelations) {
+            classRegistry.addGdccClass(sourceClassRelation.topLevelClassDef());
         }
 
         return new FrontendModuleSkeleton(moduleName, sourceClassRelations, diagnosticManager.snapshot());
     }
 
-    /// Builds one source-owned skeleton relation:
-    /// - exactly one top-level script class
-    /// - zero or more nested `ClassDeclaration -> LirClassDef` ownership pairs discovered under
-    ///   `ClassDeclaration` subtrees
+    /// Builds one accepted source-owned skeleton relation from the header graph emitted by the
+    /// discovery pass:
+    /// - exactly one accepted top-level script class
+    /// - zero or more accepted nested `ClassDeclaration -> LirClassDef` ownership pairs
     ///
-    /// The relation is stable even when later phases need more than one class skeleton from the
-    /// same source file; callers no longer have to recover that ownership through list indexes.
+    /// Rejected roots and their descendants never reach this stage. The relation therefore mirrors
+    /// the accepted header graph instead of rediscovering validity while filling member skeletons.
     private @NotNull FrontendSourceClassRelation buildSourceClassRelation(
-            @NotNull FrontendSourceUnit unit,
+            @NotNull SourceUnitClassHeaderGraph sourceUnitGraph,
             @NotNull SkeletonBuildContext context
     ) {
-        var classNameStatement = firstClassNameStatement(unit.ast().statements());
-        var className = resolveClassName(unit.path(), classNameStatement);
-        var superClassName = resolveSuperClassName(unit.ast().statements(), classNameStatement);
-
+        var topLevelHeader = Objects.requireNonNull(
+                sourceUnitGraph.topLevelHeader(),
+                "Accepted source unit graph must have a top-level header"
+        );
         var topLevelClassDef = buildClassSkeleton(
-                className,
-                superClassName,
-                unit.ast().statements(),
+                topLevelHeader.canonicalName(),
+                topLevelHeader.effectiveSuperName(),
+                sourceUnitGraph.unit().ast().statements(),
                 context
         );
-        var innerClassRelations = collectInnerClassRelations(
-                unit.ast().statements(),
-                unit.ast(),
-                topLevelClassDef.getName(),
+        var innerClassRelations = collectAcceptedInnerClassRelations(
+                topLevelHeader.immediateInnerHeaders(),
                 context
         );
         return new FrontendSourceClassRelation(
-                unit,
-                className,
+                sourceUnitGraph.unit(),
+                topLevelHeader.sourceName(),
                 topLevelClassDef,
                 innerClassRelations
         );
@@ -134,25 +121,35 @@ public final class FrontendClassSkeletonBuilder {
     }
 
     private @NotNull String resolveClassName(@NotNull Path sourcePath, @Nullable ClassNameStatement classNameStatement) {
-        if (classNameStatement != null && !classNameStatement.name().isBlank()) {
-            return classNameStatement.name().trim();
+        var className = normalizeHeaderText(classNameStatement != null ? classNameStatement.name() : null);
+        if (className != null) {
+            return className;
         }
         return deriveClassNameFromFileName(sourcePath);
     }
 
-    private @NotNull String resolveSuperClassName(
+    /// Top-level scripts may spell inheritance either on `class_name Name extends Base` or on a
+    /// standalone `extends Base` statement. Header discovery preserves only the trimmed raw text
+    /// here; Phase 2 still defers semantic type resolution itself to later steps.
+    private @Nullable String resolveTopLevelRawExtendsText(
             @NotNull List<Statement> statements,
             @Nullable ClassNameStatement classNameStatement
     ) {
-        if (classNameStatement != null && classNameStatement.extendsTarget() != null && !classNameStatement.extendsTarget().isBlank()) {
-            return classNameStatement.extendsTarget().trim();
+        var classNameExtends = normalizeHeaderText(
+                classNameStatement != null ? classNameStatement.extendsTarget() : null
+        );
+        if (classNameExtends != null) {
+            return classNameExtends;
         }
         for (var statement : statements) {
-            if (statement instanceof ExtendsStatement extendsStatement && !extendsStatement.target().isBlank()) {
-                return extendsStatement.target().trim();
+            if (statement instanceof ExtendsStatement extendsStatement) {
+                var extendsTarget = normalizeHeaderText(extendsStatement.target());
+                if (extendsTarget != null) {
+                    return extendsTarget;
+                }
             }
         }
-        return DEFAULT_SUPER_CLASS_NAME;
+        return null;
     }
 
     private @NotNull Range topLevelClassRange(@NotNull FrontendSourceUnit unit) {
@@ -191,81 +188,43 @@ public final class FrontendClassSkeletonBuilder {
         return classDef;
     }
 
-    /// Recursively collects every non-top-level class declared inside the current statement list.
-    ///
-    /// This phase already freezes inner-class identity into:
-    /// - source-facing `sourceName`
-    /// - canonical `LirClassDef#getName()`
-    /// - exact immediate lexical owner
-    ///
-    /// Actual registry publication is deferred to the later shell-publish phase; the absence of a
-    /// registry entry here is only a temporary phase boundary, not a statement that inner classes
-    /// are permanently source-local only.
-    /// - malformed nested classes are diagnosed and skipped together with their own subtrees
-    /// - each entry keeps both the parsed `ClassDeclaration` owner and its built skeleton
-    private @NotNull List<FrontendInnerClassRelation> collectInnerClassRelations(
-            @NotNull List<Statement> statements,
-            @NotNull Node lexicalOwner,
-            @NotNull String parentCanonicalName,
+    /// Builds accepted inner class relations in pre-order so later phases can keep using the stable
+    /// source traversal order established by the discovery pass.
+    private @NotNull List<FrontendInnerClassRelation> collectAcceptedInnerClassRelations(
+            @NotNull List<AcceptedClassHeader> acceptedInnerHeaders,
             @NotNull SkeletonBuildContext context
     ) {
         var innerClassRelations = new ArrayList<FrontendInnerClassRelation>();
-        for (var statement : statements) {
-            if (!(statement instanceof ClassDeclaration classDeclaration)) {
-                continue;
-            }
-
-            var innerClassName = resolveInnerClassName(classDeclaration, context);
-            if (innerClassName == null) {
-                continue;
-            }
-            var canonicalName = parentCanonicalName + "$" + innerClassName;
+        for (var acceptedInnerHeader : acceptedInnerHeaders) {
+            var classDeclaration = requireInnerClassDeclaration(acceptedInnerHeader);
             var innerClassDef = buildClassSkeleton(
-                    canonicalName,
-                    resolveInnerClassSuperName(classDeclaration),
+                    acceptedInnerHeader.canonicalName(),
+                    acceptedInnerHeader.effectiveSuperName(),
                     classDeclaration.body().statements(),
                     context
             );
             innerClassRelations.add(new FrontendInnerClassRelation(
-                    lexicalOwner,
+                    acceptedInnerHeader.lexicalOwner(),
                     classDeclaration,
-                    innerClassName,
-                    canonicalName,
+                    acceptedInnerHeader.sourceName(),
+                    acceptedInnerHeader.canonicalName(),
                     innerClassDef
             ));
-            innerClassRelations.addAll(collectInnerClassRelations(
-                    classDeclaration.body().statements(),
-                    classDeclaration,
-                    canonicalName,
+            innerClassRelations.addAll(collectAcceptedInnerClassRelations(
+                    acceptedInnerHeader.immediateInnerHeaders(),
                     context
             ));
         }
         return List.copyOf(innerClassRelations);
     }
 
-    private @NotNull String resolveInnerClassSuperName(@NotNull ClassDeclaration classDeclaration) {
-        var extendsTarget = classDeclaration.extendsTarget();
-        if (extendsTarget == null || extendsTarget.isBlank()) {
-            return DEFAULT_SUPER_CLASS_NAME;
-        }
-        return extendsTarget.trim();
-    }
-
-    private @Nullable String resolveInnerClassName(
-            @NotNull ClassDeclaration classDeclaration,
-            @NotNull SkeletonBuildContext context
+    private @NotNull ClassDeclaration requireInnerClassDeclaration(
+            @NotNull AcceptedClassHeader acceptedInnerHeader
     ) {
-        var className = classDeclaration.name().trim();
-        if (className.isEmpty()) {
-            context.diagnostics().error(
-                    "sema.class_skeleton",
-                    "Inner class declaration is missing a class name and will be skipped",
-                    context.sourcePath(),
-                    FrontendRange.fromAstRange(classDeclaration.range())
-            );
-            return null;
+        if (acceptedInnerHeader.astOwner() instanceof ClassDeclaration classDeclaration) {
+            return classDeclaration;
         }
-        return className;
+        throw new IllegalStateException("Accepted inner class header must point to ClassDeclaration");
     }
 
     private @NotNull LirSignalDef toLirSignal(
@@ -382,140 +341,658 @@ public final class FrontendClassSkeletonBuilder {
         return GdVariantType.VARIANT;
     }
 
-    private @NotNull Set<String> detectRejectedTopLevelClasses(
-            @NotNull Map<String, ClassSkeletonCandidate> classByName,
+    /// Phase-2 discovery pass:
+    /// - discovers a complete module-local class header graph before member filling starts
+    /// - validates duplicate/canonical/cycle issues against that graph
+    /// - records rejected subtree roots explicitly so later phases can skip only those regions
+    private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
+            @NotNull List<FrontendSourceUnit> units,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var states = new HashMap<String, VisitState>();
-        var visitStack = new ArrayList<String>();
-        var rejectedClassNames = new LinkedHashSet<String>();
-        for (var className : classByName.keySet()) {
-            detectInheritanceProblemsDfs(
-                    className,
-                    classByName,
-                    states,
-                    visitStack,
-                    rejectedClassNames,
+        var sourceUnitHeaders = new ArrayList<MutableSourceUnitHeaders>(units.size());
+        var discoveredHeadersInOrder = new ArrayList<MutableClassHeader>();
+        var rejectedCandidates = new ArrayList<RejectedClassHeader>();
+        var rejectedSubtreeRoots = new ArrayList<Node>();
+
+        for (var unit : units) {
+            var topLevelHeader = discoverTopLevelHeader(
+                    unit,
+                    discoveredHeadersInOrder,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots,
+                    diagnosticManager
+            );
+            sourceUnitHeaders.add(new MutableSourceUnitHeaders(unit, topLevelHeader));
+        }
+
+        rejectDuplicateTopLevelHeaders(
+                sourceUnitHeaders,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
+        rejectDuplicateInnerHeadersByLexicalOwner(
+                discoveredHeadersInOrder,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
+        rejectCanonicalHeaderConflicts(
+                discoveredHeadersInOrder,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
+
+        var validationIndex = buildHeaderValidationIndex(discoveredHeadersInOrder);
+        rejectHeadersWithInheritanceCycles(
+                discoveredHeadersInOrder,
+                validationIndex,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
+        rejectHeadersDependingOnRejectedSupers(
+                discoveredHeadersInOrder,
+                validationIndex,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
+        return freezeModuleClassHeaderDiscovery(
+                sourceUnitHeaders,
+                rejectedCandidates,
+                rejectedSubtreeRoots
+        );
+    }
+
+    /// Every source unit always contributes exactly one synthetic top-level script class header,
+    /// even when later validation rejects it. This lets Phase 2 validate module-wide conflicts
+    /// against one complete header graph before any skeleton object is published.
+    private @NotNull MutableClassHeader discoverTopLevelHeader(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var classNameStatement = firstClassNameStatement(unit.ast().statements());
+        var topLevelName = resolveClassName(unit.path(), classNameStatement);
+        var topLevelHeader = new MutableClassHeader(
+                unit,
+                null,
+                unit.ast(),
+                unit.ast(),
+                topLevelName,
+                topLevelName,
+                resolveTopLevelRawExtendsText(unit.ast().statements(), classNameStatement),
+                FrontendRange.fromAstRange(topLevelClassRange(unit)),
+                true
+        );
+        discoveredHeadersInOrder.add(topLevelHeader);
+        discoverInnerClassHeaders(
+                unit,
+                unit.ast().statements(),
+                topLevelHeader,
+                unit.ast(),
+                topLevelHeader.canonicalName(),
+                discoveredHeadersInOrder,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
+        return topLevelHeader;
+    }
+
+    /// Discovery is intentionally tolerant: malformed inner declarations publish diagnostics and
+    /// become rejected subtree roots immediately, while valid siblings continue to be discovered in
+    /// the same source unit.
+    @SuppressWarnings("DeconstructionCanBeUsed")
+    private void discoverInnerClassHeaders(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull List<Statement> statements,
+            @NotNull MutableClassHeader parentHeader,
+            @NotNull Node lexicalOwner,
+            @NotNull String parentCanonicalName,
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        for (var statement : statements) {
+            if (!(statement instanceof ClassDeclaration classDeclaration)) {
+                continue;
+            }
+
+            var innerClassName = normalizeHeaderText(classDeclaration.name());
+            if (innerClassName == null) {
+                diagnosticManager.error(
+                        "sema.class_skeleton",
+                        "Inner class declaration is missing a class name and will be skipped",
+                        unit.path(),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                );
+                rejectedCandidates.add(new RejectedClassHeader(
+                        unit,
+                        lexicalOwner,
+                        classDeclaration,
+                        null,
+                        null,
+                        normalizeHeaderText(classDeclaration.extendsTarget()),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                ));
+                rejectedSubtreeRoots.add(classDeclaration);
+                continue;
+            }
+
+            var innerHeader = new MutableClassHeader(
+                    unit,
+                    parentHeader,
+                    lexicalOwner,
+                    classDeclaration,
+                    innerClassName,
+                    parentCanonicalName + "$" + innerClassName,
+                    normalizeHeaderText(classDeclaration.extendsTarget()),
+                    FrontendRange.fromAstRange(classDeclaration.range()),
+                    false
+            );
+            parentHeader.immediateInnerHeaders().add(innerHeader);
+            discoveredHeadersInOrder.add(innerHeader);
+            discoverInnerClassHeaders(
+                    unit,
+                    classDeclaration.body().statements(),
+                    innerHeader,
+                    classDeclaration,
+                    innerHeader.canonicalName(),
+                    discoveredHeadersInOrder,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots,
                     diagnosticManager
             );
         }
-        rejectClassesDependingOnRejectedSupers(classByName, rejectedClassNames, diagnosticManager);
-        return Set.copyOf(rejectedClassNames);
+    }
+
+    private void rejectDuplicateTopLevelHeaders(
+            @NotNull List<MutableSourceUnitHeaders> sourceUnitHeaders,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var firstByName = new LinkedHashMap<String, MutableClassHeader>();
+        for (var sourceUnitHeader : sourceUnitHeaders) {
+            var topLevelHeader = sourceUnitHeader.topLevelHeader();
+            if (!topLevelHeader.isActive()) {
+                continue;
+            }
+            var existing = firstByName.putIfAbsent(topLevelHeader.sourceName(), topLevelHeader);
+            if (existing != null) {
+                reportDuplicateTopLevelClass(existing, topLevelHeader, diagnosticManager);
+                rejectDiscoveredSubtree(topLevelHeader, rejectedCandidates, rejectedSubtreeRoots);
+            }
+        }
+    }
+
+    /// Inner class source names are only required to be unique under the same immediate lexical
+    /// owner. Different branches may reuse the same source name because their canonical names still
+    /// diverge through the owner chain.
+    private void rejectDuplicateInnerHeadersByLexicalOwner(
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var firstByOwnerAndName = new IdentityHashMap<Node, Map<String, MutableClassHeader>>();
+        for (var discoveredHeader : discoveredHeadersInOrder) {
+            if (discoveredHeader.isTopLevel() || !discoveredHeader.isActive()) {
+                continue;
+            }
+
+            var headersByName = firstByOwnerAndName.computeIfAbsent(
+                    discoveredHeader.lexicalOwner(),
+                    _ -> new LinkedHashMap<>()
+            );
+            var existing = headersByName.putIfAbsent(
+                    discoveredHeader.sourceName(),
+                    discoveredHeader
+            );
+            if (existing == null) {
+                continue;
+            }
+
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    "Duplicate inner class name '" + discoveredHeader.sourceName()
+                            + "' under lexical owner '" + describeLexicalOwner(discoveredHeader)
+                            + "'; duplicate skeleton subtree will be skipped",
+                    discoveredHeader.unit().path(),
+                    discoveredHeader.range()
+            );
+            rejectDiscoveredSubtree(
+                    discoveredHeader,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots
+            );
+        }
+    }
+
+    private void rejectCanonicalHeaderConflicts(
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var firstByCanonicalName = new LinkedHashMap<String, MutableClassHeader>();
+        for (var discoveredHeader : discoveredHeadersInOrder) {
+            if (!discoveredHeader.isActive()) {
+                continue;
+            }
+
+            var existing = firstByCanonicalName.putIfAbsent(
+                    discoveredHeader.canonicalName(),
+                    discoveredHeader
+            );
+            if (existing == null) {
+                continue;
+            }
+
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    "Canonical class name conflict '" + discoveredHeader.canonicalName()
+                            + "' between "
+                            + describeClassHeaderOrigin(existing)
+                            + " and "
+                            + describeClassHeaderOrigin(discoveredHeader)
+                            + "; conflicting skeleton subtree will be skipped",
+                    discoveredHeader.unit().path(),
+                    discoveredHeader.range()
+            );
+            rejectDiscoveredSubtree(
+                    discoveredHeader,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots
+            );
+        }
+    }
+
+    private void reportDuplicateTopLevelClass(
+            @NotNull MutableClassHeader existing,
+            @NotNull MutableClassHeader duplicate,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var className = duplicate.canonicalName();
+        var message = "Duplicate class name '" + className + "' found in "
+                + existing.unit().path() + " and " + duplicate.unit().path()
+                + "; duplicate skeleton subtree will be skipped";
+        diagnosticManager.error(
+                "sema.class_skeleton",
+                message,
+                duplicate.unit().path(),
+                duplicate.range()
+        );
+    }
+
+    /// Builds the minimal lookup tables needed by Phase 2 validation:
+    /// - canonical-name hits for global uniqueness and explicit canonical extends text
+    /// - per-owner inner source-name hits for lexical lookup
+    /// - AST owner recovery so inner headers can walk back to enclosing lexical owners
+    private @NotNull HeaderValidationIndex buildHeaderValidationIndex(
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder
+    ) {
+        var firstTopLevelByName = new LinkedHashMap<String, MutableClassHeader>();
+        var firstByCanonicalName = new LinkedHashMap<String, MutableClassHeader>();
+        var firstInnerByLexicalOwner = new IdentityHashMap<Node, Map<String, MutableClassHeader>>();
+        var headersByAstOwner = new IdentityHashMap<Node, MutableClassHeader>();
+
+        for (var discoveredHeader : discoveredHeadersInOrder) {
+            firstByCanonicalName.putIfAbsent(
+                    discoveredHeader.canonicalName(),
+                    discoveredHeader
+            );
+            var previousByOwner = headersByAstOwner.putIfAbsent(
+                    discoveredHeader.astOwner(),
+                    discoveredHeader
+            );
+            if (previousByOwner != null) {
+                throw new IllegalStateException(
+                        "Duplicate AST owner encountered while building class header index"
+                );
+            }
+            if (discoveredHeader.isTopLevel()) {
+                firstTopLevelByName.putIfAbsent(
+                        discoveredHeader.sourceName(),
+                        discoveredHeader
+                );
+                continue;
+            }
+            firstInnerByLexicalOwner.computeIfAbsent(
+                    discoveredHeader.lexicalOwner(),
+                    _ -> new LinkedHashMap<>()
+            ).putIfAbsent(
+                    discoveredHeader.sourceName(),
+                    discoveredHeader
+            );
+        }
+        return new HeaderValidationIndex(
+                firstTopLevelByName,
+                firstByCanonicalName,
+                firstInnerByLexicalOwner,
+                headersByAstOwner
+        );
+    }
+
+    private void rejectHeadersWithInheritanceCycles(
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull HeaderValidationIndex validationIndex,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var states = new IdentityHashMap<MutableClassHeader, VisitState>();
+        var visitStack = new ArrayList<MutableClassHeader>();
+        for (var discoveredHeader : discoveredHeadersInOrder) {
+            if (!discoveredHeader.isActive()) {
+                continue;
+            }
+            detectInheritanceProblemsDfs(
+                    discoveredHeader,
+                    validationIndex,
+                    states,
+                    visitStack,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots,
+                    diagnosticManager
+            );
+        }
     }
 
     private void detectInheritanceProblemsDfs(
-            @NotNull String className,
-            @NotNull Map<String, ClassSkeletonCandidate> classByName,
-            @NotNull Map<String, VisitState> states,
-            @NotNull List<String> visitStack,
-            @NotNull Set<String> rejectedClassNames,
+            @NotNull MutableClassHeader discoveredHeader,
+            @NotNull HeaderValidationIndex validationIndex,
+            @NotNull IdentityHashMap<MutableClassHeader, VisitState> states,
+            @NotNull List<MutableClassHeader> visitStack,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var state = states.getOrDefault(className, VisitState.UNVISITED);
+        var state = states.getOrDefault(discoveredHeader, VisitState.UNVISITED);
         if (state == VisitState.VISITED) {
             return;
         }
         if (state == VisitState.VISITING) {
-            reportInheritanceCycle(className, classByName, visitStack, rejectedClassNames, diagnosticManager);
+            reportInheritanceCycle(
+                    discoveredHeader,
+                    visitStack,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots,
+                    diagnosticManager
+            );
             return;
         }
 
-        states.put(className, VisitState.VISITING);
-        visitStack.add(className);
+        states.put(discoveredHeader, VisitState.VISITING);
+        visitStack.add(discoveredHeader);
 
-        var superName = classByName.get(className).classDef().getSuperName();
-        if (classByName.containsKey(superName)) {
+        var superHeader = resolveHeaderSuperCandidate(
+                discoveredHeader,
+                validationIndex
+        );
+        if (superHeader != null && superHeader.isActive()) {
             detectInheritanceProblemsDfs(
-                    superName,
-                    classByName,
+                    superHeader,
+                    validationIndex,
                     states,
                     visitStack,
-                    rejectedClassNames,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots,
                     diagnosticManager
             );
         }
 
         visitStack.removeLast();
-        states.put(className, VisitState.VISITED);
+        states.put(discoveredHeader, VisitState.VISITED);
     }
 
     private void reportInheritanceCycle(
-            @NotNull String reenteredClassName,
-            @NotNull Map<String, ClassSkeletonCandidate> classByName,
-            @NotNull List<String> visitStack,
-            @NotNull Set<String> rejectedClassNames,
+            @NotNull MutableClassHeader reenteredHeader,
+            @NotNull List<MutableClassHeader> visitStack,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var cycleStart = visitStack.indexOf(reenteredClassName);
+        var cycleStart = visitStack.indexOf(reenteredHeader);
         var cyclePath = new ArrayList<>(visitStack.subList(cycleStart, visitStack.size()));
-        cyclePath.add(reenteredClassName);
-        var chainText = String.join(" -> ", cyclePath);
+        cyclePath.add(reenteredHeader);
+        var chainText = cyclePath.stream()
+                .map(MutableClassHeader::canonicalName)
+                .reduce((left, right) -> left + " -> " + right)
+                .orElse(reenteredHeader.canonicalName());
 
-        for (var className : new LinkedHashSet<>(cyclePath)) {
-            var classCandidate = classByName.get(className);
-            if (classCandidate == null || !rejectedClassNames.add(className)) {
+        for (var cycleHeader : new LinkedHashSet<>(cyclePath)) {
+            if (!cycleHeader.isActive()) {
                 continue;
             }
             diagnosticManager.error(
                     "sema.inheritance_cycle",
-                    "Class '" + className + "' participates in inheritance cycle: "
+                    "Class '" + cycleHeader.canonicalName()
+                            + "' participates in inheritance cycle: "
                             + chainText
                             + "; its skeleton subtree will be skipped",
-                    classCandidate.sourcePath(),
-                    classCandidate.range()
+                    cycleHeader.unit().path(),
+                    cycleHeader.range()
+            );
+            rejectDiscoveredSubtree(
+                    cycleHeader,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots
             );
         }
     }
 
-    private void rejectClassesDependingOnRejectedSupers(
-            @NotNull Map<String, ClassSkeletonCandidate> classByName,
-            @NotNull Set<String> rejectedClassNames,
+    private void rejectHeadersDependingOnRejectedSupers(
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull HeaderValidationIndex validationIndex,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         boolean changed;
         do {
             changed = false;
-            for (var entry : classByName.entrySet()) {
-                var className = entry.getKey();
-                if (rejectedClassNames.contains(className)) {
+            for (var discoveredHeader : discoveredHeadersInOrder) {
+                if (!discoveredHeader.isActive()) {
                     continue;
                 }
 
-                var classCandidate = entry.getValue();
-                var superName = classCandidate.classDef().getSuperName();
-                if (!rejectedClassNames.contains(superName)) {
+                var superHeader = resolveHeaderSuperCandidate(
+                        discoveredHeader,
+                        validationIndex
+                );
+                if (superHeader == null || superHeader.isActive()) {
                     continue;
                 }
 
                 diagnosticManager.error(
                         "sema.class_skeleton",
-                        "Class '" + className + "' will be skipped because its super class '"
-                                + superName
+                        "Class '" + discoveredHeader.canonicalName()
+                                + "' will be skipped because its super class '"
+                                + superHeader.canonicalName()
                                 + "' was rejected by earlier inheritance diagnostics",
-                        classCandidate.sourcePath(),
-                        classCandidate.range()
+                        discoveredHeader.unit().path(),
+                        discoveredHeader.range()
                 );
-                rejectedClassNames.add(className);
+                rejectDiscoveredSubtree(
+                        discoveredHeader,
+                        rejectedCandidates,
+                        rejectedSubtreeRoots
+                );
                 changed = true;
             }
         } while (changed);
     }
 
-    private void reportDuplicateTopLevelClass(
-            @NotNull ClassSkeletonCandidate existing,
-            @NotNull ClassSkeletonCandidate duplicate,
-            @NotNull DiagnosticManager diagnosticManager
+    /// Resolves the header-layer superclass target using the same naming facts already frozen by
+    /// discovery:
+    /// - exact canonical hit wins first
+    /// - otherwise walk lexical owner chain for inner source names
+    /// - finally fall back to top-level source names
+    ///
+    /// This remains intentionally narrower than full declared-type resolution; builtin/engine
+    /// supers stay outside the module-local header graph and therefore return `null` here.
+    private @Nullable MutableClassHeader resolveHeaderSuperCandidate(
+            @NotNull MutableClassHeader discoveredHeader,
+            @NotNull HeaderValidationIndex validationIndex
     ) {
-        var className = duplicate.classDef().getName();
-        var message = "Duplicate class name '" + className + "' found in "
-                + existing.sourcePath() + " and " + duplicate.sourcePath()
-                + "; duplicate skeleton subtree will be skipped";
-        diagnosticManager.error(
-                "sema.class_skeleton",
-                message,
-                duplicate.sourcePath(),
-                duplicate.range()
+        var rawExtendsText = discoveredHeader.rawExtendsText();
+        if (rawExtendsText == null) {
+            return null;
+        }
+
+        var canonicalHit = validationIndex.firstByCanonicalName().get(rawExtendsText);
+        if (canonicalHit != null) {
+            return canonicalHit;
+        }
+
+        Node lexicalOwner = discoveredHeader.isTopLevel()
+                ? null
+                : discoveredHeader.lexicalOwner();
+        while (lexicalOwner != null) {
+            var innerHeadersByName = validationIndex.firstInnerByLexicalOwner().get(
+                    lexicalOwner
+            );
+            if (innerHeadersByName != null) {
+                var innerHit = innerHeadersByName.get(rawExtendsText);
+                if (innerHit != null) {
+                    return innerHit;
+                }
+            }
+            lexicalOwner = nextLexicalOwner(lexicalOwner, validationIndex);
+        }
+        return validationIndex.firstTopLevelByName().get(rawExtendsText);
+    }
+
+    private @Nullable Node nextLexicalOwner(
+            @NotNull Node lexicalOwner,
+            @NotNull HeaderValidationIndex validationIndex
+    ) {
+        if (lexicalOwner instanceof SourceFile) {
+            return null;
+        }
+        var ownerHeader = validationIndex.headersByAstOwner().get(lexicalOwner);
+        if (ownerHeader == null) {
+            throw new IllegalStateException(
+                    "Missing owner header while resolving lexical class header chain"
+            );
+        }
+        return ownerHeader.lexicalOwner();
+    }
+
+    /// Marks one discovered header as the rejected root and then propagates a lighter
+    /// `REJECTED_DESCENDANT` state into all nested children. Only the root is recorded as a
+    /// rejected candidate/rejected subtree output item; descendants are skipped implicitly with the
+    /// subtree.
+    private void rejectDiscoveredSubtree(
+            @NotNull MutableClassHeader rejectedRoot,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots
+    ) {
+        if (!rejectedRoot.isActive()) {
+            return;
+        }
+        rejectedRoot.setState(HeaderCandidateState.REJECTED_CANDIDATE);
+        rejectedCandidates.add(toRejectedClassHeader(rejectedRoot));
+        rejectedSubtreeRoots.add(rejectedRoot.astOwner());
+        markRejectedDescendants(rejectedRoot);
+    }
+
+    private void markRejectedDescendants(@NotNull MutableClassHeader rejectedRoot) {
+        for (var childHeader : rejectedRoot.immediateInnerHeaders()) {
+            if (childHeader.state() == HeaderCandidateState.ACTIVE) {
+                childHeader.setState(HeaderCandidateState.REJECTED_DESCENDANT);
+            }
+            markRejectedDescendants(childHeader);
+        }
+    }
+
+    private @NotNull RejectedClassHeader toRejectedClassHeader(
+            @NotNull MutableClassHeader rejectedHeader
+    ) {
+        return new RejectedClassHeader(
+                rejectedHeader.unit(),
+                rejectedHeader.lexicalOwner(),
+                rejectedHeader.astOwner(),
+                rejectedHeader.sourceName(),
+                rejectedHeader.canonicalName(),
+                rejectedHeader.rawExtendsText(),
+                rejectedHeader.range()
         );
+    }
+
+    private @NotNull ModuleClassHeaderDiscovery freezeModuleClassHeaderDiscovery(
+            @NotNull List<MutableSourceUnitHeaders> sourceUnitHeaders,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots
+    ) {
+        var sourceUnitGraphs = sourceUnitHeaders.stream()
+                .map(this::freezeSourceUnitHeaderGraph)
+                .toList();
+        return new ModuleClassHeaderDiscovery(
+                sourceUnitGraphs,
+                List.copyOf(rejectedCandidates),
+                List.copyOf(rejectedSubtreeRoots)
+        );
+    }
+
+    private @NotNull SourceUnitClassHeaderGraph freezeSourceUnitHeaderGraph(
+            @NotNull MutableSourceUnitHeaders sourceUnitHeader
+    ) {
+        return new SourceUnitClassHeaderGraph(
+                sourceUnitHeader.unit(),
+                sourceUnitHeader.topLevelHeader().isActive()
+                        ? freezeAcceptedHeader(sourceUnitHeader.topLevelHeader())
+                        : null
+        );
+    }
+
+    private @NotNull AcceptedClassHeader freezeAcceptedHeader(
+            @NotNull MutableClassHeader discoveredHeader
+    ) {
+        var acceptedInnerHeaders = discoveredHeader.immediateInnerHeaders().stream()
+                .filter(MutableClassHeader::isActive)
+                .map(this::freezeAcceptedHeader)
+                .toList();
+        return new AcceptedClassHeader(
+                discoveredHeader.unit(),
+                discoveredHeader.lexicalOwner(),
+                discoveredHeader.astOwner(),
+                discoveredHeader.sourceName(),
+                discoveredHeader.canonicalName(),
+                discoveredHeader.rawExtendsText(),
+                discoveredHeader.range(),
+                acceptedInnerHeaders
+        );
+    }
+
+    private @Nullable String normalizeHeaderText(@Nullable String text) {
+        if (text == null) {
+            return null;
+        }
+        var trimmed = text.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private @NotNull String describeLexicalOwner(@NotNull MutableClassHeader discoveredHeader) {
+        var parentHeader = discoveredHeader.parentHeader();
+        if (parentHeader != null) {
+            return parentHeader.canonicalName();
+        }
+        return discoveredHeader.unit().path().toString();
+    }
+
+    private @NotNull String describeClassHeaderOrigin(@NotNull MutableClassHeader discoveredHeader) {
+        var classKind = discoveredHeader.isTopLevel()
+                ? "top-level class"
+                : "inner class '" + discoveredHeader.sourceName() + "'";
+        return discoveredHeader.unit().path() + " (" + classKind + ")";
     }
 
     private @NotNull String deriveClassNameFromFileName(@NotNull Path sourcePath) {
@@ -556,11 +1033,156 @@ public final class FrontendClassSkeletonBuilder {
         VISITED
     }
 
-    private record ClassSkeletonCandidate(
-            @NotNull Path sourcePath,
-            @Nullable FrontendRange range,
-            @NotNull LirClassDef classDef
+    private enum HeaderCandidateState {
+        ACTIVE,
+        REJECTED_CANDIDATE,
+        REJECTED_DESCENDANT
+    }
+
+    /// Immutable accepted/rejected output of the header discovery pass.
+    private record ModuleClassHeaderDiscovery(
+            @NotNull List<SourceUnitClassHeaderGraph> sourceUnitGraphs,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots
     ) {
+    }
+
+    private record SourceUnitClassHeaderGraph(
+            @NotNull FrontendSourceUnit unit,
+            @Nullable AcceptedClassHeader topLevelHeader
+    ) {
+    }
+
+    private record AcceptedClassHeader(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull Node lexicalOwner,
+            @NotNull Node astOwner,
+            @NotNull String sourceName,
+            @NotNull String canonicalName,
+            @Nullable String rawExtendsText,
+            @Nullable FrontendRange range,
+            @NotNull List<AcceptedClassHeader> immediateInnerHeaders
+    ) {
+        private @NotNull String effectiveSuperName() {
+            return rawExtendsText != null
+                    ? rawExtendsText
+                    : DEFAULT_SUPER_CLASS_NAME;
+        }
+    }
+
+    private record RejectedClassHeader(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull Node lexicalOwner,
+            @NotNull Node astOwner,
+            @Nullable String sourceName,
+            @Nullable String canonicalName,
+            @Nullable String rawExtendsText,
+            @Nullable FrontendRange range
+    ) {
+    }
+
+    private record MutableSourceUnitHeaders(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull MutableClassHeader topLevelHeader
+    ) {
+    }
+
+    private record HeaderValidationIndex(
+            @NotNull Map<String, MutableClassHeader> firstTopLevelByName,
+            @NotNull Map<String, MutableClassHeader> firstByCanonicalName,
+            @NotNull IdentityHashMap<Node, Map<String, MutableClassHeader>> firstInnerByLexicalOwner,
+            @NotNull IdentityHashMap<Node, MutableClassHeader> headersByAstOwner
+    ) {
+    }
+
+    /// Mutable discovery node used only inside Phase 2 before the final immutable accepted and
+    /// rejected header views are frozen.
+    private static final class MutableClassHeader {
+        private final @NotNull FrontendSourceUnit unit;
+        private final @Nullable MutableClassHeader parentHeader;
+        private final @NotNull Node lexicalOwner;
+        private final @NotNull Node astOwner;
+        private final @NotNull String sourceName;
+        private final @NotNull String canonicalName;
+        private final @Nullable String rawExtendsText;
+        private final @Nullable FrontendRange range;
+        private final boolean topLevel;
+        private final @NotNull List<MutableClassHeader> immediateInnerHeaders = new ArrayList<>();
+        private @NotNull HeaderCandidateState state = HeaderCandidateState.ACTIVE;
+
+        private MutableClassHeader(
+                @NotNull FrontendSourceUnit unit,
+                @Nullable MutableClassHeader parentHeader,
+                @NotNull Node lexicalOwner,
+                @NotNull Node astOwner,
+                @NotNull String sourceName,
+                @NotNull String canonicalName,
+                @Nullable String rawExtendsText,
+                @Nullable FrontendRange range,
+                boolean topLevel
+        ) {
+            this.unit = Objects.requireNonNull(unit, "unit");
+            this.parentHeader = parentHeader;
+            this.lexicalOwner = Objects.requireNonNull(lexicalOwner, "lexicalOwner");
+            this.astOwner = Objects.requireNonNull(astOwner, "astOwner");
+            this.sourceName = Objects.requireNonNull(sourceName, "sourceName");
+            this.canonicalName = Objects.requireNonNull(canonicalName, "canonicalName");
+            this.rawExtendsText = rawExtendsText;
+            this.range = range;
+            this.topLevel = topLevel;
+        }
+
+        private @NotNull FrontendSourceUnit unit() {
+            return unit;
+        }
+
+        private @Nullable MutableClassHeader parentHeader() {
+            return parentHeader;
+        }
+
+        private @NotNull Node lexicalOwner() {
+            return lexicalOwner;
+        }
+
+        private @NotNull Node astOwner() {
+            return astOwner;
+        }
+
+        private @NotNull String sourceName() {
+            return sourceName;
+        }
+
+        private @NotNull String canonicalName() {
+            return canonicalName;
+        }
+
+        private @Nullable String rawExtendsText() {
+            return rawExtendsText;
+        }
+
+        private @Nullable FrontendRange range() {
+            return range;
+        }
+
+        private boolean isTopLevel() {
+            return topLevel;
+        }
+
+        private @NotNull List<MutableClassHeader> immediateInnerHeaders() {
+            return immediateInnerHeaders;
+        }
+
+        private @NotNull HeaderCandidateState state() {
+            return state;
+        }
+
+        private void setState(@NotNull HeaderCandidateState state) {
+            this.state = Objects.requireNonNull(state, "state");
+        }
+
+        private boolean isActive() {
+            return state == HeaderCandidateState.ACTIVE;
+        }
     }
 
     /// Stable per-unit skeleton build environment shared by private helpers.
