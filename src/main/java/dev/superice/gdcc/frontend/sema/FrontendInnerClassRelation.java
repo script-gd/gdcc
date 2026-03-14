@@ -16,6 +16,7 @@ public record FrontendInnerClassRelation(
         @NotNull ClassDeclaration declaration,
         @NotNull String sourceName,
         @NotNull String canonicalName,
+        @NotNull FrontendSuperClassRef superClassRef,
         @NotNull LirClassDef classDef
 ) implements FrontendOwnedClassRelation {
     public FrontendInnerClassRelation {
@@ -24,6 +25,7 @@ public record FrontendInnerClassRelation(
                 declaration,
                 sourceName,
                 canonicalName,
+                superClassRef,
                 classDef,
                 "Inner class relation"
         );

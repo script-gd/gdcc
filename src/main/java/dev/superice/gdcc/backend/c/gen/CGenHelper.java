@@ -571,25 +571,25 @@ public final class CGenHelper {
     }
 
     /// Resolve the nearest constructible native ancestor for a GDCC class.
-    /// This walks up GDCC inheritance chain until the first non-GDCC parent.
+    /// This walks canonical GDCC superclass names until the first non-GDCC parent.
     public @NotNull String resolveNearestNativeAncestorName(@NotNull ClassDef classDef) {
         var registry = context.classRegistry();
-        var ancestorName = classDef.getSuperName();
+        var ancestorCanonicalName = classDef.getSuperName();
         var visited = new HashSet<String>();
-        while (registry.isGdccClass(ancestorName)) {
-            if (!visited.add(ancestorName)) {
+        while (registry.isGdccClass(ancestorCanonicalName)) {
+            if (!visited.add(ancestorCanonicalName)) {
                 throw new IllegalStateException("Detected GDCC inheritance cycle while resolving native ancestor for class " + classDef.getName());
             }
-            var parentDef = registry.findGdccClass(ancestorName);
+            var parentDef = registry.findGdccClass(ancestorCanonicalName);
             if (parentDef == null) {
-                throw new IllegalStateException("Missing GDCC class definition for parent " + ancestorName + " while resolving native ancestor for class " + classDef.getName());
+                throw new IllegalStateException("Missing GDCC class definition for parent " + ancestorCanonicalName + " while resolving native ancestor for class " + classDef.getName());
             }
-            ancestorName = parentDef.getSuperName();
+            ancestorCanonicalName = parentDef.getSuperName();
         }
-        if (ancestorName.isEmpty()) {
+        if (ancestorCanonicalName.isEmpty()) {
             throw new IllegalStateException("Class " + classDef.getName() + " does not have a native ancestor");
         }
-        return ancestorName;
+        return ancestorCanonicalName;
     }
 
     public @NotNull CodegenContext context() {

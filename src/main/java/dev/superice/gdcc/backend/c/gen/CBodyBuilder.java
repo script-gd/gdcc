@@ -280,12 +280,12 @@ public final class CBodyBuilder {
                 throw invalidInsn("Cannot resolve GDCC class definition '" + currentName +
                         "' while casting '" + sourceName + "' -> '" + targetName + "'");
             }
-            var superName = currentClass.getSuperName();
-            if (!classRegistry().isGdccClass(superName)) {
+            var superCanonicalName = currentClass.getSuperName();
+            if (!classRegistry().isGdccClass(superCanonicalName)) {
                 throw invalidInsn("Cannot prove GDCC upcast path '" + sourceName + "' -> '" +
-                        targetName + "': parent '" + superName + "' is not a GDCC class");
+                        targetName + "': parent '" + superCanonicalName + "' is not a GDCC class");
             }
-            currentName = superName;
+            currentName = superCanonicalName;
             upcastDepth++;
         }
 

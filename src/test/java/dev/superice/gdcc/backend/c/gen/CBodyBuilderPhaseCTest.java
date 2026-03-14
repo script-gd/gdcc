@@ -949,6 +949,20 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("valueOfCastedVar should render canonical inner-class GDCC upcast via _super chain")
+        void testCastedCanonicalInnerGdccChildToAncestorShouldUseSuperChain() {
+            builder.classRegistry().addGdccClass(new LirClassDef("Outer$GrandParent", "RefCounted"), "GrandParent");
+            builder.classRegistry().addGdccClass(new LirClassDef("Outer$Parent", "Outer$GrandParent"), "Parent");
+            builder.classRegistry().addGdccClass(new LirClassDef("Outer$Child", "Outer$Parent"), "Child");
+            var childVar = new LirVariable("child", new GdObjectType("Outer$Child"), lirFunctionDef);
+            var casted = builder.valueOfCastedVar(childVar, new GdObjectType("Outer$GrandParent"));
+
+            builder.callVoid("my_custom_func", List.of(casted));
+
+            assertEquals("my_custom_func(&($child->_super._super));\n", builder.build());
+        }
+
+        @Test
         @DisplayName("valueOfCastedVar should reject GDCC non-upcast conversion")
         void testCastedGdccParentToChildShouldFailFast() {
             builder.classRegistry().addGdccClass(new LirClassDef("GdccParent", "RefCounted"));
@@ -957,6 +971,20 @@ public class CBodyBuilderPhaseCTest {
 
             var ex = assertThrows(InvalidInsnException.class, () ->
                     builder.valueOfCastedVar(parentVar, new GdObjectType("GdccChild"))
+            );
+            assertInstanceOf(InvalidInsnException.class, ex);
+            assertTrue(ex.getMessage().contains("safe upcast"), ex.getMessage());
+        }
+
+        @Test
+        @DisplayName("valueOfCastedVar should reject source-styled inner superclass metadata")
+        void testCastedInnerGdccChildWithSourceStyledSuperShouldFailFast() {
+            builder.classRegistry().addGdccClass(new LirClassDef("Outer$Parent", "RefCounted"), "Parent");
+            builder.classRegistry().addGdccClass(new LirClassDef("Outer$Child", "Parent"), "Child");
+            var childVar = new LirVariable("child", new GdObjectType("Outer$Child"), lirFunctionDef);
+
+            var ex = assertThrows(InvalidInsnException.class, () ->
+                    builder.valueOfCastedVar(childVar, new GdObjectType("Outer$Parent"))
             );
             assertInstanceOf(InvalidInsnException.class, ex);
             assertTrue(ex.getMessage().contains("safe upcast"), ex.getMessage());

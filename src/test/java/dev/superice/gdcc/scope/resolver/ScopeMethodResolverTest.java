@@ -57,6 +57,52 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver should follow canonical inner-class superclass names")
+    void resolveInstanceMethodShouldFollowCanonicalInnerSuperclassNames() {
+        var parentClass = newClass("Outer$Shared", "RefCounted");
+        var parentPing = newFunction("ping");
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
+        entry(parentPing).instructions().add(new ReturnInsn(null));
+        parentClass.addFunction(parentPing);
+
+        var childClass = newClass("Outer$Leaf", "Outer$Shared");
+        var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Outer$Leaf"),
+                "ping",
+                List.of()
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals("Outer$Shared", resolved.method().ownerClass().getName());
+        assertEquals(1, resolved.method().ownerDistance());
+    }
+
+    @Test
+    @DisplayName("shared method resolver should surface stale source-styled inner superclass names as method-missing fallback")
+    void resolveInstanceMethodShouldExposeSourceStyledInnerSuperclassRegression() {
+        var parentClass = newClass("Outer$Shared", "RefCounted");
+        var parentPing = newFunction("ping");
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
+        entry(parentPing).instructions().add(new ReturnInsn(null));
+        parentClass.addFunction(parentPing);
+
+        var childClass = newClass("Outer$Leaf", "Shared");
+        var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Outer$Leaf"),
+                "ping",
+                List.of()
+        );
+
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, result);
+        assertEquals(ScopeMethodResolver.DynamicKind.OBJECT_DYNAMIC, fallback.dynamicKind());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.METHOD_MISSING, fallback.reason());
+    }
+
+    @Test
     @DisplayName("shared method resolver should accept default arguments")
     void resolveInstanceMethodShouldAcceptDefaultArguments() {
         var registry = newRegistry(apiWith(List.of(stringBuiltinWithSubstrDefault()), List.of()), List.of());

@@ -17,6 +17,7 @@
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation_plan.md`
   - `inner_class_registry_canonical_name_plan.md`
+- `superclass_canonical_name_contract.md`
   - `diagnostic_manager.md`
 - 明确非目标：
   - 不在此处实现完整 frontend binder/body
@@ -198,12 +199,25 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 
 ### 5.2 header `extends` 路径仍独立于 shared resolver
 
-当前 class header 的 `extends` 文本在 skeleton discovery 中仍以原始 source text 形式保存在 `LirClassDef.superName` 中。成员 declared type 已经可以通过 shared resolver 把 lexical inner class 解析到 canonical type，但 header super path 还没有收口到同一条解析链。
+当前 class header 的 `extends` 解析仍独立于 shared declared-type resolver，但 accepted skeleton 的产物已经 canonicalized：
+
+- `FrontendClassSkeletonBuilder` 会在 accepted header freeze 阶段生成 frontend-only `FrontendSuperClassRef`
+- `FrontendSourceClassRelation` / `FrontendInnerClassRelation` 会保留 superclass 的 `sourceName` / `canonicalName`
+- `LirClassDef.superName` 只保存 canonical superclass name
+- `rawExtendsText` 只保留在 discovery / rejected-header / diagnostic 的短生命周期对象中
 
 因此当前事实是：
 
-- member declared type 的 lexical 解析能力强于 header `extends`
-- `LirClassDef.superName` 不能被解释为“已经 canonicalized 的继承目标”
+- header super 仍走专用 header graph 解析协议，而不是 shared resolver
+- `FrontendClassSkeletonBuilder` 现通过结构化 `HeaderSuperBindingDecision` 统一驱动 accepted freeze、unsupported diagnostic 与 same-module inheritance validation，而不是让这些路径各自重复做字符串猜测
+- accepted header super 的 MVP 支持面已冻结为：
+  - 当前编译目标内唯一 gdcc module 中 lexical 可见 inner class 的 `sourceName`
+  - 当前编译目标内唯一 gdcc module 中 top-level class 的 `sourceName`
+  - `sourceName == canonicalName` 的 engine/native class 名字
+- `GDCC_CLASS` unsupported path 当前只会报中性的“unsupported gdcc superclass source”类诊断；在没有额外 provenance 前，不会再把它直接说成 global-script-class
+- member declared type 的 lexical/type-parser 覆盖面仍强于 header `extends`，两者必须被视为不同的产品边界
+- `LirClassDef.superName` 已可以被稳定解释为 canonical 继承目标
+- `$` canonical raw text、path-based `extends`、autoload superclass、global-script-class superclass 以及其他 unresolved raw text 现在都会在 skeleton/header phase 发显式 `sema.class_skeleton` diagnostic，并拒绝进入 accepted canonical contract
 
 后续若要让 header inheritance 与 shared resolver 严格对齐，需要单独设计 super path 的 canonical 绑定产物，而不是默认复用当前字符串字段。
 
@@ -214,7 +228,12 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 - 显式 diagnostic
 - 调用方决定 fallback 或 skip
 
-当前实现与测试已经锚定 skeleton 的 `diagnostic + Variant fallback` 路径，不允许静默忽略。
+当前实现与测试已经锚定：
+
+- skeleton member declared type 的 `diagnostic + Variant fallback` 路径
+- header superclass source boundary 的 `diagnostic + rejected-subtree` 路径
+
+以上行为都不允许再退化为静默忽略或 raw-text fallback。
 
 ### 5.4 compatibility 消费面仍然存在
 
@@ -236,7 +255,7 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 - skeleton 与 analyzer 对 immediate inner class type-meta 的发布规则保持一致
 - deferred type-meta 来源会产生显式 diagnostic，而不是静默忽略
 - `findType(...)` / `tryParseTextType(...)` 仍然有活跃的兼容消费面
-- base-vs-outer precedence 差异与 header super path 差异都已有显式回归测试
+- base-vs-outer precedence 差异与 canonical header-super 合同都已有显式回归测试
 
 后续工程若要改变这些行为，必须同步更新：
 

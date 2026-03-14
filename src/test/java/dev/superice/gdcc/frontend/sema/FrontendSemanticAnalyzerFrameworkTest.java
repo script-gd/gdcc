@@ -2,9 +2,19 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.scope.ClassScope;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionHeader;
+import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.PassStatement;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
@@ -28,6 +38,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendSemanticAnalyzerFrameworkTest {
+    private static final Range SYNTHETIC_RANGE = new Range(
+            0,
+            1,
+            new Point(0, 0),
+            new Point(0, 1)
+    );
+
     @Test
     void analyzeBootstrapsSideTablesAndCollectsSemanticallyRelevantAnnotations() throws Exception {
         var parserService = new GdScriptParserService();
@@ -286,7 +303,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void semanticAnalysisStillHasSeparateHeaderExtendsPathFromSharedDeclaredTypeResolver() throws Exception {
+    void semanticAnalysisCanonicalizesHeaderExtendsWhileKeepingFrontendSuperclassFacts() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "header_super_shared_resolver_gap.gd"), """
@@ -303,14 +320,22 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
 
         var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "HeaderResolverGap$Leaf");
-        assertEquals("Shared", leaf.getSuperName());
-        assertNull(registry.findGdccClass(leaf.getSuperName()));
-        assertNotNull(registry.findGdccClass("HeaderResolverGap$Shared"));
+        var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
+        var sourceRelation = result.moduleSkeleton().sourceClassRelations().getFirst();
+        var leafRelation = assertInstanceOf(
+                FrontendInnerClassRelation.class,
+                sourceRelation.findRelation(leafDeclaration)
+        );
+        assertEquals(
+                new FrontendSuperClassRef("Shared", "HeaderResolverGap$Shared"),
+                leafRelation.superClassRef()
+        );
+        assertEquals("HeaderResolverGap$Shared", leaf.getSuperName());
+        assertNotNull(registry.findGdccClass(leaf.getSuperName()));
 
         var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
         assertEquals("HeaderResolverGap$Shared", pickedType.getTypeName());
 
-        var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
         var leafScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(leafDeclaration));
         var resolvedShared = assertInstanceOf(
                 GdObjectType.class,
@@ -318,6 +343,80 @@ class FrontendSemanticAnalyzerFrameworkTest {
         );
         assertEquals("HeaderResolverGap$Shared", resolvedShared.getTypeName());
         assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void semanticAnalysisRejectsCanonicalSuperclassSpellingAtFrontendBoundary() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new FrontendSourceUnit(
+                Path.of("tmp", "canonical_super_boundary.gd"),
+                "",
+                new SourceFile(
+                        List.of(
+                                new ClassNameStatement("CanonicalBoundary", "RefCounted", SYNTHETIC_RANGE),
+                                new ClassDeclaration(
+                                        "Shared",
+                                        null,
+                                        new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
+                                        SYNTHETIC_RANGE
+                                ),
+                                new ClassDeclaration(
+                                        "Leaf",
+                                        "CanonicalBoundary$Shared",
+                                        new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
+                                        SYNTHETIC_RANGE
+                                )
+                        ),
+                        SYNTHETIC_RANGE
+                )
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+
+        var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
+        var sourceRelation = result.moduleSkeleton().sourceClassRelations().getFirst();
+        assertEquals(
+                List.of("CanonicalBoundary", "CanonicalBoundary$Shared"),
+                result.moduleSkeleton().allClassDefs().stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("Shared"),
+                sourceRelation.innerClassRelations().stream().map(FrontendInnerClassRelation::sourceName).toList()
+        );
+        assertNull(sourceRelation.findRelation(leafDeclaration));
+        assertNull(result.scopesByAst().get(leafDeclaration));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("CanonicalBoundary$Leaf")
+                        && diagnostic.message().contains("canonical '$' spelling")
+        ));
+        assertNull(registry.findGdccClass("CanonicalBoundary$Leaf"));
+        assertNotNull(registry.findGdccClass("CanonicalBoundary$Shared"));
+    }
+
+    @Test
+    void semanticAnalysisRejectsSingletonSuperclassSourceAtFrontendBoundary() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "singleton_super.gd"), """
+                class_name SingletonBoundary
+                extends GameSingleton
+                
+                func ping():
+                    pass
+                """, diagnostics);
+        var registry = createRegistryWithSingleton("GameSingleton");
+        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+
+        assertTrue(result.moduleSkeleton().classDefs().isEmpty());
+        assertTrue(result.moduleSkeleton().sourceClassRelations().isEmpty());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("SingletonBoundary")
+                        && diagnostic.message().contains("autoload/singleton superclasses")
+        ));
+        assertNull(registry.findGdccClass("SingletonBoundary"));
+        assertNull(result.scopesByAst().get(unit.ast()));
     }
 
     private VariableDeclaration findVariable(List<?> statements, String name) {
@@ -364,5 +463,23 @@ class FrontendSemanticAnalyzerFrameworkTest {
     private List<String> annotationNames(List<FrontendGdAnnotation> annotations) {
         assertNotNull(annotations);
         return annotations.stream().map(FrontendGdAnnotation::name).toList();
+    }
+
+    private ClassRegistry createRegistryWithSingleton(String singletonName) {
+        return new ClassRegistry(new ExtensionAPI(
+                new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionGdClass("Object", false, true, "", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("Node", false, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of()),
+                        new ExtensionGdClass("RefCounted", true, true, "Object", "core", List.of(), List.of(), List.of(), List.of(), List.of())
+                ),
+                List.of(new ExtensionSingleton(singletonName, "Node")),
+                List.of()
+        ));
     }
 }

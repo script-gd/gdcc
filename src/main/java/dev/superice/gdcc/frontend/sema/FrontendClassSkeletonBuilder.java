@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.LirSignalDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -55,7 +56,7 @@ public final class FrontendClassSkeletonBuilder {
             // annotation ownership map instead of per-phase copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
         }
-        var headerDiscovery = discoverModuleClassHeaders(units, diagnosticManager);
+        var headerDiscovery = discoverModuleClassHeaders(units, classRegistry, diagnosticManager);
         var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
         for (var sourceUnitGraph : headerDiscovery.sourceUnitGraphs()) {
@@ -84,10 +85,11 @@ public final class FrontendClassSkeletonBuilder {
         return new FrontendModuleSkeleton(moduleName, sourceClassRelations, diagnosticManager.snapshot());
     }
 
-    /// Builds one accepted source-owned skeleton relation from the header graph emitted by the
-    /// discovery pass:
+    /// Builds one accepted source-owned skeleton relation from the validated header graph:
     /// - exactly one accepted top-level script class
     /// - zero or more accepted nested `ClassDeclaration -> LirClassDef` ownership pairs
+    /// - each accepted class carries the frontend-only superclass source/canonical pair that later
+    ///   frontend phases must read instead of reconstructing from `ClassDef`
     ///
     /// Rejected roots and their descendants never reach this stage. The relation therefore mirrors
     /// the accepted header graph instead of rediscovering validity while filling member skeletons.
@@ -101,7 +103,7 @@ public final class FrontendClassSkeletonBuilder {
         );
         var topLevelClassDef = createClassShell(
                 topLevelHeader.canonicalName(),
-                topLevelHeader.effectiveSuperName(),
+                topLevelHeader.superClassRef().canonicalName(),
                 context
         );
         var innerClassRelations = collectAcceptedInnerClassRelations(
@@ -111,6 +113,7 @@ public final class FrontendClassSkeletonBuilder {
         return new FrontendSourceClassRelation(
                 sourceUnitGraph.unit(),
                 topLevelHeader.sourceName(),
+                topLevelHeader.superClassRef(),
                 topLevelClassDef,
                 innerClassRelations
         );
@@ -278,7 +281,7 @@ public final class FrontendClassSkeletonBuilder {
             var classDeclaration = requireInnerClassDeclaration(acceptedInnerHeader);
             var innerClassDef = createClassShell(
                     acceptedInnerHeader.canonicalName(),
-                    acceptedInnerHeader.effectiveSuperName(),
+                    acceptedInnerHeader.superClassRef().canonicalName(),
                     context
             );
             innerClassRelations.add(new FrontendInnerClassRelation(
@@ -286,6 +289,7 @@ public final class FrontendClassSkeletonBuilder {
                     classDeclaration,
                     acceptedInnerHeader.sourceName(),
                     acceptedInnerHeader.canonicalName(),
+                    acceptedInnerHeader.superClassRef(),
                     innerClassDef
             ));
             innerClassRelations.addAll(collectAcceptedInnerClassRelations(
@@ -559,10 +563,11 @@ public final class FrontendClassSkeletonBuilder {
 
     /// Module class-header discovery pass:
     /// - discovers a complete module-local class header graph before member filling starts
-    /// - validates duplicate/canonical/cycle issues against that graph
+    /// - validates duplicate/canonical/unsupported-super/cycle issues against that graph
     /// - records rejected subtree roots explicitly so downstream stages can skip only those regions
     private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
             @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var sourceUnitHeaders = new ArrayList<MutableSourceUnitHeaders>(units.size());
@@ -601,9 +606,18 @@ public final class FrontendClassSkeletonBuilder {
         );
 
         var validationIndex = buildHeaderValidationIndex(discoveredHeadersInOrder);
+        rejectHeadersWithUnsupportedSuperclassSources(
+                discoveredHeadersInOrder,
+                validationIndex,
+                classRegistry,
+                rejectedCandidates,
+                rejectedSubtreeRoots,
+                diagnosticManager
+        );
         rejectHeadersWithInheritanceCycles(
                 discoveredHeadersInOrder,
                 validationIndex,
+                classRegistry,
                 rejectedCandidates,
                 rejectedSubtreeRoots,
                 diagnosticManager
@@ -611,12 +625,15 @@ public final class FrontendClassSkeletonBuilder {
         rejectHeadersDependingOnRejectedSupers(
                 discoveredHeadersInOrder,
                 validationIndex,
+                classRegistry,
                 rejectedCandidates,
                 rejectedSubtreeRoots,
                 diagnosticManager
         );
         return freezeModuleClassHeaderDiscovery(
                 sourceUnitHeaders,
+                classRegistry,
+                validationIndex,
                 rejectedCandidates,
                 rejectedSubtreeRoots
         );
@@ -848,7 +865,7 @@ public final class FrontendClassSkeletonBuilder {
     }
 
     /// Builds the minimal lookup tables needed by class-header validation:
-    /// - canonical-name hits for global uniqueness and explicit canonical extends text
+    /// - canonical-name hits for conflict validation and precise diagnostics
     /// - per-owner inner source-name hits for lexical lookup
     /// - AST owner recovery so inner headers can walk back to enclosing lexical owners
     private @NotNull HeaderValidationIndex buildHeaderValidationIndex(
@@ -899,6 +916,7 @@ public final class FrontendClassSkeletonBuilder {
     private void rejectHeadersWithInheritanceCycles(
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
             @NotNull HeaderValidationIndex validationIndex,
+            @NotNull ClassRegistry classRegistry,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
@@ -912,6 +930,7 @@ public final class FrontendClassSkeletonBuilder {
             detectInheritanceProblemsDfs(
                     discoveredHeader,
                     validationIndex,
+                    classRegistry,
                     states,
                     visitStack,
                     rejectedCandidates,
@@ -921,9 +940,57 @@ public final class FrontendClassSkeletonBuilder {
         }
     }
 
+    /// Header `extends` is a source-facing frontend protocol, not a raw canonical-name lookup:
+    /// - the current compilation's only gdcc module contributes inner/top-level source-visible names
+    /// - engine/native classes may still bind when `sourceName == canonicalName`
+    /// - all other raw texts are rejected explicitly before accepted headers freeze superclass facts
+    private void rejectHeadersWithUnsupportedSuperclassSources(
+            @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
+            @NotNull HeaderValidationIndex validationIndex,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull List<RejectedClassHeader> rejectedCandidates,
+            @NotNull List<Node> rejectedSubtreeRoots,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        for (var discoveredHeader : discoveredHeadersInOrder) {
+            if (!discoveredHeader.isActive()) {
+                continue;
+            }
+
+            var bindingDecision = resolveHeaderSuperBindingDecision(
+                    discoveredHeader,
+                    validationIndex,
+                    classRegistry
+            );
+            if (bindingDecision.accepted()) {
+                continue;
+            }
+
+            var rawExtendsText = Objects.requireNonNull(
+                    bindingDecision.sourceText(),
+                    "Unsupported superclass rejection requires raw extends text"
+            );
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    "Class '" + discoveredHeader.canonicalName()
+                            + "' declares unsupported superclass '" + rawExtendsText
+                            + "': " + Objects.requireNonNull(bindingDecision.rejectionReason(), "rejectionReason")
+                            + "; its skeleton subtree will be skipped",
+                    discoveredHeader.unit().path(),
+                    discoveredHeader.range()
+            );
+            rejectDiscoveredSubtree(
+                    discoveredHeader,
+                    rejectedCandidates,
+                    rejectedSubtreeRoots
+            );
+        }
+    }
+
     private void detectInheritanceProblemsDfs(
             @NotNull MutableClassHeader discoveredHeader,
             @NotNull HeaderValidationIndex validationIndex,
+            @NotNull ClassRegistry classRegistry,
             @NotNull IdentityHashMap<MutableClassHeader, VisitState> states,
             @NotNull List<MutableClassHeader> visitStack,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
@@ -948,14 +1015,16 @@ public final class FrontendClassSkeletonBuilder {
         states.put(discoveredHeader, VisitState.VISITING);
         visitStack.add(discoveredHeader);
 
-        var superHeader = resolveHeaderSuperCandidate(
+        var superHeader = resolveHeaderSuperBindingDecision(
                 discoveredHeader,
-                validationIndex
-        );
+                validationIndex,
+                classRegistry
+        ).referencedHeader();
         if (superHeader != null && superHeader.isActive()) {
             detectInheritanceProblemsDfs(
                     superHeader,
                     validationIndex,
+                    classRegistry,
                     states,
                     visitStack,
                     rejectedCandidates,
@@ -1007,6 +1076,7 @@ public final class FrontendClassSkeletonBuilder {
     private void rejectHeadersDependingOnRejectedSupers(
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
             @NotNull HeaderValidationIndex validationIndex,
+            @NotNull ClassRegistry classRegistry,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
@@ -1019,10 +1089,11 @@ public final class FrontendClassSkeletonBuilder {
                     continue;
                 }
 
-                var superHeader = resolveHeaderSuperCandidate(
+                var superHeader = resolveHeaderSuperBindingDecision(
                         discoveredHeader,
-                        validationIndex
-                );
+                        validationIndex,
+                        classRegistry
+                ).referencedHeader();
                 if (superHeader == null || superHeader.isActive()) {
                     continue;
                 }
@@ -1046,26 +1117,17 @@ public final class FrontendClassSkeletonBuilder {
         } while (changed);
     }
 
-    /// Resolves the header-layer superclass target using the same naming facts already frozen by
-    /// discovery:
-    /// - exact canonical hit wins first
-    /// - otherwise walk lexical owner chain for inner source names
-    /// - finally fall back to top-level source names
-    ///
-    /// This remains intentionally narrower than full declared-type resolution; builtin/engine
-    /// supers stay outside the module-local header graph and therefore return `null` here.
-    private @Nullable MutableClassHeader resolveHeaderSuperCandidate(
+    /// Resolves the header-layer superclass candidate inside the current compilation's only gdcc
+    /// module using source-facing names only:
+    /// - walk lexical owner chain for visible inner source names
+    /// - finally fall back to same-module top-level source names
+    private @Nullable MutableClassHeader resolveCurrentModuleHeaderSuperCandidate(
             @NotNull MutableClassHeader discoveredHeader,
             @NotNull HeaderValidationIndex validationIndex
     ) {
         var rawExtendsText = discoveredHeader.rawExtendsText();
         if (rawExtendsText == null) {
             return null;
-        }
-
-        var canonicalHit = validationIndex.firstByCanonicalName().get(rawExtendsText);
-        if (canonicalHit != null) {
-            return canonicalHit;
         }
 
         Node lexicalOwner = discoveredHeader.isTopLevel()
@@ -1145,11 +1207,17 @@ public final class FrontendClassSkeletonBuilder {
 
     private @NotNull ModuleClassHeaderDiscovery freezeModuleClassHeaderDiscovery(
             @NotNull List<MutableSourceUnitHeaders> sourceUnitHeaders,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull HeaderValidationIndex validationIndex,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots
     ) {
         var sourceUnitGraphs = sourceUnitHeaders.stream()
-                .map(this::freezeSourceUnitHeaderGraph)
+                .map(sourceUnitHeader -> freezeSourceUnitHeaderGraph(
+                        sourceUnitHeader,
+                        classRegistry,
+                        validationIndex
+                ))
                 .toList();
         return new ModuleClassHeaderDiscovery(
                 sourceUnitGraphs,
@@ -1159,22 +1227,34 @@ public final class FrontendClassSkeletonBuilder {
     }
 
     private @NotNull SourceUnitClassHeaderGraph freezeSourceUnitHeaderGraph(
-            @NotNull MutableSourceUnitHeaders sourceUnitHeader
+            @NotNull MutableSourceUnitHeaders sourceUnitHeader,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull HeaderValidationIndex validationIndex
     ) {
         return new SourceUnitClassHeaderGraph(
                 sourceUnitHeader.unit(),
                 sourceUnitHeader.topLevelHeader().isActive()
-                        ? freezeAcceptedHeader(sourceUnitHeader.topLevelHeader())
+                        ? freezeAcceptedHeader(
+                        sourceUnitHeader.topLevelHeader(),
+                        classRegistry,
+                        validationIndex
+                )
                         : null
         );
     }
 
     private @NotNull AcceptedClassHeader freezeAcceptedHeader(
-            @NotNull MutableClassHeader discoveredHeader
+            @NotNull MutableClassHeader discoveredHeader,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull HeaderValidationIndex validationIndex
     ) {
         var acceptedInnerHeaders = discoveredHeader.immediateInnerHeaders().stream()
                 .filter(MutableClassHeader::isActive)
-                .map(this::freezeAcceptedHeader)
+                .map(innerHeader -> freezeAcceptedHeader(
+                        innerHeader,
+                        classRegistry,
+                        validationIndex
+                ))
                 .toList();
         return new AcceptedClassHeader(
                 discoveredHeader.unit(),
@@ -1182,10 +1262,144 @@ public final class FrontendClassSkeletonBuilder {
                 discoveredHeader.astOwner(),
                 discoveredHeader.sourceName(),
                 discoveredHeader.canonicalName(),
+                resolveHeaderSuperBindingDecision(
+                        discoveredHeader,
+                        validationIndex,
+                        classRegistry
+                ).requireAcceptedSuperClassRef(),
                 discoveredHeader.rawExtendsText(),
                 discoveredHeader.range(),
                 acceptedInnerHeaders
         );
+    }
+
+    /// Computes the structured header-super binding fact consumed by accepted freeze,
+    /// unsupported-source diagnostics, and same-module inheritance validation.
+    private @NotNull HeaderSuperBindingDecision resolveHeaderSuperBindingDecision(
+            @NotNull MutableClassHeader discoveredHeader,
+            @NotNull HeaderValidationIndex validationIndex,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var rawExtendsText = discoveredHeader.rawExtendsText();
+        if (rawExtendsText == null) {
+            return HeaderSuperBindingDecision.accepted(
+                    HeaderSuperBindingKind.IMPLICIT_DEFAULT,
+                    null,
+                    null,
+                    null,
+                    new FrontendSuperClassRef(
+                            DEFAULT_SUPER_CLASS_NAME,
+                            DEFAULT_SUPER_CLASS_NAME
+                    )
+            );
+        }
+
+        var superHeader = resolveCurrentModuleHeaderSuperCandidate(discoveredHeader, validationIndex);
+        if (superHeader != null) {
+            return HeaderSuperBindingDecision.accepted(
+                    HeaderSuperBindingKind.CURRENT_MODULE_HEADER,
+                    rawExtendsText,
+                    superHeader,
+                    null,
+                    new FrontendSuperClassRef(
+                            superHeader.sourceName(),
+                            superHeader.canonicalName()
+                    )
+            );
+        }
+        if (looksLikePathBasedSuperclassTarget(rawExtendsText)) {
+            return HeaderSuperBindingDecision.rejected(
+                    HeaderSuperBindingKind.REJECTED_PATH_BASED,
+                    rawExtendsText,
+                    null,
+                    null,
+                    "path-based extends targets are not supported in frontend superclass binding"
+            );
+        }
+        if (classRegistry.isSingleton(rawExtendsText)) {
+            return HeaderSuperBindingDecision.rejected(
+                    HeaderSuperBindingKind.REJECTED_SINGLETON,
+                    rawExtendsText,
+                    null,
+                    null,
+                    "autoload/singleton superclasses are not supported in frontend superclass binding"
+            );
+        }
+        if (rawExtendsText.contains("$")) {
+            var canonicalHit = validationIndex.firstByCanonicalName().get(rawExtendsText);
+            if (canonicalHit != null) {
+                return HeaderSuperBindingDecision.rejected(
+                        HeaderSuperBindingKind.REJECTED_CANONICAL_TEXT,
+                        rawExtendsText,
+                        canonicalHit,
+                        null,
+                        "canonical '$' spelling is not part of supported frontend extends syntax; use source-facing name '"
+                                + canonicalHit.sourceName() + "' instead"
+                );
+            }
+            return HeaderSuperBindingDecision.rejected(
+                    HeaderSuperBindingKind.REJECTED_CANONICAL_TEXT,
+                    rawExtendsText,
+                    null,
+                    null,
+                    "canonical '$' spelling is not part of frontend extends syntax"
+            );
+        }
+
+        var typeMeta = classRegistry.resolveTypeMetaHere(rawExtendsText);
+        if (typeMeta != null) {
+            return switch (typeMeta.kind()) {
+                case ENGINE_CLASS -> HeaderSuperBindingDecision.accepted(
+                        HeaderSuperBindingKind.ENGINE_CLASS,
+                        rawExtendsText,
+                        null,
+                        typeMeta,
+                        new FrontendSuperClassRef(
+                                typeMeta.sourceName(),
+                                typeMeta.canonicalName()
+                        )
+                );
+                case GDCC_CLASS -> HeaderSuperBindingDecision.rejected(
+                        HeaderSuperBindingKind.REJECTED_UNSUPPORTED_GDCC_SOURCE,
+                        rawExtendsText,
+                        null,
+                        typeMeta,
+                        "Currently frontend superclass binding does not support this gdcc superclass source; only source-facing names from the current module are accepted"
+                );
+                case BUILTIN -> HeaderSuperBindingDecision.rejected(
+                        HeaderSuperBindingKind.REJECTED_BUILTIN,
+                        rawExtendsText,
+                        null,
+                        typeMeta,
+                        "builtin types cannot be used as superclasses in frontend superclass binding"
+                );
+                case GLOBAL_ENUM -> HeaderSuperBindingDecision.rejected(
+                        HeaderSuperBindingKind.REJECTED_GLOBAL_ENUM,
+                        rawExtendsText,
+                        null,
+                        typeMeta,
+                        "global enum names cannot be used as superclasses in frontend superclass binding"
+                );
+            };
+        }
+        return HeaderSuperBindingDecision.rejected(
+                HeaderSuperBindingKind.REJECTED_UNRESOLVED,
+                rawExtendsText,
+                null,
+                null,
+                "only source-facing names from the current module and engine/native class names are supported"
+        );
+    }
+
+    private boolean looksLikePathBasedSuperclassTarget(@NotNull String rawExtendsText) {
+        var trimmed = rawExtendsText.trim();
+        return trimmed.startsWith("\"")
+                || trimmed.startsWith("'")
+                || trimmed.startsWith("preload(")
+                || trimmed.startsWith("load(")
+                || trimmed.contains("://")
+                || trimmed.contains("/")
+                || trimmed.contains("\\");
     }
 
     private @Nullable String normalizeHeaderText(@Nullable String text) {
@@ -1255,6 +1469,19 @@ public final class FrontendClassSkeletonBuilder {
         REJECTED_DESCENDANT
     }
 
+    private enum HeaderSuperBindingKind {
+        IMPLICIT_DEFAULT,
+        CURRENT_MODULE_HEADER,
+        ENGINE_CLASS,
+        REJECTED_PATH_BASED,
+        REJECTED_SINGLETON,
+        REJECTED_CANONICAL_TEXT,
+        REJECTED_UNSUPPORTED_GDCC_SOURCE,
+        REJECTED_BUILTIN,
+        REJECTED_GLOBAL_ENUM,
+        REJECTED_UNRESOLVED
+    }
+
     /// Immutable accepted/rejected output of the header discovery pass.
     private record ModuleClassHeaderDiscovery(
             @NotNull List<SourceUnitClassHeaderGraph> sourceUnitGraphs,
@@ -1275,14 +1502,13 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Node astOwner,
             @NotNull String sourceName,
             @NotNull String canonicalName,
+            @NotNull FrontendSuperClassRef superClassRef,
             @Nullable String rawExtendsText,
             @Nullable FrontendRange range,
             @NotNull List<AcceptedClassHeader> immediateInnerHeaders
     ) {
-        private @NotNull String effectiveSuperName() {
-            return rawExtendsText != null
-                    ? rawExtendsText
-                    : DEFAULT_SUPER_CLASS_NAME;
+        private AcceptedClassHeader {
+            Objects.requireNonNull(superClassRef, "superClassRef");
         }
     }
 
@@ -1309,6 +1535,66 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull IdentityHashMap<Node, Map<String, MutableClassHeader>> firstInnerByLexicalOwner,
             @NotNull IdentityHashMap<Node, MutableClassHeader> headersByAstOwner
     ) {
+    }
+
+    private record HeaderSuperBindingDecision(
+            @NotNull HeaderSuperBindingKind kind,
+            @Nullable String sourceText,
+            @Nullable MutableClassHeader referencedHeader,
+            @Nullable ScopeTypeMeta resolvedMeta,
+            @Nullable FrontendSuperClassRef acceptedSuperClassRef,
+            @Nullable String rejectionReason
+    ) {
+        private HeaderSuperBindingDecision {
+            Objects.requireNonNull(kind, "kind");
+        }
+
+        private static @NotNull HeaderSuperBindingDecision accepted(
+                @NotNull HeaderSuperBindingKind kind,
+                @Nullable String sourceText,
+                @Nullable MutableClassHeader referencedHeader,
+                @Nullable ScopeTypeMeta resolvedMeta,
+                @NotNull FrontendSuperClassRef acceptedSuperClassRef
+        ) {
+            return new HeaderSuperBindingDecision(
+                    kind,
+                    sourceText,
+                    referencedHeader,
+                    resolvedMeta,
+                    acceptedSuperClassRef,
+                    null
+            );
+        }
+
+        private static @NotNull HeaderSuperBindingDecision rejected(
+                @NotNull HeaderSuperBindingKind kind,
+                @Nullable String sourceText,
+                @Nullable MutableClassHeader referencedHeader,
+                @Nullable ScopeTypeMeta resolvedMeta,
+                @NotNull String rejectionReason
+        ) {
+            return new HeaderSuperBindingDecision(
+                    kind,
+                    sourceText,
+                    referencedHeader,
+                    resolvedMeta,
+                    null,
+                    rejectionReason
+            );
+        }
+
+        private boolean accepted() {
+            return acceptedSuperClassRef != null;
+        }
+
+        private @NotNull FrontendSuperClassRef requireAcceptedSuperClassRef() {
+            if (acceptedSuperClassRef == null) {
+                throw new IllegalStateException(
+                        "Header super binding kind '" + kind + "' does not carry an accepted superclass ref"
+                );
+            }
+            return acceptedSuperClassRef;
+        }
     }
 
     /// Mutable discovery node used only while class-header discovery and validation assemble the

@@ -73,4 +73,28 @@ public class ClassRegistryGdccTest {
         assertNull(registry.findGdccClass("Outer$Inner"));
         assertNull(registry.resolveTypeMeta("Outer$Inner"));
     }
+
+    @Test
+    void canonicalInnerSuperclassNamesDriveAssignabilityAndRefCountedStatus() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var registry = new ClassRegistry(api);
+        var parentClass = new LirClassDef("Outer$Shared", "RefCounted");
+        var childClass = new LirClassDef("Outer$Leaf", "Outer$Shared");
+        var brokenChildClass = new LirClassDef("Outer$BrokenLeaf", "Shared");
+
+        registry.addGdccClass(parentClass, "Shared");
+        registry.addGdccClass(childClass, "Leaf");
+        registry.addGdccClass(brokenChildClass, "BrokenLeaf");
+
+        assertTrue(registry.checkAssignable(
+                new GdObjectType("Outer$Leaf"),
+                new GdObjectType("Outer$Shared")
+        ));
+        assertFalse(registry.checkAssignable(
+                new GdObjectType("Outer$BrokenLeaf"),
+                new GdObjectType("Outer$Shared")
+        ));
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("Outer$Leaf")));
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("Outer$BrokenLeaf")));
+    }
 }

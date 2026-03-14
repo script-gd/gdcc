@@ -274,21 +274,23 @@ public final class ClassScope extends AbstractFrontendScope {
     ) {
         var inheritedClasses = new ArrayList<ClassDef>();
         var visitedClassNames = new LinkedHashSet<String>();
-        var nextClassName = currentClass.getSuperName();
-        while (!nextClassName.isBlank()) {
-            if (!visitedClassNames.add(nextClassName)) {
+        var nextSuperCanonicalName = currentClass.getSuperName();
+        while (!nextSuperCanonicalName.isBlank()) {
+            if (!visitedClassNames.add(nextSuperCanonicalName)) {
                 throw new ScopeLookupException(
                         "Detected inheritance cycle while resolving " + memberKind + " '" + memberName
                                 + "' for class '" + currentClass.getName() + "'"
                 );
             }
 
-            var nextClass = classRegistry.getClassDef(new GdObjectType(nextClassName));
+            // `ClassDef#getSuperName()` is canonical, so the class registry can use it directly as
+            // the inheritance-walk lookup key even for inner classes.
+            var nextClass = classRegistry.getClassDef(new GdObjectType(nextSuperCanonicalName));
             if (nextClass == null) {
                 break;
             }
             inheritedClasses.add(nextClass);
-            nextClassName = nextClass.getSuperName();
+            nextSuperCanonicalName = nextClass.getSuperName();
         }
         return inheritedClasses;
     }

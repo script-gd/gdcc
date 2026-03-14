@@ -24,6 +24,8 @@ public interface FrontendOwnedClassRelation {
 
     @NotNull String canonicalName();
 
+    @NotNull FrontendSuperClassRef superClassRef();
+
     @NotNull LirClassDef classDef();
 
     /// Builds the strict type-meta view that this source-owned class contributes to lexical type
@@ -44,6 +46,7 @@ public interface FrontendOwnedClassRelation {
             @NotNull Node astOwner,
             @NotNull String sourceName,
             @NotNull String canonicalName,
+            @NotNull FrontendSuperClassRef superClassRef,
             @NotNull LirClassDef classDef,
             @NotNull String relationKind
     ) {
@@ -51,11 +54,17 @@ public interface FrontendOwnedClassRelation {
         Objects.requireNonNull(astOwner, "astOwner must not be null");
         Objects.requireNonNull(sourceName, "sourceName must not be null");
         Objects.requireNonNull(canonicalName, "canonicalName must not be null");
+        Objects.requireNonNull(superClassRef, "superClassRef must not be null");
         Objects.requireNonNull(classDef, "classDef must not be null");
         Objects.requireNonNull(relationKind, "relationKind must not be null");
         if (!canonicalName.equals(classDef.getName())) {
             throw new IllegalArgumentException(
                     relationKind + " canonicalName must match classDef.getName()"
+            );
+        }
+        if (!superClassRef.canonicalName().equals(classDef.getSuperName())) {
+            throw new IllegalArgumentException(
+                    relationKind + " superclass canonicalName must match classDef.getSuperName()"
             );
         }
     }

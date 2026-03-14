@@ -173,18 +173,18 @@ public final class ScopeSignalResolver {
                 return new Resolved(new ScopeResolvedSignal(ownerKind, current, signalDef));
             }
 
-            var superName = current.getSuperName();
-            if (superName.isBlank()) {
+            var superCanonicalName = current.getSuperName();
+            if (superCanonicalName.isBlank()) {
                 break;
             }
-            var superClassDef = registry.getClassDef(new GdObjectType(superName));
+            var superClassDef = registry.getClassDef(new GdObjectType(superCanonicalName));
             if (superClassDef == null) {
                 return new Failed(
                         FailureKind.MISSING_SUPER_METADATA,
                         receiverType,
                         signalName,
                         current.getName(),
-                        superName,
+                        superCanonicalName,
                         hierarchyNames
                 );
             }

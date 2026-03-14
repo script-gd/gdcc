@@ -5,6 +5,7 @@ import dev.superice.gdcc.scope.ScopeTypeMetaKind;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import org.junit.jupiter.api.Test;
 
@@ -71,6 +72,62 @@ public class ClassScopeResolutionTest {
         var inheritedFunctions = classScope.resolveFunctionsHere("only_parent");
         assertEquals(1, inheritedFunctions.size());
         assertEquals("only_parent", inheritedFunctions.getFirst().getName());
+    }
+
+    @Test
+    void canonicalInnerSuperclassNamesKeepInheritedMembersVisible() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var parentPing = FrontendScopeTestSupport.createFunction("ping", GdStringType.STRING);
+        var parentClass = FrontendScopeTestSupport.createClass(
+                "Outer$Shared",
+                "Object",
+                java.util.List.of(FrontendScopeTestSupport.createProperty("hp", GdIntType.INT)),
+                java.util.List.of(parentPing)
+        );
+        var childClass = FrontendScopeTestSupport.createClass(
+                "Outer$Leaf",
+                "Outer$Shared",
+                java.util.List.of(),
+                java.util.List.of()
+        );
+        registry.addGdccClass(parentClass, "Shared");
+        registry.addGdccClass(childClass, "Leaf");
+
+        var classScope = new ClassScope(registry, registry, childClass);
+
+        var property = classScope.resolveValueHere("hp");
+        assertNotNull(property);
+        assertEquals(GdIntType.INT, property.type());
+
+        var inheritedFunctions = classScope.resolveFunctionsHere("ping");
+        assertEquals(1, inheritedFunctions.size());
+        assertEquals(parentPing, inheritedFunctions.getFirst());
+    }
+
+    @Test
+    void sourceStyledInnerSuperclassNamesStopInheritedLookup() {
+        var registry = FrontendScopeTestSupport.createRegistry();
+        var parentPing = FrontendScopeTestSupport.createFunction("ping", GdStringType.STRING);
+        var parentClass = FrontendScopeTestSupport.createClass(
+                "Outer$Shared",
+                "Object",
+                java.util.List.of(FrontendScopeTestSupport.createProperty("hp", GdIntType.INT)),
+                java.util.List.of(parentPing)
+        );
+        var childClass = FrontendScopeTestSupport.createClass(
+                "Outer$BrokenLeaf",
+                "Shared",
+                java.util.List.of(),
+                java.util.List.of()
+        );
+        registry.addGdccClass(parentClass, "Shared");
+        registry.addGdccClass(childClass, "BrokenLeaf");
+
+        var classScope = new ClassScope(registry, registry, childClass);
+
+        assertNull(classScope.resolveValueHere("hp"));
+        assertEquals(0, classScope.resolveFunctionsHere("ping").size());
+        assertEquals(new GdObjectType("Outer$Shared"), registry.resolveTypeMeta("Outer$Shared").instanceType());
     }
 
     @Test

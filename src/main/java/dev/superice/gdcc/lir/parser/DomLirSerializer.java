@@ -34,6 +34,7 @@ public final class DomLirSerializer implements LirSerializer {
         for (var cls : module.getClassDefs()) {
             Element classEl = doc.createElement("class_def");
             classEl.setAttribute("name", cls.getName());
+            // Backend-facing LIR stores `super` strictly as canonical superclass identity.
             classEl.setAttribute("super", cls.getSuperName());
             classEl.setAttribute("is_abstract", Boolean.toString(cls.isAbstract()));
             classEl.setAttribute("is_tool", Boolean.toString(cls.isTool()));
@@ -138,7 +139,7 @@ public final class DomLirSerializer implements LirSerializer {
                 // Require explicit entry block id when basic blocks exist
                 var entryId = fn.getEntryBlockId();
                 if (fn.getBasicBlockCount() > 0) {
-                    if (entryId == null || entryId.isEmpty()) {
+                    if (entryId.isEmpty()) {
                         throw new IllegalStateException("Function '" + fn.getName() + "' contains basic blocks but entry block id is not set");
                     }
                     bbsEl.setAttribute("entry", entryId);

@@ -29,10 +29,14 @@ import java.util.Objects;
 public record FrontendSourceClassRelation(
         @NotNull FrontendSourceUnit unit,
         @NotNull String name,
+        @NotNull FrontendSuperClassRef superClassRef,
         @NotNull LirClassDef topLevelClassDef,
         @NotNull List<FrontendInnerClassRelation> innerClassRelations
 ) implements FrontendOwnedClassRelation {
     public FrontendSourceClassRelation {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(superClassRef, "superClassRef must not be null");
+        Objects.requireNonNull(topLevelClassDef, "topLevelClassDef must not be null");
         Objects.requireNonNull(unit, "unit must not be null");
         innerClassRelations = List.copyOf(Objects.requireNonNull(
                 innerClassRelations,
@@ -43,6 +47,7 @@ public record FrontendSourceClassRelation(
                 unit.ast(),
                 name,
                 name,
+                superClassRef,
                 topLevelClassDef,
                 "Top-level relation"
         );
@@ -71,6 +76,11 @@ public record FrontendSourceClassRelation(
     @Override
     public @NotNull LirClassDef classDef() {
         return topLevelClassDef;
+    }
+
+    @Override
+    public @NotNull FrontendSuperClassRef superClassRef() {
+        return superClassRef;
     }
 
     /// Compatibility view of nested class skeletons in source traversal order.

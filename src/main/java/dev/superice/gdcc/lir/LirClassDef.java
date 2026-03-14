@@ -10,6 +10,7 @@ import java.util.*;
 /// XML entity: <class_def ...> ... </class_def>.
 public final class LirClassDef implements ClassDef {
     private @NotNull String name;
+    /// Canonical superclass identity written into backend-facing LIR.
     private @NotNull String superName;
     private boolean isAbstract;
     private boolean isTool;

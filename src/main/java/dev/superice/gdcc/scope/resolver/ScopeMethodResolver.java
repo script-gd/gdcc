@@ -269,11 +269,11 @@ public final class ScopeMethodResolver {
                 }
                 out.add(new MethodCandidate(toResolvedMethod(registry, ownerKind, current, function, ownerDistance)));
             }
-            var superName = current.getSuperName();
-            if (superName.isBlank()) {
+            var superCanonicalName = current.getSuperName();
+            if (superCanonicalName.isBlank()) {
                 break;
             }
-            current = registry.getClassDef(new GdObjectType(superName));
+            current = registry.getClassDef(new GdObjectType(superCanonicalName));
             ownerDistance++;
         }
         return out;

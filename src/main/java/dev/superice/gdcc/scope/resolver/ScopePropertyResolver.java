@@ -131,18 +131,18 @@ public final class ScopePropertyResolver {
                 return new Resolved(new ScopeResolvedProperty(ownerKind, current, propertyDef));
             }
 
-            var superName = current.getSuperName();
-            if (superName.isBlank()) {
+            var superCanonicalName = current.getSuperName();
+            if (superCanonicalName.isBlank()) {
                 break;
             }
-            var superClassDef = registry.getClassDef(new GdObjectType(superName));
+            var superClassDef = registry.getClassDef(new GdObjectType(superCanonicalName));
             if (superClassDef == null) {
                 return new Failed(
                         FailureKind.MISSING_SUPER_METADATA,
                         receiverType,
                         propertyName,
                         current.getName(),
-                        superName,
+                        superCanonicalName,
                         hierarchyNames
                 );
             }

@@ -707,7 +707,8 @@ public final class ClassRegistry implements Scope {
         if (!(from instanceof GdObjectType(var fromClassName)) || !(to instanceof GdObjectType(var toClassName))) {
             return false;
         }
-        // Check inheritance chain
+        // `ClassDef#getSuperName()` now always carries canonical registry identity, so assignability
+        // can walk the inheritance chain without any frontend/source-name side channel.
         while (!fromClassName.isEmpty()) {
             if (fromClassName.equals(toClassName)) {
                 return true;
@@ -739,12 +740,12 @@ public final class ClassRegistry implements Scope {
             // Traverse inheritance chain to check for RefCounted
             var current = gdccClass;
             while (current != null && !current.getSuperName().isEmpty()) {
-                if (current.getSuperName().equals("RefCounted") || current.getSuperName().equals("Resource")) {
+                var superCanonicalName = current.getSuperName();
+                if (superCanonicalName.equals("RefCounted") || superCanonicalName.equals("Resource")) {
                     return RefCountedStatus.YES;
                 }
-                var superName = current.getSuperName();
-                current = gdccClassByName.get(superName);
-                if (superName.equals("Object") || superName.equals("Node")) {
+                current = gdccClassByName.get(superCanonicalName);
+                if (superCanonicalName.equals("Object") || superCanonicalName.equals("Node")) {
                     // Reached Object without finding RefCounted, it's NO
                     return RefCountedStatus.NO;
                 }

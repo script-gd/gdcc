@@ -14,6 +14,11 @@ public interface ClassDef {
     /// frontend relation/type-meta objects instead of `ClassDef` itself.
     @NotNull String getName();
 
+    /// Returns the canonical superclass name consumed by registry, LIR, and backend inheritance walks.
+    ///
+    /// Source-facing superclass spellings now live only on frontend relation objects. `ClassDef`
+    /// intentionally keeps the old method name to reduce churn, but callers must treat the returned
+    /// string as canonical identity, not raw header text.
     @NotNull String getSuperName();
 
     boolean isAbstract();

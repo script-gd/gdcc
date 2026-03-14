@@ -429,6 +429,7 @@ class FrontendScopeAnalyzerTest {
                         List.of(new FrontendSourceClassRelation(
                                 unit,
                                 "SyntheticBlockScope",
+                                new FrontendSuperClassRef("Node", "Node"),
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticBlockScope", "Node"),
                                 List.of()
                         )),
@@ -684,6 +685,7 @@ class FrontendScopeAnalyzerTest {
                         List.of(new FrontendSourceClassRelation(
                                 unit,
                                 "SyntheticMissingInner",
+                                new FrontendSuperClassRef("Node", "Node"),
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticMissingInner", "Node"),
                                 List.of()
                         )),
@@ -833,24 +835,28 @@ class FrontendScopeAnalyzerTest {
                                 new FrontendSourceClassRelation(
                                         firstUnit,
                                         "MultiUnitNestedA",
+                                        new FrontendSuperClassRef("Node", "Node"),
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA", "Node"),
                                         List.of(new FrontendInnerClassRelation(
                                                 firstSourceFile,
                                                 outerInner,
                                                 "OuterInner",
                                                 "MultiUnitNestedA$OuterInner",
+                                                new FrontendSuperClassRef("RefCounted", "RefCounted"),
                                                 new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA$OuterInner", "RefCounted")
                                         ))
                                 ),
                                 new FrontendSourceClassRelation(
                                         secondUnit,
                                         "MultiUnitNestedB",
+                                        new FrontendSuperClassRef("Node", "Node"),
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB", "Node"),
                                         List.of(new FrontendInnerClassRelation(
                                                 secondSourceFile,
                                                 secondInner,
                                                 "Inner",
                                                 "MultiUnitNestedB$Inner",
+                                                new FrontendSuperClassRef("RefCounted", "RefCounted"),
                                                 new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB$Inner", "RefCounted")
                                         ))
                                 )

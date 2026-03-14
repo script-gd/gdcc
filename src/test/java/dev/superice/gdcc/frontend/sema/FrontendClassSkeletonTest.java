@@ -220,6 +220,44 @@ class FrontendClassSkeletonTest {
     }
 
     @Test
+    void buildPreservesFrontendSuperclassFactsWhileWritingCanonicalSuperclassToClassDef() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "superclass_contract.gd"), """
+                class_name SuperclassContract
+                extends RefCounted
+                
+                class Shared:
+                    pass
+                
+                class LexicalLeaf extends Shared:
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var relation = result.sourceClassRelations().getFirst();
+        var lexicalLeafRelation = relation.innerClassRelations().stream()
+                .filter(innerRelation -> innerRelation.canonicalName().equals("SuperclassContract$LexicalLeaf"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(new FrontendSuperClassRef("RefCounted", "RefCounted"), relation.superClassRef());
+        assertEquals(
+                new FrontendSuperClassRef("Shared", "SuperclassContract$Shared"),
+                lexicalLeafRelation.superClassRef()
+        );
+        assertEquals("SuperclassContract$Shared", lexicalLeafRelation.classDef().getSuperName());
+        assertEquals(
+                "SuperclassContract$Shared",
+                findClassByName(result.allClassDefs(), "SuperclassContract$LexicalLeaf").getSuperName()
+        );
+        assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
     void buildResolvesDeclaredTypesThroughLexicalAndStrictRegistryPaths() throws IOException {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
@@ -567,8 +605,9 @@ class FrontendClassSkeletonTest {
         var discovery = invokeBuilderMethod(
                 builder,
                 "discoverModuleClassHeaders",
-                new Class<?>[]{List.class, DiagnosticManager.class},
+                new Class<?>[]{List.class, ClassRegistry.class, DiagnosticManager.class},
                 List.of(unit),
+                registry,
                 diagnostics
         );
         @SuppressWarnings("unchecked")

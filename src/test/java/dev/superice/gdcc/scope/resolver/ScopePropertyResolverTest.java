@@ -56,6 +56,21 @@ class ScopePropertyResolverTest {
     }
 
     @Test
+    @DisplayName("shared object property resolver should follow canonical inner-class superclass names")
+    void resolveObjectPropertyShouldFollowCanonicalInnerSuperclassNames() {
+        var parentClass = new LirClassDef("Outer$Shared", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("Outer$Leaf", "Outer$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
+        var result = ScopePropertyResolver.resolveObjectProperty(registry, new GdObjectType("Outer$Leaf"), "value");
+
+        var resolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, result);
+        assertEquals("Outer$Shared", resolved.property().ownerClass().getName());
+        assertEquals("String", resolved.property().property().getType().getTypeName());
+    }
+
+    @Test
     @DisplayName("shared object property resolver should classify engine owner")
     void resolveObjectPropertyShouldClassifyEngineOwner() {
         var nodeClass = new ExtensionGdClass(
@@ -127,6 +142,21 @@ class ScopePropertyResolverTest {
 
         assertEquals(ScopePropertyResolver.FailureKind.MISSING_SUPER_METADATA, failed.kind());
         assertEquals("MissingBase", failed.relatedClassName());
+    }
+
+    @Test
+    @DisplayName("shared object property resolver should reject stale source-styled inner superclass names")
+    void resolveObjectPropertyShouldRejectSourceStyledInnerSuperclassNames() {
+        var parentClass = new LirClassDef("Outer$Shared", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("Outer$Leaf", "Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
+        var result = ScopePropertyResolver.resolveObjectProperty(registry, new GdObjectType("Outer$Leaf"), "value");
+
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, result);
+        assertEquals(ScopePropertyResolver.FailureKind.MISSING_SUPER_METADATA, failed.kind());
+        assertEquals("Shared", failed.relatedClassName());
     }
 
     @Test
