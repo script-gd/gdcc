@@ -206,6 +206,14 @@ public final class ClassScope extends AbstractFrontendScope {
         return parentScope != null ? parentScope.resolveFunctions(name, restriction) : ScopeLookupResult.notFound();
     }
 
+    /// Snapshots the direct members already present on `classDef` into this scope's local caches.
+    ///
+    /// This method intentionally mirrors whatever stage has populated the `ClassDef` so far:
+    /// - during the real `FrontendScopeAnalyzer` phase, skeleton member filling has already finished,
+    ///   so properties/signals/functions become visible here without extra `defineProperty(...)` or
+    ///   `defineSignal(...)` calls from the analyzer
+    /// - during the temporary declared-type scaffold in `FrontendClassSkeletonBuilder`, the shells are
+    ///   still member-empty, so this remains a no-op and only explicit type-meta publication matters
     private void indexDirectMembers(@NotNull ClassDef classDef) {
         for (var property : classDef.getProperties()) {
             defineDirectValue(toPropertyScopeValue(property));

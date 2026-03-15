@@ -159,6 +159,8 @@
 当前 `ClassScope` 的事实：
 
 - 直接索引当前类 direct property / direct signal / direct method
+- 真实 `FrontendScopeAnalyzer` 路径依赖 `ClassScope` 构造期的自动索引：analyzer 只需要显式发布 direct inner type-meta，不需要额外调用 `defineProperty(...)` / `defineSignal(...)`
+- `FrontendClassSkeletonBuilder.buildDeclaredTypeScopes(...)` 属于更早的 type-only scaffold；那里的 `ClassScope` 仍会走同一构造逻辑，但因为 class shell 尚未填入成员，所以 value/function 视图保持为空是刻意行为
 - inherited property / signal / method 只在 direct miss 时回退
 - 类成员继承查找属于当前 class scope layer，不是额外 lexical parent
 - class-local type-meta 只走 lexical namespace，不沿继承链扩散

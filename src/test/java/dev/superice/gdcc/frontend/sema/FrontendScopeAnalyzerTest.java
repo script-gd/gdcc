@@ -13,6 +13,10 @@ import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.ResolveRestriction;
+import dev.superice.gdcc.scope.ScopeValueKind;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdSignalType;
 import dev.superice.gdparser.frontend.ast.*;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -529,6 +533,59 @@ class FrontendScopeAnalyzerTest {
         var ifBodyScope = assertInstanceOf(BlockScope.class, scopesByAst.get(ifStatement.body()));
         assertEquals(BlockScopeKind.IF_BODY, ifBodyScope.kind());
         assertSame(pingBodyScope, ifBodyScope.getParentScope());
+    }
+
+    @Test
+    void analyzeAutoIndexesSkeletonPropertiesAndSignalsButKeepsClassBoundaryIsolation() throws Exception {
+        var analyzed = analyze("""
+                class_name MaterializedMemberBindings
+                extends Node
+
+                signal outer_changed(amount: int)
+                var outer_prop: int = 1
+
+                class Inner:
+                    signal inner_changed(flag: bool)
+                    var inner_prop: int = 2
+
+                    func ping() -> int:
+                        return inner_prop
+                """);
+        var sourceFile = analyzed.unit().ast();
+        var scopesByAst = analyzed.analysisData().scopesByAst();
+        var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
+
+        var outerProperty = sourceScope.resolveValue("outer_prop", ResolveRestriction.instanceContext());
+        assertTrue(outerProperty.isAllowed());
+        assertEquals(ScopeValueKind.PROPERTY, outerProperty.requireValue().kind());
+        assertEquals(GdIntType.INT, outerProperty.requireValue().type());
+
+        var outerSignal = sourceScope.resolveValue("outer_changed", ResolveRestriction.instanceContext());
+        assertTrue(outerSignal.isAllowed());
+        assertEquals(ScopeValueKind.SIGNAL, outerSignal.requireValue().kind());
+        assertInstanceOf(GdSignalType.class, outerSignal.requireValue().type());
+
+        var innerClass = findStatement(
+                sourceFile.statements(),
+                ClassDeclaration.class,
+                declaration -> declaration.name().equals("Inner")
+        );
+        var innerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerClass));
+
+        var innerProperty = innerScope.resolveValue("inner_prop", ResolveRestriction.instanceContext());
+        assertTrue(innerProperty.isAllowed());
+        assertEquals(ScopeValueKind.PROPERTY, innerProperty.requireValue().kind());
+        assertEquals(GdIntType.INT, innerProperty.requireValue().type());
+
+        var innerSignal = innerScope.resolveValue("inner_changed", ResolveRestriction.instanceContext());
+        assertTrue(innerSignal.isAllowed());
+        assertEquals(ScopeValueKind.SIGNAL, innerSignal.requireValue().kind());
+        assertInstanceOf(GdSignalType.class, innerSignal.requireValue().type());
+
+        assertNull(sourceScope.resolveValue("inner_prop"));
+        assertNull(sourceScope.resolveValue("inner_changed"));
+        assertNull(innerScope.resolveValue("outer_prop"));
+        assertNull(innerScope.resolveValue("outer_changed"));
     }
 
     @Test
