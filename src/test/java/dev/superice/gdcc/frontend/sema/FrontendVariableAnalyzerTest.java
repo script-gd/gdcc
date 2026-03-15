@@ -26,6 +26,7 @@ import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
@@ -288,7 +289,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsLambdaParametersAndLambdaLocalsDeferredWhileBindingOuterLocal() throws Exception {
+    void analyzeWarnsForDeferredLambdaSubtreesWhileBindingOuterLocal() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_lambda_deferred.gd", """
                 class_name LambdaVariableDeferred
                 extends Node
@@ -318,6 +319,17 @@ class FrontendVariableAnalyzerTest {
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var warning = newDiagnostics.getFirst();
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", warning.category());
+        assertTrue(warning.message().contains("defers lambda subtrees"));
+        assertTrue(warning.message().contains("parameters, default values, locals, and captures"));
+        assertEquals(phaseInput.unit().path(), warning.sourcePath());
+        assertEquals(FrontendRange.fromAstRange(builderLambda.range()), warning.range());
         assertNotNull(assertInstanceOf(
                 CallableScope.class,
                 phaseInput.analysisData().scopesByAst().get(pingFunction)
@@ -326,11 +338,10 @@ class FrontendVariableAnalyzerTest {
         assertNull(lambdaScope.resolveValue("item"));
         assertNull(lambdaScope.resolveValue("fallback"));
         assertNull(lambdaBodyScope.resolveValue("lambda_local"));
-        assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
     }
 
     @Test
-    void analyzeSkipsForMatchAndConstLocalInventoryWhileKeepingOtherLocalsBound() throws Exception {
+    void analyzeWarnsForDeferredForMatchAndBlockLocalConstWhileKeepingOtherLocalsBound() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_deferred_boundaries.gd", """
                 class_name DeferredBoundaries
                 extends Node
@@ -370,6 +381,34 @@ class FrontendVariableAnalyzerTest {
 
         new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
 
+        var answerConst = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("answer")
+        );
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var forWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(forStatement.range()));
+        var matchWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(matchStatement.range()));
+        var constWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(answerConst.range()));
+
+        assertEquals(3, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, forWarning.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", forWarning.category());
+        assertTrue(forWarning.message().contains("defers `for` subtrees"));
+        assertTrue(forWarning.message().contains("loop iterator binding"));
+        assertEquals(phaseInput.unit().path(), forWarning.sourcePath());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, matchWarning.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", matchWarning.category());
+        assertTrue(matchWarning.message().contains("defers `match` subtrees"));
+        assertTrue(matchWarning.message().contains("pattern bindings"));
+        assertEquals(phaseInput.unit().path(), matchWarning.sourcePath());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, constWarning.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", constWarning.category());
+        assertTrue(constWarning.message().contains("defers block-local `const` declarations"));
+        assertTrue(constWarning.message().contains("constant 'answer'"));
+        assertEquals(phaseInput.unit().path(), constWarning.sourcePath());
         var plainLocalBinding = pingBodyScope.resolveValueHere("plain_local");
         assertNotNull(plainLocalBinding);
         assertEquals(GdVariantType.VARIANT, plainLocalBinding.type());
@@ -378,7 +417,40 @@ class FrontendVariableAnalyzerTest {
         assertNull(forBodyScope.resolveValueHere("from_for"));
         assertNull(firstSectionScope.resolveValueHere("from_match"));
         assertNull(pingBodyScope.resolveValueHere("answer"));
-        assertEquals(diagnosticsBefore, phaseInput.diagnostics().snapshot());
+    }
+
+    @Test
+    void analyzeWarnsForDeferredLambdaSubtreesInsideReturnExpressions() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_lambda_return_expression.gd", """
+                class_name LambdaReturnExpression
+                extends Node
+
+                func ping(seed: int):
+                    return func():
+                        return seed
+                """);
+        var sourceFile = phaseInput.unit().ast();
+        var pingFunction = findStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getFirst());
+        var returnedLambda = assertInstanceOf(LambdaExpression.class, returnStatement.value());
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var diagnosticsAfter = phaseInput.diagnostics().snapshot();
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
+        var warning = newDiagnostics.getFirst();
+
+        assertEquals(1, newDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", warning.category());
+        assertTrue(warning.message().contains("defers lambda subtrees"));
+        assertEquals(phaseInput.unit().path(), warning.sourcePath());
+        assertEquals(FrontendRange.fromAstRange(returnedLambda.range()), warning.range());
     }
 
     @Test
@@ -388,6 +460,7 @@ class FrontendVariableAnalyzerTest {
                 extends Node
 
                 var hp: int = 1
+                const MAX_HP = 99
 
                 func ping():
                     var local := hp
@@ -875,6 +948,16 @@ class FrontendVariableAnalyzerTest {
             @NotNull DiagnosticSnapshot after
     ) {
         return after.asList().subList(before.size(), after.size());
+    }
+
+    private static @NotNull FrontendDiagnostic findDiagnostic(
+            @NotNull List<FrontendDiagnostic> diagnostics,
+            @NotNull FrontendRange range
+    ) {
+        return diagnostics.stream()
+                .filter(diagnostic -> diagnostic.range().equals(range))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Diagnostic not found for range: " + range));
     }
 
     private <T extends Statement> T findStatement(

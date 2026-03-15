@@ -316,6 +316,8 @@ scope 选择之后再做两步判断：
   - `sema.variable_binding`
 - unsupported parameter default value：
   - `sema.unsupported_parameter_default_value`
+- unsupported deferred variable-inventory source（当前覆盖 lambda / `for` / `match` / block-local `const`）：
+  - `sema.unsupported_variable_inventory_subtree`
 
 ### 5.2 这不是永久分类
 
@@ -536,14 +538,18 @@ scope 选择之后再做两步判断：
 - `for item in values: var x := item`
   - `item` 不写入
   - `x` 本轮也不写入
+  - 应发出 `sema.unsupported_variable_inventory_subtree` warning，明确说明 loop iterator binding 与 loop body locals 仍 deferred
 - `match value: var bound when bound > 0: var x := bound`
   - `bound` 不写入
   - `x` 本轮也不写入
+  - 应发出 `sema.unsupported_variable_inventory_subtree` warning，明确说明 pattern bindings 与 section locals 仍 deferred
 - `var f := func(arg): var inner := arg`
   - `f` 若位于普通 block，可作为 local 写入当前 `BlockScope`
   - `arg` / `inner` 不写入 lambda 对应 scope
+  - 应发出 `sema.unsupported_variable_inventory_subtree` warning，明确说明 lambda parameters / default values / locals / captures 仍 deferred
 - `const answer := 42`
   - 本轮不写入
+  - 应发出 `sema.unsupported_variable_inventory_subtree` warning，明确说明 block-local `const` 仍 deferred
 
 ### 7.5 duplicate / shadowing diagnostics
 

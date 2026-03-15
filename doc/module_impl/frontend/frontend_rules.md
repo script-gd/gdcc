@@ -16,3 +16,10 @@
 
 - 每条新的 frontend 恢复规则都必须同时覆盖 happy path 与 negative path。
 - negative path 至少要锚定：正确 diagnostic category、坏 subtree 被跳过、同一 module 中其他合法 subtree 仍继续工作。
+
+## MVP 支持约定 
+
+- `lambda`, `match`, `for`不在最小可行产品范围内。
+- 协程和信号上的协程不在最小可行产品范围内。
+- path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
+- 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
