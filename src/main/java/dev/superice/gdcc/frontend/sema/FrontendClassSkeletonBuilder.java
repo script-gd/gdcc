@@ -14,9 +14,6 @@ import dev.superice.gdcc.lir.LirSignalDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
-import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
-import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -317,10 +314,11 @@ public final class FrontendClassSkeletonBuilder {
     ) {
         var signalDef = new LirSignalDef(signalStatement.name().trim());
         for (var parameter : signalStatement.parameters()) {
-            var parameterType = resolveTypeOrVariant(
+            var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     declaredTypeScope,
-                    context
+                    context.sourcePath(),
+                    context.diagnostics()
             );
             signalDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
@@ -337,10 +335,11 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Scope declaredTypeScope,
             @NotNull SkeletonBuildContext context
     ) {
-        var propertyType = resolveTypeOrVariant(
+        var propertyType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 variableDeclaration.type(),
                 declaredTypeScope,
-                context
+                context.sourcePath(),
+                context.diagnostics()
         );
         var propertyDef = new LirPropertyDef(variableDeclaration.name().trim(), propertyType);
         propertyDef.setStatic(variableDeclaration.isStatic());
@@ -386,10 +385,11 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         var functionDef = new LirFunctionDef(functionDeclaration.name().trim());
-        functionDef.setReturnType(resolveTypeOrVariant(
+        functionDef.setReturnType(FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 functionDeclaration.returnType(),
                 declaredTypeScope,
-                context
+                context.sourcePath(),
+                context.diagnostics()
         ));
         fillFunctionParameters(
                 functionDef,
@@ -424,10 +424,11 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         for (var parameter : parameters) {
-            var parameterType = resolveTypeOrVariant(
+            var parameterType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                     parameter.type(),
                     declaredTypeScope,
-                    context
+                    context.sourcePath(),
+                    context.diagnostics()
             );
             functionDef.addParameter(new LirParameterDef(
                     parameter.name().trim(),
@@ -463,37 +464,6 @@ public final class FrontendClassSkeletonBuilder {
             return;
         }
         classDef.addFunction(functionDef);
-    }
-
-    private @NotNull GdType resolveTypeOrVariant(
-            @Nullable TypeRef typeRef,
-            @NotNull Scope declaredTypeScope,
-            @NotNull SkeletonBuildContext context
-    ) {
-        if (typeRef == null) {
-            return GdVariantType.VARIANT;
-        }
-        var typeText = typeRef.sourceText().trim();
-        // `gdparser` currently surfaces the inferred-declaration token `:=` through `TypeRef.sourceText()`.
-        // Skeleton build treats that marker as "no explicit type annotation" instead of a real type name.
-        if (typeText.isEmpty() || typeText.equals(":=")) {
-            return GdVariantType.VARIANT;
-        }
-
-        // Skeleton member filling stays on the strict no-mapper overload so unknown names still round-trip
-        // through diagnostics + `Variant` fallback instead of silently becoming guessed object types.
-        var resolvedType = ScopeTypeResolver.tryResolveDeclaredType(declaredTypeScope, typeText);
-        if (resolvedType != null) {
-            return resolvedType;
-        }
-
-        context.diagnostics().warning(
-                "sema.type_resolution",
-                "Unknown type '" + typeRef.sourceText() + "', fallback to Variant",
-                context.sourcePath(),
-                FrontendRange.fromAstRange(typeRef.range())
-        );
-        return GdVariantType.VARIANT;
     }
 
     /// Skeleton member filling still runs before the real scope phase, so it materializes a minimal

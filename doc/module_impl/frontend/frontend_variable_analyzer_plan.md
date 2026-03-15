@@ -53,12 +53,12 @@
 
 ### 1.3 当前缺口
 
-本轮实施前仍有三个明确缺口：
+当前仍有三个明确缺口，另有一个前置项已经完成：
 
-1. 声明类型解析 helper 仍被私有地放在 `FrontendClassSkeletonBuilder.resolveTypeOrVariant(...)` 中，`FrontendVariableAnalyzer` 不能直接复用。
-2. `FrontendSemanticAnalyzerFrameworkTest` 目前只验证到 `skeleton -> scope`，还没有 variable phase 注入点。
-3. 现有 `FrontendScopeAnalyzerTest` 中有“parameter 尚未 prefill”的测试锚点；一旦默认主链路接入 variable phase，这些断言需要改成“scope analyzer 单测保持原边界，framework/integration 测试验证新 phase 行为”。
-4. declaration-order 可见性仍未有 frontend 专用消费层；后续 binder 不能直接把 `scope.resolveValue(...)` 当作最终 use-site 结论，需单独接入 `FrontendVisibleValueResolver` 一类的前端可见性修正层。
+- 已完成：声明类型解析 helper 已从 `FrontendClassSkeletonBuilder` 中抽到 `FrontendDeclaredTypeSupport`，后续 `FrontendVariableAnalyzer` 可直接复用同一套 declared-type fallback 规则。
+1. `FrontendSemanticAnalyzerFrameworkTest` 目前只验证到 `skeleton -> scope`，还没有 variable phase 注入点。
+2. 现有 `FrontendScopeAnalyzerTest` 中有“parameter 尚未 prefill”的测试锚点；一旦默认主链路接入 variable phase，这些断言需要改成“scope analyzer 单测保持原边界，framework/integration 测试验证新 phase 行为”。
+3. declaration-order 可见性仍未有 frontend 专用消费层；后续 binder 不能直接把 `scope.resolveValue(...)` 当作最终 use-site 结论，需单独接入 `FrontendVisibleValueResolver` 一类的前端可见性修正层。
 
 ---
 
@@ -95,9 +95,16 @@
 
 - `typeRef == null` -> `Variant`
 - `typeRef.sourceText().trim().isEmpty()` -> `Variant`
-- `typeRef.sourceText().trim().equals(":=")` -> `Variant`
+- `typeRef.sourceText().trim().equals(":=")` -> 当前阶段临时回退为 `Variant`
 - 其余显式类型文本 -> 走严格 `ScopeTypeResolver.tryResolveDeclaredType(...)`
 - 解析失败 -> 发出 warning，并 fallback 到 `Variant`
+
+这里必须明确 `:=` 的真实语义边界：
+
+- `:=` 不等价于“语言层面的无类型变量”。
+- 它的目标语义应当是：分析右侧表达式的类型，并据此确定变量声明类型。
+- 当前返回 `Variant` 只是因为这一步依赖后续 `FrontendExprTypeAnalyzer` / 表达式类型解析能力。
+- 在 `FrontendExprTypeAnalyzer` 落地前，skeleton / variable phase 只能把 `:=` 视为“当前无法完成真实推断的 deferred 输入”，并临时按 `Variant` 处理。
 
 ### 2.4 参数默认值的本轮策略
 
@@ -160,7 +167,7 @@
 
 在正式写 `FrontendVariableAnalyzer` 之前，建议先完成以下前置任务。
 
-### 3.1 提取共享的声明类型解析 helper
+### 3.1 提取共享的声明类型解析 helper（已完成）
 
 必须先把 `FrontendClassSkeletonBuilder.resolveTypeOrVariant(...)` 抽成 phase-neutral helper。
 
@@ -178,6 +185,11 @@
   - `@NotNull Scope declaredTypeScope`
   - `@NotNull Path sourcePath`
   - `@NotNull DiagnosticManager diagnostics`
+
+当前状态：
+
+- 已落地 `FrontendDeclaredTypeSupport.resolveTypeOrVariant(...)`
+- `FrontendClassSkeletonBuilder` 已改为调用该 helper，不再保留私有副本
 
 ### 3.2 冻结 diagnostics 策略
 
@@ -344,22 +356,29 @@
 - 文档中对目标、非目标、诊断策略、风险边界的描述无歧义。
 - 团队后续实现不需要再就“for body 要不要顺手支持”“是否要顺手写 symbolBindings”反复返工。
 
-### Phase 1：抽出共享声明类型解析 helper
+### Phase 1：抽出共享声明类型解析 helper（已完成）
 
 #### 实施清单
 
-- 从 `FrontendClassSkeletonBuilder` 提取 `resolveTypeOrVariant(...)` 逻辑到共享 helper。
-- 保持以下行为不变：
-  - `null` / `:=` -> `Variant`
-  - unknown declared type -> `sema.type_resolution` warning + `Variant`
-  - 解析走严格 `ScopeTypeResolver.tryResolveDeclaredType(...)`
-- 让 skeleton phase 改为调用新 helper，而不是保留一份私有副本。
+- [x] 从 `FrontendClassSkeletonBuilder` 提取 `resolveTypeOrVariant(...)` 逻辑到共享 helper。
+- [x] 保持以下行为不变：
+  - [x] `null` -> `Variant`
+  - [x] `:=` 当前阶段临时 -> `Variant`，真实语义 deferred 到 `FrontendExprTypeAnalyzer`
+  - [x] unknown declared type -> `sema.type_resolution` warning + `Variant`
+  - [x] 解析走严格 `ScopeTypeResolver.tryResolveDeclaredType(...)`
+- [x] 让 skeleton phase 改为调用新 helper，而不是保留一份私有副本。
+
+已完成产出：
+
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendDeclaredTypeSupport.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendDeclaredTypeSupportTest.java`
+- skeleton / framework 回归测试继续覆盖该 helper 的集成行为
 
 #### 验收标准
 
-- `FrontendClassSkeletonBuilder` 的类型解析外部行为不发生变化。
-- 现有 skeleton 相关测试继续通过。
-- 新 helper 不依赖 `SkeletonBuildContext`。
+- [x] `FrontendClassSkeletonBuilder` 的类型解析外部行为不发生变化。
+- [x] 现有 skeleton 相关测试继续通过。
+- [x] 新 helper 不依赖 `SkeletonBuildContext`。
 
 ### Phase 2：`FrontendVariableAnalyzer` 骨架与主链路接线
 

@@ -100,6 +100,10 @@
 
 - declared type 解析已经切到 shared `ScopeTypeResolver`
 - strict frontend 位置继续使用 no-mapper overload
+- parser 当前会把 inferred declaration marker `:=` 暴露到 `TypeRef.sourceText()`
+  - 这不意味着 `:=` 的最终语义就是 `Variant`
+  - 正确语义应当是在后续 `FrontendExprTypeAnalyzer` 中分析右侧表达式类型，并据此确定声明类型
+  - skeleton 当前把它临时按“无法在本阶段完成真实推断”的 deferred 输入处理，并回退到 `Variant`
 - unknown type 仍由调用方负责恢复
   - 当前 skeleton 的策略是发 `sema.type_resolution` 诊断
   - 然后回退到 `Variant`
