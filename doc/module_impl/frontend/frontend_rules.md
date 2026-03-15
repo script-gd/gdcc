@@ -23,3 +23,4 @@
 - 协程和信号上的协程不在最小可行产品范围内。
 - path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
+- 函数参数默认值不在最小可行产品范围内。

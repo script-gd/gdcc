@@ -536,12 +536,119 @@ func ping(values):
 
 若后续实现本文档对应行为，预计会触达：
 
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolver.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolveRequest.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolution.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendFilteredValueHit.java`
-- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueDeferredBoundary.java`
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolverTest.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/resolver/FrontendVisibleValueResolver.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/resolver/FrontendVisibleValueResolveRequest.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/resolver/FrontendVisibleValueResolution.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/resolver/FrontendFilteredValueHit.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/resolver/FrontendVisibleValueDeferredBoundary.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/resolver/FrontendVisibleValueResolverTest.java`
 - 视 binder 接线位置，可能还需要：
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
   - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
+
+---
+
+## 12. 分阶段任务计划与验收标准
+
+本文推荐把 `FrontendVisibleValueResolver` 的落地拆成 3 个阶段。拆分原则是：
+
+- 先冻结结果合同与当前 executable-body MVP
+- 再接入 binder 主路径
+- 然后消费 provenance 产出 warning/diagnostic 价值
+- `parameter default`、`lambda`、`for`、`match` 继续作为当前 frontend MVP 的显式 deferred 边界，而不是后续实施阶段
+
+### 12.1 第一阶段：结果合同与 resolver MVP
+
+当前实施状态：
+
+- [x] request/result 相关数据结构已落地：`FrontendVisibleValueResolveRequest`、`FrontendVisibleValueResolution`、`FrontendFilteredValueHit` 及配套 domain/status/reason 枚举已添加到 `frontend.sema.resolver`
+- [x] `EXECUTABLE_BODY` 域的 resolver 主逻辑已落地，当前通过 `FrontendVisibleValueResolver` 在 `frontend.sema.resolver` 内独立提供
+- [x] declaration-order 过滤、initializer 自引用过滤、shared-scope 委托/传播逻辑已在 resolver 中实现
+- [x] deferred boundary 封口已实现：parameter default、lambda body、`for`、`match`、missing-scope 均返回 `DEFERRED_UNSUPPORTED`
+- [x] resolver 单元测试已补齐：覆盖 parameter/local/class-property 正向解析、future local / self-reference 过滤、blocked class-member、parameter default / lambda / `for` / `match` deferred、missing-scope、shared `ScopeLookupException` 传播
+
+当前验收状态：
+
+- [x] `NOT_FOUND + filteredHits`、`FOUND_ALLOWED + filteredHits`、`FOUND_BLOCKED`、`SELF_REFERENCE_IN_INITIALIZER`、missing-scope -> `DEFERRED_UNSUPPORTED` 均已由 `FrontendVisibleValueResolverTest` 锚定
+- [x] `EXECUTABLE_BODY` 内 parameter / ordinary local / class property 三类基本路径已覆盖
+- [x] `ClassScope` / `ClassRegistry` 侧的 `ScopeLookupException` 会原样传播
+- [x] 本阶段仍未接入 binder，resolver 以独立可调用组件形态落地，符合阶段目标
+
+任务范围：
+
+- 新增 request/result 相关数据结构，至少包括 `FrontendVisibleValueResolveRequest`、`FrontendVisibleValueResolution`、`FrontendFilteredValueHit`
+- 把 `filteredHits`、`primaryFilteredHit()`、`deferredBoundary`、`domain` 这些本文已冻结的合同先落地到代码
+- 实现 `EXECUTABLE_BODY` 域的 resolver 主逻辑
+- 对 `BlockScope` / `CallableScope` 加入 declaration-order 过滤与 initializer 自引用过滤
+- 保留 shared `Scope` 的 `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND` 语义与异常传播行为
+- 对 parameter default / lambda / `for` / `match` / missing-scope 等位置统一返回 `DEFERRED_UNSUPPORTED + deferredBoundary`
+
+本阶段不做：
+
+- 不改 binder 主链路
+- 不直接产出新的 warning/diagnostic
+- 不把 deferred 域改成真实可解析域
+
+验收标准：
+
+- 新增 resolver 单测，覆盖 `NOT_FOUND + filteredHits`、`FOUND_ALLOWED + filteredHits`、`FOUND_BLOCKED` 不降级、`SELF_REFERENCE_IN_INITIALIZER`、missing-scope -> `DEFERRED_UNSUPPORTED`
+- `EXECUTABLE_BODY` 内的 parameter / ordinary local / class property 三类基本路径均有测试
+- `ClassScope` / `ClassRegistry` 抛出的 `ScopeLookupException` 会原样传播
+- 本阶段不要求 binder 接线，但 resolver 自身已可被独立调用并返回稳定结果合同
+
+### 12.2 第二阶段：binder 接线与当前主路径替换
+
+任务范围：
+
+- 在 frontend binder 当前负责 value use-site 绑定的位置改为调用 `FrontendVisibleValueResolver`
+- 当前 binder 只传入 `domain = EXECUTABLE_BODY`
+- 去掉 binder 内部与 declaration-order 可见性重复、冲突或临时性的 ad-hoc 逻辑
+- 把 resolver 的 `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND` / `DEFERRED_UNSUPPORTED` 四类结果接到现有绑定流程
+
+本阶段不做：
+
+- 不实现 parameter default / lambda / `for` / `match` 的正常绑定
+- 不在 shared `Scope` 协议上增加 frontend-specific 参数
+
+验收标准：
+
+- 现有 binder 主路径在 executable body 内改为统一依赖 resolver，而不是继续混用旧逻辑
+- 现有 frontend 语义测试在 executable body 场景下通过，且行为不因接线而回退
+- parameter default / lambda / `for` / `match` use-site 不会再静默成功，而是稳定返回 `DEFERRED_UNSUPPORTED`
+- 代码中不存在第二套与 resolver 竞争的 statement-order 判定实现
+
+### 12.3 第三阶段：provenance 消费与 warning/diagnostic 接线
+
+任务范围：
+
+- 在 warning/diagnostic 生成路径消费 `filteredHits` 或 `primaryFilteredHit()`
+- 先覆盖当前 executable-body 已可稳定支持的 provenance 场景
+- 把“当前绑定是谁”和“后面会出现哪个 future local / filtered declaration”区分开
+- 使后续 `CONFUSABLE_LOCAL_USAGE` / `CONFUSABLE_LOCAL_DECLARATION` 对齐工作不再依赖临时 AST 回溯
+
+本阶段不做：
+
+- 不要求一次性完成所有 Godot warning 对齐
+- parameter default / `lambda` / `for` / `match` 这些 deferred 域不属于当前 frontend MVP 计划
+
+验收标准：
+
+- 至少存在一组测试覆盖“class property 当前可见，但后续 local 同名”的 provenance 消费
+- 至少存在一组测试覆盖 initializer 自引用导致的 `SELF_REFERENCE_IN_INITIALIZER`
+- warning/diagnostic 锚点以具体 use-site 或 declaration-site 为准，而不是按名字全局去重
+- provenance 消费只读取 resolver 结果，不再重新扫描 AST 推断 future local
+
+### 12.4 当前明确不进入计划的范围
+
+根据 `doc/module_impl/frontend/frontend_rules.md` 的 MVP 支持约定，以下内容不属于当前 frontend 计划，不应再作为后续实施阶段出现：
+
+- function parameter default-value binding / visibility
+- lambda parameter / local / capture binding
+- `for` iterator binding 与 loop-body local binding
+- `match` pattern binding / guard / section-body binding
+
+对这些域，当前正确策略仍然是：
+
+- 继续通过 `DEFERRED_UNSUPPORTED + deferredBoundary(...)` 显式封口
+- 保持 `FrontendVisibleValueResolver` 的 request/result 合同稳定
+- 不把“未来可能支持”写成当前计划中的默认后续阶段

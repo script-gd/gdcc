@@ -277,7 +277,7 @@
 因此后续工程必须遵守：
 
 - 不能直接把 `scope.resolveValue(...)` 当作 binder 的最终 use-site 结果
-- declaration-order、自引用 initializer、future declaration provenance 等问题必须交给 `FrontendVisibleValueResolver`
+- declaration-order、自引用 initializer、future declaration provenance 等问题必须交给 `frontend.sema.resolver.FrontendVisibleValueResolver`
 
 ---
 
@@ -288,7 +288,7 @@
 后续 frontend binder 若要消费 parameter/local inventory，必须同时满足：
 
 - use-site 位于已发布 inventory 的有效 executable subtree 中
-- declaration-order 可见性通过 `FrontendVisibleValueResolver` 处理
+- declaration-order 可见性通过 `frontend.sema.resolver.FrontendVisibleValueResolver` 处理
 - deferred subtree 被当作 `DEFERRED_UNSUPPORTED`，而不是当作正常 miss
 
 ### 7.2 新 lexical boundary 的维护要求
@@ -310,7 +310,7 @@
 - `for` iterator 与 loop-body inventory
 - `match` pattern binding 与 section inventory
 - block-local `const` inventory
-- `FrontendVisibleValueResolver`
+- `frontend.sema.resolver.FrontendVisibleValueResolver`
 - `symbolBindings()` 的 use-site 发布
 - `FrontendExprTypeAnalyzer` 落地后对 `:=` 与参数默认值的真实语义接线
 
