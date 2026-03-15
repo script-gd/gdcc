@@ -12,7 +12,7 @@
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
   - `src/test/java/dev/superice/gdcc/frontend/sema/**`
 - 关联文档：
-  - `doc/module_impl/frontend/frontend_variable_analyzer_plan.md`
+  - `doc/module_impl/frontend/frontend_variable_analyzer_implementation.md`
   - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
   - `doc/module_impl/frontend/scope_analyzer_implementation.md`
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -114,6 +114,7 @@
 - use-site 必须位于 variable inventory 已完成的 executable subtree 中
 - use-site 自身必须能通过 `FrontendAnalysisData.scopesByAst()` 找到当前 lexical scope
 - 若解析链最终回落到 `ClassScope` / `ClassRegistry`，这部分共享 lookup 仍然有效
+- 就 resolver 的请求模型而言，上述位置当前都归入 `EXECUTABLE_BODY` 这一语义域
 
 ### 4.2 当前明确无效域
 
@@ -166,11 +167,22 @@
 public record FrontendVisibleValueResolution(
         @NotNull FrontendVisibleValueStatus status,
         @Nullable ScopeValue visibleValue,
-        @Nullable FrontendFilteredValueHit filteredHit,
-        @Nullable FrontendVisibleValueDeferredReason deferredReason
+        @NotNull List<FrontendFilteredValueHit> filteredHits,
+        @Nullable FrontendVisibleValueDeferredBoundary deferredBoundary
 ) {
+    /// 当前 executable-body 消费者通常只关心最近的一条 filtered 命中。
+    /// 该辅助视图不应被解释成“结果永远至多只有一条 filtered hit”。
+    public @Nullable FrontendFilteredValueHit primaryFilteredHit() {
+        return filteredHits.isEmpty() ? null : filteredHits.getFirst();
+    }
 }
 ```
+
+其中：
+
+- `filteredHits` 是外部合同；它表达“有哪些命中被 declaration-order 或 publish-boundary 过滤掉了”
+- `primaryFilteredHit()` 只是当前消费者的便捷视图，不是长期唯一性承诺
+- `deferredBoundary` 用于表达当前 use-site 落在哪个语义域、因何被封口；没有 deferred 时应为 `null`
 
 推荐 `status` 至少包括：
 
@@ -186,10 +198,11 @@ public record FrontendVisibleValueResolution(
 - `NOT_FOUND`：整个有效解析链都没有可见 binding，也没有 deferred/unsupported 域阻断
 - `DEFERRED_UNSUPPORTED`：当前 use-site 位于本文明确声明的无效域，resolver 拒绝给出“看似成功”的绑定结果
 
-### 5.3 `filteredHit` 的最小要求
+### 5.3 `filteredHits` 的最小要求
 
-`filteredHit` 至少应保留：
+`filteredHits` 至少应满足：
 
+- 稳定顺序，推荐按 resolver 实际扫描到的近到远顺序保存，便于当前消费者把第一条视为 primary
 - 被 declaration-order 过滤掉的 `ScopeValue`
 - 命中的 lexical scope 层级
 - 过滤原因
@@ -199,57 +212,97 @@ public record FrontendVisibleValueResolution(
 - `DECLARATION_AFTER_USE_SITE`
 - `SELF_REFERENCE_IN_INITIALIZER`
 
-这里刻意只要求保留第一条 filtered hit，而不是所有 filtered hits，原因是：
+这里不再把“只保留第一条 filtered hit”写成外部合同，原因是：
 
-- 当前 MVP 已冻结 same-callable variable no-shadowing
-- 在 callable-local inventory 合法的前提下，第一条 filtered hit 已足够表达“future shadowing / deferred local”这类后续 warning provenance
+- 当前 executable-body MVP 在大多数场景下通常只会消费第一条 filtered 命中
+- 但 future `for` / `match` / parameter default / lambda-capture 支持可能需要同时保留多条“被过滤但仍有语义价值”的候选
+- 若今天把结果对象冻结成单字段，后续只能通过破坏性升级或额外旁路字段来补救
 
-若后续真的出现需要完整 filtered chain 的消费者，再扩展为列表，而不是现在就把接口做重。
+因此本文改为冻结：
 
-### 5.4 `DEFERRED_UNSUPPORTED` 的原因枚举
+- 当前实现可以只让 binder 读取 `primaryFilteredHit()`
+- 但结果模型本身不能把唯一性编码成不变量
 
-推荐至少区分：
+### 5.4 `DEFERRED_UNSUPPORTED` 的边界表达
 
-- `MISSING_SCOPE_OR_SKIPPED_SUBTREE`
-- `PARAMETER_DEFAULT_SUBTREE`
+`DEFERRED_UNSUPPORTED` 不应只返回一个裸 `deferredReason` 枚举，而应保留“语义域 + 原因”的组合。
+
+推荐至少表达：
+
+```java
+public record FrontendVisibleValueDeferredBoundary(
+        @NotNull FrontendVisibleValueDomain domain,
+        @NotNull FrontendVisibleValueDeferredReason reason
+) {
+}
+```
+
+其中 `domain` 表达 use-site 所属语义域，当前至少应能区分：
+
+- `EXECUTABLE_BODY`
+- `PARAMETER_DEFAULT`
 - `LAMBDA_SUBTREE`
 - `FOR_SUBTREE`
 - `MATCH_SUBTREE`
+- `UNKNOWN_OR_SKIPPED_SUBTREE`
+
+`reason` 则表达为什么当前不能给出正常绑定结果，推荐至少区分：
+
+- `UNSUPPORTED_DOMAIN`
+- `MISSING_SCOPE_OR_SKIPPED_SUBTREE`
 - `VARIABLE_INVENTORY_NOT_PUBLISHED`
 
-这一步的目标不是给用户直接出诊断，而是防止 binder 在无效域上把“当前不支持”误当成“正常 miss”。
+这一步的目标不是给用户直接出诊断，而是防止 binder 在无效域上把“当前不支持”误当成“正常 miss”，并避免未来只能从 AST 形状反推“这次解析原本想按哪个语义域工作”。
 
 ---
 
 ## 6. 冻结行为
 
-### 6.1 总体规则
+### 6.1 请求对象与 `domain`
 
-`FrontendVisibleValueResolver.resolve(...)` 的行为冻结为：
+推荐把 resolver 的输入冻结为 request object，而不是继续把 `useSite` / `name` / future flags 以零散参数堆进 `resolve(...)`。
 
-1. 先判断当前 use-site 是否位于本文定义的有效域
-2. 若不在有效域，返回 `DEFERRED_UNSUPPORTED`
-3. 若在有效域，从 `analysisData.scopesByAst().get(useSite)` 获取当前 lexical scope
-4. 对 `BlockScope` / `CallableScope` 使用“逐层 value lookup + declaration-order 过滤”
-5. 对 `ClassScope` / `ClassRegistry` 使用现有 shared `Scope` 语义
-6. 委托到 shared `Scope` 时若抛 `ScopeLookupException`，原样传播，不得降级成 `NOT_FOUND`
+请求至少应包含：
 
-### 6.2 当前层命中的处理
+- use-site AST
+- 待解析名称
+- 调用方已经知道的语义域 `domain`
+
+当前阶段：
+
+- binder 只需要为已支持的 executable body use-site 传入 `EXECUTABLE_BODY`
+- 这不要求本阶段立即实现 `PARAMETER_DEFAULT` / `FOR_SUBTREE` / `MATCH_SUBTREE` 的正常绑定逻辑
+- 但它可以避免未来为这些场景补支持时，再从 AST 位置和父节点形状里反推出“这次解析原本想按哪个域工作”
+
+### 6.2 总体规则
+
+`FrontendVisibleValueResolver.resolve(request)` 的行为冻结为：
+
+1. 先读取 `request.domain`
+2. 若 `request.domain != EXECUTABLE_BODY`，返回 `DEFERRED_UNSUPPORTED`，并填写 `deferredBoundary`
+3. 若 `request.domain == EXECUTABLE_BODY`，再判断当前 use-site 是否位于本文定义的有效域
+4. 若不在有效域，返回 `DEFERRED_UNSUPPORTED`
+5. 若在有效域，从 `analysisData.scopesByAst().get(useSite)` 获取当前 lexical scope
+6. 对 `BlockScope` / `CallableScope` 使用“逐层 value lookup + declaration-order 过滤”
+7. 对 `ClassScope` / `ClassRegistry` 使用现有 shared `Scope` 语义
+8. 委托到 shared `Scope` 时若抛 `ScopeLookupException`，原样传播，不得降级成 `NOT_FOUND`
+
+### 6.3 当前层命中的处理
 
 对于 `BlockScope` / `CallableScope` 当前层命中的 `ScopeValue`：
 
 - 若结果是 `FOUND_BLOCKED`：
   - 直接返回 `FOUND_BLOCKED`
-  - 保留已有 `filteredHit` 信息，但不能把 blocked hit 降级成 `NOT_FOUND`
+  - 保留已有 `filteredHits` 信息，但不能把 blocked hit 降级成 `NOT_FOUND`
 - 若结果是 `FOUND_ALLOWED`：
   - 若 declaration 当前已可见，则返回 `FOUND_ALLOWED`
   - 若 declaration 当前尚不可见：
-    - 记录 `filteredHit`
+    - 追加一条 `filteredHit` 到 `filteredHits`
     - 继续向 lexical parent 查找
 - 若结果是 `NOT_FOUND`：
   - 继续向 lexical parent 查找
 
-### 6.3 declaration 可见性规则
+### 6.4 declaration 可见性规则
 
 #### parameter
 
@@ -268,7 +321,7 @@ public record FrontendVisibleValueResolution(
 - class property / signal / class const / singleton / global enum 等非 callable-local binding 不受 statement-order 过滤影响
 - 它们继续按 shared `Scope` 的当前协议工作
 
-### 6.4 initializer 自引用
+### 6.5 initializer 自引用
 
 对于：
 
@@ -349,7 +402,7 @@ shared `Scope` 继续负责：
 
 若 `analysisData.scopesByAst().get(useSite)` 缺失：
 
-- 当前推荐返回 `DEFERRED_UNSUPPORTED(MISSING_SCOPE_OR_SKIPPED_SUBTREE)`
+- 当前推荐返回 `DEFERRED_UNSUPPORTED`，并填写 `deferredBoundary(domain = EXECUTABLE_BODY, reason = MISSING_SCOPE_OR_SKIPPED_SUBTREE)`
 - 不把它降级成 `NOT_FOUND`
 
 原因：
@@ -375,7 +428,7 @@ func ping():
 
 - `status = NOT_FOUND`
 - `visibleValue = null`
-- `filteredHit` 指向 block 内的 local `count`
+- `filteredHits` 包含 block 内的 local `count`，当前 `primaryFilteredHit()` 指向它
 
 这样 binder 后续既能知道“现在没有可见 local”，也能知道“后面会出现 future local declaration”。
 
@@ -391,7 +444,7 @@ func ping():
 推荐结果：
 
 - 右侧 `node` 不命中当前 declaration
-- `filteredHit.reason = SELF_REFERENCE_IN_INITIALIZER`
+- `primaryFilteredHit().reason = SELF_REFERENCE_IN_INITIALIZER`
 - 若外层没有同名 binding，则 `status = NOT_FOUND`
 
 ### 9.3 future local 会在后面遮蔽 class property
@@ -410,7 +463,7 @@ func test():
 
 - `status = FOUND_ALLOWED`
 - `visibleValue` 指向 class property `a`
-- `filteredHit` 指向后面的 local `a`
+- `filteredHits` 包含后面的 local `a`，当前 `primaryFilteredHit()` 指向它
 
 这正是后续还原 Godot `CONFUSABLE_LOCAL_USAGE` 一类 warning 所需要的最小 provenance。
 
@@ -426,7 +479,7 @@ func ping(value, alias = value):
 对于 `alias = value` 中的 `value`：
 
 - 当前不应套用 executable body 的参数可见性规则
-- resolver 推荐直接返回 `DEFERRED_UNSUPPORTED(PARAMETER_DEFAULT_SUBTREE)`
+- resolver 推荐直接返回 `DEFERRED_UNSUPPORTED`，并填写 `deferredBoundary(domain = PARAMETER_DEFAULT, reason = VARIABLE_INVENTORY_NOT_PUBLISHED)`
 
 ### 9.5 `for` / `match` / lambda subtree 当前不得静默成功
 
@@ -441,7 +494,7 @@ func ping(values):
 对 loop body 中 `item` 的 use-site：
 
 - 当前不能靠“outer lookup miss”或“假装没找到”给出正常结果
-- 应返回 `DEFERRED_UNSUPPORTED(FOR_SUBTREE)`
+- 应返回 `DEFERRED_UNSUPPORTED`，并填写 `deferredBoundary(domain = FOR_SUBTREE, reason = VARIABLE_INVENTORY_NOT_PUBLISHED)`
 
 `match` / lambda 同理。
 
@@ -453,23 +506,23 @@ func ping(values):
 
 ### 10.1 基础可见性
 
-- 首次 local 声明在 use-site 之后 -> `NOT_FOUND + filteredHit`
-- 首次 outer-block local 声明在 inner use-site 之后 -> `NOT_FOUND + filteredHit`
-- `var x = x` -> 右侧不命中当前 declaration，且 `filteredHit.reason = SELF_REFERENCE_IN_INITIALIZER`
+- 首次 local 声明在 use-site 之后 -> `NOT_FOUND + filteredHits`
+- 首次 outer-block local 声明在 inner use-site 之后 -> `NOT_FOUND + filteredHits`
+- `var x = x` -> 右侧不命中当前 declaration，且 `primaryFilteredHit().reason = SELF_REFERENCE_IN_INITIALIZER`
 - parameter 在 executable callable body 内始终可见
 
 ### 10.2 provenance 保留
 
-- class property 先可见、后面 local 同名 -> `FOUND_ALLOWED + filteredHit`
+- class property 先可见、后面 local 同名 -> `FOUND_ALLOWED + filteredHits`
 - 若未来需要 class/global warning parity，可在此基础上扩展 `CONFUSABLE_LOCAL_USAGE` 类诊断消费测试
 
 ### 10.3 deferred/unsupported 边界
 
-- parameter default subtree -> `DEFERRED_UNSUPPORTED`
-- lambda subtree -> `DEFERRED_UNSUPPORTED`
-- `for` subtree -> `DEFERRED_UNSUPPORTED`
-- `match` subtree -> `DEFERRED_UNSUPPORTED`
-- skipped subtree / missing use-site scope -> `DEFERRED_UNSUPPORTED`
+- parameter default subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = PARAMETER_DEFAULT, ...)`
+- lambda subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = LAMBDA_SUBTREE, ...)`
+- `for` subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = FOR_SUBTREE, ...)`
+- `match` subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = MATCH_SUBTREE, ...)`
+- skipped subtree / missing use-site scope -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = EXECUTABLE_BODY or UNKNOWN_OR_SKIPPED_SUBTREE, ...)`
 
 ### 10.4 shared-scope 异常传播
 
@@ -484,8 +537,10 @@ func ping(values):
 若后续实现本文档对应行为，预计会触达：
 
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolver.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolveRequest.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolution.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendFilteredValueHit.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueDeferredBoundary.java`
 - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendVisibleValueResolverTest.java`
 - 视 binder 接线位置，可能还需要：
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`

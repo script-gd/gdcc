@@ -36,22 +36,14 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Variable-analysis phase entry point.
+/// Frontend parameter/local inventory analyzer.
 ///
-/// The current phase contract is intentionally narrow and recovery-oriented:
-/// - require the skeleton and diagnostics boundaries published by earlier phases
-/// - require one top-level `ClassScope` per accepted source file
-/// - prefill function/constructor parameters into `CallableScope`
-/// - prefill supported ordinary locals into `BlockScope`
-/// - keep lambda inventory, `for`, `match`, and block-local `const` deferred
-/// - emit explicit warnings when a callable body contains deferred lambda / `for` / `match`
-///   variable-inventory subtrees or block-local `const` declarations so those gaps are never silent
-///
-/// Variable binding follows the rewritten plan in `frontend_variable_analyzer_plan.md`:
-/// - declaration-directed walking through accepted source/class containers only
-/// - skip-and-continue on missing scope records or skipped bad subtrees
-/// - `diagnostic + skip` only when a supported declaration targets the wrong scope kind
-/// - reject same-callable local shadowing before mutating the published scope graph
+/// Current responsibilities are frozen as:
+/// - require skeleton, diagnostics, and top-level source scopes to be published first
+/// - write function/constructor parameters into `CallableScope`
+/// - write supported ordinary locals into `BlockScope`
+/// - keep lambda / `for` / `match` / block-local `const` inventory deferred
+/// - emit explicit recovery diagnostics instead of letting deferred inventory sources fail silently
 public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
     private static final @NotNull String UNSUPPORTED_PARAMETER_DEFAULT_VALUE_CATEGORY =
@@ -94,15 +86,15 @@ public class FrontendVariableAnalyzer {
         }
     }
 
-    /// ASTWalker-backed declaration-directed handler used by the MVP variable phase.
+    /// ASTWalker-backed declaration-directed binder used by the current variable analyzer.
     ///
-    /// `ASTWalker` is used here only as the typed dispatch mechanism. The variable phase still
-    /// keeps explicit subtree control so deferred domains remain sealed:
+    /// `ASTWalker` is used here only as the typed dispatch mechanism. The analyzer still keeps
+    /// explicit subtree control so deferred domains remain sealed:
     /// - only source/class statement lists and supported executable blocks are descended into
     /// - function/constructor parameters are bound at the callable boundary
     /// - ordinary locals are bound only while the walker is inside a supported executable block
     /// - lambda / `for` / `match` subtrees are pruned explicitly
-    /// - arbitrary expression children stay unvisited in this phase
+    /// - arbitrary expression children stay outside the binding walk
     private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
@@ -216,8 +208,9 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleWhileStatement(@NotNull WhileStatement whileStatement) {
-            // Loop bodies are part of the MVP executable-block set, but only once the walker is
-            // already under a callable body. This keeps unsupported outer containers sealed.
+            // Loop bodies are part of the current supported executable-block set, but only once
+            // the walker is already under a callable body. This keeps unsupported outer
+            // containers sealed.
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(whileStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
@@ -458,7 +451,7 @@ public class FrontendVariableAnalyzer {
                     UNSUPPORTED_PARAMETER_DEFAULT_VALUE_CATEGORY,
                     "Parameter default value for '" + parameter.name().trim()
                             + "' is deferred until FrontendExprTypeAnalyzer is implemented; "
-                            + "current variable phase ignores the default value expression",
+                            + "the current variable analyzer ignores the default value expression",
                     sourcePath,
                     FrontendRange.fromAstRange(parameter.defaultValue().range())
             );
@@ -505,7 +498,7 @@ public class FrontendVariableAnalyzer {
         }
     }
 
-    /// Scans supported callable bodies for deferred variable-inventory boundaries that the MVP
+    /// Scans supported callable bodies for deferred variable-inventory boundaries that the current
     /// binder intentionally does not enter.
     ///
     /// This reporter exists because the binder itself is declaration-directed and therefore skips
