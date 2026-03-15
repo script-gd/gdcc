@@ -9,8 +9,9 @@ import org.jetbrains.annotations.NotNull;
 /// from that subtree.
 ///
 /// The declaration keeps the source-facing class name, while `classDef.getName()` is already the
-/// canonical identity that later phases and the registry will use. The record itself is also the
-/// shared ownership view consumed by later phases; no extra adapter object is needed.
+/// canonical identity used by the registry, scope publication, and other frontend semantic
+/// consumers. The record itself is also the shared ownership view used across frontend semantic
+/// data; no extra adapter object is needed.
 public record FrontendInnerClassRelation(
         @NotNull Node lexicalOwner,
         @NotNull ClassDeclaration declaration,

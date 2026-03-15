@@ -16,7 +16,7 @@
 - 关联文档：
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
-  - `inner_class_registry_canonical_name_plan.md`
+  - `inner_class_implementation.md`
   - `superclass_canonical_name_contract.md`
   - `diagnostic_manager.md`
 - 明确非目标：

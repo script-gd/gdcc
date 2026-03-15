@@ -20,7 +20,7 @@
 - 关联文档：
   - `frontend_rules.md`
   - `scope_type_resolver_implementation.md`
-  - `inner_class_registry_canonical_name_plan.md`
+  - `inner_class_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
   - `../backend/explicit_c_inheritance_layout.md`

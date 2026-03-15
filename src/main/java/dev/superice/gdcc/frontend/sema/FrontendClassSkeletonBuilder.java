@@ -52,8 +52,8 @@ public final class FrontendClassSkeletonBuilder {
         var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
-            // Reuse the shared analysis data side table so later phases see one stable
-            // annotation ownership map instead of per-phase copies.
+            // Reuse the shared analysis data side table so the semantic pipeline sees one stable
+            // annotation ownership map instead of local copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
         }
         var headerDiscovery = discoverModuleClassHeaders(units, classRegistry, diagnosticManager);
@@ -88,11 +88,12 @@ public final class FrontendClassSkeletonBuilder {
     /// Builds one accepted source-owned skeleton relation from the validated header graph:
     /// - exactly one accepted top-level script class
     /// - zero or more accepted nested `ClassDeclaration -> LirClassDef` ownership pairs
-    /// - each accepted class carries the frontend-only superclass source/canonical pair that later
-    ///   frontend phases must read instead of reconstructing from `ClassDef`
+    /// - each accepted class carries the frontend-only superclass source/canonical pair that
+    ///   downstream frontend consumers must read instead of reconstructing from `ClassDef`
     ///
-    /// Rejected roots and their descendants never reach this stage. The relation therefore mirrors
-    /// the accepted header graph instead of rediscovering validity while filling member skeletons.
+    /// Rejected roots and their descendants never reach relation construction. The relation
+    /// therefore mirrors the accepted header graph instead of rediscovering validity while filling
+    /// member skeletons.
     private @NotNull FrontendSourceClassRelation buildSourceClassRelationShell(
             @NotNull SourceUnitClassHeaderGraph sourceUnitGraph,
             @NotNull SkeletonBuildContext context
@@ -363,7 +364,7 @@ public final class FrontendClassSkeletonBuilder {
 
     /// Skeleton build only understands the small property annotation subset that already maps to
     /// stable LIR metadata. Other parsed annotations are preserved in the shared side tables, but
-    /// diagnosed here so later phases do not silently lose that unsupported semantic input.
+    /// diagnosed here so downstream analysis does not silently lose that unsupported semantic input.
     private void reportUnsupportedPropertyAnnotation(
             @NotNull FrontendGdAnnotation annotation,
             @NotNull VariableDeclaration variableDeclaration,
@@ -564,7 +565,8 @@ public final class FrontendClassSkeletonBuilder {
     /// Module class-header discovery pass:
     /// - discovers a complete module-local class header graph before member filling starts
     /// - validates duplicate/canonical/unsupported-super/cycle issues against that graph
-    /// - records rejected subtree roots explicitly so downstream stages can skip only those regions
+    /// - records rejected subtree roots explicitly so downstream processing can skip only those
+    ///   regions
     private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
             @NotNull List<FrontendSourceUnit> units,
             @NotNull ClassRegistry classRegistry,

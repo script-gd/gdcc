@@ -17,9 +17,9 @@ import java.util.Objects;
 /// - zero or more nested/inner `ClassDeclaration -> ClassDef` pairs discovered inside that file
 ///
 /// Keeping this relation explicit removes the previous fragile "units and classDefs share the same
-/// index" convention and gives later phases a stable place to hang source-local class skeleton
-/// facts even when one file contributes multiple classes and nested classes need to be recovered
-/// from their exact AST owner and lexical owner chain.
+/// index" convention and gives frontend semantic consumers a stable place to hang source-local
+/// class skeleton facts even when one file contributes multiple classes and nested classes need to
+/// be recovered from their exact AST owner and lexical owner chain.
 ///
 /// The top-level script class intentionally stores only one `name` field here. By invariant,
 /// top-level gdcc classes use the same source-facing and canonical name, so keeping two separate
@@ -85,8 +85,8 @@ public record FrontendSourceClassRelation(
 
     /// Compatibility view of nested class skeletons in source traversal order.
     ///
-    /// Newer phases that need stable AST ownership should prefer `innerClassRelations()` so they
-    /// can recover the exact `ClassDeclaration` matched by each source-local skeleton.
+    /// Callers that need stable AST ownership should prefer `innerClassRelations()` so they can
+    /// recover the exact `ClassDeclaration` matched by each source-local skeleton.
     public @NotNull List<LirClassDef> innerClassDefs() {
         return innerClassRelations.stream()
                 .map(FrontendInnerClassRelation::classDef)
@@ -95,9 +95,9 @@ public record FrontendSourceClassRelation(
 
     /// Resolves the source-local skeleton matched to one parsed inner class declaration.
     ///
-    /// Identity lookup is deliberate: later phases share the exact AST object graph published by
-    /// parse/skeleton, so using `==` avoids accidental matches against structurally equal but
-    /// unrelated synthetic nodes.
+    /// Identity lookup is deliberate: semantic consumers share the exact AST object graph
+    /// published by parse/skeleton, so using `==` avoids accidental matches against structurally
+    /// equal but unrelated synthetic nodes.
     public @Nullable FrontendOwnedClassRelation findRelation(
             @NotNull Node astOwner
     ) {
