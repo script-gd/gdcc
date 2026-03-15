@@ -26,16 +26,18 @@
 
 ### 1.1 已落地的 frontend 主链路
 
-当前 `FrontendSemanticAnalyzer` 的稳定顺序仍然只有两段：
+当前 `FrontendSemanticAnalyzer` 的稳定顺序已经扩展为三段：
 
 1. `FrontendClassSkeletonBuilder.build(...)`
 2. `FrontendScopeAnalyzer.analyze(...)`
+3. `FrontendVariableAnalyzer.analyze(...)`
 
 这意味着：
 
 - `moduleSkeleton`、`diagnostics`、`scopesByAst` 已有稳定发布边界。
 - `symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls` 仍然是空 side-table 预留位。
-- scope phase 结束后，`CallableScope` / `BlockScope` 对象已经存在，但其中还没有 parameter / local binding。
+- scope phase 结束后，`CallableScope` / `BlockScope` 对象已经存在。
+- variable phase 当前已经接入主链路，但在 Phase 2 里仍只负责边界校验与测试 seam，尚未开始 parameter / local binding prefill。
 
 ### 1.2 当前 scope 与 side-table 的可复用事实
 
@@ -53,11 +55,12 @@
 
 ### 1.3 当前缺口
 
-当前仍有三个明确缺口，另有一个前置项已经完成：
+当前仍有三个明确缺口，另有两个前置项已经完成：
 
 - 已完成：声明类型解析 helper 已从 `FrontendClassSkeletonBuilder` 中抽到 `FrontendDeclaredTypeSupport`，后续 `FrontendVariableAnalyzer` 可直接复用同一套 declared-type fallback 规则。
-1. `FrontendSemanticAnalyzerFrameworkTest` 目前只验证到 `skeleton -> scope`，还没有 variable phase 注入点。
-2. 现有 `FrontendScopeAnalyzerTest` 中有“parameter 尚未 prefill”的测试锚点；一旦默认主链路接入 variable phase，这些断言需要改成“scope analyzer 单测保持原边界，framework/integration 测试验证新 phase 行为”。
+- 已完成：`FrontendVariableAnalyzer` 骨架、`FrontendSemanticAnalyzer` 中的 variable phase 注入点，以及 framework test seam 已落地。
+1. `FrontendVariableAnalyzer` 当前仍只是 phase-boundary validator，参数写入 `CallableScope` 与普通局部变量写入 `BlockScope` 仍待后续阶段实现。
+2. 现有 `FrontendScopeAnalyzerTest` 中仍保留“parameter 尚未 prefill”的默认主链路锚点；等 Phase 3/4 真正接入 binding 后，需要把这类断言迁移到 scope-analyzer isolation 路径。
 3. declaration-order 可见性仍未有 frontend 专用消费层；后续 binder 不能直接把 `scope.resolveValue(...)` 当作最终 use-site 结论，需单独接入 `FrontendVisibleValueResolver` 一类的前端可见性修正层。
 
 ---
@@ -384,21 +387,28 @@
 
 #### 实施清单
 
-- 新增 `FrontendVariableAnalyzer`。
-- 为它提供独立 public 入口，建议至少接收：
-  - `FrontendAnalysisData`
-  - `DiagnosticManager`
-- 在 `FrontendSemanticAnalyzer` 中接入 variable phase。
-- 在 variable phase 返回后刷新 `analysisData.updateDiagnostics(...)`。
-- 为测试预留可注入 seam：
-  - 默认构造器使用真实 `FrontendVariableAnalyzer`
-  - 单测可注入 no-op / probe analyzer
+- [x] 新增 `FrontendVariableAnalyzer`。
+- [x] 为它提供独立 public 入口，接收：
+  - [x] `FrontendAnalysisData`
+  - [x] `DiagnosticManager`
+- [x] 在 `FrontendSemanticAnalyzer` 中接入 variable phase。
+- [x] 在 variable phase 返回后刷新 `analysisData.updateDiagnostics(...)`。
+- [x] 为测试预留可注入 seam：
+  - [x] 默认构造器使用真实 `FrontendVariableAnalyzer`
+  - [x] 单测可注入 probe analyzer
+
+已完成产出：
+
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVariableAnalyzer.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendSemanticAnalyzer.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendVariableAnalyzerTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
 
 #### 验收标准
 
-- 默认 `FrontendSemanticAnalyzer` 已形成 `skeleton -> scope -> variable` 主链路。
-- diagnostics 最终快照能够覆盖 variable phase 新增的 warning/error。
-- 不需要改动 `FrontendScopeAnalyzer` 职责。
+- [x] 默认 `FrontendSemanticAnalyzer` 已形成 `skeleton -> scope -> variable` 主链路。
+- [x] diagnostics 最终快照能够覆盖 variable phase 新增的 warning/error。
+- [x] 不需要改动 `FrontendScopeAnalyzer` 职责。
 
 ### Phase 3：参数写入 `CallableScope`
 

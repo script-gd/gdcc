@@ -1,6 +1,12 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
+import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
@@ -16,9 +22,6 @@ import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
-import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
-import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
-import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ClassDef;
@@ -26,6 +29,7 @@ import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import dev.superice.gdcc.type.GdObjectType;
 import org.junit.jupiter.api.Test;
+import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -180,6 +184,47 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertEquals(beforeMutation, result.diagnostics());
         assertEquals(beforeMutation, result.moduleSkeleton().diagnostics());
         assertEquals(beforeMutation.size() + 1, diagnostics.snapshot().size());
+    }
+
+    @Test
+    void analyzePublishesScopeBoundaryBeforeVariablePhaseAndRefreshesDiagnosticsAfterIt() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "variable_phase_probe.gd"), """
+                class_name VariablePhaseProbe
+                extends Node
+                
+                func ping(value):
+                    pass
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var probeScopeAnalyzer = new RecordingScopeAnalyzer();
+        var probeVariableAnalyzer = new RecordingVariableAnalyzer();
+        var analyzer = new FrontendSemanticAnalyzer(
+                new FrontendClassSkeletonBuilder(),
+                probeScopeAnalyzer,
+                probeVariableAnalyzer
+        );
+
+        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+
+        assertTrue(probeScopeAnalyzer.invoked);
+        assertTrue(probeScopeAnalyzer.moduleSkeletonPublished);
+        assertTrue(probeScopeAnalyzer.preScopeDiagnosticsMatchedManager);
+        assertTrue(probeVariableAnalyzer.invoked);
+        assertTrue(probeVariableAnalyzer.scopeBoundaryPublished);
+        assertTrue(probeVariableAnalyzer.preVariableDiagnosticsMatchedManager);
+        assertEquals(probeScopeAnalyzer.preScopeDiagnostics.size() + 1, probeVariableAnalyzer.preVariableDiagnostics.size());
+        assertTrue(probeVariableAnalyzer.preVariableDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.scope_phase_probe")
+        ));
+        assertEquals(probeVariableAnalyzer.preVariableDiagnostics.size() + 1, result.diagnostics().size());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.scope_phase_probe")
+        ));
+        assertEquals("sema.variable_phase_probe", result.diagnostics().getLast().category());
+        assertEquals(probeScopeAnalyzer.preScopeDiagnostics, result.moduleSkeleton().diagnostics());
+        assertEquals(result.diagnostics(), diagnostics.snapshot());
     }
 
     @Test
@@ -481,5 +526,61 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 List.of(new ExtensionSingleton(singletonName, "Node")),
                 List.of()
         ));
+    }
+
+    /// Scope-phase probe used to prove that the framework refreshes diagnostics before the
+    /// variable phase starts.
+    private static final class RecordingScopeAnalyzer extends FrontendScopeAnalyzer {
+        private boolean invoked;
+        private boolean moduleSkeletonPublished;
+        private boolean preScopeDiagnosticsMatchedManager;
+        private DiagnosticSnapshot preScopeDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull ClassRegistry classRegistry,
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1
+                    && analysisData.moduleSkeleton().classDefs().size() == 1;
+            preScopeDiagnostics = analysisData.diagnostics();
+            preScopeDiagnosticsMatchedManager = preScopeDiagnostics.equals(diagnosticManager.snapshot());
+            diagnosticManager.warning(
+                    "sema.scope_phase_probe",
+                    "scope phase probe diagnostic",
+                    null,
+                    null
+            );
+            super.analyze(classRegistry, analysisData, diagnosticManager);
+        }
+    }
+
+    /// Variable-phase probe used to lock the new `scope -> variable` hand-off contract.
+    private static final class RecordingVariableAnalyzer extends FrontendVariableAnalyzer {
+        private boolean invoked;
+        private boolean scopeBoundaryPublished;
+        private boolean preVariableDiagnosticsMatchedManager;
+        private DiagnosticSnapshot preVariableDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preVariableDiagnostics = analysisData.diagnostics();
+            preVariableDiagnosticsMatchedManager = preVariableDiagnostics.equals(diagnosticManager.snapshot());
+            scopeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()));
+            super.analyze(analysisData, diagnosticManager);
+            diagnosticManager.warning(
+                    "sema.variable_phase_probe",
+                    "variable phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
     }
 }

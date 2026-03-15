@@ -16,25 +16,44 @@ import java.util.List;
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
+/// - variable-phase boundary validation / future local-binding enrichment
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
     private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
+    private final @NotNull FrontendVariableAnalyzer variableAnalyzer;
 
     public FrontendSemanticAnalyzer() {
-        this(new FrontendClassSkeletonBuilder(), new FrontendScopeAnalyzer());
+        this(
+                new FrontendClassSkeletonBuilder(),
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer()
+        );
     }
 
     public FrontendSemanticAnalyzer(@NotNull FrontendClassSkeletonBuilder classSkeletonBuilder) {
-        this(classSkeletonBuilder, new FrontendScopeAnalyzer());
+        this(
+                classSkeletonBuilder,
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer()
+        );
     }
 
     public FrontendSemanticAnalyzer(
             @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
             @NotNull FrontendScopeAnalyzer scopeAnalyzer
     ) {
+        this(classSkeletonBuilder, scopeAnalyzer, new FrontendVariableAnalyzer());
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
+        this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -72,6 +91,12 @@ public final class FrontendSemanticAnalyzer {
         // work can consume one stable lexical graph instead of interleaving scope creation with
         // later semantic binding.
         scopeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Variable analysis enriches the published lexical graph without changing how scopes are
+        // constructed. Keeping it as its own phase prevents scope construction and declaration
+        // inventory prefill from drifting into one monolithic analyzer.
+        variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }
