@@ -8,11 +8,14 @@ import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeValue;
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
+import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -69,6 +72,10 @@ public final class FrontendVisibleValueResolver {
                     FrontendVisibleValueDomain.EXECUTABLE_BODY,
                     FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
             );
+        }
+        var deferredLocalConstBoundary = detectDeferredVisibleBlockLocalConst(request.name(), useSite);
+        if (deferredLocalConstBoundary != null) {
+            return FrontendVisibleValueResolution.deferredUnsupported(deferredLocalConstBoundary);
         }
 
         var filteredHits = new ArrayList<FrontendFilteredValueHit>();
@@ -146,6 +153,12 @@ public final class FrontendVisibleValueResolver {
                             FrontendVisibleValueDomain.LAMBDA_SUBTREE,
                             FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
                     );
+            case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.CONST
+                    && variableDeclaration.value() == childNode
+                    && isDeferredBlockLocalConst(variableDeclaration) -> new FrontendVisibleValueDeferredBoundary(
+                    FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE,
+                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+            );
             case ForStatement forStatement when (forStatement.iteratorType() == childNode
                     || forStatement.iterable() == childNode
                     || forStatement.body() == childNode) -> new FrontendVisibleValueDeferredBoundary(
@@ -160,6 +173,71 @@ public final class FrontendVisibleValueResolver {
             );
             default -> null;
         };
+    }
+
+    /// Class-level `const` continues to belong to class-scope lookup. Only executable block-local
+    /// `const` declarations are sealed as deferred unsupported boundaries here.
+    private boolean isDeferredBlockLocalConst(@NotNull VariableDeclaration variableDeclaration) {
+        var declarationScope = analysisData.scopesByAst().get(variableDeclaration);
+        return declarationScope instanceof BlockScope blockScope && isSupportedExecutableBlock(blockScope.kind());
+    }
+
+    /// Block-local `const` inventory is still deferred. If a same-name visible `const` declaration
+    /// already appears before the current use site, the resolver must refuse to masquerade as a
+    /// normal miss or fall back to an outer binding.
+    private @Nullable FrontendVisibleValueDeferredBoundary detectDeferredVisibleBlockLocalConst(
+            @NotNull String name,
+            @NotNull Node useSite
+    ) {
+        Node currentNode = useSite;
+        while (true) {
+            var parentNode = parentByNode.get(currentNode);
+            if (parentNode == null) {
+                return null;
+            }
+            if (parentNode instanceof Block block && isSupportedExecutableBlock(block)) {
+                var boundary = detectDeferredVisibleBlockLocalConstInBlock(name, useSite, block, currentNode);
+                if (boundary != null) {
+                    return boundary;
+                }
+            }
+            currentNode = parentNode;
+        }
+    }
+
+    private @Nullable FrontendVisibleValueDeferredBoundary detectDeferredVisibleBlockLocalConstInBlock(
+            @NotNull String name,
+            @NotNull Node useSite,
+            @NotNull Block block,
+            @NotNull Node currentChild
+    ) {
+        for (var statement : block.statements()) {
+            if (statement == currentChild) {
+                return null;
+            }
+            var boundary = classifyVisibleDeferredBlockLocalConst(name, useSite, statement);
+            if (boundary != null) {
+                return boundary;
+            }
+        }
+        return null;
+    }
+
+    private @Nullable FrontendVisibleValueDeferredBoundary classifyVisibleDeferredBlockLocalConst(
+            @NotNull String name,
+            @NotNull Node useSite,
+            @NotNull Statement statement
+    ) {
+        if (!(statement instanceof VariableDeclaration variableDeclaration)
+                || variableDeclaration.kind() != DeclarationKind.CONST
+                || !variableDeclaration.name().trim().equals(name)
+                || !isVisibleLocal(variableDeclaration, useSite)) {
+            return null;
+        }
+        return new FrontendVisibleValueDeferredBoundary(
+                FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE,
+                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+        );
     }
 
     private boolean isInsideSupportedExecutableScope(@NotNull Scope scope) {
@@ -195,6 +273,11 @@ public final class FrontendVisibleValueResolver {
                  WHILE_BODY -> true;
             default -> false;
         };
+    }
+
+    private boolean isSupportedExecutableBlock(@NotNull Block block) {
+        var blockScope = analysisData.scopesByAst().get(block);
+        return blockScope instanceof BlockScope typedBlockScope && isSupportedExecutableBlock(typedBlockScope.kind());
     }
 
     private @Nullable FrontendFilteredValueHit filterInvisibleCurrentLayerHit(

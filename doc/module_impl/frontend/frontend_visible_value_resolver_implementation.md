@@ -123,6 +123,7 @@
 - parameter default-value expression
 - lambda parameter default subtree
 - lambda body
+- block-local `const` initializer subtree
 - `for` iterator declaration / iterable / body
 - `match` pattern / guard / section body
 - 任何前序 phase 已跳过、当前没有稳定 scope 记录的 subtree
@@ -481,7 +482,7 @@ func ping(value, alias = value):
 - 当前不应套用 executable body 的参数可见性规则
 - resolver 推荐直接返回 `DEFERRED_UNSUPPORTED`，并填写 `deferredBoundary(domain = PARAMETER_DEFAULT, reason = VARIABLE_INVENTORY_NOT_PUBLISHED)`
 
-### 9.5 `for` / `match` / lambda subtree 当前不得静默成功
+### 9.5 `for` / `match` / lambda / block-local `const` subtree 当前不得静默成功
 
 源码：
 
@@ -496,7 +497,13 @@ func ping(values):
 - 当前不能靠“outer lookup miss”或“假装没找到”给出正常结果
 - 应返回 `DEFERRED_UNSUPPORTED`，并填写 `deferredBoundary(domain = FOR_SUBTREE, reason = VARIABLE_INVENTORY_NOT_PUBLISHED)`
 
-`match` / lambda 同理。
+`match` / lambda / block-local `const` 同理。
+
+对 block-local `const` 还要额外防止另一种静默误判：
+
+- 若当前 block 中前面已经出现同名 `const`，后续 use-site 也不能回退成普通 `NOT_FOUND`
+- 更不能继续落到 outer local / class property / global 上并假装解析成功
+- 这类 use-site 仍应返回 `DEFERRED_UNSUPPORTED`，因为它依赖的 local-const inventory 当前并未发布
 
 ---
 
@@ -520,6 +527,7 @@ func ping(values):
 
 - parameter default subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = PARAMETER_DEFAULT, ...)`
 - lambda subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = LAMBDA_SUBTREE, ...)`
+- block-local `const` initializer subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = BLOCK_LOCAL_CONST_SUBTREE, ...)`
 - `for` subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = FOR_SUBTREE, ...)`
 - `match` subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = MATCH_SUBTREE, ...)`
 - skipped subtree / missing use-site scope -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = EXECUTABLE_BODY or UNKNOWN_OR_SKIPPED_SUBTREE, ...)`
@@ -564,8 +572,8 @@ func ping(values):
 - [x] request/result 相关数据结构已落地：`FrontendVisibleValueResolveRequest`、`FrontendVisibleValueResolution`、`FrontendFilteredValueHit` 及配套 domain/status/reason 枚举已添加到 `frontend.sema.resolver`
 - [x] `EXECUTABLE_BODY` 域的 resolver 主逻辑已落地，当前通过 `FrontendVisibleValueResolver` 在 `frontend.sema.resolver` 内独立提供
 - [x] declaration-order 过滤、initializer 自引用过滤、shared-scope 委托/传播逻辑已在 resolver 中实现
-- [x] deferred boundary 封口已实现：parameter default、lambda body、`for`、`match`、missing-scope 均返回 `DEFERRED_UNSUPPORTED`
-- [x] resolver 单元测试已补齐：覆盖 parameter/local/class-property 正向解析、future local / self-reference 过滤、blocked class-member、parameter default / lambda / `for` / `match` deferred、missing-scope、shared `ScopeLookupException` 传播
+- [x] deferred boundary 封口已实现：parameter default、lambda body、block-local `const`、`for`、`match`、missing-scope 均返回 `DEFERRED_UNSUPPORTED`
+- [x] resolver 单元测试已补齐：覆盖 parameter/local/class-property 正向解析、future local / self-reference 过滤、blocked class-member、parameter default / lambda / block-local `const` / `for` / `match` deferred、missing-scope、shared `ScopeLookupException` 传播
 
 当前验收状态：
 
@@ -581,7 +589,7 @@ func ping(values):
 - 实现 `EXECUTABLE_BODY` 域的 resolver 主逻辑
 - 对 `BlockScope` / `CallableScope` 加入 declaration-order 过滤与 initializer 自引用过滤
 - 保留 shared `Scope` 的 `FOUND_ALLOWED` / `FOUND_BLOCKED` / `NOT_FOUND` 语义与异常传播行为
-- 对 parameter default / lambda / `for` / `match` / missing-scope 等位置统一返回 `DEFERRED_UNSUPPORTED + deferredBoundary`
+- 对 parameter default / lambda / block-local `const` / `for` / `match` / missing-scope 等位置统一返回 `DEFERRED_UNSUPPORTED + deferredBoundary`
 
 本阶段不做：
 

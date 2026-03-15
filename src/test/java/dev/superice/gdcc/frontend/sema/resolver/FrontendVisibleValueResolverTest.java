@@ -24,7 +24,6 @@ import java.util.Objects;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -236,6 +235,93 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
                 result.deferredBoundary().reason()
         );
+    }
+
+    @Test
+    void resolveSealsBlockLocalConstInitializerAsDeferredUnsupported() throws Exception {
+        var analyzedInput = analyzedInput("block_local_const_deferred.gd", """
+                class_name BlockLocalConstDeferred
+                extends Node
+
+                func ping(seed: int):
+                    const answer = seed
+                """);
+        var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
+        var useSite = findIdentifierExpression(pingFunction.body(), "seed");
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
+
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "seed",
+                useSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
+        assertNull(result.visibleValue());
+        assertTrue(result.filteredHits().isEmpty());
+        assertEquals(FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE, result.deferredBoundary().domain());
+        assertEquals(
+                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                result.deferredBoundary().reason()
+        );
+    }
+
+    @Test
+    void resolveDoesNotFallBackPastVisibleBlockLocalConst() throws Exception {
+        var analyzedInput = analyzedInput("visible_block_local_const_deferred.gd", """
+                class_name VisibleBlockLocalConstDeferred
+                extends Node
+
+                var answer = 99
+
+                func ping():
+                    const answer = 1
+                    print(answer)
+                """);
+        var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
+        var useSite = findIdentifierExpression(pingFunction.body(), "answer");
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
+
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "answer",
+                useSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
+        assertNull(result.visibleValue());
+        assertTrue(result.filteredHits().isEmpty());
+        assertEquals(FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE, result.deferredBoundary().domain());
+        assertEquals(
+                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                result.deferredBoundary().reason()
+        );
+    }
+
+    @Test
+    void resolveKeepsOrdinaryLocalInitializerInsideExecutableBodySupported() throws Exception {
+        var analyzedInput = analyzedInput("ordinary_local_initializer_supported.gd", """
+                class_name OrdinaryLocalInitializerSupported
+                extends Node
+
+                func ping(seed: int):
+                    var answer = seed
+                """);
+        var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
+        var useSite = findIdentifierExpression(pingFunction.body(), "seed");
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
+
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "seed",
+                useSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
+        assertTrue(result.filteredHits().isEmpty());
+        assertNull(result.deferredBoundary());
     }
 
     @Test
