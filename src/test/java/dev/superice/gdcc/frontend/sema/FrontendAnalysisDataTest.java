@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -77,6 +78,25 @@ class FrontendAnalysisDataTest {
 
         assertSame(originalSideTable, analysisData.scopesByAst());
         assertSame(scope, analysisData.scopesByAst().get(astNode));
+    }
+
+    @Test
+    void updateSymbolBindingsClearsStaleEntriesWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.symbolBindings();
+        var staleNode = passNode();
+        var freshNode = passNode();
+        originalSideTable.put(staleNode, new FrontendBinding("stale", FrontendBindingKind.UNKNOWN, null));
+
+        var replacement = new FrontendAstSideTable<FrontendBinding>();
+        var publishedBinding = new FrontendBinding("self", FrontendBindingKind.SELF, null);
+        replacement.put(freshNode, publishedBinding);
+
+        analysisData.updateSymbolBindings(replacement);
+
+        assertSame(originalSideTable, analysisData.symbolBindings());
+        assertNull(analysisData.symbolBindings().get(staleNode));
+        assertSame(publishedBinding, analysisData.symbolBindings().get(freshNode));
     }
 
     private static PassStatement passNode() {

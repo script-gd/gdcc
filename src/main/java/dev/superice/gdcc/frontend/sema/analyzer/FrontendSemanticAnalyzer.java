@@ -12,22 +12,25 @@ import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework already wires three stable frontend phases into one shared
+/// The current framework already wires four stable frontend phases into one shared
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
 /// - callable-parameter and supported local-variable binding
+/// - top-binding publication skeleton for future symbol-category resolution
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
     private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
     private final @NotNull FrontendVariableAnalyzer variableAnalyzer;
+    private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
 
     public FrontendSemanticAnalyzer() {
         this(
                 new FrontendClassSkeletonBuilder(),
                 new FrontendScopeAnalyzer(),
-                new FrontendVariableAnalyzer()
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer()
         );
     }
 
@@ -35,7 +38,8 @@ public final class FrontendSemanticAnalyzer {
         this(
                 classSkeletonBuilder,
                 new FrontendScopeAnalyzer(),
-                new FrontendVariableAnalyzer()
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer()
         );
     }
 
@@ -43,7 +47,12 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
             @NotNull FrontendScopeAnalyzer scopeAnalyzer
     ) {
-        this(classSkeletonBuilder, scopeAnalyzer, new FrontendVariableAnalyzer());
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer()
+        );
     }
 
     public FrontendSemanticAnalyzer(
@@ -51,9 +60,24 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendScopeAnalyzer scopeAnalyzer,
             @NotNull FrontendVariableAnalyzer variableAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                new FrontendTopBindingAnalyzer()
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
+        this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -97,6 +121,12 @@ public final class FrontendSemanticAnalyzer {
         // constructed. Keeping it as its own phase prevents scope construction plus parameter/local
         // inventory work from drifting into one monolithic analyzer.
         variableAnalyzer.analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Top-binding analysis currently publishes only the `symbolBindings()` phase boundary and
+        // traversal skeleton. Keeping it separate from variable analysis locks the future binder
+        // contract without mixing declaration inventory with use-site classification.
+        topBindingAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }

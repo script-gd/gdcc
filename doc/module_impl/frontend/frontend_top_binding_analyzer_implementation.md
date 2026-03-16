@@ -556,15 +556,15 @@ ordinary local initializer 当前不属于 deferred 域。
 
 **验收清单**：
 
-- [ ] `FrontendBindingKind.SELF` 已冻结
-- [ ] `FrontendBindingKind.LITERAL` 已冻结
-- [ ] `FrontendBindingKind.METHOD` 已冻结
-- [ ] `FrontendBindingKind.STATIC_METHOD` 已冻结
-- [ ] 文档已明确 `UTILITY_FUNCTION` / `METHOD` / `STATIC_METHOD` 的分工
-- [ ] 文档已明确 `TYPE_META` 的 MVP 支持来源
-- [ ] 文档已明确 ordinary local initializer subtree 属于支持面
-- [ ] 文档已明确 subscript index argument expression 属于支持面
-- [ ] 文档已明确 `resolvedMembers()` / `resolvedCalls()` 不属于本阶段
+- [x] `FrontendBindingKind.SELF` 已冻结
+- [x] `FrontendBindingKind.LITERAL` 已冻结
+- [x] `FrontendBindingKind.METHOD` 已冻结
+- [x] `FrontendBindingKind.STATIC_METHOD` 已冻结
+- [x] 文档已明确 `UTILITY_FUNCTION` / `METHOD` / `STATIC_METHOD` 的分工
+- [x] 文档已明确 `TYPE_META` 的 MVP 支持来源
+- [x] 文档已明确 ordinary local initializer subtree 属于支持面
+- [x] 文档已明确 subscript index argument expression 属于支持面
+- [x] 文档已明确 `resolvedMembers()` / `resolvedCalls()` 不属于本阶段
 
 ### 6.2 阶段 B1：主链路接线与遍历骨架
 
@@ -594,10 +594,10 @@ ordinary local initializer 当前不属于 deferred 域。
 
 **验收清单**：
 
-- [ ] `FrontendSemanticAnalyzer` 已包含 binding phase
-- [ ] `FrontendAnalysisData.symbolBindings()` 已有正式发布点
-- [ ] 旧测试中“binding side-table 恒为空”的断言已按新 phase 改造
-- [ ] `resolvedMembers()` / `resolvedCalls()` 仍保持空表合同
+- [x] `FrontendSemanticAnalyzer` 已包含 binding phase
+- [x] `FrontendAnalysisData.symbolBindings()` 已有正式发布点
+- [x] 旧测试中“binding side-table 恒为空”的断言已按新 phase 改造
+- [x] `resolvedMembers()` / `resolvedCalls()` 仍保持空表合同
 
 ### 6.3 阶段 B2：value-position symbol binding
 

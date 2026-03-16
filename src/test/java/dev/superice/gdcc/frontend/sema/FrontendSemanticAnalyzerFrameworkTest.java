@@ -6,6 +6,7 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -203,7 +204,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzePublishesScopeBoundaryBeforeVariablePhaseAndRefreshesDiagnosticsAfterIt() throws Exception {
+    void analyzePublishesPhaseBoundariesBeforeTopBindingPhaseAndRefreshesDiagnosticsAfterEachPhase() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "variable_phase_probe.gd"), """
@@ -216,10 +217,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var probeScopeAnalyzer = new RecordingScopeAnalyzer();
         var probeVariableAnalyzer = new RecordingVariableAnalyzer();
+        var probeTopBindingAnalyzer = new RecordingTopBindingAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
                 probeScopeAnalyzer,
-                probeVariableAnalyzer
+                probeVariableAnalyzer,
+                probeTopBindingAnalyzer
         );
 
         var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
@@ -230,17 +233,35 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeVariableAnalyzer.invoked);
         assertTrue(probeVariableAnalyzer.scopeBoundaryPublished);
         assertTrue(probeVariableAnalyzer.preVariableDiagnosticsMatchedManager);
+        assertTrue(probeTopBindingAnalyzer.invoked);
+        assertTrue(probeTopBindingAnalyzer.scopeBoundaryPublished);
+        assertTrue(probeTopBindingAnalyzer.preTopBindingDiagnosticsMatchedManager);
+        assertTrue(probeTopBindingAnalyzer.stableSymbolBindingsReferencePreserved);
+        assertTrue(probeTopBindingAnalyzer.symbolBindingsPublicationClearedProbeEntry);
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics.size() + 1, probeVariableAnalyzer.preVariableDiagnostics.size());
         assertTrue(probeVariableAnalyzer.preVariableDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
         ));
-        assertEquals(probeVariableAnalyzer.preVariableDiagnostics.size() + 1, result.diagnostics().size());
+        assertEquals(
+                probeVariableAnalyzer.preVariableDiagnostics.size() + 1,
+                probeTopBindingAnalyzer.preTopBindingDiagnostics.size()
+        );
+        assertTrue(probeTopBindingAnalyzer.preTopBindingDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.variable_phase_probe")
+        ));
+        assertEquals(probeTopBindingAnalyzer.preTopBindingDiagnostics.size() + 1, result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
         ));
-        assertEquals("sema.variable_phase_probe", result.diagnostics().getLast().category());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.variable_phase_probe")
+        ));
+        assertEquals("sema.top_binding_phase_probe", result.diagnostics().getLast().category());
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics, result.moduleSkeleton().diagnostics());
         assertEquals(result.diagnostics(), diagnostics.snapshot());
+        assertTrue(result.symbolBindings().isEmpty());
+        assertTrue(result.resolvedMembers().isEmpty());
+        assertTrue(result.resolvedCalls().isEmpty());
     }
 
     @Test
@@ -594,6 +615,44 @@ class FrontendSemanticAnalyzerFrameworkTest {
             diagnosticManager.warning(
                     "sema.variable_phase_probe",
                     "variable phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    /// Top-binding probe used to prove that the framework publishes the new phase boundary by
+    /// rebuilding `symbolBindings()` instead of leaving bootstrap leftovers in place.
+    private static final class RecordingTopBindingAnalyzer extends FrontendTopBindingAnalyzer {
+        private boolean invoked;
+        private boolean scopeBoundaryPublished;
+        private boolean preTopBindingDiagnosticsMatchedManager;
+        private boolean stableSymbolBindingsReferencePreserved;
+        private boolean symbolBindingsPublicationClearedProbeEntry;
+        private DiagnosticSnapshot preTopBindingDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preTopBindingDiagnostics = analysisData.diagnostics();
+            preTopBindingDiagnosticsMatchedManager = preTopBindingDiagnostics.equals(diagnosticManager.snapshot());
+            scopeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()));
+            var publishedSymbolBindings = analysisData.symbolBindings();
+            var probeNode = new PassStatement(SYNTHETIC_RANGE);
+            publishedSymbolBindings.put(probeNode, new FrontendBinding("__probe__", FrontendBindingKind.UNKNOWN, null));
+
+            super.analyze(analysisData, diagnosticManager);
+
+            stableSymbolBindingsReferencePreserved = publishedSymbolBindings == analysisData.symbolBindings();
+            symbolBindingsPublicationClearedProbeEntry = analysisData.symbolBindings().isEmpty()
+                    && !analysisData.symbolBindings().containsKey(probeNode);
+            diagnosticManager.warning(
+                    "sema.top_binding_phase_probe",
+                    "top-binding phase probe diagnostic",
                     null,
                     null
             );
