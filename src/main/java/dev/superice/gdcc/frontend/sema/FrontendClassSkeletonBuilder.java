@@ -385,6 +385,9 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull SkeletonBuildContext context
     ) {
         var functionDef = new LirFunctionDef(functionDeclaration.name().trim());
+        // Bare-callee binding and later call analysis both depend on skeleton metadata preserving
+        // whether a declared function is static or instance-owned.
+        functionDef.setStatic(functionDeclaration.isStatic());
         functionDef.setReturnType(FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 functionDeclaration.returnType(),
                 declaredTypeScope,

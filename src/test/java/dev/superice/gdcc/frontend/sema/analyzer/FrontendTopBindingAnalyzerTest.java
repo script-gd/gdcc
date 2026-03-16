@@ -1,18 +1,22 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.scope.AbstractFrontendScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
 import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -236,6 +240,140 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeBindsBareMethodsStaticMethodsAndUtilityFunctionsWithoutPublishingResolvedCalls() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        assertFalse(api.utilityFunctions().isEmpty());
+        var utilityName = api.utilityFunctions().getFirst().name();
+        var preparedInput = prepareBindingInput(
+                "bare_callee_bindings.gd",
+                """
+                        class_name BareCalleeBindings
+                        extends Node
+                        
+                        func move():
+                            pass
+                        
+                        static func build():
+                            return null
+                        
+                        func ping():
+                            move()
+                            build()
+                            %s()
+                        """.formatted(utilityName),
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "move"),
+                FrontendBindingKind.METHOD
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "build"),
+                FrontendBindingKind.STATIC_METHOD
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), utilityName),
+                FrontendBindingKind.UTILITY_FUNCTION
+        );
+        assertTrue(preparedInput.analysisData().resolvedCalls().isEmpty());
+        assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty());
+    }
+
+    @Test
+    void analyzePublishesBlockedBareInstanceMethodInStaticContextWithoutFallingBackToUtilityFunction()
+            throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        assertFalse(api.utilityFunctions().isEmpty());
+        var utilityName = api.utilityFunctions().getFirst().name();
+        var preparedInput = prepareBindingInput(
+                "static_context_bare_callee_shadowing.gd",
+                """
+                        class_name StaticContextBareCalleeShadowing
+                        extends Node
+                        
+                        func %s():
+                            pass
+                        
+                        static func ping():
+                            %s()
+                        """.formatted(utilityName, utilityName),
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), utilityName),
+                FrontendBindingKind.METHOD
+        );
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(1, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.getFirst().message().contains(utilityName));
+    }
+
+    @Test
+    void analyzePublishesUnknownForMissingBareCalleeAndReportsBindingError() throws Exception {
+        var preparedInput = prepareBindingInput("unknown_bare_callee.gd", """
+                class_name UnknownBareCallee
+                extends Node
+                
+                func ping():
+                    missing_call()
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "missing_call"),
+                FrontendBindingKind.UNKNOWN
+        );
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(1, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.getFirst().message().contains("missing_call"));
+    }
+
+    @Test
+    void analyzeFailsClosedWhenBareCalleeOverloadSetMixesStaticAndInstanceMethods() throws Exception {
+        var preparedInput = prepareBindingInput("mixed_bare_callee_overloads.gd", """
+                class_name MixedBareCalleeOverloads
+                extends Node
+                
+                func ping():
+                    mix()
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+        var classScope = assertInstanceOf(
+                ClassScope.class,
+                preparedInput.analysisData().scopesByAst().get(preparedInput.unit().ast())
+        );
+        classScope.defineFunction(createFunctionDef("mix", false));
+        classScope.defineFunction(createFunctionDef("mix", true));
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(pingFunction.body(), "mix")));
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(1, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.getFirst().message().contains("mixed static/non-static"));
+        assertTrue(bindingDiagnostics.getFirst().message().contains("mix"));
+    }
+
+    @Test
     void analyzeRejectsUnsupportedTypeMetaSourcesAndDoesNotMispublishThemAsTypeMeta() throws Exception {
         var preparedInput = prepareBindingInput("unsupported_type_meta_sources.gd", """
                 class_name UnsupportedTypeMetaSources
@@ -265,9 +403,7 @@ class FrontendTopBindingAnalyzerTest {
         assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(pingFunction.body(), "String")));
         assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(pingFunction.body(), "Alias")));
 
-        var bindingDiagnostics = preparedInput.diagnosticManager().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.binding"))
-                .toList();
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
         assertEquals(2, bindingDiagnostics.size());
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("String")));
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Alias")));
@@ -307,9 +443,7 @@ class FrontendTopBindingAnalyzerTest {
                 FrontendBindingKind.UNKNOWN
         );
 
-        var bindingDiagnostics = preparedInput.diagnosticManager().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.binding"))
-                .toList();
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
         assertEquals(1, bindingDiagnostics.size());
         assertTrue(bindingDiagnostics.getFirst().message().contains("answer"));
     }
@@ -349,9 +483,7 @@ class FrontendTopBindingAnalyzerTest {
                 FrontendBindingKind.SELF
         );
 
-        var bindingDiagnostics = preparedInput.diagnosticManager().snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals("sema.binding"))
-                .toList();
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
         assertEquals(3, bindingDiagnostics.size());
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("hp")));
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("changed")));
@@ -380,6 +512,19 @@ class FrontendTopBindingAnalyzerTest {
                 .toList();
         assertEquals(1, unsupportedDiagnostics.size());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("value"));
+    }
+
+    private static @NotNull List<FrontendDiagnostic> bindingDiagnostics(@NotNull DiagnosticManager diagnosticManager) {
+        return diagnosticManager.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.binding"))
+                .toList();
+    }
+
+    private static @NotNull LirFunctionDef createFunctionDef(@NotNull String name, boolean isStatic) {
+        var function = new LirFunctionDef(name);
+        function.setReturnType(GdVariantType.VARIANT);
+        function.setStatic(isStatic);
+        return function;
     }
 
     private static void assertBinding(

@@ -7,9 +7,12 @@ import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoundary;
+import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
+import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
@@ -57,8 +60,9 @@ import java.util.Objects;
 /// - require skeleton, diagnostics, and published top-level source scopes
 /// - rebuild `symbolBindings()` from scratch on every run
 /// - bind value-position identifiers through `FrontendVisibleValueResolver`
+/// - bind bare-callee identifiers through the function namespace
 /// - bind literals, `self`, and top-level class-like `TYPE_META` chain heads
-/// - keep bare callee/member/call-step resolution deferred for later phases
+/// - keep member/call-step resolution deferred for later phases
 ///
 /// The analyzer still does not publish member or call facts. Its only output in the current MVP is
 /// `symbolBindings()`.
@@ -393,8 +397,7 @@ public class FrontendTopBindingAnalyzer {
             switch (callExpression.callee()) {
                 case IdentifierExpression identifierExpression ->
                         visitIdentifier(identifierExpression, ExpressionPosition.BARE_CALLEE);
-                case AttributeExpression attributeExpression ->
-                        walkChainHeadBaseExpression(attributeExpression.base());
+                case AttributeExpression attributeExpression -> walkChainHeadBaseExpression(attributeExpression.base());
                 default -> walkValueExpression(callExpression.callee());
             }
             for (var argument : callExpression.arguments()) {
@@ -429,10 +432,7 @@ public class FrontendTopBindingAnalyzer {
             switch (Objects.requireNonNull(position, "position must not be null")) {
                 case VALUE -> bindValueIdentifier(identifierExpression);
                 case TOP_LEVEL_TYPE_META_CANDIDATE -> bindTopLevelTypeMetaCandidate(identifierExpression);
-                case BARE_CALLEE -> {
-                    // Bare-callee function binding is implemented in stage B3. Keeping the visit
-                    // shape here avoids reopening traversal once call-namespace binding lands.
-                }
+                case BARE_CALLEE -> bindBareCalleeIdentifier(identifierExpression);
             }
         }
 
@@ -487,17 +487,9 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private void bindTopLevelTypeMetaCandidate(@NotNull IdentifierExpression identifierExpression) {
-            var currentScope = scopesByAst.get(identifierExpression);
+            var currentScope = findCurrentScope(identifierExpression);
             if (currentScope == null) {
-                reportDeferredUnsupported(
-                        identifierExpression,
-                        identifierExpression.name(),
-                        new FrontendVisibleValueDeferredBoundary(
-                                FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE,
-                                dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason
-                                        .MISSING_SCOPE_OR_SKIPPED_SUBTREE
-                        )
-                );
+                reportMissingScopeUnsupported(identifierExpression, identifierExpression.name());
                 return;
             }
 
@@ -524,6 +516,97 @@ public class FrontendTopBindingAnalyzer {
             bindValueIdentifier(identifierExpression);
         }
 
+        private void bindBareCalleeIdentifier(@NotNull IdentifierExpression identifierExpression) {
+            var currentScope = findCurrentScope(identifierExpression);
+            if (currentScope == null) {
+                reportMissingScopeUnsupported(identifierExpression, identifierExpression.name());
+                return;
+            }
+
+            var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction);
+            switch (functionResult.status()) {
+                case FOUND_ALLOWED ->
+                        publishFunctionBinding(identifierExpression, functionResult.requireValue(), false);
+                case FOUND_BLOCKED -> publishFunctionBinding(identifierExpression, functionResult.requireValue(), true);
+                case NOT_FOUND -> {
+                    publishBinding(identifierExpression, identifierExpression.name(), FrontendBindingKind.UNKNOWN, null);
+                    reportBindingError(
+                            identifierExpression,
+                            "Unable to resolve bare callee binding '" + identifierExpression.name() + "'"
+                    );
+                }
+            }
+        }
+
+        /// Bare-callee binding currently consumes only the nearest overload set already chosen by
+        /// `Scope.resolveFunctions(...)`. The binder classifies that set, but still leaves call
+        /// legality and final dispatch to later phases.
+        private void publishFunctionBinding(
+                @NotNull IdentifierExpression identifierExpression,
+                @NotNull List<FunctionDef> overloadSet,
+                boolean blocked
+        ) {
+            var bindingKind = classifyFunctionBindingKind(identifierExpression, overloadSet);
+            if (bindingKind == null) {
+                return;
+            }
+            publishBinding(
+                    identifierExpression,
+                    identifierExpression.name(),
+                    bindingKind,
+                    List.copyOf(overloadSet)
+            );
+            if (blocked) {
+                reportBindingError(
+                        identifierExpression,
+                        "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
+                );
+            }
+        }
+
+        private @Nullable FrontendBindingKind classifyFunctionBindingKind(
+                @NotNull IdentifierExpression identifierExpression,
+                @NotNull List<FunctionDef> overloadSet
+        ) {
+            var survivingOverloads = List.copyOf(Objects.requireNonNull(overloadSet, "overloadSet must not be null"));
+            if (survivingOverloads.isEmpty()) {
+                reportBindingError(
+                        identifierExpression,
+                        "Bare callee binding '" + identifierExpression.name() + "' resolved to an empty overload set"
+                );
+                return null;
+            }
+
+            var allUtilityFunctions = survivingOverloads.stream().allMatch(ExtensionUtilityFunction.class::isInstance);
+            if (allUtilityFunctions) {
+                return FrontendBindingKind.UTILITY_FUNCTION;
+            }
+            var anyUtilityFunction = survivingOverloads.stream().anyMatch(ExtensionUtilityFunction.class::isInstance);
+            if (anyUtilityFunction) {
+                reportBindingError(
+                        identifierExpression,
+                        "Bare callee binding '" + identifierExpression.name()
+                                + "' produced a mixed utility/member overload set"
+                );
+                return null;
+            }
+
+            var allStatic = survivingOverloads.stream().allMatch(FunctionDef::isStatic);
+            if (allStatic) {
+                return FrontendBindingKind.STATIC_METHOD;
+            }
+            var anyStatic = survivingOverloads.stream().anyMatch(FunctionDef::isStatic);
+            if (anyStatic) {
+                reportBindingError(
+                        identifierExpression,
+                        "Bare callee binding '" + identifierExpression.name()
+                                + "' produced a mixed static/non-static overload set"
+                );
+                return null;
+            }
+            return FrontendBindingKind.METHOD;
+        }
+
         private void publishScopeValueBinding(
                 @NotNull IdentifierExpression identifierExpression,
                 @Nullable ScopeValue scopeValue
@@ -541,6 +624,24 @@ public class FrontendTopBindingAnalyzer {
             return !typeMeta.pseudoType()
                     && (typeMeta.kind() == ScopeTypeMetaKind.GDCC_CLASS
                     || typeMeta.kind() == ScopeTypeMetaKind.ENGINE_CLASS);
+        }
+
+        private @Nullable Scope findCurrentScope(@NotNull IdentifierExpression identifierExpression) {
+            return scopesByAst.get(Objects.requireNonNull(identifierExpression, "identifierExpression must not be null"));
+        }
+
+        private void reportMissingScopeUnsupported(
+                @NotNull IdentifierExpression identifierExpression,
+                @NotNull String symbolName
+        ) {
+            reportDeferredUnsupported(
+                    identifierExpression,
+                    symbolName,
+                    new FrontendVisibleValueDeferredBoundary(
+                            FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE,
+                            FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE
+                    )
+            );
         }
 
         private @NotNull FrontendBindingKind toBindingKind(@NotNull ScopeValueKind scopeValueKind) {

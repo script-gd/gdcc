@@ -124,6 +124,7 @@
   - `resolveTypeMeta(...)`
 - `ClassScope.resolveFunctions(...)` 已能处理未指定类名的 bare 方法 / static function 查找
 - `ClassRegistry.resolveFunctionsHere(...)` 已能处理 global utility function 查找
+- `FrontendClassSkeletonBuilder` 已把 `static func` 的静态属性稳定写入 `FunctionDef.isStatic()`
 - `Scope.resolveTypeMeta(...)` 已能通过 lexical type namespace + `ClassRegistry` 解析 strict type-meta
 - `AbstractFrontendScope.defineTypeMeta(...)` / `FrontendScopeAnalyzer` 已为 lexical 可见 inner class 发布 local type-meta
 - `FunctionDef.isStatic()` 已稳定存在，binder 可据此区分 `METHOD` 与 `STATIC_METHOD`
@@ -687,12 +688,12 @@ ordinary local initializer 当前不属于 deferred 域。
 
 **验收清单**：
 
-- [ ] bare 实例方法可绑定为 `METHOD`
-- [ ] bare 静态函数可绑定为 `STATIC_METHOD`
-- [ ] bare global utility function 可绑定为 `UTILITY_FUNCTION`
-- [ ] static context 下被 restriction 阻止的 bare 实例方法不会回退 global utility function
-- [ ] mixed static/non-static surviving overload set 会 fail-closed，而不是写入误导性类别
-- [ ] `resolvedCalls()` 仍保持空表合同
+- [x] bare 实例方法可绑定为 `METHOD`
+- [x] bare 静态函数可绑定为 `STATIC_METHOD`
+- [x] bare global utility function 可绑定为 `UTILITY_FUNCTION`
+- [x] static context 下被 restriction 阻止的 bare 实例方法不会回退 global utility function
+- [x] mixed static/non-static surviving overload set 会 fail-closed，而不是写入误导性类别
+- [x] `resolvedCalls()` 仍保持空表合同
 
 ### 6.5 阶段 B4：显式 receiver 遍历收口、诊断与测试矩阵
 
