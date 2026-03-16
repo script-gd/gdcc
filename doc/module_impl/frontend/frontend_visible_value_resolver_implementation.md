@@ -14,7 +14,7 @@
 - 关联文档：
   - `frontend_rules.md`
   - `frontend_variable_analyzer_implementation.md`
-  - `frontend_binding_analyzer_implementation.md`
+  - `frontend_top_binding_analyzer_implementation.md`
   - `scope_analyzer_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `diagnostic_manager.md`
