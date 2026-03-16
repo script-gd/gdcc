@@ -8,8 +8,9 @@ import java.util.Objects;
 
 /// One same-name binding that existed in lookup order but was filtered by frontend visibility rules.
 ///
-/// The resolver keeps both the `ScopeValue` and the owning lexical `Scope` so later diagnostics can
-/// explain not just what was filtered, but also which layer originally contributed that hit.
+/// The resolver keeps both the `ScopeValue` and the owning lexical `Scope` so diagnostics and
+/// downstream consumers can explain not just what was filtered, but also which layer originally
+/// contributed that hit.
 public record FrontendFilteredValueHit(
         @NotNull ScopeValue value,
         @NotNull Scope owningScope,

@@ -8,9 +8,8 @@ import java.util.Objects;
 
 /// Input contract for one frontend visible-value lookup.
 ///
-/// `domain` is explicit on purpose. Phase 1 only accepts `EXECUTABLE_BODY`, but later binder work
-/// should extend the caller-side domain selection instead of forcing the resolver to guess purely
-/// from AST shape.
+/// `domain` stays explicit on purpose so callers choose the semantic domain intentionally instead
+/// of forcing the resolver to guess lookup intent purely from AST shape.
 public record FrontendVisibleValueResolveRequest(
         @NotNull String name,
         @NotNull Node useSite,
