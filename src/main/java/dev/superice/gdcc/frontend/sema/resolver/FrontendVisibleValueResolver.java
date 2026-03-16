@@ -4,7 +4,9 @@ import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
+import dev.superice.gdcc.frontend.scope.CallableScopeKind;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeValue;
@@ -67,11 +69,9 @@ public final class FrontendVisibleValueResolver {
                     FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE
             );
         }
-        if (!isInsideSupportedExecutableScope(currentScope)) {
-            return deferredUnsupported(
-                    FrontendVisibleValueDomain.EXECUTABLE_BODY,
-                    FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
-            );
+        var currentScopeBoundary = classifyUnsupportedCurrentScopeBoundary(currentScope);
+        if (currentScopeBoundary != null) {
+            return FrontendVisibleValueResolution.deferredUnsupported(currentScopeBoundary);
         }
         var deferredLocalConstBoundary = detectDeferredVisibleBlockLocalConst(request.name(), useSite);
         if (deferredLocalConstBoundary != null) {
@@ -179,7 +179,8 @@ public final class FrontendVisibleValueResolver {
     /// `const` declarations are sealed as deferred unsupported boundaries here.
     private boolean isDeferredBlockLocalConst(@NotNull VariableDeclaration variableDeclaration) {
         var declarationScope = analysisData.scopesByAst().get(variableDeclaration);
-        return declarationScope instanceof BlockScope blockScope && isSupportedExecutableBlock(blockScope.kind());
+        return declarationScope instanceof BlockScope blockScope
+                && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
     }
 
     /// Block-local `const` inventory is still deferred. If a same-name visible `const` declaration
@@ -195,7 +196,7 @@ public final class FrontendVisibleValueResolver {
             if (parentNode == null) {
                 return null;
             }
-            if (parentNode instanceof Block block && isSupportedExecutableBlock(block)) {
+            if (parentNode instanceof Block block && publishesCallableLocalValueInventory(block)) {
                 var boundary = detectDeferredVisibleBlockLocalConstInBlock(name, useSite, block, currentNode);
                 if (boundary != null) {
                     return boundary;
@@ -240,15 +241,24 @@ public final class FrontendVisibleValueResolver {
         );
     }
 
-    private boolean isInsideSupportedExecutableScope(@NotNull Scope scope) {
-        Scope currentScope = scope;
-        while (currentScope != null) {
-            if (currentScope instanceof BlockScope blockScope && isSupportedExecutableBlock(blockScope.kind())) {
-                return true;
-            }
-            currentScope = currentScope.getParentScope();
-        }
-        return false;
+    /// AST edge detection seals unsupported fragments such as parameter defaults or `for` iterables
+    /// that still reuse one outer supported scope. This current-scope gate exists as the fail-closed
+    /// backstop for unsupported bodies whose own scope is already published in `scopesByAst()`.
+    private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentScopeBoundary(
+            @NotNull Scope currentScope
+    ) {
+        return switch (currentScope) {
+            case BlockScope blockScope -> classifyUnsupportedCurrentBlockScopeBoundary(blockScope.kind());
+            case CallableScope callableScope when callableScope.kind() == CallableScopeKind.LAMBDA_EXPRESSION ->
+                    new FrontendVisibleValueDeferredBoundary(
+                            FrontendVisibleValueDomain.LAMBDA_SUBTREE,
+                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+                    );
+            default -> new FrontendVisibleValueDeferredBoundary(
+                    FrontendVisibleValueDomain.EXECUTABLE_BODY,
+                    FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
+            );
+        };
     }
 
     /// Deferred-boundary checks must follow AST identity, matching the rest of the resolver's
@@ -262,22 +272,36 @@ public final class FrontendVisibleValueResolver {
         return false;
     }
 
-    private boolean isSupportedExecutableBlock(@NotNull BlockScopeKind kind) {
+    private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentBlockScopeBoundary(
+            @NotNull BlockScopeKind kind
+    ) {
+        if (FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(kind)) {
+            return null;
+        }
         return switch (kind) {
-            case FUNCTION_BODY,
-                 CONSTRUCTOR_BODY,
-                 BLOCK_STATEMENT,
-                 IF_BODY,
-                 ELIF_BODY,
-                 ELSE_BODY,
-                 WHILE_BODY -> true;
-            default -> false;
+            case LAMBDA_BODY -> new FrontendVisibleValueDeferredBoundary(
+                    FrontendVisibleValueDomain.LAMBDA_SUBTREE,
+                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+            );
+            case FOR_BODY -> new FrontendVisibleValueDeferredBoundary(
+                    FrontendVisibleValueDomain.FOR_SUBTREE,
+                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+            );
+            case MATCH_SECTION_BODY -> new FrontendVisibleValueDeferredBoundary(
+                    FrontendVisibleValueDomain.MATCH_SUBTREE,
+                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+            );
+            default -> new FrontendVisibleValueDeferredBoundary(
+                    FrontendVisibleValueDomain.EXECUTABLE_BODY,
+                    FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
+            );
         };
     }
 
-    private boolean isSupportedExecutableBlock(@NotNull Block block) {
+    private boolean publishesCallableLocalValueInventory(@NotNull Block block) {
         var blockScope = analysisData.scopesByAst().get(block);
-        return blockScope instanceof BlockScope typedBlockScope && isSupportedExecutableBlock(typedBlockScope.kind());
+        return blockScope instanceof BlockScope typedBlockScope
+                && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(typedBlockScope.kind());
     }
 
     private @Nullable FrontendFilteredValueHit filterInvisibleCurrentLayerHit(

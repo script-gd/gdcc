@@ -3,11 +3,11 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.scope.BlockScope;
-import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
+import dev.superice.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -364,7 +364,7 @@ public class FrontendVariableAnalyzer {
                 return;
             }
 
-            if (!isSupportedLocalBlock(blockScope.kind())) {
+            if (!FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
                 reportBindingError(
                         variableDeclaration,
                         "Local variable '" + variableName + "' expected supported executable BlockScope, but found "
@@ -482,19 +482,6 @@ public class FrontendVariableAnalyzer {
 
         private boolean isNotPublished(@Nullable Node astNode) {
             return astNode == null || !scopesByAst.containsKey(astNode);
-        }
-
-        private boolean isSupportedLocalBlock(@NotNull BlockScopeKind kind) {
-            return switch (kind) {
-                case FUNCTION_BODY,
-                     CONSTRUCTOR_BODY,
-                     BLOCK_STATEMENT,
-                     IF_BODY,
-                     ELIF_BODY,
-                     ELSE_BODY,
-                     WHILE_BODY -> true;
-                default -> false;
-            };
         }
     }
 

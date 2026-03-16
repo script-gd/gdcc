@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：frontend binder 辅助设计 / 行为事实源 / 实施计划
-- 更新时间：2026-03-15
+- 更新时间：2026-03-16
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -115,6 +115,7 @@
 - use-site 自身必须能通过 `FrontendAnalysisData.scopesByAst()` 找到当前 lexical scope
 - 若解析链最终回落到 `ClassScope` / `ClassRegistry`，这部分共享 lookup 仍然有效
 - 就 resolver 的请求模型而言，上述位置当前都归入 `EXECUTABLE_BODY` 这一语义域
+- current scope 自身必须属于“已发布 variable inventory 的 block-scope kind”集合，而不是只要求祖先链上某处存在 supported block
 
 ### 4.2 当前明确无效域
 
@@ -243,6 +244,7 @@ public record FrontendVisibleValueDeferredBoundary(
 - `EXECUTABLE_BODY`
 - `PARAMETER_DEFAULT`
 - `LAMBDA_SUBTREE`
+- `BLOCK_LOCAL_CONST_SUBTREE`
 - `FOR_SUBTREE`
 - `MATCH_SUBTREE`
 - `UNKNOWN_OR_SKIPPED_SUBTREE`
@@ -284,9 +286,12 @@ public record FrontendVisibleValueDeferredBoundary(
 3. 若 `request.domain == EXECUTABLE_BODY`，再判断当前 use-site 是否位于本文定义的有效域
 4. 若不在有效域，返回 `DEFERRED_UNSUPPORTED`
 5. 若在有效域，从 `analysisData.scopesByAst().get(useSite)` 获取当前 lexical scope
-6. 对 `BlockScope` / `CallableScope` 使用“逐层 value lookup + declaration-order 过滤”
-7. 对 `ClassScope` / `ClassRegistry` 使用现有 shared `Scope` 语义
-8. 委托到 shared `Scope` 时若抛 `ScopeLookupException`，原样传播，不得降级成 `NOT_FOUND`
+6. 若 use-site 缺少 current scope 记录，返回 `DEFERRED_UNSUPPORTED`
+7. 若 current scope 自身不是已发布 inventory 的合法 executable scope，也返回 `DEFERRED_UNSUPPORTED`
+8. 这条 current-scope gate 必须独立存在，不能把正确性完全押注在 AST 边界识别永远完整
+9. 只有在 AST 边界与 current-scope gate 都放行后，才对 `BlockScope` / `CallableScope` 使用“逐层 value lookup + declaration-order 过滤”
+10. 对 `ClassScope` / `ClassRegistry` 使用现有 shared `Scope` 语义
+11. 委托到 shared `Scope` 时若抛 `ScopeLookupException`，原样传播，不得降级成 `NOT_FOUND`
 
 ### 6.3 当前层命中的处理
 
@@ -505,6 +510,12 @@ func ping(values):
 - 更不能继续落到 outer local / class property / global 上并假装解析成功
 - 这类 use-site 仍应返回 `DEFERRED_UNSUPPORTED`，因为它依赖的 local-const inventory 当前并未发布
 
+这条规则还必须再补一层 current-scope fail-closed 保护：
+
+- `LAMBDA_BODY` / `FOR_BODY` / `MATCH_SECTION_BODY` 这些 scope kind 已由 scope phase 正式发布
+- 即使某个 AST boundary edge 分类未来漏掉了一个节点，resolver 也不能因为祖先链上存在 `FUNCTION_BODY` / `WHILE_BODY` / `IF_BODY` 就继续 lookup
+- 只要 current scope 自己就是这些未发布 inventory 的 kind，resolver 就必须直接返回 `DEFERRED_UNSUPPORTED`
+
 ---
 
 ## 10. 建议测试锚点
@@ -531,6 +542,7 @@ func ping(values):
 - `for` subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = FOR_SUBTREE, ...)`
 - `match` subtree -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = MATCH_SUBTREE, ...)`
 - skipped subtree / missing use-site scope -> `DEFERRED_UNSUPPORTED + deferredBoundary(domain = EXECUTABLE_BODY or UNKNOWN_OR_SKIPPED_SUBTREE, ...)`
+- synthetic current-scope remap to `LAMBDA_BODY` / `FOR_BODY` / `MATCH_SECTION_BODY` 也必须返回 `DEFERRED_UNSUPPORTED`
 
 ### 10.4 shared-scope 异常传播
 
@@ -564,6 +576,7 @@ func ping(values):
 - [x] `EXECUTABLE_BODY` 域的 resolver 主逻辑已落地，当前通过 `FrontendVisibleValueResolver` 在 `frontend.sema.resolver` 内独立提供
 - [x] declaration-order 过滤、initializer 自引用过滤、shared-scope 委托/传播逻辑已在 resolver 中实现
 - [x] deferred boundary 封口已实现：parameter default、lambda body、block-local `const`、`for`、`match`、missing-scope 均返回 `DEFERRED_UNSUPPORTED`
+- [x] current-scope fail-closed hardening 已实现：`FOR_BODY` / `MATCH_SECTION_BODY` / `LAMBDA_BODY` 等未发布 inventory 的当前 scope 不再仅因祖先链存在 supported block 而放行
 - [x] resolver 单元测试已补齐：覆盖 parameter/local/class-property 正向解析、future local / self-reference 过滤、blocked class-member、parameter default / lambda / block-local `const` / `for` / `match` deferred、missing-scope、shared `ScopeLookupException` 传播
 
 当前验收状态：
@@ -571,7 +584,14 @@ func ping(values):
 - [x] `NOT_FOUND + filteredHits`、`FOUND_ALLOWED + filteredHits`、`FOUND_BLOCKED`、`SELF_REFERENCE_IN_INITIALIZER`、missing-scope -> `DEFERRED_UNSUPPORTED` 均已由 `FrontendVisibleValueResolverTest` 锚定
 - [x] `EXECUTABLE_BODY` 内 parameter / ordinary local / class property 三类基本路径已覆盖
 - [x] `ClassScope` / `ClassRegistry` 侧的 `ScopeLookupException` 会原样传播
+- [x] 真实 AST deferred 场景与 synthetic current-scope fallback 场景均已覆盖，证明即使 AST boundary 漏判，resolver 仍按未发布 inventory fail-closed
 - [x] 本阶段仍未接入 binder，resolver 以独立可调用组件形态落地，符合阶段目标
+
+### 12.1 当前修复任务：supported executable scope hardening（2026-03-16）
+
+- [x] 提取 published variable-inventory block kind 的共享 support matrix，避免 `FrontendVariableAnalyzer` 与 resolver 分别维护一套名单
+- [x] 将 resolver 从“祖先链存在 supported block 即放行”改为“当前 scope 自己必须属于已发布 inventory 域，否则 fail-closed”
+- [x] 补齐单元测试：既覆盖真实 AST deferred 场景，也覆盖 synthetic current-scope fallback 场景，证明即使 AST 边界识别漏掉也不会静默成功
 
 任务范围：
 
