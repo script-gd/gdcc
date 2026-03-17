@@ -3,10 +3,12 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
+import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
+import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
@@ -229,6 +231,7 @@ public class FrontendExprTypeAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             publishExpressionType(variableDeclaration.value());
+            backfillInferredLocalType(variableDeclaration);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -350,6 +353,32 @@ public class FrontendExprTypeAnalyzer {
             }
             var computed = resolveExpressionType(expression);
             expressionTypes.put(expression, computed);
+        }
+
+        /// Supported local `:=` declarations are still inventoried as `Variant` during variable
+        /// analysis. Once the RHS expression type is published here, rewrite the block-local slot
+        /// only when that published result is stable enough to become the local's value type.
+        private void backfillInferredLocalType(@NotNull VariableDeclaration variableDeclaration) {
+            if (!FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())
+                    || variableDeclaration.value() == null) {
+                return;
+            }
+            var declarationScope = scopesByAst.get(variableDeclaration);
+            if (!(declarationScope instanceof BlockScope blockScope)) {
+                return;
+            }
+            var publishedInitializerType = expressionTypes.get(variableDeclaration.value());
+            if (publishedInitializerType == null) {
+                return;
+            }
+            var backfilledType = switch (publishedInitializerType.status()) {
+                case RESOLVED, DYNAMIC -> publishedInitializerType.publishedType();
+                case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
+            };
+            if (backfilledType == null) {
+                return;
+            }
+            blockScope.backfillLocalType(variableDeclaration.name().trim(), backfilledType);
         }
 
         private @NotNull FrontendExpressionType resolveExpressionType(@NotNull Expression expression) {
@@ -534,6 +563,10 @@ public class FrontendExprTypeAnalyzer {
 
         private boolean isNotPublished(@Nullable Node astNode) {
             return astNode == null || !scopesByAst.containsKey(astNode);
+        }
+
+        public @NotNull ClassRegistry getClassRegistry() {
+            return classRegistry;
         }
     }
 }

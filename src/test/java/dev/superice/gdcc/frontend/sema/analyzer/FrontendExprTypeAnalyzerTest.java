@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -12,6 +13,7 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -201,6 +203,134 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(blockedCallType.detailReason());
     }
 
+    @Test
+    void analyzeBackfillsInferredLocalsFromResolvedAndDynamicInitializerTypes() throws Exception {
+        var analyzed = analyze(
+                "expr_type_inferred_backfill.gd",
+                """
+                        class_name ExprTypeInferredBackfill
+                        extends RefCounted
+
+                        func ping(worker):
+                            var resolved := 1
+                            var dynamic_value := worker.ping().length
+                            resolved
+                            dynamic_value
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        var resolvedDeclaration = findVariable(pingFunction.body().statements(), "resolved");
+        var dynamicDeclaration = findVariable(pingFunction.body().statements(), "dynamic_value");
+        var resolvedUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var dynamicUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+
+        var resolvedInitializerType = analyzed.analysisData().expressionTypes().get(resolvedDeclaration.value());
+        assertNotNull(resolvedInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedInitializerType.status());
+        assertEquals("int", resolvedInitializerType.publishedType().getTypeName());
+
+        var dynamicInitializerType = analyzed.analysisData().expressionTypes().get(dynamicDeclaration.value());
+        assertNotNull(dynamicInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicInitializerType.status());
+        assertEquals(GdVariantType.VARIANT, dynamicInitializerType.publishedType());
+
+        assertEquals("int", bodyScope.resolveValue("resolved").type().getTypeName());
+        assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("dynamic_value").type());
+
+        var resolvedUseType = analyzed.analysisData().expressionTypes().get(resolvedUse);
+        assertNotNull(resolvedUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, resolvedUseType.status());
+        assertEquals("int", resolvedUseType.publishedType().getTypeName());
+
+        var dynamicUseType = analyzed.analysisData().expressionTypes().get(dynamicUse);
+        assertNotNull(dynamicUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, dynamicUseType.status());
+        assertEquals(GdVariantType.VARIANT, dynamicUseType.publishedType());
+    }
+
+    @Test
+    void analyzeLeavesInferredLocalsAsVariantWhenInitializerCannotPublishStableType() throws Exception {
+        var analyzed = analyze(
+                "expr_type_inferred_no_backfill.gd",
+                """
+                        class_name ExprTypeInferredNoBackfill
+                        extends RefCounted
+
+                        class Worker:
+                            pass
+
+                        var payload: int = 1
+
+                        static func ping():
+                            var deferred_value := func(offset: int):
+                                return offset
+                            var unsupported_value := Worker.VALUE
+                            var blocked_value := self.payload
+                            deferred_value
+                            unsupported_value
+                            blocked_value
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        var deferredDeclaration = findVariable(pingFunction.body().statements(), "deferred_value");
+        var unsupportedDeclaration = findVariable(pingFunction.body().statements(), "unsupported_value");
+        var blockedDeclaration = findVariable(pingFunction.body().statements(), "blocked_value");
+        var deferredUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+        var unsupportedUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(4)).expression()
+        );
+        var blockedUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(5)).expression()
+        );
+
+        var deferredInitializerType = analyzed.analysisData().expressionTypes().get(deferredDeclaration.value());
+        assertNotNull(deferredInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.DEFERRED, deferredInitializerType.status());
+
+        var unsupportedInitializerType = analyzed.analysisData().expressionTypes().get(unsupportedDeclaration.value());
+        assertNotNull(unsupportedInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedInitializerType.status());
+
+        var blockedInitializerType = analyzed.analysisData().expressionTypes().get(blockedDeclaration.value());
+        assertNotNull(blockedInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedInitializerType.status());
+        assertNull(blockedInitializerType.publishedType());
+
+        assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("deferred_value").type());
+        assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("unsupported_value").type());
+        assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("blocked_value").type());
+
+        var deferredUseType = analyzed.analysisData().expressionTypes().get(deferredUse);
+        assertNotNull(deferredUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, deferredUseType.status());
+        assertEquals(GdVariantType.VARIANT, deferredUseType.publishedType());
+
+        var unsupportedUseType = analyzed.analysisData().expressionTypes().get(unsupportedUse);
+        assertNotNull(unsupportedUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, unsupportedUseType.status());
+        assertEquals(GdVariantType.VARIANT, unsupportedUseType.publishedType());
+
+        var blockedUseType = analyzed.analysisData().expressionTypes().get(blockedUse);
+        assertNotNull(blockedUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, blockedUseType.status());
+        assertEquals(GdVariantType.VARIANT, blockedUseType.publishedType());
+    }
+
     private static @NotNull AnalyzedScript analyze(
             @NotNull String fileName,
             @NotNull String source
@@ -219,6 +349,15 @@ class FrontendExprTypeAnalyzerTest {
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {
         return findNode(root, FunctionDeclaration.class, function -> function.name().equals(name));
+    }
+
+    private static @NotNull VariableDeclaration findVariable(@NotNull List<?> statements, @NotNull String name) {
+        return statements.stream()
+                .filter(VariableDeclaration.class::isInstance)
+                .map(VariableDeclaration.class::cast)
+                .filter(variable -> variable.name().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Variable not found: " + name));
     }
 
     private static <T extends Node> @NotNull T findNode(

@@ -1052,6 +1052,13 @@ base expression 支撑逻辑收口到同一个 frontend helper。
 - 新增 operator/container/ternary/assignment typing 不会破坏 D 阶段已冻结的表达式类型发布规则
 - 完成 E 后，才允许讨论是否需要新的 body sub-phase 或更强的全局收敛机制
 
+**当前实施状态（2026-03-17）**：
+
+- [x] E1.a 已冻结本轮小改动边界：不新增 side table、不新增顶层 analyzer，仅在 `FrontendExprTypeAnalyzer` 中消费已发布的 RHS `expressionTypes()` 来回填支持域内的 block-local `:=` 绑定。
+- [x] E1.b 已落地最小回填通道：`FrontendDeclaredTypeSupport` 现明确暴露 `:=` 判定合同，`BlockScope` 新增窄化的 local type backfill 入口，`FrontendExprTypeAnalyzer` 仅在 RHS 为 `RESOLVED` / `DYNAMIC` 时重写局部变量类型；`BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 保持原始 `Variant` 绑定不变。
+- [x] E1.c 已补齐并跑通合同测试：`FrontendExprTypeAnalyzerTest` 现覆盖 resolved backfill、dynamic degrade-to-Variant、以及 deferred/unsupported/blocked 不回填的负路径；`FrontendDeclaredTypeSupportTest` 补充了 `:=` marker 判定；回归已跑通 `FrontendVariableAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendDeclaredTypeSupportTest`、`FrontendSemanticAnalyzerFrameworkTest`。
+- [ ] E2/E3 仍维持原边界，不在本轮小改动中扩张 parameter default、operator/container/ternary/assignment typing 或更复杂的 flow-sensitive 恢复。
+
 ## 6.6 阶段总体验收出口
 
 第六部分整体完成时，应满足以下条件：

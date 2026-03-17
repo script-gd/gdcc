@@ -17,11 +17,20 @@ import java.util.Objects;
 ///
 /// The contract is intentionally small:
 /// - missing declarations stay `Variant`
-/// - inferred declarations (`:=`) temporarily stay `Variant` until expression typing exists
+/// - variable inventory initially publishes inferred declarations (`:=`) as `Variant`
+/// - later body phases may backfill supported local `:=` bindings from published RHS expression types
 /// - declared type lookup stays on the strict shared resolver
 /// - unresolved declared types emit one warning and fall back to `Variant`
 public final class FrontendDeclaredTypeSupport {
     private FrontendDeclaredTypeSupport() {
+    }
+
+    /// Returns whether the parser-level type marker represents a `:=` inferred declaration.
+    public static boolean isInferredTypeRef(@Nullable TypeRef typeRef) {
+        if (typeRef == null) {
+            return false;
+        }
+        return typeRef.sourceText().trim().equals(":=");
     }
 
     public static @NotNull GdType resolveTypeOrVariant(
@@ -38,10 +47,7 @@ public final class FrontendDeclaredTypeSupport {
         }
 
         var typeText = typeRef.sourceText().trim();
-        // `gdparser` currently exposes inferred declarations as `:=` through `TypeRef.sourceText()`.
-        // The real language meaning is "infer from the RHS expression type", but that remains
-        // deferred until `FrontendExprTypeAnalyzer` publishes expression typing.
-        if (typeText.isEmpty() || typeText.equals(":=")) {
+        if (typeText.isEmpty() || isInferredTypeRef(typeRef)) {
             return GdVariantType.VARIANT;
         }
 

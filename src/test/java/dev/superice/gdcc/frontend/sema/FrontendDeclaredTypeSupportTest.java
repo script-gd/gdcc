@@ -50,6 +50,7 @@ class FrontendDeclaredTypeSupportTest {
     void resolveTypeOrVariantTreatsBlankAndInferredMarkersAsDeferredVariantUntilExprTypingExists() throws IOException {
         var diagnostics = new DiagnosticManager();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var inferredTypeRef = new TypeRef(" := ", SYNTHETIC_RANGE);
 
         var blankType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("   ", SYNTHETIC_RANGE),
@@ -58,7 +59,7 @@ class FrontendDeclaredTypeSupportTest {
                 diagnostics
         );
         var inferredType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
-                new TypeRef(" := ", SYNTHETIC_RANGE),
+                inferredTypeRef,
                 registry,
                 SOURCE_PATH,
                 diagnostics
@@ -66,6 +67,7 @@ class FrontendDeclaredTypeSupportTest {
 
         assertEquals(GdVariantType.VARIANT, blankType);
         assertEquals(GdVariantType.VARIANT, inferredType);
+        assertTrue(FrontendDeclaredTypeSupport.isInferredTypeRef(inferredTypeRef));
         assertTrue(diagnostics.isEmpty());
     }
 

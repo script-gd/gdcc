@@ -84,6 +84,36 @@ public final class BlockScope extends AbstractFrontendScope {
         return ScopeLookupResult.notFound();
     }
 
+    /// Rewrites the type of already-published mutable local binding.
+    ///
+    /// The update is intentionally narrow:
+    /// - only existing block-local `LOCAL` bindings can be rewritten
+    /// - missing or non-local names remain a quiet no-op because earlier phases may already have
+    ///   rejected the declaration and the expression-typing phase must stay fail-closed
+    public boolean backfillLocalType(
+            @NotNull String name,
+            @NotNull GdType type
+    ) {
+        Objects.requireNonNull(name, "name");
+        Objects.requireNonNull(type, "type");
+        var existing = valuesByName.get(name);
+        if (existing == null || existing.kind() != ScopeValueKind.LOCAL) {
+            return false;
+        }
+        valuesByName.put(
+                name,
+                new ScopeValue(
+                        existing.name(),
+                        type,
+                        existing.kind(),
+                        existing.declaration(),
+                        existing.constant(),
+                        existing.staticMember()
+                )
+        );
+        return true;
+    }
+
     private void defineValue(
             @NotNull String name,
             @NotNull GdType type,
