@@ -4,10 +4,9 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
-import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
-import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
-import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainHeadReceiverSupport;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
@@ -45,10 +44,8 @@ import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 /// Publishes frontend expression typing facts after chain/member/call results are already visible.
 ///
@@ -96,8 +93,7 @@ public class FrontendExprTypeAnalyzer {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
         private final @NotNull ASTWalker astWalker;
-        private final @NotNull IdentityHashMap<AttributeExpression, Optional<FrontendChainReductionHelper.ReductionResult>>
-                reducedChains = new IdentityHashMap<>();
+        private final @NotNull FrontendChainReductionFacade chainReduction;
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
@@ -113,6 +109,14 @@ public class FrontendExprTypeAnalyzer {
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
             this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
             astWalker = new ASTWalker(this);
+            chainReduction = new FrontendChainReductionFacade(
+                    analysisData,
+                    scopesByAst,
+                    () -> currentRestriction,
+                    () -> currentStaticContext,
+                    classRegistry,
+                    this::resolveExpressionDependency
+            );
         }
 
         private void walk(@NotNull SourceFile sourceFile) {
@@ -364,7 +368,7 @@ public class FrontendExprTypeAnalyzer {
         private @NotNull FrontendExpressionType resolveLiteralExpressionType(
                 @NotNull LiteralExpression literalExpression
         ) {
-            var literalType = headReceiverSupport().resolveLiteralType(literalExpression);
+            var literalType = chainReduction.headReceiverSupport().resolveLiteralType(literalExpression);
             if (literalType != null) {
                 return FrontendExpressionType.resolved(literalType);
             }
@@ -374,7 +378,9 @@ public class FrontendExprTypeAnalyzer {
         }
 
         private @NotNull FrontendExpressionType resolveSelfExpressionType(@NotNull Node selfNode) {
-            return toPublishedExpressionType(expressionTypeFromReceiver(headReceiverSupport().resolveSelfReceiver(selfNode)));
+            return FrontendChainStatusBridge.toPublishedExpressionType(
+                    chainReduction.headReceiverSupport().resolveSelfReceiver(selfNode)
+            );
         }
 
         private @NotNull FrontendExpressionType resolveIdentifierExpressionType(
@@ -443,13 +449,13 @@ public class FrontendExprTypeAnalyzer {
             if (finalStep instanceof AttributePropertyStep) {
                 var publishedMember = analysisData.resolvedMembers().get(finalStep);
                 if (publishedMember != null) {
-                    return toPublishedExpressionType(publishedMember);
+                    return FrontendChainStatusBridge.toPublishedExpressionType(publishedMember);
                 }
             }
             if (finalStep instanceof AttributeCallStep) {
                 var publishedCall = analysisData.resolvedCalls().get(finalStep);
                 if (publishedCall != null) {
-                    return toPublishedExpressionType(publishedCall);
+                    return FrontendChainStatusBridge.toPublishedExpressionType(publishedCall);
                 }
             }
 
@@ -460,7 +466,7 @@ public class FrontendExprTypeAnalyzer {
                                 + attributeExpression.base().getClass().getSimpleName()
                 );
             }
-            return toPublishedExpressionType(reduced);
+            return FrontendChainStatusBridge.toPublishedExpressionType(reduced);
         }
 
         private @NotNull FrontendExpressionType resolveAssignmentExpressionType(
@@ -510,42 +516,7 @@ public class FrontendExprTypeAnalyzer {
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(
                 @NotNull AttributeExpression attributeExpression
         ) {
-            var cached = reducedChains.get(attributeExpression);
-            if (cached != null) {
-                return cached.orElse(null);
-            }
-
-            var headReceiver = headReceiverSupport().resolveHeadReceiver(attributeExpression.base());
-            if (headReceiver == null) {
-                reducedChains.put(attributeExpression, Optional.empty());
-                return null;
-            }
-
-            var result = FrontendChainReductionHelper.reduce(new FrontendChainReductionHelper.ReductionRequest(
-                    attributeExpression,
-                    headReceiver,
-                    analysisData,
-                    classRegistry,
-                    this::resolveExpressionDependency,
-                    _ -> {
-                    }
-            ));
-            reducedChains.put(attributeExpression, Optional.of(result));
-            return result;
-        }
-
-        private @NotNull FrontendChainHeadReceiverSupport headReceiverSupport() {
-            return new FrontendChainHeadReceiverSupport(
-                    analysisData,
-                    scopesByAst,
-                    currentRestriction,
-                    currentStaticContext,
-                    attributeExpression -> {
-                        var nestedResult = reduceAttributeExpression(attributeExpression);
-                        return nestedResult != null ? nestedResult.finalReceiver() : null;
-                    },
-                    expression -> receiverFromExpressionType(resolveExpressionDependency(expression, false))
-            );
+            return chainReduction.reduce(attributeExpression).result();
         }
 
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionDependency(
@@ -554,198 +525,11 @@ public class FrontendExprTypeAnalyzer {
         ) {
             var published = expressionTypes.get(expression);
             if (published != null) {
-                return FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(published);
+                return FrontendChainStatusBridge.toExpressionTypeResult(published);
             }
             var computed = resolveExpressionType(expression);
             expressionTypes.put(expression, computed);
-            return FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(computed);
-        }
-
-        private @NotNull FrontendChainReductionHelper.ExpressionTypeResult expressionTypeFromReceiver(
-                @NotNull FrontendChainReductionHelper.ReceiverState receiverState
-        ) {
-            return switch (receiverState.status()) {
-                case RESOLVED -> FrontendChainReductionHelper.ExpressionTypeResult.resolved(
-                        Objects.requireNonNull(receiverState.receiverType(), "receiverType must not be null")
-                );
-                case BLOCKED -> FrontendChainReductionHelper.ExpressionTypeResult.blocked(
-                        receiverState.receiverType(),
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> FrontendChainReductionHelper.ExpressionTypeResult.deferred(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendChainReductionHelper.ExpressionTypeResult.dynamic(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> FrontendChainReductionHelper.ExpressionTypeResult.unsupported(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-            };
-        }
-
-        private @NotNull FrontendChainReductionHelper.ReceiverState receiverFromExpressionType(
-                @NotNull FrontendChainReductionHelper.ExpressionTypeResult typeResult
-        ) {
-            return switch (typeResult.status()) {
-                case RESOLVED -> FrontendChainReductionHelper.ReceiverState.resolvedInstance(
-                        Objects.requireNonNull(typeResult.type(), "type must not be null")
-                );
-                case BLOCKED -> typeResult.type() != null
-                        ? FrontendChainReductionHelper.ReceiverState.blockedFrom(
-                        FrontendChainReductionHelper.ReceiverState.resolvedInstance(typeResult.type()),
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                )
-                        : new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.BLOCKED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.DEFERRED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendChainReductionHelper.ReceiverState.dynamic(
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.FAILED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.UNSUPPORTED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-            };
-        }
-
-        private static @NotNull FrontendExpressionType toPublishedExpressionType(
-                @NotNull FrontendChainReductionHelper.ExpressionTypeResult result
-        ) {
-            return switch (result.status()) {
-                case RESOLVED -> FrontendExpressionType.resolved(
-                        Objects.requireNonNull(result.type(), "type must not be null")
-                );
-                case BLOCKED -> FrontendExpressionType.blocked(
-                        result.type(),
-                        Objects.requireNonNull(result.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> FrontendExpressionType.deferred(
-                        Objects.requireNonNull(result.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendExpressionType.dynamic(
-                        Objects.requireNonNull(result.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> FrontendExpressionType.failed(
-                        Objects.requireNonNull(result.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> FrontendExpressionType.unsupported(
-                        Objects.requireNonNull(result.detailReason(), "detailReason must not be null")
-                );
-            };
-        }
-
-        private static @NotNull FrontendExpressionType toPublishedExpressionType(
-                @NotNull FrontendChainReductionHelper.ReductionResult result
-        ) {
-            var lastTrace = result.stepTraces().isEmpty() ? null : result.stepTraces().getLast();
-            if (result.finalReceiver().status() == FrontendChainReductionHelper.Status.BLOCKED
-                    && lastTrace != null
-                    && lastTrace.routeKind() == FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED) {
-                return FrontendExpressionType.blocked(
-                        null,
-                        Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                );
-            }
-            return toPublishedExpressionType(
-                    switch (result.finalReceiver().status()) {
-                        case RESOLVED -> FrontendChainReductionHelper.ExpressionTypeResult.resolved(
-                                Objects.requireNonNull(result.finalReceiver().receiverType(), "receiverType must not be null")
-                        );
-                        case BLOCKED -> FrontendChainReductionHelper.ExpressionTypeResult.blocked(
-                                result.finalReceiver().receiverType(),
-                                Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                        );
-                        case DEFERRED -> FrontendChainReductionHelper.ExpressionTypeResult.deferred(
-                                Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                        );
-                        case DYNAMIC -> FrontendChainReductionHelper.ExpressionTypeResult.dynamic(
-                                Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                        );
-                        case FAILED -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
-                                Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                        );
-                        case UNSUPPORTED -> FrontendChainReductionHelper.ExpressionTypeResult.unsupported(
-                                Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                        );
-                    }
-            );
-        }
-
-        private static @NotNull FrontendExpressionType toPublishedExpressionType(
-                @NotNull FrontendResolvedMember member
-        ) {
-            return switch (member.status()) {
-                case RESOLVED -> FrontendExpressionType.resolved(
-                        Objects.requireNonNull(member.resultType(), "resultType must not be null")
-                );
-                case BLOCKED -> FrontendExpressionType.blocked(
-                        member.resultType(),
-                        Objects.requireNonNull(member.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> FrontendExpressionType.deferred(
-                        Objects.requireNonNull(member.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendExpressionType.dynamic(
-                        Objects.requireNonNull(member.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> FrontendExpressionType.failed(
-                        Objects.requireNonNull(member.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> FrontendExpressionType.unsupported(
-                        Objects.requireNonNull(member.detailReason(), "detailReason must not be null")
-                );
-            };
-        }
-
-        private static @NotNull FrontendExpressionType toPublishedExpressionType(
-                @NotNull FrontendResolvedCall call
-        ) {
-            return switch (call.status()) {
-                case RESOLVED -> FrontendExpressionType.resolved(
-                        Objects.requireNonNull(call.returnType(), "returnType must not be null")
-                );
-                case BLOCKED -> FrontendExpressionType.blocked(
-                        call.returnType(),
-                        Objects.requireNonNull(call.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> FrontendExpressionType.deferred(
-                        Objects.requireNonNull(call.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendExpressionType.dynamic(
-                        Objects.requireNonNull(call.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> FrontendExpressionType.failed(
-                        Objects.requireNonNull(call.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> FrontendExpressionType.unsupported(
-                        Objects.requireNonNull(call.detailReason(), "detailReason must not be null")
-                );
-            };
+            return FrontendChainStatusBridge.toExpressionTypeResult(computed);
         }
 
         private boolean isNotPublished(@Nullable Node astNode) {

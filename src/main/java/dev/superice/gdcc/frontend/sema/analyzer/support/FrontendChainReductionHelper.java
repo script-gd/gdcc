@@ -159,16 +159,7 @@ public final class FrontendChainReductionHelper {
         }
 
         public static @NotNull ExpressionTypeResult fromPublished(@NotNull FrontendExpressionType expressionType) {
-            var published = Objects.requireNonNull(expressionType, "expressionType must not be null");
-            return switch (published.status()) {
-                case RESOLVED ->
-                        resolved(Objects.requireNonNull(published.publishedType(), "publishedType must not be null"));
-                case BLOCKED -> blocked(published.publishedType(), Objects.requireNonNull(published.detailReason()));
-                case DEFERRED -> deferred(Objects.requireNonNull(published.detailReason()));
-                case DYNAMIC -> dynamic(Objects.requireNonNull(published.detailReason()));
-                case FAILED -> failed(Objects.requireNonNull(published.detailReason()));
-                case UNSUPPORTED -> unsupported(Objects.requireNonNull(published.detailReason()));
-            };
+            return FrontendChainStatusBridge.toExpressionTypeResult(expressionType);
         }
     }
 

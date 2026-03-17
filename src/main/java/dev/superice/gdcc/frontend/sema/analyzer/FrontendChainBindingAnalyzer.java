@@ -6,8 +6,9 @@ import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
-import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainHeadReceiverSupport;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
 import dev.superice.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
@@ -43,10 +44,9 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.IdentityHashMap;
 
 /// Publishes body-phase chain member/call results from already-published binding and scope facts.
 ///
@@ -108,8 +108,7 @@ public class FrontendChainBindingAnalyzer {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull IdentityHashMap<Node, Boolean> reportedDeferredRoots = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedUnsupportedRoots = new IdentityHashMap<>();
-        private final @NotNull IdentityHashMap<AttributeExpression, Optional<FrontendChainReductionHelper.ReductionResult>> reducedChains =
-                new IdentityHashMap<>();
+        private final @NotNull FrontendChainReductionFacade chainReduction;
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
@@ -131,6 +130,14 @@ public class FrontendChainBindingAnalyzer {
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
+            chainReduction = new FrontendChainReductionFacade(
+                    analysisData,
+                    scopesByAst,
+                    () -> currentRestriction,
+                    () -> currentStaticContext,
+                    classRegistry,
+                    this::resolveExpressionType
+            );
         }
 
         private void walk(@NotNull SourceFile sourceFile) {
@@ -423,29 +430,11 @@ public class FrontendChainBindingAnalyzer {
         private @Nullable FrontendChainReductionHelper.ReductionResult reduceAttributeExpression(
                 @NotNull AttributeExpression attributeExpression
         ) {
-            var cached = reducedChains.get(attributeExpression);
-            if (cached != null) {
-                return cached.orElse(null);
+            var reduced = chainReduction.reduce(attributeExpression);
+            if (reduced.computedNow() && reduced.result() != null) {
+                publishReduction(reduced.result());
             }
-
-            var headReceiver = headReceiverSupport().resolveHeadReceiver(attributeExpression.base());
-            if (headReceiver == null) {
-                reducedChains.put(attributeExpression, Optional.empty());
-                return null;
-            }
-
-            var result = FrontendChainReductionHelper.reduce(new FrontendChainReductionHelper.ReductionRequest(
-                    attributeExpression,
-                    headReceiver,
-                    analysisData,
-                    classRegistry,
-                    this::resolveExpressionType,
-                    _ -> {
-                    }
-            ));
-            reducedChains.put(attributeExpression, Optional.of(result));
-            publishReduction(result);
-            return result;
+            return reduced.result();
         }
 
         private void publishReduction(@NotNull FrontendChainReductionHelper.ReductionResult result) {
@@ -533,25 +522,11 @@ public class FrontendChainBindingAnalyzer {
             }
         }
 
-        private @NotNull FrontendChainHeadReceiverSupport headReceiverSupport() {
-            return new FrontendChainHeadReceiverSupport(
-                    analysisData,
-                    scopesByAst,
-                    currentRestriction,
-                    currentStaticContext,
-                    attributeExpression -> {
-                        var nestedResult = reduceAttributeExpression(attributeExpression);
-                        return nestedResult != null ? nestedResult.finalReceiver() : null;
-                    },
-                    expression -> receiverFromExpressionType(resolveExpressionType(expression, false))
-            );
-        }
-
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionType(
                 @NotNull Expression expression,
                 boolean finalizeWindow
         ) {
-            var support = headReceiverSupport();
+            var support = chainReduction.headReceiverSupport();
             return switch (expression) {
                 case LiteralExpression literalExpression -> {
                     var literalType = support.resolveLiteralType(literalExpression);
@@ -563,7 +538,7 @@ public class FrontendChainBindingAnalyzer {
                     );
                 }
                 case SelfExpression selfExpression ->
-                        expressionTypeFromReceiver(support.resolveSelfReceiver(selfExpression));
+                        FrontendChainStatusBridge.toExpressionTypeResult(support.resolveSelfReceiver(selfExpression));
                 case IdentifierExpression identifierExpression -> resolveIdentifierExpressionType(identifierExpression);
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
                 default -> FrontendChainReductionHelper.ExpressionTypeResult.deferred(
@@ -582,9 +557,10 @@ public class FrontendChainBindingAnalyzer {
                         "No published binding fact is available for identifier '" + identifierExpression.name() + "'"
                 );
             }
-            var support = headReceiverSupport();
+            var support = chainReduction.headReceiverSupport();
             return switch (binding.kind()) {
-                case SELF -> expressionTypeFromReceiver(support.resolveSelfReceiver(identifierExpression));
+                case SELF ->
+                        FrontendChainStatusBridge.toExpressionTypeResult(support.resolveSelfReceiver(identifierExpression));
                 case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM -> {
                     var currentScope = scopesByAst.get(identifierExpression);
                     if (currentScope == null) {
@@ -631,102 +607,7 @@ public class FrontendChainBindingAnalyzer {
                         "Nested chain expression is inside an unsupported or skipped subtree"
                 );
             }
-            var lastTrace = result.stepTraces().isEmpty() ? null : result.stepTraces().getLast();
-            return switch (result.finalReceiver().status()) {
-                case RESOLVED -> FrontendChainReductionHelper.ExpressionTypeResult.resolved(
-                        Objects.requireNonNull(result.finalReceiver().receiverType(), "receiverType must not be null")
-                );
-                case BLOCKED -> FrontendChainReductionHelper.ExpressionTypeResult.blocked(
-                        lastTrace != null && lastTrace.routeKind() == FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED
-                                ? null
-                                : result.finalReceiver().receiverType(),
-                        Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> FrontendChainReductionHelper.ExpressionTypeResult.deferred(
-                        Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendChainReductionHelper.ExpressionTypeResult.dynamic(
-                        Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> FrontendChainReductionHelper.ExpressionTypeResult.unsupported(
-                        Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
-                        Objects.requireNonNull(result.finalReceiver().detailReason(), "detailReason must not be null")
-                );
-            };
-        }
-
-        private @NotNull FrontendChainReductionHelper.ExpressionTypeResult expressionTypeFromReceiver(
-                @NotNull FrontendChainReductionHelper.ReceiverState receiverState
-        ) {
-            return switch (receiverState.status()) {
-                case RESOLVED -> FrontendChainReductionHelper.ExpressionTypeResult.resolved(
-                        Objects.requireNonNull(receiverState.receiverType(), "receiverType must not be null")
-                );
-                case BLOCKED -> FrontendChainReductionHelper.ExpressionTypeResult.blocked(
-                        receiverState.receiverType(),
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> FrontendChainReductionHelper.ExpressionTypeResult.deferred(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendChainReductionHelper.ExpressionTypeResult.dynamic(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> FrontendChainReductionHelper.ExpressionTypeResult.unsupported(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
-                        Objects.requireNonNull(receiverState.detailReason(), "detailReason must not be null")
-                );
-            };
-        }
-
-        private @NotNull FrontendChainReductionHelper.ReceiverState receiverFromExpressionType(
-                @NotNull FrontendChainReductionHelper.ExpressionTypeResult typeResult
-        ) {
-            return switch (typeResult.status()) {
-                case RESOLVED -> FrontendChainReductionHelper.ReceiverState.resolvedInstance(
-                        Objects.requireNonNull(typeResult.type(), "type must not be null")
-                );
-                case BLOCKED -> typeResult.type() != null
-                        ? FrontendChainReductionHelper.ReceiverState.blockedFrom(
-                        FrontendChainReductionHelper.ReceiverState.resolvedInstance(typeResult.type()),
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                )
-                        : new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.BLOCKED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case DEFERRED -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.DEFERRED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case DYNAMIC -> FrontendChainReductionHelper.ReceiverState.dynamic(
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case FAILED -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.FAILED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-                case UNSUPPORTED -> new FrontendChainReductionHelper.ReceiverState(
-                        FrontendChainReductionHelper.Status.UNSUPPORTED,
-                        dev.superice.gdcc.frontend.sema.FrontendReceiverKind.UNKNOWN,
-                        null,
-                        null,
-                        Objects.requireNonNull(typeResult.detailReason(), "detailReason must not be null")
-                );
-            };
+            return FrontendChainStatusBridge.toExpressionTypeResult(result);
         }
 
         private void reportDeferredParameterDefaults(@NotNull List<Parameter> parameters) {

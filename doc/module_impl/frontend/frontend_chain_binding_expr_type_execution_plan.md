@@ -954,6 +954,13 @@ base expression 支撑逻辑收口到同一个 frontend helper。
   - blocked propagation
   - exact `Variant` 与 dynamic `Variant` 区分
 
+当前实施状态：
+
+- [x] 6.4.2.a 已新增 `FrontendChainStatusBridge`，统一冻结 `ReceiverState`、`ExpressionTypeResult`、`FrontendExpressionType`、`FrontendResolvedMember`、`FrontendResolvedCall` 之间的状态转换协议。
+- [x] 6.4.2.b `FrontendChainBindingAnalyzer` 与 `FrontendExprTypeAnalyzer` 已删除本地重复的状态桥接方法，统一改为消费 `FrontendChainStatusBridge`。
+- [x] 6.4.2.c `FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(...)` 已收口到共享 bridge，避免 published-expression 转换规则在 helper 与 analyzer 两侧漂移。
+- [x] 6.4.2.d 已新增 `FrontendChainStatusBridgeTest`，并与 `FrontendChainHeadReceiverSupportTest`、`FrontendChainReductionHelperTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendSemanticAnalyzerFrameworkTest` 一起跑通，覆盖 dynamic degradation、blocked propagation 与 exact/dynamic `Variant` 区分。
+
 ## 6.4.3 D/E 间重构收敛：抽出带缓存的链 reduction 门面
 
 第三步建议抽出一个 analyzer-side 的“带缓存的 chain reduction 门面”，统一两边各自维护的
@@ -990,6 +997,12 @@ base expression 支撑逻辑收口到同一个 frontend helper。
 - nested attribute recursion 行为保持稳定
 - chain analyzer 仍只发布一次 diagnostics，不出现双重发布
 - expr analyzer 仍不会越权发布 member/call side table
+
+当前实施状态：
+
+- [x] 6.4.3.a 已新增 `FrontendChainReductionFacade`，统一承载 analyzer-side 的 attribute reduction cache、chain-head receiver 计算以及 `FrontendChainReductionHelper.reduce(...)` 编排。
+- [x] 6.4.3.b `FrontendChainBindingAnalyzer` 与 `FrontendExprTypeAnalyzer` 已删除各自本地的 `reducedChains` 与 reduction 样板，改为共享 facade；其中 chain analyzer 仅在 `computedNow()` 时发布 reduction 结果，保持 diagnostics 单次发布边界。
+- [x] 6.4.3.c facade 已通过 `FrontendChainReductionFacadeTest` 锁定成功缓存、空结果缓存与 nested attribute base 复用行为；相关 analyzer focused tests 与 `FrontendSemanticAnalyzerFrameworkTest` 均已回归通过。
 
 ## 6.4.4 D/E 间收敛顺序建议
 
