@@ -26,5 +26,6 @@
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
 - 函数参数默认值不在最小可行产品范围内。
 - class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
+- callable scope / block scope 中手动声明或发布的类型别名不在 MVP 范围内；frontend body phase 必须对这类 scope-local `type-meta` 采用 fail-closed 的 deferred / unsupported 处理，而不是把它们当成普通 class-like `TYPE_META` 消费。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
