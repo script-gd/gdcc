@@ -788,7 +788,7 @@ MVP 优先覆盖：
 - literal
 - `self`
 - bare identifier
-- top-level `TYPE_META`
+- top-level `TYPE_META` static-route head
 - property read
 - signal value
 - static constant load
@@ -813,7 +813,7 @@ MVP 优先覆盖：
   - literal
   - `self`
   - bare identifier
-  - top-level `TYPE_META`
+  - top-level `TYPE_META` 的 route-head 参与规则
   - 这些节点先独立落地，保证 analyzer 本身的遍历与发布机制稳定
 - D2：读取型链式结果
   - property read
@@ -1059,7 +1059,82 @@ base expression 支撑逻辑收口到同一个 frontend helper。
 - [x] E1.c 已补齐并跑通合同测试：`FrontendExprTypeAnalyzerTest` 现覆盖 resolved backfill、dynamic degrade-to-Variant、以及 deferred/unsupported/blocked 不回填的负路径；`FrontendDeclaredTypeSupportTest` 补充了 `:=` marker 判定；回归已跑通 `FrontendVariableAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendDeclaredTypeSupportTest`、`FrontendSemanticAnalyzerFrameworkTest`。
 - [ ] E2/E3 仍维持原边界，不在本轮小改动中扩张 parameter default、operator/container/ternary/assignment typing 或更复杂的 flow-sensitive 恢复。
 
-## 6.6 阶段总体验收出口
+## 6.6 里程碑 F：static-route 头语义与链头失败合同收口
+
+E1 把 `:=` 的最小回填通道接上后，当前 body phase 还剩两类会直接影响最终阶段稳定性的合同缺口，需要在进入更大范围的 E2/E3 扩张前先收口：
+
+- `TYPE_META` 在 MVP 中不是一等 value，只能作为 static route 的语法头使用
+- 链式调用的头 binding 一旦未解析，就属于源码错误；frontend 必须发出 error diagnostic，并把整条链稳定归类为 head-failure，而不是在不同消费路径里漂成空结果、`UNSUPPORTED`、`FAILED` 或被后续 `:=` 回填洗成普通 `Variant`
+
+这一里程碑的目标不是增加新的语言支持面，而是把已经明确下来的 MVP 语义边界真正冻结进 published contract。
+
+**实施细则**：
+
+- F1：`TYPE_META` 的“static-route 头、非一等 value”合同收口
+  - 明确 bare `TYPE_META` identifier 在 MVP 中不发布 ordinary value expression typing，也不参与 `:=` 回填
+  - `FrontendExprTypeAnalyzer` 不得再把“合法 static route 内部的链头 `TYPE_META`”发布成会污染 side table 的普通 `UNSUPPORTED` 子表达式事实
+  - 对于 `Worker.build(seed)`、`Worker.new()`、`Vector3.BACK`、`Node.NOTIFICATION_ENTER_TREE` 这类合法 static route：
+    - 最终链式表达式继续按 `resolvedCalls()` / `resolvedMembers()` 发布稳定类型
+    - static route head `Worker` / `Vector3` / `Node` 本身要么不写入 `expressionTypes()`，要么只按明确冻结的“route-head only”内部规则处理，但不得伪装成普通 feature-boundary `UNSUPPORTED`
+  - 文档事实同步：
+    - D1 中关于 top-level `TYPE_META` 的表述必须改成与本合同一致
+    - 明确“top-level `TYPE_META` chain head 可参与 static route reduction”与“bare `TYPE_META` expression 不是普通 value”这两个语义并不矛盾
+- F2：链头 binding 未解析的 hard-fail 合同收口
+  - 只要链头 binding 未解析，或链头已发布 binding 但无法恢复出合法 receiver，就必须稳定进入 `FAILED`
+  - 这一类 head-failure 必须发出 error diagnostic；diagnostic 允许在 LSP 源模式下与后续容错分析共存，但不能静默掉地板
+  - `FrontendChainHeadReceiverSupport` / `FrontendChainReductionFacade` 不得再把 supported chain head 的失败压成 `null`
+    - `binding == null`
+    - `binding.kind() == UNKNOWN`
+    - 已发布 head binding 与当前 scope/restriction 不一致且无法恢复 receiver
+  - 上述场景必须改为返回结构化的 failed receiver state，再由 `FrontendChainReductionHelper` 统一做 suffix 传播
+  - dynamic fallback 的边界必须保持清晰：
+    - head 未解析 -> `FAILED`
+    - head 已解析、但中间成员/方法只能运行时分派 -> `DYNAMIC`
+    - 不允许再把 head-failure 伪装成 nested-unsupported、空结果缓存命中或普通 `Variant` 降级
+  - `FrontendExprTypeAnalyzer`、`FrontendChainBindingAnalyzer` 与 local expression dependency resolver 对同一类 head-failure 必须给出同向 provenance
+    - 顶层链式表达式
+    - 作为 call argument / nested attribute 的子表达式
+    - 作为 `:=` initializer 的 RHS
+- F3：`:=` 与 provenance 保真
+  - F2 完成后，重新核对 E1 回填策略
+  - 对 head-failure RHS：
+    - 局部变量 binding 允许继续保持 inventory 阶段的 `Variant` 以满足容错/LSP 继续分析
+    - 但 initializer 自身的 `expressionTypes()` 与对应 diagnostic 必须稳定保留 `FAILED` provenance
+    - 不得因为回填未发生，就让失败的 initializer 在后续消费者视角中只剩下一个“干净的 resolved Variant local”而无法追溯来源
+  - 若需要补充“声明由失败 initializer 引入”的测试锚点，应优先通过现有 side table 与 diagnostic 合同表达，而不是新增新的 side table
+
+**验收标准**：
+
+- F1 完成后：
+  - bare `TYPE_META` 不再被文档误写成 ordinary value expression
+  - 合法 static route 不会因为其链头 `TYPE_META` 而在 `expressionTypes()` 中留下误导性的普通 `UNSUPPORTED` 子节点记录
+  - `Worker.build(seed)` / `Worker.new()` / `Vector3.BACK` / `Node.NOTIFICATION_ENTER_TREE` 均有 focused tests 锁定 head 与整链的发布行为
+- F2 完成后：
+  - 顶层坏链头会稳定发出 error diagnostic
+  - nested bad chain（例如作为 argument 的子表达式）也会保持 `FAILED`，而不是漂成 `UNSUPPORTED`
+  - `FrontendChainReductionFacade` 不再把 supported head failure 压成 `null`
+  - dynamic middle-step fallback 与 head-failure 的测试矩阵明确分开
+- F3 完成后：
+  - `:=` initializer 为 head-failure 时，不会回填局部变量真实类型
+  - 但 initializer 的 `FAILED` expression typing 与对应 diagnostic 仍可被下游稳定观察
+  - 不会再出现“同一类坏链头在 chain analyzer 中静默、在 expr analyzer 中 failed、在 nested dependency 中 unsupported”的 provenance 分叉
+
+**推荐 targeted tests**：
+
+- `FrontendChainBindingAnalyzerTest`
+- `FrontendExprTypeAnalyzerTest`
+- `FrontendSemanticAnalyzerFrameworkTest`
+- 若新增 head-failure / static-head 专项 support tests，则一并纳入 targeted 回归
+
+**当前实施状态（2026-03-17）**：
+
+- [x] F1.a 已冻结 static-route head `TYPE_META` 发布合同：`FrontendExprTypeAnalyzer` 现只把这类 `TYPE_META` identifier 当作 reduction 的瞬时输入，不再把它们写入 ordinary `expressionTypes()`，因此也不会被 `:=` 回填路径误消费。
+- [x] F1.b 已收口 static-route head 污染面：`Worker.build(seed)`、`Worker.new()`、`Vector3.BACK`、`Node.NOTIFICATION_ENTER_TREE` 这类合法 static route 的整链结果继续正常发布，但链头 `TYPE_META` 本身不再以普通 `UNSUPPORTED` 子表达式形态混入 side table。
+- [x] F1.c 已补齐 focused tests：`FrontendExprTypeAnalyzerTest` 现同时锚定 legal static route 的 head `TYPE_META` 不落 ordinary expression typing、整链结果继续稳定发布、以及 unsupported static-route initializer 仍保持原有 `UNSUPPORTED`/不回填行为。
+- [ ] F2 待实施：当前实现中，supported chain head failure 仍可能在不同路径里表现为 facade `null`、expr-level `FAILED` 或 nested dependency `UNSUPPORTED`，尚未统一成 head-failure contract。
+- [ ] F3 待实施：E1 已经接上 `:=` 回填，但 head-failure initializer 的 provenance 保真还未与 F2 一并冻结。
+
+## 6.7 阶段总体验收出口
 
 第六部分整体完成时，应满足以下条件：
 
@@ -1067,6 +1142,8 @@ base expression 支撑逻辑收口到同一个 frontend helper。
 - constructor route、static method route、static load route 三条语义路径已结构化分流，不再依赖临时分支拼装
 - `BLOCKED` / `DEFERRED` / `DYNAMIC` / `FAILED` / `UNSUPPORTED` 的 published 语义、后缀传播和诊断数量都可测试、可预测
 - `:=` 已能消费稳定 RHS typing 完成变量真实类型落地
+- bare `TYPE_META` 已按“static-route 头、非一等 value”合同收口，不再污染 ordinary value expression typing
+- 链头 binding 未解析的 hard-fail 合同已统一：坏链头会发 error diagnostic，且在顶层、nested dependency 与 `:=` initializer 场景下都保持同向 provenance
 - 整体设计仍保持“整体分层、局部交替”，未退化成 whole-module fixpoint
 
 建议在整体出口前至少跑通以下 targeted tests 组合：

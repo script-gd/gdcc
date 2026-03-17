@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
+import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
@@ -338,11 +339,14 @@ public class FrontendExprTypeAnalyzer {
             }
         }
 
-        /// Ensures the expression type for `expression` has been published into `expressionTypes()`.
+        /// Ensures the ordinary value expression type for `expression` has been published when one
+        /// should exist in `expressionTypes()`.
         ///
         /// Callers use this for its side effect only: populate the published side table before a
-        /// parent expression needs to consume nested facts. Returning the computed value provided no
-        /// additional signal because all current call sites intentionally ignore it.
+        /// parent expression needs to consume nested facts. Bare `TYPE_META` identifiers are the
+        /// one intentional exception: they may be computed transiently for the current reduction,
+        /// but they are not published as ordinary value expression facts because they only serve as
+        /// static-route heads in MVP.
         private void publishExpressionType(@Nullable Expression expression) {
             if (expression == null) {
                 return;
@@ -352,7 +356,28 @@ public class FrontendExprTypeAnalyzer {
                 return;
             }
             var computed = resolveExpressionType(expression);
+            publishResolvedExpressionType(expression, computed);
+        }
+
+        private void publishResolvedExpressionType(
+                @NotNull Expression expression,
+                @NotNull FrontendExpressionType computed
+        ) {
+            if (isRouteHeadOnlyTypeMeta(expression)) {
+                return;
+            }
             expressionTypes.put(expression, computed);
+        }
+
+        /// Bare `TYPE_META` identifiers are valid chain heads such as `Worker.build()` but they are
+        /// not first-class value expressions in MVP. Skipping publication keeps static-route heads
+        /// out of ordinary `expressionTypes()` consumers and out of `:=` backfill.
+        private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {
+            if (!(expression instanceof IdentifierExpression identifierExpression)) {
+                return false;
+            }
+            var binding = analysisData.symbolBindings().get(identifierExpression);
+            return binding != null && binding.kind() == FrontendBindingKind.TYPE_META;
         }
 
         /// Supported local `:=` declarations are still inventoried as `Variant` during variable
@@ -378,7 +403,7 @@ public class FrontendExprTypeAnalyzer {
             if (backfilledType == null) {
                 return;
             }
-            blockScope.backfillLocalType(variableDeclaration.name().trim(), backfilledType);
+            blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, backfilledType);
         }
 
         private @NotNull FrontendExpressionType resolveExpressionType(@NotNull Expression expression) {
@@ -557,7 +582,7 @@ public class FrontendExprTypeAnalyzer {
                 return FrontendChainStatusBridge.toExpressionTypeResult(published);
             }
             var computed = resolveExpressionType(expression);
-            expressionTypes.put(expression, computed);
+            publishResolvedExpressionType(expression, computed);
             return FrontendChainStatusBridge.toExpressionTypeResult(computed);
         }
 

@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExprTypeAnalyzerTest {
     @Test
@@ -165,6 +166,68 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzeKeepsStaticRouteTypeMetaHeadsOutOfOrdinaryExpressionTypes() throws Exception {
+        var analyzed = analyze(
+                "expr_type_static_route_heads.gd",
+                """
+                        class_name ExprTypeStaticRouteHeads
+                        extends Node
+                        
+                        class Worker:
+                            static func build(seed) -> String:
+                                return ""
+                        
+                        func ping(seed):
+                            Worker.build(seed)
+                            Worker.new()
+                            Vector3.BACK
+                            Node.NOTIFICATION_ENTER_TREE
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var staticCallStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var constructorStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var builtinLoadStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2));
+        var engineLoadStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3));
+
+        var staticCall = assertInstanceOf(AttributeExpression.class, staticCallStatement.expression());
+        var constructorCall = assertInstanceOf(AttributeExpression.class, constructorStatement.expression());
+        var builtinLoad = assertInstanceOf(AttributeExpression.class, builtinLoadStatement.expression());
+        var engineLoad = assertInstanceOf(AttributeExpression.class, engineLoadStatement.expression());
+
+        var staticCallHead = findNode(staticCall, IdentifierExpression.class, identifier -> identifier.name().equals("Worker"));
+        var constructorHead = findNode(constructorCall, IdentifierExpression.class, identifier -> identifier.name().equals("Worker"));
+        var builtinLoadHead = findNode(builtinLoad, IdentifierExpression.class, identifier -> identifier.name().equals("Vector3"));
+        var engineLoadHead = findNode(engineLoad, IdentifierExpression.class, identifier -> identifier.name().equals("Node"));
+
+        assertNull(analyzed.analysisData().expressionTypes().get(staticCallHead));
+        assertNull(analyzed.analysisData().expressionTypes().get(constructorHead));
+        assertNull(analyzed.analysisData().expressionTypes().get(builtinLoadHead));
+        assertNull(analyzed.analysisData().expressionTypes().get(engineLoadHead));
+
+        var staticCallType = analyzed.analysisData().expressionTypes().get(staticCall);
+        assertNotNull(staticCallType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, staticCallType.status());
+        assertEquals("String", staticCallType.publishedType().getTypeName());
+
+        var constructorType = analyzed.analysisData().expressionTypes().get(constructorCall);
+        assertNotNull(constructorType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, constructorType.status());
+        assertEquals("ExprTypeStaticRouteHeads$Worker", constructorType.publishedType().getTypeName());
+
+        var builtinLoadType = analyzed.analysisData().expressionTypes().get(builtinLoad);
+        assertNotNull(builtinLoadType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, builtinLoadType.status());
+        assertEquals("Vector3", builtinLoadType.publishedType().getTypeName());
+
+        var engineLoadType = analyzed.analysisData().expressionTypes().get(engineLoad);
+        assertNotNull(engineLoadType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, engineLoadType.status());
+        assertEquals("int", engineLoadType.publishedType().getTypeName());
+    }
+
+    @Test
     void analyzePreservesBlockedStatusAcrossNestedArgumentDependency() throws Exception {
         var analyzed = analyze(
                 "expr_type_blocked_arg.gd",
@@ -210,7 +273,7 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeInferredBackfill
                         extends RefCounted
-
+                        
                         func ping(worker):
                             var resolved := 1
                             var dynamic_value := worker.ping().length
@@ -263,12 +326,12 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeInferredNoBackfill
                         extends RefCounted
-
+                        
                         class Worker:
                             pass
-
+                        
                         var payload: int = 1
-
+                        
                         static func ping():
                             var deferred_value := func(offset: int):
                                 return offset
@@ -285,6 +348,11 @@ class FrontendExprTypeAnalyzerTest {
         var deferredDeclaration = findVariable(pingFunction.body().statements(), "deferred_value");
         var unsupportedDeclaration = findVariable(pingFunction.body().statements(), "unsupported_value");
         var blockedDeclaration = findVariable(pingFunction.body().statements(), "blocked_value");
+        var unsupportedHead = findNode(
+                unsupportedDeclaration.value(),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("Worker")
+        );
         var deferredUse = assertInstanceOf(
                 IdentifierExpression.class,
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
@@ -305,6 +373,7 @@ class FrontendExprTypeAnalyzerTest {
         var unsupportedInitializerType = analyzed.analysisData().expressionTypes().get(unsupportedDeclaration.value());
         assertNotNull(unsupportedInitializerType);
         assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedInitializerType.status());
+        assertNull(analyzed.analysisData().expressionTypes().get(unsupportedHead));
 
         var blockedInitializerType = analyzed.analysisData().expressionTypes().get(blockedDeclaration.value());
         assertNotNull(blockedInitializerType);
@@ -329,6 +398,97 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(blockedUseType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, blockedUseType.status());
         assertEquals(GdVariantType.VARIANT, blockedUseType.publishedType());
+    }
+
+    @Test
+    void analyzeDoesNotRetypeEarlierLocalWhenDuplicateInferredDeclarationWasRejected() throws Exception {
+        var analyzed = analyze(
+                "expr_type_duplicate_inferred_local.gd",
+                """
+                        class_name ExprTypeDuplicateInferredLocal
+                        extends RefCounted
+                        
+                        func ping():
+                            var value := 1
+                            var value := "oops"
+                            value
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        var firstDeclaration = assertInstanceOf(VariableDeclaration.class, pingFunction.body().statements().getFirst());
+        var duplicateDeclaration = assertInstanceOf(VariableDeclaration.class, pingFunction.body().statements().get(1));
+        var valueUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+
+        var firstInitializerType = analyzed.analysisData().expressionTypes().get(firstDeclaration.value());
+        assertNotNull(firstInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, firstInitializerType.status());
+        assertEquals("int", firstInitializerType.publishedType().getTypeName());
+
+        var duplicateInitializerType = analyzed.analysisData().expressionTypes().get(duplicateDeclaration.value());
+        assertNotNull(duplicateInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, duplicateInitializerType.status());
+        assertEquals("String", duplicateInitializerType.publishedType().getTypeName());
+
+        assertEquals("int", bodyScope.resolveValue("value").type().getTypeName());
+
+        var valueUseType = analyzed.analysisData().expressionTypes().get(valueUse);
+        assertNotNull(valueUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, valueUseType.status());
+        assertEquals("int", valueUseType.publishedType().getTypeName());
+
+        assertTrue(
+                analyzed.analysisData().diagnostics().asList().stream()
+                        .anyMatch(diagnostic -> diagnostic.category().equals("sema.variable_binding")
+                                && diagnostic.message().contains("Duplicate local variable 'value'"))
+        );
+    }
+
+    @Test
+    void analyzeKeepsOuterLocalTypeWhenConflictingInnerInferredDeclarationWasRejected() throws Exception {
+        var analyzed = analyze(
+                "expr_type_conflicting_inferred_local.gd",
+                """
+                        class_name ExprTypeConflictingInferredLocal
+                        extends RefCounted
+                        
+                        func ping():
+                            var value := 1
+                            if value > 0:
+                                var value := 2
+                            value
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        var outerDeclaration = assertInstanceOf(VariableDeclaration.class, pingFunction.body().statements().getFirst());
+        var valueUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+
+        var outerInitializerType = analyzed.analysisData().expressionTypes().get(outerDeclaration.value());
+        assertNotNull(outerInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, outerInitializerType.status());
+        assertEquals("int", outerInitializerType.publishedType().getTypeName());
+
+        assertEquals("int", bodyScope.resolveValue("value").type().getTypeName());
+
+        var valueUseType = analyzed.analysisData().expressionTypes().get(valueUse);
+        assertNotNull(valueUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, valueUseType.status());
+        assertEquals("int", valueUseType.publishedType().getTypeName());
+
+        assertTrue(
+                analyzed.analysisData().diagnostics().asList().stream()
+                        .anyMatch(diagnostic -> diagnostic.category().equals("sema.variable_binding")
+                                && diagnostic.message().contains("shadows outer local 'value'"))
+        );
     }
 
     private static @NotNull AnalyzedScript analyze(
