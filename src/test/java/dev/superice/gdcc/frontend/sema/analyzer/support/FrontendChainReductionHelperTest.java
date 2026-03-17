@@ -256,6 +256,40 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reducePublishesConcreteFirstStepForHeadFailureThenPropagatesSuffix() {
+        var chain = chain(identifier("ghost"), property("payload"), property("length"));
+        var headFailure = new FrontendChainReductionHelper.ReceiverState(
+                FrontendChainReductionHelper.Status.FAILED,
+                FrontendReceiverKind.UNKNOWN,
+                null,
+                null,
+                "No published chain-head binding fact is available for identifier 'ghost'"
+        );
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                headFailure,
+                newRegistry(List.of(), List.of()),
+                noExpressionTypes()
+        ));
+
+        var firstTrace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, firstTrace.status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_FAILED, firstTrace.routeKind());
+        assertNotNull(firstTrace.suggestedMember());
+        assertEquals("payload", firstTrace.suggestedMember().memberName());
+        assertEquals(FrontendReceiverKind.UNKNOWN, firstTrace.suggestedMember().receiverKind());
+
+        var secondTrace = result.stepTraces().get(1);
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, secondTrace.status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_FAILED, secondTrace.routeKind());
+        assertNull(secondTrace.suggestedMember());
+
+        assertSame(chain.base(), result.recoveryRoot());
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, result.finalReceiver().status());
+    }
+
+    @Test
     void reduceSealsUnsupportedHeadAcrossEntireSuffix() {
         var chain = chain(identifier("ClassName"), property("VALUE"), property("next"));
         var head = FrontendChainReductionHelper.ReceiverState.unsupportedFrom(

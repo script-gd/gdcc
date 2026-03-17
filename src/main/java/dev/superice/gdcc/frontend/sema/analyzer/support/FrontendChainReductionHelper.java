@@ -39,6 +39,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
@@ -1303,6 +1304,12 @@ public final class FrontendChainReductionHelper {
             case UNSUPPORTED -> ReceiverState.unsupportedFrom(incomingReceiver, detailReason);
             case RESOLVED -> throw new IllegalStateException("upstream cause cannot be resolved");
         };
+        var suggestedMember = upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()
+                ? headFailureSuggestedMember(step, incomingReceiver, detailReason)
+                : null;
+        var suggestedCall = upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()
+                ? headFailureSuggestedCall(step, incomingReceiver, detailReason)
+                : null;
         return new StepTrace(
                 stepIndex,
                 step,
@@ -1312,9 +1319,50 @@ public final class FrontendChainReductionHelper {
                 outgoingReceiver.status(),
                 outgoingReceiver,
                 upstreamCause,
-                null,
-                null,
+                suggestedMember,
+                suggestedCall,
                 false,
+                detailReason
+        );
+    }
+
+    /// A failed chain head should still materialize one concrete failed first-step publication so
+    /// analyzer layers can issue a stable error diagnostic instead of observing an empty reduction.
+    private static @Nullable FrontendResolvedMember headFailureSuggestedMember(
+            @NotNull AttributeStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull String detailReason
+    ) {
+        if (!(step instanceof AttributePropertyStep propertyStep)) {
+            return null;
+        }
+        return FrontendResolvedMember.failed(
+                propertyStep.name(),
+                FrontendBindingKind.UNKNOWN,
+                incomingReceiver.receiverKind(),
+                null,
+                incomingReceiver.receiverType(),
+                null,
+                detailReason
+        );
+    }
+
+    private static @Nullable FrontendResolvedCall headFailureSuggestedCall(
+            @NotNull AttributeStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull String detailReason
+    ) {
+        if (!(step instanceof AttributeCallStep callStep)) {
+            return null;
+        }
+        return FrontendResolvedCall.failed(
+                callStep.name(),
+                FrontendCallResolutionKind.UNKNOWN,
+                incomingReceiver.receiverKind(),
+                null,
+                incomingReceiver.receiverType(),
+                List.copyOf(Collections.nCopies(callStep.arguments().size(), GdVariantType.VARIANT)),
+                null,
                 detailReason
         );
     }

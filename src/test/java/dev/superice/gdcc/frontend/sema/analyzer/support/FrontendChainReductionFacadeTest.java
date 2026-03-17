@@ -75,7 +75,7 @@ class FrontendChainReductionFacadeTest {
     }
 
     @Test
-    void reduceShouldCacheMissingHeadReceiverAsEmptyResult() throws Exception {
+    void reduceShouldCacheHeadFailureAsStructuredFailedReduction() throws Exception {
         var context = newTestContext();
         var facade = newFacade(context);
         var missing = chain(identifier("ghost"), property("payload"));
@@ -84,9 +84,12 @@ class FrontendChainReductionFacadeTest {
         var second = facade.reduce(missing);
 
         assertTrue(first.computedNow());
-        assertNull(first.result());
+        assertNotNull(first.result());
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, first.result().stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, first.result().finalReceiver().status());
+        assertSame(missing.base(), first.result().recoveryRoot());
         assertFalse(second.computedNow());
-        assertNull(second.result());
+        assertSame(first.result(), second.result());
     }
 
     private static @NotNull FrontendChainReductionFacade newFacade(@NotNull TestContext context) {

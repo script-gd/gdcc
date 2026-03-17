@@ -111,6 +111,49 @@ class FrontendChainHeadReceiverSupportTest {
     }
 
     @Test
+    void resolveHeadReceiverShouldFailInsteadOfReturningNullForMissingOrUnknownBindings() throws Exception {
+        var context = newTestContext();
+        var missing = identifier("ghost");
+        var unknown = identifier("mystery");
+        context.analysisData().symbolBindings().put(unknown, new FrontendBinding("mystery", FrontendBindingKind.UNKNOWN, null));
+
+        var support = newSupport(context, ResolveRestriction.unrestricted(), false);
+        var missingReceiver = support.resolveHeadReceiver(missing);
+        var unknownReceiver = support.resolveHeadReceiver(unknown);
+
+        assertNotNull(missingReceiver);
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, missingReceiver.status());
+        assertTrue(missingReceiver.detailReason().contains("No published chain-head binding fact"));
+
+        assertNotNull(unknownReceiver);
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, unknownReceiver.status());
+        assertTrue(unknownReceiver.detailReason().contains("does not resolve to a published value or type-meta receiver"));
+    }
+
+    @Test
+    void resolveHeadReceiverShouldFailWhenPublishedBindingCannotBeRecoveredFromCurrentScope() throws Exception {
+        var context = newTestContext();
+        var missingValue = identifier("worker");
+        var missingTypeMeta = identifier("Worker");
+        context.analysisData().symbolBindings().put(missingValue, new FrontendBinding("worker", FrontendBindingKind.LOCAL_VAR, null));
+        context.analysisData().symbolBindings().put(missingTypeMeta, new FrontendBinding("Worker", FrontendBindingKind.TYPE_META, null));
+        context.analysisData().scopesByAst().put(missingValue, context.bodyScope());
+        context.analysisData().scopesByAst().put(missingTypeMeta, context.bodyScope());
+
+        var support = newSupport(context, ResolveRestriction.unrestricted(), false);
+        var valueReceiver = support.resolveHeadReceiver(missingValue);
+        var typeReceiver = support.resolveHeadReceiver(missingTypeMeta);
+
+        assertNotNull(valueReceiver);
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, valueReceiver.status());
+        assertTrue(valueReceiver.detailReason().contains("no longer visible"));
+
+        assertNotNull(typeReceiver);
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, typeReceiver.status());
+        assertTrue(typeReceiver.detailReason().contains("no longer visible"));
+    }
+
+    @Test
     void resolveHeadReceiverShouldDelegateNestedAttributeAndFallbackCallbacks() throws Exception {
         var context = newTestContext();
         var nestedAttribute = new AttributeExpression(

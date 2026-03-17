@@ -77,6 +77,66 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesEachNonHeadStepForResolvedStaticRouteChain() throws Exception {
+        var analyzed = analyze(
+                "resolved_static_route_chain.gd",
+                """
+                        class_name ResolvedStaticRouteChain
+                        extends RefCounted
+                        
+                        class Handle:
+                            func start() -> int:
+                                return 1
+                        
+                        class Worker:
+                            var handle: Handle = Handle.new()
+                        
+                            static func build(seed) -> Worker:
+                                return Worker.new()
+                        
+                        func ping(seed):
+                            Worker.build(seed).handle.start()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var buildStep = findNode(chainStatement, AttributeCallStep.class, step -> step.name().equals("build"));
+        var handleStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("handle"));
+        var startStep = findNode(chainStatement, AttributeCallStep.class, step -> step.name().equals("start"));
+
+        var resolvedBuild = analyzed.analysisData().resolvedCalls().get(buildStep);
+        assertNotNull(resolvedBuild);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedBuild.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedBuild.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedBuild.receiverKind());
+        var resolvedBuildType = resolvedBuild.returnType();
+        assertNotNull(resolvedBuildType);
+        assertEquals("ResolvedStaticRouteChain$Worker", resolvedBuildType.getTypeName());
+
+        var resolvedHandle = analyzed.analysisData().resolvedMembers().get(handleStep);
+        assertNotNull(resolvedHandle);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedHandle.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedHandle.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedHandle.receiverKind());
+        var resolvedHandleType = resolvedHandle.resultType();
+        assertNotNull(resolvedHandleType);
+        assertEquals("ResolvedStaticRouteChain$Handle", resolvedHandleType.getTypeName());
+
+        var resolvedStart = analyzed.analysisData().resolvedCalls().get(startStep);
+        assertNotNull(resolvedStart);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedStart.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedStart.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedStart.receiverKind());
+        var resolvedStartType = resolvedStart.returnType();
+        assertNotNull(resolvedStartType);
+        assertEquals("int", resolvedStartType.getTypeName());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
     void analyzePublishesConstructorThenWarnsWhenInstanceSyntaxHitsStaticMethod() throws Exception {
         var analyzed = analyze(
                 "instance_static_method.gd",
@@ -302,6 +362,45 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(1, unsupportedDiagnostics.size());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("Static load route on GDCC class"));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesFailedHeadFailureRoutesAndDiagnostics() throws Exception {
+        var analyzed = analyze(
+                "head_failure_routes.gd",
+                """
+                        class_name HeadFailureRoutes
+                        extends RefCounted
+                        
+                        func ping():
+                            missing.payload
+                            missing_call.speak()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var failedMemberStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var failedCallStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var payloadStep = findNode(failedMemberStatement, AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var speakStep = findNode(failedCallStatement, AttributeCallStep.class, step -> step.name().equals("speak"));
+
+        var failedMember = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(failedMember);
+        assertEquals(FrontendMemberResolutionStatus.FAILED, failedMember.status());
+        assertEquals(FrontendBindingKind.UNKNOWN, failedMember.bindingKind());
+        assertEquals(FrontendReceiverKind.UNKNOWN, failedMember.receiverKind());
+        assertTrue(failedMember.detailReason().contains("does not resolve to a published value or type-meta receiver"));
+
+        var failedCall = analyzed.analysisData().resolvedCalls().get(speakStep);
+        assertNotNull(failedCall);
+        assertEquals(FrontendCallResolutionStatus.FAILED, failedCall.status());
+        assertEquals(FrontendCallResolutionKind.UNKNOWN, failedCall.callKind());
+        assertEquals(FrontendReceiverKind.UNKNOWN, failedCall.receiverKind());
+        assertTrue(failedCall.detailReason().contains("does not resolve to a published value or type-meta receiver"));
+
+        assertEquals(2, diagnosticsByCategory(analyzed.analysisData(), "sema.binding").size());
+        assertEquals(1, diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").size());
+        assertEquals(1, diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").size());
     }
 
     private static @NotNull AnalyzedScript analyze(

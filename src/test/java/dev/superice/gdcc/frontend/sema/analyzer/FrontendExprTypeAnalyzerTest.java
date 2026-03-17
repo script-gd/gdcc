@@ -93,6 +93,52 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesArgumentAndFinalTypeForResolvedStaticRouteChain() throws Exception {
+        var analyzed = analyze(
+                "expr_type_static_route_chain.gd",
+                """
+                        class_name ExprTypeStaticRouteChain
+                        extends RefCounted
+                        
+                        class Handle:
+                            func start() -> int:
+                                return 1
+                        
+                        class Worker:
+                            var handle: Handle = Handle.new()
+                        
+                            static func build(seed) -> Worker:
+                                return Worker.new()
+                        
+                        func ping(seed):
+                            Worker.build(seed).handle.start()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var chainExpression = assertInstanceOf(AttributeExpression.class, chainStatement.expression());
+        var workerHead = findNode(chainExpression, IdentifierExpression.class, identifier -> identifier.name().equals("Worker"));
+        var seedIdentifier = findNode(
+                chainExpression,
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("seed")
+        );
+
+        assertNull(analyzed.analysisData().expressionTypes().get(workerHead));
+
+        var seedType = analyzed.analysisData().expressionTypes().get(seedIdentifier);
+        assertNotNull(seedType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, seedType.status());
+        assertEquals(GdVariantType.VARIANT, seedType.publishedType());
+
+        var chainType = analyzed.analysisData().expressionTypes().get(chainExpression);
+        assertNotNull(chainType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, chainType.status());
+        assertEquals("int", chainType.publishedType().getTypeName());
+    }
+
+    @Test
     void analyzeDistinguishesExactVariantFromDynamicVariantDegradation() throws Exception {
         var analyzed = analyze(
                 "expr_type_dynamic.gd",
@@ -228,6 +274,55 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePreservesFailedHeadFailureAcrossNestedArgumentDependency() throws Exception {
+        var analyzed = analyze(
+                "expr_type_failed_head_arg.gd",
+                """
+                        class_name ExprTypeFailedHeadArgument
+                        extends RefCounted
+                        
+                        func consume(value) -> int:
+                            return 1
+                        
+                        func ping():
+                            self.consume(missing.payload)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var consumeStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var consumeExpression = assertInstanceOf(AttributeExpression.class, consumeStatement.expression());
+        var failedInner = findNode(
+                consumeExpression,
+                AttributeExpression.class,
+                candidate -> candidate != consumeExpression
+        );
+
+        var innerType = analyzed.analysisData().expressionTypes().get(failedInner);
+        assertNotNull(innerType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, innerType.status());
+        assertTrue(innerType.detailReason().contains("chain head"));
+
+        var outerType = analyzed.analysisData().expressionTypes().get(consumeExpression);
+        assertNotNull(outerType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, outerType.status());
+        assertTrue(outerType.detailReason().contains("chain head"));
+
+        assertEquals(
+                1,
+                analyzed.analysisData().diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.member_resolution"))
+                        .count()
+        );
+        assertEquals(
+                1,
+                analyzed.analysisData().diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.call_resolution"))
+                        .count()
+        );
+    }
+
+    @Test
     void analyzePreservesBlockedStatusAcrossNestedArgumentDependency() throws Exception {
         var analyzed = analyze(
                 "expr_type_blocked_arg.gd",
@@ -264,6 +359,48 @@ class FrontendExprTypeAnalyzerTest {
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedCallType.status());
         assertNull(blockedCallType.publishedType());
         assertNotNull(blockedCallType.detailReason());
+    }
+
+    @Test
+    void analyzeKeepsFailedInitializerProvenanceWithoutBackfillingInferredLocal() throws Exception {
+        var analyzed = analyze(
+                "expr_type_failed_initializer.gd",
+                """
+                        class_name ExprTypeFailedInitializer
+                        extends RefCounted
+                        
+                        func ping():
+                            var broken := missing.payload
+                            broken
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        var brokenDeclaration = findVariable(pingFunction.body().statements(), "broken");
+        var brokenUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        var initializerType = analyzed.analysisData().expressionTypes().get(brokenDeclaration.value());
+        assertNotNull(initializerType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, initializerType.status());
+        assertTrue(initializerType.detailReason().contains("chain head"));
+
+        assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("broken").type());
+
+        var brokenUseType = analyzed.analysisData().expressionTypes().get(brokenUse);
+        assertNotNull(brokenUseType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, brokenUseType.status());
+        assertEquals(GdVariantType.VARIANT, brokenUseType.publishedType());
+
+        assertEquals(
+                1,
+                analyzed.analysisData().diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.member_resolution"))
+                        .count()
+        );
     }
 
     @Test

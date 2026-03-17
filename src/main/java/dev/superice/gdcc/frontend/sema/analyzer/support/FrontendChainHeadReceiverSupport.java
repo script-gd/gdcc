@@ -122,8 +122,9 @@ public final class FrontendChainHeadReceiverSupport {
     /// - nested attributes are delegated back to the analyzer so cached reduction can be reused
     /// - everything else is delegated to the analyzer's fallback-expression policy
     ///
-    /// Returning `null` means "no published chain-head fact is available"; callers may then choose
-    /// to skip reduction entirely.
+    /// Returning `null` means only that a caller-supplied nested/fallback callback declined to
+    /// publish any receiver fact. Supported identifier-head failures are materialized as `FAILED`
+    /// receiver states instead of being silently compressed into `null`.
     public @Nullable FrontendChainReductionHelper.ReceiverState resolveHeadReceiver(@NotNull Expression base) {
         return switch (Objects.requireNonNull(base, "base must not be null")) {
             case IdentifierExpression identifierExpression -> resolveIdentifierHeadReceiver(identifierExpression);
@@ -141,25 +142,32 @@ public final class FrontendChainHeadReceiverSupport {
     /// published binding kind tells us which namespace already won during top binding. That keeps the
     /// body-phase contract stable: `TYPE_META`, ordinary values, `self`, and "not a value receiver"
     /// cases all follow the published result instead of re-running ad-hoc namespace competition.
-    public @Nullable FrontendChainReductionHelper.ReceiverState resolveIdentifierHeadReceiver(
+    ///
+    /// Unlike `resolveHeadReceiver(...)`, identifier heads never use `null` as a miss sentinel:
+    /// supported head failures are always materialized as `FAILED` receiver states so downstream
+    /// reduction preserves provenance instead of collapsing into an empty chain result.
+    public @NotNull FrontendChainReductionHelper.ReceiverState resolveIdentifierHeadReceiver(
             @NotNull IdentifierExpression identifierExpression
     ) {
         var identifier = Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
         var binding = analysisData.symbolBindings().get(identifier);
         if (binding == null) {
-            return null;
+            return failedHeadReceiver(
+                    identifier,
+                    "No published chain-head binding fact is available for identifier '" + identifier.name() + "'"
+            );
         }
         return switch (binding.kind()) {
             case TYPE_META -> resolveTypeMetaReceiver(identifier);
             case SELF -> resolveSelfReceiver(identifier);
             case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM ->
                     resolveValueReceiver(identifier);
-            case UNKNOWN -> null;
-            case LITERAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION -> new FrontendChainReductionHelper.ReceiverState(
-                    FrontendChainReductionHelper.Status.FAILED,
-                    FrontendReceiverKind.UNKNOWN,
-                    null,
-                    null,
+            case UNKNOWN -> failedHeadReceiver(
+                    identifier,
+                    "Chain head '" + identifier.name() + "' does not resolve to a published value or type-meta receiver"
+            );
+            case LITERAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION -> failedHeadReceiver(
+                    identifier,
                     "Chain head '" + identifier.name() + "' does not publish a value receiver"
             );
         };
@@ -307,6 +315,20 @@ public final class FrontendChainHeadReceiverSupport {
                 null,
                 null,
                 "Literal kind '" + literalExpression.kind() + "' does not yet have a local type rule"
+        );
+    }
+
+    private static @NotNull FrontendChainReductionHelper.ReceiverState failedHeadReceiver(
+            @NotNull IdentifierExpression identifierExpression,
+            @NotNull String detailReason
+    ) {
+        Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
+        return new FrontendChainReductionHelper.ReceiverState(
+                FrontendChainReductionHelper.Status.FAILED,
+                FrontendReceiverKind.UNKNOWN,
+                null,
+                null,
+                Objects.requireNonNull(detailReason, "detailReason must not be null")
         );
     }
 
