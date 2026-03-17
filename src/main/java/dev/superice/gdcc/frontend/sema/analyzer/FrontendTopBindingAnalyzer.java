@@ -607,6 +607,16 @@ public class FrontendTopBindingAnalyzer {
             }
 
             var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
+            if (shouldPreferGlobalEnumTypeMeta(valueResolution, typeMetaResult)) {
+                var typeMeta = typeMetaResult.requireValue();
+                publishBinding(
+                        identifierExpression,
+                        identifierExpression.name(),
+                        FrontendBindingKind.TYPE_META,
+                        typeMeta.declaration()
+                );
+                return;
+            }
             if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED
                     || valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
                 publishValueResolution(identifierExpression, valueResolution);
@@ -627,7 +637,7 @@ public class FrontendTopBindingAnalyzer {
                     reportBindingError(
                             identifierExpression,
                             "Top-level type-meta binding for '" + identifierExpression.name()
-                                    + "' currently supports only class-like registry types and lexical inner classes"
+                                    + "' currently supports class-like types, builtin static receivers, and global enums"
                     );
                 }
                 return;
@@ -770,9 +780,26 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private boolean supportsTopLevelTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
-            return !typeMeta.pseudoType()
-                    && (typeMeta.kind() == ScopeTypeMetaKind.GDCC_CLASS
-                    || typeMeta.kind() == ScopeTypeMetaKind.ENGINE_CLASS);
+            return switch (typeMeta.kind()) {
+                case GDCC_CLASS, ENGINE_CLASS, BUILTIN -> !typeMeta.pseudoType();
+                case GLOBAL_ENUM -> typeMeta.declaration() != null;
+            };
+        }
+
+        private boolean shouldPreferGlobalEnumTypeMeta(
+                @NotNull FrontendVisibleValueResolution valueResolution,
+                @NotNull dev.superice.gdcc.scope.ScopeLookupResult<ScopeTypeMeta> typeMetaResult
+        ) {
+            if (valueResolution.status() != FrontendVisibleValueStatus.FOUND_ALLOWED) {
+                return false;
+            }
+            var visibleValue = valueResolution.visibleValue();
+            if (visibleValue == null || visibleValue.kind() != ScopeValueKind.GLOBAL_ENUM) {
+                return false;
+            }
+            return typeMetaResult.isAllowed()
+                    && typeMetaResult.requireValue().kind() == ScopeTypeMetaKind.GLOBAL_ENUM
+                    && supportsTopLevelTypeMeta(typeMetaResult.requireValue());
         }
 
         private @Nullable Scope findCurrentScope(@NotNull IdentifierExpression identifierExpression) {

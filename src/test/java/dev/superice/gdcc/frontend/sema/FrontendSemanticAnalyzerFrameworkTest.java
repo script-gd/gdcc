@@ -4,6 +4,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
@@ -238,12 +239,18 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.symbolBindings().get(lambdaPlayerUseSite));
 
         assertEquals(5, result.symbolBindings().size());
-        assertTrue(result.resolvedMembers().isEmpty());
-        assertTrue(result.resolvedCalls().isEmpty());
+        assertEquals(1, result.resolvedMembers().size());
+        assertEquals(1, result.resolvedCalls().size());
         assertEquals(
                 2,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_binding_subtree"))
+                        .count()
+        );
+        assertEquals(
+                4,
+                result.diagnostics().asList().stream()
+                        .filter(diagnostic -> diagnostic.category().equals("sema.deferred_chain_resolution"))
                         .count()
         );
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
@@ -253,6 +260,18 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_binding_subtree")
                         && diagnostic.message().contains("lambda subtree")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.deferred_chain_resolution")
+                        && diagnostic.message().contains("parameter default")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.deferred_chain_resolution")
+                        && diagnostic.message().contains("lambda subtree")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.deferred_chain_resolution")
+                        && diagnostic.message().contains("Argument #1 type is still deferred")
         ));
     }
 
@@ -327,11 +346,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var probeScopeAnalyzer = new RecordingScopeAnalyzer();
         var probeVariableAnalyzer = new RecordingVariableAnalyzer();
         var probeTopBindingAnalyzer = new RecordingTopBindingAnalyzer();
+        var probeChainBindingAnalyzer = new RecordingChainBindingAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
                 probeScopeAnalyzer,
                 probeVariableAnalyzer,
-                probeTopBindingAnalyzer
+                probeTopBindingAnalyzer,
+                probeChainBindingAnalyzer
         );
 
         var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
@@ -347,6 +368,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeTopBindingAnalyzer.preTopBindingDiagnosticsMatchedManager);
         assertTrue(probeTopBindingAnalyzer.stableSymbolBindingsReferencePreserved);
         assertTrue(probeTopBindingAnalyzer.symbolBindingsPublicationClearedProbeEntry);
+        assertTrue(probeChainBindingAnalyzer.invoked);
+        assertTrue(probeChainBindingAnalyzer.topBindingBoundaryPublished);
+        assertTrue(probeChainBindingAnalyzer.preChainBindingDiagnosticsMatchedManager);
+        assertTrue(probeChainBindingAnalyzer.stableResolvedMembersReferencePreserved);
+        assertTrue(probeChainBindingAnalyzer.stableResolvedCallsReferencePreserved);
+        assertTrue(probeChainBindingAnalyzer.memberPublicationClearedProbeEntry);
+        assertTrue(probeChainBindingAnalyzer.callPublicationClearedProbeEntry);
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics.size() + 1, probeVariableAnalyzer.preVariableDiagnostics.size());
         assertTrue(probeVariableAnalyzer.preVariableDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
@@ -358,14 +386,24 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeTopBindingAnalyzer.preTopBindingDiagnostics.asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.variable_phase_probe")
         ));
-        assertEquals(probeTopBindingAnalyzer.preTopBindingDiagnostics.size() + 1, result.diagnostics().size());
+        assertEquals(
+                probeTopBindingAnalyzer.preTopBindingDiagnostics.size() + 1,
+                probeChainBindingAnalyzer.preChainBindingDiagnostics.size()
+        );
+        assertTrue(probeChainBindingAnalyzer.preChainBindingDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.top_binding_phase_probe")
+        ));
+        assertEquals(probeChainBindingAnalyzer.preChainBindingDiagnostics.size() + 1, result.diagnostics().size());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.scope_phase_probe")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.variable_phase_probe")
         ));
-        assertEquals("sema.top_binding_phase_probe", result.diagnostics().getLast().category());
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.top_binding_phase_probe")
+        ));
+        assertEquals("sema.chain_binding_phase_probe", result.diagnostics().getLast().category());
         assertEquals(probeScopeAnalyzer.preScopeDiagnostics, result.moduleSkeleton().diagnostics());
         assertEquals(result.diagnostics(), diagnostics.snapshot());
         assertTrue(result.symbolBindings().isEmpty());
@@ -807,6 +845,75 @@ class FrontendSemanticAnalyzerFrameworkTest {
             diagnosticManager.warning(
                     "sema.top_binding_phase_probe",
                     "top-binding phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingChainBindingAnalyzer extends FrontendChainBindingAnalyzer {
+        private boolean invoked;
+        private boolean topBindingBoundaryPublished;
+        private boolean preChainBindingDiagnosticsMatchedManager;
+        private boolean stableResolvedMembersReferencePreserved;
+        private boolean stableResolvedCallsReferencePreserved;
+        private boolean memberPublicationClearedProbeEntry;
+        private boolean callPublicationClearedProbeEntry;
+        private DiagnosticSnapshot preChainBindingDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull ClassRegistry classRegistry,
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preChainBindingDiagnostics = analysisData.diagnostics();
+            preChainBindingDiagnosticsMatchedManager = preChainBindingDiagnostics.equals(diagnosticManager.snapshot());
+            topBindingBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty();
+            var publishedMembers = analysisData.resolvedMembers();
+            var publishedCalls = analysisData.resolvedCalls();
+            var probeMemberNode = new PassStatement(SYNTHETIC_RANGE);
+            var probeCallNode = new ExpressionStatement(new LiteralExpression("integer", "0", SYNTHETIC_RANGE), SYNTHETIC_RANGE);
+            publishedMembers.put(
+                    probeMemberNode,
+                    FrontendResolvedMember.failed(
+                            "__probe_member__",
+                            FrontendBindingKind.PROPERTY,
+                            FrontendReceiverKind.INSTANCE,
+                            null,
+                            GdVariantType.VARIANT,
+                            null,
+                            "probe"
+                    )
+            );
+            publishedCalls.put(
+                    probeCallNode,
+                    FrontendResolvedCall.failed(
+                            "__probe_call__",
+                            FrontendCallResolutionKind.INSTANCE_METHOD,
+                            FrontendReceiverKind.INSTANCE,
+                            null,
+                            GdVariantType.VARIANT,
+                            List.of(),
+                            null,
+                            "probe"
+                    )
+            );
+
+            super.analyze(classRegistry, analysisData, diagnosticManager);
+
+            stableResolvedMembersReferencePreserved = publishedMembers == analysisData.resolvedMembers();
+            stableResolvedCallsReferencePreserved = publishedCalls == analysisData.resolvedCalls();
+            memberPublicationClearedProbeEntry = analysisData.resolvedMembers().isEmpty()
+                    && !analysisData.resolvedMembers().containsKey(probeMemberNode);
+            callPublicationClearedProbeEntry = analysisData.resolvedCalls().isEmpty()
+                    && !analysisData.resolvedCalls().containsKey(probeCallNode);
+            diagnosticManager.warning(
+                    "sema.chain_binding_phase_probe",
+                    "chain-binding phase probe diagnostic",
                     null,
                     null
             );

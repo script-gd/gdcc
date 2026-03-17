@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`symbolBindings()` 重建、ordinary-value-first 的 top-level `TYPE_META` 规则、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
-- 更新时间：2026-03-16
+- 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
+- 更新时间：2026-03-17
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -47,6 +47,8 @@
 7. `analysisData.updateDiagnostics(...)`
 8. `FrontendTopBindingAnalyzer.analyze(...)`
 9. `analysisData.updateDiagnostics(...)`
+10. `FrontendChainBindingAnalyzer.analyze(...)`
+11. `analysisData.updateDiagnostics(...)`
 
 这意味着：
 
@@ -216,6 +218,13 @@
   - 直接发 deferred / unsupported diagnostic
   - 不得继续尝试 `TYPE_META`
 
+唯一的当前例外是 global enum chain head：
+
+- 若 ordinary value resolution 的 winning value 是 `GLOBAL_ENUM`
+- 且 `Scope.resolveTypeMeta(...)` 同名命中受支持的 global enum type-meta
+- analyzer 必须优先发布 `TYPE_META`
+- 这样 `EnumType.VALUE` 才能进入后续 static-load route，而不会被 ordinary value binding 永久吃掉
+
 若 ordinary value 赢了，且同名受支持 `TYPE_META` 同时可见：
 
 - 只有当 winning value 属于 `LOCAL` / `PARAMETER` / `CAPTURE`
@@ -226,18 +235,22 @@
 当前 top-level `TYPE_META` 只支持以下来源：
 
 - `ClassRegistry` 已注册的 class-like 类型
+- `ClassRegistry` 已注册的 builtin static receiver
+- `ClassRegistry` 已注册的 global enum
 - 当前 lexical scope 可见的 inner class
 
 实现上，这对应以下约束：
 
-- `ScopeTypeMeta.kind()` 必须是 `ENGINE_CLASS` 或 `GDCC_CLASS`
-- `ScopeTypeMeta.pseudoType()` 必须为 `false`
+- `ScopeTypeMeta.kind()` 为 `GDCC_CLASS` / `ENGINE_CLASS` / `BUILTIN` 时
+  - `ScopeTypeMeta.pseudoType()` 必须为 `false`
+- `ScopeTypeMeta.kind()` 为 `GLOBAL_ENUM` 时
+  - `declaration()` 必须非空
 
 当前明确不支持的 type-meta 来源包括：
 
 - preload alias
 - const-based type alias
-- local enum
+- scope-local pseudo type-meta / local enum alias
 - 其他未来通过 `defineTypeMeta(...)` 接入、但当前未冻结消费合同的来源
 
 ### 3.3 bare callee
@@ -623,4 +636,3 @@ func ping():
 - ordinary local initializer 继续属于支持面
 - parameter default / lambda / `for` / `match` / block-local `const` 当前继续走 deferred warning
 - skipped executable subtree 的 warning 当前按 root-level 发布，而不是静默跳过或逐 use-site 降级
-

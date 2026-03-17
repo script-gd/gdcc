@@ -212,19 +212,30 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
-    void analyzeBindsTopLevelTypeMetaChainHeadsForEngineAndLexicalInnerClasses() throws Exception {
-        var preparedInput = prepareBindingInput("type_meta_chain_head.gd", """
-                class_name TypeMetaChainHead
-                extends Node
-                
-                class Inner:
-                    static func build():
-                        return null
-                
-                func ping():
-                    Node.new()
-                    Inner.build()
-                """);
+    void analyzeBindsTopLevelTypeMetaChainHeadsForEngineBuiltinGlobalEnumAndLexicalInnerClasses() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        assertFalse(api.globalEnums().isEmpty());
+        assertFalse(api.globalEnums().getFirst().values().isEmpty());
+        var globalEnumName = api.globalEnums().getFirst().name();
+        var globalEnumValueName = api.globalEnums().getFirst().values().getFirst().name();
+        var preparedInput = prepareBindingInput(
+                "type_meta_chain_head.gd",
+                """
+                        class_name TypeMetaChainHead
+                        extends Node
+                        
+                        class Inner:
+                            static func build():
+                                return null
+                        
+                        func ping():
+                            Node.new()
+                            String.num_int64(1)
+                            %s.%s
+                            Inner.build()
+                        """.formatted(globalEnumName, globalEnumValueName),
+                new ClassRegistry(api)
+        );
         var analyzer = new FrontendTopBindingAnalyzer();
 
         analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
@@ -233,6 +244,16 @@ class FrontendTopBindingAnalyzerTest {
         assertBinding(
                 preparedInput.analysisData(),
                 findIdentifierExpression(pingFunction.body(), "Node"),
+                FrontendBindingKind.TYPE_META
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "String"),
+                FrontendBindingKind.TYPE_META
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), globalEnumName),
                 FrontendBindingKind.TYPE_META
         );
         assertBinding(
@@ -420,7 +441,7 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
-    void analyzeRejectsUnsupportedTypeMetaSourcesAndDoesNotMispublishThemAsTypeMeta() throws Exception {
+    void analyzeAllowsBuiltinTypeMetaHeadsButRejectsScopeLocalPseudoTypeMetaSources() throws Exception {
         var preparedInput = prepareBindingInput("unsupported_type_meta_sources.gd", """
                 class_name UnsupportedTypeMetaSources
                 extends Node
@@ -446,12 +467,15 @@ class FrontendTopBindingAnalyzerTest {
         analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
-        assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(pingFunction.body(), "String")));
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "String"),
+                FrontendBindingKind.TYPE_META
+        );
         assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(pingFunction.body(), "Alias")));
 
         var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
-        assertEquals(2, bindingDiagnostics.size());
-        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("String")));
+        assertEquals(1, bindingDiagnostics.size());
         assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Alias")));
     }
 

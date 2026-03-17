@@ -6,7 +6,14 @@ import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.ClassDef;
+import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
 import dev.superice.gdcc.scope.resolver.ScopePropertyResolver;
@@ -14,6 +21,7 @@ import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedProperty;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedSignal;
 import dev.superice.gdcc.scope.resolver.ScopeSignalResolver;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdSignalType;
 import dev.superice.gdcc.type.GdType;
@@ -33,12 +41,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
+import java.util.StringJoiner;
+import java.util.regex.Pattern;
 
 /// Local left-to-right chain reduction helper used before the published chain analyzer exists.
 ///
 /// The helper is frontend-specific because it translates shared resolver output into frontend
 /// statuses, trace entries, and suggested `FrontendResolvedMember` / `FrontendResolvedCall` facts.
 public final class FrontendChainReductionHelper {
+    private static final @NotNull Pattern INTEGER_LITERAL_PATTERN = Pattern.compile("[+-]?\\d+");
+
     private FrontendChainReductionHelper() {
     }
 
@@ -367,29 +379,7 @@ public final class FrontendChainReductionHelper {
             @NotNull ReductionRequest request
     ) {
         if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
-            var detailReason = "Static load route for '" + step.name() + "' remains frontend-only until milestone C";
-            return new StepTrace(
-                    stepIndex,
-                    step,
-                    StepKind.PROPERTY,
-                    RouteKind.STATIC_LOAD,
-                    incomingReceiver,
-                    Status.UNSUPPORTED,
-                    ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
-                    null,
-                    FrontendResolvedMember.unsupported(
-                            step.name(),
-                            FrontendBindingKind.UNKNOWN,
-                            FrontendReceiverKind.TYPE_META,
-                            null,
-                            incomingReceiver.receiverType(),
-                            incomingReceiver.receiverTypeMeta(),
-                            detailReason
-                    ),
-                    null,
-                    false,
-                    detailReason
-            );
+            return reduceStaticLoadStep(stepIndex, step, incomingReceiver, request.classRegistry());
         }
 
         var receiverType = Objects.requireNonNull(incomingReceiver.receiverType(), "receiverType must not be null");
@@ -443,10 +433,10 @@ public final class FrontendChainReductionHelper {
                     StepKind.PROPERTY,
                     RouteKind.INSTANCE_PROPERTY,
                     incomingReceiver,
-                    Status.DEFERRED,
-                    ReceiverState.deferredFrom(incomingReceiver, detailReason),
+                    Status.DYNAMIC,
+                    ReceiverState.dynamic(detailReason),
                     null,
-                    FrontendResolvedMember.deferred(
+                    FrontendResolvedMember.dynamic(
                             step.name(),
                             FrontendBindingKind.UNKNOWN,
                             FrontendReceiverKind.INSTANCE,
@@ -531,6 +521,218 @@ public final class FrontendChainReductionHelper {
         );
     }
 
+    private static @NotNull StepTrace reduceStaticLoadStep(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ClassRegistry classRegistry
+    ) {
+        var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
+        return switch (receiverTypeMeta.kind()) {
+            case GLOBAL_ENUM -> reduceGlobalEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
+            case BUILTIN -> reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
+            case ENGINE_CLASS -> reduceEngineStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
+            case GDCC_CLASS -> {
+                var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.sourceName()
+                        + "' is deferred until class constants are published";
+                yield new StepTrace(
+                        stepIndex,
+                        step,
+                        StepKind.PROPERTY,
+                        RouteKind.STATIC_LOAD,
+                        incomingReceiver,
+                        Status.UNSUPPORTED,
+                        ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
+                        null,
+                        FrontendResolvedMember.unsupported(
+                                step.name(),
+                                FrontendBindingKind.CONSTANT,
+                                FrontendReceiverKind.TYPE_META,
+                                ScopeOwnerKind.GDCC,
+                                incomingReceiver.receiverType(),
+                                receiverTypeMeta.declaration(),
+                                detailReason
+                        ),
+                        null,
+                        false,
+                        detailReason
+                );
+            }
+        };
+    }
+
+    private static @NotNull StepTrace reduceGlobalEnumStaticLoad(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        if (!(receiverTypeMeta.declaration() instanceof ExtensionGlobalEnum globalEnum)) {
+            var detailReason = "Global enum static load receiver '" + receiverTypeMeta.sourceName()
+                    + "' has malformed declaration metadata";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
+        }
+        var enumValue = globalEnum.values().stream()
+                .filter(value -> step.name().equals(value.name()))
+                .findFirst()
+                .orElse(null);
+        if (enumValue == null) {
+            var detailReason = "Enum value '" + step.name() + "' not found in global enum '" + globalEnum.name() + "'";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, null, receiverTypeMeta, detailReason);
+        }
+        return resolvedStaticLoadTrace(
+                stepIndex,
+                step,
+                incomingReceiver,
+                null,
+                GdIntType.INT,
+                enumValue
+        );
+    }
+
+    private static @NotNull StepTrace reduceBuiltinStaticLoad(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
+        if (builtinClass == null) {
+            var detailReason = "Builtin static receiver '" + receiverTypeMeta.sourceName()
+                    + "' is not backed by builtin class metadata";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
+        }
+        var constant = builtinClass.constants().stream()
+                .filter(candidate -> step.name().equals(candidate.name()))
+                .findFirst()
+                .orElse(null);
+        if (constant == null) {
+            var detailReason = "Builtin constant '" + step.name() + "' not found in class '" + builtinClass.name() + "'";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
+        }
+        if (constant.type() == null || constant.type().isBlank()) {
+            var detailReason = "Builtin constant '" + step.name() + "' in class '" + builtinClass.name()
+                    + "' has no declared type";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, constant, detailReason);
+        }
+        var constantType = classRegistry.tryResolveDeclaredType(constant.type());
+        if (constantType == null) {
+            var detailReason = "Builtin constant '" + step.name() + "' in class '" + builtinClass.name()
+                    + "' has unsupported declared type '" + constant.type() + "'";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, constant, detailReason);
+        }
+        return resolvedStaticLoadTrace(
+                stepIndex,
+                step,
+                incomingReceiver,
+                ScopeOwnerKind.BUILTIN,
+                constantType,
+                constant
+        );
+    }
+
+    private static @NotNull StepTrace reduceEngineStaticLoad(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        var engineClass = resolveEngineStaticOwner(classRegistry, receiverTypeMeta);
+        if (engineClass == null) {
+            var detailReason = "Engine static receiver '" + receiverTypeMeta.sourceName()
+                    + "' is not backed by engine class metadata";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
+        }
+        var constant = engineClass.constants().stream()
+                .filter(candidate -> step.name().equals(candidate.name()))
+                .findFirst()
+                .orElse(null);
+        if (constant == null) {
+            var detailReason = "Engine class constant '" + step.name() + "' not found in class '" + engineClass.name() + "'";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
+        }
+        var literal = constant.value() == null ? "" : constant.value().trim();
+        if (!INTEGER_LITERAL_PATTERN.matcher(literal).matches()) {
+            var detailReason = "Engine class constant '" + step.name() + "' in class '" + engineClass.name()
+                    + "' is not an integer literal";
+            return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, constant, detailReason);
+        }
+        return resolvedStaticLoadTrace(
+                stepIndex,
+                step,
+                incomingReceiver,
+                ScopeOwnerKind.ENGINE,
+                GdIntType.INT,
+                constant
+        );
+    }
+
+    private static @NotNull StepTrace resolvedStaticLoadTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @Nullable ScopeOwnerKind ownerKind,
+            @NotNull GdType resultType,
+            @Nullable Object declarationSite
+    ) {
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.STATIC_LOAD,
+                incomingReceiver,
+                Status.RESOLVED,
+                ReceiverState.resolvedInstance(resultType),
+                null,
+                FrontendResolvedMember.resolved(
+                        step.name(),
+                        FrontendBindingKind.CONSTANT,
+                        FrontendReceiverKind.TYPE_META,
+                        ownerKind,
+                        incomingReceiver.receiverType(),
+                        resultType,
+                        declarationSite
+                ),
+                null,
+                false,
+                null
+        );
+    }
+
+    private static @NotNull StepTrace failedStaticLoadTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @Nullable ScopeOwnerKind ownerKind,
+            @Nullable Object declarationSite,
+            @NotNull String detailReason
+    ) {
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.STATIC_LOAD,
+                incomingReceiver,
+                Status.FAILED,
+                ReceiverState.failedFrom(incomingReceiver, detailReason),
+                null,
+                FrontendResolvedMember.failed(
+                        step.name(),
+                        FrontendBindingKind.CONSTANT,
+                        FrontendReceiverKind.TYPE_META,
+                        ownerKind,
+                        incomingReceiver.receiverType(),
+                        declarationSite,
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
+        );
+    }
+
     private static @NotNull StepTrace resolvedPropertyTrace(
             int stepIndex,
             @NotNull AttributePropertyStep step,
@@ -601,38 +803,37 @@ public final class FrontendChainReductionHelper {
             @NotNull ReductionRequest request,
             @NotNull List<ReductionNote> notes
     ) {
-        if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")) {
-            var typeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
-            var detailReason = "Constructor route for type-meta receiver '" + typeMeta.sourceName()
-                    + "' remains frontend-only until milestone C";
-            return new StepTrace(
+        var argumentResolution = resolveArgumentTypes(step.arguments(), request);
+        if (argumentResolution.status() != Status.RESOLVED) {
+            var routeKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")
+                    ? RouteKind.CONSTRUCTOR
+                    : incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
+                    ? RouteKind.STATIC_METHOD
+                    : RouteKind.INSTANCE_METHOD;
+            var callKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")
+                    ? FrontendCallResolutionKind.CONSTRUCTOR
+                    : incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
+                    ? FrontendCallResolutionKind.STATIC_METHOD
+                    : FrontendCallResolutionKind.INSTANCE_METHOD;
+            return unresolvedCallDependencyTrace(
                     stepIndex,
                     step,
-                    StepKind.CALL,
-                    RouteKind.CONSTRUCTOR,
                     incomingReceiver,
-                    Status.UNSUPPORTED,
-                    ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
-                    null,
-                    null,
-                    FrontendResolvedCall.unsupported(
-                            step.name(),
-                            FrontendCallResolutionKind.CONSTRUCTOR,
-                            FrontendReceiverKind.TYPE_META,
-                            null,
-                            incomingReceiver.receiverType(),
-                            List.of(),
-                            typeMeta,
-                            detailReason
-                    ),
-                    false,
-                    detailReason
+                    argumentResolution,
+                    routeKind,
+                    callKind
             );
         }
 
-        var argumentResolution = resolveArgumentTypes(step.arguments(), request);
-        if (argumentResolution.status() != Status.RESOLVED) {
-            return unresolvedCallDependencyTrace(stepIndex, step, incomingReceiver, argumentResolution);
+        if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META && step.name().equals("new")) {
+            return reduceConstructorStep(
+                    stepIndex,
+                    step,
+                    incomingReceiver,
+                    request.classRegistry(),
+                    argumentResolution.argumentTypes(),
+                    argumentResolution.retryUsed()
+            );
         }
 
         if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
@@ -723,6 +924,93 @@ public final class FrontendChainReductionHelper {
                         detailReason
                 );
             }
+        };
+    }
+
+    private static @NotNull StepTrace reduceConstructorStep(
+            int stepIndex,
+            @NotNull AttributeCallStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull List<GdType> argumentTypes,
+            boolean finalizeRetryUsed
+    ) {
+        var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
+        var resolution = resolveConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+        return switch (resolution.status()) {
+            case RESOLVED -> {
+                var declarationSite = resolution.constructor() != null ? resolution.constructor() : receiverTypeMeta.declaration();
+                yield new StepTrace(
+                        stepIndex,
+                        step,
+                        StepKind.CALL,
+                        RouteKind.CONSTRUCTOR,
+                        incomingReceiver,
+                        Status.RESOLVED,
+                        ReceiverState.resolvedInstance(receiverTypeMeta.instanceType()),
+                        null,
+                        null,
+                        FrontendResolvedCall.resolved(
+                                step.name(),
+                                FrontendCallResolutionKind.CONSTRUCTOR,
+                                FrontendReceiverKind.TYPE_META,
+                                resolution.ownerKind(),
+                                incomingReceiver.receiverType(),
+                                receiverTypeMeta.instanceType(),
+                                argumentTypes,
+                                declarationSite
+                        ),
+                        finalizeRetryUsed,
+                        null
+                );
+            }
+            case FAILED -> new StepTrace(
+                    stepIndex,
+                    step,
+                    StepKind.CALL,
+                    RouteKind.CONSTRUCTOR,
+                    incomingReceiver,
+                    Status.FAILED,
+                    ReceiverState.failedFrom(incomingReceiver, Objects.requireNonNull(resolution.detailReason())),
+                    null,
+                    null,
+                    FrontendResolvedCall.failed(
+                            step.name(),
+                            FrontendCallResolutionKind.CONSTRUCTOR,
+                            FrontendReceiverKind.TYPE_META,
+                            resolution.ownerKind(),
+                            incomingReceiver.receiverType(),
+                            argumentTypes,
+                            resolution.constructor() != null ? resolution.constructor() : receiverTypeMeta.declaration(),
+                            Objects.requireNonNull(resolution.detailReason())
+                    ),
+                    finalizeRetryUsed,
+                    Objects.requireNonNull(resolution.detailReason())
+            );
+            case UNSUPPORTED -> new StepTrace(
+                    stepIndex,
+                    step,
+                    StepKind.CALL,
+                    RouteKind.CONSTRUCTOR,
+                    incomingReceiver,
+                    Status.UNSUPPORTED,
+                    ReceiverState.unsupportedFrom(incomingReceiver, Objects.requireNonNull(resolution.detailReason())),
+                    null,
+                    null,
+                    FrontendResolvedCall.unsupported(
+                            step.name(),
+                            FrontendCallResolutionKind.CONSTRUCTOR,
+                            FrontendReceiverKind.TYPE_META,
+                            resolution.ownerKind(),
+                            incomingReceiver.receiverType(),
+                            argumentTypes,
+                            resolution.constructor() != null ? resolution.constructor() : receiverTypeMeta.declaration(),
+                            Objects.requireNonNull(resolution.detailReason())
+                    ),
+                    finalizeRetryUsed,
+                    Objects.requireNonNull(resolution.detailReason())
+            );
+            default -> throw new IllegalStateException("unexpected constructor status: " + resolution.status());
         };
     }
 
@@ -866,7 +1154,9 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributeCallStep step,
             @NotNull ReceiverState incomingReceiver,
-            @NotNull ArgumentResolution argumentResolution
+            @NotNull ArgumentResolution argumentResolution,
+            @NotNull RouteKind routeKind,
+            @NotNull FrontendCallResolutionKind callKind
     ) {
         var detailReason = Objects.requireNonNull(argumentResolution.detailReason(), "detailReason must not be null");
         var status = argumentResolution.status();
@@ -876,9 +1166,6 @@ public final class FrontendChainReductionHelper {
             case UNSUPPORTED -> ReceiverState.unsupportedFrom(incomingReceiver, detailReason);
             default -> throw new IllegalStateException("unexpected argument status: " + status);
         };
-        var callKind = incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
-                ? FrontendCallResolutionKind.STATIC_METHOD
-                : FrontendCallResolutionKind.INSTANCE_METHOD;
         var call = switch (status) {
             case DEFERRED -> FrontendResolvedCall.deferred(
                     step.name(),
@@ -916,9 +1203,7 @@ public final class FrontendChainReductionHelper {
                 stepIndex,
                 step,
                 StepKind.CALL,
-                incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META
-                        ? RouteKind.STATIC_METHOD
-                        : RouteKind.INSTANCE_METHOD,
+                routeKind,
                 incomingReceiver,
                 status,
                 outgoingReceiver,
@@ -1102,6 +1387,305 @@ public final class FrontendChainReductionHelper {
         return request.expressionTypeResolver().resolve(expression, finalizeWindow);
     }
 
+    private static @Nullable ExtensionBuiltinClass resolveBuiltinStaticOwner(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        if (receiverTypeMeta.declaration() instanceof ExtensionBuiltinClass builtinClass) {
+            return builtinClass;
+        }
+        return classRegistry.findBuiltinClass(receiverTypeMeta.sourceName());
+    }
+
+    private static @Nullable ExtensionGdClass resolveEngineStaticOwner(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        if (receiverTypeMeta.declaration() instanceof ExtensionGdClass engineClass) {
+            return engineClass;
+        }
+        if (receiverTypeMeta.instanceType() instanceof GdObjectType objectType
+                && classRegistry.getClassDef(objectType) instanceof ExtensionGdClass engineClass) {
+            return engineClass;
+        }
+        return null;
+    }
+
+    private static @NotNull ConstructorResolution resolveConstructor(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        return switch (receiverTypeMeta.kind()) {
+            case GLOBAL_ENUM -> new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    null,
+                    "Type meta '" + receiverTypeMeta.sourceName() + "' does not support constructor calls"
+            );
+            case ENGINE_CLASS -> resolveEngineConstructor(receiverTypeMeta, argumentTypes);
+            case GDCC_CLASS -> resolveGdccConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+            case BUILTIN -> resolveBuiltinConstructor(classRegistry, receiverTypeMeta, argumentTypes);
+        };
+    }
+
+    private static @NotNull ConstructorResolution resolveEngineConstructor(
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        if (!(receiverTypeMeta.declaration() instanceof ExtensionGdClass engineClass)) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.ENGINE,
+                    "Engine constructor receiver '" + receiverTypeMeta.sourceName() + "' has malformed declaration metadata"
+            );
+        }
+        if (!engineClass.isInstantiable()) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.ENGINE,
+                    "Engine class '" + receiverTypeMeta.sourceName() + "' is not instantiable"
+            );
+        }
+        if (!argumentTypes.isEmpty()) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.ENGINE,
+                    "Engine class constructor '" + receiverTypeMeta.sourceName() + ".new' accepts no arguments"
+            );
+        }
+        return new ConstructorResolution(Status.RESOLVED, null, ScopeOwnerKind.ENGINE, null);
+    }
+
+    private static @NotNull ConstructorResolution resolveGdccConstructor(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var classDef = resolveDeclaredClass(classRegistry, receiverTypeMeta);
+        if (classDef == null) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.GDCC,
+                    "Constructor receiver '" + receiverTypeMeta.sourceName() + "' has unavailable class metadata"
+            );
+        }
+        var constructors = classDef.getFunctions().stream()
+                .filter(function -> function.getName().equals("_init") && !function.isStatic())
+                .toList();
+        if (constructors.isEmpty()) {
+            if (argumentTypes.isEmpty()) {
+                return new ConstructorResolution(Status.RESOLVED, null, ScopeOwnerKind.GDCC, null);
+            }
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.GDCC,
+                    "Class '" + receiverTypeMeta.sourceName() + "' has no matching constructor overload for "
+                            + renderArgumentTypes(argumentTypes)
+            );
+        }
+        return chooseConstructor(classRegistry, receiverTypeMeta, constructors, argumentTypes, ScopeOwnerKind.GDCC);
+    }
+
+    private static @NotNull ConstructorResolution resolveBuiltinConstructor(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
+        if (builtinClass == null) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.BUILTIN,
+                    "Builtin constructor receiver '" + receiverTypeMeta.sourceName() + "' is not backed by builtin metadata"
+            );
+        }
+        if (builtinClass.constructors().isEmpty()) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ScopeOwnerKind.BUILTIN,
+                    "Builtin type '" + receiverTypeMeta.sourceName() + "' has no constructor metadata"
+            );
+        }
+        return chooseConstructor(
+                classRegistry,
+                receiverTypeMeta,
+                builtinClass.constructors(),
+                argumentTypes,
+                ScopeOwnerKind.BUILTIN
+        );
+    }
+
+    private static @NotNull ConstructorResolution chooseConstructor(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull List<? extends FunctionDef> constructors,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull ScopeOwnerKind ownerKind
+    ) {
+        var applicable = constructors.stream()
+                .filter(constructor -> matchesCallableArguments(classRegistry, constructor, argumentTypes))
+                .toList();
+        if (applicable.size() == 1) {
+            return new ConstructorResolution(Status.RESOLVED, applicable.getFirst(), ownerKind, null);
+        }
+        if (applicable.size() > 1) {
+            return new ConstructorResolution(
+                    Status.FAILED,
+                    null,
+                    ownerKind,
+                    "Ambiguous constructor overload for '" + receiverTypeMeta.sourceName() + ".new': "
+                            + renderCallableSignatures(applicable)
+            );
+        }
+        var detailReason = constructors.isEmpty()
+                ? "Type '" + receiverTypeMeta.sourceName() + "' exposes no constructors"
+                : "No applicable constructor overload for '" + receiverTypeMeta.sourceName() + ".new': "
+                + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
+                + ". candidates: " + renderCallableSignatures(constructors);
+        return new ConstructorResolution(Status.FAILED, null, ownerKind, detailReason);
+    }
+
+    private static boolean matchesCallableArguments(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FunctionDef callable,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var parameters = callable.getParameters();
+        var fixedCount = parameters.size();
+        var providedCount = argumentTypes.size();
+        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+            return false;
+        }
+        if (!callable.isVararg() && providedCount > fixedCount) {
+            return false;
+        }
+        var fixedPrefixCount = Math.min(providedCount, fixedCount);
+        for (var index = 0; index < fixedPrefixCount; index++) {
+            if (!classRegistry.checkAssignable(argumentTypes.get(index), parameters.get(index).getType())) {
+                return false;
+            }
+        }
+        if (!callable.isVararg()) {
+            return true;
+        }
+        for (var index = fixedCount; index < providedCount; index++) {
+            if (!classRegistry.checkAssignable(argumentTypes.get(index), GdVariantType.VARIANT)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static @NotNull String buildCallableMismatchReason(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FunctionDef callable,
+            @NotNull List<GdType> argumentTypes
+    ) {
+        var parameters = callable.getParameters();
+        var fixedCount = parameters.size();
+        var providedCount = argumentTypes.size();
+        if (providedCount < fixedCount && !canOmitTrailingParameters(parameters, providedCount)) {
+            var missingParameterIndex = firstMissingRequiredParameter(parameters, providedCount);
+            return "missing required parameter #" + (missingParameterIndex + 1) + " ('"
+                    + parameters.get(missingParameterIndex).getName() + "')";
+        }
+        if (!callable.isVararg() && providedCount > fixedCount) {
+            return "expected " + fixedCount + " arguments, got " + providedCount;
+        }
+        var fixedPrefixCount = Math.min(providedCount, fixedCount);
+        for (var index = 0; index < fixedPrefixCount; index++) {
+            var argumentType = argumentTypes.get(index);
+            var parameter = parameters.get(index);
+            if (!classRegistry.checkAssignable(argumentType, parameter.getType())) {
+                return "argument #" + (index + 1) + " of type '" + argumentType.getTypeName()
+                        + "' is not assignable to parameter '" + parameter.getName()
+                        + "' of type '" + parameter.getType().getTypeName() + "'";
+            }
+        }
+        if (callable.isVararg()) {
+            for (var index = fixedCount; index < providedCount; index++) {
+                var argumentType = argumentTypes.get(index);
+                if (!classRegistry.checkAssignable(argumentType, GdVariantType.VARIANT)) {
+                    return "vararg argument #" + (index + 1) + " must be Variant, got '"
+                            + argumentType.getTypeName() + "'";
+                }
+            }
+        }
+        return "no compatible signature found";
+    }
+
+    private static boolean canOmitTrailingParameters(
+            @NotNull List<? extends ParameterDef> parameters,
+            int providedCount
+    ) {
+        for (var index = providedCount; index < parameters.size(); index++) {
+            if (parameters.get(index).getDefaultValueFunc() == null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int firstMissingRequiredParameter(
+            @NotNull List<? extends ParameterDef> parameters,
+            int providedCount
+    ) {
+        for (var index = providedCount; index < parameters.size(); index++) {
+            if (parameters.get(index).getDefaultValueFunc() == null) {
+                return index;
+            }
+        }
+        return providedCount;
+    }
+
+    private static @NotNull String renderCallableSignatures(@NotNull List<? extends FunctionDef> callables) {
+        var joiner = new StringJoiner("; ");
+        for (var callable : callables) {
+            joiner.add(renderCallableSignature(callable));
+        }
+        return joiner.toString();
+    }
+
+    private static @NotNull String renderCallableSignature(@NotNull FunctionDef callable) {
+        var argsJoiner = new StringJoiner(", ");
+        for (var parameter : callable.getParameters()) {
+            argsJoiner.add(parameter.getType().getTypeName());
+        }
+        if (callable.isVararg()) {
+            argsJoiner.add("...");
+        }
+        return callable.getName() + "(" + argsJoiner + ")";
+    }
+
+    private static @NotNull String renderArgumentTypes(@NotNull List<GdType> argumentTypes) {
+        var joiner = new StringJoiner(", ", "(", ")");
+        for (var argumentType : argumentTypes) {
+            joiner.add(argumentType.getTypeName());
+        }
+        return joiner.toString();
+    }
+
+    private static @Nullable ClassDef resolveDeclaredClass(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        if (receiverTypeMeta.declaration() instanceof ClassDef classDef) {
+            return classDef;
+        }
+        if (receiverTypeMeta.instanceType() instanceof GdObjectType objectType) {
+            return classRegistry.getClassDef(objectType);
+        }
+        return null;
+    }
+
     private static @NotNull StepKind classifyStepKind(@NotNull AttributeStep step) {
         return switch (step) {
             case AttributePropertyStep _ -> StepKind.PROPERTY;
@@ -1187,6 +1771,24 @@ public final class FrontendChainReductionHelper {
             if (status == Status.RESOLVED) {
                 if (detailReason != null) {
                     throw new IllegalArgumentException("detailReason must be null for resolved argument resolution");
+                }
+            } else {
+                requireNonBlank(detailReason, "detailReason");
+            }
+        }
+    }
+
+    private record ConstructorResolution(
+            @NotNull Status status,
+            @Nullable FunctionDef constructor,
+            @Nullable ScopeOwnerKind ownerKind,
+            @Nullable String detailReason
+    ) {
+        private ConstructorResolution {
+            Objects.requireNonNull(status, "status must not be null");
+            if (status == Status.RESOLVED) {
+                if (detailReason != null) {
+                    throw new IllegalArgumentException("detailReason must be null for resolved constructor resolution");
                 }
             } else {
                 requireNonBlank(detailReason, "detailReason");

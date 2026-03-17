@@ -702,31 +702,50 @@ MVP 支持顺序建议为：
 **实施细则**：
 
 - C0：phase 接线与发布骨架
+  - 状态：已完成（2026-03-17）
   - 在 `FrontendSemanticAnalyzer` 中插入 `FrontendChainBindingAnalyzer` 的发布位置
   - 明确输入依赖：`symbolBindings()`、`scopesByAst()`、class/type metadata、diagnostic manager
   - 明确输出 side table：`resolvedMembers()`、`resolvedCalls()`
   - 先保证未覆盖节点保持空表 / 无发布，而不是伪造默认结果
 - C1：稳定 member 路径
+  - 状态：已完成（2026-03-17）
   - 先接 instance property
   - 再接 instance signal
   - 确保 `BLOCKED` hit 会保留 winner 并发 diagnostic，不会回退其他同名 route
   - 对 metadata unknown / inheritance malformed 与 property missing 要区分成 `DYNAMIC` / `FAILED`
 - C2：type-meta 与 static 路径
+  - 状态：已完成（2026-03-17）
   - 接 `TYPE_META` receiver 的 static method call
   - 接 constructor route
   - 接 static constant / enum value / builtin constant / engine integer constant
   - 明确 static method / constructor / static load 三条路完全分流
   - 接 instance receiver 命中 static method 的 resolved static call + diagnostic
 - C3：普通 call 路径
+  - 状态：已完成（2026-03-17）
   - 在 argument types 已知时接 receiver-known method call
   - argument types 未知时优先发布 `DEFERRED`
   - 仅在 shared resolver 明确返回 dynamic fallback 时发布 `DYNAMIC`
   - 对 overload ambiguous / no applicable overload / static-nonstatic mismatch 分别走对应状态
 - C4：恢复与后缀传播
+  - 状态：已完成（2026-03-17）
   - 把第 5.4 节的 suffix 传播合同真正接入 analyzer
   - `DEFERRED` suffix 只发 1 条恢复诊断
   - `UNSUPPORTED` subtree / route 只在最近恢复根发 boundary diagnostic
   - 坏链式表达式不得污染同模块其他表达式的 member/call 结果
+
+**当前里程碑 C 产出（2026-03-17）**：
+
+- `FrontendSemanticAnalyzer` 已接入 `FrontendChainBindingAnalyzer`，并在 top-binding 后刷新 `resolvedMembers()` / `resolvedCalls()` 与 diagnostics 边界。
+- `FrontendChainReductionHelper` 已接通 instance property/signal、static method、constructor、static load、dynamic fallback、deferred finalize-window retry 与 suffix 传播。
+- `FrontendChainBindingAnalyzer` 已发布：
+  - blocked/failed member -> `sema.member_resolution`
+  - blocked/failed call 与 instance-syntax-static-method note -> `sema.call_resolution`
+  - deferred subtree / deferred chain root -> `sema.deferred_chain_resolution`
+  - unsupported static route boundary -> `sema.unsupported_chain_route`
+- 测试锚点已覆盖：
+  - helper 级别的 resolved/deferred/dynamic/failed/unsupported 路径
+  - analyzer 级别的 static method、constructor、static load、deferred suffix、failed static route、unsupported gdcc static load
+  - semantic framework 的 chain phase 接线、stable side-table 引用与 diagnostics boundary refresh
 
 **验收标准**：
 

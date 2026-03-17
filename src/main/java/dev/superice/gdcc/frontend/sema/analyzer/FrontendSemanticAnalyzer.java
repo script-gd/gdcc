@@ -24,13 +24,15 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
     private final @NotNull FrontendVariableAnalyzer variableAnalyzer;
     private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
+    private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
 
     public FrontendSemanticAnalyzer() {
         this(
                 new FrontendClassSkeletonBuilder(),
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer()
+                new FrontendTopBindingAnalyzer(),
+                new FrontendChainBindingAnalyzer()
         );
     }
 
@@ -39,7 +41,8 @@ public final class FrontendSemanticAnalyzer {
                 classSkeletonBuilder,
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer()
+                new FrontendTopBindingAnalyzer(),
+                new FrontendChainBindingAnalyzer()
         );
     }
 
@@ -51,7 +54,8 @@ public final class FrontendSemanticAnalyzer {
                 classSkeletonBuilder,
                 scopeAnalyzer,
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer()
+                new FrontendTopBindingAnalyzer(),
+                new FrontendChainBindingAnalyzer()
         );
     }
 
@@ -64,7 +68,8 @@ public final class FrontendSemanticAnalyzer {
                 classSkeletonBuilder,
                 scopeAnalyzer,
                 variableAnalyzer,
-                new FrontendTopBindingAnalyzer()
+                new FrontendTopBindingAnalyzer(),
+                new FrontendChainBindingAnalyzer()
         );
     }
 
@@ -74,10 +79,27 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendVariableAnalyzer variableAnalyzer,
             @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                new FrontendChainBindingAnalyzer()
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
         this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
+        this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -127,6 +149,11 @@ public final class FrontendSemanticAnalyzer {
         // still keeping member/call resolution out of scope. Keeping it separate from variable
         // analysis preserves a clean hand-off between declaration inventory and use-site binding.
         topBindingAnalyzer.analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Chain-binding analysis consumes published symbol/scope facts and emits the first stable
+        // member/call side tables without opening whole-module expression typing yet.
+        chainBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }

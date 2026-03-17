@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / analyzer / exception 诊断链路已落地；scope graph 与 inner class lexical boundary 已进入 analyzer 主链路，binder / body phase 待扩展）
-- 更新时间：2026-03-12
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / exception 诊断链路已落地；expression typing 仍待扩展）
+- 更新时间：2026-03-17
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -127,7 +127,12 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `resolvedMembers`
 - `resolvedCalls`
 
-其中 `annotationsByAst` 与 `scopesByAst` 已在生产链路中稳定填充；`symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls` 目前仍主要为后续 binder/body phase 预留。
+其中：
+
+- `annotationsByAst` 与 `scopesByAst` 已在生产链路中稳定填充
+- `symbolBindings` 已由 `FrontendTopBindingAnalyzer` 稳定发布
+- `resolvedMembers` / `resolvedCalls` 已由 `FrontendChainBindingAnalyzer` MVP 发布
+- `expressionTypes` 仍保留给后续 `FrontendExprTypeAnalyzer`
 
 ### 2.6 `SkeletonBuildContext` 只服务于 skeleton phase
 
@@ -173,7 +178,30 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.class_skeleton`
 - `sema.inheritance_cycle`
 - `sema.type_resolution`
+- `sema.binding`
+- `sema.unsupported_binding_subtree`
+- `sema.member_resolution`
+- `sema.call_resolution`
+- `sema.deferred_chain_resolution`
+- `sema.unsupported_chain_route`
 - `sema.unsupported_annotation`
+
+其中 body/binding phase 新增 category 的语义固定为：
+
+- `sema.binding`
+  - top binding 命中的 blocked / unknown / shadowing 诊断
+- `sema.unsupported_binding_subtree`
+  - top binding 对 parameter default、lambda、`for`、`match` 等 deferred subtree 的边界 warning
+- `sema.member_resolution`
+  - chain binding 中 blocked / failed member step 的语义错误
+- `sema.call_resolution`
+  - chain binding 中 blocked / failed call step 的语义错误
+  - 以及“实例语法命中 static method”这类 route note/warning
+- `sema.deferred_chain_resolution`
+  - chain binding 的 deferred subtree warning
+  - 以及首个 deferred chain recovery root 的恢复诊断
+- `sema.unsupported_chain_route`
+  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 warning
 
 其中 `FrontendClassSkeletonBuilder` 当前对 property annotation 的行为已经冻结为：
 
@@ -205,12 +233,15 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
-- analyze 现在已经具备独立的 scope phase 主链路：
+- analyze 现在已经具备独立的多 phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`
     - 调用 `FrontendScopeAnalyzer.analyze(...)`
-    - scope phase 会重建并发布真实的 `scopesByAst`，当前已覆盖顶层脚本、callable、控制流 block、match section 与 inner class lexical boundary
-    - 最后再次 `updateDiagnostics(...)`，把最终边界快照刷新到最新 shared manager 状态
+    - scope phase 重建并发布真实的 `scopesByAst`
+    - 调用 `FrontendVariableAnalyzer.analyze(...)`
+    - 调用 `FrontendTopBindingAnalyzer.analyze(...)` 发布 `symbolBindings`
+    - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
+    - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
 
 ### 3.4 exception
 
