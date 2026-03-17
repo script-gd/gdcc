@@ -599,6 +599,13 @@ body phase 里的 step status 需要同时回答三件事：
 
 新增内部 helper，用于单条链式表达式的左到右 reduction。
 
+**当前状态**：
+
+- [x] B0 输入输出冻结：已新增 `frontend.sema.resolver.FrontendChainReductionHelper`，先把 request/result、receiver state、step trace、upstream provenance、局部 note sink 等局部 contract 固定下来，继续保持“不写 `FrontendAnalysisData`、不直接承担 phase 发布”的边界。
+- [x] B1 shared resolver 接线：已接上 instance property / signal、instance/static method，并把 constructor/static-load 先冻结成 frontend-only route 占位；instance-syntax 命中 static method 时同步产出 local note。
+- [x] B2 finalize-window 规则：call-step 参数类型现在支持一次有界 finalize-window 重试；若仍无法恢复，则当前 step 正式发布 `DEFERRED`，后续 suffix 只走 deferred-by-upstream trace，不再回溯重跑上游。
+- [x] B3 helper 合同测试：已新增 `FrontendChainReductionHelperTest`，纯 helper 级覆盖 resolved / blocked / deferred 恢复与停机 / dynamic / failed / unsupported / static route / repeatability，不依赖完整 `FrontendSemanticAnalyzer` wiring。
+
 该 helper 的职责：
 
 - 消费链头 binding / type-meta 事实
@@ -648,6 +655,19 @@ body phase 里的 step status 需要同时回答三件事：
 - helper 不直接写 side table，不直接承担 whole-module phase 发布职责
 - 对同一输入重复运行 helper，trace 结果保持稳定，不因内部缓存或副作用漂移
 - helper 已足以支撑后续 analyzer 实现，不需要再回到 A 去重塑结果模型
+
+**当前验收记录**：
+
+- 新增 `FrontendChainReductionHelper` 作为 frontend 专用 reduction adapter，位置固定在 `frontend.sema.resolver`，与 shared `scope.resolver` 和后续 analyzer phase 保持清晰分层。
+- 新增 `FrontendChainReductionHelperTest`，使用手工 AST + fixture registry 做纯局部 reduction 测试，不依赖完整 `FrontendSemanticAnalyzer`。
+- 已跑通 targeted tests：
+  - `FrontendChainReductionHelperTest`
+  - `FrontendResolvedMemberTest`
+  - `FrontendResolvedCallTest`
+  - `FrontendAnalysisDataTest`
+  - `ScopePropertyResolverTest`
+  - `ScopeSignalResolverTest`
+  - `ScopeMethodResolverTest`
 
 ## 6.3 里程碑 C：`FrontendChainBindingAnalyzer` MVP
 
