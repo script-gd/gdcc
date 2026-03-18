@@ -1,0 +1,405 @@
+package dev.superice.gdcc.frontend.sema.analyzer.support;
+
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.ResolveRestriction;
+import dev.superice.gdcc.type.GdVoidType;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.Node;
+import org.jetbrains.annotations.NotNull;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Predicate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class FrontendAssignmentSemanticSupportTest {
+    @Test
+    void resolveAssignmentExpressionTypePublishesResolvedVoidForSupportedTargets() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_positive.gd",
+                """
+                        class_name AssignmentSemanticSupportPositive
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        class Holder:
+                            var values: Array[int] = []
+                        
+                        func ping(values: Array[int], holder: Holder):
+                            hp = 1
+                            self.hp = 2
+                            values[0] = 3
+                            holder.values[0] = 4
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignments = List.of(
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
+                ),
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+                ),
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+                ),
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+                )
+        );
+
+        for (var assignment : assignments) {
+            var result = support.resolveAssignmentExpressionType(
+                    assignment,
+                    FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                    publishedResolver,
+                    false
+            );
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+            assertEquals(GdVoidType.VOID, result.expressionType().publishedType());
+        }
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeRejectsIllegalTargetsAndValueRequiredUsage() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_negative.gd",
+                """
+                        class_name AssignmentSemanticSupportNegative
+                        extends RefCounted
+                        
+                        signal pinged
+                        
+                        class Worker:
+                            static func build() -> int:
+                                return 1
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func ping(values: Array[int]):
+                            self.pinged = 1
+                            Worker = 1
+                            helper = 1
+                            values[0] = ""
+                            values[0] = 1
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var signalAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
+        );
+        var typeMetaAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var callableAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var assignabilityFailure = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+        var valueRequiredAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(4)).expression()
+        );
+
+        var signalResult = support.resolveAssignmentExpressionType(
+                signalAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(signalResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, signalResult.expressionType().status());
+        assertTrue(signalResult.expressionType().detailReason().contains("Signal"));
+
+        var typeMetaResult = support.resolveAssignmentExpressionType(
+                typeMetaAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(typeMetaResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, typeMetaResult.expressionType().status());
+        assertTrue(typeMetaResult.expressionType().detailReason().contains("Type-meta"));
+
+        var callableResult = support.resolveAssignmentExpressionType(
+                callableAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(callableResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, callableResult.expressionType().status());
+        assertTrue(callableResult.expressionType().detailReason().contains("cannot be assigned"));
+
+        var assignabilityResult = support.resolveAssignmentExpressionType(
+                assignabilityFailure,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(assignabilityResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, assignabilityResult.expressionType().status());
+        assertTrue(assignabilityResult.expressionType().detailReason().contains("not assignable"));
+
+        var valueRequiredResult = support.resolveAssignmentExpressionType(
+                valueRequiredAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
+                publishedResolver,
+                false
+        );
+        assertTrue(valueRequiredResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, valueRequiredResult.expressionType().status());
+        assertTrue(valueRequiredResult.expressionType().detailReason().contains("ordinary value"));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeRejectsCompoundAssignmentOperators() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_compound.gd",
+                """
+                        class_name AssignmentSemanticSupportCompound
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        func ping():
+                            hp += 1
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var compoundAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+
+        var result = support.resolveAssignmentExpressionType(
+                compoundAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        assertTrue(result.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, result.expressionType().status());
+        assertTrue(result.expressionType().detailReason().contains("Compound assignment operator"));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeUsesSharedReadonlyPropertyContractForBareAndAttributeRoutes() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_readonly_property.gd",
+                """
+                        class_name AssignmentSemanticSupportReadonlyProperty
+                        extends ReadonlyBase
+                        
+                        func ping():
+                            locked = 1
+                            self.locked = 1
+                        """,
+                registryWithReadonlyEngineBase()
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
+        );
+        var attributeAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        var bareResult = support.resolveAssignmentExpressionType(
+                bareAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var attributeResult = support.resolveAssignmentExpressionType(
+                attributeAssignment,
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        assertTrue(bareResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, bareResult.expressionType().status());
+        assertEquals("Property 'locked' is not writable", bareResult.expressionType().detailReason());
+
+        assertTrue(attributeResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, attributeResult.expressionType().status());
+        assertEquals("Property 'locked' is not writable", attributeResult.expressionType().detailReason());
+    }
+
+    private @NotNull FrontendAssignmentSemanticSupport createSupport(
+            @NotNull AnalyzedScript analyzed,
+            @NotNull ResolveRestriction restriction,
+            boolean staticContext
+    ) {
+        var chainReduction = new FrontendChainReductionFacade(
+                analyzed.analysisData(),
+                analyzed.analysisData().scopesByAst(),
+                () -> restriction,
+                () -> staticContext,
+                analyzed.classRegistry(),
+                (expression, finalizeWindow) -> FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(
+                        publishedExpressionResolver(analyzed).resolve(expression, finalizeWindow)
+                )
+        );
+        return new FrontendAssignmentSemanticSupport(
+                analyzed.analysisData().symbolBindings(),
+                analyzed.analysisData().scopesByAst(),
+                () -> restriction,
+                analyzed.classRegistry(),
+                chainReduction
+        );
+    }
+
+    private static @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver publishedExpressionResolver(
+            @NotNull AnalyzedScript analyzed
+    ) {
+        return (expression, finalizeWindow) -> Objects.requireNonNull(
+                analyzed.analysisData().expressionTypes().get(expression),
+                "Expected published expression type for " + expression.getClass().getSimpleName()
+        );
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName,
+            @NotNull String source
+    ) throws Exception {
+        return analyze(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()));
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry registry
+    ) throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                "test_module",
+                List.of(unit),
+                registry,
+                diagnostics
+        );
+        return new AnalyzedScript(unit.ast(), analysisData, registry);
+    }
+
+    private static @NotNull ClassRegistry registryWithReadonlyEngineBase() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var classes = new ArrayList<>(api.classes());
+        classes.add(new ExtensionGdClass(
+                "ReadonlyBase",
+                false,
+                true,
+                "RefCounted",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0")),
+                List.of()
+        ));
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                api.builtinClasses(),
+                List.copyOf(classes),
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
+    private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {
+        return findNode(root, FunctionDeclaration.class, function -> function.name().equals(name));
+    }
+
+    private static <T extends Node> @NotNull T findNode(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        return findNodes(root, nodeType, predicate).getFirst();
+    }
+
+    private static <T extends Node> @NotNull List<T> findNodes(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        var matches = new ArrayList<T>();
+        collectNodes(root, nodeType, predicate, matches);
+        if (matches.isEmpty()) {
+            throw new AssertionError("No node of type " + nodeType.getSimpleName() + " matched the predicate");
+        }
+        return List.copyOf(matches);
+    }
+
+    private static <T extends Node> void collectNodes(
+            @NotNull Node node,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate,
+            @NotNull List<T> matches
+    ) {
+        if (nodeType.isInstance(node)) {
+            var typedNode = nodeType.cast(node);
+            if (predicate.test(typedNode)) {
+                matches.add(typedNode);
+            }
+        }
+        for (var child : node.getChildren()) {
+            collectNodes(child, nodeType, predicate, matches);
+        }
+    }
+
+    private record AnalyzedScript(
+            @NotNull Node ast,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ClassRegistry classRegistry
+    ) {
+    }
+}

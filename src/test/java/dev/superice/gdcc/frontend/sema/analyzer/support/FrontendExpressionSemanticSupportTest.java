@@ -10,7 +10,6 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdVariantType;
-import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -235,22 +234,10 @@ class FrontendExpressionSemanticSupportTest {
         var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
         var publishedResolver = publishedExpressionResolver(analyzed);
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var assignment = assertInstanceOf(
-                AssignmentExpression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
-        );
         var genericDeferred = assertInstanceOf(
                 Expression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getLast()).expression()
         );
-
-        var assignmentResult = support.resolveAssignmentExpressionType(
-                assignment,
-                publishedResolver,
-                false
-        );
-        assertTrue(assignmentResult.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.DEFERRED, assignmentResult.expressionType().status());
 
         var genericResult = support.resolveExplicitDeferredExpressionType(
                 genericDeferred,

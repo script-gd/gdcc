@@ -9,8 +9,10 @@ import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -21,6 +23,7 @@ import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.type.GdCallableType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -447,16 +450,15 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeReportsExprOwnedDeferredDiagnosticsForCurrentMvpGaps() throws Exception {
+    void analyzeReportsExprOwnedDeferredDiagnosticsForCurrentGenericMvpGaps() throws Exception {
         var analyzed = analyze(
                 "expr_type_deferred_gaps.gd",
                 """
                         class_name ExprTypeDeferredGaps
                         extends RefCounted
                         
-                        func ping(items):
+                        func ping():
                             1 + 2
-                            items = 1
                         """
         );
 
@@ -465,22 +467,215 @@ class FrontendExprTypeAnalyzerTest {
                 ExpressionStatement.class,
                 pingFunction.body().statements().getFirst()
         ).expression();
-        var assignment = assertInstanceOf(
-                ExpressionStatement.class,
-                pingFunction.body().statements().get(1)
-        ).expression();
 
         assertEquals(
                 FrontendExpressionTypeStatus.DEFERRED,
                 analyzed.analysisData().expressionTypes().get(genericDeferred).status()
         );
-        assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
-                analyzed.analysisData().expressionTypes().get(assignment).status()
-        );
 
         var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(2, deferredDiagnostics.size());
+        assertEquals(1, deferredDiagnostics.size());
+    }
+
+    @Test
+    void analyzePublishesResolvedVoidForStatementAssignmentsWithoutDiscardedWarnings() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_success.gd",
+                """
+                        class_name ExprTypeAssignmentSuccess
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        class Holder:
+                            var values: Array[int] = []
+                        
+                        func ping(values: Array[int], holder: Holder):
+                            hp = 1
+                            self.hp = 2
+                            values[0] = 3
+                            holder.values[0] = 4
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignments = List.of(
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
+                ),
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+                ),
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+                ),
+                assertInstanceOf(
+                        AssignmentExpression.class,
+                        assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+                )
+        );
+
+        for (var assignment : assignments) {
+            var assignmentType = analyzed.analysisData().expressionTypes().get(assignment);
+            assertNotNull(assignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, assignmentType.status());
+            assertEquals(GdVoidType.VOID, assignmentType.publishedType());
+        }
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeRejectsIllegalTargetsAndAssignabilityFailures() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_failures.gd",
+                """
+                        class_name ExprTypeAssignmentFailures
+                        extends RefCounted
+                        
+                        signal pinged
+                        
+                        class Worker:
+                            static func build() -> int:
+                                return 1
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func ping(values: Array[int]):
+                            self.pinged = 1
+                            Worker = 1
+                            helper = 1
+                            values[0] = ""
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var signalAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
+        );
+        var typeMetaAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var callableAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var assignabilityFailure = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+
+        var signalAssignmentType = analyzed.analysisData().expressionTypes().get(signalAssignment);
+        assertNotNull(signalAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, signalAssignmentType.status());
+        assertTrue(signalAssignmentType.detailReason().contains("Signal"));
+
+        var typeMetaAssignmentType = analyzed.analysisData().expressionTypes().get(typeMetaAssignment);
+        assertNotNull(typeMetaAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, typeMetaAssignmentType.status());
+        assertTrue(typeMetaAssignmentType.detailReason().contains("Type-meta"));
+
+        var callableAssignmentType = analyzed.analysisData().expressionTypes().get(callableAssignment);
+        assertNotNull(callableAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, callableAssignmentType.status());
+        assertTrue(callableAssignmentType.detailReason().contains("cannot be assigned"));
+
+        var assignabilityFailureType = analyzed.analysisData().expressionTypes().get(assignabilityFailure);
+        assertNotNull(assignabilityFailureType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, assignabilityFailureType.status());
+        assertTrue(assignabilityFailureType.detailReason().contains("not assignable"));
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(4, expressionDiagnostics.size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeRejectsReadonlyPropertyWritesThroughBareAndAttributeRoutes() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_readonly_property.gd",
+                """
+                        class_name ExprTypeAssignmentReadonlyProperty
+                        extends ReadonlyBase
+                        
+                        func ping():
+                            locked = 1
+                            self.locked = 1
+                        """,
+                registryWithReadonlyEngineBase()
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(0)).expression()
+        );
+        var attributeAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        var bareAssignmentType = analyzed.analysisData().expressionTypes().get(bareAssignment);
+        assertNotNull(bareAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, bareAssignmentType.status());
+        assertEquals("Property 'locked' is not writable", bareAssignmentType.detailReason());
+
+        var attributeAssignmentType = analyzed.analysisData().expressionTypes().get(attributeAssignment);
+        assertNotNull(attributeAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, attributeAssignmentType.status());
+        assertEquals("Property 'locked' is not writable", attributeAssignmentType.detailReason());
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(2, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.stream().allMatch(diagnostic -> diagnostic.message().contains("not writable")));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsUnsupportedForCompoundAssignmentStatementsWithoutDiscardedWarnings() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_compound.gd",
+                """
+                        class_name ExprTypeAssignmentCompound
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        func ping():
+                            hp += 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var compoundAssignment = assertInstanceOf(
+                AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+
+        var compoundAssignmentType = analyzed.analysisData().expressionTypes().get(compoundAssignment);
+        assertNotNull(compoundAssignmentType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, compoundAssignmentType.status());
+        assertTrue(compoundAssignmentType.detailReason().contains("Compound assignment operator"));
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("Compound assignment operator"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
     }
 
     @Test
@@ -1116,6 +1311,34 @@ class FrontendExprTypeAnalyzerTest {
                 api.utilityFunctions(),
                 patchedBuiltins,
                 api.classes(),
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
+    private static @NotNull ClassRegistry registryWithReadonlyEngineBase() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var classes = new ArrayList<>(api.classes());
+        classes.add(new ExtensionGdClass(
+                "ReadonlyBase",
+                false,
+                true,
+                "RefCounted",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0")),
+                List.of()
+        ));
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                api.builtinClasses(),
+                List.copyOf(classes),
                 api.singletons(),
                 api.nativeStructures()
         ));

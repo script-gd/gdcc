@@ -115,6 +115,7 @@ public final class BlockScope extends AbstractFrontendScope {
                         existing.kind(),
                         existing.declaration(),
                         existing.constant(),
+                        existing.writable(),
                         existing.staticMember()
                 )
         );
@@ -130,7 +131,10 @@ public final class BlockScope extends AbstractFrontendScope {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(kind, "kind");
-        var previous = valuesByName.putIfAbsent(name, new ScopeValue(name, type, kind, declaration, constant, false));
+        var previous = valuesByName.putIfAbsent(
+                name,
+                new ScopeValue(name, type, kind, declaration, constant, !constant, false)
+        );
         if (previous != null) {
             throw duplicateNamespaceBinding("block value", name);
         }

@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：执行计划
-- 更新时间：2026-03-18
+- 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -1332,7 +1332,7 @@ F 阶段完成后，frontend body phase 仍有一块与 GDScript 语义不对齐
   - 当前仍未正式支持的 generic deferred expression root
   - nested dependency 与顶层 statement 共享同一坏子树时的去重
 
-**当前实施状态（2026-03-18）**：
+**当前实施状态（2026-03-19）**：
 
 - [x] G0 已冻结 owner 边界与非目标：`FrontendTopBindingAnalyzer` 继续只发布 symbol category，并负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`；`FrontendChainBindingAnalyzer` 继续拥有 chain/member/call route diagnostics；`FrontendExprTypeAnalyzer` 现只补 expression-only diagnostics 与 discarded-expression warning，没有新增 side table，也没有把 lambda / parameter default / `for` / `match` 偷偷扩成正式 typing 面。
 - [x] G1 已落地 value-position callable / type-meta 分流：`bindValueIdentifier(...)` 与 `bindTopLevelTypeMetaCandidate(...)` 现统一冻结为“value winner -> function namespace -> type-meta misuse -> generic unknown miss”；bare function name 在 value position 会发布 `METHOD` / `STATIC_METHOD` / `UTILITY_FUNCTION`，bare `TYPE_META` 则发布真实 `TYPE_META` 并由 top binding 发出精确 `sema.binding`，不再退化成 generic unknown value miss。
@@ -1474,6 +1474,10 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
     - destructuring / pattern assignment
     - flow-sensitive narrowing / smart-cast-style refinement
     - 更复杂的 multi-target assignment
+    - compound assignment（`+=` / `-=` / `*=` / ...）：当前阶段必须稳定 `UNSUPPORTED`
+  - 当前阶段保守冻结的额外边界：
+    - `attribute-subscript` 目前按“property value 上的 container element mutation”建模
+    - getter-only property 是否同时阻断 `obj.prop[i] = value` 这类 aliasing route 暂不在 H2 冻结；后续需结合 property/container mutation contract 一并收口
   - assignment 成功态 contract 必须明确为：
     - 发布 `RESOLVED(void)`
     - 表达“赋值语义成功，但不产生 ordinary value”
@@ -1482,12 +1486,22 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
     - target 是否可写
     - RHS 是否 assignable 到 target slot
     - constant / method reference / `TYPE_META` / 不可写 signal 等非法左值要稳定 `FAILED`
+  - bare identifier property 与 attribute-property 的 direct-write writable 判定必须同源：
+    - scope publication 负责把 bare identifier 所需的最小 writable contract 放进 `ScopeValue`
+    - use-site assignment analysis 负责 receiver/path 语义，但不能另起一套 property writable metadata 解释
+    - `ScopeValue.writable` 仅服务 bare identifier direct write；不覆盖 `attribute-subscript` aliasing 或更广的 property/container mutation 语义
   - `handleExpressionStatement(...)` 需要同步重构为语义分类策略：
     - resolved ordinary non-`void` value -> `sema.discarded_expression`
     - resolved `void` bare/chain call -> 静默
     - resolved assignment-success root -> 静默
     - `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` / `DYNAMIC` -> 继续优先依赖 expr-owned / upstream diagnostic，不额外叠 discarded warning
   - 若 assignment 出现在 value-required 位置，必须 fail-closed，而不是伪装成 ordinary resolved value。
+  - 当前实施拆分（2026-03-18）：
+    - [x] H2.1 已完成：新增 `FrontendAssignmentSemanticSupport` 作为 shared assignment 真源，并从 `FrontendExpressionSemanticSupport` 中移除 assignment 语义；left-hand side 不再走 ordinary expression resolver，而是通过 dedicated assignment-target model 单独解析。
+    - [x] H2.2 已完成：`FrontendExprTypeAnalyzer` 已按 statement-root / value-required 分流 assignment usage；statement-root success 稳定发布 `RESOLVED(void)`，且 `handleExpressionStatement(...)` 不再对 assignment-success 误发 discarded warning。
+    - [x] H2.3 已完成：`FrontendChainBindingAnalyzer` 也已接线 shared assignment support，nested assignment 在 local dependency typing 中稳定 fail-closed；illegal lvalue、assignability failure 与 compound assignment boundary 现拥有明确 `FAILED` / `UNSUPPORTED` contract。
+    - [x] H2.4 已完成：已新增 `FrontendAssignmentSemanticSupportTest`，并扩展 `FrontendExprTypeAnalyzerTest`、`FrontendChainBindingAnalyzerTest`；覆盖 bare identifier / attribute property / plain subscript / attribute-subscript success、signal / `TYPE_META` / bare callable / assignability failure、compound assignment unsupported，以及 value-required nested assignment 的正反路径。
+    - [x] H2.5 已完成（2026-03-19）：`ScopeValue` 已新增 `writable` direct-write contract，`ClassScope` 通过共享 `PropertyDefAccessSupport` 发布 property writable 元数据；`FrontendAssignmentSemanticSupport` 现以同一 property writable helper 收口 bare identifier property 与 attribute-property，避免 `prop = value` / `self.prop = value` 对同一 readonly property 分叉。当前阶段仍明确不把 `ScopeValue.writable` 扩展为完整 property/container mutation 模型。
 - H3：generic deferred bucket 收窄
   - `FrontendExprTypeAnalyzer` 不能继续把大批节点统一压回 “generic deferred expression” 黑箱。
   - 需要先把 remaining unsupported/deferred node kinds 显式列出并单独命名 reason，即使当前仍暂不转正。
@@ -1539,6 +1553,7 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
   - assignment-success root 稳定发布 `RESOLVED(void)`，且 statement-position 不发 discarded warning
   - 非法左值与 assignability 失败拥有明确 error contract
   - assignment 若被放到 value-required 位置，会 fail-closed，而不是伪装成 ordinary value
+  - compound assignment 在当前阶段稳定 `UNSUPPORTED`，不再混入 generic deferred / ordinary assignment 成功语义
 - H3 完成后：
   - generic deferred bucket 已从默认黑箱收窄为显式枚举集合
   - `SubscriptExpression` / `AssignmentExpression` 不再属于 generic deferred catch-all
@@ -1572,6 +1587,7 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
   - `self.hp = 1`
   - `items[0] = 1`
   - constant / method reference / `TYPE_META` / signal 等非法左值
+  - compound assignment（`+=` / `-=` / ...）明确 `UNSUPPORTED`
   - assignment-success root 不发 discarded warning
   - assignment 被放到 value-required 位置时 fail-closed
 - shared expression semantic support：
@@ -1592,7 +1608,7 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
 - [x] H0 已完成（2026-03-18）：已提取 `FrontendExpressionSemanticSupport`，并接线到 `FrontendExprTypeAnalyzer` / `FrontendChainBindingAnalyzer`；两侧不再各自维护 bare callable / bare call / assignment / subscript / explicit-deferred 的重复局部语义实现。新增 `FrontendExpressionSemanticSupportTest`，并通过 `FrontendExpressionSemanticSupportTest, FrontendExprTypeAnalyzerTest, FrontendChainBindingAnalyzerTest, FrontendChainReductionHelperTest, FrontendChainStatusBridgeTest` 定向测试锚定合同。
 - [x] H1 已完成（2026-03-18）：plain `SubscriptExpression` 现已对 `Array` / `Dictionary` / `Packed*Array` 发布真实 element/value type，对 `Variant` receiver 发布 `DYNAMIC(Variant)`，并对 bad key type、non-container receiver、keyed-builtin route 发布明确 `FAILED` / `UNSUPPORTED`；`AttributeSubscriptStep` 已进入真实 chain reduction，可继续 exact suffix；plain subscript 也已作为 chain-local dependency 的一等节点支撑 outer call exact resolution。当前阶段仍未新增独立 subscript side table，attribute-subscript 本身继续只依赖 reduction trace / `expressionTypes()` 完成最小闭环。
 - [x] H1 范围说明已冻结：当前实现中的 strict container key/index 校验与 keyed builtin `UNSUPPORTED` 都是 MVP 的显式边界，而不是待 H1 内补齐的缺陷；文档必须继续按“container-family strict contract”表述，不得泛化成“已基本对齐 Godot subscript 语义”。
-- [ ] H2 待实施：assignment 仍是 deferred wrapper，尚未建立 assignable target contract 与 `RESOLVED(void)` success semantics，也尚未重构 statement-position warning policy。
+- [x] H2 已完成（2026-03-19）：已新增 `FrontendAssignmentSemanticSupport` 作为独立 assignment semantic 真源，并从 `FrontendExpressionSemanticSupport` 中移除 assignment；left-hand side 不再走 ordinary expression resolver，而是通过 dedicated assignment-target model 解析 bare identifier / attribute property / plain subscript / attribute-subscript。assignment-success root 现稳定发布 `RESOLVED(void)`，statement-position 不再误发 discarded warning；value-required nested assignment 会 fail-closed；illegal lvalue / assignability failure / compound assignment boundary 现具备明确 `FAILED` / `UNSUPPORTED` contract。`ScopeValue` 现额外承载 bare identifier direct-write 所需的最小 `writable` contract，且 bare identifier property 与 attribute-property 都统一复用 `PropertyDefAccessSupport` 解释 readonly metadata，避免对同一 property 分叉出不同 assignment 结论。当前阶段对 `attribute-subscript` 仍按 property value 上的 element mutation 建模，getter-only property 是否额外阻断该 aliasing route 暂留后续里程碑统一收口。已新增/扩展 `FrontendAssignmentSemanticSupportTest`、`FrontendExprTypeAnalyzerTest`、`ClassScopeResolutionTest`、`ClassScopeSignalResolutionTest`、`ClassRegistryScopeTest` 与 `ScopeProtocolTest`；通过 assignment / expr / scope 定向测试共同锚定 direct-write contract。
 - [ ] H3 待实施：generic deferred bucket 仍过宽；除本里程碑明确要收口的节点外，remaining deferred node set 尚未显式拆分。
 - [ ] H4 待实施：callable focused tests 仍缺 `.bind(...)`、blocked bare call 的 chain-path coverage、ambiguous bare call、empty overload set、callable direct invocation variants 与 subscript+callable integration cases；expr-path blocked bare call 已要求并锚定“保留 overload-selected 真实返回类型，而不是 `Callable`”合同。
 

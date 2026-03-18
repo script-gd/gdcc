@@ -34,6 +34,7 @@ class ClassScopeSignalResolutionTest {
         var binding = result.requireValue();
         assertEquals(ScopeValueKind.SIGNAL, binding.kind());
         assertTrue(binding.constant());
+        assertFalse(binding.writable());
         assertFalse(binding.staticMember());
         assertSame(changed, assertInstanceOf(SignalDef.class, binding.declaration()));
 

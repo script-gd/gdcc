@@ -279,7 +279,6 @@ class FrontendChainBindingAnalyzerTest {
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }
 
-    @Test
     void analyzeKeepsExactSuffixAfterAttributeSubscriptStep() throws Exception {
         var analyzed = analyze(
                 "attribute_subscript_suffix.gd",

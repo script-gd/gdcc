@@ -59,7 +59,7 @@ public final class CallableScope extends AbstractFrontendScope {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(type, "type");
         ensureCallableValueSlotAvailable(name);
-        parametersByName.put(name, new ScopeValue(name, type, ScopeValueKind.PARAMETER, declaration, false, false));
+        parametersByName.put(name, new ScopeValue(name, type, ScopeValueKind.PARAMETER, declaration, false, true, false));
     }
 
     /// Registers a capture imported from an outer callable.
@@ -77,7 +77,7 @@ public final class CallableScope extends AbstractFrontendScope {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(type, "type");
         ensureCallableValueSlotAvailable(name);
-        capturesByName.put(name, new ScopeValue(name, type, ScopeValueKind.CAPTURE, declaration, false, false));
+        capturesByName.put(name, new ScopeValue(name, type, ScopeValueKind.CAPTURE, declaration, false, true, false));
     }
 
     @Override

@@ -1,6 +1,8 @@
 package dev.superice.gdcc.frontend.scope;
 
 import dev.superice.gdcc.exception.ScopeLookupException;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
 import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.type.GdBoolType;
@@ -10,8 +12,10 @@ import dev.superice.gdcc.type.GdStringType;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class ClassScopeResolutionTest {
@@ -33,6 +37,7 @@ public class ClassScopeResolutionTest {
         assertNotNull(property);
         assertEquals(ScopeValueKind.PROPERTY, property.kind());
         assertEquals(GdIntType.INT, property.type());
+        assertTrue(property.writable());
 
         var functions = classScope.resolveFunctionsHere("ping");
         assertEquals(1, functions.size());
@@ -72,6 +77,34 @@ public class ClassScopeResolutionTest {
         var inheritedFunctions = classScope.resolveFunctionsHere("only_parent");
         assertEquals(1, inheritedFunctions.size());
         assertEquals("only_parent", inheritedFunctions.getFirst().getName());
+    }
+
+    @Test
+    void inheritedReadonlyEnginePropertyPublishesNonWritableBinding() {
+        var readonlyBase = new ExtensionGdClass(
+                "ReadonlyBase",
+                false,
+                true,
+                "Object",
+                "core",
+                java.util.List.of(),
+                java.util.List.of(),
+                java.util.List.of(),
+                java.util.List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0")),
+                java.util.List.of()
+        );
+        var registry = FrontendScopeTestSupport.createRegistry(java.util.List.of(readonlyBase));
+        var childClass = FrontendScopeTestSupport.createClass("Hero", "ReadonlyBase", java.util.List.of(), java.util.List.of());
+        registry.addGdccClass(childClass);
+
+        var classScope = new ClassScope(registry, registry, childClass);
+        var propertyResult = classScope.resolveValue("locked", ResolveRestriction.instanceContext());
+
+        assertTrue(propertyResult.isAllowed());
+        var property = propertyResult.requireValue();
+        assertEquals(ScopeValueKind.PROPERTY, property.kind());
+        assertEquals(GdIntType.INT, property.type());
+        assertFalse(property.writable());
     }
 
     @Test

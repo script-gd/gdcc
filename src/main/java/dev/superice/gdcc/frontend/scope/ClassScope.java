@@ -5,6 +5,7 @@ import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.scope.PropertyDefAccessSupport;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeLookupResult;
@@ -128,7 +129,7 @@ public final class ClassScope extends AbstractFrontendScope {
     ) {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(type, "type");
-        defineDirectValue(new ScopeValue(name, type, ScopeValueKind.CONSTANT, declaration, true, true));
+        defineDirectValue(new ScopeValue(name, type, ScopeValueKind.CONSTANT, declaration, true, false, true));
     }
 
     /// Registers a direct method owned by the current class.
@@ -315,6 +316,7 @@ public final class ClassScope extends AbstractFrontendScope {
                 ScopeValueKind.PROPERTY,
                 property,
                 false,
+                PropertyDefAccessSupport.isDirectlyWritable(property),
                 property.isStatic()
         );
     }
@@ -332,6 +334,7 @@ public final class ClassScope extends AbstractFrontendScope {
                 ScopeValueKind.SIGNAL,
                 signal,
                 true,
+                false,
                 false
         );
     }

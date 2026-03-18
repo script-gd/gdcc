@@ -28,8 +28,8 @@ public class ScopeProtocolTest {
         middleScope.setParentScope(rootScope);
         leafScope.setParentScope(middleScope);
 
-        var rootValue = new ScopeValue("global_only", GdVariantType.VARIANT, ScopeValueKind.CONSTANT, "root", true, false);
-        var middleValue = new ScopeValue("value", GdIntType.INT, ScopeValueKind.LOCAL, "middle", false, false);
+        var rootValue = new ScopeValue("global_only", GdVariantType.VARIANT, ScopeValueKind.CONSTANT, "root", true, false, false);
+        var middleValue = new ScopeValue("value", GdIntType.INT, ScopeValueKind.LOCAL, "middle", false, true, false);
         rootScope.defineValue(rootValue);
         middleScope.defineValue(middleValue);
 
@@ -112,8 +112,8 @@ public class ScopeProtocolTest {
         middleScope.setParentScope(rootScope);
         leafScope.setParentScope(middleScope);
 
-        var blockedValue = new ScopeValue("player", GdIntType.INT, ScopeValueKind.PROPERTY, "blocked", false, false);
-        var outerValue = new ScopeValue("player", GdStringType.STRING, ScopeValueKind.SINGLETON, "outer", true, false);
+        var blockedValue = new ScopeValue("player", GdIntType.INT, ScopeValueKind.PROPERTY, "blocked", false, true, false);
+        var outerValue = new ScopeValue("player", GdStringType.STRING, ScopeValueKind.SINGLETON, "outer", true, false, false);
         middleScope.defineBlockedValue(blockedValue);
         rootScope.defineValue(outerValue);
 

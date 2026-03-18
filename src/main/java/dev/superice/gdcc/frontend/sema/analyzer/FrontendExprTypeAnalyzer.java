@@ -8,6 +8,7 @@ import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
@@ -115,6 +116,7 @@ public class FrontendExprTypeAnalyzer {
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull FrontendChainReductionFacade chainReduction;
+        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
         private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedExpressionRoots = new IdentityHashMap<>();
@@ -147,6 +149,13 @@ public class FrontendExprTypeAnalyzer {
                     () -> currentStaticContext,
                     classRegistry,
                     this::resolveExpressionDependency
+            );
+            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+                    analysisData.symbolBindings(),
+                    scopesByAst,
+                    () -> currentRestriction,
+                    classRegistry,
+                    chainReduction
             );
             expressionSemanticSupport = new FrontendExpressionSemanticSupport(
                     analysisData.symbolBindings(),
@@ -233,7 +242,7 @@ public class FrontendExprTypeAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             var expression = expressionStatement.expression();
-            var expressionType = publishExpressionType(expression);
+            var expressionType = publishStatementExpressionType(expression);
             reportDiscardedExpressionWarning(expression, expressionType);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -396,6 +405,17 @@ public class FrontendExprTypeAnalyzer {
         /// but they are not published as ordinary value expression facts because they only serve as
         /// static-route heads in MVP.
         private @Nullable FrontendExpressionType publishExpressionType(@Nullable Expression expression) {
+            return publishExpressionType(expression, false);
+        }
+
+        private @Nullable FrontendExpressionType publishStatementExpressionType(@Nullable Expression expression) {
+            return publishExpressionType(expression, true);
+        }
+
+        private @Nullable FrontendExpressionType publishExpressionType(
+                @Nullable Expression expression,
+                boolean allowStatementResult
+        ) {
             if (expression == null) {
                 return null;
             }
@@ -403,7 +423,7 @@ public class FrontendExprTypeAnalyzer {
             if (published != null) {
                 return published;
             }
-            var computed = resolveExpressionType(expression);
+            var computed = resolveExpressionType(expression, allowStatementResult);
             publishResolvedExpressionType(expression, computed);
             return computed;
         }
@@ -466,6 +486,13 @@ public class FrontendExprTypeAnalyzer {
         }
 
         private @NotNull FrontendExpressionType resolveExpressionType(@NotNull Expression expression) {
+            return resolveExpressionType(expression, false);
+        }
+
+        private @NotNull FrontendExpressionType resolveExpressionType(
+                @NotNull Expression expression,
+                boolean allowStatementResult
+        ) {
             return switch (expression) {
                 case LiteralExpression literalExpression ->
                         expressionSemanticSupport.resolveLiteralExpressionType(literalExpression).expressionType();
@@ -476,8 +503,11 @@ public class FrontendExprTypeAnalyzer {
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
                 case AssignmentExpression assignmentExpression -> finishSemanticResolution(
                         assignmentExpression,
-                        expressionSemanticSupport.resolveAssignmentExpressionType(
+                        assignmentSemanticSupport.resolveAssignmentExpressionType(
                                 assignmentExpression,
+                                allowStatementResult
+                                        ? FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT
+                                        : FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
                                 this::resolveExpressionDependencyType,
                                 false
                         )
@@ -588,8 +618,15 @@ public class FrontendExprTypeAnalyzer {
                 @NotNull Node root,
                 @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolution
         ) {
-            var expressionType = resolution.expressionType();
-            if (resolution.rootOwnsOutcome()) {
+            return finishSemanticResolution(root, resolution.expressionType(), resolution.rootOwnsOutcome());
+        }
+
+        private @NotNull FrontendExpressionType finishSemanticResolution(
+                @NotNull Node root,
+                @NotNull FrontendExpressionType expressionType,
+                boolean rootOwnsOutcome
+        ) {
+            if (rootOwnsOutcome) {
                 switch (expressionType.status()) {
                     case FAILED -> reportExpressionError(root, requireDetailReason(expressionType));
                     case UNSUPPORTED -> reportUnsupportedExpression(root, requireDetailReason(expressionType));
@@ -661,6 +698,8 @@ public class FrontendExprTypeAnalyzer {
             if (expressionType == null || expressionType.status() != FrontendExpressionTypeStatus.RESOLVED) {
                 return;
             }
+            // Successful assignments now publish `RESOLVED(void)` and intentionally share the same
+            // quiet path as ordinary `void` calls.
             var publishedType = expressionType.publishedType();
             if (publishedType == null || publishedType instanceof GdVoidType) {
                 return;

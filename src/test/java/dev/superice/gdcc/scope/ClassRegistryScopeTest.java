@@ -49,6 +49,7 @@ public class ClassRegistryScopeTest {
         assertEquals(ScopeValueKind.SINGLETON, singletonValue.kind());
         assertEquals("Node", singletonValue.type().getTypeName());
         assertTrue(singletonValue.constant());
+        assertFalse(singletonValue.writable());
         assertInstanceOf(ExtensionSingleton.class, singletonValue.declaration());
 
         var enumValue = registry.resolveValue("GameFlags");
@@ -56,6 +57,7 @@ public class ClassRegistryScopeTest {
         assertEquals(ScopeValueKind.GLOBAL_ENUM, enumValue.kind());
         assertEquals(GdIntType.INT, enumValue.type());
         assertTrue(enumValue.constant());
+        assertFalse(enumValue.writable());
         assertInstanceOf(ExtensionGlobalEnum.class, enumValue.declaration());
 
         var utilityFunctions = registry.resolveFunctions("print_line");
@@ -195,7 +197,7 @@ public class ClassRegistryScopeTest {
                 @NotNull ResolveRestriction restriction
         ) {
             return ScopeLookupResult.foundAllowed(
-                    new ScopeValue(name, GdVariantType.VARIANT, ScopeValueKind.LOCAL, null, false, false)
+                    new ScopeValue(name, GdVariantType.VARIANT, ScopeValueKind.LOCAL, null, false, true, false)
             );
         }
 

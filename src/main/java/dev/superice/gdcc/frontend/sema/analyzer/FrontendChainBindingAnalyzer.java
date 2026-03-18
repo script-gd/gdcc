@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
@@ -114,6 +115,7 @@ public class FrontendChainBindingAnalyzer {
         private final @NotNull IdentityHashMap<Node, Boolean> reportedDeferredRoots = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedUnsupportedRoots = new IdentityHashMap<>();
         private final @NotNull FrontendChainReductionFacade chainReduction;
+        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
@@ -143,6 +145,13 @@ public class FrontendChainBindingAnalyzer {
                     () -> currentStaticContext,
                     classRegistry,
                     this::resolveExpressionType
+            );
+            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+                    analysisData.symbolBindings(),
+                    scopesByAst,
+                    () -> currentRestriction,
+                    classRegistry,
+                    chainReduction
             );
             expressionSemanticSupport = new FrontendExpressionSemanticSupport(
                     analysisData.symbolBindings(),
@@ -559,8 +568,9 @@ public class FrontendChainBindingAnalyzer {
                         )
                 );
                 case AssignmentExpression assignmentExpression -> bridgeExpressionResolution(
-                        expressionSemanticSupport.resolveAssignmentExpressionType(
+                        assignmentSemanticSupport.resolveAssignmentExpressionType(
                                 assignmentExpression,
+                                FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
                                 this::resolveExpressionDependencyType,
                                 finalizeWindow
                         )
@@ -652,6 +662,7 @@ public class FrontendChainBindingAnalyzer {
         ) {
             return FrontendChainStatusBridge.toExpressionTypeResult(resolution.expressionType());
         }
+
 
         private @NotNull FrontendExpressionType resolveExpressionDependencyType(
                 @NotNull Expression expression,

@@ -37,3 +37,5 @@
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
+- `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。
+- property writable 判定必须统一复用共享 helper，而不是在 scope publication、assignment analyzer、其他 frontend 路径里各自硬编码 engine/builtin property metadata 分支。

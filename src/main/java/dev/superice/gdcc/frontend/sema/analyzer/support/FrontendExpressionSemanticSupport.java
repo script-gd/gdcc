@@ -12,7 +12,6 @@ import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
-import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -192,22 +191,6 @@ public final class FrontendExpressionSemanticSupport {
             case SELF, LITERAL, LOCAL_VAR, PARAMETER, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON,
                     GLOBAL_ENUM, TYPE_META, UNKNOWN -> false;
         };
-    }
-
-    public @NotNull ExpressionSemanticResult resolveAssignmentExpressionType(
-            @NotNull AssignmentExpression assignmentExpression,
-            @NotNull NestedExpressionResolver nestedResolver,
-            boolean finalizeWindow
-    ) {
-        var leftType = nestedResolver.resolve(assignmentExpression.left(), finalizeWindow);
-        var rightType = nestedResolver.resolve(assignmentExpression.right(), finalizeWindow);
-        var dependencyIssue = firstNonResolvedDependency(leftType, rightType);
-        if (dependencyIssue != null) {
-            return propagated(dependencyIssue);
-        }
-        return rootOutcome(FrontendExpressionType.deferred(
-                "Assignment expression typing is deferred until assignment semantics are implemented"
-        ));
     }
 
     public @NotNull ExpressionSemanticResult resolveSubscriptExpressionType(

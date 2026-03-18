@@ -168,7 +168,7 @@ public final class ClassRegistry implements Scope {
             var singletonType = findSingletonType(name);
             if (singletonType != null) {
                 return ScopeLookupResult.foundAllowed(
-                        new ScopeValue(name, singletonType, ScopeValueKind.SINGLETON, singleton, true, false)
+                        new ScopeValue(name, singletonType, ScopeValueKind.SINGLETON, singleton, true, false, false)
                 );
             }
         }
@@ -176,7 +176,7 @@ public final class ClassRegistry implements Scope {
         var globalEnum = globalEnumByName.get(name);
         if (globalEnum != null) {
             return ScopeLookupResult.foundAllowed(
-                    new ScopeValue(name, GdIntType.INT, ScopeValueKind.GLOBAL_ENUM, globalEnum, true, false)
+                    new ScopeValue(name, GdIntType.INT, ScopeValueKind.GLOBAL_ENUM, globalEnum, true, false, false)
             );
         }
 
