@@ -22,6 +22,7 @@ import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedProperty;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedSignal;
 import dev.superice.gdcc.scope.resolver.ScopeSignalResolver;
+import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdSignalType;
@@ -40,6 +41,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.OptionalInt;
@@ -472,6 +474,13 @@ public final class FrontendChainReductionHelper {
 
         var propertyFailed = assertPropertyFailure(propertyResult);
         var signalFailed = assertSignalFailure(signalResult);
+        if (propertyFailed.kind() == ScopePropertyResolver.FailureKind.PROPERTY_MISSING
+                && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING) {
+            var methodReference = resolveInstanceMethodReference(request.classRegistry(), receiverType, step.name());
+            if (methodReference != null) {
+                return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
+            }
+        }
         var detailReason = propertyFailed.kind() == ScopePropertyResolver.FailureKind.PROPERTY_MISSING
                 && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING
                 ? "Member '" + step.name() + "' was not found as a property or signal on type '" + receiverType.getTypeName() + "'"
@@ -514,6 +523,12 @@ public final class FrontendChainReductionHelper {
             return resolvedPropertyTrace(stepIndex, step, incomingReceiver, property);
         }
         var failed = assertPropertyFailure(propertyResult);
+        if (failed.kind() == ScopePropertyResolver.FailureKind.BUILTIN_PROPERTY_MISSING) {
+            var methodReference = resolveInstanceMethodReference(classRegistry, receiverType, step.name());
+            if (methodReference != null) {
+                return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
+            }
+        }
         var detailReason = "Builtin member lookup for '" + step.name() + "' failed on type '"
                 + receiverType.getTypeName() + "': " + failed.kind();
         return new StepTrace(
@@ -552,32 +567,7 @@ public final class FrontendChainReductionHelper {
             case BUILTIN -> reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
             case ENGINE_CLASS ->
                     reduceEngineStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
-            case GDCC_CLASS -> {
-                var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.sourceName()
-                        + "' is deferred until class constants are published";
-                yield new StepTrace(
-                        stepIndex,
-                        step,
-                        StepKind.PROPERTY,
-                        RouteKind.STATIC_LOAD,
-                        incomingReceiver,
-                        Status.UNSUPPORTED,
-                        ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
-                        null,
-                        FrontendResolvedMember.unsupported(
-                                step.name(),
-                                FrontendBindingKind.CONSTANT,
-                                FrontendReceiverKind.TYPE_META,
-                                ScopeOwnerKind.GDCC,
-                                incomingReceiver.receiverType(),
-                                receiverTypeMeta.declaration(),
-                                detailReason
-                        ),
-                        null,
-                        false,
-                        detailReason
-                );
-            }
+            case GDCC_CLASS -> reduceGdccStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
         };
     }
 
@@ -628,6 +618,10 @@ public final class FrontendChainReductionHelper {
                 .findFirst()
                 .orElse(null);
         if (constant == null) {
+            var methodReference = resolveStaticMethodReference(classRegistry, receiverTypeMeta, step.name());
+            if (methodReference != null) {
+                return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
+            }
             var detailReason = "Builtin constant '" + step.name() + "' not found in class '" + builtinClass.name() + "'";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
         }
@@ -670,6 +664,10 @@ public final class FrontendChainReductionHelper {
                 .findFirst()
                 .orElse(null);
         if (constant == null) {
+            var methodReference = resolveStaticMethodReference(classRegistry, receiverTypeMeta, step.name());
+            if (methodReference != null) {
+                return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
+            }
             var detailReason = "Engine class constant '" + step.name() + "' not found in class '" + engineClass.name() + "'";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
         }
@@ -686,6 +684,43 @@ public final class FrontendChainReductionHelper {
                 ScopeOwnerKind.ENGINE,
                 GdIntType.INT,
                 constant
+        );
+    }
+
+    private static @NotNull StepTrace reduceGdccStaticLoad(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        var methodReference = resolveStaticMethodReference(classRegistry, receiverTypeMeta, step.name());
+        if (methodReference != null) {
+            return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
+        }
+        var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.sourceName()
+                + "' is deferred until class constants are published";
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.STATIC_LOAD,
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
+                null,
+                FrontendResolvedMember.unsupported(
+                        step.name(),
+                        FrontendBindingKind.CONSTANT,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        incomingReceiver.receiverType(),
+                        receiverTypeMeta.declaration(),
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
         );
     }
 
@@ -750,6 +785,37 @@ public final class FrontendChainReductionHelper {
                 null,
                 false,
                 detailReason
+        );
+    }
+
+    private static @NotNull StepTrace resolvedMethodReferenceTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull MethodReferenceResolution methodReference
+    ) {
+        var callableType = new GdCallableType();
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                methodReference.routeKind(),
+                incomingReceiver,
+                Status.RESOLVED,
+                ReceiverState.resolvedInstance(callableType),
+                null,
+                FrontendResolvedMember.resolved(
+                        methodReference.memberName(),
+                        methodReference.bindingKind(),
+                        incomingReceiver.receiverKind(),
+                        methodReference.ownerKind(),
+                        incomingReceiver.receiverType(),
+                        callableType,
+                        methodReference.declarationSite()
+                ),
+                null,
+                false,
+                null
         );
     }
 
@@ -1501,6 +1567,104 @@ public final class FrontendChainReductionHelper {
         return null;
     }
 
+    private static @Nullable MethodReferenceResolution resolveInstanceMethodReference(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull GdType receiverType,
+            @NotNull String memberName
+    ) {
+        if (receiverType instanceof GdObjectType objectType) {
+            var classDef = classRegistry.getClassDef(objectType);
+            return classDef == null ? null : resolveMethodReference(classRegistry, classDef, memberName, false);
+        }
+        var builtinClass = classRegistry.findBuiltinClass(receiverType.getTypeName());
+        return builtinClass == null ? null : resolveMethodReference(classRegistry, builtinClass, memberName, false);
+    }
+
+    private static @Nullable MethodReferenceResolution resolveStaticMethodReference(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull String memberName
+    ) {
+        return switch (receiverTypeMeta.kind()) {
+            case GLOBAL_ENUM -> null;
+            case BUILTIN -> {
+                var builtinClass = resolveBuiltinStaticOwner(classRegistry, receiverTypeMeta);
+                yield builtinClass == null ? null : resolveMethodReference(classRegistry, builtinClass, memberName, true);
+            }
+            case ENGINE_CLASS, GDCC_CLASS -> {
+                var classDef = resolveDeclaredClass(classRegistry, receiverTypeMeta);
+                yield classDef == null ? null : resolveMethodReference(classRegistry, classDef, memberName, true);
+            }
+        };
+    }
+
+    private static @Nullable MethodReferenceResolution resolveMethodReference(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ClassDef startClass,
+            @NotNull String memberName,
+            boolean staticOnly
+    ) {
+        ClassDef current = startClass;
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            var ownerMethods = current.getFunctions().stream()
+                    .filter(function -> function.getName().equals(memberName))
+                    .filter(function -> function.isStatic() == staticOnly)
+                    .toList();
+            if (!ownerMethods.isEmpty()) {
+                var ownerKind = resolveMethodOwnerKind(classRegistry, current);
+                if (ownerKind == null) {
+                    return null;
+                }
+                return new MethodReferenceResolution(
+                        memberName,
+                        staticOnly ? FrontendBindingKind.STATIC_METHOD : FrontendBindingKind.METHOD,
+                        staticOnly ? RouteKind.STATIC_METHOD : RouteKind.INSTANCE_METHOD,
+                        ownerKind,
+                        List.copyOf(ownerMethods)
+                );
+            }
+            current = resolveMethodReferenceSuperclass(classRegistry, current);
+        }
+        return null;
+    }
+
+    private static @Nullable ClassDef resolveMethodReferenceSuperclass(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ClassDef current
+    ) {
+        if (current.getSuperName().isBlank()) {
+            return null;
+        }
+        var builtinSuper = classRegistry.findBuiltinClass(current.getSuperName());
+        if (builtinSuper != null) {
+            return builtinSuper;
+        }
+        return classRegistry.getClassDef(new GdObjectType(current.getSuperName()));
+    }
+
+    private static @Nullable ScopeOwnerKind resolveMethodOwnerKind(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ClassDef ownerClass
+    ) {
+        if (ownerClass instanceof ExtensionBuiltinClass) {
+            return ScopeOwnerKind.BUILTIN;
+        }
+        if (ownerClass instanceof ExtensionGdClass) {
+            return ScopeOwnerKind.ENGINE;
+        }
+        if (ownerClass.isGdccClass() || classRegistry.isGdccClass(ownerClass.getName())) {
+            return ScopeOwnerKind.GDCC;
+        }
+        if (classRegistry.isGdClass(ownerClass.getName())) {
+            return ScopeOwnerKind.ENGINE;
+        }
+        if (classRegistry.isBuiltinClass(ownerClass.getName())) {
+            return ScopeOwnerKind.BUILTIN;
+        }
+        return null;
+    }
+
     private static @NotNull ConstructorResolution resolveConstructor(
             @NotNull ClassRegistry classRegistry,
             @NotNull ScopeTypeMeta receiverTypeMeta,
@@ -1774,6 +1938,22 @@ public final class FrontendChainReductionHelper {
             return classRegistry.getClassDef(objectType);
         }
         return null;
+    }
+
+    private record MethodReferenceResolution(
+            @NotNull String memberName,
+            @NotNull FrontendBindingKind bindingKind,
+            @NotNull RouteKind routeKind,
+            @NotNull ScopeOwnerKind ownerKind,
+            @NotNull List<? extends FunctionDef> declarationSite
+    ) {
+        private MethodReferenceResolution {
+            Objects.requireNonNull(memberName, "memberName must not be null");
+            Objects.requireNonNull(bindingKind, "bindingKind must not be null");
+            Objects.requireNonNull(routeKind, "routeKind must not be null");
+            Objects.requireNonNull(ownerKind, "ownerKind must not be null");
+            declarationSite = List.copyOf(declarationSite);
+        }
     }
 
     private static @NotNull StepKind classifyStepKind(@NotNull AttributeStep step) {

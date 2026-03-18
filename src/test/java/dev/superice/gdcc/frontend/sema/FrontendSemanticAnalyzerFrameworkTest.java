@@ -241,7 +241,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.symbolBindings().get(lambdaPlayerUseSite));
 
         assertEquals(5, result.symbolBindings().size());
-        assertEquals(1, result.resolvedMembers().size());
+        assertEquals(2, result.resolvedMembers().size());
         assertEquals(1, result.resolvedCalls().size());
         assertEquals(
                 2,
@@ -250,7 +250,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .count()
         );
         assertEquals(
-                4,
+                3,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.deferred_chain_resolution"))
                         .count()

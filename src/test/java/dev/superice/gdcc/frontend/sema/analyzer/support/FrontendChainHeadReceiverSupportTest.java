@@ -11,10 +11,12 @@ import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
+import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
@@ -179,17 +181,23 @@ class FrontendChainHeadReceiverSupportTest {
     }
 
     @Test
-    void resolveHeadReceiverShouldFailForNonValuePublishedBindingKinds() throws Exception {
+    void resolveHeadReceiverShouldMaterializeCallableForPublishedFunctionLikeBindings() throws Exception {
         var context = newTestContext();
         var bareMethod = identifier("build");
+        var buildFunction = new LirFunctionDef("build");
+        buildFunction.setStatic(true);
+        buildFunction.setReturnType(GdIntType.INT);
+        context.classScope().defineFunction(buildFunction);
         context.analysisData().symbolBindings().put(bareMethod, new FrontendBinding("build", FrontendBindingKind.STATIC_METHOD, null));
+        context.analysisData().scopesByAst().put(bareMethod, context.bodyScope());
 
         var receiver = newSupport(context, ResolveRestriction.unrestricted(), false).resolveHeadReceiver(bareMethod);
 
         assertNotNull(receiver);
-        assertEquals(FrontendChainReductionHelper.Status.FAILED, receiver.status());
-        assertEquals(FrontendReceiverKind.UNKNOWN, receiver.receiverKind());
-        assertTrue(receiver.detailReason().contains("does not publish a value receiver"));
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, receiver.status());
+        assertEquals(FrontendReceiverKind.INSTANCE, receiver.receiverKind());
+        assertEquals(new GdCallableType(), receiver.receiverType());
+        assertNull(receiver.detailReason());
     }
 
     private static @NotNull FrontendChainHeadReceiverSupport newSupport(

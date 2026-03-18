@@ -9,6 +9,7 @@ import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -16,6 +17,7 @@ import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -274,6 +276,267 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(engineLoadType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, engineLoadType.status());
         assertEquals("int", engineLoadType.publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzePublishesCallableTypesForBareCallableValuesAndMethodReferences() throws Exception {
+        var analyzed = analyze(
+                "expr_type_callable_values.gd",
+                """
+                        class_name ExprTypeCallableValues
+                        extends RefCounted
+                        
+                        class Worker:
+                            static func build() -> int:
+                                return 1
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func ping():
+                            helper
+                            self.helper
+                            Worker.build
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareHelper = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var instanceMethodReference = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var staticMethodReference = assertInstanceOf(
+                AttributeExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var staticHead = findNode(
+                staticMethodReference,
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("Worker")
+        );
+
+        var bareHelperType = analyzed.analysisData().expressionTypes().get(bareHelper);
+        assertNotNull(bareHelperType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareHelperType.status());
+        assertInstanceOf(GdCallableType.class, bareHelperType.publishedType());
+
+        var instanceMethodReferenceType = analyzed.analysisData().expressionTypes().get(instanceMethodReference);
+        assertNotNull(instanceMethodReferenceType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, instanceMethodReferenceType.status());
+        assertInstanceOf(GdCallableType.class, instanceMethodReferenceType.publishedType());
+
+        var staticMethodReferenceType = analyzed.analysisData().expressionTypes().get(staticMethodReference);
+        assertNotNull(staticMethodReferenceType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, staticMethodReferenceType.status());
+        assertInstanceOf(GdCallableType.class, staticMethodReferenceType.publishedType());
+        assertNull(analyzed.analysisData().expressionTypes().get(staticHead));
+
+        var discardedDiagnostics = diagnosticsByCategory(analyzed, "sema.discarded_expression");
+        assertEquals(3, discardedDiagnostics.size());
+    }
+
+    @Test
+    void analyzeWarnsForDiscardedNonVoidBareCallButNotVoidCall() throws Exception {
+        var analyzed = analyze(
+                "expr_type_discarded_calls.gd",
+                """
+                        class_name ExprTypeDiscardedCalls
+                        extends RefCounted
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func noop() -> void:
+                            pass
+                        
+                        func ping():
+                            helper()
+                            noop()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var helperCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var noopCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        var helperCallType = analyzed.analysisData().expressionTypes().get(helperCall);
+        assertNotNull(helperCallType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, helperCallType.status());
+        assertEquals("int", helperCallType.publishedType().getTypeName());
+
+        var noopCallType = analyzed.analysisData().expressionTypes().get(noopCall);
+        assertNotNull(noopCallType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, noopCallType.status());
+        assertEquals("void", noopCallType.publishedType().getTypeName());
+
+        var discardedDiagnostics = diagnosticsByCategory(analyzed, "sema.discarded_expression");
+        assertEquals(1, discardedDiagnostics.size());
+        assertTrue(discardedDiagnostics.getFirst().message().contains("int"));
+    }
+
+    @Test
+    void analyzePreservesBareTypeMetaMisuseAsFailedWithoutDuplicateExprError() throws Exception {
+        var analyzed = analyze(
+                "expr_type_type_meta_misuse.gd",
+                """
+                        class_name ExprTypeTypeMetaMisuse
+                        extends RefCounted
+                        
+                        class Worker:
+                            static func build() -> int:
+                                return 1
+                        
+                        func consume(value) -> void:
+                            pass
+                        
+                        func ping():
+                            Worker
+                            consume(Worker)
+                            var bad := Worker
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareWorker = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var consumeCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var badDeclaration = findVariable(pingFunction.body().statements(), "bad");
+        var workerArguments = findNodes(
+                consumeCall,
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("Worker")
+        );
+
+        var bareWorkerType = analyzed.analysisData().expressionTypes().get(bareWorker);
+        assertNotNull(bareWorkerType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, bareWorkerType.status());
+
+        assertEquals(1, workerArguments.size());
+        var argumentWorkerType = analyzed.analysisData().expressionTypes().get(workerArguments.getFirst());
+        assertNotNull(argumentWorkerType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, argumentWorkerType.status());
+
+        var badInitializerType = analyzed.analysisData().expressionTypes().get(badDeclaration.value());
+        assertNotNull(badInitializerType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, badInitializerType.status());
+
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("bad").type());
+
+        assertEquals(3, diagnosticsByCategory(analyzed, "sema.binding").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsExprOwnedDeferredDiagnosticsForCurrentMvpGaps() throws Exception {
+        var analyzed = analyze(
+                "expr_type_deferred_gaps.gd",
+                """
+                        class_name ExprTypeDeferredGaps
+                        extends RefCounted
+                        
+                        func ping(items):
+                            1 + 2
+                            items[0]
+                            items = 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var genericDeferred = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().getFirst()
+        ).expression();
+        var subscript = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(1)
+        ).expression();
+        var assignment = assertInstanceOf(
+                ExpressionStatement.class,
+                pingFunction.body().statements().get(2)
+        ).expression();
+
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                analyzed.analysisData().expressionTypes().get(genericDeferred).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                analyzed.analysisData().expressionTypes().get(subscript).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DEFERRED,
+                analyzed.analysisData().expressionTypes().get(assignment).status()
+        );
+
+        var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
+        assertEquals(3, deferredDiagnostics.size());
+    }
+
+    @Test
+    void analyzeReportsExprOwnedErrorAndUnsupportedDiagnostics() throws Exception {
+        var analyzed = analyze(
+                "expr_type_expr_owned_errors.gd",
+                """
+                        class_name ExprTypeExprOwnedErrors
+                        extends RefCounted
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func make_cb() -> Callable:
+                            return helper
+                        
+                        func takes_text(value: String) -> int:
+                            return 1
+                        
+                        func ping():
+                            takes_text(1)
+                            self.make_cb()()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var mismatchedBareCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var unsupportedDirectCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        var mismatchedBareCallType = analyzed.analysisData().expressionTypes().get(mismatchedBareCall);
+        assertNotNull(mismatchedBareCallType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, mismatchedBareCallType.status());
+
+        var unsupportedDirectCallType = analyzed.analysisData().expressionTypes().get(unsupportedDirectCall);
+        assertNotNull(unsupportedDirectCallType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedDirectCallType.status());
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(1, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.getFirst().message().contains("No applicable overload"));
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("Direct invocation of callable values"));
     }
 
     @Test
@@ -731,6 +994,15 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(initializerType);
         assertEquals(expectedInitializerStatus, initializerType.status());
         return initializerType;
+    }
+
+    private static @NotNull List<dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic> diagnosticsByCategory(
+            @NotNull AnalyzedScript analyzed,
+            @NotNull String category
+    ) {
+        return analyzed.analysisData().diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals(category))
+                .toList();
     }
 
     private static <T extends Node> @NotNull T findNode(

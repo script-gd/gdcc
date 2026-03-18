@@ -355,6 +355,90 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeBindsBareFunctionLikeSymbolsInValuePositionAfterValueNamespaceMiss() throws Exception {
+        var preparedInput = prepareBindingInput("bare_callable_values.gd", """
+                class_name BareCallableValues
+                extends Node
+                
+                static func build():
+                    return null
+                
+                func helper():
+                    pass
+                
+                func ping():
+                    helper
+                    build
+                    print
+                    var cb = helper
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "helper",
+                FrontendBindingKind.METHOD,
+                2
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "build"),
+                FrontendBindingKind.STATIC_METHOD
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "print"),
+                FrontendBindingKind.UTILITY_FUNCTION
+        );
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+    }
+
+    @Test
+    void analyzePublishesSupportedTypeMetaValueBindingsAndReportsOrdinaryValueMisuse() throws Exception {
+        var preparedInput = prepareBindingInput("bare_type_meta_values.gd", """
+                class_name BareTypeMetaValues
+                extends RefCounted
+                
+                class Worker:
+                    static func build():
+                        return null
+                
+                func consume(value):
+                    pass
+                
+                func ping():
+                    Worker
+                    consume(Worker)
+                    var bad = Worker
+                """);
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "Worker",
+                FrontendBindingKind.TYPE_META,
+                3
+        );
+
+        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(3, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.message().contains("static-route head")
+        ));
+        assertTrue(bindingDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.message().contains("Worker.build")
+        ));
+    }
+
+    @Test
     void analyzePublishesBlockedBareInstanceMethodInStaticContextWithoutFallingBackToUtilityFunction()
             throws Exception {
         var api = ExtensionApiLoader.loadDefault();

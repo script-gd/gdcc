@@ -76,7 +76,7 @@ public record ExtensionUtilityFunction(
 
     @Override
     public @NotNull @UnmodifiableView List<? extends ParameterDef> getParameters() {
-        return List.of();
+        return arguments;
     }
 
     @Override

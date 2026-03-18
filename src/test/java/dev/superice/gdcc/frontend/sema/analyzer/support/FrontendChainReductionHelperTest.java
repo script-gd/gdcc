@@ -18,6 +18,7 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
+import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -358,6 +359,56 @@ class FrontendChainReductionHelperTest {
         assertNotNull(staticBuildCall);
         assertEquals(FrontendReceiverKind.TYPE_META, staticBuildCall.receiverKind());
         assertTrue(result.notes().isEmpty());
+    }
+
+    @Test
+    void reduceResolvesInstanceMethodReferenceAfterPropertyAndSignalMiss() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("speak", GdStringType.STRING, false));
+        var registry = newRegistry(List.of(), List.of(worker));
+        var chain = chain(identifier("worker"), property("speak"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
+                registry,
+                noExpressionTypes()
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_METHOD, result.stepTraces().getFirst().routeKind());
+        var methodReference = result.stepTraces().getFirst().suggestedMember();
+        assertNotNull(methodReference);
+        assertEquals(FrontendBindingKind.METHOD, methodReference.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, methodReference.receiverKind());
+        assertInstanceOf(GdCallableType.class, methodReference.resultType());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.finalReceiver().status());
+        assertInstanceOf(GdCallableType.class, result.finalReceiver().receiverType());
+    }
+
+    @Test
+    void reduceResolvesTypeMetaStaticMethodReferenceAfterStaticLoadMiss() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("build", GdStringType.STRING, true));
+        var registry = newRegistry(List.of(), List.of(worker));
+        var chain = chain(identifier("Worker"), property("build"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(typeMeta("Worker")),
+                registry,
+                noExpressionTypes()
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.STATIC_METHOD, result.stepTraces().getFirst().routeKind());
+        var methodReference = result.stepTraces().getFirst().suggestedMember();
+        assertNotNull(methodReference);
+        assertEquals(FrontendBindingKind.STATIC_METHOD, methodReference.bindingKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, methodReference.receiverKind());
+        assertInstanceOf(GdCallableType.class, methodReference.resultType());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.finalReceiver().status());
+        assertInstanceOf(GdCallableType.class, result.finalReceiver().receiverType());
     }
 
     @Test

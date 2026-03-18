@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / exception 诊断链路已落地；expression typing 仍待扩展）
-- 更新时间：2026-03-17
+- 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / exception 诊断链路已落地）
+- 更新时间：2026-03-18
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -132,7 +132,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `annotationsByAst` 与 `scopesByAst` 已在生产链路中稳定填充
 - `symbolBindings` 已由 `FrontendTopBindingAnalyzer` 稳定发布
 - `resolvedMembers` / `resolvedCalls` 已由 `FrontendChainBindingAnalyzer` MVP 发布
-- `expressionTypes` 仍保留给后续 `FrontendExprTypeAnalyzer`
+- `expressionTypes` 已由 `FrontendExprTypeAnalyzer` 稳定发布，并承担 expression-only 恢复状态的 side-table 真源
 
 ### 2.6 `SkeletonBuildContext` 只服务于 skeleton phase
 
@@ -184,6 +184,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.call_resolution`
 - `sema.deferred_chain_resolution`
 - `sema.unsupported_chain_route`
+- `sema.expression_resolution`
+- `sema.deferred_expression_resolution`
+- `sema.unsupported_expression_route`
+- `sema.discarded_expression`
 - `sema.unsupported_annotation`
 
 其中 body/binding phase 新增 category 的语义固定为：
@@ -202,6 +206,14 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 以及首个 deferred chain recovery root 的恢复诊断
 - `sema.unsupported_chain_route`
   - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 warning
+- `sema.expression_resolution`
+  - expr analyzer 对 bare call 与其他 expression-only 路径的 failed recovery error
+- `sema.deferred_expression_resolution`
+  - expr analyzer 对 assignment / subscript / generic deferred expression 等 expression-only deferred root 的 warning
+- `sema.unsupported_expression_route`
+  - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 warning
+- `sema.discarded_expression`
+  - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
 
 其中 `FrontendClassSkeletonBuilder` 当前对 property annotation 的行为已经冻结为：
 
@@ -241,6 +253,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendVariableAnalyzer.analyze(...)`
     - 调用 `FrontendTopBindingAnalyzer.analyze(...)` 发布 `symbolBindings`
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
+    - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
 
 ### 3.4 exception
@@ -307,14 +320,3 @@ powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -T
    `FrontendSourceUnit`。
 7. 对普通源码错误，frontend phase 应优先采用“发诊断 + 跳过当前 subtree”的恢复策略；只有不可恢复 guard rail 才允许抛异常。
 
----
-
-## 6. 后续优先方向
-
-frontend 诊断基础设施已经能够支撑后续 binder/body phase。当前更高优先级的后续工程是：
-
-1. 在 `FrontendAnalysisData` 中真正填充 `symbolBindings`、`expressionTypes`、`resolvedMembers`、`resolvedCalls`、
-   并在新增 lexical boundary 时继续扩展 `scopesByAst`
-2. 将 signal、type-meta、static-context、member/call 解析失败统一接入 frontend binder diagnostics
-3. 为更完整的 unsupported / deferred feature 建立稳定 category 与测试矩阵
-4. 将 AST body -> LIR lowering 接到已有 skeleton / analysis data / diagnostics 主干上

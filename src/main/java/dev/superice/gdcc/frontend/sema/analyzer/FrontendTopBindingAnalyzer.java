@@ -547,7 +547,61 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private void bindValueIdentifier(@NotNull IdentifierExpression identifierExpression) {
-            publishValueResolution(identifierExpression, resolveVisibleValue(identifierExpression));
+            var valueResolution = resolveVisibleValue(identifierExpression);
+            if (valueResolution.status() != FrontendVisibleValueStatus.NOT_FOUND) {
+                publishValueResolution(identifierExpression, valueResolution);
+                return;
+            }
+
+            var currentScope = findCurrentScope(identifierExpression);
+            if (currentScope == null) {
+                reportMissingScopeUnsupported(identifierExpression, identifierExpression.name());
+                return;
+            }
+
+            var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction);
+            switch (functionResult.status()) {
+                case FOUND_ALLOWED -> {
+                    publishFunctionBinding(identifierExpression, functionResult.requireValue(), false);
+                    return;
+                }
+                case FOUND_BLOCKED -> {
+                    publishFunctionBinding(identifierExpression, functionResult.requireValue(), true);
+                    return;
+                }
+                case NOT_FOUND -> {
+                }
+            }
+
+            var typeMetaResult = currentScope.resolveTypeMeta(identifierExpression.name(), currentRestriction);
+            if (typeMetaResult.isAllowed()) {
+                var typeMeta = typeMetaResult.requireValue();
+                if (supportsTopLevelTypeMeta(typeMeta)) {
+                    publishBinding(
+                            identifierExpression,
+                            identifierExpression.name(),
+                            FrontendBindingKind.TYPE_META,
+                            typeMeta.declaration()
+                    );
+                    reportBindingError(
+                            identifierExpression,
+                            "Type-meta '" + identifierExpression.name()
+                                    + "' can only be used as a static-route head, not as an ordinary value; "
+                                    + "use routes such as '" + identifierExpression.name()
+                                    + ".build(...)', '" + identifierExpression.name()
+                                    + ".new()', or a static constant access like 'Vector3.BACK'"
+                    );
+                    return;
+                }
+                reportBindingError(
+                        identifierExpression,
+                        "Top-level type-meta binding for '" + identifierExpression.name()
+                                + "' currently supports class-like types, builtin static receivers, and global enums"
+                );
+                return;
+            }
+
+            publishValueResolution(identifierExpression, valueResolution);
         }
 
         private @NotNull FrontendVisibleValueResolution resolveVisibleValue(
@@ -622,6 +676,20 @@ public class FrontendTopBindingAnalyzer {
                 publishValueResolution(identifierExpression, valueResolution);
                 reportLocalTypeMetaShadowing(identifierExpression, valueResolution.visibleValue(), typeMetaResult);
                 return;
+            }
+
+            var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction);
+            switch (functionResult.status()) {
+                case FOUND_ALLOWED -> {
+                    publishFunctionBinding(identifierExpression, functionResult.requireValue(), false);
+                    return;
+                }
+                case FOUND_BLOCKED -> {
+                    publishFunctionBinding(identifierExpression, functionResult.requireValue(), true);
+                    return;
+                }
+                case NOT_FOUND -> {
+                }
             }
 
             if (typeMetaResult.isAllowed()) {

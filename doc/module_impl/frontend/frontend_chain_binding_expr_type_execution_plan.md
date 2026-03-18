@@ -1334,13 +1334,24 @@ F 阶段完成后，frontend body phase 仍有一块与 GDScript 语义不对齐
 
 **当前实施状态（2026-03-18）**：
 
-- [ ] G0 owner 边界仍未冻结：`FrontendExprTypeAnalyzer` 目前仍无任何 diagnostic emission，statement-position warning 也尚未存在。
-- [ ] G1 value-position callable / type-meta 分流尚未落地：`bindValueIdentifier(...)` 仍只查 value namespace；bare function 仍退化为 generic unknown value miss，而 bare `TYPE_META` 也只能借这条 generic `sema.binding` 路径间接报错。
-- [ ] G2 callable value typing 与 bare `TYPE_META` provenance 尚未落地：`FrontendExprTypeAnalyzer` 与 `FrontendChainBindingAnalyzer` 对 `METHOD` / `STATIC_METHOD` / `UTILITY_FUNCTION` 仍统一发布 `DEFERRED`，而 `TYPE_META` 仍沿用 route-head-only 宽泛 skip 规则，尚未区分“合法 static route head”与“非法 bare value use-site”。
-- [ ] G3 bare call typing 尚未落地：`resolveCallExpressionType(...)` 仍无条件返回 `DEFERRED`，因此无法稳定区分 `void` / non-`void` bare call。
-- [ ] G4 method-as-value route 尚未落地：`FrontendChainReductionHelper.reducePropertyStep(...)` 仍只覆盖 property/signal/static-load；`FrontendChainHeadReceiverSupport` 对 function-like chain head 仍 fail-closed。
-- [ ] G5 expr-owned diagnostics 尚未落地：assignment、subscript、generic deferred expression 等 expression-only 路径仍大量停留在 side-table-only 状态。
-- [ ] G6 文档收口尚未开始：`frontend_rules.md`、`diagnostic_manager.md`、`frontend_top_binding_analyzer_implementation.md` 仍未反映上述新合同。
+- [x] G0 已冻结 owner 边界与非目标：`FrontendTopBindingAnalyzer` 继续只发布 symbol category，并负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`；`FrontendChainBindingAnalyzer` 继续拥有 chain/member/call route diagnostics；`FrontendExprTypeAnalyzer` 现只补 expression-only diagnostics 与 discarded-expression warning，没有新增 side table，也没有把 lambda / parameter default / `for` / `match` 偷偷扩成正式 typing 面。
+- [x] G1 已落地 value-position callable / type-meta 分流：`bindValueIdentifier(...)` 与 `bindTopLevelTypeMetaCandidate(...)` 现统一冻结为“value winner -> function namespace -> type-meta misuse -> generic unknown miss”；bare function name 在 value position 会发布 `METHOD` / `STATIC_METHOD` / `UTILITY_FUNCTION`，bare `TYPE_META` 则发布真实 `TYPE_META` 并由 top binding 发出精确 `sema.binding`，不再退化成 generic unknown value miss。
+- [x] G2 已落地 callable value typing 与 bare `TYPE_META` provenance：`FrontendExprTypeAnalyzer.resolveIdentifierExpressionType(...)` 与 chain analyzer 的 local dependency resolver 现把 function-like binding materialize 为 `RESOLVED(Callable)`，从而让 bare callable、callable argument、`foo.call(...)` / `foo.bind(...)` 与 bare local initializer 共享同一 published contract；同时 route-head-only `TYPE_META` skip 已收窄为“仅合法 static-route head base 不落 ordinary publication”，bare `TYPE_META` value use-site 会稳定保留 `FAILED` provenance，不再被静默吞掉。
+- [x] G3 已落地 bare call typing 与 `void` 判定最小闭环：`resolveCallExpressionType(...)` 现对 bare identifier callee 做真正的 overload 选择，并稳定区分 `RESOLVED` / `BLOCKED` / `FAILED` / `DEFERRED` / `UNSUPPORTED`；statement-position 上只对 resolved non-`void` bare call 发 discarded warning，而 resolved `void` bare call 保持静默。
+- [x] G4 已落地 method-as-value route：`FrontendChainReductionHelper.reducePropertyStep(...)` 现保持 property -> signal -> static load 的既有优先级后，再保守尝试 method reference，把 `obj.method` / `Type.static_func` 发布为 `Callable`；`FrontendChainHeadReceiverSupport.resolveIdentifierHeadReceiver(...)` 也已支持 function-like chain head materialization，使 `foo.call(...)`、`foo.bind(...)`、`Type.func.bind(...)` 能继续进入既有 chain reduction，而不是 fail-closed。
+- [x] G5 已落地 expr-owned diagnostics 与 statement warning：`FrontendExprTypeAnalyzer` 现正式发出 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`，并对 assignment、subscript、generic deferred expression、bare call 与 discarded-expression statement 建立 root 去重；若同一根源错误已由 top binding / chain binding 发过诊断，expr analyzer 只保留 published status，不重复补第二条同级 error。
+- [x] G6 已完成文档收口与回归边界复核：`diagnostic_manager.md`、`frontend_rules.md`、`frontend_top_binding_analyzer_implementation.md` 已同步 bare callable 价值语义、bare `TYPE_META` misuse owner、expr-owned diagnostics category 与 statement warning 合同；F 阶段冻结的 `TYPE_META` route-head only 规则、E1 的 `:=` provenance/backfill 规则以及既有 chain diagnostics 均保持稳定。
+
+**本轮 targeted 验收（2026-03-18）**：
+
+- 已运行：`powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendTopBindingAnalyzerTest,FrontendExprTypeAnalyzerTest,FrontendChainBindingAnalyzerTest,FrontendChainHeadReceiverSupportTest,FrontendChainReductionHelperTest,FrontendSemanticAnalyzerFrameworkTest`
+- 结果：`BUILD SUCCESSFUL`
+- 当前 focused coverage 已锚定：
+  - bare function name 作为 ordinary value、call argument、initializer 与 callable chain head
+  - bare `TYPE_META` ordinary-value misuse 与合法 static route head 分流
+  - bare call 的 `void` / non-`void` discarded-expression policy
+  - method / static-method reference 作为 member value 的 `Callable` materialization
+  - assignment / subscript / generic deferred expression 的 expr-owned diagnostics 与 root-level 去重
 
 ## 6.8 阶段总体验收出口
 

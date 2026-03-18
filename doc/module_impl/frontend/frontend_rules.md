@@ -12,6 +12,11 @@
 - parser 必须保持 tolerant：`gdparser` lowering diagnostics 映射为 `parse.lowering`，parser/runtime 失败映射为 `parse.internal`，不要把运行时异常直接抛给调用方。
 - skeleton / analyzer / 后续 binder-body phase 对可恢复错误必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
 - 新增 frontend 诊断或恢复路径时，必须同步更新 `diagnostic_manager.md`、相关实现注释和受影响的模块文档，避免代码与文档冲突。
+- body phase 的 diagnostic owner 必须保持单一：
+  - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
+  - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / chain deferred/unsupported boundary
+  - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
+  - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
 
 ## 测试约定
 

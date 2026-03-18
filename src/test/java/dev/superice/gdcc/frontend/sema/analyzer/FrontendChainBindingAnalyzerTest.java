@@ -12,6 +12,7 @@ import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -244,6 +245,122 @@ class FrontendChainBindingAnalyzerTest {
                 String.valueOf(outerResolvedCall.detailReason())
         );
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, outerResolvedCall.callKind());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesMethodReferenceMembersAsCallableValues() throws Exception {
+        var analyzed = analyze(
+                "method_reference_members.gd",
+                """
+                        class_name MethodReferenceMembers
+                        extends RefCounted
+                        
+                        class Worker:
+                            static func build() -> int:
+                                return 1
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func ping():
+                            self.helper
+                            Worker.build
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var instanceReferenceStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()),
+                AttributePropertyStep.class,
+                step -> step.name().equals("helper")
+        );
+        var staticReferenceStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)),
+                AttributePropertyStep.class,
+                step -> step.name().equals("build")
+        );
+
+        var instanceReference = analyzed.analysisData().resolvedMembers().get(instanceReferenceStep);
+        assertNotNull(instanceReference);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, instanceReference.status());
+        assertEquals(FrontendBindingKind.METHOD, instanceReference.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, instanceReference.receiverKind());
+        assertInstanceOf(GdCallableType.class, instanceReference.resultType());
+
+        var staticReference = analyzed.analysisData().resolvedMembers().get(staticReferenceStep);
+        assertNotNull(staticReference);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, staticReference.status());
+        assertEquals(FrontendBindingKind.STATIC_METHOD, staticReference.bindingKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, staticReference.receiverKind());
+        assertInstanceOf(GdCallableType.class, staticReference.resultType());
+
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
+    void analyzeUsesCallableReceiverForBareFunctionHeadChains() throws Exception {
+        var analyzed = analyze(
+                "callable_head_chain.gd",
+                """
+                        class_name CallableHeadChain
+                        extends RefCounted
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func ping():
+                            helper.call()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var callStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()),
+                AttributeCallStep.class,
+                step -> step.name().equals("call")
+        );
+
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeResolvesBareCallArgumentDependenciesInsideChainCalls() throws Exception {
+        var analyzed = analyze(
+                "bare_call_chain_argument.gd",
+                """
+                        class_name BareCallChainArgument
+                        extends RefCounted
+                        
+                        func helper() -> int:
+                            return 1
+                        
+                        func consume(value: int) -> int:
+                            return value
+                        
+                        func ping():
+                            self.consume(helper())
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var consumeStep = findNode(
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()),
+                AttributeCallStep.class,
+                step -> step.name().equals("consume")
+        );
+
+        var resolvedConsume = analyzed.analysisData().resolvedCalls().get(consumeStep);
+        assertNotNull(resolvedConsume);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedConsume.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedConsume.callKind());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }
 

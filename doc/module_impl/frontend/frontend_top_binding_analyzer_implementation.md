@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
-- 更新时间：2026-03-17
+- 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
+- 更新时间：2026-03-18
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -139,9 +139,9 @@
 
 需要明确：
 
-- `UTILITY_FUNCTION` 只表示 global utility function
-- `METHOD` 只表示 bare callee 命中的实例方法 overload set
-- `STATIC_METHOD` 只表示 bare callee 命中的静态方法 overload set
+- `UTILITY_FUNCTION` 表示 global utility function 对应的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
+- `METHOD` 表示实例方法 overload set 的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
+- `STATIC_METHOD` 表示静态方法 overload set 的 function-like symbol category，可被 bare callee 与 value use-site 共同消费
 - `CONSTANT` 仍保留在枚举中，但 class-level `const` 当前不属于本 analyzer 的正式支持面
 - `CAPTURE` 在当前支持面下通常不会正式产出，因为 lambda capture 仍 deferred
 
@@ -176,11 +176,26 @@
   - 仍发布对应 binding
   - 同时发 `sema.binding`
 - `NOT_FOUND`
-  - 发布 `UNKNOWN`
-  - 同时发 `sema.binding`
+  - 继续按固定 fallback 顺序竞争其他命名空间：
+    - `resolveFunctions(...)`
+    - `resolveTypeMeta(...)` ordinary-value misuse
+    - generic unknown value miss
 - `DEFERRED_UNSUPPORTED`
   - 不发布 binding
   - 发 `sema.unsupported_binding_subtree`
+
+当 value namespace 返回 `NOT_FOUND` 时，value-position 的最终收口顺序已经冻结为：
+
+- ordinary value winner
+- function namespace winner（发布 `METHOD` / `STATIC_METHOD` / `UTILITY_FUNCTION`）
+- supported `TYPE_META` ordinary-value misuse
+- generic unknown value miss
+
+这意味着：
+
+- bare function name 现在是合法的 ordinary value use-site；top binding 负责发布 function-like symbol category，而不是误退化成 unknown value
+- bare `TYPE_META` ordinary-value misuse 不再退化成 generic unknown miss；top binding 必须发布真实 `TYPE_META`，并由自己发出首条精确 `sema.binding`
+- value namespace 一旦已有 allowed / blocked winner，function/type-meta namespace 都不得反抢，blocked local winner 仍继续遮蔽 outer/global function
 
 当前 `ScopeValueKind -> FrontendBindingKind` 映射为：
 
@@ -282,6 +297,12 @@
   - fail-closed
   - 发 `sema.binding`
   - 不发布误导性的 function kind
+
+需要额外冻结一条 use-site 规则：
+
+- function namespace winner 不再只服务 bare callee
+- 对 bare value-position `IdentifierExpression`，只要 ordinary value namespace 返回 `NOT_FOUND`，top binding 也允许发布 `METHOD` / `STATIC_METHOD` / `UTILITY_FUNCTION`
+- 这样 expression typing、chain head receiver 与后续 `Callable` materialization 都能消费同一份 published symbol category，而不需要扩张 `FrontendBinding` 数据模型
 
 ### 3.4 `self`
 

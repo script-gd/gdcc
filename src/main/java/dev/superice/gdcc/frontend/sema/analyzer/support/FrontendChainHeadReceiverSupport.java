@@ -7,6 +7,7 @@ import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
@@ -162,11 +163,12 @@ public final class FrontendChainHeadReceiverSupport {
             case SELF -> resolveSelfReceiver(identifier);
             case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM ->
                     resolveValueReceiver(identifier);
+            case METHOD, STATIC_METHOD, UTILITY_FUNCTION -> resolveCallableReceiver(identifier);
             case UNKNOWN -> failedHeadReceiver(
                     identifier,
                     "Chain head '" + identifier.name() + "' does not resolve to a published value or type-meta receiver"
             );
-            case LITERAL, METHOD, STATIC_METHOD, UTILITY_FUNCTION -> failedHeadReceiver(
+            case LITERAL -> failedHeadReceiver(
                     identifier,
                     "Chain head '" + identifier.name() + "' does not publish a value receiver"
             );
@@ -244,6 +246,45 @@ public final class FrontendChainHeadReceiverSupport {
                 null,
                 null,
                 "Published value receiver '" + identifier.name() + "' is no longer visible"
+        );
+    }
+
+    /// Resolves a published bare callable symbol into a `Callable` value receiver.
+    ///
+    /// Function namespace lookup keeps the same blocked-hit semantics as ordinary value lookup:
+    /// a blocked local winner still shadows outer/global functions, so we preserve it as a blocked
+    /// `Callable` receiver instead of pretending the name disappeared.
+    public @NotNull FrontendChainReductionHelper.ReceiverState resolveCallableReceiver(
+            @NotNull IdentifierExpression identifierExpression
+    ) {
+        var identifier = Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
+        var currentScope = scopesByAst.get(identifier);
+        if (currentScope == null) {
+            return new FrontendChainReductionHelper.ReceiverState(
+                    FrontendChainReductionHelper.Status.UNSUPPORTED,
+                    FrontendReceiverKind.UNKNOWN,
+                    null,
+                    null,
+                    "Callable receiver '" + identifier.name() + "' is inside a skipped subtree"
+            );
+        }
+        var functionResult = currentScope.resolveFunctions(identifier.name(), currentRestriction);
+        var callableType = new GdCallableType();
+        if (functionResult.isAllowed()) {
+            return FrontendChainReductionHelper.ReceiverState.resolvedInstance(callableType);
+        }
+        if (functionResult.isBlocked()) {
+            return FrontendChainReductionHelper.ReceiverState.blockedFrom(
+                    FrontendChainReductionHelper.ReceiverState.resolvedInstance(callableType),
+                    "Binding '" + identifier.name() + "' is not accessible in the current context"
+            );
+        }
+        return new FrontendChainReductionHelper.ReceiverState(
+                FrontendChainReductionHelper.Status.FAILED,
+                FrontendReceiverKind.UNKNOWN,
+                null,
+                null,
+                "Published callable receiver '" + identifier.name() + "' is no longer visible"
         );
     }
 
