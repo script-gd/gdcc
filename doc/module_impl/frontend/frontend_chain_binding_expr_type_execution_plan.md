@@ -1215,7 +1215,7 @@ F 阶段完成后，frontend body phase 仍有一块与 GDScript 语义不对齐
     - argument types 已通过现有 local dependency 规则可见
   - 对这一路径，expr analyzer 应基于当前 scope / restriction 与 argument types 做真正的 bare-call 选择，并发布：
     - `RESOLVED(returnType)`
-    - `BLOCKED(returnType?)`
+    - `BLOCKED(returnType when overload resolution succeeds)`
     - `FAILED`
     - `DEFERRED`
     - `UNSUPPORTED`
@@ -1432,6 +1432,11 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
     - receiver 为 `GdContainerType`：
       - key/index type 用 `ClassRegistry.checkAssignable(argumentType, container.getKeyType())` 校验
       - 成功后结果类型为 `container.getValueType()`
+      - 这是 H1 明确接受的 **strict typed MVP contract**，不是对 Godot keyed/index 兼容性的完整对齐：
+        - 当前不额外放宽 `String` / `StringName` 互通
+        - 当前不额外放宽 `int -> float`
+        - 当前不额外放宽 `null -> Object`
+        - 当前也不为 `Array` / packed array 额外接受 float index
     - receiver 为 `Variant`：
       - 发布 `DYNAMIC(Variant)`
       - 不退化成 deferred
@@ -1440,9 +1445,23 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
     - metadata 表明 receiver keyed，但 frontend 当前仍无稳定规则时：
       - 显式 `UNSUPPORTED`
       - 不退回 generic deferred
+      - 该分支在 MVP 中是刻意的范围冻结，而不是待自动降级的“半支持”：
+        - `String`
+        - `Vector2` / `Vector3` / `Vector4`
+        - `Color`
+        - `Basis`
+        - `Transform2D` / `Transform3D`
+        - `Projection`
+        - `Object`
+        - 其他 extension metadata 仅声明 `isKeyed`、但当前 frontend 仍缺少稳定 key/result typing 规则的 builtin route
   - `FrontendChainReductionHelper` 必须把 `AttributeSubscriptStep` 从 hardcoded unsupported 改成真实 reduction step，并复用现有 argument finalize/retry window。
   - `FrontendChainBindingAnalyzer` 的本地 expression dependency typer 必须把 `SubscriptExpression` 纳入一等节点，否则 chain call argument 中的 `arr[i]` 仍会无谓拖成 `DEFERRED`。
   - 当前阶段不新增独立的 subscript side table；先依赖 `expressionTypes()` 与 chain reduction trace/output receiver 完成最小闭环。
+  - 当前实施拆分（2026-03-18）：
+    - [x] H1.1 已完成：新增 `FrontendSubscriptSemanticSupport` 作为 shared 子域真源，统一 plain/attribute subscript 的 container-family、Variant、keyed-builtin、non-container contract。
+    - [x] H1.2 已完成：`FrontendExpressionSemanticSupport` / `FrontendChainReductionHelper` 均已接线 shared subscript support；`AttributeSubscriptStep` 不再 hardcoded unsupported，而是先解析 `name` 对应 member value，再对其结果类型应用 subscript 语义。
+    - [x] H1.3 已完成：`FrontendExprTypeAnalyzer` 已统一 shared support 的 root-owned deferred/failed/unsupported 诊断出口，并补齐 attribute-subscript argument 的 expression-type 发布，避免 final-step 直接命中 published member/call 时漏发 nested argument facts。
+    - [x] H1.4 已完成：已新增/扩展 `FrontendSubscriptSemanticSupportTest`、`FrontendExpressionSemanticSupportTest`、`FrontendExprTypeAnalyzerTest`、`FrontendChainReductionHelperTest`、`FrontendChainBindingAnalyzerTest`，覆盖 container happy path、Variant dynamic、bad key type、non-container receiver、keyed-builtin unsupported、plain subscript nested call argument、attribute-subscript exact suffix 与 unsupported boundary；并跑通上述测试以及 `FrontendChainStatusBridgeTest`、`FrontendSemanticAnalyzerFrameworkTest`。
 - H2：assignment 语义与 statement policy 收口
   - 新增独立 assignment semantic support，建议命名为 `FrontendAssignmentSemanticSupport` 或语义等价名称。
   - 必须新增 assignment-target resolution model，而不是继续依赖 usage-agnostic `FrontendBinding` 反推左值语义。
@@ -1487,8 +1506,8 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
       - `self.helper.bind(...)`
       - `Worker.build.bind(...)`
     - blocked bare call：
-      - expr path
       - chain path
+      - expr path 必须继续断言 `BLOCKED` 且保留 overload-selected 真实返回类型，而不是把 published type 擦平成 `Callable`
     - direct-callable-invocation unsupported 变体：
       - callable produced by `.bind(...)`
       - callable chain head variant
@@ -1525,7 +1544,7 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
   - `SubscriptExpression` / `AssignmentExpression` 不再属于 generic deferred catch-all
   - 后续 E2/E3 若继续扩张 operator/ternary/其他 expression node，不需要再同时维护两个 analyzer 内部的漂移实现
 - H4 完成后：
-  - `.bind(...)`、blocked bare call、callable direct invocation variants、callable chain head variants 均有 focused tests
+  - `.bind(...)`、blocked bare call（含真实返回类型合同）、callable direct invocation variants、callable chain head variants 均有 focused tests
   - ambiguous bare call 与 empty overload set 至少在 helper/unit 层被稳定锚定
   - subscript + callable integration cases 具备正反两面 coverage
 
@@ -1562,7 +1581,7 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
   - `helper.bind(...)`
   - `self.helper.bind(...)`
   - `Worker.build.bind(...)`
-  - blocked bare call
+  - blocked bare call（尤其 chain path 与真实返回类型合同）
   - ambiguous bare call
   - empty overload set
   - callable produced by `.bind(...)` 后再 direct invoke
@@ -1571,10 +1590,11 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
 **当前实施状态（2026-03-18）**：
 
 - [x] H0 已完成（2026-03-18）：已提取 `FrontendExpressionSemanticSupport`，并接线到 `FrontendExprTypeAnalyzer` / `FrontendChainBindingAnalyzer`；两侧不再各自维护 bare callable / bare call / assignment / subscript / explicit-deferred 的重复局部语义实现。新增 `FrontendExpressionSemanticSupportTest`，并通过 `FrontendExpressionSemanticSupportTest, FrontendExprTypeAnalyzerTest, FrontendChainBindingAnalyzerTest, FrontendChainReductionHelperTest, FrontendChainStatusBridgeTest` 定向测试锚定合同。
-- [ ] H1 待实施：plain subscript 仍只发布 deferred，attribute-subscript 仍 hardcoded unsupported，chain-local dependency typer 也未把 subscript 视为一等节点。
+- [x] H1 已完成（2026-03-18）：plain `SubscriptExpression` 现已对 `Array` / `Dictionary` / `Packed*Array` 发布真实 element/value type，对 `Variant` receiver 发布 `DYNAMIC(Variant)`，并对 bad key type、non-container receiver、keyed-builtin route 发布明确 `FAILED` / `UNSUPPORTED`；`AttributeSubscriptStep` 已进入真实 chain reduction，可继续 exact suffix；plain subscript 也已作为 chain-local dependency 的一等节点支撑 outer call exact resolution。当前阶段仍未新增独立 subscript side table，attribute-subscript 本身继续只依赖 reduction trace / `expressionTypes()` 完成最小闭环。
+- [x] H1 范围说明已冻结：当前实现中的 strict container key/index 校验与 keyed builtin `UNSUPPORTED` 都是 MVP 的显式边界，而不是待 H1 内补齐的缺陷；文档必须继续按“container-family strict contract”表述，不得泛化成“已基本对齐 Godot subscript 语义”。
 - [ ] H2 待实施：assignment 仍是 deferred wrapper，尚未建立 assignable target contract 与 `RESOLVED(void)` success semantics，也尚未重构 statement-position warning policy。
 - [ ] H3 待实施：generic deferred bucket 仍过宽；除本里程碑明确要收口的节点外，remaining deferred node set 尚未显式拆分。
-- [ ] H4 待实施：callable focused tests 仍缺 `.bind(...)`、blocked bare call、ambiguous bare call、empty overload set、callable direct invocation variants 与 subscript+callable integration cases。
+- [ ] H4 待实施：callable focused tests 仍缺 `.bind(...)`、blocked bare call 的 chain-path coverage、ambiguous bare call、empty overload set、callable direct invocation variants 与 subscript+callable integration cases；expr-path blocked bare call 已要求并锚定“保留 overload-selected 真实返回类型，而不是 `Callable`”合同。
 
 ## 6.9 阶段总体验收出口
 
@@ -1594,7 +1614,7 @@ G 里程碑完成后，frontend body phase 仍有三条会继续污染 published
 - shared expression semantic support 已成为 chain/expr analyzer 的共同真源，不再维持两套局部 expression semantic 解析实现
 - expression-only `FAILED` / `DEFERRED` / `UNSUPPORTED` 根节点不再只停留在 side table；它们要么拥有 expr-owned diagnostic，要么明确复用既有 upstream diagnostic provenance
 - generic deferred bucket 已收窄为显式枚举的剩余延期节点集合，而不是默认黑箱
-- callable 的高风险分支已有 focused tests 锚定：至少包含 `.bind(...)`、blocked bare call、direct-callable-invocation variants，以及 helper-level ambiguous/empty-overload coverage
+- callable 的高风险分支已有 focused tests 锚定：至少包含 `.bind(...)`、blocked bare call（保留真实返回类型而非 `Callable`）、direct-callable-invocation variants，以及 helper-level ambiguous/empty-overload coverage
 - 整体设计仍保持“整体分层、局部交替”，未退化成 whole-module fixpoint
 
 建议在整体出口前至少跑通以下 targeted tests 组合：

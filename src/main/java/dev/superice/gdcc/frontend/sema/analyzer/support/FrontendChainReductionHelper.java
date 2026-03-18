@@ -300,7 +300,7 @@ public final class FrontendChainReductionHelper {
                 if (detailReason != null) {
                     throw new IllegalArgumentException("detailReason must be null for resolved step trace");
                 }
-                if (suggestedMember == null && suggestedCall == null) {
+                if (stepKind != StepKind.SUBSCRIPT && suggestedMember == null && suggestedCall == null) {
                     throw new IllegalArgumentException("resolved step trace must publish a member or call suggestion");
                 }
             } else {
@@ -388,7 +388,7 @@ public final class FrontendChainReductionHelper {
                     reducePropertyStep(stepIndex, propertyStep, incomingReceiver, request);
             case AttributeCallStep callStep -> reduceCallStep(stepIndex, callStep, incomingReceiver, request, notes);
             case AttributeSubscriptStep subscriptStep ->
-                    unsupportedSubscriptStep(stepIndex, subscriptStep, incomingReceiver);
+                    reduceSubscriptStep(stepIndex, subscriptStep, incomingReceiver, request);
             case UnknownAttributeStep unknownStep -> unsupportedUnknownStep(stepIndex, unknownStep, incomingReceiver);
         };
     }
@@ -1303,24 +1303,95 @@ public final class FrontendChainReductionHelper {
         );
     }
 
-    private static @NotNull StepTrace unsupportedSubscriptStep(
+    private static @NotNull StepTrace reduceSubscriptStep(
             int stepIndex,
             @NotNull AttributeSubscriptStep step,
-            @NotNull ReceiverState incomingReceiver
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ReductionRequest request
     ) {
-        var detailReason = "Attribute subscript step '" + step.name() + "' is not supported in milestone B helper yet";
+        var memberResolution = reducePropertyStep(
+                stepIndex,
+                new AttributePropertyStep(step.name(), step.range()),
+                incomingReceiver,
+                request
+        );
+        if (memberResolution.status() != Status.RESOLVED && memberResolution.status() != Status.DYNAMIC) {
+            return new StepTrace(
+                    stepIndex,
+                    step,
+                    StepKind.SUBSCRIPT,
+                    RouteKind.SUBSCRIPT,
+                    incomingReceiver,
+                    memberResolution.status(),
+                    memberResolution.outgoingReceiver(),
+                    null,
+                    null,
+                    null,
+                    false,
+                    Objects.requireNonNull(memberResolution.detailReason(), "detailReason must not be null")
+            );
+        }
+
+        var argumentResolution = resolveArgumentTypes(step.arguments(), request);
+        if (argumentResolution.status() != Status.RESOLVED) {
+            return unresolvedSubscriptDependencyTrace(stepIndex, step, incomingReceiver, argumentResolution);
+        }
+
+        var receiverType = Objects.requireNonNull(
+                memberResolution.outgoingReceiver().receiverType(),
+                "receiverType must not be null"
+        );
+        var semanticResult = new FrontendSubscriptSemanticSupport(request.classRegistry()).resolveSubscriptType(
+                receiverType,
+                argumentResolution.argumentTypes(),
+                "attribute subscript step '" + step.name() + "'"
+        );
+        var subscriptTypeResult = FrontendChainStatusBridge.toExpressionTypeResult(semanticResult);
+        var outgoingReceiver = FrontendChainStatusBridge.toReceiverState(subscriptTypeResult);
+        var detailReason = semanticResult.detailReason();
         return new StepTrace(
                 stepIndex,
                 step,
                 StepKind.SUBSCRIPT,
                 RouteKind.SUBSCRIPT,
                 incomingReceiver,
-                Status.UNSUPPORTED,
-                ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
+                outgoingReceiver.status(),
+                outgoingReceiver,
                 null,
                 null,
                 null,
-                false,
+                argumentResolution.retryUsed(),
+                detailReason
+        );
+    }
+
+    private static @NotNull StepTrace unresolvedSubscriptDependencyTrace(
+            int stepIndex,
+            @NotNull AttributeSubscriptStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ArgumentResolution argumentResolution
+    ) {
+        var detailReason = Objects.requireNonNull(argumentResolution.detailReason(), "detailReason must not be null");
+        var status = argumentResolution.status();
+        var outgoingReceiver = switch (status) {
+            case BLOCKED -> new ReceiverState(Status.BLOCKED, FrontendReceiverKind.UNKNOWN, null, null, detailReason);
+            case DEFERRED -> ReceiverState.deferredFrom(incomingReceiver, detailReason);
+            case FAILED -> ReceiverState.failedFrom(incomingReceiver, detailReason);
+            case UNSUPPORTED -> ReceiverState.unsupportedFrom(incomingReceiver, detailReason);
+            default -> throw new IllegalStateException("unexpected argument status: " + status);
+        };
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.SUBSCRIPT,
+                RouteKind.SUBSCRIPT,
+                incomingReceiver,
+                status,
+                outgoingReceiver,
+                null,
+                null,
+                null,
+                argumentResolution.retryUsed(),
                 detailReason
         );
     }

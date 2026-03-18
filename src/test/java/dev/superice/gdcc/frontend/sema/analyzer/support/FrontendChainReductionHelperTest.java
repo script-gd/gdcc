@@ -18,6 +18,7 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.ScopeTypeMetaKind;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdFloatVectorType;
 import dev.superice.gdcc.type.GdIntType;
@@ -29,6 +30,7 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -336,6 +338,65 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceResolvesAttributeSubscriptAndContinuesExactSuffix() {
+        var holder = newClass("Holder");
+        holder.addProperty(new LirPropertyDef("names", new GdArrayType(GdStringType.STRING)));
+        var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(holder));
+        var index = literal("0");
+        var chain = chain(identifier("holder"), subscript("names", index), property("length"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Holder")),
+                registry,
+                (expression, finalizeWindow) -> expression == index
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.SUBSCRIPT, result.stepTraces().getFirst().routeKind());
+        assertNull(result.stepTraces().getFirst().suggestedMember());
+        assertNull(result.stepTraces().getFirst().suggestedCall());
+        var subscriptReceiverType = result.stepTraces().getFirst().outgoingReceiver().receiverType();
+        assertNotNull(subscriptReceiverType);
+        assertEquals("String", subscriptReceiverType.getTypeName());
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().get(1).status());
+        var lengthMember = result.stepTraces().get(1).suggestedMember();
+        assertNotNull(lengthMember);
+        var lengthType = lengthMember.resultType();
+        assertNotNull(lengthType);
+        assertEquals("int", lengthType.getTypeName());
+        assertNull(result.recoveryRoot());
+    }
+
+    @Test
+    void reducePublishesUnsupportedAttributeSubscriptWhenMemberTypeIsOnlyKeyedMetadata() {
+        var holder = newClass("Holder");
+        holder.addProperty(new LirPropertyDef("text", GdStringType.STRING));
+        var registry = newRegistry(List.of(keyedStringBuiltin()), List.of(holder));
+        var index = literal("0");
+        var chain = chain(identifier("holder"), subscript("text", index), property("length"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Holder")),
+                registry,
+                (expression, finalizeWindow) -> expression == index
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.UNSUPPORTED, result.stepTraces().getFirst().status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.SUBSCRIPT, result.stepTraces().getFirst().routeKind());
+        assertTrue(result.stepTraces().getFirst().detailReason().contains("keyed access metadata"));
+        assertEquals(FrontendChainReductionHelper.Status.UNSUPPORTED, result.stepTraces().get(1).status());
+        assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_UNSUPPORTED, result.stepTraces().get(1).routeKind());
+        assertSame(chain.steps().getFirst(), result.recoveryRoot());
+    }
+
+    @Test
     void reduceResolvesTypeMetaStaticMethodRoute() {
         var worker = newClass("Worker");
         worker.addFunction(newMethod("build", GdStringType.STRING, true, GdIntType.INT));
@@ -630,6 +691,10 @@ class FrontendChainReductionHelperTest {
         return new AttributeCallStep(name, List.of(arguments), TINY);
     }
 
+    private static @NotNull AttributeSubscriptStep subscript(@NotNull String name, @NotNull Expression... arguments) {
+        return new AttributeSubscriptStep(name, List.of(arguments), TINY);
+    }
+
     private static @NotNull ScopeTypeMeta typeMeta(@NotNull String name) {
         return typeMeta(name, new GdObjectType(name), ScopeTypeMetaKind.GDCC_CLASS, null, false);
     }
@@ -728,6 +793,19 @@ class FrontendChainReductionHelperTest {
                         0,
                         List.of(new ExtensionFunctionArgument("value", "int", null, null))
                 )),
+                List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass keyedStringBuiltin() {
+        return new ExtensionBuiltinClass(
+                "String",
+                true,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
                 List.of(new ExtensionBuiltinClass.PropertyInfo("length", "int", true, false, "0")),
                 List.of()
         );

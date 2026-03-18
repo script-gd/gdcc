@@ -59,6 +59,7 @@ public final class FrontendExpressionSemanticSupport {
     private final @NotNull Supplier<ResolveRestriction> restrictionSupplier;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier;
+    private final @NotNull FrontendSubscriptSemanticSupport subscriptSemanticSupport;
 
     public FrontendExpressionSemanticSupport(
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
@@ -75,6 +76,7 @@ public final class FrontendExpressionSemanticSupport {
                 headReceiverSupportSupplier,
                 "headReceiverSupportSupplier must not be null"
         );
+        subscriptSemanticSupport = new FrontendSubscriptSemanticSupport(this.classRegistry);
     }
 
     public @NotNull ExpressionSemanticResult resolveLiteralExpressionType(
@@ -137,7 +139,8 @@ public final class FrontendExpressionSemanticSupport {
     ) {
         if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
             var calleeType = nestedResolver.resolve(bareCallee, finalizeWindow);
-            if (calleeType.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            if (calleeType.status() != FrontendExpressionTypeStatus.RESOLVED
+                    && !shouldContinueBlockedBareCallResolution(bareCallee, calleeType)) {
                 return propagated(calleeType);
             }
             var argumentResolution = resolveCallArgumentTypes(callExpression.arguments(), nestedResolver, finalizeWindow);
@@ -165,6 +168,30 @@ public final class FrontendExpressionSemanticSupport {
                 "Direct invocation of callable values is not implemented yet unless the callee is a bare identifier"
         )
                 : FrontendExpressionType.failed("Call target does not resolve to a callable value"));
+    }
+
+    /// A blocked bare identifier callee may still be a valid bare-call winner:
+    /// `FOUND_BLOCKED` preserves the shadowing overload set, so we should still run overload
+    /// selection and keep the blocked call's real return type when the published binding is
+    /// function-like. Other blocked callable values continue to short-circuit as propagated
+    /// dependencies because they are not part of the bare-call overload route.
+    private boolean shouldContinueBlockedBareCallResolution(
+            @NotNull IdentifierExpression bareCallee,
+            @NotNull FrontendExpressionType calleeType
+    ) {
+        if (calleeType.status() != FrontendExpressionTypeStatus.BLOCKED
+                || !(calleeType.publishedType() instanceof GdCallableType)) {
+            return false;
+        }
+        var binding = symbolBindings.get(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
+        if (binding == null) {
+            return false;
+        }
+        return switch (binding.kind()) {
+            case METHOD, STATIC_METHOD, UTILITY_FUNCTION -> true;
+            case SELF, LITERAL, LOCAL_VAR, PARAMETER, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON,
+                    GLOBAL_ENUM, TYPE_META, UNKNOWN -> false;
+        };
     }
 
     public @NotNull ExpressionSemanticResult resolveAssignmentExpressionType(
@@ -201,8 +228,10 @@ public final class FrontendExpressionSemanticSupport {
         if (argumentResolution.issue() != null) {
             return propagated(argumentResolution.issue());
         }
-        return rootOutcome(FrontendExpressionType.deferred(
-                "Subscript expression typing is deferred until subscript semantics are implemented"
+        return rootOutcome(subscriptSemanticSupport.resolveSubscriptType(
+                Objects.requireNonNull(baseType.publishedType(), "publishedType must not be null"),
+                argumentResolution.argumentTypes(),
+                "subscript expression"
         ));
     }
 

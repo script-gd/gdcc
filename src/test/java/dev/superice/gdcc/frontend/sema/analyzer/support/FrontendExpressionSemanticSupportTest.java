@@ -145,10 +145,10 @@ class FrontendExpressionSemanticSupportTest {
                 true,
                 false
         );
-        assertFalse(blockedResult.rootOwnsOutcome());
+        assertTrue(blockedResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedResult.expressionType().status());
         assertNotNull(blockedResult.expressionType().publishedType());
-        assertInstanceOf(GdCallableType.class, blockedResult.expressionType().publishedType());
+        assertEquals("int", blockedResult.expressionType().publishedType().getTypeName());
 
         var unsupportedResult = unrestrictedSupport.resolveCallExpressionType(
                 unsupportedDirectCall,
@@ -162,6 +162,63 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveSubscriptExpressionTypePublishesResolvedAndDynamicOutcomes() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_subscript.gd",
+                """
+                        class_name ExpressionSemanticSupportSubscript
+                        extends RefCounted
+                        
+                        func ping(items: Array[int], lookup: Dictionary[String, int], packed: PackedInt32Array, dynamic_value):
+                            items[0]
+                            lookup["hp"]
+                            packed[0]
+                            dynamic_value[0]
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var itemsSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        var lookupSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var packedSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+        );
+        var dynamicSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3)).expression()
+        );
+
+        var itemsResult = support.resolveSubscriptExpressionType(itemsSubscript, publishedResolver, false);
+        assertTrue(itemsResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, itemsResult.expressionType().status());
+        assertEquals("int", itemsResult.expressionType().publishedType().getTypeName());
+
+        var lookupResult = support.resolveSubscriptExpressionType(lookupSubscript, publishedResolver, false);
+        assertTrue(lookupResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, lookupResult.expressionType().status());
+        assertEquals("int", lookupResult.expressionType().publishedType().getTypeName());
+
+        var packedResult = support.resolveSubscriptExpressionType(packedSubscript, publishedResolver, false);
+        assertTrue(packedResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, packedResult.expressionType().status());
+        assertEquals("int", packedResult.expressionType().publishedType().getTypeName());
+
+        var dynamicResult = support.resolveSubscriptExpressionType(dynamicSubscript, publishedResolver, false);
+        assertTrue(dynamicResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicResult.expressionType().status());
+        assertEquals(GdVariantType.VARIANT, dynamicResult.expressionType().publishedType());
+    }
+
+    @Test
     void resolveDeferredRoutesKeepDependencyProvenance() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_deferred.gd",
@@ -170,7 +227,6 @@ class FrontendExpressionSemanticSupportTest {
                         extends RefCounted
                         
                         func ping(items):
-                            items[0]
                             items = 1
                             1 + missing.payload
                         """
@@ -179,26 +235,14 @@ class FrontendExpressionSemanticSupportTest {
         var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
         var publishedResolver = publishedExpressionResolver(analyzed);
         var pingFunction = findFunction(analyzed.ast(), "ping");
-        var subscript = assertInstanceOf(
-                SubscriptExpression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
-        );
         var assignment = assertInstanceOf(
                 AssignmentExpression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
         );
         var genericDeferred = assertInstanceOf(
                 Expression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2)).expression()
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
         );
-
-        var subscriptResult = support.resolveSubscriptExpressionType(
-                subscript,
-                publishedResolver,
-                false
-        );
-        assertTrue(subscriptResult.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.DEFERRED, subscriptResult.expressionType().status());
 
         var assignmentResult = support.resolveAssignmentExpressionType(
                 assignment,

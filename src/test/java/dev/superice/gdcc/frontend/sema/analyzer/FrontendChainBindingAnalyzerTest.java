@@ -10,11 +10,14 @@ import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -246,6 +249,98 @@ class FrontendChainBindingAnalyzerTest {
         );
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, outerResolvedCall.callKind());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeUsesTypedPlainSubscriptArgumentsToKeepOuterCallExact() throws Exception {
+        var analyzed = analyze(
+                "subscript_argument_route.gd",
+                """
+                        class_name SubscriptArgumentRoute
+                        extends RefCounted
+                        
+                        func consume(value: int) -> int:
+                            return value
+                        
+                        func ping(items: Array[int]):
+                            self.consume(items[0])
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var callStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var consumeStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("consume"));
+
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(consumeStep);
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsExactSuffixAfterAttributeSubscriptStep() throws Exception {
+        var analyzed = analyze(
+                "attribute_subscript_suffix.gd",
+                """
+                        class_name AttributeSubscriptSuffix
+                        extends RefCounted
+                        
+                        class Item:
+                            var payload: int = 1
+                        
+                        class Holder:
+                            var items: Array[Item] = []
+                        
+                        func ping(holder: Holder):
+                            holder.items[0].payload
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var itemsStep = findNode(chainStatement, AttributeSubscriptStep.class, step -> step.name().equals("items"));
+        var payloadStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("payload"));
+
+        assertTrue(analyzed.analysisData().resolvedMembers().get(itemsStep) == null);
+
+        var resolvedPayload = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(resolvedPayload);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedPayload.status());
+        assertEquals(FrontendBindingKind.PROPERTY, resolvedPayload.bindingKind());
+        var resolvedPayloadType = resolvedPayload.resultType();
+        assertNotNull(resolvedPayloadType);
+        assertEquals("int", resolvedPayloadType.getTypeName());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsUnsupportedBoundaryForAttributeSubscriptKeyedBuiltinRoute() throws Exception {
+        var analyzed = analyze(
+                "attribute_subscript_keyed_unsupported.gd",
+                """
+                        class_name AttributeSubscriptKeyedUnsupported
+                        extends RefCounted
+                        
+                        class Holder:
+                            var text: String = ""
+                        
+                        func ping(holder: Holder):
+                            holder.text[0].length
+                        """,
+                registryWithKeyedStringBuiltin()
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var chainStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var lengthStep = findNode(chainStatement, AttributePropertyStep.class, step -> step.name().equals("length"));
+
+        assertTrue(analyzed.analysisData().resolvedMembers().get(lengthStep) == null);
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("keyed access metadata"));
     }
 
     @Test
@@ -537,6 +632,40 @@ class FrontendChainBindingAnalyzerTest {
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         var analysisData = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
         return new AnalyzedScript(unit, analysisData);
+    }
+
+    private static @NotNull ClassRegistry registryWithKeyedStringBuiltin() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var patchedBuiltins = api.builtinClasses().stream()
+                .map(FrontendChainBindingAnalyzerTest::withKeyedStringBuiltin)
+                .toList();
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                patchedBuiltins,
+                api.classes(),
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
+    private static @NotNull ExtensionBuiltinClass withKeyedStringBuiltin(@NotNull ExtensionBuiltinClass builtinClass) {
+        if (!builtinClass.name().equals("String")) {
+            return builtinClass;
+        }
+        return new ExtensionBuiltinClass(
+                builtinClass.name(),
+                true,
+                builtinClass.operators(),
+                builtinClass.methods(),
+                builtinClass.enums(),
+                builtinClass.constructors(),
+                builtinClass.properties(),
+                builtinClass.constants()
+        );
     }
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {

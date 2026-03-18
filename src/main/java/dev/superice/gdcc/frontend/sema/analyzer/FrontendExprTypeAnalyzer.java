@@ -24,6 +24,7 @@ import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
@@ -473,7 +474,7 @@ public class FrontendExprTypeAnalyzer {
                 case IdentifierExpression identifierExpression ->
                         expressionSemanticSupport.resolveIdentifierExpressionType(identifierExpression).expressionType();
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
-                case AssignmentExpression assignmentExpression -> finishDeferredResolution(
+                case AssignmentExpression assignmentExpression -> finishSemanticResolution(
                         assignmentExpression,
                         expressionSemanticSupport.resolveAssignmentExpressionType(
                                 assignmentExpression,
@@ -481,7 +482,7 @@ public class FrontendExprTypeAnalyzer {
                                 false
                         )
                 );
-                case CallExpression callExpression -> finishCallResolution(
+                case CallExpression callExpression -> finishSemanticResolution(
                         callExpression,
                         expressionSemanticSupport.resolveCallExpressionType(
                                 callExpression,
@@ -490,7 +491,7 @@ public class FrontendExprTypeAnalyzer {
                                 false
                         )
                 );
-                case SubscriptExpression subscriptExpression -> finishDeferredResolution(
+                case SubscriptExpression subscriptExpression -> finishSemanticResolution(
                         subscriptExpression,
                         expressionSemanticSupport.resolveSubscriptExpressionType(
                                 subscriptExpression,
@@ -498,7 +499,7 @@ public class FrontendExprTypeAnalyzer {
                                 false
                         )
                 );
-                case LambdaExpression lambdaExpression -> finishDeferredResolution(
+                case LambdaExpression lambdaExpression -> finishSemanticResolution(
                         lambdaExpression,
                         expressionSemanticSupport.resolveLambdaExpressionType(
                                 lambdaExpression,
@@ -507,7 +508,7 @@ public class FrontendExprTypeAnalyzer {
                                 false
                         )
                 );
-                default -> finishDeferredResolution(
+                default -> finishSemanticResolution(
                         expression,
                         expressionSemanticSupport.resolveExplicitDeferredExpressionType(
                                 expression,
@@ -532,6 +533,12 @@ public class FrontendExprTypeAnalyzer {
             for (var step : attributeExpression.steps()) {
                 if (step instanceof AttributeCallStep attributeCallStep) {
                     for (var argument : attributeCallStep.arguments()) {
+                        publishExpressionType(argument);
+                    }
+                    continue;
+                }
+                if (step instanceof AttributeSubscriptStep attributeSubscriptStep) {
+                    for (var argument : attributeSubscriptStep.arguments()) {
                         publishExpressionType(argument);
                     }
                 }
@@ -577,7 +584,7 @@ public class FrontendExprTypeAnalyzer {
             );
         }
 
-        private @NotNull FrontendExpressionType finishCallResolution(
+        private @NotNull FrontendExpressionType finishSemanticResolution(
                 @NotNull Node root,
                 @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolution
         ) {
@@ -586,20 +593,10 @@ public class FrontendExprTypeAnalyzer {
                 switch (expressionType.status()) {
                     case FAILED -> reportExpressionError(root, requireDetailReason(expressionType));
                     case UNSUPPORTED -> reportUnsupportedExpression(root, requireDetailReason(expressionType));
-                    case RESOLVED, BLOCKED, DEFERRED, DYNAMIC -> {
+                    case DEFERRED -> reportDeferredExpression(root, requireDetailReason(expressionType));
+                    case RESOLVED, BLOCKED, DYNAMIC -> {
                     }
                 }
-            }
-            return expressionType;
-        }
-
-        private @NotNull FrontendExpressionType finishDeferredResolution(
-                @NotNull Node root,
-                @NotNull FrontendExpressionSemanticSupport.ExpressionSemanticResult resolution
-        ) {
-            var expressionType = resolution.expressionType();
-            if (resolution.rootOwnsOutcome() && expressionType.status() == FrontendExpressionTypeStatus.DEFERRED) {
-                reportDeferredExpression(root, requireDetailReason(expressionType));
             }
             return expressionType;
         }

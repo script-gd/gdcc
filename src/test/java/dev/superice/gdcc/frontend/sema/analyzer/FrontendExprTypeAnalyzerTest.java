@@ -6,7 +6,9 @@ import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
@@ -16,6 +18,7 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
+import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -453,7 +456,6 @@ class FrontendExprTypeAnalyzerTest {
                         
                         func ping(items):
                             1 + 2
-                            items[0]
                             items = 1
                         """
         );
@@ -463,13 +465,9 @@ class FrontendExprTypeAnalyzerTest {
                 ExpressionStatement.class,
                 pingFunction.body().statements().getFirst()
         ).expression();
-        var subscript = assertInstanceOf(
-                ExpressionStatement.class,
-                pingFunction.body().statements().get(1)
-        ).expression();
         var assignment = assertInstanceOf(
                 ExpressionStatement.class,
-                pingFunction.body().statements().get(2)
+                pingFunction.body().statements().get(1)
         ).expression();
 
         assertEquals(
@@ -478,15 +476,117 @@ class FrontendExprTypeAnalyzerTest {
         );
         assertEquals(
                 FrontendExpressionTypeStatus.DEFERRED,
-                analyzed.analysisData().expressionTypes().get(subscript).status()
-        );
-        assertEquals(
-                FrontendExpressionTypeStatus.DEFERRED,
                 analyzed.analysisData().expressionTypes().get(assignment).status()
         );
 
         var deferredDiagnostics = diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution");
-        assertEquals(3, deferredDiagnostics.size());
+        assertEquals(2, deferredDiagnostics.size());
+    }
+
+    @Test
+    void analyzePublishesTypedSubscriptRoutesAndExprOwnedDiagnostics() throws Exception {
+        var analyzed = analyze(
+                "expr_type_subscript_routes.gd",
+                """
+                        class_name ExprTypeSubscriptRoutes
+                        extends RefCounted
+                        
+                        func ping(
+                                items: Array[int],
+                                lookup: Dictionary[String, int],
+                                packed: PackedInt32Array,
+                                text: String,
+                                value: int,
+                                dynamic_value
+                        ):
+                            items[0]
+                            lookup["hp"]
+                            packed[0]
+                            dynamic_value[0]
+                            items["bad"]
+                            value[0]
+                            text[0]
+                        """,
+                registryWithKeyedStringBuiltin()
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+        var itemsSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(0)).expression()
+        );
+        var lookupSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(1)).expression()
+        );
+        var packedSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(2)).expression()
+        );
+        var dynamicSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(3)).expression()
+        );
+        var badKeySubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(4)).expression()
+        );
+        var badReceiverSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(5)).expression()
+        );
+        var unsupportedKeyedSubscript = assertInstanceOf(
+                SubscriptExpression.class,
+                assertInstanceOf(ExpressionStatement.class, statements.get(6)).expression()
+        );
+
+        var itemsType = analyzed.analysisData().expressionTypes().get(itemsSubscript);
+        assertNotNull(itemsType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, itemsType.status());
+        assertEquals("int", itemsType.publishedType().getTypeName());
+
+        var lookupType = analyzed.analysisData().expressionTypes().get(lookupSubscript);
+        assertNotNull(lookupType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, lookupType.status());
+        assertEquals("int", lookupType.publishedType().getTypeName());
+
+        var packedType = analyzed.analysisData().expressionTypes().get(packedSubscript);
+        assertNotNull(packedType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, packedType.status());
+        assertEquals("int", packedType.publishedType().getTypeName());
+
+        var dynamicType = analyzed.analysisData().expressionTypes().get(dynamicSubscript);
+        assertNotNull(dynamicType);
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicType.status());
+        assertEquals(GdVariantType.VARIANT, dynamicType.publishedType());
+
+        var badKeyType = analyzed.analysisData().expressionTypes().get(badKeySubscript);
+        assertNotNull(badKeyType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, badKeyType.status());
+        assertTrue(badKeyType.detailReason().contains("not assignable"));
+
+        var badReceiverType = analyzed.analysisData().expressionTypes().get(badReceiverSubscript);
+        assertNotNull(badReceiverType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, badReceiverType.status());
+        assertTrue(badReceiverType.detailReason().contains("does not support"));
+
+        var unsupportedKeyedType = analyzed.analysisData().expressionTypes().get(unsupportedKeyedSubscript);
+        assertNotNull(unsupportedKeyedType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, unsupportedKeyedType.status());
+        assertTrue(unsupportedKeyedType.detailReason().contains("keyed access metadata"));
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(2, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("not assignable")));
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("does not support")));
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
+        assertEquals(1, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.getFirst().message().contains("keyed access metadata"));
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertEquals(3, diagnosticsByCategory(analyzed, "sema.discarded_expression").size());
     }
 
     @Test
@@ -625,6 +725,37 @@ class FrontendExprTypeAnalyzerTest {
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedCallType.status());
         assertNull(blockedCallType.publishedType());
         assertNotNull(blockedCallType.detailReason());
+    }
+
+    @Test
+    void analyzePublishesBlockedBareCallWithResolvedReturnType() throws Exception {
+        var analyzed = analyze(
+                "expr_type_blocked_bare_call.gd",
+                """
+                        class_name ExprTypeBlockedBareCall
+                        extends RefCounted
+                        
+                        func helper(value: int) -> int:
+                            return value
+                        
+                        static func ping_static(value: int):
+                            helper(value)
+                        """
+        );
+
+        var pingStaticFunction = findFunction(analyzed.ast(), "ping_static");
+        var blockedCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingStaticFunction.body().statements().getFirst()).expression()
+        );
+
+        var blockedCallType = analyzed.analysisData().expressionTypes().get(blockedCall);
+        assertNotNull(blockedCallType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedCallType.status());
+        assertNotNull(blockedCallType.publishedType());
+        assertEquals("int", blockedCallType.publishedType().getTypeName());
+        assertTrue(blockedCallType.detailReason().contains("not accessible"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
     }
 
     @Test
@@ -952,16 +1083,58 @@ class FrontendExprTypeAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return analyze(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()));
+    }
+
+    private static @NotNull AnalyzedScript analyze(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry registry
+    ) throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         var analysisData = new FrontendSemanticAnalyzer().analyze(
                 "test_module",
                 List.of(unit),
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                registry,
                 diagnostics
         );
         return new AnalyzedScript(unit.ast(), analysisData);
+    }
+
+    private static @NotNull ClassRegistry registryWithKeyedStringBuiltin() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var patchedBuiltins = api.builtinClasses().stream()
+                .map(FrontendExprTypeAnalyzerTest::withKeyedStringBuiltin)
+                .toList();
+        return new ClassRegistry(new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                patchedBuiltins,
+                api.classes(),
+                api.singletons(),
+                api.nativeStructures()
+        ));
+    }
+
+    private static @NotNull ExtensionBuiltinClass withKeyedStringBuiltin(@NotNull ExtensionBuiltinClass builtinClass) {
+        if (!builtinClass.name().equals("String")) {
+            return builtinClass;
+        }
+        return new ExtensionBuiltinClass(
+                builtinClass.name(),
+                true,
+                builtinClass.operators(),
+                builtinClass.methods(),
+                builtinClass.enums(),
+                builtinClass.constructors(),
+                builtinClass.properties(),
+                builtinClass.constants()
+        );
     }
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {
