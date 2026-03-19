@@ -34,8 +34,8 @@ import java.util.Objects;
 /// This keeps property initializer publication explicit without widening the whole class body into
 /// an executable region.
 public final class FrontendPropertyInitializerSupport {
-    /// The property declaration plus the exact class scope whose direct members must be treated as
-    /// "same-class" for the MVP boundary.
+    /// The property declaration plus the exact class scope whose current-instance hierarchy becomes
+    /// the MVP boundary for this initializer.
     public record PropertyInitializerContext(
             @NotNull VariableDeclaration declaration,
             @NotNull ClassScope declaringClassScope
@@ -116,14 +116,14 @@ public final class FrontendPropertyInitializerSupport {
         }
         return switch (bindingKind) {
             case SELF -> selfBoundaryDetail();
-            case PROPERTY -> isSameClassDirectNonStaticProperty(context, symbolName)
-                    ? sameClassNonStaticMemberDetail("property", symbolName)
+            case PROPERTY -> currentInstanceHierarchyNonStaticValueKind(context, symbolName) == ScopeValueKind.PROPERTY
+                    ? currentInstanceHierarchyNonStaticMemberDetail("property", symbolName)
                     : null;
-            case SIGNAL -> isSameClassDirectSignal(context, symbolName)
-                    ? sameClassNonStaticMemberDetail("signal", symbolName)
+            case SIGNAL -> currentInstanceHierarchyNonStaticValueKind(context, symbolName) == ScopeValueKind.SIGNAL
+                    ? currentInstanceHierarchyNonStaticMemberDetail("signal", symbolName)
                     : null;
-            case METHOD, STATIC_METHOD -> isSameClassDirectNonStaticMethod(context, symbolName)
-                    ? sameClassNonStaticMemberDetail("method", symbolName)
+            case METHOD, STATIC_METHOD -> hasCurrentInstanceHierarchyNonStaticFunction(context, symbolName)
+                    ? currentInstanceHierarchyNonStaticMemberDetail("method", symbolName)
                     : null;
             case LITERAL, LOCAL_VAR, PARAMETER, CAPTURE, UTILITY_FUNCTION, CONSTANT, SINGLETON,
                  GLOBAL_ENUM, TYPE_META, UNKNOWN -> null;
@@ -139,11 +139,12 @@ public final class FrontendPropertyInitializerSupport {
             return null;
         }
         return switch (value.kind()) {
-            case PROPERTY -> isSameClassDirectNonStaticProperty(context, value.name())
-                    ? sameClassNonStaticMemberDetail("property", value.name())
-                    : null;
-            case SIGNAL -> isSameClassDirectSignal(context, value.name())
-                    ? sameClassNonStaticMemberDetail("signal", value.name())
+            case PROPERTY ->
+                    currentInstanceHierarchyNonStaticValueKind(context, value.name()) == ScopeValueKind.PROPERTY
+                            ? currentInstanceHierarchyNonStaticMemberDetail("property", value.name())
+                            : null;
+            case SIGNAL -> currentInstanceHierarchyNonStaticValueKind(context, value.name()) == ScopeValueKind.SIGNAL
+                    ? currentInstanceHierarchyNonStaticMemberDetail("signal", value.name())
                     : null;
             case LOCAL, PARAMETER, CAPTURE, CONSTANT, SINGLETON, GLOBAL_ENUM, TYPE_META -> null;
         };
@@ -154,8 +155,8 @@ public final class FrontendPropertyInitializerSupport {
             @NotNull String callableName
     ) {
         Objects.requireNonNull(callableName, "callableName must not be null");
-        return context != null && isSameClassDirectNonStaticMethod(context, callableName)
-                ? sameClassNonStaticMemberDetail("method", callableName)
+        return context != null && hasCurrentInstanceHierarchyNonStaticFunction(context, callableName)
+                ? currentInstanceHierarchyNonStaticMemberDetail("method", callableName)
                 : null;
     }
 
@@ -165,9 +166,9 @@ public final class FrontendPropertyInitializerSupport {
     ) {
         Objects.requireNonNull(property, "property must not be null");
         return context != null
-                && isSameDeclaringClass(context, property.ownerClass())
+                && isCurrentInstanceHierarchyClass(context, property.ownerClass())
                 && !property.property().isStatic()
-                ? sameClassNonStaticMemberDetail("property", property.property().getName())
+                ? currentInstanceHierarchyNonStaticMemberDetail("property", property.property().getName())
                 : null;
     }
 
@@ -176,8 +177,8 @@ public final class FrontendPropertyInitializerSupport {
             @NotNull ScopeResolvedSignal signal
     ) {
         Objects.requireNonNull(signal, "signal must not be null");
-        return context != null && isSameDeclaringClass(context, signal.ownerClass())
-                ? sameClassNonStaticMemberDetail("signal", signal.signal().getName())
+        return context != null && isCurrentInstanceHierarchyClass(context, signal.ownerClass())
+                ? currentInstanceHierarchyNonStaticMemberDetail("signal", signal.signal().getName())
                 : null;
     }
 
@@ -187,9 +188,9 @@ public final class FrontendPropertyInitializerSupport {
     ) {
         Objects.requireNonNull(method, "method must not be null");
         return context != null
-                && isSameDeclaringClass(context, method.ownerClass())
+                && isCurrentInstanceHierarchyClass(context, method.ownerClass())
                 && !method.isStatic()
-                ? sameClassNonStaticMemberDetail("method", method.methodName())
+                ? currentInstanceHierarchyNonStaticMemberDetail("method", method.methodName())
                 : null;
     }
 
@@ -200,29 +201,29 @@ public final class FrontendPropertyInitializerSupport {
     ) {
         Objects.requireNonNull(ownerClass, "ownerClass must not be null");
         Objects.requireNonNull(function, "function must not be null");
-        return context != null && isSameDeclaringClass(context, ownerClass) && !function.isStatic()
-                ? sameClassNonStaticMemberDetail("method", function.getName())
+        return context != null && isCurrentInstanceHierarchyClass(context, ownerClass) && !function.isStatic()
+                ? currentInstanceHierarchyNonStaticMemberDetail("method", function.getName())
                 : null;
     }
 
     public static @NotNull String selfBoundaryDetail() {
-        return "Property initializer MVP does not support accessing 'self' or other same-class non-static members";
+        return "Property initializer MVP does not support accessing 'self' or other current-instance-hierarchy non-static members";
     }
 
     public static @NotNull String unsupportedSelfMessage() {
         return selfBoundaryDetail();
     }
 
-    public static @NotNull String sameClassNonStaticMemberDetail(
+    public static @NotNull String currentInstanceHierarchyNonStaticMemberDetail(
             @NotNull String memberKind,
             @NotNull String memberName
     ) {
-        return "Property initializer MVP does not support accessing same-class non-static "
+        return "Property initializer MVP does not support accessing current-instance-hierarchy non-static "
                 + Objects.requireNonNull(memberKind, "memberKind must not be null")
                 + " '" + Objects.requireNonNull(memberName, "memberName must not be null") + "'";
     }
 
-    public static @Nullable ScopeValueKind sameClassNonStaticValueKind(
+    public static @Nullable ScopeValueKind currentInstanceHierarchyNonStaticValueKind(
             @Nullable PropertyInitializerContext context,
             @NotNull String valueName
     ) {
@@ -230,23 +231,30 @@ public final class FrontendPropertyInitializerSupport {
         if (context == null) {
             return null;
         }
-        if (isSameClassDirectNonStaticProperty(context, valueName)) {
-            return ScopeValueKind.PROPERTY;
+        // Reuse the class-scope winner so direct static members can legally shadow inherited
+        // instance members, while plain inherited instance members still get sealed on miss.
+        var valueResult = context.declaringClassScope().resolveValueHere(valueName, ResolveRestriction.instanceContext());
+        if (!valueResult.isFound()) {
+            return null;
         }
-        if (isSameClassDirectSignal(context, valueName)) {
-            return ScopeValueKind.SIGNAL;
+        var resolvedValue = valueResult.requireValue();
+        if (resolvedValue.staticMember()) {
+            return null;
         }
-        return null;
+        return switch (resolvedValue.kind()) {
+            case PROPERTY, SIGNAL -> resolvedValue.kind();
+            case LOCAL, PARAMETER, CAPTURE, CONSTANT, SINGLETON, GLOBAL_ENUM, TYPE_META -> null;
+        };
     }
 
-    public static boolean hasSameClassNonStaticFunction(
+    public static boolean hasCurrentInstanceHierarchyNonStaticFunction(
             @Nullable PropertyInitializerContext context,
             @NotNull String functionName
     ) {
-        return sameClassNonStaticFunction(context, functionName) != null;
+        return currentInstanceHierarchyNonStaticFunction(context, functionName) != null;
     }
 
-    public static @Nullable FunctionDef sameClassNonStaticFunction(
+    public static @Nullable FunctionDef currentInstanceHierarchyNonStaticFunction(
             @Nullable PropertyInitializerContext context,
             @NotNull String functionName
     ) {
@@ -254,29 +262,39 @@ public final class FrontendPropertyInitializerSupport {
         if (context == null) {
             return null;
         }
-        return context.declaringClass().getFunctions().stream()
+        // Function lookup follows the same "nearest non-empty class layer wins" rule as value
+        // lookup, so the visible overload set already encodes whether a static helper suppresses
+        // an inherited instance member with the same name.
+        var functionResult = context.declaringClassScope().resolveFunctionsHere(
+                functionName,
+                ResolveRestriction.instanceContext()
+        );
+        if (!functionResult.isFound()) {
+            return null;
+        }
+        return functionResult.requireValue().stream()
                 .filter(function -> function.getName().equals(functionName) && !function.isStatic())
                 .findFirst()
                 .orElse(null);
     }
 
-    public static boolean isSameClassTypeMeta(
+    public static boolean isCurrentInstanceHierarchyTypeMeta(
             @Nullable PropertyInitializerContext context,
             @Nullable ScopeTypeMeta receiverTypeMeta
     ) {
-        return context != null
-                && receiverTypeMeta != null
-                && context.declaringClass().getName().equals(receiverTypeMeta.instanceType().getTypeName());
+        return receiverTypeMeta != null
+                && isCurrentInstanceHierarchyInstanceType(context, receiverTypeMeta.instanceType());
     }
 
-    public static boolean isSameClassInstanceType(
+    public static boolean isCurrentInstanceHierarchyInstanceType(
             @Nullable PropertyInitializerContext context,
             @Nullable GdType receiverType
     ) {
         if (context == null || !(receiverType instanceof GdObjectType objectType)) {
             return false;
         }
-        return context.declaringClass().getName().equals(objectType.getTypeName());
+        var currentType = new GdObjectType(context.declaringClass().getName());
+        return context.declaringClassScope().getClassRegistry().checkAssignable(currentType, objectType);
     }
 
     public static boolean isTopBindingOwnedUnsupportedHead(
@@ -296,13 +314,17 @@ public final class FrontendPropertyInitializerSupport {
         var memberKind = switch (Objects.requireNonNull(valueKind, "valueKind must not be null")) {
             case PROPERTY -> "property";
             case SIGNAL -> "signal";
-            default -> throw new IllegalArgumentException("unsupported same-class value kind: " + valueKind);
+            default ->
+                    throw new IllegalArgumentException("unsupported current-instance-hierarchy value kind: " + valueKind);
         };
-        return sameClassNonStaticMemberDetail(memberKind, valueName);
+        return currentInstanceHierarchyNonStaticMemberDetail(memberKind, valueName);
     }
 
     public static @NotNull String unsupportedMethodMessage(@NotNull String methodName) {
-        return sameClassNonStaticMemberDetail("method", Objects.requireNonNull(methodName, "methodName must not be null"));
+        return currentInstanceHierarchyNonStaticMemberDetail(
+                "method",
+                Objects.requireNonNull(methodName, "methodName must not be null")
+        );
     }
 
     public static @NotNull String unsupportedTypeMetaValueMessage(
@@ -310,12 +332,13 @@ public final class FrontendPropertyInitializerSupport {
             @NotNull String valueName,
             @NotNull ScopeValueKind valueKind
     ) {
-        return "Property initializer MVP does not support accessing same-class non-static "
+        return "Property initializer MVP does not support accessing current-instance-hierarchy non-static "
                 + switch (Objects.requireNonNull(valueKind, "valueKind must not be null")) {
-                    case PROPERTY -> "property";
-                    case SIGNAL -> "signal";
-                    default -> throw new IllegalArgumentException("unsupported same-class value kind: " + valueKind);
-                }
+            case PROPERTY -> "property";
+            case SIGNAL -> "signal";
+            default ->
+                    throw new IllegalArgumentException("unsupported current-instance-hierarchy value kind: " + valueKind);
+        }
                 + " '" + Objects.requireNonNull(receiverName, "receiverName must not be null") + "."
                 + Objects.requireNonNull(valueName, "valueName must not be null") + "'";
     }
@@ -324,7 +347,7 @@ public final class FrontendPropertyInitializerSupport {
             @NotNull String receiverName,
             @NotNull String methodName
     ) {
-        return "Property initializer MVP does not support accessing same-class non-static method '"
+        return "Property initializer MVP does not support accessing current-instance-hierarchy non-static method '"
                 + Objects.requireNonNull(receiverName, "receiverName must not be null")
                 + "." + Objects.requireNonNull(methodName, "methodName must not be null") + "()'";
     }
@@ -333,39 +356,19 @@ public final class FrontendPropertyInitializerSupport {
             @NotNull String receiverName,
             @NotNull String methodName
     ) {
-        return "Property initializer MVP does not support accessing same-class non-static method '"
+        return "Property initializer MVP does not support accessing current-instance-hierarchy non-static method '"
                 + Objects.requireNonNull(receiverName, "receiverName must not be null")
                 + "." + Objects.requireNonNull(methodName, "methodName must not be null") + "'";
     }
 
-    private static boolean isSameClassDirectNonStaticProperty(
-            @NotNull PropertyInitializerContext context,
-            @NotNull String propertyName
-    ) {
-        return context.declaringClass().getProperties().stream()
-                .anyMatch(property -> property.getName().equals(propertyName) && !property.isStatic());
-    }
-
-    private static boolean isSameClassDirectSignal(
-            @NotNull PropertyInitializerContext context,
-            @NotNull String signalName
-    ) {
-        return context.declaringClass().getSignals().stream()
-                .anyMatch(signal -> signal.getName().equals(signalName));
-    }
-
-    private static boolean isSameClassDirectNonStaticMethod(
-            @NotNull PropertyInitializerContext context,
-            @NotNull String methodName
-    ) {
-        return context.declaringClass().getFunctions().stream()
-                .anyMatch(function -> function.getName().equals(methodName) && !function.isStatic());
-    }
-
-    private static boolean isSameDeclaringClass(
+    private static boolean isCurrentInstanceHierarchyClass(
             @NotNull PropertyInitializerContext context,
             @NotNull ClassDef ownerClass
     ) {
-        return context.declaringClass().getName().equals(ownerClass.getName());
+        var currentType = new GdObjectType(context.declaringClass().getName());
+        return context.declaringClassScope().getClassRegistry().checkAssignable(
+                currentType,
+                new GdObjectType(ownerClass.getName())
+        );
     }
 }

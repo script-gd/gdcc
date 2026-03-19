@@ -263,10 +263,10 @@
 需要补充的稳定 MVP 合同是：
 
 - property initializer subtree 的 published support 主要服务于可发布事实，而不是宣称“当前类实例成员初始化语义已完成”
-- 同 class non-static property / method / signal / `self` 依赖不属于当前 MVP 的正式支持面
+- 当前实例层级可达的 non-static property / method / signal / `self` 依赖不属于当前 MVP 的正式支持面
 - 当前已由 T0.5 把这类依赖收口为 explicit boundary：
   - bare identifier / bare callee / `self` 由 top-binding owner 封口并向 expr typing 传播 `BLOCKED`
-  - chain suffix 与 same-class type-meta route 中首个非法依赖由 chain-binding owner 封口并向 expr typing 传播 `UNSUPPORTED`
+  - chain suffix 与 current-instance-hierarchy type-meta route 中首个非法依赖由 chain-binding owner 封口并向 expr typing 传播 `UNSUPPORTED`
 
 静态访问与构造器的分流原则已经冻结为：
 
@@ -274,7 +274,7 @@
 - 不能把它们伪装成普通 instance property / instance method lookup
 - instance receiver 命中 static method 时，必须保留 resolved call，并单独发调用方式 diagnostic
 - property initializer 若在 static restriction 下命中 instance-only member / method，首个依赖 step 仍需发布带精确 receiver metadata 的 `BLOCKED` member/call；只有更后面的 suffix 才降级为 upstream-blocked 传播
-- 对 instance property initializer 中“命中当前 class 非静态成员”的情况，不应把上述 static restriction 规则误读成合法支持面的对称扩张；该路径在 MVP 中需要单独 fail-closed
+- 对 instance property initializer 中“命中当前实例层级可达的非静态成员”的情况，不应把上述 static restriction 规则误读成合法支持面的对称扩张；该路径在 MVP 中需要单独 fail-closed
 
 ### 4.2 表达式类型
 

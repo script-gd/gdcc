@@ -683,18 +683,18 @@ public final class FrontendChainReductionHelper {
     ) {
         var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
         var propertyInitializerContext = request.propertyInitializerContext();
-        if (FrontendPropertyInitializerSupport.isSameClassTypeMeta(propertyInitializerContext, receiverTypeMeta)) {
-            var sameClassValueKind = FrontendPropertyInitializerSupport.sameClassNonStaticValueKind(
+        if (FrontendPropertyInitializerSupport.isCurrentInstanceHierarchyTypeMeta(propertyInitializerContext, receiverTypeMeta)) {
+            var currentInstanceValueKind = FrontendPropertyInitializerSupport.currentInstanceHierarchyNonStaticValueKind(
                     propertyInitializerContext,
                     step.name()
             );
-            if (sameClassValueKind != null) {
+            if (currentInstanceValueKind != null) {
                 return unsupportedPropertyInitializerStaticLoadTrace(
                         stepIndex,
                         step,
                         incomingReceiver,
                         receiverTypeMeta,
-                        sameClassValueKind
+                        currentInstanceValueKind
                 );
             }
         }
@@ -1219,8 +1219,11 @@ public final class FrontendChainReductionHelper {
     ) {
         var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
         var propertyInitializerContext = request.propertyInitializerContext();
-        if (FrontendPropertyInitializerSupport.isSameClassTypeMeta(propertyInitializerContext, receiverTypeMeta)
-                && FrontendPropertyInitializerSupport.hasSameClassNonStaticFunction(propertyInitializerContext, step.name())) {
+        if (FrontendPropertyInitializerSupport.isCurrentInstanceHierarchyTypeMeta(propertyInitializerContext, receiverTypeMeta)
+                && FrontendPropertyInitializerSupport.hasCurrentInstanceHierarchyNonStaticFunction(
+                propertyInitializerContext,
+                step.name()
+        )) {
             return unsupportedPropertyInitializerStaticMethodTrace(
                     stepIndex,
                     step,

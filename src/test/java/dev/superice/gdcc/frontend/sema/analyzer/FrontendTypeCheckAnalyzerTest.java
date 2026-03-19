@@ -15,6 +15,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -101,7 +102,7 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("missing_type_check_local_initializer_type.gd", """
                 class_name MissingTypeCheckLocalInitializerType
                 extends RefCounted
-
+                
                 func ping():
                     var local: int = 1
                 """);
@@ -127,7 +128,7 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("missing_type_check_property_initializer_type.gd", """
                 class_name MissingTypeCheckPropertyInitializerType
                 extends RefCounted
-
+                
                 var field: int = 1
                 """);
         var fieldDeclaration = findVariable(preparedInput.unit().ast(), "field");
@@ -151,7 +152,7 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("missing_type_check_return_value_type.gd", """
                 class_name MissingTypeCheckReturnValueType
                 extends RefCounted
-
+                
                 func ping() -> int:
                     return 1
                 """);
@@ -181,7 +182,7 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("missing_type_check_condition_type.gd", """
                 class_name MissingTypeCheckConditionType
                 extends RefCounted
-
+                
                 func ping():
                     if true:
                         pass
@@ -387,12 +388,12 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("type_check_local_compatibility.gd", """
                 class_name TypeCheckLocalCompatibility
                 extends RefCounted
-
+                
                 class Worker:
                     pass
-
+                
                 var payload: int = 1
-
+                
                 static func ping(worker):
                     var accepts_variant: Variant = 1
                     var strict_float: float = 1
@@ -458,11 +459,11 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("type_check_property_compatibility.gd", """
                 class_name TypeCheckPropertyCompatibility
                 extends RefCounted
-
+                
                 class Worker:
                     static func make():
                         return "value"
-
+                
                 var accepts_variant: Variant = 1
                 var wrong_type: int = "x"
                 var inferred_int := 1
@@ -553,33 +554,79 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeSkipsInheritedPropertyInitializerBoundaryDiagnosticsOwnedByUpstreamPhases()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput(
+                "type_check_inherited_property_initializer_boundary.gd",
+                """
+                        class_name TypeCheckInheritedPropertyInitializerBoundary
+                        extends PropertyInitializerBase
+                        
+                        var skipped_blocked: int = payload
+                        static var skipped_unsupported: int = PropertyInitializerBase.read()
+                        static var allowed_helper: int = PropertyInitializerBase.helper()
+                        """,
+                FrontendAnalyzerTestRegistrySupport.registryWithInheritedPropertyInitializerBase()
+        );
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertEquals(
+                FrontendExpressionTypeStatus.BLOCKED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_blocked", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.UNSUPPORTED,
+                requireInitializerType(preparedInput.unit().ast(), "skipped_unsupported", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(preparedInput.unit().ast(), "allowed_helper", preparedInput).status()
+        );
+        assertEquals(
+                "int",
+                requireInitializerType(preparedInput.unit().ast(), "allowed_helper", preparedInput)
+                        .publishedType()
+                        .getTypeName()
+        );
+        assertTrue(diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        ).isEmpty());
+    }
+
+    @Test
     void analyzeChecksReturnCompatibilityAgainstPublishedCallableSlotsAndSkipsUnstableReturnValues()
             throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_return_compatibility.gd", """
                 class_name TypeCheckReturnCompatibility
                 extends RefCounted
-
+                
                 class Worker:
                     pass
-
+                
                 func accepts_variant_expr() -> Variant:
                     return 1
-
+                
                 func accepts_variant_bare() -> Variant:
                     return
-
+                
                 func rejects_bare() -> int:
                     return
-
+                
                 func rejects_type() -> int:
                     return "x"
-
+                
                 func skips_failed() -> int:
                     return Worker
-
+                
                 func skips_deferred() -> int:
                     return 1 + 2
-
+                
                 func _init():
                     return 1
                 """);
@@ -634,22 +681,58 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeChecksConditionExpressionsAgainstStrictBoolSlotAndSkipsUnstableConditions()
+    void analyzeReportsTypeMismatchWhenVoidUtilityFeedsTypedInitializerInsteadOfCrashing()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_void_utility_initializer.gd", """
+                class_name TypeCheckVoidUtilityInitializer
+                extends RefCounted
+                
+                func ping(value):
+                    var strict_value: int = print(value)
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var strictValueType = requireInitializerType(
+                pingFunction.body().statements(),
+                "strict_value",
+                preparedInput
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, strictValueType.status());
+        assertEquals(GdVoidType.VOID, strictValueType.publishedType());
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("strict_value"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("void"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("int"));
+    }
+
+    @Test
+    void analyzeRequiresStableConditionFactsButDoesNotEnforceStrictBoolConditionSlots()
             throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_condition_contract.gd", """
                 class_name TypeCheckConditionContract
                 extends RefCounted
-
+                
                 class Worker:
                     pass
-
-                func ping(flag: bool, payload):
-                    assert(flag, payload)
+                
+                func ping(payload):
+                    assert(payload, "variant condition remains source-valid")
                     if 1:
                         pass
                     elif payload:
                         pass
-                    while false:
+                    while payload:
                         pass
                     if 1 + 2:
                         pass
@@ -665,28 +748,33 @@ class FrontendTypeCheckAnalyzerTest {
 
         var diagnostics = preparedInput.diagnosticManager().snapshot();
         var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
-        assertEquals(2, typeCheckDiagnostics.size());
-        assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
-                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && Path.of("tmp", "type_check_condition_contract.gd").equals(diagnostic.sourcePath())
-                        && diagnostic.range() != null
-        ));
-        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("IfStatement")
-                        && diagnostic.message().contains("int")
-                        && diagnostic.message().contains("bool")
-        ));
-        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("ElifClause")
-                        && diagnostic.message().contains("Variant")
-                        && diagnostic.message().contains("bool")
-        ));
+        assertTrue(typeCheckDiagnostics.isEmpty());
 
         var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
         var ifStatements = findNodes(
                 pingFunction,
                 dev.superice.gdparser.frontend.ast.IfStatement.class,
                 ignored -> true
+        );
+        var whileStatement = findNode(
+                pingFunction,
+                dev.superice.gdparser.frontend.ast.WhileStatement.class,
+                ignored -> true
+        );
+        var firstIf = ifStatements.getFirst();
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(firstIf.condition())).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(firstIf.elifClauses().getFirst().condition())
+                ).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(whileStatement.condition())).status()
         );
         assertEquals(
                 FrontendExpressionTypeStatus.DEFERRED,
@@ -723,12 +811,19 @@ class FrontendTypeCheckAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return prepareTypeCheckInput(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()));
+    }
+
+    private static @NotNull PreparedTypeCheckInput prepareTypeCheckInput(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull ClassRegistry classRegistry
+    ) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnosticManager);
         assertTrue(diagnosticManager.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnosticManager.snapshot());
 
-        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
                 "test_module",

@@ -298,6 +298,73 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePropagatesUnsupportedInheritedTypeMetaPropertyInitializerRoutesWithoutExprOwnedDuplicateErrors()
+            throws Exception {
+        var analyzed = analyze(
+                "expr_type_inherited_type_meta_property_initializer.gd",
+                """
+                        class_name ExprTypeInheritedTypeMetaPropertyInitializer
+                        extends PropertyInitializerBase
+                        
+                        static var blocked_value := PropertyInitializerBase.payload
+                        static var blocked_signal := PropertyInitializerBase.changed
+                        static var blocked_call := PropertyInitializerBase.read()
+                        static var allowed_helper := PropertyInitializerBase.helper()
+                        """,
+                FrontendAnalyzerTestRegistrySupport.registryWithInheritedPropertyInitializerBase()
+        );
+
+        var blockedValueDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_value")
+        );
+        var blockedSignalDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_signal")
+        );
+        var blockedCallDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_call")
+        );
+        var allowedHelperDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("allowed_helper")
+        );
+        var blockedValue = assertInstanceOf(AttributeExpression.class, blockedValueDeclaration.value());
+        var blockedSignal = assertInstanceOf(AttributeExpression.class, blockedSignalDeclaration.value());
+        var blockedCall = assertInstanceOf(AttributeExpression.class, blockedCallDeclaration.value());
+        var allowedHelper = assertInstanceOf(AttributeExpression.class, allowedHelperDeclaration.value());
+
+        var blockedValueType = analyzed.analysisData().expressionTypes().get(blockedValue);
+        assertNotNull(blockedValueType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedValueType.status());
+        assertTrue(blockedValueType.detailReason().contains("PropertyInitializerBase.payload"));
+
+        var blockedSignalType = analyzed.analysisData().expressionTypes().get(blockedSignal);
+        assertNotNull(blockedSignalType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedSignalType.status());
+        assertTrue(blockedSignalType.detailReason().contains("PropertyInitializerBase.changed"));
+
+        var blockedCallType = analyzed.analysisData().expressionTypes().get(blockedCall);
+        assertNotNull(blockedCallType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedCallType.status());
+        assertTrue(blockedCallType.detailReason().contains("PropertyInitializerBase.read"));
+
+        var allowedHelperType = analyzed.analysisData().expressionTypes().get(allowedHelper);
+        assertNotNull(allowedHelperType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, allowedHelperType.status());
+        assertEquals("int", allowedHelperType.publishedType().getTypeName());
+
+        assertEquals(3, diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
     void analyzePropagatesUnsupportedSameClassSuffixPropertyInitializerRoutesWithoutExprOwnedDuplicateErrors()
             throws Exception {
         var analyzed = analyze(
@@ -354,6 +421,78 @@ class FrontendExprTypeAnalyzerTest {
         assertNotNull(blockedSignalType);
         assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedSignalType.status());
         assertTrue(blockedSignalType.detailReason().contains("changed"));
+
+        assertEquals(3, diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
+    void analyzePropagatesUnsupportedInheritedSuffixPropertyInitializerRoutesWithoutExprOwnedDuplicateErrors()
+            throws Exception {
+        var analyzed = analyze(
+                "expr_type_inherited_suffix_property_initializer.gd",
+                """
+                        class_name ExprTypeInheritedSuffixPropertyInitializer
+                        extends PropertyInitializerBase
+                        
+                        static func build_base() -> PropertyInitializerBase:
+                            return null
+                        
+                        var blocked_value := build_base().payload
+                        var blocked_call := build_base().read()
+                        var blocked_signal := build_base().changed
+                        var allowed_helper := PropertyInitializerBase.helper()
+                        """,
+                FrontendAnalyzerTestRegistrySupport.registryWithInheritedPropertyInitializerBase()
+        );
+
+        var blockedValueDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_value")
+        );
+        var blockedCallDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_call")
+        );
+        var blockedSignalDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_signal")
+        );
+        var allowedHelperDeclaration = findNode(
+                analyzed.ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("allowed_helper")
+        );
+        var blockedValue = assertInstanceOf(AttributeExpression.class, blockedValueDeclaration.value());
+        var blockedCall = assertInstanceOf(AttributeExpression.class, blockedCallDeclaration.value());
+        var blockedSignal = assertInstanceOf(AttributeExpression.class, blockedSignalDeclaration.value());
+        var allowedHelper = assertInstanceOf(AttributeExpression.class, allowedHelperDeclaration.value());
+
+        var blockedValueType = analyzed.analysisData().expressionTypes().get(blockedValue);
+        assertNotNull(blockedValueType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedValueType.status());
+        assertTrue(blockedValueType.detailReason().contains("payload"));
+
+        var blockedCallType = analyzed.analysisData().expressionTypes().get(blockedCall);
+        assertNotNull(blockedCallType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedCallType.status());
+        assertTrue(blockedCallType.detailReason().contains("read"));
+
+        var blockedSignalType = analyzed.analysisData().expressionTypes().get(blockedSignal);
+        assertNotNull(blockedSignalType);
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, blockedSignalType.status());
+        assertTrue(blockedSignalType.detailReason().contains("changed"));
+
+        var allowedHelperType = analyzed.analysisData().expressionTypes().get(allowedHelper);
+        assertNotNull(allowedHelperType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, allowedHelperType.status());
+        assertEquals("int", allowedHelperType.publishedType().getTypeName());
 
         assertEquals(3, diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").size());
         assertTrue(diagnosticsByCategory(analyzed, "sema.member_resolution").isEmpty());
@@ -718,6 +857,35 @@ class FrontendExprTypeAnalyzerTest {
         var discardedDiagnostics = diagnosticsByCategory(analyzed, "sema.discarded_expression");
         assertEquals(1, discardedDiagnostics.size());
         assertTrue(discardedDiagnostics.getFirst().message().contains("int"));
+    }
+
+    @Test
+    void analyzeResolvesUtilityCallWithoutReturnMetadataAsVoid() throws Exception {
+        var analyzed = analyze(
+                "expr_type_void_utility_call.gd",
+                """
+                        class_name ExprTypeVoidUtilityCall
+                        extends RefCounted
+                        
+                        func ping(value):
+                            print(value)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var printCall = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+
+        var printCallType = analyzed.analysisData().expressionTypes().get(printCall);
+        assertNotNull(printCallType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, printCallType.status());
+        assertEquals(GdVoidType.VOID, printCallType.publishedType());
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
     }
 
     @Test

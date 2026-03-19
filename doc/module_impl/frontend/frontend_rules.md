@@ -41,6 +41,8 @@
 - H2 assignment compatibility 当前通过公开 API `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 复用 concrete slot 的兼容判断：exact `Variant` slot 允许任意来源类型，其余 slot 回退 generic `ClassRegistry.checkAssignable(...)`。
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
 - 除 exact `Variant` slot 与 `DYNAMIC` target 外，assignment compatibility 在 MVP 中继续回退 `ClassRegistry.checkAssignable(...)`；`int -> float`、`StringName` / `String` 互转、`null -> Object` 等更宽隐式转换当前不支持，文档和测试都必须按 strict contract 锚定。
+- source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。
+- backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
 - `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。

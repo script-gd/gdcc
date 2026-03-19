@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -291,6 +292,87 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeSealsInheritedTypeMetaValueAndMethodRoutesInPropertyInitializerAsUnsupportedRoute() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_inherited_type_meta_call.gd",
+                """
+                        class_name PropertyInitializerInheritedTypeMetaCall
+                        extends PropertyInitializerBase
+                        
+                        static var blocked_value := PropertyInitializerBase.payload
+                        static var blocked_signal := PropertyInitializerBase.changed
+                        static var blocked_call := PropertyInitializerBase.read()
+                        static var allowed_helper := PropertyInitializerBase.helper()
+                        """,
+                FrontendAnalyzerTestRegistrySupport.registryWithInheritedPropertyInitializerBase()
+        );
+
+        var blockedValueDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_value")
+        );
+        var blockedSignalDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_signal")
+        );
+        var blockedCallDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_call")
+        );
+        var allowedHelperDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("allowed_helper")
+        );
+        var payloadStep = findNode(blockedValueDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var changedStep = findNode(blockedSignalDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("changed"));
+        var readStep = findNode(blockedCallDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var helperStep = findNode(allowedHelperDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("helper"));
+
+        var unsupportedValue = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(unsupportedValue);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedValue.status());
+        assertEquals(FrontendBindingKind.PROPERTY, unsupportedValue.bindingKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, unsupportedValue.receiverKind());
+
+        var unsupportedSignal = analyzed.analysisData().resolvedMembers().get(changedStep);
+        assertNotNull(unsupportedSignal);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedSignal.status());
+        assertEquals(FrontendBindingKind.SIGNAL, unsupportedSignal.bindingKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, unsupportedSignal.receiverKind());
+
+        var unsupportedRead = analyzed.analysisData().resolvedCalls().get(readStep);
+        assertNotNull(unsupportedRead);
+        assertEquals(FrontendCallResolutionStatus.UNSUPPORTED, unsupportedRead.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, unsupportedRead.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, unsupportedRead.receiverKind());
+
+        var resolvedHelper = analyzed.analysisData().resolvedCalls().get(helperStep);
+        assertNotNull(resolvedHelper);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedHelper.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedHelper.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedHelper.receiverKind());
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
+        assertEquals(3, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("PropertyInitializerBase.payload")
+        ));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("PropertyInitializerBase.changed")
+        ));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("PropertyInitializerBase.read")
+        ));
+        assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("helper")));
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
     void analyzeSealsSameClassInstanceSuffixRoutesInPropertyInitializerAsUnsupported() throws Exception {
         var analyzed = analyze(
                 "property_initializer_same_class_suffix_routes.gd",
@@ -355,6 +437,84 @@ class FrontendChainBindingAnalyzerTest {
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("changed")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeSealsInheritedInstanceSuffixRoutesInPropertyInitializerAsUnsupported() throws Exception {
+        var analyzed = analyze(
+                "property_initializer_inherited_suffix_routes.gd",
+                """
+                        class_name PropertyInitializerInheritedSuffixRoutes
+                        extends PropertyInitializerBase
+                        
+                        static func build_base() -> PropertyInitializerBase:
+                            return null
+                        
+                        var blocked_value := build_base().payload
+                        var blocked_call := build_base().read()
+                        var blocked_signal := build_base().changed
+                        var allowed_helper := PropertyInitializerBase.helper()
+                        """,
+                FrontendAnalyzerTestRegistrySupport.registryWithInheritedPropertyInitializerBase()
+        );
+
+        var blockedValueDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_value")
+        );
+        var blockedCallDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_call")
+        );
+        var blockedSignalDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("blocked_signal")
+        );
+        var allowedHelperDeclaration = findNode(
+                analyzed.unit().ast(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("allowed_helper")
+        );
+        var payloadStep = findNode(blockedValueDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var readStep = findNode(blockedCallDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var changedStep = findNode(blockedSignalDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("changed"));
+        var helperStep = findNode(allowedHelperDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("helper"));
+
+        var unsupportedValue = analyzed.analysisData().resolvedMembers().get(payloadStep);
+        assertNotNull(unsupportedValue);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedValue.status());
+        assertEquals(FrontendBindingKind.PROPERTY, unsupportedValue.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedValue.receiverKind());
+
+        var unsupportedSignal = analyzed.analysisData().resolvedMembers().get(changedStep);
+        assertNotNull(unsupportedSignal);
+        assertEquals(FrontendMemberResolutionStatus.UNSUPPORTED, unsupportedSignal.status());
+        assertEquals(FrontendBindingKind.SIGNAL, unsupportedSignal.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedSignal.receiverKind());
+
+        var unsupportedRead = analyzed.analysisData().resolvedCalls().get(readStep);
+        assertNotNull(unsupportedRead);
+        assertEquals(FrontendCallResolutionStatus.UNSUPPORTED, unsupportedRead.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, unsupportedRead.callKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, unsupportedRead.receiverKind());
+
+        var resolvedHelper = analyzed.analysisData().resolvedCalls().get(helperStep);
+        assertNotNull(resolvedHelper);
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedHelper.status());
+        assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedHelper.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedHelper.receiverKind());
+
+        var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
+        assertEquals(3, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("changed")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
+        assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("helper")));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }

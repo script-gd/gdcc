@@ -172,8 +172,8 @@
   - 不直接复用 `FrontendVisibleValueResolver`
   - 必须直接走 shared `Scope.resolveValue(...)` / `resolveFunctions(...)` / `resolveTypeMeta(...)` 的 class/global contract
   - restriction 固定按 property staticness 选择：instance property -> `ResolveRestriction.instanceContext()`，static property -> `ResolveRestriction.staticContext()`
-  - 但这条 shared lookup 只负责候选查找；稳定的 MVP 合同明确不支持 property initializer 直接消费同 class 下的 non-static property / method / signal / `self`
-  - 命中上述 same-class non-static 候选时，当前由 top-binding 在 bare identifier / bare callee / `self` 处发布首个 `sema.unsupported_binding_subtree`，而不是继续把它当成 ordinary supported binding
+  - 但这条 shared lookup 只负责候选查找；稳定的 MVP 合同明确不支持 property initializer 直接消费当前实例层级可达的 non-static property / method / signal / `self`
+  - 命中上述 current-instance-hierarchy non-static 候选时，当前由 top-binding 在 bare identifier / bare callee / `self` 处发布首个 `sema.unsupported_binding_subtree`，而不是继续把它当成 ordinary supported binding
 
 `FrontendVisibleValueResolution` 的消费合同固定为：
 

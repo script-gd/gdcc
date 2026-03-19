@@ -1,10 +1,11 @@
 package dev.superice.gdcc.gdextension;
 
 import dev.superice.gdcc.scope.CaptureDef;
-import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -96,6 +97,15 @@ public record ExtensionUtilityFunction(
 
     @Override
     public @NotNull GdType getReturnType() {
-        return Objects.requireNonNull(ClassRegistry.tryParseTextType(returnType));
+        // Godot utility metadata omits `return_type` for void-like calls such as `print(...)`.
+        // Shared consumers still need a stable non-null `FunctionDef` contract, so blank metadata
+        // is normalized to `void` here instead of leaking a metadata shape difference as an NPE.
+        if (returnType == null || returnType.isBlank()) {
+            return GdVoidType.VOID;
+        }
+        return ScopeTypeParsers.parseExtensionTypeMetadata(
+                returnType,
+                "return type of utility '" + Objects.requireNonNull(name, "name must not be null") + "'"
+        );
     }
 }

@@ -968,31 +968,31 @@ public class FrontendTopBindingAnalyzer {
             if (supportedPropertyInitializerDepth <= 0) {
                 return false;
             }
-            var sameClassValueKind = FrontendPropertyInitializerSupport.sameClassNonStaticValueKind(
+            var currentInstanceValueKind = FrontendPropertyInitializerSupport.currentInstanceHierarchyNonStaticValueKind(
                     currentPropertyInitializerContext,
                     identifierExpression.name()
             );
-            if (sameClassValueKind == null) {
+            if (currentInstanceValueKind == null) {
                 return false;
             }
             publishBinding(
                     identifierExpression,
                     identifierExpression.name(),
-                    toBindingKind(sameClassValueKind),
+                    toBindingKind(currentInstanceValueKind),
                     null
             );
             reportPropertyInitializerUnsupportedBoundary(
                     identifierExpression,
                     FrontendPropertyInitializerSupport.unsupportedValueMessage(
                             identifierExpression.name(),
-                            sameClassValueKind
+                            currentInstanceValueKind
                     )
             );
             return true;
         }
 
         private boolean trySealPropertyInitializerFunctionBoundary(@NotNull IdentifierExpression identifierExpression) {
-            if (supportedPropertyInitializerDepth <= 0 || !FrontendPropertyInitializerSupport.hasSameClassNonStaticFunction(
+            if (supportedPropertyInitializerDepth <= 0 || !FrontendPropertyInitializerSupport.hasCurrentInstanceHierarchyNonStaticFunction(
                     currentPropertyInitializerContext,
                     identifierExpression.name()
             )) {

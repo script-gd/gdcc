@@ -609,9 +609,15 @@ public final class ClassRegistry implements Scope {
                 params.add(new FunctionSignature.Parameter(a.name(), ptype, a.defaultValue()));
             }
         }
-        var rtype = parseUtilityMetadataTypeOrNull(
+        // Utility metadata omits `return_type` for void-like calls such as `print(...)`.
+        // The registry contract should still expose a stable return slot to both frontend and
+        // backend consumers instead of encoding "no return" as an accidental `null` branch.
+        var rtype = uf.returnType() == null || uf.returnType().isBlank()
+                ? GdVoidType.VOID
+                : ScopeTypeParsers.parseExtensionTypeMetadata(
                 uf.returnType(),
-                "return type of utility '" + uf.name() + "'"
+                "return type of utility '" + uf.name() + "'",
+                this
         );
         return new FunctionSignature(uf.name(), params, uf.isVararg(), rtype);
     }

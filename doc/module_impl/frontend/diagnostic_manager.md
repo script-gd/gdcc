@@ -218,7 +218,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
 - `sema.type_check`
-  - type-check analyzer 对 ordinary local / class property typed contract 不兼容发出的 error
+  - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
@@ -248,12 +248,13 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 与 `FrontendTypeCheckAnalyzer` 相关的当前合同已冻结为：
 
 - `sema.type_check`
-  - 用于 typed contract 的真实不兼容错误
+  - 用于 local / class property / return typed contract 的真实不兼容错误
   - severity 固定为 `error`
 - `sema.type_hint`
   - 用于 property `:=` / 未声明显式类型 property 的手动显式类型提醒
   - severity 固定为 `warning`
   - 该 warning 不表示 frontend 已完成 property 类型推导；它只提示用户手动补写推荐的显式类型
+- condition root 当前只要求 stable typed fact；非 `bool` 的 Godot-compatible source condition 不再由 type-check analyzer 发 `sema.type_check`
 
 ---
 
@@ -286,7 +287,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendTopBindingAnalyzer.analyze(...)` 发布 `symbolBindings`
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
-    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property typed contract 发出 `sema.type_check` / `sema.type_hint`
+    - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
 
 ### 3.4 exception

@@ -99,6 +99,11 @@ public final class ClassScope extends AbstractFrontendScope {
         return currentClass;
     }
 
+    /// Exposes the registry that owns the current/inherited member metadata for this class scope.
+    public @NotNull ClassRegistry getClassRegistry() {
+        return classRegistry;
+    }
+
     /// Registers a direct property belonging to the current class scope.
     ///
     /// The registration is local to the current class layer only. Outer lexical scopes remain on the

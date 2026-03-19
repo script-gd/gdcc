@@ -18,7 +18,6 @@ import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeValue;
-import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -244,14 +243,13 @@ public class FrontendTypeCheckAnalyzer {
         if (publishedConditionType == null) {
             return;
         }
-        var valueType = Objects.requireNonNull(
+        // T8.2: frontend only verifies that the condition root published a stable typed fact.
+        // Godot accepts non-bool condition values, so source-level truthiness must be normalized
+        // by downstream lowering/runtime contracts instead of being rejected here as a dialect.
+        Objects.requireNonNull(
                 publishedConditionType.publishedType(),
                 "publishedType must not be null for stable condition expression"
         );
-        if (access.checkAssignmentCompatible(GdBoolType.BOOL, valueType)) {
-            return;
-        }
-        reportConditionTypeMismatch(access, owner, valueType);
     }
 
     protected record TypeCheckAccess(
@@ -438,23 +436,6 @@ public class FrontendTypeCheckAnalyzer {
                         + "' is not assignable to callable return slot type '" + slotType.getTypeName() + "'",
                 access.sourcePath(),
                 FrontendRange.fromAstRange(returnStatement.range())
-        );
-    }
-
-    private static void reportConditionTypeMismatch(
-            @NotNull TypeCheckAccess access,
-            @NotNull Node owner,
-            @NotNull GdType valueType
-    ) {
-        Objects.requireNonNull(access, "access must not be null");
-        Objects.requireNonNull(owner, "owner must not be null");
-        Objects.requireNonNull(valueType, "valueType must not be null");
-        access.diagnosticManager().error(
-                TYPE_CHECK_CATEGORY,
-                owner.getClass().getSimpleName() + " condition type '" + valueType.getTypeName()
-                        + "' is not assignable to required bool slot 'bool'",
-                access.sourcePath(),
-                FrontendRange.fromAstRange(owner.range())
         );
     }
 

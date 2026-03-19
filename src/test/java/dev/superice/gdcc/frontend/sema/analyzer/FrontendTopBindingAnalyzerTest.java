@@ -318,6 +318,77 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeSealsInheritedInstancePropertyInitializerHeadsButKeepsAllowedStaticRoutes() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "property_initializer_inherited_bindings.gd",
+                """
+                        class_name PropertyInitializerInheritedBindings
+                        extends PropertyInitializerBase
+                        
+                        static func helper() -> int:
+                            return 1
+                        
+                        var blocked_value := payload
+                        var blocked_signal := changed
+                        var blocked_call := read()
+                        var allowed_helper := helper()
+                        var allowed_global := print()
+                        """
+                ,
+                FrontendAnalyzerTestRegistrySupport.registryWithInheritedPropertyInitializerBase()
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var sourceFile = preparedInput.unit().ast();
+        var blockedValueDeclaration = findVariable(sourceFile.statements(), "blocked_value");
+        var blockedSignalDeclaration = findVariable(sourceFile.statements(), "blocked_signal");
+        var blockedCallDeclaration = findVariable(sourceFile.statements(), "blocked_call");
+        var allowedHelperDeclaration = findVariable(sourceFile.statements(), "allowed_helper");
+        var allowedGlobalDeclaration = findVariable(sourceFile.statements(), "allowed_global");
+
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(blockedValueDeclaration.value(), "payload"),
+                FrontendBindingKind.PROPERTY
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(blockedSignalDeclaration.value(), "changed"),
+                FrontendBindingKind.SIGNAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(blockedCallDeclaration.value(), "read"),
+                FrontendBindingKind.METHOD
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(allowedHelperDeclaration.value(), "helper"),
+                FrontendBindingKind.STATIC_METHOD
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(allowedGlobalDeclaration.value(), "print"),
+                FrontendBindingKind.UTILITY_FUNCTION
+        );
+
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+
+        var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(3, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+        ));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("changed")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
+        assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("helper")));
+        assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("print")));
+    }
+
+    @Test
     void analyzeBindsTopLevelTypeMetaChainHeadsForEngineBuiltinGlobalEnumAndLexicalInnerClasses() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         assertFalse(api.globalEnums().isEmpty());

@@ -16,6 +16,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -364,6 +365,22 @@ public class ClassRegistryTest {
                 "Array[RDPipelineSpecializationConstant]([])",
                 signature.parameters().getFirst().defaultValue()
         );
+    }
+
+    @Test
+    void utilityWithoutDeclaredReturnTypeNormalizesToVoidForSharedConsumers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var printUtility = assertInstanceOf(
+                ExtensionUtilityFunction.class,
+                registry.resolveFunctions("print").getFirst()
+        );
+        assertNull(printUtility.returnType());
+        assertEquals(GdVoidType.VOID, printUtility.getReturnType());
+
+        var printSignature = registry.findUtilityFunctionSignature("print");
+        assertNotNull(printSignature);
+        assertEquals(GdVoidType.VOID, printSignature.returnType());
     }
 
     @Test
