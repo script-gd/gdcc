@@ -675,6 +675,7 @@ class FrontendChainReductionHelperTest {
                 head,
                 FrontendAnalysisData.bootstrap(),
                 registry,
+                null,
                 expressionTypeResolver,
                 noteSink
         );

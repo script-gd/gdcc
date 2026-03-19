@@ -266,6 +266,7 @@ class FrontendChainHeadReceiverSupportTest {
                 context.analysisData().scopesByAst(),
                 restriction,
                 staticContext,
+                null,
                 nestedResolver,
                 fallbackResolver
         );

@@ -389,12 +389,14 @@ class FrontendExpressionSemanticSupportTest {
                 analyzed.analysisData().symbolBindings(),
                 analyzed.analysisData().scopesByAst(),
                 () -> restriction,
+                () -> null,
                 analyzed.classRegistry(),
                 () -> new FrontendChainHeadReceiverSupport(
                         analyzed.analysisData(),
                         analyzed.analysisData().scopesByAst(),
                         restriction,
                         staticContext,
+                        null,
                         _ -> null,
                         _ -> null
                 )
@@ -408,12 +410,14 @@ class FrontendExpressionSemanticSupportTest {
                 analysisData.symbolBindings(),
                 analysisData.scopesByAst(),
                 ResolveRestriction::instanceContext,
+                () -> null,
                 classRegistry,
                 () -> new FrontendChainHeadReceiverSupport(
                         analysisData,
                         analysisData.scopesByAst(),
                         ResolveRestriction.instanceContext(),
                         false,
+                        null,
                         _ -> null,
                         _ -> null
                 )

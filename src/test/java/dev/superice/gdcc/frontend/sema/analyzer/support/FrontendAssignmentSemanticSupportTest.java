@@ -384,6 +384,7 @@ class FrontendAssignmentSemanticSupportTest {
                 analyzed.analysisData().scopesByAst(),
                 () -> restriction,
                 () -> staticContext,
+                () -> null,
                 analyzed.classRegistry(),
                 (expression, finalizeWindow) -> FrontendChainReductionHelper.ExpressionTypeResult.fromPublished(
                         publishedExpressionResolver(analyzed).resolve(expression, finalizeWindow)

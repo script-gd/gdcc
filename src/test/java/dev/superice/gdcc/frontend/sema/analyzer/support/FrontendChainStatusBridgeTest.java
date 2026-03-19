@@ -66,6 +66,7 @@ class FrontendChainStatusBridgeTest {
                 ),
                 dev.superice.gdcc.frontend.sema.FrontendAnalysisData.bootstrap(),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                null,
                 noExpressionTypes(),
                 _ -> {
                 }

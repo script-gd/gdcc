@@ -70,6 +70,8 @@ public final class FrontendExpressionSemanticSupport {
     private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull Supplier<ResolveRestriction> restrictionSupplier;
+    private final @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext>
+            propertyInitializerContextSupplier;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier;
     private final @NotNull FrontendSubscriptSemanticSupport subscriptSemanticSupport;
@@ -81,9 +83,31 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull ClassRegistry classRegistry,
             @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier
     ) {
+        this(
+                symbolBindings,
+                scopesByAst,
+                restrictionSupplier,
+                () -> null,
+                classRegistry,
+                headReceiverSupportSupplier
+        );
+    }
+
+    public FrontendExpressionSemanticSupport(
+            @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext> propertyInitializerContextSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier
+    ) {
         this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
         this.restrictionSupplier = Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
+        this.propertyInitializerContextSupplier = Objects.requireNonNull(
+                propertyInitializerContextSupplier,
+                "propertyInitializerContextSupplier must not be null"
+        );
         this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         this.headReceiverSupportSupplier = Objects.requireNonNull(
                 headReceiverSupportSupplier,
@@ -105,6 +129,14 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     public @NotNull ExpressionSemanticResult resolveSelfExpressionType(@NotNull Node selfNode) {
+        var boundaryDetail = FrontendPropertyInitializerSupport.detailForBindingBoundary(
+                currentPropertyInitializerContext(),
+                dev.superice.gdcc.frontend.sema.FrontendBindingKind.SELF,
+                "self"
+        );
+        if (boundaryDetail != null) {
+            return propagated(FrontendExpressionType.blocked(null, boundaryDetail));
+        }
         return propagated(FrontendChainStatusBridge.toPublishedExpressionType(
                 headReceiverSupportSupplier.get().resolveSelfReceiver(selfNode)
         ));
@@ -118,6 +150,14 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(FrontendExpressionType.failed(
                     "No published binding fact is available for identifier '" + identifierExpression.name() + "'"
             ));
+        }
+        var boundaryDetail = FrontendPropertyInitializerSupport.detailForBindingBoundary(
+                currentPropertyInitializerContext(),
+                binding.kind(),
+                identifierExpression.name()
+        );
+        if (boundaryDetail != null) {
+            return propagated(FrontendExpressionType.blocked(null, boundaryDetail));
         }
         return propagated(switch (binding.kind()) {
             case SELF -> resolveSelfExpressionType(identifierExpression).expressionType();
@@ -557,6 +597,10 @@ public final class FrontendExpressionSemanticSupport {
             }
         }
         return "no compatible signature found";
+    }
+
+    private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext() {
+        return propertyInitializerContextSupplier.get();
     }
 
     private boolean canOmitTrailingParameters(

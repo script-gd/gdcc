@@ -127,6 +127,7 @@ public class FrontendExprTypeAnalyzer {
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
+        private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext;
 
         private AstWalkerExprTypePublisher(
                 @NotNull Path sourcePath,
@@ -148,6 +149,7 @@ public class FrontendExprTypeAnalyzer {
                     scopesByAst,
                     () -> currentRestriction,
                     () -> currentStaticContext,
+                    () -> currentPropertyInitializerContext,
                     classRegistry,
                     this::resolveExpressionDependency
             );
@@ -162,6 +164,7 @@ public class FrontendExprTypeAnalyzer {
                     analysisData.symbolBindings(),
                     scopesByAst,
                     () -> currentRestriction,
+                    () -> currentPropertyInitializerContext,
                     classRegistry,
                     chainReduction::headReceiverSupport
             );
@@ -403,11 +406,17 @@ public class FrontendExprTypeAnalyzer {
             );
             var previousRestriction = currentRestriction;
             var previousStaticContext = currentStaticContext;
+            var previousPropertyInitializerContext = currentPropertyInitializerContext;
             currentRestriction = FrontendPropertyInitializerSupport.restrictionFor(variableDeclaration);
             currentStaticContext = variableDeclaration.isStatic();
+            currentPropertyInitializerContext = FrontendPropertyInitializerSupport.contextFor(
+                    scopesByAst,
+                    variableDeclaration
+            );
             try {
                 publishExpressionType(initializer);
             } finally {
+                currentPropertyInitializerContext = previousPropertyInitializerContext;
                 currentRestriction = previousRestriction;
                 currentStaticContext = previousStaticContext;
             }

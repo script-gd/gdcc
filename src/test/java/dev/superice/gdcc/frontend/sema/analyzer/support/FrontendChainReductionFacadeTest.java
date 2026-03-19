@@ -98,6 +98,7 @@ class FrontendChainReductionFacadeTest {
                 context.analysisData().scopesByAst(),
                 ResolveRestriction::unrestricted,
                 () -> false,
+                () -> null,
                 context.registry(),
                 (expression, finalizeWindow) -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
                         "unexpected expression type lookup for " + expression.getClass().getSimpleName()

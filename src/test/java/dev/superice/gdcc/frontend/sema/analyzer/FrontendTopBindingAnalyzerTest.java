@@ -213,26 +213,35 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     @Test
-    void analyzePublishesPropertyInitializerBindingsWithoutOpeningWholeClassBody() throws Exception {
+    void analyzeSealsSameClassNonStaticPropertyInitializerHeadsButKeepsAllowedStaticRoutes() throws Exception {
         var preparedInput = prepareBindingInput(
                 "property_initializer_bindings.gd",
                 """
                         class_name PropertyInitializerBindings
                         extends RefCounted
                         
+                        signal changed
                         var payload: int = 1
+                        static var shared: int = 1
                         
                         class Worker:
                             static func build():
                                 return 1
                         
+                        static func helper() -> int:
+                            return 1
+                        
                         func read() -> int:
                             return 1
                         
                         var mirror := payload
+                        var watched := changed
                         var built := Worker.build()
+                        static var allowed_shared := shared
+                        static var allowed_helper := helper()
                         static var blocked_value := payload
                         static var blocked_call := read()
+                        var self_copy := self.payload
                         const Alias = payload
                         """
         );
@@ -242,9 +251,13 @@ class FrontendTopBindingAnalyzerTest {
 
         var sourceFile = preparedInput.unit().ast();
         var mirrorDeclaration = findVariable(sourceFile.statements(), "mirror");
+        var watchedDeclaration = findVariable(sourceFile.statements(), "watched");
         var builtDeclaration = findVariable(sourceFile.statements(), "built");
+        var allowedSharedDeclaration = findVariable(sourceFile.statements(), "allowed_shared");
+        var allowedHelperDeclaration = findVariable(sourceFile.statements(), "allowed_helper");
         var blockedValueDeclaration = findVariable(sourceFile.statements(), "blocked_value");
         var blockedCallDeclaration = findVariable(sourceFile.statements(), "blocked_call");
+        var selfCopyDeclaration = findVariable(sourceFile.statements(), "self_copy");
         var aliasDeclaration = findVariable(sourceFile.statements(), "Alias");
 
         assertBinding(
@@ -254,8 +267,23 @@ class FrontendTopBindingAnalyzerTest {
         );
         assertBinding(
                 preparedInput.analysisData(),
+                findIdentifierExpression(watchedDeclaration.value(), "changed"),
+                FrontendBindingKind.SIGNAL
+        );
+        assertBinding(
+                preparedInput.analysisData(),
                 findIdentifierExpression(builtDeclaration.value(), "Worker"),
                 FrontendBindingKind.TYPE_META
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(allowedSharedDeclaration.value(), "shared"),
+                FrontendBindingKind.PROPERTY
+        );
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(allowedHelperDeclaration.value(), "helper"),
+                FrontendBindingKind.STATIC_METHOD
         );
         assertBinding(
                 preparedInput.analysisData(),
@@ -267,15 +295,26 @@ class FrontendTopBindingAnalyzerTest {
                 findIdentifierExpression(blockedCallDeclaration.value(), "read"),
                 FrontendBindingKind.METHOD
         );
+        assertBinding(
+                preparedInput.analysisData(),
+                findSelfExpression(selfCopyDeclaration.value()),
+                FrontendBindingKind.SELF
+        );
         assertNull(preparedInput.analysisData().symbolBindings().get(findIdentifierExpression(aliasDeclaration.value(), "payload")));
 
-        var bindingDiagnostics = bindingDiagnostics(preparedInput.diagnosticManager());
-        assertEquals(2, bindingDiagnostics.size());
-        assertTrue(bindingDiagnostics.stream().allMatch(diagnostic ->
+        assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
+
+        var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
+        assertEquals(5, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
         ));
-        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
-        assertTrue(bindingDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("payload")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("changed")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("read")));
+        assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("self")));
+        assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("shared")));
+        assertFalse(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("helper")));
     }
 
     @Test

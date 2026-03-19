@@ -37,6 +37,8 @@ public final class FrontendChainReductionFacade {
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull Supplier<ResolveRestriction> restrictionSupplier;
     private final @NotNull BooleanSupplier staticContextSupplier;
+    private final @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext>
+            propertyInitializerContextSupplier;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver;
     private final @NotNull IdentityHashMap<AttributeExpression, Optional<FrontendChainReductionHelper.ReductionResult>> reducedChains =
@@ -50,10 +52,35 @@ public final class FrontendChainReductionFacade {
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver
     ) {
+        this(
+                analysisData,
+                scopesByAst,
+                restrictionSupplier,
+                staticContextSupplier,
+                () -> null,
+                classRegistry,
+                expressionTypeResolver
+        );
+    }
+
+    public FrontendChainReductionFacade(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull BooleanSupplier staticContextSupplier,
+            @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext>
+                    propertyInitializerContextSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver
+    ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
         this.restrictionSupplier = Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
         this.staticContextSupplier = Objects.requireNonNull(staticContextSupplier, "staticContextSupplier must not be null");
+        this.propertyInitializerContextSupplier = Objects.requireNonNull(
+                propertyInitializerContextSupplier,
+                "propertyInitializerContextSupplier must not be null"
+        );
         this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         this.expressionTypeResolver = Objects.requireNonNull(
                 expressionTypeResolver,
@@ -67,6 +94,7 @@ public final class FrontendChainReductionFacade {
                 scopesByAst,
                 restrictionSupplier.get(),
                 staticContextSupplier.getAsBoolean(),
+                propertyInitializerContextSupplier.get(),
                 attributeExpression -> {
                     var nestedReduction = reduce(attributeExpression);
                     return nestedReduction.result() != null ? nestedReduction.result().finalReceiver() : null;
@@ -93,6 +121,7 @@ public final class FrontendChainReductionFacade {
                 headReceiver,
                 analysisData,
                 classRegistry,
+                propertyInitializerContextSupplier.get(),
                 expressionTypeResolver,
                 _ -> {
                 }

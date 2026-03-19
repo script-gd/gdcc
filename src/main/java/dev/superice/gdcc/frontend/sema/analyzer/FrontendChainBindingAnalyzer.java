@@ -121,6 +121,7 @@ public class FrontendChainBindingAnalyzer {
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
+        private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext;
 
         private AstWalkerChainBinder(
                 @NotNull Path sourcePath,
@@ -144,6 +145,7 @@ public class FrontendChainBindingAnalyzer {
                     scopesByAst,
                     () -> currentRestriction,
                     () -> currentStaticContext,
+                    () -> currentPropertyInitializerContext,
                     classRegistry,
                     this::resolveExpressionType
             );
@@ -158,6 +160,7 @@ public class FrontendChainBindingAnalyzer {
                     analysisData.symbolBindings(),
                     scopesByAst,
                     () -> currentRestriction,
+                    () -> currentPropertyInitializerContext,
                     classRegistry,
                     chainReduction::headReceiverSupport
             );
@@ -445,11 +448,17 @@ public class FrontendChainBindingAnalyzer {
             );
             var previousRestriction = currentRestriction;
             var previousStaticContext = currentStaticContext;
+            var previousPropertyInitializerContext = currentPropertyInitializerContext;
             currentRestriction = FrontendPropertyInitializerSupport.restrictionFor(variableDeclaration);
             currentStaticContext = variableDeclaration.isStatic();
+            currentPropertyInitializerContext = FrontendPropertyInitializerSupport.contextFor(
+                    scopesByAst,
+                    variableDeclaration
+            );
             try {
                 walkValueExpression(initializer);
             } finally {
+                currentPropertyInitializerContext = previousPropertyInitializerContext;
                 currentRestriction = previousRestriction;
                 currentStaticContext = previousStaticContext;
             }
@@ -562,6 +571,9 @@ public class FrontendChainBindingAnalyzer {
                 return;
             }
             if (firstNonResolved.status() == FrontendChainReductionHelper.Status.UNSUPPORTED) {
+                if (shouldSuppressPropertyInitializerHeadBoundary(recoveryRoot)) {
+                    return;
+                }
                 if (reportedUnsupportedRoots.putIfAbsent(recoveryRoot, Boolean.TRUE) != null) {
                     return;
                 }
@@ -691,6 +703,13 @@ public class FrontendChainBindingAnalyzer {
                 case MATCH_SUBTREE -> "match subtree";
                 case UNKNOWN_OR_SKIPPED_SUBTREE -> "skipped subtree";
             };
+        }
+
+        private boolean shouldSuppressPropertyInitializerHeadBoundary(@Nullable Node recoveryRoot) {
+            return FrontendPropertyInitializerSupport.isTopBindingOwnedUnsupportedHead(
+                    currentPropertyInitializerContext,
+                    recoveryRoot
+            );
         }
 
         private boolean isNotPublished(@Nullable Node node) {

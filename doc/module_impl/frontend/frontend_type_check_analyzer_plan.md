@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施计划（T0 已完成并验收，T0.5-T7 尚未落地）
+- 状态：实施计划（T0-T0.5 已完成并验收，T1-T7 尚未落地）
 - 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -411,6 +411,17 @@ property initializer 的 restriction 固定按 property staticness 选择：
 - downstream expr typing 与后续 type-check 只能复用上游 status，不得补第二条同级错误
 - MVP 明确不在此阶段引入 member initialization order、default-state visibility、forward-reference 语义、或 member-level cycle detection
 
+**实施状态**
+
+- `T0.5.1` root 级 boundary 封口（bare identifier / bare callee / `self`）：已完成
+- `T0.5.2` chain suffix 首个 same-class non-static 依赖封口：已完成
+- `T0.5.3` 单元测试与回归验收：已完成
+- 当前已落地事实（2026-03-19）：
+  - `FrontendTopBindingAnalyzer` 会在 property initializer 中对 bare identifier、bare callee 与 `self` 的 same-class non-static 依赖发布首个 `sema.unsupported_binding_subtree`
+  - `FrontendChainBindingAnalyzer` 会对 chain suffix 中首个 same-class non-static property / signal / method 依赖，以及 same-class type-meta route 命中的 non-static property / signal / method 依赖发布 `UNSUPPORTED`
+  - `FrontendExprTypeAnalyzer` 对 top-binding owner 的 property-initializer boundary 只传播 `BLOCKED`，对 chain-owned boundary 只传播 `UNSUPPORTED`，不再补第二条 expr-owned 同级错误
+  - 回归测试已覆盖 bare property / signal / bare callee / `self`、same-class suffix、same-class type-meta route，以及允许的 static route 正向场景
+
 **验收标准**
 
 - `var mirror := payload`、`var ready := read()`、`var copy := self.value` 这类依赖同 class 非静态内容的 property initializer，会收到首个 explicit unsupported diagnostic
@@ -690,7 +701,7 @@ property initializer 的 restriction 固定按 property staticness 选择：
 
 ### 7.3 不要把 shared class lookup 误当成完整的 member-initializer 语义
 
-T0 发布的是 fact support island，不是 declaration-order/default-state/cycle-aware 语义域。MVP 下必须通过 T0.5 显式封口 same-class non-static 依赖，而不是继续把它们伪装成 ordinary supported property initializer。
+T0 发布的是 fact support island，不是 declaration-order/default-state/cycle-aware 语义域。当前 MVP 已通过 T0.5 显式封口 same-class non-static 依赖，后续阶段不得再把这些路径回退成 ordinary supported property initializer。
 
 ### 7.4 不要让 type check phase 抢 upstream diagnostic owner
 

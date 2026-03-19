@@ -264,7 +264,9 @@
 
 - property initializer subtree 的 published support 主要服务于可发布事实，而不是宣称“当前类实例成员初始化语义已完成”
 - 同 class non-static property / method / signal / `self` 依赖不属于当前 MVP 的正式支持面
-- 后续 T0.5 必须把这类依赖收口为 explicit unsupported boundary，而不是继续按 ordinary instance route 扩张支持面
+- 当前已由 T0.5 把这类依赖收口为 explicit boundary：
+  - bare identifier / bare callee / `self` 由 top-binding owner 封口并向 expr typing 传播 `BLOCKED`
+  - chain suffix 与 same-class type-meta route 中首个非法依赖由 chain-binding owner 封口并向 expr typing 传播 `UNSUPPORTED`
 
 静态访问与构造器的分流原则已经冻结为：
 
@@ -304,7 +306,7 @@
 - property initializer 只开放表达式子树，不引入 class-body `:=` backfill 或新的 executable scope
 - 同 class 非静态依赖在 MVP 中仍需显式封口；不要把 property initializer 的 published subtree support 误写成完整实例初始化语义
 - 这里的 published support surface 只表示 side-table 可发布；它不自动承诺同 class non-static property / method / signal / `self` 已在 property initializer 中具备稳定语义
-- MVP 将在后续 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这类路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义
+- 当前 MVP 已通过 T0.5 显式收口：property initializer 不支持访问同 class 下的 non-static 内容；这些路径必须 fail-closed，而不是继续假装存在 declaration-order / default-state / cycle-aware 语义
 
 当前 expression-only 恢复出口也已冻结：
 

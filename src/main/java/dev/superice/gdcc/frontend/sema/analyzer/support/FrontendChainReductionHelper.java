@@ -16,6 +16,7 @@ import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
+import dev.superice.gdcc.scope.ScopeValueKind;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
 import dev.superice.gdcc.scope.resolver.ScopePropertyResolver;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
@@ -314,9 +315,29 @@ public final class FrontendChainReductionHelper {
             @NotNull ReceiverState headReceiver,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull ClassRegistry classRegistry,
+            @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext,
             @NotNull ExpressionTypeResolver expressionTypeResolver,
             @NotNull NoteSink noteSink
     ) {
+        public ReductionRequest(
+                @NotNull AttributeExpression chainExpression,
+                @NotNull ReceiverState headReceiver,
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull ClassRegistry classRegistry,
+                @NotNull ExpressionTypeResolver expressionTypeResolver,
+                @NotNull NoteSink noteSink
+        ) {
+            this(
+                    chainExpression,
+                    headReceiver,
+                    analysisData,
+                    classRegistry,
+                    null,
+                    expressionTypeResolver,
+                    noteSink
+            );
+        }
+
         public ReductionRequest {
             Objects.requireNonNull(chainExpression, "chainExpression must not be null");
             Objects.requireNonNull(headReceiver, "headReceiver must not be null");
@@ -471,7 +492,7 @@ public final class FrontendChainReductionHelper {
             @NotNull ReductionRequest request
     ) {
         if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
-            return reduceStaticLoadStep(stepIndex, step, incomingReceiver, request.classRegistry());
+            return reduceStaticLoadStep(stepIndex, step, incomingReceiver, request);
         }
 
         var receiverType = Objects.requireNonNull(incomingReceiver.receiverType(), "receiverType must not be null");
@@ -507,11 +528,25 @@ public final class FrontendChainReductionHelper {
 
         var propertyResult = ScopePropertyResolver.resolveObjectProperty(request.classRegistry(), objectType, step.name());
         if (propertyResult instanceof ScopePropertyResolver.Resolved(var property)) {
+            var boundaryDetail = FrontendPropertyInitializerSupport.detailForResolvedPropertyBoundary(
+                    request.propertyInitializerContext(),
+                    property
+            );
+            if (boundaryDetail != null) {
+                return unsupportedResolvedPropertyTrace(stepIndex, step, incomingReceiver, property, boundaryDetail);
+            }
             return resolvedPropertyTrace(stepIndex, step, incomingReceiver, property);
         }
 
         var signalResult = ScopeSignalResolver.resolveInstanceSignal(request.classRegistry(), receiverType, step.name());
         if (signalResult instanceof ScopeSignalResolver.Resolved(var signal)) {
+            var boundaryDetail = FrontendPropertyInitializerSupport.detailForResolvedSignalBoundary(
+                    request.propertyInitializerContext(),
+                    signal
+            );
+            if (boundaryDetail != null) {
+                return unsupportedResolvedSignalTrace(stepIndex, step, incomingReceiver, signal, boundaryDetail);
+            }
             return resolvedSignalTrace(stepIndex, step, incomingReceiver, signal);
         }
 
@@ -549,6 +584,20 @@ public final class FrontendChainReductionHelper {
                 && signalFailed.kind() == ScopeSignalResolver.FailureKind.SIGNAL_MISSING) {
             var methodReference = resolveInstanceMethodReference(request.classRegistry(), receiverType, step.name());
             if (methodReference != null) {
+                var boundaryDetail = FrontendPropertyInitializerSupport.detailForMethodReferenceBoundary(
+                        request.propertyInitializerContext(),
+                        methodReference.ownerClass(),
+                        methodReference.declarationSite().getFirst()
+                );
+                if (boundaryDetail != null) {
+                    return unsupportedMethodReferenceTrace(
+                            stepIndex,
+                            step,
+                            incomingReceiver,
+                            methodReference,
+                            boundaryDetail
+                    );
+                }
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
             }
         }
@@ -630,15 +679,33 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributePropertyStep step,
             @NotNull ReceiverState incomingReceiver,
-            @NotNull ClassRegistry classRegistry
+            @NotNull ReductionRequest request
     ) {
         var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
+        var propertyInitializerContext = request.propertyInitializerContext();
+        if (FrontendPropertyInitializerSupport.isSameClassTypeMeta(propertyInitializerContext, receiverTypeMeta)) {
+            var sameClassValueKind = FrontendPropertyInitializerSupport.sameClassNonStaticValueKind(
+                    propertyInitializerContext,
+                    step.name()
+            );
+            if (sameClassValueKind != null) {
+                return unsupportedPropertyInitializerStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        receiverTypeMeta,
+                        sameClassValueKind
+                );
+            }
+        }
         return switch (receiverTypeMeta.kind()) {
             case GLOBAL_ENUM -> reduceGlobalEnumStaticLoad(stepIndex, step, incomingReceiver, receiverTypeMeta);
-            case BUILTIN -> reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
+            case BUILTIN ->
+                    reduceBuiltinStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
             case ENGINE_CLASS ->
-                    reduceEngineStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
-            case GDCC_CLASS -> reduceGdccStaticLoad(stepIndex, step, incomingReceiver, classRegistry, receiverTypeMeta);
+                    reduceEngineStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
+            case GDCC_CLASS ->
+                    reduceGdccStaticLoad(stepIndex, step, incomingReceiver, request.classRegistry(), receiverTypeMeta);
         };
     }
 
@@ -827,6 +894,42 @@ public final class FrontendChainReductionHelper {
         );
     }
 
+    private static @NotNull StepTrace unsupportedPropertyInitializerStaticLoadTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeTypeMeta receiverTypeMeta,
+            @NotNull ScopeValueKind valueKind
+    ) {
+        var detailReason = FrontendPropertyInitializerSupport.unsupportedTypeMetaValueMessage(
+                receiverTypeMeta.sourceName(),
+                step.name(),
+                valueKind
+        );
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.STATIC_LOAD,
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
+                null,
+                FrontendResolvedMember.unsupported(
+                        step.name(),
+                        valueKind == ScopeValueKind.SIGNAL ? FrontendBindingKind.SIGNAL : FrontendBindingKind.PROPERTY,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        incomingReceiver.receiverType(),
+                        receiverTypeMeta.declaration(),
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
+        );
+    }
+
     private static @NotNull StepTrace failedStaticLoadTrace(
             int stepIndex,
             @NotNull AttributePropertyStep step,
@@ -890,6 +993,38 @@ public final class FrontendChainReductionHelper {
         );
     }
 
+    private static @NotNull StepTrace unsupportedMethodReferenceTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull MethodReferenceResolution methodReference,
+            @NotNull String detailReason
+    ) {
+        var callableType = new GdCallableType();
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                methodReference.routeKind(),
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(ReceiverState.resolvedInstance(callableType), detailReason),
+                null,
+                FrontendResolvedMember.unsupported(
+                        methodReference.memberName(),
+                        methodReference.bindingKind(),
+                        incomingReceiver.receiverKind(),
+                        methodReference.ownerKind(),
+                        incomingReceiver.receiverType(),
+                        methodReference.declarationSite(),
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
+        );
+    }
+
     private static @NotNull StepTrace resolvedPropertyTrace(
             int stepIndex,
             @NotNull AttributePropertyStep step,
@@ -918,6 +1053,40 @@ public final class FrontendChainReductionHelper {
                 null,
                 false,
                 null
+        );
+    }
+
+    private static @NotNull StepTrace unsupportedResolvedPropertyTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeResolvedProperty property,
+            @NotNull String detailReason
+    ) {
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.INSTANCE_PROPERTY,
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(
+                        ReceiverState.resolvedInstance(property.property().getType()),
+                        detailReason
+                ),
+                null,
+                FrontendResolvedMember.unsupported(
+                        step.name(),
+                        FrontendBindingKind.PROPERTY,
+                        FrontendReceiverKind.INSTANCE,
+                        property.ownerKind(),
+                        incomingReceiver.receiverType(),
+                        property.property(),
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
         );
     }
 
@@ -950,6 +1119,38 @@ public final class FrontendChainReductionHelper {
                 null,
                 false,
                 null
+        );
+    }
+
+    private static @NotNull StepTrace unsupportedResolvedSignalTrace(
+            int stepIndex,
+            @NotNull AttributePropertyStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull ScopeResolvedSignal signal,
+            @NotNull String detailReason
+    ) {
+        var signalType = GdSignalType.from(signal.signal());
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.PROPERTY,
+                RouteKind.INSTANCE_SIGNAL,
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(ReceiverState.resolvedInstance(signalType), detailReason),
+                null,
+                FrontendResolvedMember.unsupported(
+                        step.name(),
+                        FrontendBindingKind.SIGNAL,
+                        FrontendReceiverKind.INSTANCE,
+                        signal.ownerKind(),
+                        incomingReceiver.receiverType(),
+                        signal.signal(),
+                        detailReason
+                ),
+                null,
+                false,
+                detailReason
         );
     }
 
@@ -994,12 +1195,13 @@ public final class FrontendChainReductionHelper {
         }
 
         if (incomingReceiver.receiverKind() == FrontendReceiverKind.TYPE_META) {
-            return reduceStaticMethodStep(stepIndex, step, incomingReceiver, request.classRegistry(), argumentResolution.argumentTypes());
+            return reduceStaticMethodStep(stepIndex, step, incomingReceiver, request, argumentResolution.argumentTypes());
         }
         return reduceInstanceMethodStep(
                 stepIndex,
                 step,
                 incomingReceiver,
+                request.propertyInitializerContext(),
                 request.classRegistry(),
                 argumentResolution.argumentTypes(),
                 argumentResolution.retryUsed(),
@@ -1012,11 +1214,27 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributeCallStep step,
             @NotNull ReceiverState incomingReceiver,
-            @NotNull ClassRegistry classRegistry,
+            @NotNull ReductionRequest request,
             @NotNull List<GdType> argumentTypes
     ) {
         var receiverTypeMeta = Objects.requireNonNull(incomingReceiver.receiverTypeMeta(), "receiverTypeMeta must not be null");
-        var result = ScopeMethodResolver.resolveStaticMethod(classRegistry, receiverTypeMeta, step.name(), argumentTypes);
+        var propertyInitializerContext = request.propertyInitializerContext();
+        if (FrontendPropertyInitializerSupport.isSameClassTypeMeta(propertyInitializerContext, receiverTypeMeta)
+                && FrontendPropertyInitializerSupport.hasSameClassNonStaticFunction(propertyInitializerContext, step.name())) {
+            return unsupportedPropertyInitializerStaticMethodTrace(
+                    stepIndex,
+                    step,
+                    incomingReceiver,
+                    argumentTypes,
+                    receiverTypeMeta
+            );
+        }
+        var result = ScopeMethodResolver.resolveStaticMethod(
+                request.classRegistry(),
+                receiverTypeMeta,
+                step.name(),
+                argumentTypes
+        );
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> resolvedCallTrace(
                     stepIndex,
@@ -1082,6 +1300,42 @@ public final class FrontendChainReductionHelper {
                 );
             }
         };
+    }
+
+    private static @NotNull StepTrace unsupportedPropertyInitializerStaticMethodTrace(
+            int stepIndex,
+            @NotNull AttributeCallStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull List<GdType> argumentTypes,
+            @NotNull ScopeTypeMeta receiverTypeMeta
+    ) {
+        var detailReason = FrontendPropertyInitializerSupport.unsupportedTypeMetaMethodMessage(
+                receiverTypeMeta.sourceName(),
+                step.name()
+        );
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.CALL,
+                RouteKind.STATIC_METHOD,
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(incomingReceiver, detailReason),
+                null,
+                null,
+                FrontendResolvedCall.unsupported(
+                        step.name(),
+                        FrontendCallResolutionKind.STATIC_METHOD,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        incomingReceiver.receiverType(),
+                        argumentTypes,
+                        receiverTypeMeta.declaration(),
+                        detailReason
+                ),
+                false,
+                detailReason
+        );
     }
 
     private static @NotNull StepTrace reduceConstructorStep(
@@ -1175,6 +1429,7 @@ public final class FrontendChainReductionHelper {
             int stepIndex,
             @NotNull AttributeCallStep step,
             @NotNull ReceiverState incomingReceiver,
+            @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext,
             @NotNull ClassRegistry classRegistry,
             @NotNull List<GdType> argumentTypes,
             boolean finalizeRetryUsed,
@@ -1190,10 +1445,28 @@ public final class FrontendChainReductionHelper {
         return switch (result) {
             case ScopeMethodResolver.Resolved resolved -> {
                 var resolvedMethod = resolved.method();
+                var boundaryDetail = FrontendPropertyInitializerSupport.detailForResolvedMethodBoundary(
+                        propertyInitializerContext,
+                        resolvedMethod
+                );
                 var routeKind = resolvedMethod.isStatic() ? RouteKind.STATIC_METHOD : RouteKind.INSTANCE_METHOD;
                 var callKind = resolvedMethod.isStatic()
                         ? FrontendCallResolutionKind.STATIC_METHOD
                         : FrontendCallResolutionKind.INSTANCE_METHOD;
+                if (boundaryDetail != null) {
+                    yield unsupportedResolvedCallTrace(
+                            stepIndex,
+                            step,
+                            incomingReceiver,
+                            routeKind,
+                            FrontendReceiverKind.INSTANCE,
+                            callKind,
+                            resolvedMethod,
+                            argumentTypes,
+                            finalizeRetryUsed,
+                            boundaryDetail
+                    );
+                }
                 if (resolvedMethod.isStatic()) {
                     emitNote(
                             step,
@@ -1268,6 +1541,46 @@ public final class FrontendChainReductionHelper {
                 );
             }
         };
+    }
+
+    private static @NotNull StepTrace unsupportedResolvedCallTrace(
+            int stepIndex,
+            @NotNull AttributeCallStep step,
+            @NotNull ReceiverState incomingReceiver,
+            @NotNull RouteKind routeKind,
+            @NotNull FrontendReceiverKind receiverKind,
+            @NotNull FrontendCallResolutionKind callKind,
+            @NotNull ScopeResolvedMethod resolvedMethod,
+            @NotNull List<GdType> argumentTypes,
+            boolean finalizeRetryUsed,
+            @NotNull String detailReason
+    ) {
+        return new StepTrace(
+                stepIndex,
+                step,
+                StepKind.CALL,
+                routeKind,
+                incomingReceiver,
+                Status.UNSUPPORTED,
+                ReceiverState.unsupportedFrom(
+                        ReceiverState.resolvedInstance(resolvedMethod.returnType()),
+                        detailReason
+                ),
+                null,
+                null,
+                FrontendResolvedCall.unsupported(
+                        step.name(),
+                        callKind,
+                        receiverKind,
+                        resolvedMethod.ownerKind(),
+                        incomingReceiver.receiverType(),
+                        argumentTypes,
+                        resolvedMethod.function(),
+                        detailReason
+                ),
+                finalizeRetryUsed,
+                detailReason
+        );
     }
 
     private static @NotNull StepTrace resolvedCallTrace(
@@ -1801,6 +2114,7 @@ public final class FrontendChainReductionHelper {
                         memberName,
                         staticOnly ? FrontendBindingKind.STATIC_METHOD : FrontendBindingKind.METHOD,
                         staticOnly ? RouteKind.STATIC_METHOD : RouteKind.INSTANCE_METHOD,
+                        current,
                         ownerKind,
                         List.copyOf(ownerMethods)
                 );
@@ -2112,6 +2426,7 @@ public final class FrontendChainReductionHelper {
             @NotNull String memberName,
             @NotNull FrontendBindingKind bindingKind,
             @NotNull RouteKind routeKind,
+            @NotNull ClassDef ownerClass,
             @NotNull ScopeOwnerKind ownerKind,
             @NotNull List<? extends FunctionDef> declarationSite
     ) {
@@ -2119,6 +2434,7 @@ public final class FrontendChainReductionHelper {
             Objects.requireNonNull(memberName, "memberName must not be null");
             Objects.requireNonNull(bindingKind, "bindingKind must not be null");
             Objects.requireNonNull(routeKind, "routeKind must not be null");
+            Objects.requireNonNull(ownerClass, "ownerClass must not be null");
             Objects.requireNonNull(ownerKind, "ownerKind must not be null");
             declarationSite = List.copyOf(declarationSite);
         }

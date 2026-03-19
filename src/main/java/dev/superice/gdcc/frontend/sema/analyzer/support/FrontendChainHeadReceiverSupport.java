@@ -80,6 +80,7 @@ public final class FrontendChainHeadReceiverSupport {
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull ResolveRestriction currentRestriction;
     private final boolean staticContext;
+    private final @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext;
     private final @NotNull NestedAttributeReceiverResolver nestedAttributeReceiverResolver;
     private final @NotNull FallbackExpressionReceiverResolver fallbackExpressionReceiverResolver;
 
@@ -100,10 +101,31 @@ public final class FrontendChainHeadReceiverSupport {
             @NotNull NestedAttributeReceiverResolver nestedAttributeReceiverResolver,
             @NotNull FallbackExpressionReceiverResolver fallbackExpressionReceiverResolver
     ) {
+        this(
+                analysisData,
+                scopesByAst,
+                currentRestriction,
+                staticContext,
+                null,
+                nestedAttributeReceiverResolver,
+                fallbackExpressionReceiverResolver
+        );
+    }
+
+    public FrontendChainHeadReceiverSupport(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull ResolveRestriction currentRestriction,
+            boolean staticContext,
+            @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext,
+            @NotNull NestedAttributeReceiverResolver nestedAttributeReceiverResolver,
+            @NotNull FallbackExpressionReceiverResolver fallbackExpressionReceiverResolver
+    ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
         this.currentRestriction = Objects.requireNonNull(currentRestriction, "currentRestriction must not be null");
         this.staticContext = staticContext;
+        this.propertyInitializerContext = propertyInitializerContext;
         this.nestedAttributeReceiverResolver = Objects.requireNonNull(
                 nestedAttributeReceiverResolver,
                 "nestedAttributeReceiverResolver must not be null"
@@ -157,6 +179,14 @@ public final class FrontendChainHeadReceiverSupport {
                     identifier,
                     "No published chain-head binding fact is available for identifier '" + identifier.name() + "'"
             );
+        }
+        var propertyInitializerBoundary = FrontendPropertyInitializerSupport.detailForBindingBoundary(
+                propertyInitializerContext,
+                binding.kind(),
+                identifier.name()
+        );
+        if (propertyInitializerBoundary != null) {
+            return propertyInitializerBoundaryReceiver(propertyInitializerBoundary);
         }
         return switch (binding.kind()) {
             case TYPE_META -> resolveTypeMetaReceiver(identifier);
@@ -295,6 +325,9 @@ public final class FrontendChainHeadReceiverSupport {
     /// also centralizes the static-context policy: when the caller says the current context is
     /// static, the same receiver is preserved but wrapped as `BLOCKED`.
     public @NotNull FrontendChainReductionHelper.ReceiverState resolveSelfReceiver(@NotNull Node selfNode) {
+        if (propertyInitializerContext != null) {
+            return propertyInitializerBoundaryReceiver(FrontendPropertyInitializerSupport.selfBoundaryDetail());
+        }
         var classScope = findEnclosingClassScope(scopesByAst.get(Objects.requireNonNull(selfNode, "selfNode must not be null")));
         if (classScope == null) {
             return new FrontendChainReductionHelper.ReceiverState(
@@ -315,6 +348,18 @@ public final class FrontendChainHeadReceiverSupport {
             );
         }
         return resolvedSelf;
+    }
+
+    private @NotNull FrontendChainReductionHelper.ReceiverState propertyInitializerBoundaryReceiver(
+            @NotNull String detailReason
+    ) {
+        return new FrontendChainReductionHelper.ReceiverState(
+                FrontendChainReductionHelper.Status.BLOCKED,
+                FrontendReceiverKind.UNKNOWN,
+                null,
+                null,
+                Objects.requireNonNull(detailReason, "detailReason must not be null")
+        );
     }
 
     /// Resolves the local type rule for a literal expression.

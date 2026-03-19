@@ -127,6 +127,7 @@ public class FrontendTopBindingAnalyzer {
         private int supportedPropertyInitializerDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
+        private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext;
 
         private AstWalkerTopBindingBinder(
                 @NotNull Path sourcePath,
@@ -426,13 +427,19 @@ public class FrontendTopBindingAnalyzer {
             );
             var previousRestriction = currentRestriction;
             var previousStaticContext = currentStaticContext;
+            var previousPropertyInitializerContext = currentPropertyInitializerContext;
             currentRestriction = FrontendPropertyInitializerSupport.restrictionFor(variableDeclaration);
             currentStaticContext = variableDeclaration.isStatic();
+            currentPropertyInitializerContext = FrontendPropertyInitializerSupport.contextFor(
+                    scopesByAst,
+                    variableDeclaration
+            );
             supportedPropertyInitializerDepth++;
             try {
                 walkValueExpression(initializer);
             } finally {
                 supportedPropertyInitializerDepth--;
+                currentPropertyInitializerContext = previousPropertyInitializerContext;
                 currentRestriction = previousRestriction;
                 currentStaticContext = previousStaticContext;
             }
@@ -560,6 +567,13 @@ public class FrontendTopBindingAnalyzer {
 
         private void visitSelf(@NotNull SelfExpression selfExpression) {
             publishBinding(selfExpression, "self", FrontendBindingKind.SELF, null);
+            if (supportedPropertyInitializerDepth > 0) {
+                reportPropertyInitializerUnsupportedBoundary(
+                        selfExpression,
+                        FrontendPropertyInitializerSupport.unsupportedSelfMessage()
+                );
+                return;
+            }
             if (currentStaticContext) {
                 reportBindingError(
                         selfExpression,
@@ -578,9 +592,16 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private void bindValueIdentifier(@NotNull IdentifierExpression identifierExpression) {
+            if (trySealPropertyInitializerValueBoundary(identifierExpression)) {
+                return;
+            }
             var valueResolution = resolveVisibleValue(identifierExpression);
             if (valueResolution.status() != FrontendVisibleValueStatus.NOT_FOUND) {
                 publishValueResolution(identifierExpression, valueResolution);
+                return;
+            }
+
+            if (trySealPropertyInitializerFunctionBoundary(identifierExpression)) {
                 return;
             }
 
@@ -709,6 +730,10 @@ public class FrontendTopBindingAnalyzer {
                 return;
             }
 
+            if (trySealPropertyInitializerValueBoundary(identifierExpression)) {
+                return;
+            }
+
             var valueResolution = resolveVisibleValue(identifierExpression);
             if (valueResolution.status() == FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED) {
                 reportDeferredUnsupported(
@@ -734,6 +759,9 @@ public class FrontendTopBindingAnalyzer {
                     || valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
                 publishValueResolution(identifierExpression, valueResolution);
                 reportLocalTypeMetaShadowing(identifierExpression, valueResolution.visibleValue(), typeMetaResult);
+                return;
+            }
+            if (trySealPropertyInitializerFunctionBoundary(identifierExpression)) {
                 return;
             }
 
@@ -804,12 +832,15 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private void bindBareCalleeIdentifier(@NotNull IdentifierExpression identifierExpression) {
+            if (trySealPropertyInitializerFunctionBoundary(identifierExpression)) {
+                return;
+            }
+
             var currentScope = findCurrentScope(identifierExpression);
             if (currentScope == null) {
                 reportMissingScopeUnsupported(identifierExpression, identifierExpression.name());
                 return;
             }
-
             var functionResult = currentScope.resolveFunctions(identifierExpression.name(), currentRestriction);
             switch (functionResult.status()) {
                 case FOUND_ALLOWED ->
@@ -933,6 +964,53 @@ public class FrontendTopBindingAnalyzer {
             return scopesByAst.get(Objects.requireNonNull(identifierExpression, "identifierExpression must not be null"));
         }
 
+        private boolean trySealPropertyInitializerValueBoundary(@NotNull IdentifierExpression identifierExpression) {
+            if (supportedPropertyInitializerDepth <= 0) {
+                return false;
+            }
+            var sameClassValueKind = FrontendPropertyInitializerSupport.sameClassNonStaticValueKind(
+                    currentPropertyInitializerContext,
+                    identifierExpression.name()
+            );
+            if (sameClassValueKind == null) {
+                return false;
+            }
+            publishBinding(
+                    identifierExpression,
+                    identifierExpression.name(),
+                    toBindingKind(sameClassValueKind),
+                    null
+            );
+            reportPropertyInitializerUnsupportedBoundary(
+                    identifierExpression,
+                    FrontendPropertyInitializerSupport.unsupportedValueMessage(
+                            identifierExpression.name(),
+                            sameClassValueKind
+                    )
+            );
+            return true;
+        }
+
+        private boolean trySealPropertyInitializerFunctionBoundary(@NotNull IdentifierExpression identifierExpression) {
+            if (supportedPropertyInitializerDepth <= 0 || !FrontendPropertyInitializerSupport.hasSameClassNonStaticFunction(
+                    currentPropertyInitializerContext,
+                    identifierExpression.name()
+            )) {
+                return false;
+            }
+            publishBinding(
+                    identifierExpression,
+                    identifierExpression.name(),
+                    FrontendBindingKind.METHOD,
+                    null
+            );
+            reportPropertyInitializerUnsupportedBoundary(
+                    identifierExpression,
+                    FrontendPropertyInitializerSupport.unsupportedMethodMessage(identifierExpression.name())
+            );
+            return true;
+        }
+
         private void reportMissingScopeUnsupported(
                 @NotNull IdentifierExpression identifierExpression,
                 @NotNull String symbolName
@@ -980,6 +1058,18 @@ public class FrontendTopBindingAnalyzer {
         private void reportBindingError(@NotNull Node useSite, @NotNull String message) {
             diagnosticManager.error(
                     BINDING_CATEGORY,
+                    Objects.requireNonNull(message, "message must not be null"),
+                    sourcePath,
+                    FrontendRange.fromAstRange(useSite.range())
+            );
+        }
+
+        private void reportPropertyInitializerUnsupportedBoundary(
+                @NotNull Node useSite,
+                @NotNull String message
+        ) {
+            diagnosticManager.error(
+                    UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
                     Objects.requireNonNull(message, "message must not be null"),
                     sourcePath,
                     FrontendRange.fromAstRange(useSite.range())
