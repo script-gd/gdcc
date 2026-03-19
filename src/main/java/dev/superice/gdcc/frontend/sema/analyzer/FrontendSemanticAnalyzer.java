@@ -12,7 +12,7 @@ import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework wires six stable frontend phases into one shared
+/// The current framework wires seven stable frontend phases into one shared
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
@@ -20,6 +20,7 @@ import java.util.List;
 /// - top-binding publication for symbol-category resolution
 /// - chain member/call publication
 /// - expression-type publication
+/// - diagnostics-only type-check traversal
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
@@ -28,6 +29,7 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
     private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
     private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
+    private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
 
     public FrontendSemanticAnalyzer() {
         this(
@@ -36,7 +38,8 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendVariableAnalyzer(),
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer()
+                new FrontendExprTypeAnalyzer(),
+                new FrontendTypeCheckAnalyzer()
         );
     }
 
@@ -47,7 +50,8 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendVariableAnalyzer(),
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer()
+                new FrontendExprTypeAnalyzer(),
+                new FrontendTypeCheckAnalyzer()
         );
     }
 
@@ -61,7 +65,8 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendVariableAnalyzer(),
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer()
+                new FrontendExprTypeAnalyzer(),
+                new FrontendTypeCheckAnalyzer()
         );
     }
 
@@ -76,7 +81,8 @@ public final class FrontendSemanticAnalyzer {
                 variableAnalyzer,
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer()
+                new FrontendExprTypeAnalyzer(),
+                new FrontendTypeCheckAnalyzer()
         );
     }
 
@@ -92,7 +98,8 @@ public final class FrontendSemanticAnalyzer {
                 variableAnalyzer,
                 topBindingAnalyzer,
                 new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer()
+                new FrontendExprTypeAnalyzer(),
+                new FrontendTypeCheckAnalyzer()
         );
     }
 
@@ -109,7 +116,8 @@ public final class FrontendSemanticAnalyzer {
                 variableAnalyzer,
                 topBindingAnalyzer,
                 chainBindingAnalyzer,
-                new FrontendExprTypeAnalyzer()
+                new FrontendExprTypeAnalyzer(),
+                new FrontendTypeCheckAnalyzer()
         );
     }
 
@@ -121,12 +129,33 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
             @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                chainBindingAnalyzer,
+                exprTypeAnalyzer,
+                new FrontendTypeCheckAnalyzer()
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
+            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
         this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
         this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
         this.exprTypeAnalyzer = Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
+        this.typeCheckAnalyzer = Objects.requireNonNull(typeCheckAnalyzer, "typeCheckAnalyzer must not be null");
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -186,6 +215,11 @@ public final class FrontendSemanticAnalyzer {
         // Expression typing consumes the published symbol/member/call facts and releases the final
         // expression-type side table without reopening the earlier chain-binding phase.
         exprTypeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Type checking is diagnostics-only for now: it consumes the published frontend facts but
+        // must not introduce new side tables or rewrite earlier publication boundaries.
+        typeCheckAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
     }

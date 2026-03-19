@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施计划（T0-T0.5 已完成并验收，T1-T7 尚未落地）
+- 状态：实施计划（T0-T1 已完成并验收，T2-T7 尚未落地）
 - 更新时间：2026-03-19
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -72,8 +72,9 @@
 4. top binding
 5. chain binding
 6. expr typing
+7. type check
 
-这意味着新的 `FrontendTypeCheckAnalyzer` 若落地，应消费的稳定事实已经是：
+这意味着当前 `FrontendTypeCheckAnalyzer` 消费的稳定事实已经是：
 
 - skeleton 中冻结的 property / function metadata
 - `scopesByAst()`
@@ -454,6 +455,19 @@ property initializer 的 restriction 固定按 property staticness 选择：
   - 当前 restriction/static-context
   - executable-body 深度
   - property initializer 临时上下文
+
+**实施状态**
+
+- `T1.1` `FrontendTypeCheckAnalyzer` 骨架与最小上下文 walker：已完成
+- `T1.2` `FrontendSemanticAnalyzer` phase 接线与可注入构造重载：已完成
+- `T1.3` T1 单元测试与回归验收：已完成
+- 当前已通过的 targeted tests：
+  - `FrontendTypeCheckAnalyzerTest`
+  - `FrontendSemanticAnalyzerFrameworkTest`
+  - `FrontendExprTypeAnalyzerTest`
+  - `FrontendTopBindingAnalyzerTest`
+  - `FrontendChainBindingAnalyzerTest`
+  - `FrontendAnalysisDataTest`
 
 **验收标准**
 
