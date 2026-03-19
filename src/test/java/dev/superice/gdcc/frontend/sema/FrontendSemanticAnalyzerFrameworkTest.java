@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
@@ -250,25 +251,19 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         .count()
         );
         assertEquals(
-                3,
+                1,
                 result.diagnostics().asList().stream()
                         .filter(diagnostic -> diagnostic.category().equals("sema.deferred_chain_resolution"))
                         .count()
         );
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_binding_subtree")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && diagnostic.message().contains("parameter default")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.unsupported_binding_subtree")
-                        && diagnostic.message().contains("lambda subtree")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.deferred_chain_resolution")
-                        && diagnostic.message().contains("parameter default")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.deferred_chain_resolution")
+                        && diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && diagnostic.message().contains("lambda subtree")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->

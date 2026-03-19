@@ -394,13 +394,14 @@ writable / compatibility 规则为：
   - 保留 winner，并由 owner 发 restriction diagnostic
 - `DEFERRED`
   - 优先锚定到第一个无法继续 exact 解析的 suffix root
-  - 同一条 deferred suffix 当前只发 1 条恢复诊断
+  - 同一条 deferred suffix 当前只发 1 条恢复 warning
 - `DYNAMIC`
   - 后续若继续分析，只能沿 runtime-dynamic / `Variant` 路由传播
 - `FAILED`
   - 阻断后续 exact suffix，不再伪装成普通 miss
 - `UNSUPPORTED`
   - 优先锚定 feature-boundary root，一次性封口
+  - 当前 unsupported feature boundary 统一发 error，而不是 warning
 
 expr-owned diagnostics 的硬约束是：
 

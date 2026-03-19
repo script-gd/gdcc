@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
@@ -407,6 +408,9 @@ class FrontendExprTypeAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
         assertEquals(2, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+        ));
         assertTrue(unsupportedDiagnostics.stream().allMatch(
                 diagnostic -> diagnostic.message().contains("Direct invocation of callable values")
         ));
@@ -797,6 +801,7 @@ class FrontendExprTypeAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("Compound assignment operator"));
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
@@ -903,6 +908,7 @@ class FrontendExprTypeAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("keyed access metadata"));
 
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
@@ -956,6 +962,7 @@ class FrontendExprTypeAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("Direct invocation of callable values"));
     }
 
@@ -1249,7 +1256,7 @@ class FrontendExprTypeAnalyzerTest {
 
         var deferredInitializerType = analyzed.analysisData().expressionTypes().get(deferredDeclaration.value());
         assertNotNull(deferredInitializerType);
-        assertEquals(FrontendExpressionTypeStatus.DEFERRED, deferredInitializerType.status());
+        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, deferredInitializerType.status());
 
         var unsupportedInitializerType = analyzed.analysisData().expressionTypes().get(unsupportedDeclaration.value());
         assertNotNull(unsupportedInitializerType);
@@ -1266,7 +1273,7 @@ class FrontendExprTypeAnalyzerTest {
                         analyzed,
                         deferredUse,
                         deferredDeclaration,
-                        FrontendExpressionTypeStatus.DEFERRED
+                        FrontendExpressionTypeStatus.UNSUPPORTED
                 )
         );
         assertSame(

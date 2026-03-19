@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -314,6 +315,7 @@ class FrontendChainBindingAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
         assertTrue(!unsupportedDiagnostics.getFirst().message().isBlank());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
@@ -379,6 +381,7 @@ class FrontendChainBindingAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("keyed access metadata"));
     }
 
@@ -749,6 +752,7 @@ class FrontendChainBindingAnalyzerTest {
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route");
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("Static load route on GDCC class"));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
     }

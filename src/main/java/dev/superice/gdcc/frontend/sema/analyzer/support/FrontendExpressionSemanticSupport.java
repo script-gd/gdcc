@@ -238,13 +238,15 @@ public final class FrontendExpressionSemanticSupport {
             boolean resolveNestedChildren,
             boolean finalizeWindow
     ) {
-        return resolveExplicitDeferredExpressionType(
-                lambdaExpression,
-                nestedResolver,
-                resolveNestedChildren,
-                "Lambda expression typing is deferred by the current frontend expression-typing contract",
-                finalizeWindow
-        );
+        var dependencyIssue = resolveNestedChildren
+                ? firstNestedDependencyIssue(lambdaExpression, nestedResolver, finalizeWindow)
+                : null;
+        if (dependencyIssue != null) {
+            return propagated(dependencyIssue);
+        }
+        return rootOutcome(FrontendExpressionType.unsupported(
+                "Lambda expression typing is not supported by the current frontend expression-typing contract"
+        ));
     }
 
     /// Exhaustive routing for the remaining explicitly deferred expression kinds.

@@ -42,8 +42,9 @@ import java.util.Objects;
 /// - require skeleton, diagnostics, and top-level source scopes to be published first
 /// - write function/constructor parameters into `CallableScope`
 /// - write supported ordinary locals into `BlockScope`
-/// - keep lambda / `for` / `match` / block-local `const` inventory deferred
-/// - emit explicit recovery diagnostics instead of letting deferred inventory sources fail silently
+/// - keep lambda / `for` / `match` / block-local `const` inventory outside the current support
+///   boundary
+/// - emit explicit recovery diagnostics instead of letting unsupported inventory sources fail silently
 public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
     private static final @NotNull String UNSUPPORTED_PARAMETER_DEFAULT_VALUE_CATEGORY =
@@ -89,7 +90,7 @@ public class FrontendVariableAnalyzer {
     /// ASTWalker-backed declaration-directed binder used by the current variable analyzer.
     ///
     /// `ASTWalker` is used here only as the typed dispatch mechanism. The analyzer still keeps
-    /// explicit subtree control so deferred domains remain sealed:
+    /// explicit subtree control so unsupported domains remain sealed:
     /// - only source/class statement lists and supported executable blocks are descended into
     /// - function/constructor parameters are bound at the callable boundary
     /// - ordinary locals are bound only while the walker is inside a supported executable block
@@ -100,7 +101,7 @@ public class FrontendVariableAnalyzer {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
-        private final @NotNull DeferredVariableBoundaryReporter deferredBoundaryReporter;
+        private final @NotNull UnsupportedVariableBoundaryReporter unsupportedBoundaryReporter;
         /// Counts how many supported executable-block boundaries the walker is currently inside.
         ///
         /// The counter acts as a narrow capability flag rather than a generic nesting metric:
@@ -123,7 +124,7 @@ public class FrontendVariableAnalyzer {
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager");
             this.astWalker = new ASTWalker(this);
-            deferredBoundaryReporter = new DeferredVariableBoundaryReporter(sourcePath, diagnosticManager);
+            unsupportedBoundaryReporter = new UnsupportedVariableBoundaryReporter(sourcePath, diagnosticManager);
         }
 
         private void walk(@NotNull SourceFile sourceFile) {
@@ -229,7 +230,7 @@ public class FrontendVariableAnalyzer {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.CONST) {
-                warnIgnoredBlockLocalConst(variableDeclaration);
+                reportUnsupportedBlockLocalConst(variableDeclaration);
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() != DeclarationKind.VAR) {
@@ -241,21 +242,22 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
-            // Deferred-boundary warnings are emitted by `DeferredVariableBoundaryReporter`, which
-            // can scan expression subtrees without changing this binder's declaration-only walk.
+            // Unsupported feature-boundary diagnostics are emitted by
+            // `UnsupportedVariableBoundaryReporter`, which can scan expression subtrees without
+            // changing this binder's declaration-only walk.
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
-            // The binder itself still treats `for` as a hard deferred boundary; explicit user
+            // The binder itself still treats `for` as an unsupported boundary; explicit user
             // diagnostics are produced by the dedicated boundary reporter.
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            // The binder itself still treats `match` as a hard deferred boundary; explicit user
+            // The binder itself still treats `match` as an unsupported boundary; explicit user
             // diagnostics are produced by the dedicated boundary reporter.
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -274,7 +276,7 @@ public class FrontendVariableAnalyzer {
             if (isNotPublished(body)) {
                 return;
             }
-            deferredBoundaryReporter.report(body);
+            unsupportedBoundaryReporter.report(body);
             walkSupportedExecutableBlock(body);
         }
 
@@ -314,7 +316,7 @@ public class FrontendVariableAnalyzer {
 
         private void bindParameter(@NotNull Parameter parameter) {
             var parameterName = parameter.name().trim();
-            warnIgnoredDefaultValue(parameter);
+            reportUnsupportedDefaultValue(parameter);
 
             var targetScope = scopesByAst.get(parameter);
             if (targetScope == null) {
@@ -443,24 +445,24 @@ public class FrontendVariableAnalyzer {
             return null;
         }
 
-        private void warnIgnoredDefaultValue(@NotNull Parameter parameter) {
+        private void reportUnsupportedDefaultValue(@NotNull Parameter parameter) {
             if (parameter.defaultValue() == null) {
                 return;
             }
-            diagnosticManager.warning(
+            diagnosticManager.error(
                     UNSUPPORTED_PARAMETER_DEFAULT_VALUE_CATEGORY,
                     "Parameter default value for '" + parameter.name().trim()
-                            + "' is outside the current frontend body-typing contract; "
+                            + "' is not supported by the current frontend body-typing contract; "
                             + "the current variable analyzer ignores the default value expression",
                     sourcePath,
                     FrontendRange.fromAstRange(parameter.defaultValue().range())
             );
         }
 
-        private void warnIgnoredBlockLocalConst(@NotNull VariableDeclaration variableDeclaration) {
-            diagnosticManager.warning(
+        private void reportUnsupportedBlockLocalConst(@NotNull VariableDeclaration variableDeclaration) {
+            diagnosticManager.error(
                     UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY,
-                    "Variable analysis currently defers block-local `const` declarations; constant '"
+                    "Variable analysis does not support block-local `const` declarations yet; constant '"
                             + variableDeclaration.name().trim()
                             + "' is not bound into the current executable scope yet",
                     sourcePath,
@@ -485,18 +487,18 @@ public class FrontendVariableAnalyzer {
         }
     }
 
-    /// Scans supported callable bodies for deferred variable-inventory boundaries that the current
-    /// binder intentionally does not enter.
+    /// Scans supported callable bodies for unsupported variable-inventory boundaries that the
+    /// current binder intentionally does not enter.
     ///
     /// This reporter exists because the binder itself is declaration-directed and therefore skips
     /// arbitrary expression children. Without a separate scan, lambdas nested inside expressions
     /// such as local initializers or return values would remain completely silent.
-    private static final class DeferredVariableBoundaryReporter implements ASTNodeHandler {
+    private static final class UnsupportedVariableBoundaryReporter implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
 
-        private DeferredVariableBoundaryReporter(
+        private UnsupportedVariableBoundaryReporter(
                 @NotNull Path sourcePath,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
@@ -535,9 +537,9 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
-            reportDeferredBoundary(
+            reportUnsupportedBoundary(
                     lambdaExpression,
-                    "Variable analysis currently defers lambda subtrees; parameters, default values, locals, "
+                    "Variable analysis does not support lambda subtrees yet; parameters, default values, locals, "
                             + "and captures inside this lambda are not bound yet"
             );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -545,9 +547,9 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
-            reportDeferredBoundary(
+            reportUnsupportedBoundary(
                     forStatement,
-                    "Variable analysis currently defers `for` subtrees; the loop iterator binding and "
+                    "Variable analysis does not support `for` subtrees yet; the loop iterator binding and "
                             + "locals declared inside this loop body are not bound yet"
             );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -555,16 +557,16 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            reportDeferredBoundary(
+            reportUnsupportedBoundary(
                     matchStatement,
-                    "Variable analysis currently defers `match` subtrees; pattern bindings and locals "
+                    "Variable analysis does not support `match` subtrees yet; pattern bindings and locals "
                             + "declared inside match sections are not bound yet"
             );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        private void reportDeferredBoundary(@NotNull Node node, @NotNull String message) {
-            diagnosticManager.warning(
+        private void reportUnsupportedBoundary(@NotNull Node node, @NotNull String message) {
+            diagnosticManager.error(
                     UNSUPPORTED_VARIABLE_INVENTORY_SUBTREE_CATEGORY,
                     message,
                     sourcePath,

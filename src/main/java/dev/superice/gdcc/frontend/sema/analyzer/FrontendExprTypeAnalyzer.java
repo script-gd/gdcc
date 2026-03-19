@@ -677,7 +677,7 @@ public class FrontendExprTypeAnalyzer {
             if (reportedUnsupportedRoots.putIfAbsent(root, Boolean.TRUE) != null) {
                 return;
             }
-            diagnosticManager.warning(
+            diagnosticManager.error(
                     UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY,
                     Objects.requireNonNull(detailReason, "detailReason must not be null"),
                     sourcePath,

@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.scope.ClassScope;
@@ -983,6 +984,9 @@ class FrontendTopBindingAnalyzerTest {
 
         var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
         assertEquals(5, unsupportedDiagnostics.size());
+        assertTrue(unsupportedDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+        ));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("parameter default")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("lambda subtree")));
         assertTrue(unsupportedDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("block-local const initializer")));
@@ -1018,6 +1022,7 @@ class FrontendTopBindingAnalyzerTest {
         );
         var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("skipped subtree"));
         assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
     }
@@ -1051,6 +1056,7 @@ class FrontendTopBindingAnalyzerTest {
         assertBinding(preparedInput.analysisData(), printedValues.get(2), FrontendBindingKind.PARAMETER);
         var unsupportedDiagnostics = unsupportedBindingDiagnostics(preparedInput.diagnosticManager());
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("skipped subtree"));
         assertTrue(bindingDiagnostics(preparedInput.diagnosticManager()).isEmpty());
     }
@@ -1118,6 +1124,7 @@ class FrontendTopBindingAnalyzerTest {
                 .filter(diagnostic -> diagnostic.category().equals("sema.unsupported_binding_subtree"))
                 .toList();
         assertEquals(1, unsupportedDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.WARNING, unsupportedDiagnostics.getFirst().severity());
         assertTrue(unsupportedDiagnostics.getFirst().message().contains("value"));
     }
 

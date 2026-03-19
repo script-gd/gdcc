@@ -108,7 +108,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_supported_locals.gd", """
                 class_name VariablePhaseBoundary
                 extends Node
-
+                
                 func ping(value: int, alias):
                     var local := value
                     if value > 0:
@@ -121,7 +121,7 @@ class FrontendVariableAnalyzerTest {
                         var loop_local := value
                         break
                     return alias
-
+                
                 func _init(seed: int, mirror):
                     var ctor_local := seed
                     pass
@@ -250,7 +250,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase3_parameter_default.gd", """
                 class_name ParameterDefaultWarning
                 extends Node
-
+                
                 func ping(value, alias = value):
                     pass
                 """);
@@ -267,17 +267,17 @@ class FrontendVariableAnalyzerTest {
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var warning = newDiagnostics.getFirst();
+        var error = newDiagnostics.getFirst();
 
         assertEquals(1, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
-        assertEquals("sema.unsupported_parameter_default_value", warning.category());
-        assertTrue(warning.message().contains("FrontendExprTypeAnalyzer"));
-        assertTrue(warning.message().contains("ignores the default value expression"));
-        assertEquals(phaseInput.unit().path(), warning.sourcePath());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.unsupported_parameter_default_value", error.category());
+        assertTrue(error.message().contains("not supported"));
+        assertTrue(error.message().contains("ignores the default value expression"));
+        assertEquals(phaseInput.unit().path(), error.sourcePath());
         assertEquals(
                 FrontendRange.fromAstRange(pingFunction.parameters().getLast().defaultValue().range()),
-                warning.range()
+                error.range()
         );
 
         var valueBinding = pingScope.resolveValue("value");
@@ -293,7 +293,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_lambda_deferred.gd", """
                 class_name LambdaVariableDeferred
                 extends Node
-
+                
                 func ping(seed: int):
                     var builder := func(item: int, fallback = item):
                         var lambda_local := fallback
@@ -321,15 +321,15 @@ class FrontendVariableAnalyzerTest {
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var warning = newDiagnostics.getFirst();
+        var error = newDiagnostics.getFirst();
 
         assertEquals(1, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", warning.category());
-        assertTrue(warning.message().contains("defers lambda subtrees"));
-        assertTrue(warning.message().contains("parameters, default values, locals, and captures"));
-        assertEquals(phaseInput.unit().path(), warning.sourcePath());
-        assertEquals(FrontendRange.fromAstRange(builderLambda.range()), warning.range());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", error.category());
+        assertTrue(error.message().contains("does not support lambda subtrees"));
+        assertTrue(error.message().contains("parameters, default values, locals, and captures"));
+        assertEquals(phaseInput.unit().path(), error.sourcePath());
+        assertEquals(FrontendRange.fromAstRange(builderLambda.range()), error.range());
         assertNotNull(assertInstanceOf(
                 CallableScope.class,
                 phaseInput.analysisData().scopesByAst().get(pingFunction)
@@ -345,7 +345,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_deferred_boundaries.gd", """
                 class_name DeferredBoundaries
                 extends Node
-
+                
                 func ping(value: int):
                     var plain_local := value
                     for item: int in [value, value + 1]:
@@ -394,19 +394,19 @@ class FrontendVariableAnalyzerTest {
         var constWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(answerConst.range()));
 
         assertEquals(3, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, forWarning.severity());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, forWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", forWarning.category());
-        assertTrue(forWarning.message().contains("defers `for` subtrees"));
+        assertTrue(forWarning.message().contains("does not support `for` subtrees"));
         assertTrue(forWarning.message().contains("loop iterator binding"));
         assertEquals(phaseInput.unit().path(), forWarning.sourcePath());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, matchWarning.severity());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, matchWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", matchWarning.category());
-        assertTrue(matchWarning.message().contains("defers `match` subtrees"));
+        assertTrue(matchWarning.message().contains("does not support `match` subtrees"));
         assertTrue(matchWarning.message().contains("pattern bindings"));
         assertEquals(phaseInput.unit().path(), matchWarning.sourcePath());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, constWarning.severity());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, constWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", constWarning.category());
-        assertTrue(constWarning.message().contains("defers block-local `const` declarations"));
+        assertTrue(constWarning.message().contains("does not support block-local `const` declarations"));
         assertTrue(constWarning.message().contains("constant 'answer'"));
         assertEquals(phaseInput.unit().path(), constWarning.sourcePath());
         var plainLocalBinding = pingBodyScope.resolveValueHere("plain_local");
@@ -424,7 +424,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_lambda_return_expression.gd", """
                 class_name LambdaReturnExpression
                 extends Node
-
+                
                 func ping(seed: int):
                     return func():
                         return seed
@@ -443,14 +443,14 @@ class FrontendVariableAnalyzerTest {
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var warning = newDiagnostics.getFirst();
+        var error = newDiagnostics.getFirst();
 
         assertEquals(1, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", warning.category());
-        assertTrue(warning.message().contains("defers lambda subtrees"));
-        assertEquals(phaseInput.unit().path(), warning.sourcePath());
-        assertEquals(FrontendRange.fromAstRange(returnedLambda.range()), warning.range());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
+        assertEquals("sema.unsupported_variable_inventory_subtree", error.category());
+        assertTrue(error.message().contains("does not support lambda subtrees"));
+        assertEquals(phaseInput.unit().path(), error.sourcePath());
+        assertEquals(FrontendRange.fromAstRange(returnedLambda.range()), error.range());
     }
 
     @Test
@@ -458,10 +458,10 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_class_property_boundary.gd", """
                 class_name ClassPropertyBoundary
                 extends Node
-
+                
                 var hp: int = 1
                 const MAX_HP = 99
-
+                
                 func ping():
                     var local := hp
                 """);
@@ -487,7 +487,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase3_unknown_parameter_type.gd", """
                 class_name UnknownParameterType
                 extends Node
-
+                
                 func ping(value: MissingType):
                     pass
                 """);
@@ -525,7 +525,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_unknown_local_type.gd", """
                 class_name UnknownLocalType
                 extends Node
-
+                
                 func ping():
                     var missing: MissingType = null
                 """);
@@ -570,7 +570,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase3_duplicate_parameter.gd", """
                 class_name DuplicateParameterBinding
                 extends Node
-
+                
                 func ping(value: int, value):
                     pass
                 """);
@@ -604,7 +604,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_duplicate_local.gd", """
                 class_name DuplicateLocalBinding
                 extends Node
-
+                
                 func ping():
                     var value: int = 1
                     var value := 2
@@ -645,7 +645,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase3_missing_parameter_scope.gd", """
                 class_name MissingParameterScope
                 extends Node
-
+                
                 func ping(value: int, alias: int):
                     pass
                 """);
@@ -672,7 +672,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_missing_local_scope.gd", """
                 class_name MissingLocalScope
                 extends Node
-
+                
                 func ping():
                     var value := 1
                     var alias := 2
@@ -704,7 +704,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase3_parameter_scope_mismatch.gd", """
                 class_name ParameterScopeMismatch
                 extends Node
-
+                
                 func ping(value: int, alias: int):
                     pass
                 """);
@@ -740,7 +740,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_local_scope_mismatch.gd", """
                 class_name LocalScopeMismatch
                 extends Node
-
+                
                 func ping():
                     var value := 1
                     var alias := 2
@@ -781,7 +781,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_local_shadows_parameter.gd", """
                 class_name LocalShadowsParameter
                 extends Node
-
+                
                 func ping(value: int):
                     if value > 0:
                         var value := 1
@@ -815,7 +815,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_local_shadows_outer_local.gd", """
                 class_name LocalShadowsOuterLocal
                 extends Node
-
+                
                 func ping():
                     var value := 1
                     if value > 0:
@@ -854,11 +854,11 @@ class FrontendVariableAnalyzerTest {
         var unit = parserService.parseUnit(Path.of("tmp", "phase3_skipped_inner_class.gd"), """
                 class_name SkippedInnerClass
                 extends Node
-
+                
                 class Broken:
                     func lost(arg: int):
                         pass
-
+                
                 func good(value: int):
                     var keep := value
                 """, diagnostics);

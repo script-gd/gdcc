@@ -4,7 +4,7 @@
 
 - frontend 对普通源码错误必须优先通过 `DiagnosticManager` 发诊断，不要把异常当成常规控制流。
 - 当某个 AST 节点树已经无法稳定产生产物时，当前 phase 必须跳过该节点树，并继续处理同一 module 中其他仍可恢复的节点树。
-- 对 deferred / skipped subtree 的 warning，优先锚定到被跳过子树的根节点；若无法识别更大的恢复根，才允许退化到节点自身这一最小 skipped root。
+- 对 deferred subtree 的 warning 与 unsupported feature boundary 的 error，都应优先锚定到被跳过子树的根节点；若无法识别更大的恢复根，才允许退化到节点自身这一最小 skipped root。
 - 只有 programmer error、共享 side-table 破坏、协议不变量失真等不可恢复 guard rail，才允许抛异常；`FrontendSemanticException` 不作为普通源码错误的主路径。
 
 ## 诊断约定
@@ -12,6 +12,7 @@
 - parser 必须保持 tolerant：`gdparser` lowering diagnostics 映射为 `parse.lowering`，parser/runtime 失败映射为 `parse.internal`，不要把运行时异常直接抛给调用方。
 - skeleton / analyzer / 后续 binder-body phase 对可恢复错误必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
 - 新增 frontend 诊断或恢复路径时，必须同步更新 `diagnostic_manager.md`、相关实现注释和受影响的模块文档，避免代码与文档冲突。
+- 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
 - body phase 的 diagnostic owner 必须保持单一：
   - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
   - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / chain deferred/unsupported boundary

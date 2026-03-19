@@ -66,7 +66,7 @@
 - 为 bare callee identifier 通过 function namespace 发布 symbol category binding
 - 为 qualified static access / call chain 的最外层 chain head 发布 ordinary value 或 `TYPE_META` binding
 - 为 `SelfExpression` 与 `LiteralExpression` 直接发布 binding
-- 对 deferred / skipped subtree 发出显式 `sema.unsupported_binding_subtree`
+- 对 unsupported / skipped subtree 发出显式 `sema.unsupported_binding_subtree`
 - 将 blocked / unknown / shadowing / unsupported-source 情形翻译为 `sema.binding`
 
 ### 1.3 当前不负责
@@ -445,12 +445,13 @@
 
 ### 5.4 root-level 恢复合同
 
-当前 deferred / skipped subtree 的 warning 语义固定为：
+当前 `sema.unsupported_binding_subtree` 的 root-level 恢复语义固定为：
 
-- warning 优先锚定到“被跳过子树的根节点”
-- 同一棵 skipped / deferred subtree 当前只发 1 条 warning
+- 明确 unsupported 的 feature boundary 优先发 root-level error
+- missing-scope / skipped subtree 继续允许发 root-level warning
+- 同一棵 skipped / unsupported subtree 当前只发 1 条边界诊断
 - subtree 内部 use-site 不再逐个降级成 `UNKNOWN`
-- subtree 内部也不再逐个单独补 warning
+- subtree 内部也不再逐个单独补边界诊断
 
 这条 root-level 合同同样适用于：
 
@@ -655,5 +656,5 @@ func ping():
 - explicit receiver 只绑定链头与 step/index arguments，不绑定尾部 segment
 - assignment 左右两侧都会递归进入 binding
 - ordinary local initializer 继续属于支持面
-- parameter default / lambda / `for` / `match` / block-local `const` 当前继续走 deferred warning
+- parameter default / lambda / `for` / `match` / block-local `const` 当前继续走 root-level unsupported error
 - skipped executable subtree 的 warning 当前按 root-level 发布，而不是静默跳过或逐 use-site 降级

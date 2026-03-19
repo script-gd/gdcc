@@ -934,12 +934,7 @@ public class FrontendTopBindingAnalyzer {
             if (reportedUnsupportedRoots.putIfAbsent(subtreeRoot, Boolean.TRUE) != null) {
                 return;
             }
-            diagnosticManager.warning(
-                    UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
-                    "Binding analysis is deferred in " + formatDomain(domain),
-                    sourcePath,
-                    FrontendRange.fromAstRange(subtreeRoot.range())
-            );
+            reportBindingBoundary(subtreeRoot, domain, false, null);
         }
 
         private void reportSkippedSubtree(@Nullable Node subtreeRoot) {
@@ -955,11 +950,43 @@ public class FrontendTopBindingAnalyzer {
                 @Nullable FrontendVisibleValueDeferredBoundary deferredBoundary
         ) {
             var boundary = Objects.requireNonNull(deferredBoundary, "deferredBoundary must not be null");
-            diagnosticManager.warning(
+            reportBindingBoundary(
+                    useSite,
+                    boundary.domain(),
+                    boundary.reason() == FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE,
+                    symbolName
+            );
+        }
+
+        private void reportBindingBoundary(
+                @NotNull Node anchor,
+                @NotNull FrontendVisibleValueDomain domain,
+                boolean skippedRecoveryBoundary,
+                @Nullable String symbolName
+        ) {
+            var formattedDomain = formatDomain(domain);
+            var message = switch (Objects.requireNonNull(domain, "domain must not be null")) {
+                case UNKNOWN_OR_SKIPPED_SUBTREE -> symbolName == null
+                        ? "Binding analysis skipped in " + formattedDomain
+                        : "Binding analysis for '" + symbolName + "' was skipped in " + formattedDomain;
+                default -> symbolName == null
+                        ? "Binding analysis is not supported in " + formattedDomain
+                        : "Binding analysis for '" + symbolName + "' is not supported in " + formattedDomain;
+            };
+            if (domain == FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE || skippedRecoveryBoundary) {
+                diagnosticManager.warning(
+                        UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                        message,
+                        sourcePath,
+                        FrontendRange.fromAstRange(anchor.range())
+                );
+                return;
+            }
+            diagnosticManager.error(
                     UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
-                    "Binding analysis for '" + symbolName + "' is deferred in " + formatDomain(boundary.domain()),
+                    message,
                     sourcePath,
-                    FrontendRange.fromAstRange(useSite.range())
+                    FrontendRange.fromAstRange(anchor.range())
             );
         }
 

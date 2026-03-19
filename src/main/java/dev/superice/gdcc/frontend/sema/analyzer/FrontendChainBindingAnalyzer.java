@@ -535,7 +535,7 @@ public class FrontendChainBindingAnalyzer {
                 if (reportedUnsupportedRoots.putIfAbsent(recoveryRoot, Boolean.TRUE) != null) {
                     return;
                 }
-                diagnosticManager.warning(
+                diagnosticManager.error(
                         UNSUPPORTED_CHAIN_ROUTE_CATEGORY,
                         Objects.requireNonNull(firstNonResolved.detailReason(), "detailReason must not be null"),
                         sourcePath,
@@ -628,12 +628,24 @@ public class FrontendChainBindingAnalyzer {
             if (subtreeRoot == null) {
                 return;
             }
-            if (reportedDeferredRoots.putIfAbsent(subtreeRoot, Boolean.TRUE) != null) {
+            if (domain == FrontendVisibleValueDomain.UNKNOWN_OR_SKIPPED_SUBTREE) {
+                if (reportedDeferredRoots.putIfAbsent(subtreeRoot, Boolean.TRUE) != null) {
+                    return;
+                }
+                diagnosticManager.warning(
+                        DEFERRED_CHAIN_RESOLUTION_CATEGORY,
+                        "Chain binding analysis is skipped in " + formatDomain(domain),
+                        sourcePath,
+                        FrontendRange.fromAstRange(subtreeRoot.range())
+                );
                 return;
             }
-            diagnosticManager.warning(
-                    DEFERRED_CHAIN_RESOLUTION_CATEGORY,
-                    "Chain binding analysis is deferred in " + formatDomain(domain),
+            if (reportedUnsupportedRoots.putIfAbsent(subtreeRoot, Boolean.TRUE) != null) {
+                return;
+            }
+            diagnosticManager.error(
+                    UNSUPPORTED_CHAIN_ROUTE_CATEGORY,
+                    "Chain binding analysis is not supported in " + formatDomain(domain),
                     sourcePath,
                     FrontendRange.fromAstRange(subtreeRoot.range())
             );

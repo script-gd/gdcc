@@ -115,7 +115,7 @@ class FrontendClassSkeletonAnnotationTest {
         assertEquals(1, result.diagnostics().size());
 
         var diagnostic = result.diagnostics().getFirst();
-        assertEquals(FrontendDiagnosticSeverity.WARNING, diagnostic.severity());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
         assertEquals("sema.unsupported_annotation", diagnostic.category());
         assertTrue(diagnostic.message().contains("@warning_ignore"));
         assertTrue(diagnostic.message().contains("hp"));

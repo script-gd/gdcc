@@ -369,7 +369,7 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull VariableDeclaration variableDeclaration,
             @NotNull SkeletonBuildContext context
     ) {
-        context.diagnostics().warning(
+        context.diagnostics().error(
                 "sema.unsupported_annotation",
                 "Property annotation '@" + annotation.name()
                         + "' on '" + variableDeclaration.name()

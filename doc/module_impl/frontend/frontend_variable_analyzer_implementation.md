@@ -55,7 +55,7 @@
 
 - 把 `FunctionDeclaration` / `ConstructorDeclaration` 参数写入对应 `CallableScope`
 - 把 supported executable subtree 中的普通局部 `var` 写入对应 `BlockScope`
-- 对当前明确 deferred 的 variable-inventory 来源发出显式 warning，避免静默跳过
+- 对当前明确不支持的 variable-inventory 来源发出显式 error，避免静默跳过
 - 对 duplicate / shadowing / target scope kind mismatch 发布恢复性 diagnostic，并保持其他 subtree 继续处理
 
 `FrontendVariableAnalyzer` 明确不负责：
@@ -154,7 +154,7 @@
 
 若 `Parameter.defaultValue() != null`，当前行为固定为：
 
-- 发出 `sema.unsupported_parameter_default_value` warning
+- 发出 `sema.unsupported_parameter_default_value` error
 - 不分析默认值表达式
 - 不改变参数本身写入 `CallableScope` 的行为
 
@@ -187,7 +187,7 @@
 
 - binder 主遍历不会把 arbitrary expression subtree 当作 local-binding 域
 - lambda / `for` / `match` subtree 不会进入 binding walk
-- deferred 边界 warning 由独立的 boundary reporter 扫描 callable body 后补发
+- unsupported feature-boundary error 由独立的 boundary reporter 扫描 callable body 后补发
 
 ### 4.3 executable-context 判定
 
@@ -215,19 +215,19 @@
 
 这些都属于 framework 不变量损坏，而不是普通源码错误。
 
-### 5.2 恢复性 warning
+### 5.2 feature-boundary error
 
-当前恢复性 warning 包括：
+当前对“已识别但当前不支持”的 variable-inventory 来源统一发 error：
 
 - `sema.unsupported_parameter_default_value`
   - 参数默认值当前被忽略
 - `sema.unsupported_variable_inventory_subtree`
-  - lambda subtree 当前 deferred
-  - `for` subtree 当前 deferred
-  - `match` subtree 当前 deferred
-  - block-local `const` 当前 deferred
+  - lambda subtree 当前不支持
+  - `for` subtree 当前不支持
+  - `match` subtree 当前不支持
+  - block-local `const` 当前不支持
 
-这些 warning 的目标是防止“代码库已识别但当前未实现”的变量来源静默失败。
+这些 error 的目标是防止“代码库已识别但当前未实现”的变量来源静默穿过后续 lowering。
 
 ### 5.3 恢复性 error
 
@@ -322,7 +322,7 @@
 
 - `FrontendVariableAnalyzerTest`
   - parameter/local 正向写入
-  - deferred warning
+  - unsupported feature-boundary error
   - duplicate / shadowing / kind mismatch 负向路径
   - missing scope recovery
 - `FrontendSemanticAnalyzerFrameworkTest`

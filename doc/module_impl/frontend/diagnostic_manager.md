@@ -195,7 +195,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.binding`
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
-  - top binding 对 parameter default、lambda、`for`、`match` 等 deferred subtree 的边界 warning
+  - top binding 对 parameter default、lambda、`for`、`match`、block-local `const` 等明确 unsupported subtree 的边界 error
+  - top binding 对 missing-scope / skipped subtree 的恢复诊断继续允许使用 warning
 - `sema.member_resolution`
   - chain binding 中 blocked / failed member step 的语义错误
 - `sema.call_resolution`
@@ -205,13 +206,13 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - chain binding 的 deferred subtree warning
   - 以及首个 deferred chain recovery root 的恢复诊断
 - `sema.unsupported_chain_route`
-  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 warning
+  - chain binding 对当前 MVP 明确认定 unsupported 的 static / constructor / suffix route 边界 error
 - `sema.expression_resolution`
   - expr analyzer 对 bare call 与其他 expression-only 路径的 failed recovery error
 - `sema.deferred_expression_resolution`
   - expr analyzer 对 assignment / subscript / generic deferred expression 等 expression-only deferred root 的 warning
 - `sema.unsupported_expression_route`
-  - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 warning
+  - expr analyzer 对当前明确不支持的 direct-callable-invocation 等 expression route 的 error
 - `sema.discarded_expression`
   - expr analyzer 对 bare expression statement 中被丢弃的非 `void` 结果发出的 warning
 
@@ -220,7 +221,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `export` / `onready`：映射到 property skeleton annotations
 - region annotations：忽略，不制造噪声诊断
 - 已识别但当前 skeleton phase 尚未支持的 property annotation：
-    - 发出 `sema.unsupported_annotation` warning
+    - 发出 `sema.unsupported_annotation` error
     - 同时保留 annotation 事实在 `FrontendAnalysisData.annotationsByAst()`
 
 ---
@@ -282,7 +283,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - registry 注入和 snapshot 边界稳定
 - `FrontendClassSkeletonAnnotationTest`
     - `export` / `onready` 语义稳定
-    - unsupported property annotation 会发 warning，且仍保留 side-table 事实
+    - unsupported property annotation 会发 error，且仍保留 side-table 事实
 - `FrontendSemanticAnalyzerFrameworkTest`
     - analyzer 返回共享 `FrontendAnalysisData`
     - parse->analyze shared pipeline 不重复导入 parse diagnostics
@@ -319,4 +320,3 @@ powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -T
 6. 若未来需要单独暴露 parse-phase 局部诊断视图，应新增明确的边界对象或 helper，而不是重新把 diagnostics 塞回
    `FrontendSourceUnit`。
 7. 对普通源码错误，frontend phase 应优先采用“发诊断 + 跳过当前 subtree”的恢复策略；只有不可恢复 guard rail 才允许抛异常。
-
