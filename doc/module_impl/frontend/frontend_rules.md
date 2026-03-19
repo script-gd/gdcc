@@ -35,6 +35,9 @@
 - H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
 - 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、`null -> Object`、以及 `Array` / packed array 的 float index 兼容。
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
+- H2 assignment compatibility 当前通过公开 API `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 复用 concrete slot 的兼容判断：exact `Variant` slot 允许任意来源类型，其余 slot 回退 generic `ClassRegistry.checkAssignable(...)`。
+- `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
+- 除 exact `Variant` slot 与 `DYNAMIC` target 外，assignment compatibility 在 MVP 中继续回退 `ClassRegistry.checkAssignable(...)`；`int -> float`、`StringName` / `String` 互转、`null -> Object` 等更宽隐式转换当前不支持，文档和测试都必须按 strict contract 锚定。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
 - `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。

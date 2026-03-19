@@ -279,6 +279,40 @@ class FrontendChainBindingAnalyzerTest {
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
     }
 
+    @Test
+    void analyzeKeepsValueRequiredNestedAssignmentFailClosedForDynamicTargets() throws Exception {
+        var analyzed = analyze(
+                "dynamic_assignment_argument_route.gd",
+                """
+                        class_name DynamicAssignmentArgumentRoute
+                        extends RefCounted
+                        
+                        func consume(value: int) -> int:
+                            return value
+                        
+                        func ping(dynamic_value):
+                            self.consume(dynamic_value[0] = 1)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var callStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var consumeStep = findNode(callStatement, AttributeCallStep.class, step -> step.name().equals("consume"));
+
+        var deferredCall = analyzed.analysisData().resolvedCalls().get(consumeStep);
+        assertNotNull(deferredCall);
+        assertEquals(FrontendCallResolutionStatus.DEFERRED, deferredCall.status());
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, deferredCall.callKind());
+        assertNotNull(deferredCall.detailReason());
+        assertTrue(!deferredCall.detailReason().isBlank());
+
+        var deferredDiagnostics = diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution");
+        assertEquals(1, deferredDiagnostics.size());
+        assertTrue(!deferredDiagnostics.getFirst().message().isBlank());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
     void analyzeKeepsExactSuffixAfterAttributeSubscriptStep() throws Exception {
         var analyzed = analyze(
                 "attribute_subscript_suffix.gd",

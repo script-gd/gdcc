@@ -232,13 +232,10 @@ public final class FrontendAssignmentSemanticSupport {
             ));
         }
 
-        var slotType = Objects.requireNonNull(targetResult.slotType(), "slotType must not be null");
         var valueType = Objects.requireNonNull(rightType.publishedType(), "publishedType must not be null");
-        if (!classRegistry.checkAssignable(valueType, slotType)) {
-            return rootOutcome(FrontendExpressionType.failed(
-                    "Assignment value type '" + valueType.getTypeName()
-                            + "' is not assignable to target slot type '" + slotType.getTypeName() + "'"
-            ));
+        var compatibilityIssue = resolveAssignmentCompatibilityIssue(targetResult, valueType);
+        if (compatibilityIssue != null) {
+            return rootOutcome(compatibilityIssue);
         }
         if (usage == AssignmentUsage.VALUE_REQUIRED) {
             return rootOutcome(FrontendExpressionType.failed(
@@ -734,6 +731,41 @@ public final class FrontendAssignmentSemanticSupport {
             }
         }
         return null;
+    }
+
+    /// Public frontend assignment compatibility check for already-resolved concrete slots.
+    ///
+    /// This API intentionally stays narrower than assignment semantic resolution:
+    /// - exact `Variant` slots accept any source type
+    /// - all other slots fall back to `ClassRegistry.checkAssignable(...)`
+    ///
+    /// Assignment-specific routes such as `DYNAMIC` targets stay encapsulated in this helper and do
+    /// not leak into the public API.
+    public boolean checkAssignmentCompatible(
+            @NotNull GdType slotType,
+            @NotNull GdType valueType
+    ) {
+        var targetSlotType = Objects.requireNonNull(slotType, "slotType must not be null");
+        var assignedValueType = Objects.requireNonNull(valueType, "valueType must not be null");
+        return targetSlotType instanceof GdVariantType
+                || classRegistry.checkAssignable(assignedValueType, targetSlotType);
+    }
+
+    private @Nullable FrontendExpressionType resolveAssignmentCompatibilityIssue(
+            @NotNull AssignmentTargetResult targetResult,
+            @NotNull GdType valueType
+    ) {
+        if (targetResult.status() == AssignmentTargetStatus.DYNAMIC) {
+            return null;
+        }
+        var slotType = Objects.requireNonNull(targetResult.slotType(), "slotType must not be null");
+        if (checkAssignmentCompatible(slotType, valueType)) {
+            return null;
+        }
+        return FrontendExpressionType.failed(
+                "Assignment value type '" + valueType.getTypeName()
+                        + "' is not assignable to target slot type '" + slotType.getTypeName() + "'"
+        );
     }
 
     private @NotNull AttributeExpression syntheticPropertyExpression(

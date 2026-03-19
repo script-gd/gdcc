@@ -10,6 +10,9 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
+import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -26,6 +29,8 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAssignmentSemanticSupportTest {
@@ -267,6 +272,106 @@ class FrontendAssignmentSemanticSupportTest {
         assertTrue(attributeResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.FAILED, attributeResult.expressionType().status());
         assertEquals("Property 'locked' is not writable", attributeResult.expressionType().detailReason());
+    }
+
+    @Test
+    void checkAssignmentCompatiblePublishesFrontendWidePublicContract() throws Exception {
+        var support = createSupport(
+                analyze(
+                        "assignment_semantic_support_public_gate.gd",
+                        """
+                                class_name AssignmentSemanticSupportPublicGate
+                                extends RefCounted
+                                
+                                func ping():
+                                    pass
+                                """
+                ),
+                ResolveRestriction.instanceContext(),
+                false
+        );
+
+        assertTrue(support.checkAssignmentCompatible(
+                GdVariantType.VARIANT,
+                GdIntType.INT
+        ));
+        assertTrue(!support.checkAssignmentCompatible(
+                GdFloatType.FLOAT,
+                GdIntType.INT
+        ));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeAcceptsVariantAndDynamicTargetsButKeepsImplicitConversionsStrict()
+            throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_variant_dynamic.gd",
+                """
+                        class_name AssignmentSemanticSupportVariantDynamic
+                        extends RefCounted
+                        
+                        var field
+                        
+                        func ping(dynamic_value):
+                            var payload
+                            var ratio: float = 0.0
+                            payload = 1
+                            field = 2
+                            self.field = 3
+                            dynamic_value[0] = 4
+                            ratio = 1
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+
+        var localVariantResult = support.resolveAssignmentExpressionType(
+                assignments.get(0),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var bareVariantPropertyResult = support.resolveAssignmentExpressionType(
+                assignments.get(1),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var attributeVariantPropertyResult = support.resolveAssignmentExpressionType(
+                assignments.get(2),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var dynamicTargetResult = support.resolveAssignmentExpressionType(
+                assignments.get(3),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var strictImplicitConversionFailure = support.resolveAssignmentExpressionType(
+                assignments.get(4),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        for (var successfulResult : List.of(
+                localVariantResult,
+                bareVariantPropertyResult,
+                attributeVariantPropertyResult,
+                dynamicTargetResult
+        )) {
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, successfulResult.expressionType().status());
+            assertEquals(GdVoidType.VOID, successfulResult.expressionType().publishedType());
+        }
+
+        assertTrue(strictImplicitConversionFailure.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, strictImplicitConversionFailure.expressionType().status());
+        assertTrue(strictImplicitConversionFailure.expressionType().detailReason().contains("not assignable"));
+        assertTrue(strictImplicitConversionFailure.expressionType().detailReason().contains("float"));
     }
 
     private @NotNull FrontendAssignmentSemanticSupport createSupport(

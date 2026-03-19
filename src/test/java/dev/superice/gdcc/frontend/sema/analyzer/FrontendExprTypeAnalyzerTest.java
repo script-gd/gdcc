@@ -645,6 +645,49 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzeAcceptsVariantAndDynamicAssignmentTargetsButKeepsImplicitConversionsStrict() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_variant_dynamic.gd",
+                """
+                        class_name ExprTypeAssignmentVariantDynamic
+                        extends RefCounted
+                        
+                        var field
+                        
+                        func ping(dynamic_value):
+                            var payload
+                            var ratio: float = 0.0
+                            payload = 1
+                            field = 2
+                            self.field = 3
+                            dynamic_value[0] = 4
+                            ratio = 1
+                        """
+        );
+
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        for (var successIndex : List.of(0, 1, 2, 3)) {
+            var assignmentType = analyzed.analysisData().expressionTypes().get(assignments.get(successIndex));
+            assertNotNull(assignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, assignmentType.status());
+            assertEquals(GdVoidType.VOID, assignmentType.publishedType());
+        }
+
+        var strictImplicitConversionFailure = analyzed.analysisData().expressionTypes().get(assignments.get(4));
+        assertNotNull(strictImplicitConversionFailure);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, strictImplicitConversionFailure.status());
+        assertTrue(strictImplicitConversionFailure.detailReason().contains("not assignable"));
+        assertTrue(strictImplicitConversionFailure.detailReason().contains("float"));
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(1, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.getFirst().message().contains("not assignable"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
     void analyzeReportsUnsupportedForCompoundAssignmentStatementsWithoutDiscardedWarnings() throws Exception {
         var analyzed = analyze(
                 "expr_type_assignment_compound.gd",
