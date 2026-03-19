@@ -11,11 +11,11 @@ public enum FrontendMemberResolutionStatus {
     /// This is intentionally distinct from `FAILED`: the hit still exists and still shadows other
     /// names/routes, so callers must not silently retry outer/global alternatives.
     BLOCKED,
-    /// The route is part of the planned support surface, but the current phase lacks enough frozen
-    /// input facts to publish a stable member target/result yet.
+    /// The route is part of the supported surface, but the current published analysis state lacks
+    /// enough frozen input facts to publish a stable member target/result yet.
     ///
-    /// Typical examples include argument typing or other local prerequisites that are expected to be
-    /// connected by later body-phase work.
+    /// Typical examples include argument typing or other local prerequisites that are not yet
+    /// available at the current reduction point.
     DEFERRED,
     /// The step intentionally falls back to runtime-dynamic semantics instead of exact static member
     /// resolution.
@@ -30,8 +30,8 @@ public enum FrontendMemberResolutionStatus {
     /// - malformed metadata that makes exact resolution impossible
     /// - a statically illegal member route after enough input facts are known
     FAILED,
-    /// The analyzer recognized the route/source, but that route is outside the current MVP or body
-    /// phase support contract.
+    /// The analyzer recognized the route/source, but that route is outside the current body-phase
+    /// support contract.
     ///
     /// This status is used for fail-closed feature boundaries rather than ordinary semantic failure.
     UNSUPPORTED

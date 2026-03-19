@@ -56,8 +56,8 @@ import java.util.Objects;
 
 /// Publishes body-phase chain member/call results from already-published binding and scope facts.
 ///
-/// The analyzer deliberately keeps expression typing out of the published surface for milestone C.
-/// It only performs a small local type callback so one chain can continue reducing left-to-right.
+/// The analyzer keeps ordinary expression publication in `FrontendExprTypeAnalyzer`.
+/// It only performs the local dependency typing needed to keep one chain reducing left-to-right.
 public class FrontendChainBindingAnalyzer {
     private static final @NotNull String MEMBER_RESOLUTION_CATEGORY = "sema.member_resolution";
     private static final @NotNull String CALL_RESOLUTION_CATEGORY = "sema.call_resolution";

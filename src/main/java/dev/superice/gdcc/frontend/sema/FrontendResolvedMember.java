@@ -9,10 +9,10 @@ import java.util.Objects;
 
 /// Published member-resolution fact for one body-phase chain step.
 ///
-/// The record keeps the data model explicit before the real chain analyzer lands:
+/// The record keeps the published member result model explicit:
 /// - `bindingKind` preserves the member category when the step did resolve to a concrete symbol kind
 /// - `status` captures why the step is resolved/blocked/deferred/dynamic/failed/unsupported
-/// - `receiverKind` and optional type payloads let later analyzers reason about suffix propagation
+/// - `receiverKind` and optional type payloads let downstream consumers reason about suffix propagation
 public record FrontendResolvedMember(
         @NotNull String memberName,
         @NotNull FrontendBindingKind bindingKind,

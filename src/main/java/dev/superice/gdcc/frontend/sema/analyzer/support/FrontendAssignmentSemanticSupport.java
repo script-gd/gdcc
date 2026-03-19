@@ -228,7 +228,7 @@ public final class FrontendAssignmentSemanticSupport {
         if (!"=".equals(assignmentExpression.operator())) {
             return rootOutcome(FrontendExpressionType.unsupported(
                     "Compound assignment operator '" + assignmentExpression.operator()
-                            + "' is not supported in milestone H2"
+                            + "' is not supported by the current frontend assignment contract"
             ));
         }
 
@@ -246,8 +246,8 @@ public final class FrontendAssignmentSemanticSupport {
     }
 
     /// The left side is resolved through a dedicated writable-target model instead of the ordinary
-    /// expression resolver. This prevents H0's old drift where assignment reused value semantics and
-    /// made H2's target contract impossible to enforce independently.
+    /// expression resolver. This keeps assignment-target semantics independent from ordinary value
+    /// typing and prevents left-value rules from drifting with read/call semantics.
     public @NotNull AssignmentTargetResult resolveAssignmentTarget(
             @NotNull Expression targetExpression,
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
@@ -269,7 +269,7 @@ public final class FrontendAssignmentSemanticSupport {
                     AssignmentTargetKind.SUBSCRIPT,
                     true,
                     "Assignment target kind '" + targetExpression.getClass().getSimpleName()
-                            + "' is not supported in milestone H2"
+                            + "' is not supported by the current frontend assignment contract"
             );
         };
     }
@@ -384,7 +384,7 @@ public final class FrontendAssignmentSemanticSupport {
                     AssignmentTargetKind.ATTRIBUTE_SUBSCRIPT,
                     true,
                     "Assignment target step '" + finalStep.getClass().getSimpleName()
-                            + "' is not supported in milestone H2"
+                            + "' is not supported by the current frontend assignment contract"
             );
         };
     }
@@ -428,9 +428,9 @@ public final class FrontendAssignmentSemanticSupport {
             @NotNull FrontendExpressionSemanticSupport.NestedExpressionResolver nestedResolver,
             boolean finalizeWindow
     ) {
-        // H2 models `obj.prop[i] = value` as element mutation over the resolved property value type.
-        // Whether getter-only properties should also block this aliasing route stays deferred until a
-        // later milestone freezes the broader container/property mutation contract.
+        // The current contract models `obj.prop[i] = value` as element mutation over the resolved
+        // property value type. Getter-only properties do not yet add a second aliasing-specific
+        // block here; that boundary remains coupled to the broader property/container mutation model.
         var propertyTarget = resolvePropertyLikeAttributeTarget(
                 syntheticPropertyExpression(attributeExpression, attributeSubscriptStep),
                 AssignmentTargetKind.ATTRIBUTE_SUBSCRIPT,

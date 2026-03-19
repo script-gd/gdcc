@@ -203,7 +203,7 @@ public final class FrontendExpressionSemanticSupport {
         return switch (binding.kind()) {
             case METHOD, STATIC_METHOD, UTILITY_FUNCTION -> true;
             case SELF, LITERAL, LOCAL_VAR, PARAMETER, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON,
-                    GLOBAL_ENUM, TYPE_META, UNKNOWN -> false;
+                 GLOBAL_ENUM, TYPE_META, UNKNOWN -> false;
         };
     }
 
@@ -242,16 +242,17 @@ public final class FrontendExpressionSemanticSupport {
                 lambdaExpression,
                 nestedResolver,
                 resolveNestedChildren,
-                "Lambda expression typing is deferred until lambda semantics are implemented",
+                "Lambda expression typing is deferred by the current frontend expression-typing contract",
                 finalizeWindow
         );
     }
 
-    /// Exhaustive routing for the remaining MVP-deferred expression kinds.
+    /// Exhaustive routing for the remaining explicitly deferred expression kinds.
     ///
     /// The analyzers intentionally keep dedicated entry points for the green paths such as
     /// identifiers, calls, subscript, assignment, and lambda. Everything still outside that set is
-    /// enumerated here so we no longer hide future work behind a generic fallback bucket.
+    /// enumerated here so we no longer hide unsupported/deferred domains behind a generic fallback
+    /// bucket.
     public @NotNull ExpressionSemanticResult resolveRemainingExplicitExpressionType(
             @NotNull Expression expression,
             @NotNull NestedExpressionResolver nestedResolver,
@@ -263,77 +264,77 @@ public final class FrontendExpressionSemanticSupport {
                     binaryExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Binary operator typing is deferred until operator semantics are implemented",
+                    "Binary operator typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case UnaryExpression unaryExpression -> resolveExplicitDeferredExpressionType(
                     unaryExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Unary operator typing is deferred until operator semantics are implemented",
+                    "Unary operator typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case ConditionalExpression conditionalExpression -> resolveExplicitDeferredExpressionType(
                     conditionalExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Conditional expression typing is deferred until ternary semantics are implemented",
+                    "Conditional expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case ArrayExpression arrayExpression -> resolveExplicitDeferredExpressionType(
                     arrayExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Array literal typing is deferred until collection literal semantics are implemented",
+                    "Array literal typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case DictionaryExpression dictionaryExpression -> resolveExplicitDeferredExpressionType(
                     dictionaryExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Dictionary literal typing is deferred until collection literal semantics are implemented",
+                    "Dictionary literal typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case AwaitExpression awaitExpression -> resolveExplicitDeferredExpressionType(
                     awaitExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Await expression typing is deferred until coroutine semantics are implemented",
+                    "Await expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case PreloadExpression preloadExpression -> resolveExplicitDeferredExpressionType(
                     preloadExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Preload expression typing is deferred until resource preload semantics are implemented",
+                    "Preload expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case GetNodeExpression getNodeExpression -> resolveExplicitDeferredExpressionType(
                     getNodeExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Get-node expression typing is deferred until node-path lookup semantics are implemented",
+                    "Get-node expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case CastExpression castExpression -> resolveExplicitDeferredExpressionType(
                     castExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Cast expression typing is deferred until cast semantics are implemented",
+                    "Cast expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case TypeTestExpression typeTestExpression -> resolveExplicitDeferredExpressionType(
                     typeTestExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Type-test expression typing is deferred until type-test semantics are implemented",
+                    "Type-test expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case PatternBindingExpression patternBindingExpression -> resolveExplicitDeferredExpressionType(
                     patternBindingExpression,
                     nestedResolver,
                     resolveNestedChildren,
-                    "Pattern binding expression typing is deferred until match-pattern semantics are implemented",
+                    "Pattern binding expression typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case UnknownExpression unknownExpression -> rootOutcome(FrontendExpressionType.unsupported(

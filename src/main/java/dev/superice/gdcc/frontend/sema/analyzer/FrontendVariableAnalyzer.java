@@ -450,7 +450,7 @@ public class FrontendVariableAnalyzer {
             diagnosticManager.warning(
                     UNSUPPORTED_PARAMETER_DEFAULT_VALUE_CATEGORY,
                     "Parameter default value for '" + parameter.name().trim()
-                            + "' is deferred until FrontendExprTypeAnalyzer is implemented; "
+                            + "' is outside the current frontend body-typing contract; "
                             + "the current variable analyzer ignores the default value expression",
                     sourcePath,
                     FrontendRange.fromAstRange(parameter.defaultValue().range())

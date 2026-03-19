@@ -8,7 +8,7 @@ import java.util.Objects;
 
 /// Shared direct-property access helper used by scope publication and frontend assignment typing.
 ///
-/// This helper intentionally models only the current MVP direct-write contract:
+/// This helper intentionally models only the current direct-write contract:
 /// - engine and builtin metadata honor their explicit writable flag
 /// - other property definitions stay conservatively writable until a richer property access model lands
 ///

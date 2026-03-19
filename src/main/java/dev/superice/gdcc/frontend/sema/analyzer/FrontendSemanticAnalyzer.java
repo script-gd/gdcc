@@ -12,12 +12,14 @@ import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework already wires four stable frontend phases into one shared
+/// The current framework wires six stable frontend phases into one shared
 /// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
-/// - callable-parameter and supported local-variable binding
-/// - top-binding publication for current symbol-category resolution
+/// - callable-parameter and supported local-variable inventory
+/// - top-binding publication for symbol-category resolution
+/// - chain member/call publication
+/// - expression-type publication
 /// - diagnostics boundary refresh after each phase
 public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;

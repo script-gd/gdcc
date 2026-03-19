@@ -403,7 +403,7 @@ public class FrontendExprTypeAnalyzer {
         /// parent expression needs to consume nested facts. Bare `TYPE_META` identifiers are the
         /// one intentional exception: they may be computed transiently for the current reduction,
         /// but they are not published as ordinary value expression facts because they only serve as
-        /// static-route heads in MVP.
+        /// static-route heads in the current frontend contract.
         private @Nullable FrontendExpressionType publishExpressionType(@Nullable Expression expression) {
             return publishExpressionType(expression, false);
         }
@@ -439,7 +439,7 @@ public class FrontendExprTypeAnalyzer {
         }
 
         /// Bare `TYPE_META` identifiers are valid chain heads such as `Worker.build()` but they are
-        /// not first-class value expressions in MVP. Skipping publication keeps static-route heads
+        /// not first-class ordinary value expressions. Skipping publication keeps static-route heads
         /// out of ordinary `expressionTypes()` consumers and out of `:=` backfill.
         private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {
             if (!(expression instanceof IdentifierExpression identifierExpression)) {

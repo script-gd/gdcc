@@ -12,7 +12,7 @@ import java.util.Objects;
 
 /// Shared subscript/container typing helper used by both expression typing and chain reduction.
 ///
-/// H1 intentionally keeps the supported surface conservative:
+/// The current contract intentionally keeps the supported surface conservative:
 /// - typed `Array`, `Dictionary`, and `Packed*Array` families
 /// - `Variant` receiver as runtime-dynamic `Variant`
 /// - keyed builtin metadata outside the container family as explicit `UNSUPPORTED`
@@ -40,7 +40,8 @@ public final class FrontendSubscriptSemanticSupport {
         }
         if (arguments.size() != 1) {
             return FrontendExpressionType.unsupported(
-                    description + " supports exactly one key/index argument in milestone H1, got " + arguments.size()
+                    description + " supports exactly one key/index argument in the current frontend contract, got "
+                            + arguments.size()
             );
         }
         if (receiver instanceof GdContainerType containerType) {
@@ -61,7 +62,7 @@ public final class FrontendSubscriptSemanticSupport {
             return FrontendExpressionType.unsupported(
                     "Receiver type '" + receiver.getTypeName()
                             + "' advertises keyed access metadata, but " + description
-                            + " only supports container-family receivers in milestone H1"
+                            + " only supports container-family receivers in the current frontend contract"
             );
         }
         return FrontendExpressionType.failed(

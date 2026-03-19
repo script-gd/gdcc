@@ -699,7 +699,7 @@ public final class FrontendChainReductionHelper {
             return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
         }
         var detailReason = "Static load route on GDCC class '" + receiverTypeMeta.sourceName()
-                + "' is deferred until class constants are published";
+                + "' is outside the current class-constant support boundary";
         return new StepTrace(
                 stepIndex,
                 step,

@@ -10,7 +10,7 @@ import java.util.Objects;
 
 /// Published call-resolution fact for one body-phase chain step.
 ///
-/// The model keeps route kind and result status separate so later analyzers can distinguish
+/// The model keeps route kind and result status separate so downstream consumers can distinguish
 /// constructor/static/dynamic paths without flattening everything into one generic "call hit".
 public record FrontendResolvedCall(
         @NotNull String callableName,

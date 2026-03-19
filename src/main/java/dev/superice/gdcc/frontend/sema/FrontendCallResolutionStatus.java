@@ -11,8 +11,8 @@ public enum FrontendCallResolutionStatus {
     ///
     /// This keeps the winner visible for diagnostics/shadowing instead of collapsing it into a miss.
     BLOCKED,
-    /// The call route is part of the intended support surface, but the current phase still lacks
-    /// enough frozen input facts to choose and publish one stable callable.
+    /// The call route is part of the supported surface, but the current published analysis state
+    /// still lacks enough frozen input facts to choose and publish one stable callable.
     ///
     /// Typical examples include not-yet-stable argument types during local body-phase alternation.
     DEFERRED,
@@ -27,7 +27,7 @@ public enum FrontendCallResolutionStatus {
     /// other exact-call routes that definitively failed.
     FAILED,
     /// The analyzer recognized the call/source/route but deliberately sealed it because it falls
-    /// outside the current MVP/body-phase support boundary.
+    /// outside the current body-phase support boundary.
     ///
     /// This is a feature-boundary result, not a normal semantic miss.
     UNSUPPORTED
