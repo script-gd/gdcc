@@ -24,8 +24,8 @@ import java.util.Objects;
 
 /// Diagnostics-only annotation placement validator for the currently supported subset.
 ///
-/// MVP keeps `@onready` intentionally small: it is retained during skeleton build, then later
-/// validated here against the owner-class and staticness contract without introducing runtime
+/// Current `@onready` contract stays intentionally small: skeleton retains the annotation, then
+/// this analyzer validates owner-class and staticness placement without introducing runtime
 /// `_ready()` timing semantics.
 public class FrontendAnnotationUsageAnalyzer {
     private static final @NotNull String ANNOTATION_USAGE_CATEGORY = "sema.annotation_usage";

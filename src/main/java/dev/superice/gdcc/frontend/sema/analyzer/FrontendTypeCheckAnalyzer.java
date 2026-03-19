@@ -50,15 +50,16 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Diagnostics-only frontend type-check phase skeleton.
+/// Diagnostics-only frontend typed-contract analyzer.
 ///
-/// T1 intentionally stops at the framework boundary:
-/// - require the stable upstream phase order to have already published scope/binding/member/call/type facts
-/// - walk only the statement roots that later typed contracts care about
-/// - maintain the minimal contextual state T2-T5 will need, without creating any new side table
+/// Current contract:
+/// - require upstream phases to have already published scope/binding/member/call/expression facts
+/// - walk only the statement roots that own local/property/return/condition contracts
+/// - emit diagnostics without creating any new side table
+/// - preserve upstream diagnostic ownership for unstable expression roots
 ///
-/// The protected callback surface exists so tests can lock the traversal/context contract now,
-/// before concrete type-check diagnostics land in later tasks.
+/// The protected callback surface exists so tests can lock the traversal/context contract without
+/// duplicating the visitor logic in test-only analyzers.
 public class FrontendTypeCheckAnalyzer {
     private static final @NotNull String TYPE_CHECK_CATEGORY = "sema.type_check";
     private static final @NotNull String TYPE_HINT_CATEGORY = "sema.type_hint";
@@ -243,9 +244,9 @@ public class FrontendTypeCheckAnalyzer {
         if (publishedConditionType == null) {
             return;
         }
-        // T8.2: frontend only verifies that the condition root published a stable typed fact.
-        // Godot accepts non-bool condition values, so source-level truthiness must be normalized
-        // by downstream lowering/runtime contracts instead of being rejected here as a dialect.
+        // Conditions only require a stable published typed fact here.
+        // Godot-compatible truthiness stays a downstream lowering/runtime concern instead of being
+        // reinterpreted here as a strict-bool source-language contract.
         Objects.requireNonNull(
                 publishedConditionType.publishedType(),
                 "publishedType must not be null for stable condition expression"
