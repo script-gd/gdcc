@@ -233,6 +233,10 @@ public final class FrontendSemanticAnalyzer {
     /// `FrontendSourceUnit` no longer stores parse diagnostics. The analyzer therefore consumes
     /// parse diagnostics only through the shared manager state that callers prepared earlier in
     /// the pipeline.
+    ///
+    /// This shared semantic entrypoint intentionally does not guarantee lowering readiness.
+    /// Compile callers must use `analyzeForCompile(...)` and check the resulting diagnostics for
+    /// errors before allowing frontend output to enter lowering.
     public @NotNull FrontendAnalysisData analyze(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,
@@ -301,7 +305,9 @@ public final class FrontendSemanticAnalyzer {
     /// Runs the shared semantic pipeline plus the compile-only final gate.
     ///
     /// This split keeps the default semantic entrypoint reusable for inspection/LSP-style tooling
-    /// while still giving lowering callers one dedicated compile-only contract.
+    /// while still giving lowering callers one dedicated compile-only contract. Future
+    /// frontend-to-LIR lowering must treat this entrypoint plus `diagnostics().hasErrors() == false`
+    /// as the minimum precondition before compilation can continue.
     public @NotNull FrontendAnalysisData analyzeForCompile(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,

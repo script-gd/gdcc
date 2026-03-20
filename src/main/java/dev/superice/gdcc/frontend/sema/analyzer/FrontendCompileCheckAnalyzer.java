@@ -6,10 +6,19 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
@@ -40,13 +49,23 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 
 /// Compile-only final frontend gate that runs after the shared semantic pipeline.
 ///
 /// The default shared `analyze(...)` path intentionally does not call this analyzer so inspection
 /// and future LSP-style entrypoints can keep consuming raw frontend recovery facts. Compile-only
 /// entrypoints invoke it as the final diagnostics-only barrier before lowering is allowed to start.
+///
+/// The gate itself stays deliberately narrow:
+/// - explicit AST compile blocks for the MVP forms that lowering/backend do not support yet
+/// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
+///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
+/// - no new side tables and no rewrites of upstream semantic ownership
 public class FrontendCompileCheckAnalyzer {
     private static final @NotNull String COMPILE_CHECK_CATEGORY = "sema.compile_check";
 
@@ -75,6 +94,9 @@ public class FrontendCompileCheckAnalyzer {
                     sourceClassRelation.unit().path(),
                     publishedDiagnostics,
                     scopesByAst,
+                    analysisData.expressionTypes(),
+                    analysisData.resolvedMembers(),
+                    analysisData.resolvedCalls(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -91,18 +113,62 @@ public class FrontendCompileCheckAnalyzer {
                 + "lowering support lands";
     }
 
+    private static @NotNull String publishedCompileBlockedMessage(
+            @NotNull String surfaceKind,
+            @NotNull Enum<?> publishedStatus,
+            @Nullable String detailReason
+    ) {
+        var message = Objects.requireNonNull(surfaceKind, "surfaceKind must not be null")
+                + " remains "
+                + Objects.requireNonNull(publishedStatus, "publishedStatus must not be null").name().toLowerCase(Locale.ROOT)
+                + " at compile surface and is not lowering-ready in compile mode";
+        if (detailReason == null || detailReason.isBlank()) {
+            return message;
+        }
+        return message + ": " + detailReason;
+    }
+
+    private static boolean isCompileBlocking(@NotNull FrontendExpressionTypeStatus status) {
+        return switch (Objects.requireNonNull(status, "status must not be null")) {
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> true;
+            case RESOLVED, DYNAMIC -> false;
+        };
+    }
+
+    private static boolean isCompileBlocking(@NotNull FrontendMemberResolutionStatus status) {
+        return switch (Objects.requireNonNull(status, "status must not be null")) {
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> true;
+            case RESOLVED, DYNAMIC -> false;
+        };
+    }
+
+    private static boolean isCompileBlocking(@NotNull FrontendCallResolutionStatus status) {
+        return switch (Objects.requireNonNull(status, "status must not be null")) {
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> true;
+            case RESOLVED, DYNAMIC -> false;
+        };
+    }
+
     private static final class AstWalkerCompileCheckVisitor implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull DiagnosticSnapshot publishedDiagnostics;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
+        private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
+        private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
+        private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
+        private final @NotNull Set<Node> handledAnchors = Collections.newSetFromMap(new IdentityHashMap<>());
         private int supportedExecutableBlockDepth;
 
         private AstWalkerCompileCheckVisitor(
                 @NotNull Path sourcePath,
                 @NotNull DiagnosticSnapshot publishedDiagnostics,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
+                @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
+                @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
+                @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -111,12 +177,16 @@ public class FrontendCompileCheckAnalyzer {
                     "publishedDiagnostics must not be null"
             );
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
+            this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
+            this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
         }
 
         private void walk(@NotNull SourceFile sourceFile) {
             astWalker.walk(Objects.requireNonNull(sourceFile, "sourceFile must not be null"));
+            scanPublishedCompileBlocks();
         }
 
         @Override
@@ -166,6 +236,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(block)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(block);
             walkStatements(block.statements());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -177,6 +248,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(expressionStatement);
             walkExpression(expressionStatement.expression());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -186,6 +258,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0 || returnStatement.value() == null) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(returnStatement);
             walkExpression(returnStatement.value());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
@@ -195,7 +268,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            reportCompileBlock(assertStatement, assertCompileBlockedMessage());
+            reportExplicitCompileBlock(assertStatement, assertCompileBlockedMessage());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -207,12 +280,14 @@ public class FrontendCompileCheckAnalyzer {
                 if (variableDeclaration.kind() != DeclarationKind.VAR || variableDeclaration.value() == null) {
                     return FrontendASTTraversalDirective.SKIP_CHILDREN;
                 }
+                markCompileSurfaceNode(variableDeclaration);
                 walkExpression(variableDeclaration.value());
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(scopesByAst, variableDeclaration)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(variableDeclaration);
             walkExpression(Objects.requireNonNull(
                     variableDeclaration.value(),
                     "property initializer value must not be null"
@@ -225,6 +300,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(ifStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(ifStatement);
             walkExpression(ifStatement.condition());
             walkSupportedExecutableBlock(ifStatement.body());
             for (var elifClause : ifStatement.elifClauses()) {
@@ -241,6 +317,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(elifClause)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(elifClause);
             walkExpression(elifClause.condition());
             walkSupportedExecutableBlock(elifClause.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -251,6 +328,7 @@ public class FrontendCompileCheckAnalyzer {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(whileStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            markCompileSurfaceNode(whileStatement);
             walkExpression(whileStatement.condition());
             walkSupportedExecutableBlock(whileStatement.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
@@ -310,31 +388,34 @@ public class FrontendCompileCheckAnalyzer {
                     // Lambdas remain outside the current compile surface and keep their upstream
                     // unsupported-subtree owner.
                 }
-                case ArrayExpression arrayExpression -> reportCompileBlock(
+                case ArrayExpression arrayExpression -> reportExplicitCompileBlock(
                         arrayExpression,
                         expressionCompileBlockedMessage("Array literal")
                 );
-                case DictionaryExpression dictionaryExpression -> reportCompileBlock(
+                case DictionaryExpression dictionaryExpression -> reportExplicitCompileBlock(
                         dictionaryExpression,
                         expressionCompileBlockedMessage("Dictionary literal")
                 );
-                case PreloadExpression preloadExpression -> reportCompileBlock(
+                case PreloadExpression preloadExpression -> reportExplicitCompileBlock(
                         preloadExpression,
                         expressionCompileBlockedMessage("Preload expression")
                 );
-                case GetNodeExpression getNodeExpression -> reportCompileBlock(
+                case GetNodeExpression getNodeExpression -> reportExplicitCompileBlock(
                         getNodeExpression,
                         expressionCompileBlockedMessage("Get-node expression")
                 );
-                case CastExpression castExpression -> reportCompileBlock(
+                case CastExpression castExpression -> reportExplicitCompileBlock(
                         castExpression,
                         expressionCompileBlockedMessage("Cast expression")
                 );
-                case TypeTestExpression typeTestExpression -> reportCompileBlock(
+                case TypeTestExpression typeTestExpression -> reportExplicitCompileBlock(
                         typeTestExpression,
                         expressionCompileBlockedMessage("Type-test expression")
                 );
-                default -> walkNestedExpressionChildren(expression);
+                default -> {
+                    markCompileSurfaceNode(expression);
+                    walkNestedExpressionChildren(expression);
+                }
             }
         }
 
@@ -347,13 +428,134 @@ public class FrontendCompileCheckAnalyzer {
                     walkExpression(childExpression);
                     continue;
                 }
+                markCompileSurfaceNode(child);
                 walkNestedExpressionChildren(child);
             }
+        }
+
+        private void scanPublishedCompileBlocks() {
+            scanExpressionTypeCompileBlocks();
+            scanResolvedMemberCompileBlocks();
+            scanResolvedCallCompileBlocks();
+        }
+
+        private void scanExpressionTypeCompileBlocks() {
+            for (var entry : expressionTypes.entrySet()) {
+                var expression = requireExpression(entry.getKey(), "expressionTypes");
+                var publishedType = Objects.requireNonNull(entry.getValue(), "publishedType must not be null");
+                if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(expression)) {
+                    continue;
+                }
+                var anchor = compileAnchorForExpression(expression);
+                if (!compileSurfaceNodes.contains(anchor)) {
+                    continue;
+                }
+                reportCompileBlock(
+                        anchor,
+                        publishedCompileBlockedMessage(
+                                describeExpression(expression),
+                                publishedType.status(),
+                                publishedType.detailReason()
+                        )
+                );
+            }
+        }
+
+        private void scanResolvedMemberCompileBlocks() {
+            for (var entry : resolvedMembers.entrySet()) {
+                var anchor = requireAttributePropertyStep(entry.getKey(), "resolvedMembers");
+                var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
+                if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
+                    continue;
+                }
+                reportCompileBlock(
+                        anchor,
+                        publishedCompileBlockedMessage(
+                                "Member access '" + publishedMember.memberName() + "'",
+                                publishedMember.status(),
+                                publishedMember.detailReason()
+                        )
+                );
+            }
+        }
+
+        private void scanResolvedCallCompileBlocks() {
+            for (var entry : resolvedCalls.entrySet()) {
+                var anchor = requireAttributeCallStep(entry.getKey(), "resolvedCalls");
+                var publishedCall = Objects.requireNonNull(entry.getValue(), "publishedCall must not be null");
+                if (!isCompileBlocking(publishedCall.status()) || !compileSurfaceNodes.contains(anchor)) {
+                    continue;
+                }
+                reportCompileBlock(
+                        anchor,
+                        publishedCompileBlockedMessage(
+                                "Call step '" + publishedCall.callableName() + "'",
+                                publishedCall.status(),
+                                publishedCall.detailReason()
+                        )
+                );
+            }
+        }
+
+        /// Attribute expression typing often mirrors the final member/call step fact, so compile
+        /// anchoring prefers that exact step to avoid reporting both the outer expression and the
+        /// terminal chain step as separate generic compile blockers.
+        private @NotNull Node compileAnchorForExpression(@NotNull Expression expression) {
+            if (expression instanceof AttributeExpression attributeExpression && !attributeExpression.steps().isEmpty()) {
+                var finalStep = attributeExpression.steps().getLast();
+                if ((finalStep instanceof AttributePropertyStep || finalStep instanceof AttributeCallStep)
+                        && compileSurfaceNodes.contains(finalStep)) {
+                    return finalStep;
+                }
+            }
+            return expression;
+        }
+
+        private static @NotNull Expression requireExpression(@NotNull Node node, @NotNull String sideTableName) {
+            if (node instanceof Expression expression) {
+                return expression;
+            }
+            throw new IllegalStateException(sideTableName + " must be keyed by expression nodes");
+        }
+
+        private static @NotNull AttributePropertyStep requireAttributePropertyStep(
+                @NotNull Node node,
+                @NotNull String sideTableName
+        ) {
+            if (node instanceof AttributePropertyStep attributePropertyStep) {
+                return attributePropertyStep;
+            }
+            throw new IllegalStateException(sideTableName + " must be keyed by attribute property steps");
+        }
+
+        private static @NotNull AttributeCallStep requireAttributeCallStep(
+                @NotNull Node node,
+                @NotNull String sideTableName
+        ) {
+            if (node instanceof AttributeCallStep attributeCallStep) {
+                return attributeCallStep;
+            }
+            throw new IllegalStateException(sideTableName + " must be keyed by attribute call steps");
+        }
+
+        private static @NotNull String describeExpression(@NotNull Expression expression) {
+            return switch (Objects.requireNonNull(expression, "expression must not be null")) {
+                case AttributeExpression _ -> "Attribute expression";
+                default -> "Expression";
+            };
+        }
+
+        private void reportExplicitCompileBlock(@NotNull Node anchor, @NotNull String message) {
+            markCompileSurfaceNode(anchor);
+            reportCompileBlock(anchor, message);
         }
 
         private void reportCompileBlock(@NotNull Node anchor, @NotNull String message) {
             Objects.requireNonNull(anchor, "anchor must not be null");
             Objects.requireNonNull(message, "message must not be null");
+            if (!handledAnchors.add(anchor)) {
+                return;
+            }
             if (hasPublishedErrorAt(anchor)) {
                 return;
             }
@@ -372,6 +574,10 @@ public class FrontendCompileCheckAnalyzer {
                             && Objects.equals(diagnostic.sourcePath(), sourcePath)
                             && Objects.equals(diagnostic.range(), anchorRange)
             );
+        }
+
+        private void markCompileSurfaceNode(@NotNull Node node) {
+            compileSurfaceNodes.add(Objects.requireNonNull(node, "node must not be null"));
         }
 
         private boolean isNotPublished(@Nullable Node node) {

@@ -9,12 +9,21 @@ import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
+import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -22,9 +31,12 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -175,6 +187,255 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(1, diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.synthetic").size());
     }
 
+    @Test
+    void analyzeReportsGenericCompileBlocksForPublishedCompileSurfaceFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_published_facts.gd", """
+                class_name CompileCheckPublishedFacts
+                extends RefCounted
+                
+                class Worker:
+                    var payload: int = 1
+                
+                    func read() -> int:
+                        return 1
+                
+                func ping(worker: Worker):
+                    var copy = worker
+                    var payload_copy = worker.payload
+                    var read_value = worker.read()
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var copyDeclaration = findVariable(pingFunction.body().statements(), "copy");
+        var payloadCopyDeclaration = findVariable(pingFunction.body().statements(), "payload_copy");
+        var readValueDeclaration = findVariable(pingFunction.body().statements(), "read_value");
+        var copyIdentifier = assertInstanceOf(dev.superice.gdparser.frontend.ast.IdentifierExpression.class, copyDeclaration.value());
+        var payloadStep = findNode(payloadCopyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var readStep = findNode(readValueDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+
+        preparedInput.analysisData().expressionTypes().put(
+                copyIdentifier,
+                FrontendExpressionType.deferred("synthetic deferred expression")
+        );
+        var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(payloadStep));
+        preparedInput.analysisData().resolvedMembers().put(
+                payloadStep,
+                FrontendResolvedMember.failed(
+                        originalMember.memberName(),
+                        originalMember.bindingKind(),
+                        originalMember.receiverKind(),
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic failed member"
+                )
+        );
+        var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(readStep));
+        preparedInput.analysisData().resolvedCalls().put(
+                readStep,
+                FrontendResolvedCall.unsupported(
+                        originalCall.callableName(),
+                        originalCall.callKind(),
+                        originalCall.receiverKind(),
+                        originalCall.ownerKind(),
+                        originalCall.receiverType(),
+                        originalCall.argumentTypes(),
+                        originalCall.declarationSite(),
+                        "synthetic unsupported call"
+                )
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(3, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+        ));
+        assertEquals(
+                Set.of(
+                        FrontendRange.fromAstRange(copyIdentifier.range()),
+                        FrontendRange.fromAstRange(payloadStep.range()),
+                        FrontendRange.fromAstRange(readStep.range())
+                ),
+                compileDiagnostics.stream().map(FrontendDiagnostic::range).collect(java.util.stream.Collectors.toSet())
+        );
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("synthetic deferred expression")
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("synthetic failed member")
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("synthetic unsupported call")
+        ));
+    }
+
+    @Test
+    void analyzeDeduplicatesGenericCompileBlocksAtSharedAttributeFinalStepAnchor() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_shared_anchor.gd", """
+                class_name CompileCheckSharedAnchor
+                extends RefCounted
+                
+                class Worker:
+                    func read() -> int:
+                        return 1
+                
+                func ping(worker: Worker):
+                    var value = worker.read()
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
+        var attributeExpression = assertInstanceOf(AttributeExpression.class, valueDeclaration.value());
+        var readStep = findNode(attributeExpression, AttributeCallStep.class, step -> step.name().equals("read"));
+        var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(readStep));
+
+        preparedInput.analysisData().expressionTypes().put(
+                attributeExpression,
+                FrontendExpressionType.failed("synthetic failed attribute expression")
+        );
+        preparedInput.analysisData().resolvedCalls().put(
+                readStep,
+                FrontendResolvedCall.failed(
+                        originalCall.callableName(),
+                        originalCall.callKind(),
+                        originalCall.receiverKind(),
+                        originalCall.ownerKind(),
+                        originalCall.receiverType(),
+                        originalCall.argumentTypes(),
+                        originalCall.declarationSite(),
+                        "synthetic failed call step"
+                )
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(readStep.range()), compileDiagnostics.getFirst().range());
+        assertTrue(compileDiagnostics.getFirst().message().contains("synthetic failed attribute expression"));
+    }
+
+    @Test
+    void analyzeSkipsGenericCompileBlocksOutsideCompileSurface() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_outside_surface.gd", """
+                class_name CompileCheckOutsideSurface
+                extends Node
+                
+                func ping(seed = 1):
+                    var callback = func():
+                        return 2
+                    pass
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var defaultLiteral = assertInstanceOf(LiteralExpression.class, pingFunction.parameters().getFirst().defaultValue());
+        var callbackDeclaration = findVariable(pingFunction.body().statements(), "callback");
+        var lambdaExpression = assertInstanceOf(LambdaExpression.class, callbackDeclaration.value());
+        var lambdaLiteral = findNode(lambdaExpression, LiteralExpression.class, ignored -> true);
+
+        preparedInput.analysisData().expressionTypes().put(
+                defaultLiteral,
+                FrontendExpressionType.deferred("synthetic default-value deferred expression")
+        );
+        preparedInput.analysisData().expressionTypes().put(
+                lambdaLiteral,
+                FrontendExpressionType.failed("synthetic lambda failure")
+        );
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeSkipsDynamicPublishedFactsInsideCompileSurface() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_dynamic_surface.gd", """
+                class_name CompileCheckDynamicSurface
+                extends RefCounted
+                
+                class Worker:
+                    var payload: int = 1
+                
+                    func read() -> int:
+                        return 1
+                
+                func ping(worker: Worker):
+                    var copy = worker
+                    var payload_copy = worker.payload
+                    var read_value = worker.read()
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
+        var copyDeclaration = findVariable(pingFunction.body().statements(), "copy");
+        var payloadCopyDeclaration = findVariable(pingFunction.body().statements(), "payload_copy");
+        var readValueDeclaration = findVariable(pingFunction.body().statements(), "read_value");
+        var copyIdentifier = assertInstanceOf(dev.superice.gdparser.frontend.ast.IdentifierExpression.class, copyDeclaration.value());
+        var payloadStep = findNode(payloadCopyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
+        var readStep = findNode(readValueDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(payloadStep));
+        var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(readStep));
+
+        preparedInput.analysisData().expressionTypes().put(
+                copyIdentifier,
+                FrontendExpressionType.dynamic("synthetic dynamic expression")
+        );
+        preparedInput.analysisData().resolvedMembers().put(
+                payloadStep,
+                FrontendResolvedMember.dynamic(
+                        originalMember.memberName(),
+                        originalMember.bindingKind(),
+                        originalMember.receiverKind(),
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic dynamic member"
+                )
+        );
+        preparedInput.analysisData().resolvedCalls().put(
+                readStep,
+                FrontendResolvedCall.dynamic(
+                        originalCall.callableName(),
+                        originalCall.receiverKind(),
+                        originalCall.ownerKind(),
+                        originalCall.receiverType(),
+                        originalCall.argumentTypes(),
+                        originalCall.declarationSite(),
+                        "synthetic dynamic call"
+                )
+        );
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileUpgradesDeferredWarningsIntoCompileBlockingErrors() throws Exception {
+        var source = """
+                class_name DeferredCompileCheck
+                extends RefCounted
+                
+                func build(value: int) -> String:
+                    return ""
+                
+                func ping():
+                    self.build(1 + 2).length
+                """;
+
+        var shared = analyzeShared("deferred_compile_check.gd", source);
+        assertFalse(shared.diagnostics().hasErrors());
+        assertEquals(1, diagnosticsByCategory(shared.diagnostics(), "sema.deferred_chain_resolution").size());
+        assertTrue(diagnosticsByCategory(shared.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("deferred_compile_check.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertFalse(compileDiagnostics.isEmpty());
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.message().contains("remains deferred")
+        ));
+    }
+
     private static @NotNull AnalyzedScript analyzeShared(
             @NotNull String fileName,
             @NotNull String source
@@ -250,6 +511,15 @@ class FrontendCompileCheckAnalyzerTest {
         return new PreparedCompileCheckInput(unit, analysisData, diagnosticManager);
     }
 
+    private static void runCompileCheck(@NotNull PreparedCompileCheckInput preparedInput) {
+        Objects.requireNonNull(preparedInput, "preparedInput must not be null");
+        new FrontendCompileCheckAnalyzer().analyze(
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+        preparedInput.analysisData().updateDiagnostics(preparedInput.diagnosticManager().snapshot());
+    }
+
     private static @NotNull List<FrontendDiagnostic> diagnosticsByCategory(
             @NotNull DiagnosticSnapshot diagnostics,
             @NotNull String category
@@ -257,6 +527,32 @@ class FrontendCompileCheckAnalyzerTest {
         return diagnostics.asList().stream()
                 .filter(diagnostic -> diagnostic.category().equals(category))
                 .toList();
+    }
+
+    private static @NotNull FunctionDeclaration findFunction(
+            @NotNull List<Statement> statements,
+            @NotNull String name
+    ) {
+        for (var statement : Objects.requireNonNull(statements, "statements must not be null")) {
+            if (statement instanceof FunctionDeclaration functionDeclaration
+                    && functionDeclaration.name().equals(Objects.requireNonNull(name, "name must not be null"))) {
+                return functionDeclaration;
+            }
+        }
+        throw new AssertionError("Function not found: " + name);
+    }
+
+    private static @NotNull VariableDeclaration findVariable(
+            @NotNull List<Statement> statements,
+            @NotNull String name
+    ) {
+        for (var statement : Objects.requireNonNull(statements, "statements must not be null")) {
+            if (statement instanceof VariableDeclaration variableDeclaration
+                    && variableDeclaration.name().equals(Objects.requireNonNull(name, "name must not be null"))) {
+                return variableDeclaration;
+            }
+        }
+        throw new AssertionError("Variable not found: " + name);
     }
 
     private static <T extends Node> @NotNull T findNode(

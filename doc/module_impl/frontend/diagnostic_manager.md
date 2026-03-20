@@ -6,7 +6,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（parser / skeleton / scope / variable / top-binding / chain-binding / expr-typing / type-check / exception 诊断链路已落地）
-- 更新时间：2026-03-19
+- 更新时间：2026-03-20
 - 适用范围：
     - `src/main/java/dev/superice/gdcc/frontend/diagnostic/**`
     - `src/main/java/dev/superice/gdcc/frontend/parse/**`
@@ -226,7 +226,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
-  - 当前首批显式封口包括 `assert`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
+  - 同时覆盖：
+    - 当前首批显式封口的 `assert`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
+    - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
+  - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 
 其中 `FrontendClassSkeletonBuilder` 当前对 property annotation 的行为已经冻结为：
@@ -298,6 +301,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `analyzeForCompile(...)` 在共享 8 phase 之后追加：
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
+- 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
+- 未来 frontend -> LIR lowering 调用方必须：
+    - 使用 `analyzeForCompile(...)`
+    - 并在继续编译前检查 `DiagnosticManager.hasErrors()` 或 `FrontendAnalysisData.diagnostics().hasErrors()`
 
 ### 3.4 exception
 
@@ -330,6 +337,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - analyzer 返回共享 `FrontendAnalysisData`
     - parse->analyze shared pipeline 不重复导入 parse diagnostics
     - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
+    - `analyzeForCompile(...)` 与共享 `analyze(...)` 的 lowering-readiness 边界被显式锁定
+- `FrontendCompileCheckAnalyzerTest`
+    - compile-only gate 会显式封口 `assert` 与当前暂不 lowering 的表达式形态
+    - compile surface 上的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 会被补成最终 compile blocker
+    - `DYNAMIC`、surface 外 subtree、以及同锚点重复 generic block 的去重行为稳定
 - `FrontendScopeAnalyzerTest`
     - scope phase 会发布真实 `scopesByAst`，而不是空 side-table
     - inner class / nested lambda / multi-source-unit module 的 lexical scope graph 稳定

@@ -23,6 +23,8 @@
   - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
+- compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
+- 共享 `FrontendSemanticAnalyzer.analyze(...)` 的结果不是 lowering-ready 合同；未来 frontend -> LIR lowering 只能以前置的 `analyzeForCompile(...)` 结果为准，并在 diagnostics 无 error 时继续。
 
 ## 测试约定
 

@@ -614,6 +614,40 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
+    void analyzeForCompileDefinesTheLoweringReadinessBoundary() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "compile_check_lowering_boundary.gd"), """
+                class_name CompileCheckLoweringBoundary
+                extends Node
+                
+                func ping():
+                    [1]
+                """, new DiagnosticManager());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var sharedDiagnostics = new DiagnosticManager();
+        var sharedResult = new FrontendSemanticAnalyzer().analyze(
+                "test_module",
+                List.of(unit),
+                registry,
+                sharedDiagnostics
+        );
+        assertFalse(sharedResult.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compileDiagnostics = new DiagnosticManager();
+        var compileResult = new FrontendSemanticAnalyzer().analyzeForCompile(
+                "test_module",
+                List.of(unit),
+                registry,
+                compileDiagnostics
+        );
+        assertTrue(compileResult.diagnostics().hasErrors());
+        assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check").size());
+        assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
+    }
+
+    @Test
     void analyzeKeepsPipelineAliveWhenSkeletonReportsRecoverableDiagnostics() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
