@@ -45,6 +45,11 @@
 ### 已实现共享类型解析
 
 - `MethodCallResolver#parseExtensionType` 已下沉到 `CGenHelper.parseExtensionType(...)`。
+- `ConstructInsnGen` 的 `construct_array` / `construct_dictionary` hint 解析现在走 `ClassRegistry.findType(...)`。
+- 这意味着 backend container hint 会复用 registry 的 shared strict core，同时保留 compatibility fallback：
+  - 已知 builtin / engine / gdcc / strict container 文本继续按 strict 规则解析
+  - unknown object leaf 仍可保留 `Array[FutureItem]` / `Dictionary[String, FutureItem]` 这类 external/manual LIR hint
+  - singleton / global enum / utility function 这类非 type 名称不会再被当作容器 hint 类型
 - 解析规则：
   - 空/空白 -> `GdVoidType.VOID`
   - `enum::` / `bitfield::` -> `GdIntType.INT`
@@ -81,6 +86,8 @@
 
 - 风险：已有 IR 可能向 packed `construct_array` 传入 `class_name`，改造后会 fail-fast。
   - 防线：明确错误文案，尽早暴露上游生成问题。
+- 风险：container hint 若直接切到 strict declared-type 解析，会误伤 external/manual LIR 中依赖 unknown object leaf 的兼容输入。
+  - 防线：`ConstructInsnGen` 暂时继续走 `ClassRegistry.findType(...)`，只复用 strict core，不切断 compatibility fallback。
 - 风险：`parseExtensionType` 抽取后出现行为漂移。
   - 防线：在 helper 级与 call-method 级同时加测试，覆盖 typedarray/enum/bitfield/非法输入。
 - 风险：自动注入路径切换影响 `__prepare__` 既有顺序。
@@ -93,6 +100,8 @@
 - `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenTest.java`
   - `construct_array` 构造 `Packed*Array` 成功用例（无 `class_name`）
   - `Packed*Array` 场景传入 `class_name` 报错用例
+  - unknown object leaf container hint 兼容用例
+  - singleton / global enum / utility function hint 拒绝用例
   - `__prepare__` 注入 `Packed*Array` 时生成 `ConstructArrayInsn(..., null)` 的断言
   - `generateFuncBody` 输出 packed 构造调用的断言（如 `godot_new_PackedInt32Array()`）
 - `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenEngineTest.java`

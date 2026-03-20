@@ -1,4 +1,4 @@
-package dev.superice;
+package dev.superice.gdcc;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

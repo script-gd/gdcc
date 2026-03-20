@@ -1,0 +1,67 @@
+# Frontend Rules
+
+## 恢复约定
+
+- frontend 对普通源码错误必须优先通过 `DiagnosticManager` 发诊断，不要把异常当成常规控制流。
+- 当某个 AST 节点树已经无法稳定产生产物时，当前 phase 必须跳过该节点树，并继续处理同一 module 中其他仍可恢复的节点树。
+- 对 deferred subtree 的 warning 与 unsupported feature boundary 的 error，都应优先锚定到被跳过子树的根节点；若无法识别更大的恢复根，才允许退化到节点自身这一最小 skipped root。
+- 只有 programmer error、共享 side-table 破坏、协议不变量失真等不可恢复 guard rail，才允许抛异常；`FrontendSemanticException` 不作为普通源码错误的主路径。
+
+## 诊断约定
+
+- parser 必须保持 tolerant：`gdparser` lowering diagnostics 映射为 `parse.lowering`，parser/runtime 失败映射为 `parse.internal`，不要把运行时异常直接抛给调用方。
+- skeleton / analyzer / 后续 binder-body phase 对可恢复错误必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
+- 新增 frontend 诊断或恢复路径时，必须同步更新 `diagnostic_manager.md`、相关实现注释和受影响的模块文档，避免代码与文档冲突。
+- 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
+- body phase 的 diagnostic owner 必须保持单一：
+  - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
+  - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / chain deferred/unsupported boundary
+  - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
+  - type-check analyzer 负责 `sema.type_check` / `sema.type_hint`
+  - annotation-usage analyzer 负责 `sema.annotation_usage`
+  - compile-only `FrontendCompileCheckAnalyzer` 负责 `sema.compile_check`
+  - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
+- `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
+- compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
+- compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
+- `assert` 在共享语义路径中继续沿用 Godot-compatible condition contract；compile-only `FrontendCompileCheckAnalyzer` 只是暂时阻断 statement 自身，不得把它回退成 `sema.type_check` 或 grammar unsupported。
+- `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 当前属于 frontend 已识别但 lowering 尚未就绪的 temporary compile intercept；共享语义路径可以继续发布 deferred/unstable facts，但 compile-only gate 必须在进入 lowering 前最终封口。
+- `ConditionalExpression` 当前之所以在 compile-only gate 中被显式封口，是因为它的 lowering 需要依赖 control-flow / CFG 侧合同先稳定；在那之前不得放行进编译管线。
+- 共享 `FrontendSemanticAnalyzer.analyze(...)` 的结果不是 lowering-ready 合同；未来 frontend -> LIR lowering 只能以前置的 `analyzeForCompile(...)` 结果为准，并在 diagnostics 无 error 时继续。
+
+## 测试约定
+
+- 每条新的 frontend 恢复规则都必须同时覆盖 happy path 与 negative path。
+- negative path 至少要锚定：正确 diagnostic category、坏 subtree 被跳过、同一 module 中其他合法 subtree 仍继续工作。
+
+## MVP 支持约定 
+
+- `lambda`, `match`, `for`不在最小可行产品范围内。
+- 协程和信号上的协程不在最小可行产品范围内。
+- path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
+- 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。
+- 函数参数默认值不在最小可行产品范围内。
+- class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
+- callable scope / block scope 中手动声明或发布的类型别名不在 MVP 范围内；frontend body phase 必须对这类 scope-local `type-meta` 采用 fail-closed 的 deferred / unsupported 处理，而不是把它们当成普通 class-like `TYPE_META` 消费。
+- H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
+- 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、`null -> Object`、以及 `Array` / packed array 的 float index 兼容。
+- builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
+- H2 assignment compatibility 当前通过公开 API `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 复用 concrete slot 的兼容判断：exact `Variant` slot 允许任意来源类型，其余 slot 回退 generic `ClassRegistry.checkAssignable(...)`。
+- `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
+- 除 exact `Variant` slot 与 `DYNAMIC` target 外，assignment compatibility 在 MVP 中继续回退 `ClassRegistry.checkAssignable(...)`；`int -> float`、`StringName` / `String` 互转、`null -> Object` 等更宽隐式转换当前不支持，文档和测试都必须按 strict contract 锚定。
+- source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。
+- `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
+- backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
+- `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
+- 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
+- `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。
+- property writable 判定必须统一复用共享 helper，而不是在 scope publication、assignment analyzer、其他 frontend 路径里各自硬编码 engine/builtin property metadata 分支。
+- property initializer 的 MVP 支持面是“published subtree facts”，不是“完整 class-member initializer 语义”。
+- MVP 不支持 property initializer 访问同 class 下的 non-static property / method / signal / `self`；这类访问必须 fail-closed，而不是假装已经拥有 declaration-order / default-state / cycle-aware 语义。
+- property initializer 若确实需要静态 helper，优先通过 global name、type-meta route 或其他不依赖当前类实例状态的路径进入；不要把当前类 direct member namespace 当成实例初始化期可见性模型。
+- property `:=` 在 MVP 中不支持类型推导，也不会因为 RHS 稳定类型而回写 class property metadata。
+- property `:=` 与未声明显式类型 property 在 type-check 中仍按普通 initializer expression 处理；若 RHS 已稳定，type-check analyzer 需要发 `sema.type_hint` warning，提示用户手动补写建议的显式类型。
+- `sema.type_hint` 的职责是提醒用户手动添加显式类型，而不是暗中把 property 当成已经推导完成的 typed slot。
+- `@onready` 的 MVP 合同当前是“annotation retention + usage validation”，不是完整 ready-time 执行模型。
+- `@onready` 的最小合法性规则固定为：只能用于 Node 派生类中的 non-static class property；相关非法用法由独立的 `sema.annotation_usage` owner 负责，不应混入 `sema.unsupported_annotation` 或 `sema.type_check`。
+- `not in`运算符语法糖在MVP版本中不支持。

@@ -6,10 +6,6 @@ plugins {
 group = "dev.superice"
 version = "1.0-SNAPSHOT"
 
-repositories {
-    mavenCentral()
-}
-
 java {
     toolchain {
         languageVersion.set(JavaLanguageVersion.of(25))
@@ -27,6 +23,7 @@ dependencies {
     implementation("com.github.abrarsyed.jastyle:jAstyle:1.3")
     implementation("org.slf4j:slf4j-api:2.0.17")
     implementation("info.picocli:picocli:4.7.7")
+    implementation("com.github.SuperIceCN:gdparser:0.5.1")
 }
 
 tasks.test {
@@ -43,4 +40,5 @@ sourceSets {
 
 extraJavaModuleInfo {
     automaticModule("jAstyle-1.3.jar", "jAstyle")
+    automaticModule("tree-sitter-0.26.3.jar", "tree.sitter")
 }

@@ -64,4 +64,16 @@ public class DomLirSerializerTest {
         var xml = serializer.serializeToString(module);
         assertTrue(xml.contains("try_release_object $tmp \"USER_EXPLICIT\";"));
     }
+
+    @Test
+    public void serialize_module_preservesCanonicalSuperclassAttribute() throws Exception {
+        var cls = new LirClassDef("Outer$Leaf", "Outer$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var module = new LirModule("m", List.of(cls));
+        var serializer = new DomLirSerializer();
+
+        var xml = serializer.serializeToString(module);
+
+        assertTrue(xml.contains("name=\"Outer$Leaf\""), xml);
+        assertTrue(xml.contains("super=\"Outer$Shared\""), xml);
+    }
 }

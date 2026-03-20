@@ -9,7 +9,6 @@ import dev.superice.gdcc.lir.insn.ConstructArrayInsn;
 import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructDictionaryInsn;
 import dev.superice.gdcc.lir.insn.ConstructionInstruction;
-import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdPackedArrayType;
@@ -182,7 +181,10 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
         if (textType.isBlank()) {
             throw bodyBuilder.invalidInsn(hintLabel + " must not be blank");
         }
-        var parsedType = ClassRegistry.tryParseTextType(textType);
+        // Low IR container hints still accept registry compatibility parsing so external/manual IR can keep
+        // expressing forward object names such as `Array[FutureItem]` while reusing the shared strict core
+        // that now lives behind `ClassRegistry.findType(...)`.
+        var parsedType = bodyBuilder.classRegistry().findType(textType);
         if (parsedType == null) {
             throw bodyBuilder.invalidInsn(hintLabel + " '" + textType + "' is not a valid type");
         }

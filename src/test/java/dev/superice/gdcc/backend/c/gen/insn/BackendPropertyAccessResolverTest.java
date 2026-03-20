@@ -30,14 +30,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class PropertyAccessResolverTest {
+class BackendPropertyAccessResolverTest {
     @Test
     @DisplayName("resolveObjectProperty should return null for unknown object receiver")
     void resolveObjectPropertyReturnsNullForUnknownReceiver() {
         var hostClass = new LirClassDef("HostClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var bodyBuilder = newBodyBuilder(emptyApi(), List.of(hostClass));
 
-        var lookup = PropertyAccessResolver.resolveObjectProperty(
+        var lookup = BackendPropertyAccessResolver.resolveObjectProperty(
                 bodyBuilder,
                 new GdObjectType("UnknownType"),
                 "name",
@@ -58,7 +58,7 @@ class PropertyAccessResolverTest {
 
         var bodyBuilder = newBodyBuilder(emptyApi(), List.of(parentClass, childClass));
 
-        var lookup = PropertyAccessResolver.resolveObjectProperty(
+        var lookup = BackendPropertyAccessResolver.resolveObjectProperty(
                 bodyBuilder,
                 new GdObjectType("ChildClass"),
                 "value",
@@ -68,7 +68,7 @@ class PropertyAccessResolverTest {
         assertNotNull(lookup);
         assertEquals("ChildClass", lookup.ownerClass().getName());
         assertEquals("StringName", lookup.property().getType().getTypeName());
-        assertEquals(PropertyAccessResolver.PropertyOwnerDispatchMode.GDCC, lookup.ownerDispatchMode());
+        assertEquals(BackendPropertyAccessResolver.PropertyOwnerDispatchMode.GDCC, lookup.ownerDispatchMode());
     }
 
     @Test
@@ -85,7 +85,7 @@ class PropertyAccessResolverTest {
         var userClass = new LirClassDef("MyClass", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
         var bodyBuilder = newBodyBuilder(api, List.of(userClass));
 
-        var lookup = PropertyAccessResolver.resolveObjectProperty(
+        var lookup = BackendPropertyAccessResolver.resolveObjectProperty(
                 bodyBuilder,
                 new GdObjectType("MyClass"),
                 "name",
@@ -94,7 +94,7 @@ class PropertyAccessResolverTest {
 
         assertNotNull(lookup);
         assertEquals("Node", lookup.ownerClass().getName());
-        assertEquals(PropertyAccessResolver.PropertyOwnerDispatchMode.ENGINE, lookup.ownerDispatchMode());
+        assertEquals(BackendPropertyAccessResolver.PropertyOwnerDispatchMode.ENGINE, lookup.ownerDispatchMode());
     }
 
     @Test
@@ -106,7 +106,7 @@ class PropertyAccessResolverTest {
 
         var ex = assertThrows(
                 InvalidInsnException.class,
-                () -> PropertyAccessResolver.resolveObjectProperty(
+                () -> BackendPropertyAccessResolver.resolveObjectProperty(
                         bodyBuilder,
                         new GdObjectType("ChildClass"),
                         "missing_prop",
@@ -128,7 +128,7 @@ class PropertyAccessResolverTest {
 
         var ex = assertThrows(
                 InvalidInsnException.class,
-                () -> PropertyAccessResolver.resolveObjectProperty(
+                () -> BackendPropertyAccessResolver.resolveObjectProperty(
                         bodyBuilder,
                         new GdObjectType("ClassA"),
                         "name",
@@ -148,7 +148,7 @@ class PropertyAccessResolverTest {
 
         var ex = assertThrows(
                 InvalidInsnException.class,
-                () -> PropertyAccessResolver.resolveObjectProperty(
+                () -> BackendPropertyAccessResolver.resolveObjectProperty(
                         bodyBuilder,
                         new GdObjectType("ClassA"),
                         "name",

@@ -7,9 +7,10 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.util.*;
 
-/** XML entity: <class_def ...> ... </class_def>. */
+/// XML entity: <class_def ...> ... </class_def>.
 public final class LirClassDef implements ClassDef {
     private @NotNull String name;
+    /// Canonical superclass identity written into backend-facing LIR.
     private @NotNull String superName;
     private boolean isAbstract;
     private boolean isTool;
@@ -53,6 +54,7 @@ public final class LirClassDef implements ClassDef {
         this.functions = new ArrayList<>();
     }
 
+    /// Canonical class identity used by the registry and downstream phases.
     public @NotNull String getName() {
         return name;
     }

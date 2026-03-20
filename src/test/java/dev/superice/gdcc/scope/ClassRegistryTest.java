@@ -1,6 +1,13 @@
 package dev.superice.gdcc.scope;
 
+import dev.superice.gdcc.exception.TypeParsingException;
+import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
@@ -9,6 +16,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -109,6 +117,15 @@ public class ClassRegistryTest {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);
 
+        if (!api.singletons().isEmpty()) {
+            var singleton = api.singletons().getFirst();
+            assertNotNull(singleton.name());
+            if (!registry.isGdClass(singleton.name()) && !registry.isGdccClass(singleton.name())) {
+                assertNull(registry.findType(singleton.name()),
+                        () -> "findType should not return type for singleton name: " + singleton.name());
+            }
+        }
+
         // If global enums exist, findType should not return a type for the enum name
         if (!api.globalEnums().isEmpty()) {
             var ge = api.globalEnums().getFirst();
@@ -122,6 +139,49 @@ public class ClassRegistryTest {
             assertNotNull(uf.name());
             assertNull(registry.findType(uf.name()), () -> "findType should not return type for utility function name: " + uf.name());
         }
+    }
+
+    @Test
+    void findTypeShouldReuseStrictResolverBeforeCompatibilityFallback() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        registry.addGdccClass(new LirClassDef("InventoryItem", "Object"));
+
+        assertEquals(registry.tryResolveDeclaredType("InventoryItem"), registry.findType("InventoryItem"));
+        assertEquals(registry.tryResolveDeclaredType("Array[InventoryItem]"), registry.findType("Array[InventoryItem]"));
+
+        assertNull(registry.tryResolveDeclaredType("FutureEnemy"));
+        assertEquals(new GdObjectType("FutureEnemy"), registry.findType("FutureEnemy"));
+        assertEquals(new GdArrayType(new GdObjectType("FutureEnemy")), registry.findType("Array[FutureEnemy]"));
+    }
+
+    @Test
+    void findTypeShouldExplainBuiltinMappingGapWithoutImplyingBuiltinTypesAreUnsupported() {
+        var registry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass(
+                        "CustomBuiltin",
+                        false,
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of()
+                )),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+
+        var exception = assertThrows(TypeParsingException.class, () -> registry.findType("CustomBuiltin"));
+        assertEquals(
+                "Name 'CustomBuiltin' is recognized as a Godot builtin class, but GDCC has no builtin-type mapping for it yet",
+                exception.getMessage()
+        );
     }
 
     @Test
@@ -179,6 +239,61 @@ public class ClassRegistryTest {
     }
 
     @Test
+    void compatibilityTypeParsingShouldPreserveContainerShapeForUnknownLeafIdentifiers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                ClassRegistry.tryParseTextType("Array[FutureEnemy]")
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                ClassRegistry.tryParseTextType("Dictionary[String, FutureEnemy]")
+        );
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                registry.findType("Array[FutureEnemy]")
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                registry.findType("Dictionary[String, FutureEnemy]")
+        );
+
+        assertNull(registry.tryResolveDeclaredType("Array[FutureEnemy]"));
+        assertNull(registry.tryResolveDeclaredType("Dictionary[String, FutureEnemy]"));
+    }
+
+    @Test
+    void compatibilityTypeParsingShouldRejectInvalidObjectIdentifiers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertNull(ClassRegistry.tryParseTextType("1Enemy"));
+        assertNull(ClassRegistry.tryParseTextType("bad-name"));
+        assertNull(ClassRegistry.tryParseTextType("Array[1Enemy]"));
+        assertNull(ClassRegistry.tryParseTextType("Dictionary[String, bad-name]"));
+
+        assertNull(registry.findType("Array[1Enemy]"));
+        assertNull(registry.findType("Dictionary[String, bad-name]"));
+    }
+
+    @Test
+    void declaredTypeParsingShouldAllowBareContainerFamiliesButRejectStructuredNestedContainers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertEquals(
+                new GdArrayType(new GdArrayType(GdVariantType.VARIANT)),
+                registry.tryResolveDeclaredType("Array[Array]")
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdArrayType(GdVariantType.VARIANT)),
+                registry.tryResolveDeclaredType("Dictionary[String, Array]")
+        );
+
+        assertNull(registry.tryResolveDeclaredType("Array[Array[int]]"));
+        assertNull(registry.tryResolveDeclaredType("Dictionary[String, Array[int]]"));
+    }
+
+    @Test
     void findDefaultValues() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);
@@ -194,5 +309,184 @@ public class ClassRegistryTest {
         }
         IO.println("Found " + defaultValueSet.size() + " unique default values across all API methods");
         IO.println(defaultValueSet);
+    }
+
+    @Test
+    void utilitySignatureShouldNormalizeTypedarrayMetadataThroughRegistry() throws IOException {
+        var registry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionUtilityFunction(
+                                "typedarray_default_utility",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument(
+                                                "specialization_constants",
+                                                "typedarray::RDPipelineSpecializationConstant",
+                                                "Array[RDPipelineSpecializationConstant]([])",
+                                                null
+                                        )
+                                )
+                        )
+                ),
+                List.of(),
+                List.of(
+                        new ExtensionGdClass(
+                                "RDPipelineSpecializationConstant",
+                                false,
+                                true,
+                                "RefCounted",
+                                "servers",
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        )
+                ),
+                List.of(),
+                List.of()
+        ));
+
+        var signature = registry.findUtilityFunctionSignature("typedarray_default_utility");
+        assertNotNull(signature);
+        assertEquals(1, signature.parameterCount());
+        assertEquals(
+                new GdArrayType(new GdObjectType("RDPipelineSpecializationConstant")),
+                signature.parameters().getFirst().type()
+        );
+        assertEquals(
+                "Array[RDPipelineSpecializationConstant]([])",
+                signature.parameters().getFirst().defaultValue()
+        );
+    }
+
+    @Test
+    void utilityWithoutDeclaredReturnTypeNormalizesToVoidForSharedConsumers() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var printUtility = assertInstanceOf(
+                ExtensionUtilityFunction.class,
+                registry.resolveFunctions("print").getFirst()
+        );
+        assertNull(printUtility.returnType());
+        assertEquals(GdVoidType.VOID, printUtility.getReturnType());
+
+        var printSignature = registry.findUtilityFunctionSignature("print");
+        assertNotNull(printSignature);
+        assertEquals(GdVoidType.VOID, printSignature.returnType());
+    }
+
+    @Test
+    void extensionMetadataConsumersStillUseCompatibilityTextTypeParsingForUnknownObjectLeaves() {
+        var utility = new ExtensionUtilityFunction(
+                "spawn_wave",
+                "Array[FutureEnemy]",
+                "test",
+                false,
+                0,
+                List.of(new ExtensionFunctionArgument(
+                        "payload",
+                        "Dictionary[String, FutureEnemy]",
+                        null,
+                        null
+                ))
+        );
+        var builtinClass = new ExtensionBuiltinClass(
+                "FutureCarrier",
+                false,
+                List.of(),
+                List.of(new ExtensionBuiltinClass.ClassMethod(
+                        "spawn_array",
+                        "Array[FutureEnemy]",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0,
+                        List.of(new ExtensionFunctionArgument("target", "FutureEnemy", null, null)),
+                        List.of(),
+                        new ExtensionBuiltinClass.ClassMethod.ReturnValue("Array[FutureEnemy]")
+                )),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.PropertyInfo(
+                        "items",
+                        "Array[FutureEnemy]",
+                        true,
+                        false,
+                        ""
+                )),
+                List.of()
+        );
+        var engineClass = new ExtensionGdClass(
+                "FutureSpawner",
+                false,
+                true,
+                "RefCounted",
+                "test",
+                List.of(),
+                List.of(new ExtensionGdClass.ClassMethod(
+                        "spawn_dictionary",
+                        false,
+                        false,
+                        false,
+                        false,
+                        0,
+                        List.of(),
+                        new ExtensionGdClass.ClassMethod.ClassMethodReturn("Dictionary[String, FutureEnemy]"),
+                        List.of(new ExtensionFunctionArgument("target", "FutureEnemy", null, null))
+                )),
+                List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo(
+                        "queue",
+                        "Array[FutureEnemy]",
+                        true,
+                        true,
+                        ""
+                )),
+                List.of()
+        );
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                utility.getReturnType()
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                utility.getParameter(0).getType()
+        );
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                engineClass.getProperties().getFirst().getType()
+        );
+        assertEquals(
+                new GdObjectType("FutureEnemy"),
+                engineClass.getFunctions().getFirst().getParameter(0).getType()
+        );
+        assertEquals(
+                new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureEnemy")),
+                engineClass.getFunctions().getFirst().getReturnType()
+        );
+
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                builtinClass.getProperties().getFirst().getType()
+        );
+        assertEquals(
+                new GdObjectType("FutureEnemy"),
+                builtinClass.getFunctions().getFirst().getParameter(0).getType()
+        );
+        assertEquals(
+                new GdArrayType(new GdObjectType("FutureEnemy")),
+                builtinClass.getFunctions().getFirst().getReturnType()
+        );
     }
 }

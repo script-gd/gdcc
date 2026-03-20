@@ -150,6 +150,17 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("parseExtensionType should resolve typedarray engine class element through registry")
+    void parseExtensionTypeShouldResolveTypedarrayEngineClassElementThroughRegistry() {
+        var parsed = helper.parseExtensionType(
+                "typedarray::RDPipelineSpecializationConstant",
+                "test typedarray engine class parameter"
+        );
+
+        assertEquals(new GdArrayType(new GdObjectType("RDPipelineSpecializationConstant")), parsed);
+    }
+
+    @Test
     @DisplayName("parseExtensionType should normalize enum and bitfield metadata to int")
     void parseExtensionTypeShouldNormalizeEnumAndBitfield() {
         var enumType = helper.parseExtensionType("enum::Variant.Type", "test enum return type");

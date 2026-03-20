@@ -377,7 +377,7 @@ public final class OperatorResolver {
             );
             return null;
         }
-        var parsedReturnType = ClassRegistry.tryParseTextType(returnTypeName);
+        var parsedReturnType = bodyBuilder.classRegistry().tryResolveDeclaredType(returnTypeName);
         if (parsedReturnType == null) {
             warnMetadataEntry(
                     bodyBuilder,

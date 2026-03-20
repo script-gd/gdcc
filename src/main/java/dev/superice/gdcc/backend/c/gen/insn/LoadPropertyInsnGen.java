@@ -19,7 +19,7 @@ import java.util.Objects;
 
 public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
     private record PropertyReadResolution(@NotNull GdType propertyType,
-                                          @Nullable PropertyAccessResolver.ObjectPropertyLookup objectLookup) {
+                                          @Nullable BackendPropertyAccessResolver.ObjectPropertyLookup objectLookup) {
         private PropertyReadResolution {
             Objects.requireNonNull(propertyType);
         }
@@ -62,7 +62,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         if (objectVar.type() instanceof GdObjectType) {
             var lookup = readResolution.objectLookup();
             if (lookup != null) {
-                var receiverValue = PropertyAccessResolver.renderOwnerReceiverValue(
+                var receiverValue = BackendPropertyAccessResolver.renderOwnerReceiverValue(
                         bodyBuilder,
                         objectVar,
                         lookup,
@@ -116,7 +116,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                                                                 @NotNull String propertyName) {
         var registry = bodyBuilder.classRegistry();
         if (objectType instanceof GdObjectType gdObjectType) {
-            var lookup = PropertyAccessResolver.resolveObjectProperty(
+            var lookup = BackendPropertyAccessResolver.resolveObjectProperty(
                     bodyBuilder,
                     gdObjectType,
                     propertyName,
@@ -139,7 +139,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
             return new PropertyReadResolution(propertyType, lookup);
         }
 
-        var lookup = PropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
+        var lookup = BackendPropertyAccessResolver.resolveBuiltinProperty(bodyBuilder, objectType, propertyName);
         var builtinClass = lookup.builtinClass();
         if (!lookup.property().isReadable()) {
             throw bodyBuilder.invalidInsn("Property '" + propertyName + "' in builtin class " + builtinClass.getName() + " is not readable");
@@ -154,7 +154,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
 
     private boolean isLoadingInsideGetterSelf(@NotNull CBodyBuilder bodyBuilder,
                                               @NotNull dev.superice.gdcc.lir.LirVariable objectVar,
-                                              @NotNull PropertyAccessResolver.ObjectPropertyLookup lookup) {
+                                              @NotNull BackendPropertyAccessResolver.ObjectPropertyLookup lookup) {
         var func = bodyBuilder.func();
         if (func.isAbstract() || func.isStatic() || func.isLambda() || func.isVararg()) {
             return false;

@@ -6,6 +6,7 @@ import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 
 import org.w3c.dom.*;
+
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.Reader;
 import java.io.StringReader;
@@ -45,7 +46,8 @@ public final class DomLirParser implements LirParser {
         for (int i = 0; i < classNodes.getLength(); i++) {
             var cn = (Element) classNodes.item(i);
             var name = cn.getAttribute("name");
-            var superName = cn.getAttribute("super");
+            // The serialized `super` attribute is canonical and is loaded verbatim into `ClassDef`.
+            var superCanonicalName = cn.getAttribute("super");
             var isAbstract = Boolean.parseBoolean(cn.getAttribute("is_abstract"));
             var isTool = Boolean.parseBoolean(cn.getAttribute("is_tool"));
 
@@ -210,7 +212,7 @@ public final class DomLirParser implements LirParser {
                                 throw new IllegalArgumentException("<basic_blocks> must have an 'entry' attribute when basic_block children are present for function: " + fname);
                             }
                             var entryId = bnode.getAttribute("entry");
-                            if (entryId == null || entryId.isEmpty()) {
+                            if (entryId.isEmpty()) {
                                 throw new IllegalArgumentException("Empty 'entry' attribute on <basic_blocks> for function: " + fname);
                             }
                             fn.setEntryBlockId(entryId);
@@ -240,7 +242,7 @@ public final class DomLirParser implements LirParser {
                 }
             }
 
-            classes.add(new LirClassDef(name, superName, isAbstract, isTool, annotations, signals, props, funcs));
+            classes.add(new LirClassDef(name, superCanonicalName, isAbstract, isTool, annotations, signals, props, funcs));
         }
 
         return new LirModule(moduleName, classes);

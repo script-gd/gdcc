@@ -6,6 +6,7 @@ import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -586,12 +587,61 @@ class CallGlobalInsnGenTest {
                                                 null
                                         )
                                 )
+                        ),
+                        new ExtensionUtilityFunction(
+                                "utility_with_default_typedarray_metadata",
+                                "void",
+                                "test",
+                                false,
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument(
+                                                "specialization_constants",
+                                                "typedarray::RDPipelineSpecializationConstant",
+                                                "Array[RDPipelineSpecializationConstant]([])",
+                                                null
+                                        )
+                                )
                         )
                 ),
                 List.of(),
-                List.of(),
+                List.of(
+                        new ExtensionGdClass(
+                                "RDPipelineSpecializationConstant",
+                                false,
+                                true,
+                                "RefCounted",
+                                "servers",
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of(),
+                                List.of()
+                        )
+                ),
                 List.of(),
                 List.of()
         );
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should normalize typedarray metadata default through registry-aware utility signature parsing")
+    void callGlobalShouldCompleteTypedarrayMetadataDefault() {
+        var clazz = newTestClass();
+        var func = newFunction("call_utility_with_metadata_typedarray_default");
+
+        entry(func).instructions().add(new CallGlobalInsn(
+                null,
+                "utility_with_default_typedarray_metadata",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, utilityApi());
+        assertTrue(body.matches("(?s).*\\b__gdcc_tmp_default_arg_1_\\d+;.*"), body);
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant("), body);
+        assertTrue(body.contains("GD_STATIC_SN(u8\"RDPipelineSpecializationConstant\")"), body);
+        assertTrue(body.matches("(?s).*godot_utility_with_default_typedarray_metadata\\(&__gdcc_tmp_default_arg_1_\\d+\\);.*"), body);
+        assertTrue(body.matches("(?s).*godot_Array_destroy\\(&__gdcc_tmp_default_arg_1_\\d+\\);.*"), body);
     }
 }

@@ -6,6 +6,9 @@ import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionGlobalEnum;
+import dev.superice.gdcc.gdextension.ExtensionSingleton;
+import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -20,6 +23,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdPackedStringArrayType;
 import dev.superice.gdcc.type.GdPackedVectorArrayType;
@@ -183,6 +187,56 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_array should preserve unknown object leaf hints through registry compatibility parsing")
+    void constructArrayShouldPreserveUnknownObjectLeafHints() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_array_unknown_object_leaf");
+        func.createAndAddVariable("arr", new GdArrayType(new GdObjectType("FutureItem")));
+
+        entry(func).instructions().add(new ConstructArrayInsn("arr", "FutureItem"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
+        assertTrue(body.contains("GD_STATIC_SN(u8\"FutureItem\")"));
+    }
+
+    @Test
+    @DisplayName("construct_dictionary should preserve unknown object leaf hints through registry compatibility parsing")
+    void constructDictionaryShouldPreserveUnknownObjectLeafHints() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_dictionary_unknown_object_leaf");
+        func.createAndAddVariable("dict", new GdDictionaryType(GdStringType.STRING, new GdObjectType("FutureItem")));
+
+        entry(func).instructions().add(new ConstructDictionaryInsn("dict", "String", "FutureItem"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+        assertTrue(body.contains("GD_STATIC_SN(u8\"FutureItem\")"));
+    }
+
+    @Test
+    @DisplayName("construct container hints should reject non-type registry names exposed by compatibility lookup")
+    void constructContainerHintsShouldRejectNonTypeRegistryNames() {
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalEnum("DamageFlags", true, List.of())),
+                List.of(new ExtensionUtilityFunction("spawn_helper", "void", "test", false, 0, List.of())),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionSingleton("GameSingleton", "Node")),
+                List.of()
+        );
+
+        assertInvalidArrayHint(api, "DamageFlags");
+        assertInvalidArrayHint(api, "spawn_helper");
+        assertInvalidArrayHint(api, "GameSingleton");
     }
 
     @Test
@@ -482,6 +536,12 @@ class CConstructInsnGenTest {
         return codegen.generateFuncBody(clazz, func);
     }
 
+    private String generateBody(LirClassDef clazz, LirFunctionDef func, ExtensionAPI api) {
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz), api);
+        return codegen.generateFuncBody(clazz, func);
+    }
+
     private void assertPackedArrayClassNameRejected(String className) {
         var clazz = newTestClass();
         var func = newFunction("construct_packed_array_with_blank_class_name");
@@ -491,6 +551,17 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("must not provide class_name"));
+    }
+
+    private void assertInvalidArrayHint(ExtensionAPI api, String hintText) {
+        var clazz = newTestClass();
+        var func = newFunction("construct_array_invalid_hint_" + hintText);
+        func.createAndAddVariable("arr", new GdArrayType(GdVariantType.VARIANT));
+        entry(func).instructions().add(new ConstructArrayInsn("arr", hintText));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, api));
+        assertTrue(ex.getMessage().contains("construct_array '" + hintText + "' is not a valid type"));
     }
 
     private LirFunctionDef findFunctionByName(LirClassDef clazz, String functionName) {
@@ -517,7 +588,11 @@ class CConstructInsnGenTest {
     }
 
     private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses) {
-        var classRegistry = new ClassRegistry(apiWithPackedConstructors());
+        return newCodegen(module, gdccClasses, apiWithPackedConstructors());
+    }
+
+    private CCodegen newCodegen(LirModule module, List<LirClassDef> gdccClasses, ExtensionAPI api) {
+        var classRegistry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
             classRegistry.addGdccClass(gdccClass);
         }

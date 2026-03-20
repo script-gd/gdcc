@@ -6,7 +6,6 @@ import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
-import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
@@ -125,16 +124,16 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
     }
 
     private @NotNull GdType parseBuiltinConstantType(@NotNull CBodyBuilder bodyBuilder,
-                                                      @NotNull ExtensionBuiltinClass.ConstantInfo constant,
-                                                      @NotNull String className,
-                                                      @NotNull String staticName) {
+                                                     @NotNull ExtensionBuiltinClass.ConstantInfo constant,
+                                                     @NotNull String className,
+                                                     @NotNull String staticName) {
         var constantTypeName = constant.type();
         if (constantTypeName == null || constantTypeName.isBlank()) {
             throw bodyBuilder.invalidInsn(
                     "Builtin constant '" + staticName + "' in class '" + className + "' has no declared type"
             );
         }
-        var parsedType = ClassRegistry.tryParseTextType(constantTypeName);
+        var parsedType = bodyBuilder.classRegistry().tryResolveDeclaredType(constantTypeName);
         if (parsedType == null) {
             throw bodyBuilder.invalidInsn(
                     "Builtin constant '" + staticName + "' in class '" + className +

@@ -11,6 +11,7 @@ import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdDictionaryType;
@@ -45,7 +46,8 @@ class UtilityDefaultLiteralMaterializationTest {
     @DisplayName("materializeUtilityDefaultValue should cover all documented default literals")
     void shouldMaterializeAllDocumentedDefaults() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
-        var samplesByLiteral = buildSamplesByLiteral(api);
+        var classRegistry = new ClassRegistry(api);
+        var samplesByLiteral = buildSamplesByLiteral(api, classRegistry);
         var documentedLiterals = parseDocumentedDefaultLiterals();
 
         var missingLiterals = new ArrayList<String>();
@@ -60,7 +62,7 @@ class UtilityDefaultLiteralMaterializationTest {
         for (var selectedLiteral : documentedLiterals) {
             var sample = selectPreferredSample(selectedLiteral, samplesByLiteral.get(selectedLiteral));
             if (scoreSample(selectedLiteral, sample) < 50) {
-                sample = syntheticSampleForLiteral(selectedLiteral);
+                sample = syntheticSampleForLiteral(selectedLiteral, classRegistry);
             }
             var selectedSample = sample;
             assertDoesNotThrow(
@@ -68,6 +70,42 @@ class UtilityDefaultLiteralMaterializationTest {
                     () -> "Failed to materialize default literal '" + selectedLiteral + "' from " + selectedSample.source()
             );
         }
+    }
+
+    @Test
+    @DisplayName("materializeUtilityDefaultValue should support typed array defaults resolved from registry-backed metadata")
+    void shouldMaterializeTypedArrayDefaultResolvedFromRegistryBackedMetadata() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        var sample = new DefaultSample(
+                ScopeTypeParsers.parseExtensionTypeMetadata(
+                        "typedarray::RDPipelineSpecializationConstant",
+                        "test typedarray default metadata",
+                        classRegistry
+                ),
+                "Array[RDPipelineSpecializationConstant]([])",
+                "synthetic:typedarray_metadata"
+        );
+
+        assertDoesNotThrow(() -> materializeWithSample(api, sample));
+    }
+
+    @Test
+    @DisplayName("materializeUtilityDefaultValue should support typed array defaults whose element family is Array")
+    void shouldMaterializeTypedArrayOfArrayDefault() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        var sample = new DefaultSample(
+                ScopeTypeParsers.parseExtensionTypeMetadata(
+                        "typedarray::Array",
+                        "test typedarray array default metadata",
+                        classRegistry
+                ),
+                "Array[Array]([])",
+                "synthetic:typedarray_array_default"
+        );
+
+        assertDoesNotThrow(() -> materializeWithSample(api, sample));
     }
 
     private void materializeWithSample(ExtensionAPI api, DefaultSample sample) {
@@ -103,22 +141,43 @@ class UtilityDefaultLiteralMaterializationTest {
         return bodyBuilder;
     }
 
-    private Map<String, List<DefaultSample>> buildSamplesByLiteral(ExtensionAPI api) {
+    private Map<String, List<DefaultSample>> buildSamplesByLiteral(ExtensionAPI api,
+                                                                   ClassRegistry classRegistry) {
         var samplesByLiteral = new LinkedHashMap<String, List<DefaultSample>>();
         for (var utilityFunction : api.utilityFunctions()) {
-            collectFromArguments(samplesByLiteral, utilityFunction.arguments(), "utility:" + utilityFunction.name());
+            collectFromArguments(
+                    samplesByLiteral,
+                    utilityFunction.arguments(),
+                    "utility:" + utilityFunction.name(),
+                    classRegistry
+            );
         }
         for (var builtinClass : api.builtinClasses()) {
             for (var method : builtinClass.methods()) {
-                collectFromArguments(samplesByLiteral, method.arguments(), "builtin_method:" + builtinClass.name() + ":" + method.name());
+                collectFromArguments(
+                        samplesByLiteral,
+                        method.arguments(),
+                        "builtin_method:" + builtinClass.name() + ":" + method.name(),
+                        classRegistry
+                );
             }
             for (var ctor : builtinClass.constructors()) {
-                collectFromArguments(samplesByLiteral, ctor.arguments(), "builtin_ctor:" + builtinClass.name() + ":new");
+                collectFromArguments(
+                        samplesByLiteral,
+                        ctor.arguments(),
+                        "builtin_ctor:" + builtinClass.name() + ":new",
+                        classRegistry
+                );
             }
         }
         for (var gdClass : api.classes()) {
             for (var method : gdClass.methods()) {
-                collectFromArguments(samplesByLiteral, method.arguments(), "class_method:" + gdClass.name() + ":" + method.name());
+                collectFromArguments(
+                        samplesByLiteral,
+                        method.arguments(),
+                        "class_method:" + gdClass.name() + ":" + method.name(),
+                        classRegistry
+                );
             }
         }
         return samplesByLiteral;
@@ -126,16 +185,18 @@ class UtilityDefaultLiteralMaterializationTest {
 
     private void collectFromArguments(Map<String, List<DefaultSample>> out,
                                       List<ExtensionFunctionArgument> arguments,
-                                      String sourcePrefix) {
+                                      String sourcePrefix,
+                                      ClassRegistry classRegistry) {
         for (var i = 0; i < arguments.size(); i++) {
             var argument = arguments.get(i);
             if (argument.defaultValue() == null || argument.type() == null) {
                 continue;
             }
-            var parsedType = ClassRegistry.tryParseTextType(argument.type());
-            if (parsedType == null) {
-                continue;
-            }
+            var parsedType = ScopeTypeParsers.parseExtensionTypeMetadata(
+                    argument.type(),
+                    sourcePrefix + "#" + (i + 1),
+                    classRegistry
+            );
             out.computeIfAbsent(argument.defaultValue(), ignored -> new ArrayList<>())
                     .add(new DefaultSample(parsedType, argument.defaultValue(), sourcePrefix + "#" + (i + 1)));
         }
@@ -171,7 +232,7 @@ class UtilityDefaultLiteralMaterializationTest {
         return 60;
     }
 
-    private DefaultSample syntheticSampleForLiteral(String literal) {
+    private DefaultSample syntheticSampleForLiteral(String literal, ClassRegistry classRegistry) {
         var trimmed = literal.trim();
         if ("null".equals(trimmed)) {
             return new DefaultSample(GdVariantType.VARIANT, trimmed, "synthetic:null");
@@ -203,7 +264,7 @@ class UtilityDefaultLiteralMaterializationTest {
         }
         var leftParen = trimmed.indexOf('(');
         if (leftParen > 0 && trimmed.endsWith(")")) {
-            var ctorType = ClassRegistry.tryParseTextType(trimmed.substring(0, leftParen).trim());
+            var ctorType = classRegistry.tryResolveDeclaredType(trimmed.substring(0, leftParen).trim());
             if (ctorType != null) {
                 return new DefaultSample(ctorType, trimmed, "synthetic:constructor");
             }

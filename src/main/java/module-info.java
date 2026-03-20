@@ -6,6 +6,7 @@ open module gdcc {
     requires org.slf4j;
     requires org.jetbrains.annotations;
     requires jAstyle;
+    requires gdparser;
 
     provides org.slf4j.spi.SLF4JServiceProvider with dev.superice.gdcc.logger.GdccSlf4jServiceProvider;
 }

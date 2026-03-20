@@ -11,6 +11,7 @@ import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.scope.*;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -390,35 +391,10 @@ public final class CGenHelper {
         };
     }
 
+    /// This is a thin layer
     public @NotNull GdType parseExtensionType(@Nullable String rawTypeName,
                                               @NotNull String typeUseSite) {
-        if (rawTypeName == null || rawTypeName.isBlank()) {
-            return GdVoidType.VOID;
-        }
-        var normalized = rawTypeName.trim();
-        if (normalized.startsWith("enum::") || normalized.startsWith("bitfield::")) {
-            return GdIntType.INT;
-        }
-        if (normalized.startsWith("typedarray::")) {
-            var elementTypeName = normalized.substring("typedarray::".length()).trim();
-            if (elementTypeName.isBlank()) {
-                throw new IllegalArgumentException(
-                        typeUseSite + " has malformed typedarray metadata: '" + rawTypeName + "'"
-                );
-            }
-            var elementType = parseExtensionType(elementTypeName, typeUseSite);
-            if (elementType instanceof GdPackedArrayType) {
-                return elementType;
-            }
-            return new GdArrayType(elementType);
-        }
-        var parsed = ClassRegistry.tryParseTextType(normalized);
-        if (parsed == null) {
-            throw new IllegalArgumentException(
-                    typeUseSite + " has unsupported type metadata: '" + rawTypeName + "'"
-            );
-        }
-        return parsed;
+        return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite, context.classRegistry());
     }
 
     public @NotNull String renderFuncBindName(@Nullable GdType returnType,
@@ -595,25 +571,25 @@ public final class CGenHelper {
     }
 
     /// Resolve the nearest constructible native ancestor for a GDCC class.
-    /// This walks up GDCC inheritance chain until the first non-GDCC parent.
+    /// This walks canonical GDCC superclass names until the first non-GDCC parent.
     public @NotNull String resolveNearestNativeAncestorName(@NotNull ClassDef classDef) {
         var registry = context.classRegistry();
-        var ancestorName = classDef.getSuperName();
+        var ancestorCanonicalName = classDef.getSuperName();
         var visited = new HashSet<String>();
-        while (registry.isGdccClass(ancestorName)) {
-            if (!visited.add(ancestorName)) {
+        while (registry.isGdccClass(ancestorCanonicalName)) {
+            if (!visited.add(ancestorCanonicalName)) {
                 throw new IllegalStateException("Detected GDCC inheritance cycle while resolving native ancestor for class " + classDef.getName());
             }
-            var parentDef = registry.findGdccClass(ancestorName);
+            var parentDef = registry.findGdccClass(ancestorCanonicalName);
             if (parentDef == null) {
-                throw new IllegalStateException("Missing GDCC class definition for parent " + ancestorName + " while resolving native ancestor for class " + classDef.getName());
+                throw new IllegalStateException("Missing GDCC class definition for parent " + ancestorCanonicalName + " while resolving native ancestor for class " + classDef.getName());
             }
-            ancestorName = parentDef.getSuperName();
+            ancestorCanonicalName = parentDef.getSuperName();
         }
-        if (ancestorName.isEmpty()) {
+        if (ancestorCanonicalName.isEmpty()) {
             throw new IllegalStateException("Class " + classDef.getName() + " does not have a native ancestor");
         }
-        return ancestorName;
+        return ancestorCanonicalName;
     }
 
     public @NotNull CodegenContext context() {
