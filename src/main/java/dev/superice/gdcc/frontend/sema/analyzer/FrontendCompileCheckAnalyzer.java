@@ -24,6 +24,7 @@ import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CastExpression;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.DictionaryExpression;
@@ -62,7 +63,8 @@ import java.util.Set;
 /// entrypoints invoke it as the final diagnostics-only barrier before lowering is allowed to start.
 ///
 /// The gate itself stays deliberately narrow:
-/// - explicit AST compile blocks for the MVP forms that lowering/backend do not support yet
+/// - explicit AST compile blocks for the currently recognized forms whose lowering/backend support
+///   is not ready yet
 /// - generic side-table scans over published `expressionTypes()` / `resolvedMembers()` /
 ///   `resolvedCalls()` facts that are still blocked/deferred/failed/unsupported on compile surface
 /// - no new side tables and no rewrites of upstream semantic ownership
@@ -105,6 +107,11 @@ public class FrontendCompileCheckAnalyzer {
     private static @NotNull String assertCompileBlockedMessage() {
         return "assert statement is recognized by the frontend but is temporarily blocked in compile mode until "
                 + "lowering/backend support lands";
+    }
+
+    private static @NotNull String conditionalCompileBlockedMessage() {
+        return "Conditional expression is recognized by the frontend but is temporarily blocked in compile mode until "
+                + "lowering CFG support lands";
     }
 
     private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
@@ -388,6 +395,10 @@ public class FrontendCompileCheckAnalyzer {
                     // Lambdas remain outside the current compile surface and keep their upstream
                     // unsupported-subtree owner.
                 }
+                case ConditionalExpression conditionalExpression -> reportExplicitCompileBlock(
+                        conditionalExpression,
+                        conditionalCompileBlockedMessage()
+                );
                 case ArrayExpression arrayExpression -> reportExplicitCompileBlock(
                         arrayExpression,
                         expressionCompileBlockedMessage("Array literal")

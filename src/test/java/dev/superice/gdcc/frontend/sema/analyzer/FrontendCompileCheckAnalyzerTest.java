@@ -86,6 +86,7 @@ class FrontendCompileCheckAnalyzerTest {
                 
                 func ping(value):
                     assert(value, "compile-only gate")
+                    1 if value else 0
                     {"hp": 1}
                     $Camera3D
                     value as String
@@ -93,17 +94,21 @@ class FrontendCompileCheckAnalyzerTest {
                 """;
 
         var sharedAnalyzed = analyzeShared("compile_check_explicit_blocks.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.type_check").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.unsupported_expression_route").isEmpty());
 
         var compiled = analyzeForCompile("compile_check_explicit_blocks.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(7, compileDiagnostics.size());
+        assertEquals(8, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Path.of("tmp", "compile_check_explicit_blocks.gd").equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Conditional expression")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Array literal")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Dictionary literal")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Preload expression")));
@@ -111,6 +116,29 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Cast expression")));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Type-test expression")));
         assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileBlocksAssertWithoutReclassifyingSharedConditionContract() throws Exception {
+        var source = """
+                class_name CompileCheckAssertContract
+                extends RefCounted
+                
+                func ping():
+                    assert(1, "frontend still accepts truthy source conditions")
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_assert_contract.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.type_check").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_assert_contract.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.type_check").isEmpty());
+        assertTrue(compileDiagnostics.getFirst().message().contains("assert statement"));
     }
 
     @Test
@@ -313,6 +341,96 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(1, compileDiagnostics.size());
         assertEquals(FrontendRange.fromAstRange(readStep.range()), compileDiagnostics.getFirst().range());
         assertTrue(compileDiagnostics.getFirst().message().contains("synthetic failed attribute expression"));
+    }
+
+    @Test
+    void analyzeReportsGenericCompileBlocksForPublishedPropertyInitializerFacts() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_property_initializer_facts.gd", """
+                class_name CompileCheckPropertyInitializerFacts
+                extends RefCounted
+                
+                class Handle:
+                    func read() -> int:
+                        return 1
+                
+                class Worker:
+                    var handle: Handle = Handle.new()
+                
+                    static func build() -> Worker:
+                        return Worker.new()
+                
+                var expr_value: int = 1
+                var member_value := Worker.build().handle
+                var call_value := Worker.build().handle.read()
+                """);
+        var exprValueDeclaration = findVariable(preparedInput.unit().ast().statements(), "expr_value");
+        var memberValueDeclaration = findVariable(preparedInput.unit().ast().statements(), "member_value");
+        var callValueDeclaration = findVariable(preparedInput.unit().ast().statements(), "call_value");
+        var exprLiteral = assertInstanceOf(LiteralExpression.class, exprValueDeclaration.value());
+        var handleStep = findNode(
+                memberValueDeclaration.value(),
+                AttributePropertyStep.class,
+                step -> step.name().equals("handle")
+        );
+        var readStep = findNode(
+                callValueDeclaration.value(),
+                AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
+
+        preparedInput.analysisData().expressionTypes().put(
+                exprLiteral,
+                FrontendExpressionType.failed("synthetic property initializer expression")
+        );
+        var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(handleStep));
+        preparedInput.analysisData().resolvedMembers().put(
+                handleStep,
+                FrontendResolvedMember.failed(
+                        originalMember.memberName(),
+                        originalMember.bindingKind(),
+                        originalMember.receiverKind(),
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic property initializer member"
+                )
+        );
+        var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(readStep));
+        preparedInput.analysisData().resolvedCalls().put(
+                readStep,
+                FrontendResolvedCall.unsupported(
+                        originalCall.callableName(),
+                        originalCall.callKind(),
+                        originalCall.receiverKind(),
+                        originalCall.ownerKind(),
+                        originalCall.receiverType(),
+                        originalCall.argumentTypes(),
+                        originalCall.declarationSite(),
+                        "synthetic property initializer call"
+                )
+        );
+
+        runCompileCheck(preparedInput);
+
+        var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
+        assertEquals(3, compileDiagnostics.size());
+        assertEquals(
+                Set.of(
+                        FrontendRange.fromAstRange(exprLiteral.range()),
+                        FrontendRange.fromAstRange(handleStep.range()),
+                        FrontendRange.fromAstRange(readStep.range())
+                ),
+                compileDiagnostics.stream().map(FrontendDiagnostic::range).collect(java.util.stream.Collectors.toSet())
+        );
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("synthetic property initializer expression")
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("synthetic property initializer member")
+        ));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("synthetic property initializer call")
+        ));
     }
 
     @Test

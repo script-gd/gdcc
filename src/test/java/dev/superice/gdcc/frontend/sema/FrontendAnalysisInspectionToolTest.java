@@ -9,6 +9,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -109,6 +110,27 @@ class FrontendAnalysisInspectionToolTest {
         assertTrue(report.contains("self"));
         assertTrue(report.contains("diagnostics = [D0001]"));
         assertTrue(report.contains("type.status = BLOCKED"));
+    }
+
+    @Test
+    void inspectSingleScriptKeepsCompileOnlyGateOutOfSharedInspectionPipeline() throws Exception {
+        var inspected = inspect(
+                "inspection_compile_gate_split.gd",
+                """
+                        class_name InspectionCompileGateSplit
+                        extends Node
+                        
+                        func ping():
+                            assert(1, "inspection stays on shared semantic facts")
+                            [1]
+                        """
+        );
+
+        assertFalse(inspected.analysisData().diagnostics().hasErrors());
+        assertTrue(inspected.analysisData().diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.compile_check")
+        ));
+        assertFalse(inspected.report().contains("sema.compile_check"));
     }
 
     @Test

@@ -15,6 +15,7 @@
 - 关联文档：
     - `doc/module_impl/common_rules.md`
     - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
+    - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
     - `doc/analysis/frontend_semantic_analyzer_research_report.md`
 
 ---
@@ -227,8 +228,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.compile_check`
   - compile-only `FrontendCompileCheckAnalyzer` 对进入 lowering 前仍不可编译的 surface 发出的最终 error
   - 同时覆盖：
-    - 当前首批显式封口的 `assert`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
+    - 当前首批显式封口的 `assert`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
+  - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
+  - 上述 7 类表达式属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
+  - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 control-flow / CFG 侧合同冻结后再接通
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态
   - 该 category 只属于 compile-only 入口，不属于默认共享语义 / inspection / 未来 LSP 入口
 
@@ -302,6 +306,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
 - 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
+- inspection 与未来 LSP 入口继续消费共享 `analyze(...)`，不应被 `sema.compile_check` 污染
 - 未来 frontend -> LIR lowering 调用方必须：
     - 使用 `analyzeForCompile(...)`
     - 并在继续编译前检查 `DiagnosticManager.hasErrors()` 或 `FrontendAnalysisData.diagnostics().hasErrors()`
@@ -341,7 +346,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `FrontendCompileCheckAnalyzerTest`
     - compile-only gate 会显式封口 `assert` 与当前暂不 lowering 的表达式形态
     - compile surface 上的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 会被补成最终 compile blocker
+    - supported property initializer island 上的 generic blocker 也被单独锚定到 compile surface
     - `DYNAMIC`、surface 外 subtree、以及同锚点重复 generic block 的去重行为稳定
+- `FrontendAnalysisInspectionToolTest`
+    - inspection 继续消费共享 `analyze(...)`，不会引入 `sema.compile_check`
+    - inspection report 只呈现共享语义事实，不把 compile-only gate 误当成 inspection 诊断
 - `FrontendScopeAnalyzerTest`
     - scope phase 会发布真实 `scopesByAst`，而不是空 side-table
     - inner class / nested lambda / multi-source-unit module 的 lexical scope graph 稳定
