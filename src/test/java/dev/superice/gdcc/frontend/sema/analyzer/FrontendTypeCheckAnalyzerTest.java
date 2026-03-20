@@ -745,6 +745,10 @@ class FrontendTypeCheckAnalyzerTest {
                         pass
                     if payload or 0:
                         pass
+                    if !true:
+                        pass
+                    if not payload:
+                        pass
                     if Worker:
                         pass
                 """);
@@ -798,8 +802,16 @@ class FrontendTypeCheckAnalyzerTest {
                 Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(3).condition())).status()
         );
         assertEquals(
-                FrontendExpressionTypeStatus.FAILED,
+                FrontendExpressionTypeStatus.RESOLVED,
                 Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(4).condition())).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.DYNAMIC,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(5).condition())).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.FAILED,
+                Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(6).condition())).status()
         );
     }
 

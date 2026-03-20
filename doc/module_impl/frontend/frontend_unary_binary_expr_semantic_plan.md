@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（P1-P4 已完成，P5 待实施；`not in` 保持显式 unsupported 边界）
+- 状态：已完成（P1-P5 已完成；稳定事实已归并到 implementation 文档；`not in` 保持显式 unsupported 边界）
 - 更新时间：2026-03-20
 - 当前版本约定：`not in` 操作符不属于已支持的 frontend binary 语义面；遇到该源码运算符时，frontend 必须显式发布 `UNSUPPORTED`
 - 适用范围：
@@ -589,6 +589,30 @@ typed array 保型反例至少覆盖：
 #### 目标
 
 让 unary / binary 的 shared semantic 结果真正穿透到 expression typing、type-check 和 compile gate，并用测试把新合同锚死。
+
+#### 当前状态
+
+- 状态：已完成
+- 完成项：
+  - [x] `FrontendExprTypeAnalyzerTest` 已冻结 unary / binary 的 analyzer 集成结果：
+    - unary / binary 根节点不再以“尚未实现”为由发布 `DEFERRED`
+    - root-owned `FAILED` / `UNSUPPORTED` 与 upstream 传播结果继续区分
+  - [x] `FrontendTypeCheckAnalyzerTest` 已覆盖 unary / binary 结果作为 stable typed fact 被 condition、initializer、return 消费：
+    - binary condition 如 `1 + 2`、`payload and 1`、`payload or 0`
+    - unary condition 如 `!true`、`not payload`
+    - `not payload` 当前按 unary runtime-open 合同发布 `DYNAMIC(Variant)`，但仍满足 condition contract
+  - [x] `FrontendCompileCheckAnalyzerTest` 已覆盖 unary / binary 的 compile-only 集成：
+    - `RESOLVED` unary / binary 根节点不再触发 generic compile blocker
+    - unary/binary `DYNAMIC` 结果继续被 compile gate 视为可接受的 runtime-open fact
+    - `ConditionalExpression` 仍保持 compile-only block，不受本轮影响
+  - [x] 长期事实文档已同步：
+    - `frontend_chain_binding_expr_type_implementation.md`
+    - `frontend_type_check_analyzer_implementation.md`
+    - `frontend_compile_check_analyzer_implementation.md`
+- 测试产出：
+  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzerTest.java`
+  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendTypeCheckAnalyzerTest.java`
+  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
 
 #### 实施内容
 

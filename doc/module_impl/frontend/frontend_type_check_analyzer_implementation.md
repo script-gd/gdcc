@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、property initializer boundary consumption、`@onready` usage validation 已落地）
+- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、unary/binary stable-fact consumption、property initializer boundary consumption、`@onready` usage validation 已落地）
 - 更新时间：2026-03-20
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -63,6 +63,12 @@
 - bare `return` / `return expr` 与 callable return slot 的兼容性
 - condition root 是否已经发布稳定 typed fact
 - property `:=` / 未声明显式类型 property 的 `sema.type_hint`
+
+这里的 “稳定 typed fact” 当前已经包含 unary / binary 根节点：
+
+- `UnaryExpression` 不再被默认视为 deferred gap
+- `BinaryExpression` 不再被默认视为 deferred gap
+- `not in` 例外地保持显式 `UNSUPPORTED`，因此继续留给 upstream owner
 
 `FrontendAnnotationUsageAnalyzer` 当前只负责 diagnostics-only 的 annotation placement contract：
 
@@ -233,6 +239,12 @@ condition 当前采用 Godot-compatible source contract：
 
 - 已经在 `expressionTypes()` 中发布稳定 typed fact
 - `publishedType` 非空
+
+这意味着 unary / binary 的已发布结果会被 type-check 直接消费，而不是再按“表达式家族尚未实现”额外跳过。例如：
+
+- `RESOLVED(bool)` 的 `!true`
+- `RESOLVED(bool)` 的 `payload and 1`
+- `DYNAMIC(Variant)` 的 `not payload`
 
 当前 type-check 不再把 condition 当作 strict `bool` slot 去做 assignment gate。也就是说：
 

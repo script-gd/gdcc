@@ -119,7 +119,7 @@
   - 当前这是唯一允许维护 status/published-type 映射的桥接点
 - `FrontendExpressionSemanticSupport`
   - 负责 analyzer-neutral 的局部表达式语义
-  - 当前覆盖 literal、`self`、identifier、bare call、assignment、subscript、剩余显式 deferred 节点
+  - 当前覆盖 literal、`self`、identifier、bare call、unary、binary、assignment、subscript、剩余显式 deferred 节点
   - 自身不发布 side table、不发 diagnostic、不遍历 statement tree
 - `FrontendSubscriptSemanticSupport`
   - 负责 shared subscript/container typing contract
@@ -316,6 +316,17 @@
 - generic side-table-only 状态已被清理掉
 - bare call、assignment、subscript、generic deferred expression 至少会走“expr-owned diagnostic”或“明确复用 upstream diagnostic”二选一
 - discarded-expression policy 已区分 ordinary discarded value、resolved `void` call、assignment-success root
+
+当前 unary / binary 的局部语义补充冻结为：
+
+- unary
+  - exact 非 `Variant` operand 走 builtin operator metadata
+  - `DYNAMIC` 或 exact `Variant` operand 保守发布 `DYNAMIC(Variant)`，不伪装成 exact 失败
+- binary
+  - 左右操作数按固定顺序求值并匹配 metadata；普通 exact route 保持顺序敏感
+  - `and` / `or` 与 `&&` / `||` 走 source-level special rule：操作数只需满足 condition contract，结果固定为 `bool`
+  - `Array[T] + Array[T]` 仅在两侧元素类型都存在且相同的情况下保留 `Array[T]`
+  - `not in` 当前属于独立的显式 `UNSUPPORTED` 边界，不能静默按 `in` 处理
 
 ### 4.3 subscript / container typing
 

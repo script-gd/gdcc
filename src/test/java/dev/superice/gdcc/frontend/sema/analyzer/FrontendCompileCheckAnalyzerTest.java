@@ -142,9 +142,9 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileLeavesResolvedBinaryExpressionsOutOfCompileBlocks() throws Exception {
+    void analyzeForCompileLeavesResolvedUnaryAndBinaryExpressionsOutOfCompileBlocks() throws Exception {
         var source = """
-                class_name CompileCheckBinaryResolved
+                class_name CompileCheckUnaryBinaryResolved
                 extends RefCounted
                 
                 func ping(
@@ -153,19 +153,22 @@ class FrontendCompileCheckAnalyzerTest {
                     payload,
                     typed_variant: Variant
                 ):
+                    var negated: int = -1
+                    var logical_not: bool = !true
+                    var dynamic_not := not typed_variant
                     var sum: int = 1 + 2
                     var truthy: bool = payload and 0
                     var typed_merge := items_a + items_b
                     var dynamic_sum := typed_variant + 1
                 """;
 
-        var sharedAnalyzed = analyzeShared("compile_check_binary_resolved.gd", source);
+        var sharedAnalyzed = analyzeShared("compile_check_unary_binary_resolved.gd", source);
         assertFalse(sharedAnalyzed.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
 
-        var compiled = analyzeForCompile("compile_check_binary_resolved.gd", source);
+        var compiled = analyzeForCompile("compile_check_unary_binary_resolved.gd", source);
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());

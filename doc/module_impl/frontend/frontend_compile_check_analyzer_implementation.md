@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、shared/compile 分流边界已落地）
+- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、shared/compile 分流边界、unary/binary 非 blocker 合同已落地）
 - 更新时间：2026-03-20
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -181,6 +181,13 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 - `DYNAMIC`
 
 `DYNAMIC` 继续保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 尚未实现的缺口。
+
+这条 blocker 合同当前对 unary / binary 已经产生直接效果：
+
+- 已稳定发布的 `UnaryExpression` / `BinaryExpression` 不会再因为“表达式家族尚未实现”被 compile gate 误封口
+- `RESOLVED` unary / binary 与 `DYNAMIC` unary / binary 一样，都不会命中 generic compile blocker
+- `not in` 仍会因为 upstream 发布的是显式 `UNSUPPORTED` 而被 compile gate 阻断
+- `ConditionalExpression` 继续依赖显式 AST compile-block，而不是借 unary/binary 的转正被顺带放行
 
 ### 4.3 当前 compile anchor 规则
 
