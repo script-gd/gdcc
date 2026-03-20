@@ -4,7 +4,7 @@
 
 其他语言版本：[English](README.md)
 
-GDCC 是一个将 GDScript 编译为 GDExtension 本机二进制模块的编译器，通过 Godot 引擎的本机二进制接口安全且高效地运行 GDScript。
+GDCC 是一个将 GDScript 编译为 GDExtension 本机二进制模块的编译器，允许您通过 Godot 引擎的本机二进制接口安全且高效地运行 GDScript 代码。
 
 从现在起，编写 GDScript，获取类似 C/C++ 原生模块的安全性与性能！
 

@@ -13,7 +13,7 @@ From now on, write GDScript and get the safety and performance of native C/C++-s
 # Features
 
 - Extensible architecture: modular design for the parser, semantic analyzer, IR lowering (WIP), intermediate representation, backend generator, and cross-compilation toolchain
-- Reverse-engineering resistance: generates native binary modules for GDScript, protecting source code from disclosure at the root
+- Reverse-engineering resistance: generates native binary modules for GDScript, protecting source code from disclosure fundamentally
 - High performance: directly generates efficient static GDExtension calls, avoiding the overhead of compatibility layers and dynamic dispatch
 - Progressive migration: remains compatible with most loosely typed code, allowing gradual migration to a stricter type system for better performance
 
