@@ -241,7 +241,122 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void resolveRemainingExplicitExpressionRoutesEnumerateDeferredKindsAndRejectParserRecoveryNodes() throws Exception {
+    void resolveUnaryExpressionTypePublishesResolvedDynamicAndFailedOutcomes() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_unary.gd",
+                """
+                        class_name ExpressionSemanticSupportUnary
+                        extends RefCounted
+                        
+                        func ping(items: Array[int], dynamic_value, typed_variant: Variant):
+                            -1
+                            +1
+                            ~1
+                            !true
+                            not true
+                            not items
+                            -dynamic_value
+                            not typed_variant
+                            ~"hello"
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var expressions = pingFunction.body().statements().stream()
+                .map(ExpressionStatement.class::cast)
+                .map(ExpressionStatement::expression)
+                .map(UnaryExpression.class::cast)
+                .toList();
+
+        var negateResult = support.resolveUnaryExpressionType(expressions.get(0), publishedResolver, false);
+        assertTrue(negateResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, negateResult.expressionType().status());
+        assertEquals("int", negateResult.expressionType().publishedType().getTypeName());
+
+        var positiveResult = support.resolveUnaryExpressionType(expressions.get(1), publishedResolver, false);
+        assertTrue(positiveResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, positiveResult.expressionType().status());
+        assertEquals("int", positiveResult.expressionType().publishedType().getTypeName());
+
+        var bitNotResult = support.resolveUnaryExpressionType(expressions.get(2), publishedResolver, false);
+        assertTrue(bitNotResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, bitNotResult.expressionType().status());
+        assertEquals("int", bitNotResult.expressionType().publishedType().getTypeName());
+
+        var bangResult = support.resolveUnaryExpressionType(expressions.get(3), publishedResolver, false);
+        assertTrue(bangResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, bangResult.expressionType().status());
+        assertEquals("bool", bangResult.expressionType().publishedType().getTypeName());
+
+        var notResult = support.resolveUnaryExpressionType(expressions.get(4), publishedResolver, false);
+        assertTrue(notResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, notResult.expressionType().status());
+        assertEquals("bool", notResult.expressionType().publishedType().getTypeName());
+
+        var typedArrayNotResult = support.resolveUnaryExpressionType(expressions.get(5), publishedResolver, false);
+        assertTrue(typedArrayNotResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typedArrayNotResult.expressionType().status());
+        assertEquals("bool", typedArrayNotResult.expressionType().publishedType().getTypeName());
+
+        var dynamicResult = support.resolveUnaryExpressionType(expressions.get(6), publishedResolver, false);
+        assertTrue(dynamicResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicResult.expressionType().status());
+        assertEquals(GdVariantType.VARIANT, dynamicResult.expressionType().publishedType());
+
+        var resolvedVariantResult = support.resolveUnaryExpressionType(expressions.get(7), publishedResolver, false);
+        assertTrue(resolvedVariantResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, resolvedVariantResult.expressionType().status());
+        assertEquals(GdVariantType.VARIANT, resolvedVariantResult.expressionType().publishedType());
+
+        var invalidResult = support.resolveUnaryExpressionType(expressions.get(8), publishedResolver, false);
+        assertTrue(invalidResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, invalidResult.expressionType().status());
+        assertTrue(invalidResult.expressionType().detailReason().contains("not defined for operand type 'String'"));
+    }
+
+    @Test
+    void resolveUnaryExpressionTypeRejectsUnknownOperatorsAndPropagatesDependencyFailures() throws Exception {
+        var support = newBareSupport();
+        var unknownOperatorResult = support.resolveUnaryExpressionType(
+                new UnaryExpression("??", integerLiteral("1"), TINY),
+                (expression, finalizeWindow) -> FrontendExpressionType.resolved(GdIntType.INT),
+                false
+        );
+        assertTrue(unknownOperatorResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, unknownOperatorResult.expressionType().status());
+        assertTrue(unknownOperatorResult.expressionType().detailReason().contains("Unknown unary source operator"));
+
+        var analyzed = analyze(
+                "expression_semantic_support_unary_dependency.gd",
+                """
+                        class_name ExpressionSemanticSupportUnaryDependency
+                        extends RefCounted
+                        
+                        func ping():
+                            -missing.payload
+                        """
+        );
+        var dependencySupport = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var unaryExpression = assertInstanceOf(
+                UnaryExpression.class,
+                assertInstanceOf(
+                        ExpressionStatement.class,
+                        findFunction(analyzed.ast(), "ping").body().statements().getFirst()
+                ).expression()
+        );
+
+        var propagatedResult = dependencySupport.resolveUnaryExpressionType(unaryExpression, publishedResolver, false);
+        assertFalse(propagatedResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, propagatedResult.expressionType().status());
+        assertTrue(propagatedResult.expressionType().detailReason().contains("chain head"));
+    }
+
+    @Test
+    void resolveRemainingExplicitExpressionRoutesEnumerateRemainingDeferredKindsAndRejectParserRecoveryNodes()
+            throws Exception {
         var support = newBareSupport();
         var nestedResolver = resolvedVariantResolver();
         var typeRef = new TypeRef("String", TINY);
@@ -251,11 +366,6 @@ class FrontendExpressionSemanticSupportTest {
                         new BinaryExpression("+", literal, integerLiteral("2"), TINY),
                         FrontendExpressionTypeStatus.DEFERRED,
                         "Binary operator typing is deferred"
-                ),
-                new RemainingExpressionCase(
-                        new UnaryExpression("-", literal, TINY),
-                        FrontendExpressionTypeStatus.DEFERRED,
-                        "Unary operator typing is deferred"
                 ),
                 new RemainingExpressionCase(
                         new ConditionalExpression(identifier("flag"), integerLiteral("1"), integerLiteral("2"), TINY),

@@ -990,6 +990,71 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesUnaryExpressionTypesWithoutDeferredDiagnostics() throws Exception {
+        var analyzed = analyze(
+                "expr_type_unary_semantics.gd",
+                """
+                        class_name ExprTypeUnarySemantics
+                        extends RefCounted
+                        
+                        func ping(items: Array[int], dynamic_value, typed_variant: Variant):
+                            var neg: int = -1
+                            var pos: int = +1
+                            var bit: int = ~1
+                            var logic_true: bool = !true
+                            var logic_array: bool = not items
+                            var dynamic_result := -dynamic_value
+                            var dynamic_variant_result := not typed_variant
+                            var invalid: int = ~"hello"
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var statements = pingFunction.body().statements();
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "neg").value()).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "pos").value()).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "bit").value()).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                analyzed.analysisData().expressionTypes().get(findVariable(statements, "logic_true").value()).status()
+        );
+        var typedArrayNot = analyzed.analysisData().expressionTypes().get(findVariable(statements, "logic_array").value());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, typedArrayNot.status());
+        assertEquals("bool", typedArrayNot.publishedType().getTypeName());
+
+        var dynamicResult = analyzed.analysisData().expressionTypes().get(findVariable(statements, "dynamic_result").value());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicResult.status());
+        assertEquals(GdVariantType.VARIANT, dynamicResult.publishedType());
+
+        var dynamicVariantResult = analyzed.analysisData().expressionTypes().get(
+                findVariable(statements, "dynamic_variant_result").value()
+        );
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicVariantResult.status());
+        assertEquals(GdVariantType.VARIANT, dynamicVariantResult.publishedType());
+
+        var invalidResult = analyzed.analysisData().expressionTypes().get(findVariable(statements, "invalid").value());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, invalidResult.status());
+
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(1, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.getFirst().message().contains(
+                "Unary operator '~' is not defined for operand type 'String'"
+        ));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
     void analyzePublishesResolvedVoidForStatementAssignmentsWithoutDiscardedWarnings() throws Exception {
         var analyzed = analyze(
                 "expr_type_assignment_success.gd",

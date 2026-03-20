@@ -1,16 +1,21 @@
 package dev.superice.gdcc.frontend.sema.analyzer.support;
 
+import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdCallableType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -289,12 +294,58 @@ public final class FrontendExpressionSemanticSupport {
         ));
     }
 
+    /// Unary operators are now part of the ordinary local expression contract:
+    /// - unstable operand outcomes still propagate from upstream
+    /// - exact `Variant` operands stay runtime-dynamic
+    /// - exact resolved non-Variant operands use builtin operator metadata
+    public @NotNull ExpressionSemanticResult resolveUnaryExpressionType(
+            @NotNull UnaryExpression unaryExpression,
+            @NotNull NestedExpressionResolver nestedResolver,
+            boolean finalizeWindow
+    ) {
+        var operandType = nestedResolver.resolve(unaryExpression.operand(), finalizeWindow);
+        var dependencyIssue = firstNonResolvedDependency(operandType);
+        if (dependencyIssue != null) {
+            return propagated(dependencyIssue);
+        }
+        var publishedOperandType = Objects.requireNonNull(
+                operandType.publishedType(),
+                "publishedType must not be null for stable unary operand"
+        );
+        if (operandType.status() == FrontendExpressionTypeStatus.DYNAMIC
+                || publishedOperandType instanceof GdVariantType) {
+            return rootOutcome(FrontendExpressionType.dynamic(
+                    "Variant operand routes unary operator '" + unaryExpression.operator()
+                            + "' through runtime-dynamic semantics"
+            ));
+        }
+
+        final GodotOperator operator;
+        try {
+            operator = GodotOperator.fromSourceLexeme(
+                    unaryExpression.operator(),
+                    GodotOperator.OperatorArity.UNARY
+            );
+        } catch (IllegalArgumentException ex) {
+            return rootOutcome(FrontendExpressionType.failed(ex.getMessage()));
+        }
+
+        var returnType = resolveUnaryExactReturnType(operator, publishedOperandType);
+        if (returnType != null) {
+            return rootOutcome(FrontendExpressionType.resolved(returnType));
+        }
+        return rootOutcome(FrontendExpressionType.failed(
+                "Unary operator '" + unaryExpression.operator()
+                        + "' is not defined for operand type '" + publishedOperandType.getTypeName() + "'"
+        ));
+    }
+
     /// Exhaustive routing for the remaining explicitly deferred expression kinds.
     ///
     /// The analyzers intentionally keep dedicated entry points for the green paths such as
-    /// identifiers, calls, subscript, assignment, and lambda. Everything still outside that set is
-    /// enumerated here so we no longer hide unsupported/deferred domains behind a generic fallback
-    /// bucket.
+    /// identifiers, calls, subscript, assignment, lambda, and unary operators. Everything still
+    /// outside that set is enumerated here so we no longer hide unsupported/deferred domains behind
+    /// a generic fallback bucket.
     public @NotNull ExpressionSemanticResult resolveRemainingExplicitExpressionType(
             @NotNull Expression expression,
             @NotNull NestedExpressionResolver nestedResolver,
@@ -307,13 +358,6 @@ public final class FrontendExpressionSemanticSupport {
                     nestedResolver,
                     resolveNestedChildren,
                     "Binary operator typing is deferred by the current frontend expression-typing contract",
-                    finalizeWindow
-            );
-            case UnaryExpression unaryExpression -> resolveExplicitDeferredExpressionType(
-                    unaryExpression,
-                    nestedResolver,
-                    resolveNestedChildren,
-                    "Unary operator typing is deferred by the current frontend expression-typing contract",
                     finalizeWindow
             );
             case ConditionalExpression conditionalExpression -> resolveExplicitDeferredExpressionType(
@@ -390,7 +434,8 @@ public final class FrontendExpressionSemanticSupport {
                  AssignmentExpression _,
                  CallExpression _,
                  SubscriptExpression _,
-                 LambdaExpression _ -> throw new IllegalArgumentException(
+                 LambdaExpression _,
+                 UnaryExpression _ -> throw new IllegalArgumentException(
                     "Expression kind '" + expression.getClass().getSimpleName()
                             + "' must use its dedicated semantic resolver"
             );
@@ -601,6 +646,57 @@ public final class FrontendExpressionSemanticSupport {
 
     private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext() {
         return propertyInitializerContextSupplier.get();
+    }
+
+    /// Typed containers keep richer source-level names such as `Array[int]`, but unary metadata is
+    /// still owned by the raw builtin classes.
+    private @Nullable GdType resolveUnaryExactReturnType(
+            @NotNull GodotOperator operator,
+            @NotNull GdType operandType
+    ) {
+        var builtinClass = findUnaryOperatorOwnerClass(operandType);
+        if (builtinClass == null) {
+            return null;
+        }
+        for (var classOperator : builtinClass.operators()) {
+            if (classOperator == null || classOperator.operator() != operator) {
+                continue;
+            }
+            if (!normalizeTypeName(classOperator.rightType()).isEmpty()) {
+                continue;
+            }
+            var returnType = parseOperatorReturnType(classOperator);
+            if (returnType != null) {
+                return returnType;
+            }
+        }
+        return null;
+    }
+
+    private @Nullable ExtensionBuiltinClass findUnaryOperatorOwnerClass(@NotNull GdType operandType) {
+        var directBuiltinClass = classRegistry.findBuiltinClass(operandType.getTypeName());
+        if (directBuiltinClass != null) {
+            return directBuiltinClass;
+        }
+        if (operandType instanceof GdArrayType) {
+            return classRegistry.findBuiltinClass("Array");
+        }
+        if (operandType instanceof GdDictionaryType) {
+            return classRegistry.findBuiltinClass("Dictionary");
+        }
+        return null;
+    }
+
+    private @Nullable GdType parseOperatorReturnType(@NotNull ExtensionBuiltinClass.ClassOperator classOperator) {
+        var returnTypeName = normalizeTypeName(classOperator.returnType());
+        if (returnTypeName.isEmpty()) {
+            return null;
+        }
+        return classRegistry.tryResolveDeclaredType(returnTypeName);
+    }
+
+    private static @NotNull String normalizeTypeName(@Nullable String typeName) {
+        return typeName == null ? "" : typeName.trim();
     }
 
     private boolean canOmitTrailingParameters(

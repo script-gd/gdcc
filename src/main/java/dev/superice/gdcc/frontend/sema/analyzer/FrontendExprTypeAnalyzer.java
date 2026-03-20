@@ -49,6 +49,7 @@ import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
@@ -571,6 +572,14 @@ public class FrontendExprTypeAnalyzer {
                                 lambdaExpression,
                                 this::resolveExpressionDependencyType,
                                 false,
+                                false
+                        )
+                );
+                case UnaryExpression unaryExpression -> finishSemanticResolution(
+                        unaryExpression,
+                        expressionSemanticSupport.resolveUnaryExpressionType(
+                                unaryExpression,
+                                this::resolveExpressionDependencyType,
                                 false
                         )
                 );
