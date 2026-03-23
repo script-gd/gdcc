@@ -25,6 +25,7 @@
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
 - compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
 - `assert` 在共享语义路径中继续沿用 Godot-compatible condition contract；compile-only `FrontendCompileCheckAnalyzer` 只是暂时阻断 statement 自身，不得把它回退成 `sema.type_check` 或 grammar unsupported。
+- 脚本类 `static var` 当前属于“frontend 已识别但 compile target 明确不接受”的 declaration-level compile boundary；共享语义可继续发布 metadata，但 compile-only gate 必须在进入 lowering/backend 前显式封口。
 - `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 当前属于 frontend 已识别但 lowering 尚未就绪的 temporary compile intercept；共享语义路径可以继续发布 deferred/unstable facts，但 compile-only gate 必须在进入 lowering 前最终封口。
 - `ConditionalExpression` 当前之所以在 compile-only gate 中被显式封口，是因为它的 lowering 需要依赖 control-flow / CFG 侧合同先稳定；在那之前不得放行进编译管线。
 - 共享 `FrontendSemanticAnalyzer.analyze(...)` 的结果不是 lowering-ready 合同；未来 frontend -> LIR lowering 只能以前置的 `analyzeForCompile(...)` 结果为准，并在 diagnostics 无 error 时继续。
@@ -58,6 +59,7 @@
 - `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。
 - property writable 判定必须统一复用共享 helper，而不是在 scope publication、assignment analyzer、其他 frontend 路径里各自硬编码 engine/builtin property metadata 分支。
 - property initializer 的 MVP 支持面是“published subtree facts”，不是“完整 class-member initializer 语义”。
+- 脚本类 static property declaration 当前不在 compile-ready 支持面；即使它在 shared semantic 中可被识别，也必须由 compile-only gate fail-closed，而不是等 backend 在 codegen 阶段拒绝。
 - MVP 不支持 property initializer 访问同 class 下的 non-static property / method / signal / `self`；这类访问必须 fail-closed，而不是假装已经拥有 declaration-order / default-state / cycle-aware 语义。
 - property initializer 若确实需要静态 helper，优先通过 global name、type-meta route 或其他不依赖当前类实例状态的路径进入；不要把当前类 direct member namespace 当成实例初始化期可见性模型。
 - property `:=` 在 MVP 中不支持类型推导，也不会因为 RHS 稳定类型而回写 class property metadata。

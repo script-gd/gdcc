@@ -18,7 +18,6 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
-import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -37,7 +36,6 @@ import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -142,6 +140,82 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileBlocksStaticPropertyDeclarationsWhileAnalyzeLeavesSharedDiagnosticsUntouched() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyDeclaration
+                extends RefCounted
+                
+                static var shared: int = 1
+                
+                static func build() -> int:
+                    return shared
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_property_declaration.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_property_declaration.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(
+                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
+                compileDiagnostics.getFirst().range()
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("does not support script static fields"));
+    }
+
+    @Test
+    void analyzeForCompileBlocksStaticPropertyDeclarationsWithoutInitializer() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyWithoutInitializer
+                extends RefCounted
+                
+                static var shared: int
+                
+                static func set_shared(value: int):
+                    shared = value
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_property_without_initializer.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_property_without_initializer.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(
+                FrontendRange.fromAstRange(findVariable(compiled.unit().ast().statements(), "shared").range()),
+                compileDiagnostics.getFirst().range()
+        );
+        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+    }
+
+    @Test
+    void analyzeForCompileStopsAtStaticPropertyDeclarationInsteadOfRecursingIntoInitializerSubtree() throws Exception {
+        var source = """
+                class_name CompileCheckStaticPropertyInitializerSubtree
+                extends Node
+                
+                static var shared = [1]
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_property_initializer_subtree.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_property_initializer_subtree.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Static property 'shared'"));
+        assertFalse(compileDiagnostics.getFirst().message().contains("Array literal"));
+    }
+
+    @Test
     void analyzeForCompileLeavesResolvedUnaryAndBinaryExpressionsOutOfCompileBlocks() throws Exception {
         var source = """
                 class_name CompileCheckUnaryBinaryResolved
@@ -172,6 +246,27 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileLeavesStaticMethodRoutesOutOfStaticPropertyCompileBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckStaticMethodRoute
+                extends RefCounted
+                
+                class Worker:
+                    static func build() -> Worker:
+                        return Worker.new()
+                
+                var worker := Worker.build()
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_static_method_route.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_static_method_route.gd", source);
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
     }
 
     @Test

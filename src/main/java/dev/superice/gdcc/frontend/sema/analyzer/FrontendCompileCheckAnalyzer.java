@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
@@ -118,6 +119,12 @@ public class FrontendCompileCheckAnalyzer {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
                 + " is recognized by the frontend but is temporarily blocked in compile mode until "
                 + "lowering support lands";
+    }
+
+    private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {
+        return "Static property '" + Objects.requireNonNull(propertyName, "propertyName must not be null")
+                + "' is recognized by the frontend but is blocked in compile mode because current backend "
+                + "does not support script static fields";
     }
 
     private static @NotNull String publishedCompileBlockedMessage(
@@ -289,6 +296,13 @@ public class FrontendCompileCheckAnalyzer {
                 }
                 markCompileSurfaceNode(variableDeclaration);
                 walkExpression(variableDeclaration.value());
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            if (isStaticClassPropertyDeclaration(variableDeclaration)) {
+                reportExplicitCompileBlock(
+                        variableDeclaration,
+                        staticPropertyCompileBlockedMessage(variableDeclaration.name())
+                );
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(scopesByAst, variableDeclaration)) {
@@ -589,6 +603,12 @@ public class FrontendCompileCheckAnalyzer {
 
         private void markCompileSurfaceNode(@NotNull Node node) {
             compileSurfaceNodes.add(Objects.requireNonNull(node, "node must not be null"));
+        }
+
+        private boolean isStaticClassPropertyDeclaration(@NotNull VariableDeclaration variableDeclaration) {
+            return Objects.requireNonNull(variableDeclaration, "variableDeclaration must not be null").kind() == DeclarationKind.VAR
+                    && variableDeclaration.isStatic()
+                    && scopesByAst.get(variableDeclaration) instanceof ClassScope;
         }
 
         private boolean isNotPublished(@Nullable Node node) {
