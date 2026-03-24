@@ -227,7 +227,7 @@ skeleton 成员填充当前不再把 `ClassRegistry#findType(...)` 当作 declar
 
 ### 4.1 `FrontendScopeAnalyzer`
 
-`FrontendScopeAnalyzer` 当前不再通过 source order 或 `moduleSkeleton.classDefs()` 索引对齐恢复 inner class 边界，而是直接消费 `FrontendSourceClassRelation` / `FrontendInnerClassRelation`：
+`FrontendScopeAnalyzer` 当前不再通过 source order 或扁平化 top-level class 兼容视图索引对齐恢复 inner class 边界，而是直接消费 `FrontendSourceClassRelation` / `FrontendInnerClassRelation`：
 
 - `SourceFile` 建立 top-level `ClassScope`
 - nested `ClassDeclaration` 通过 relation 重开对应的 inner `ClassScope`

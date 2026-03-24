@@ -83,16 +83,6 @@ public record FrontendSourceClassRelation(
         return superClassRef;
     }
 
-    /// Compatibility view of nested class skeletons in source traversal order.
-    ///
-    /// Callers that need stable AST ownership should prefer `innerClassRelations()` so they can
-    /// recover the exact `ClassDeclaration` matched by each source-local skeleton.
-    public @NotNull List<LirClassDef> innerClassDefs() {
-        return innerClassRelations.stream()
-                .map(FrontendInnerClassRelation::classDef)
-                .toList();
-    }
-
     /// Resolves the source-local skeleton matched to one parsed inner class declaration.
     ///
     /// Identity lookup is deliberate: semantic consumers share the exact AST object graph
@@ -130,7 +120,9 @@ public record FrontendSourceClassRelation(
     public @NotNull List<LirClassDef> allClassDefs() {
         var classDefs = new ArrayList<LirClassDef>(1 + innerClassRelations.size());
         classDefs.add(topLevelClassDef);
-        classDefs.addAll(innerClassDefs());
+        classDefs.addAll(innerClassRelations.stream()
+                .map(FrontendInnerClassRelation::classDef)
+                .toList());
         return List.copyOf(classDefs);
     }
 }

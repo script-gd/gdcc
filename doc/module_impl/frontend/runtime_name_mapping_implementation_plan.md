@@ -225,6 +225,22 @@
 - `FrontendModule` 中的 `units` 顺序仍与当前语义保持一致。
 - 在尚未启用任何映射时，改造前后的行为完全一致。
 
+第 1 步执行状态（2026-03-24）：
+
+- [x] 1.1 新增 `frontend.parse.FrontendModule`
+  - 已新增统一模块输入快照，冻结 `moduleName`、`List<FrontendSourceUnit>` 与顶层类名映射表。
+  - 当前阶段映射表仅承载输入，不提前参与 skeleton identity 计算。
+- [x] 1.2 切换 `FrontendClassSkeletonBuilder`、`FrontendSemanticAnalyzer`、`FrontendAnalysisInspectionTool` 主入口到 `FrontendModule`
+  - 已新增 `FrontendModule` 版本主入口，并保留旧签名作为过渡委托层。
+  - inspection 单文件路径已改为内部先构造 `FrontendModule`，不再在实现内部平行传递 `moduleName + unit`。
+- [x] 1.3 补充并更新单元测试，覆盖正反行为与兼容入口
+  - 已新增 `FrontendModuleTest`，锚定输入快照冻结、单文件工厂与边界空值校验。
+  - 已在 skeleton/analyzer/inspection 测试中补充 `FrontendModule` 主入口、旧委托入口和 compile-only 分流断言。
+- [x] 1.4 运行 targeted tests 并记录验收结果
+  - 已通过：`FrontendModuleTest`、`FrontendParseSmokeTest`、`FrontendAnnotationParseBehaviorTest`、`GdScriptParserServiceDiagnosticManagerTest`
+  - 已通过：`FrontendClassSkeletonTest`、`FrontendClassSkeletonAnnotationTest`、`FrontendInheritanceCycleTest`
+  - 已通过：`FrontendSemanticAnalyzerFrameworkTest`、`FrontendAnalysisInspectionToolTest`、`FrontendCompileCheckAnalyzerTest`、`FrontendScopeAnalyzerTest`
+
 ### 第 2 步：新增外部映射入口，并把映射固定在 `FrontendModule`
 
 目标：

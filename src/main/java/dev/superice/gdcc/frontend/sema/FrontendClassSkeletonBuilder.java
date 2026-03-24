@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -34,18 +35,17 @@ public final class FrontendClassSkeletonBuilder {
     /// `FrontendSourceUnit`s. Units themselves no longer store parse diagnostics, so this builder
     /// must treat the shared manager as the only parse diagnostic source of truth.
     public @NotNull FrontendModuleSkeleton build(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager,
             @NotNull FrontendAnalysisData analysisData
     ) {
-        Objects.requireNonNull(moduleName, "moduleName must not be null");
-        Objects.requireNonNull(units, "units must not be null");
+        Objects.requireNonNull(module, "module must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
 
+        var units = module.units();
         var annotationCollector = new FrontendAnnotationCollector();
 
         for (var unit : units) {
@@ -79,7 +79,7 @@ public final class FrontendClassSkeletonBuilder {
             fillSourceClassRelationMembers(sourceClassRelation, context);
         }
 
-        return new FrontendModuleSkeleton(moduleName, sourceClassRelations, diagnosticManager.snapshot());
+        return new FrontendModuleSkeleton(module.moduleName(), sourceClassRelations, diagnosticManager.snapshot());
     }
 
     /// Builds one accepted source-owned skeleton relation from the validated header graph:

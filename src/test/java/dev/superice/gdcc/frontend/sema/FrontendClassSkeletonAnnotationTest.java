@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -36,8 +37,13 @@ class FrontendClassSkeletonAnnotationTest {
                 var plain := 3
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var classDef = findClassByName(result.classDefs(), "AnnotatedProps");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "AnnotatedProps");
         var hpProperty = findPropertyByName(classDef, "hp");
         var targetProperty = findPropertyByName(classDef, "target");
         var plainProperty = findPropertyByName(classDef, "plain");
@@ -80,8 +86,13 @@ class FrontendClassSkeletonAnnotationTest {
                 var after := 3
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var classDef = findClassByName(result.classDefs(), "IgnoredAnnotations");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "IgnoredAnnotations");
 
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertTrue(findPropertyByName(classDef, "tmp").getAnnotations().isEmpty());
@@ -104,8 +115,13 @@ class FrontendClassSkeletonAnnotationTest {
                 var hp := 1
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var classDef = findClassByName(result.classDefs(), "UnsupportedPropertyAnnotation");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "UnsupportedPropertyAnnotation");
         var hpProperty = findPropertyByName(classDef, "hp");
         var hpVariable = findVariableByName(unit, "hp");
 
@@ -128,6 +144,12 @@ class FrontendClassSkeletonAnnotationTest {
                 .filter(classDef -> classDef.getName().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Class not found: " + className));
+    }
+
+    private List<LirClassDef> topLevelClassDefs(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
     }
 
     private LirPropertyDef findPropertyByName(LirClassDef classDef, String propertyName) {

@@ -34,6 +34,10 @@ class FrontendAnalysisInspectionToolTest {
 
         assertEquals(
                 result.report(),
+                tool.renderSingleUnitReport(result.module(), result.unit(), result.analysisData())
+        );
+        assertEquals(
+                result.report(),
                 tool.renderSingleUnitReport("test_module", result.unit(), result.analysisData())
         );
     }

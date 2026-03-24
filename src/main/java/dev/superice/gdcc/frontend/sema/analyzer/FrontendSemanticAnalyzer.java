@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
@@ -238,20 +239,17 @@ public final class FrontendSemanticAnalyzer {
     /// Compile callers must use `analyzeForCompile(...)` and check the resulting diagnostics for
     /// errors before allowing frontend output to enter lowering.
     public @NotNull FrontendAnalysisData analyze(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        Objects.requireNonNull(moduleName, "moduleName must not be null");
-        Objects.requireNonNull(units, "units must not be null");
+        Objects.requireNonNull(module, "module must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = classSkeletonBuilder.build(
-                moduleName,
-                units,
+                module,
                 classRegistry,
                 diagnosticManager,
                 analysisData
@@ -302,6 +300,19 @@ public final class FrontendSemanticAnalyzer {
         return analysisData;
     }
 
+    public @NotNull FrontendAnalysisData analyze(
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        return analyze(
+                new FrontendModule(moduleName, units),
+                classRegistry,
+                diagnosticManager
+        );
+    }
+
     /// Runs the shared semantic pipeline plus the compile-only final gate.
     ///
     /// This split keeps the default semantic entrypoint reusable for inspection/LSP-style tooling
@@ -309,14 +320,26 @@ public final class FrontendSemanticAnalyzer {
     /// frontend-to-LIR lowering must treat this entrypoint plus `diagnostics().hasErrors() == false`
     /// as the minimum precondition before compilation can continue.
     public @NotNull FrontendAnalysisData analyzeForCompile(
+            @NotNull FrontendModule module,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        var analysisData = analyze(module, classRegistry, diagnosticManager);
+        compileCheckAnalyzer.analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        return analysisData;
+    }
+
+    public @NotNull FrontendAnalysisData analyzeForCompile(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var analysisData = analyze(moduleName, units, classRegistry, diagnosticManager);
-        compileCheckAnalyzer.analyze(analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        return analysisData;
+        return analyzeForCompile(
+                new FrontendModule(moduleName, units),
+                classRegistry,
+                diagnosticManager
+        );
     }
 }

@@ -566,7 +566,7 @@ class FrontendVisibleValueResolverTest {
                 func ping():
                     print(missing_member)
                 """);
-        analyzedInput.analysisData().moduleSkeleton().classDefs().getFirst().setSuperName("MissingParent");
+        analyzedInput.analysisData().moduleSkeleton().sourceClassRelations().getFirst().topLevelClassDef().setSuperName("MissingParent");
         var useSite = findIdentifierExpression(analyzedInput.unit().ast(), "missing_member");
         var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
 

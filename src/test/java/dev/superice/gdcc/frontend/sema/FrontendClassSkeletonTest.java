@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -30,6 +31,41 @@ import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.*;
 
 class FrontendClassSkeletonTest {
+    @Test
+    void buildAcceptsFrontendModuleAndKeepsStepOneBehaviorStable() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var builder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var mappedUnit = parserService.parseUnit(Path.of("tmp", "mapped_candidate.gd"), """
+                class_name MappedCandidate
+                extends RefCounted
+                """, diagnostics);
+        var plainUnit = parserService.parseUnit(Path.of("tmp", "plain_candidate.gd"), """
+                class_name PlainCandidate
+                extends RefCounted
+                """, diagnostics);
+        var module = new FrontendModule(
+                "test_module",
+                List.of(mappedUnit, plainUnit),
+                java.util.Map.of("MappedCandidate", "MappedRuntimeCandidate")
+        );
+
+        var result = builder.build(module, registry, diagnostics, analysisData);
+
+        assertEquals("test_module", result.moduleName());
+        assertEquals(List.of(mappedUnit, plainUnit), sourceUnits(result));
+        assertEquals(
+                List.of("MappedCandidate", "PlainCandidate"),
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("MappedCandidate", "PlainCandidate"),
+                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList()
+        );
+    }
+
     @Test
     void buildInjectsClassSkeletonsIntoRegistry() throws IOException {
         var parserService = new GdScriptParserService();
@@ -70,21 +106,26 @@ class FrontendClassSkeletonTest {
                 parserService.parseUnit(Path.of("tmp", "no_name_script.gd"), anonymousSource, diagnostics)
         );
 
-        var result = classSkeletonBuilder.build("test_module", units, registry, diagnostics, analysisData);
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", units),
+                registry,
+                diagnostics,
+                analysisData
+        );
         assertEquals(3, result.sourceClassRelations().size());
-        assertEquals(3, result.classDefs().size());
+        assertEquals(3, topLevelClassDefs(result).size());
         assertEquals(3, result.allClassDefs().size());
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertTrue(result.diagnostics().isEmpty());
 
-        var childClass = findClassByName(result.classDefs(), "ChildClass");
+        var childClass = findClassByName(topLevelClassDefs(result), "ChildClass");
         assertEquals("BaseClass", childClass.getSuperName());
         assertEquals(1, childClass.getProperties().size());
         assertEquals("hp", childClass.getProperties().getFirst().getName());
         assertEquals(1, childClass.getFunctions().size());
         assertEquals("_ready", childClass.getFunctions().getFirst().getName());
 
-        var baseClass = findClassByName(result.classDefs(), "BaseClass");
+        var baseClass = findClassByName(topLevelClassDefs(result), "BaseClass");
         assertEquals("RefCounted", baseClass.getSuperName());
         assertEquals(1, baseClass.getSignals().size());
         var changedSignal = baseClass.getSignals().getFirst();
@@ -93,7 +134,7 @@ class FrontendClassSkeletonTest {
         assertEquals("value", changedSignal.getParameter(0).getName());
         assertEquals(GdIntType.INT, changedSignal.getParameter(0).getType());
 
-        var derivedNameClass = findClassByName(result.classDefs(), "NoNameScript");
+        var derivedNameClass = findClassByName(topLevelClassDefs(result), "NoNameScript");
         assertEquals("RefCounted", derivedNameClass.getSuperName());
         assertEquals(1, derivedNameClass.getProperties().size());
         assertEquals("flag", derivedNameClass.getProperties().getFirst().getName());
@@ -127,7 +168,12 @@ class FrontendClassSkeletonTest {
                     signal changed(value: int)
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
         var relation = result.sourceClassRelations().getFirst();
 
         assertEquals(1, result.sourceClassRelations().size());
@@ -148,8 +194,8 @@ class FrontendClassSkeletonTest {
                 "OuterWithInner$InnerA",
                 "OuterWithInner$InnerA$Deep",
                 "OuterWithInner$InnerB"
-        ), relation.innerClassDefs().stream().map(LirClassDef::getName).toList());
-        assertEquals(List.of("OuterWithInner"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        ), innerClassDefs(relation).stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("OuterWithInner"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
         assertEquals(List.of(
                 "OuterWithInner",
                 "OuterWithInner$InnerA",
@@ -191,16 +237,16 @@ class FrontendClassSkeletonTest {
                 .toList());
         assertTrue(relation.findImmediateInnerRelations(innerBDeclaration).isEmpty());
 
-        var innerA = findClassByName(relation.innerClassDefs(), "OuterWithInner$InnerA");
+        var innerA = findClassByName(innerClassDefs(relation), "OuterWithInner$InnerA");
         assertEquals("RefCounted", innerA.getSuperName());
         assertEquals("hp", innerA.getProperties().getFirst().getName());
         assertEquals("ping", innerA.getFunctions().getFirst().getName());
 
-        var innerB = findClassByName(relation.innerClassDefs(), "OuterWithInner$InnerB");
+        var innerB = findClassByName(innerClassDefs(relation), "OuterWithInner$InnerB");
         assertEquals(1, innerB.getSignals().size());
         assertEquals("changed", innerB.getSignals().getFirst().getName());
 
-        var deep = findClassByName(relation.innerClassDefs(), "OuterWithInner$InnerA$Deep");
+        var deep = findClassByName(innerClassDefs(relation), "OuterWithInner$InnerA$Deep");
         assertEquals("RefCounted", deep.getSuperName());
         assertEquals("nested", deep.getFunctions().getFirst().getName());
 
@@ -237,7 +283,12 @@ class FrontendClassSkeletonTest {
                     pass
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
         var relation = result.sourceClassRelations().getFirst();
         var lexicalLeafRelation = relation.innerClassRelations().stream()
                 .filter(innerRelation -> innerRelation.canonicalName().equals("SuperclassContract$LexicalLeaf"))
@@ -299,13 +350,12 @@ class FrontendClassSkeletonTest {
                 """, diagnostics);
 
         var result = classSkeletonBuilder.build(
-                "test_module",
-                List.of(outerUnit, moduleItemUnit),
+                new FrontendModule("test_module", List.of(outerUnit, moduleItemUnit)),
                 registry,
                 diagnostics,
                 analysisData
         );
-        var outer = findClassByName(result.classDefs(), "OuterTypes");
+        var outer = findClassByName(topLevelClassDefs(result), "OuterTypes");
         var directInner = findClassByName(result.allClassDefs(), "OuterTypes$DirectInner");
         var deep = findClassByName(result.allClassDefs(), "OuterTypes$DirectInner$Deep");
 
@@ -373,13 +423,12 @@ class FrontendClassSkeletonTest {
                 """, diagnostics);
 
         var result = classSkeletonBuilder.build(
-                "test_module",
-                List.of(outerUnit, consumerUnit),
+                new FrontendModule("test_module", List.of(outerUnit, consumerUnit)),
                 registry,
                 diagnostics,
                 analysisData
         );
-        var consumer = findClassByName(result.classDefs(), "ExternalConsumer");
+        var consumer = findClassByName(topLevelClassDefs(result), "ExternalConsumer");
 
         assertEquals(GdVariantType.VARIANT, findPropertyByName(consumer, "leaked").getType());
         assertObjectTypeName(findPropertyByName(consumer, "allowed").getType(), "OuterVisibility");
@@ -418,13 +467,12 @@ class FrontendClassSkeletonTest {
                 """, diagnostics);
 
         var result = classSkeletonBuilder.build(
-                "test_module",
-                List.of(helperUnit, deferredUnit),
+                new FrontendModule("test_module", List.of(helperUnit, deferredUnit)),
                 registry,
                 diagnostics,
                 analysisData
         );
-        var deferredClass = findClassByName(result.classDefs(), "DeferredTypeSources");
+        var deferredClass = findClassByName(topLevelClassDefs(result), "DeferredTypeSources");
 
         assertObjectTypeName(findPropertyByName(deferredClass, "direct").getType(), "HelperScript");
         assertEquals(GdVariantType.VARIANT, findPropertyByName(deferredClass, "from_enum").getType());
@@ -465,8 +513,13 @@ class FrontendClassSkeletonTest {
                     pass
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var unknownTypeSurface = findClassByName(result.classDefs(), "UnknownTypeSurface");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var unknownTypeSurface = findClassByName(topLevelClassDefs(result), "UnknownTypeSurface");
         var changedSignal = findSignalByName(unknownTypeSurface, "changed");
         var pingFunction = findFunctionByName(unknownTypeSurface, "ping");
         var initFunction = findFunctionByName(unknownTypeSurface, "_init");
@@ -511,8 +564,13 @@ class FrontendClassSkeletonTest {
                         pass
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var topLevel = findClassByName(result.classDefs(), "ConstructorMembers");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var topLevel = findClassByName(topLevelClassDefs(result), "ConstructorMembers");
         var inner = findClassByName(result.allClassDefs(), "ConstructorMembers$Inner");
 
         var topLevelInit = findFunctionByName(topLevel, "_init");
@@ -557,8 +615,13 @@ class FrontendClassSkeletonTest {
                         pass
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var topLevel = findClassByName(result.classDefs(), "DuplicateInitConstructor");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var topLevel = findClassByName(topLevelClassDefs(result), "DuplicateInitConstructor");
         var inner = findClassByName(result.allClassDefs(), "DuplicateInitConstructor$Inner");
 
         assertEquals(List.of("_init", "ping"), topLevel.getFunctions().stream()
@@ -690,8 +753,13 @@ class FrontendClassSkeletonTest {
                 """, diagnostics);
         var parseSnapshot = diagnostics.snapshot();
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
-        var classDef = findClassByName(result.classDefs(), "BrokenSharedPipeline");
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "BrokenSharedPipeline");
 
         assertEquals("BrokenSharedPipeline", classDef.getName());
         assertEquals(diagnostics.snapshot(), result.diagnostics());
@@ -731,16 +799,15 @@ class FrontendClassSkeletonTest {
                 """, diagnostics);
 
         var result = classSkeletonBuilder.build(
-                "duplicate_module",
-                List.of(original, duplicate, unique),
+                new FrontendModule("duplicate_module", List.of(original, duplicate, unique)),
                 registry,
                 diagnostics,
                 analysisData
         );
 
-        assertEquals(List.of("SharedName", "UniqueName"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("SharedName", "UniqueName"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
         assertEquals(2, result.sourceClassRelations().size());
-        assertEquals("from_first", findClassByName(result.classDefs(), "SharedName").getFunctions().getFirst().getName());
+        assertEquals("from_first", findClassByName(topLevelClassDefs(result), "SharedName").getFunctions().getFirst().getName());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
                         && diagnostic.message().contains("Duplicate class name 'SharedName'")
@@ -772,9 +839,14 @@ class FrontendClassSkeletonTest {
         );
         var diagnostics = new DiagnosticManager();
 
-        var result = classSkeletonBuilder.build("test_module", List.of(manualUnit), registry, diagnostics, analysisData);
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(manualUnit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
 
-        assertEquals(1, result.classDefs().size());
+        assertEquals(1, topLevelClassDefs(result).size());
         assertTrue(diagnostics.isEmpty());
         assertTrue(result.diagnostics().isEmpty());
     }
@@ -803,7 +875,12 @@ class FrontendClassSkeletonTest {
                         pass
                 """, diagnostics);
 
-        var result = classSkeletonBuilder.build("test_module", List.of(unit), registry, diagnostics, analysisData);
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
         var relation = result.sourceClassRelations().getFirst();
 
         assertEquals(List.of("OuterCycle", "OuterCycle$StableInner"), result.allClassDefs().stream()
@@ -830,6 +907,24 @@ class FrontendClassSkeletonTest {
                 .filter(classDef -> classDef.getName().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Class not found: " + className));
+    }
+
+    private List<FrontendSourceUnit> sourceUnits(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::unit)
+                .toList();
+    }
+
+    private List<LirClassDef> topLevelClassDefs(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
+    }
+
+    private List<LirClassDef> innerClassDefs(FrontendSourceClassRelation relation) {
+        return relation.innerClassRelations().stream()
+                .map(FrontendInnerClassRelation::classDef)
+                .toList();
     }
 
     private PropertyDef findPropertyByName(LirClassDef classDef, String propertyName) {

@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
@@ -101,8 +102,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var keepProperty = findVariable(topLevelStatements, "keep");
         var pingFunction = findFunction(topLevelStatements, "ping");
 
-        assertEquals(1, result.moduleSkeleton().classDefs().size());
-        assertEquals("AnnotatedPlayer", result.moduleSkeleton().classDefs().getFirst().getName());
+        assertEquals(1, topLevelClassDefs(result.moduleSkeleton()).size());
+        assertEquals("AnnotatedPlayer", topLevelClassDefs(result.moduleSkeleton()).getFirst().getName());
         assertEquals(List.of("tool"), annotationNames(result.annotationsByAst().get(unit.ast())));
         assertEquals(List.of("export"), annotationNames(result.annotationsByAst().get(hpProperty)));
         assertEquals(List.of("rpc"), annotationNames(result.annotationsByAst().get(pingFunction)));
@@ -153,6 +154,50 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("keep")
                         && diagnostic.message().contains(": int")
+        ));
+    }
+
+    @Test
+    void analyzeAndAnalyzeForCompileAcceptFrontendModuleWhileKeepingCompileGateSplitStable() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "module_compile_split.gd"), """
+                class_name ModuleCompileSplit
+                extends Node
+
+                static var blocked := 1
+
+                func ping():
+                    pass
+                """, new DiagnosticManager());
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                java.util.Map.of("ModuleCompileSplit", "RuntimeModuleCompileSplit")
+        );
+
+        var sharedDiagnostics = new DiagnosticManager();
+        var sharedResult = new FrontendSemanticAnalyzer().analyze(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                sharedDiagnostics
+        );
+
+        assertEquals("test_module", sharedResult.moduleSkeleton().moduleName());
+        assertEquals(List.of(unit), sourceUnits(sharedResult.moduleSkeleton()));
+        assertFalse(sharedResult.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.compile_check")
+        ));
+
+        var compileDiagnostics = new DiagnosticManager();
+        var compileResult = new FrontendSemanticAnalyzer().analyzeForCompile(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                compileDiagnostics
+        );
+
+        assertTrue(compileResult.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.compile_check")
+                        && diagnostic.message().contains("Static property 'blocked'")
         ));
     }
 
@@ -411,7 +456,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
 
         var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
 
-        assertEquals(1, result.moduleSkeleton().classDefs().size());
+        assertEquals(1, topLevelClassDefs(result.moduleSkeleton()).size());
         assertTrue(diagnostics.isEmpty());
         assertTrue(result.moduleSkeleton().diagnostics().isEmpty());
         assertTrue(result.diagnostics().isEmpty());
@@ -700,7 +745,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
 
         var result = analyzer.analyze("test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
 
-        assertEquals(List.of("SharedName", "StableAfterError"), result.moduleSkeleton().classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(
+                List.of("SharedName", "StableAfterError"),
+                topLevelClassDefs(result.moduleSkeleton()).stream().map(LirClassDef::getName).toList()
+        );
         assertFalse(result.scopesByAst().isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -729,7 +777,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
 
-        var topLevel = findClassByName(result.moduleSkeleton().classDefs(), "ScopeTypeResolverParity");
+        var topLevel = findClassByName(topLevelClassDefs(result.moduleSkeleton()), "ScopeTypeResolverParity");
         var inner = findClassByName(result.moduleSkeleton().allClassDefs(), "ScopeTypeResolverParity$Inner");
         var sourceScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(unit.ast()));
 
@@ -896,7 +944,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = createRegistryWithSingleton("GameSingleton");
         var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
 
-        assertTrue(result.moduleSkeleton().classDefs().isEmpty());
+        assertTrue(topLevelClassDefs(result.moduleSkeleton()).isEmpty());
         assertTrue(result.moduleSkeleton().sourceClassRelations().isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -914,6 +962,18 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 .filter(variableDeclaration -> variableDeclaration.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Variable not found: " + name));
+    }
+
+    private List<FrontendSourceUnit> sourceUnits(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::unit)
+                .toList();
+    }
+
+    private List<LirClassDef> topLevelClassDefs(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
     }
 
     private FunctionDeclaration findFunction(List<?> statements, String name) {
@@ -1040,8 +1100,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             invoked = true;
-            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1
-                    && analysisData.moduleSkeleton().classDefs().size() == 1;
+            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1;
             preScopeDiagnostics = analysisData.diagnostics();
             preScopeDiagnosticsMatchedManager = preScopeDiagnostics.equals(diagnosticManager.snapshot());
             diagnosticManager.warning(

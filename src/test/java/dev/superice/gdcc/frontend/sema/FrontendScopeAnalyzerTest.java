@@ -2,8 +2,10 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
+import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -1058,8 +1060,7 @@ class FrontendScopeAnalyzerTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 registry,
                 diagnostics,
                 analysisData
@@ -1082,6 +1083,12 @@ class FrontendScopeAnalyzerTest {
                 .filter(predicate)
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Statement not found: " + statementType.getSimpleName()));
+    }
+
+    private List<LirClassDef> topLevelClassDefs(@NotNull FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
     }
 
     private AnalyzedModule analyzeModule(@NotNull List<ModuleSource> sources) throws Exception {
@@ -1120,8 +1127,7 @@ class FrontendScopeAnalyzerTest {
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             invoked = true;
-            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1
-                    && analysisData.moduleSkeleton().classDefs().size() == 1;
+            moduleSkeletonPublished = analysisData.moduleSkeleton().sourceClassRelations().size() == 1;
             preScopeDiagnostics = analysisData.diagnostics();
             preScopeDiagnosticsMatchedManager = preScopeDiagnostics.equals(diagnosticManager.snapshot());
             diagnosticManager.warning(

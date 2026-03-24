@@ -20,6 +20,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -84,8 +85,17 @@ public final class FrontendAnalysisInspectionTool {
 
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(sourcePath, source, diagnosticManager);
-        var analysisData = semanticAnalyzer.analyze(moduleName, List.of(unit), classRegistry, diagnosticManager);
-        return new InspectionResult(unit, analysisData, renderSingleUnitReport(moduleName, unit, analysisData));
+        var module = FrontendModule.singleUnit(moduleName, unit);
+        var analysisData = semanticAnalyzer.analyze(module, classRegistry, diagnosticManager);
+        return new InspectionResult(module, unit, analysisData, renderSingleUnitReport(module, unit, analysisData));
+    }
+
+    public @NotNull String renderSingleUnitReport(
+            @NotNull FrontendModule module,
+            @NotNull FrontendSourceUnit unit,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        return new ReportRenderer(module, unit, analysisData).render();
     }
 
     public @NotNull String renderSingleUnitReport(
@@ -93,15 +103,21 @@ public final class FrontendAnalysisInspectionTool {
             @NotNull FrontendSourceUnit unit,
             @NotNull FrontendAnalysisData analysisData
     ) {
-        return new ReportRenderer(moduleName, unit, analysisData).render();
+        return renderSingleUnitReport(
+                FrontendModule.singleUnit(moduleName, unit),
+                unit,
+                analysisData
+        );
     }
 
     public record InspectionResult(
+            @NotNull FrontendModule module,
             @NotNull FrontendSourceUnit unit,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull String report
     ) {
         public InspectionResult {
+            Objects.requireNonNull(module, "module must not be null");
             Objects.requireNonNull(unit, "unit must not be null");
             Objects.requireNonNull(analysisData, "analysisData must not be null");
             Objects.requireNonNull(report, "report must not be null");
@@ -113,7 +129,7 @@ public final class FrontendAnalysisInspectionTool {
                 .comparingInt(Range::startByte)
                 .thenComparingInt(Range::endByte);
 
-        private final @NotNull String moduleName;
+        private final @NotNull FrontendModule module;
         private final @NotNull FrontendSourceUnit unit;
         private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull SourceTextIndex sourceTextIndex;
@@ -132,11 +148,11 @@ public final class FrontendAnalysisInspectionTool {
         private int nextVisitIndex;
 
         private ReportRenderer(
-                @NotNull String moduleName,
+                @NotNull FrontendModule module,
                 @NotNull FrontendSourceUnit unit,
                 @NotNull FrontendAnalysisData analysisData
         ) {
-            this.moduleName = Objects.requireNonNull(moduleName, "moduleName must not be null");
+            this.module = Objects.requireNonNull(module, "module must not be null");
             this.unit = Objects.requireNonNull(unit, "unit must not be null");
             this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
             sourceTextIndex = new SourceTextIndex(unit.source());
@@ -150,7 +166,7 @@ public final class FrontendAnalysisInspectionTool {
             var report = new StringBuilder(8_192);
             report.append("FORMAT ").append(REPORT_FORMAT).append('\n');
             report.append("FILE ").append(unit.path()).append('\n');
-            report.append("MODULE ").append(moduleName).append('\n');
+            report.append("MODULE ").append(module.moduleName()).append('\n');
             report.append("SUMMARY diagnostics=").append(diagnostics.size())
                     .append(" expressions=").append(expressions.size())
                     .append(" publishedExpressions=").append(countPublishedExpressions())

@@ -3,10 +3,12 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import dev.superice.gdcc.frontend.sema.FrontendSourceClassRelation;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -162,7 +164,8 @@ class FrontendAnnotationUsageAnalyzerTest {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull String className
     ) {
-        return analysisData.moduleSkeleton().classDefs().stream()
+        return analysisData.moduleSkeleton().sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
                 .filter(classDef -> classDef.getName().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Class not found: " + className));
@@ -222,8 +225,7 @@ class FrontendAnnotationUsageAnalyzerTest {
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = FrontendAnalysisData.bootstrap();
         var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 classRegistry,
                 diagnosticManager,
                 analysisData

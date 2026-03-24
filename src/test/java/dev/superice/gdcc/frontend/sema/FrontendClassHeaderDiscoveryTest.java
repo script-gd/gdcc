@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
@@ -75,18 +76,12 @@ class FrontendClassHeaderDiscoveryTest {
         );
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(duplicateInnerUnit, stableUnit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(duplicateInnerUnit, stableUnit), registry, diagnostics);
 
         var outerRelation = findSourceRelation(result, "Outer");
         assertEquals(
                 List.of("Outer", "StableModule"),
-                result.classDefs().stream().map(LirClassDef::getName).toList()
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
                 List.of(
@@ -159,18 +154,17 @@ class FrontendClassHeaderDiscoveryTest {
         );
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendClassSkeletonBuilder().build(
+        var result = buildSkeleton(
                 "header_discovery",
                 List.of(outerUnit, conflictingTopLevelUnit, stableUnit),
                 registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
+                diagnostics
         );
 
         var outerRelation = findSourceRelation(result, "Outer");
         assertEquals(
                 List.of("Outer", "KeepAlive"),
-                result.classDefs().stream().map(LirClassDef::getName).toList()
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
                 List.of(
@@ -236,18 +230,12 @@ class FrontendClassHeaderDiscoveryTest {
         );
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(outerUnit, stableUnit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(outerUnit, stableUnit), registry, diagnostics);
 
         var outerRelation = findSourceRelation(result, "OuterCycle");
         assertEquals(
                 List.of("OuterCycle", "StableRoot"),
-                result.classDefs().stream().map(LirClassDef::getName).toList()
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
                 List.of("StableInner"),
@@ -302,13 +290,7 @@ class FrontendClassHeaderDiscoveryTest {
         );
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(unit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(unit), registry, diagnostics);
 
         var relation = findSourceRelation(result, "CanonicalSuperBoundary");
         assertEquals(
@@ -362,15 +344,9 @@ class FrontendClassHeaderDiscoveryTest {
         );
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(pathBasedUnit, stableUnit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(pathBasedUnit, stableUnit), registry, diagnostics);
 
-        assertEquals(List.of("KeepAlive"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("KeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("KeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -404,15 +380,9 @@ class FrontendClassHeaderDiscoveryTest {
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         registry.addGdccClass(new LirClassDef("ExternalBase", "RefCounted"));
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(unit, stableUnit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(unit, stableUnit), registry, diagnostics);
 
-        assertEquals(List.of("LocalKeepAlive"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("LocalKeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("LocalKeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -447,15 +417,9 @@ class FrontendClassHeaderDiscoveryTest {
         );
 
         var registry = createRegistryWithSingleton("GameSingleton");
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(singletonUnit, stableUnit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(singletonUnit, stableUnit), registry, diagnostics);
 
-        assertEquals(List.of("KeepAlive"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("KeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("KeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
@@ -496,13 +460,7 @@ class FrontendClassHeaderDiscoveryTest {
 
         var diagnostics = new DiagnosticManager();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendClassSkeletonBuilder().build(
-                "header_discovery",
-                List.of(unit),
-                registry,
-                diagnostics,
-                FrontendAnalysisData.bootstrap()
-        );
+        var result = buildSkeleton("header_discovery", List.of(unit), registry, diagnostics);
 
         var relation = findSourceRelation(result, "ManualMissingInner");
         assertEquals(
@@ -526,6 +484,26 @@ class FrontendClassHeaderDiscoveryTest {
                 .filter(relation -> relation.name().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Source relation not found: " + className));
+    }
+
+    private List<LirClassDef> topLevelClassDefs(FrontendModuleSkeleton result) {
+        return result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .toList();
+    }
+
+    private FrontendModuleSkeleton buildSkeleton(
+            String moduleName,
+            List<FrontendSourceUnit> units,
+            ClassRegistry registry,
+            DiagnosticManager diagnostics
+    ) {
+        return new FrontendClassSkeletonBuilder().build(
+                new FrontendModule(moduleName, units),
+                registry,
+                diagnostics,
+                FrontendAnalysisData.bootstrap()
+        );
     }
 
     private ClassRegistry createRegistryWithSingleton(String singletonName) {

@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -59,11 +60,19 @@ class FrontendInheritanceCycleTest {
                 parserService.parseUnit(Path.of("tmp", "stable.gd"), sourceStable, diagnostics)
         );
 
-        var result = classSkeletonBuilder.build("cycle_module", units, registry, diagnostics, analysisData);
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("cycle_module", units),
+                registry,
+                diagnostics,
+                analysisData
+        );
 
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertFalse(result.diagnostics().isEmpty());
-        assertEquals(List.of("StableClass"), result.classDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("StableClass"), result.sourceClassRelations().stream()
+                .map(FrontendSourceClassRelation::topLevelClassDef)
+                .map(LirClassDef::getName)
+                .toList());
         assertEquals(1, result.sourceClassRelations().size());
         assertEquals(FrontendDiagnosticSeverity.ERROR, result.diagnostics().getFirst().severity());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
