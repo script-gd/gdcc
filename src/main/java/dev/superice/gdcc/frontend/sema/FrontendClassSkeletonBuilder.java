@@ -53,7 +53,7 @@ public final class FrontendClassSkeletonBuilder {
             // annotation ownership map instead of local copies.
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
         }
-        var headerDiscovery = discoverModuleClassHeaders(units, classRegistry, diagnosticManager);
+        var headerDiscovery = discoverModuleClassHeaders(module, classRegistry, diagnosticManager);
         var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
         for (var sourceUnitGraph : headerDiscovery.sourceUnitGraphs()) {
@@ -541,10 +541,14 @@ public final class FrontendClassSkeletonBuilder {
     /// - records rejected subtree roots explicitly so downstream processing can skip only those
     ///   regions
     private @NotNull ModuleClassHeaderDiscovery discoverModuleClassHeaders(
-            @NotNull List<FrontendSourceUnit> units,
+            @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        Objects.requireNonNull(module, "module must not be null");
+        // Header discovery now receives the frozen module carrier directly so later runtime-name
+        // identity work can read module-level mapping without reopening another parallel API.
+        var units = module.units();
         var sourceUnitHeaders = new ArrayList<MutableSourceUnitHeaders>(units.size());
         var discoveredHeadersInOrder = new ArrayList<MutableClassHeader>();
         var rejectedCandidates = new ArrayList<RejectedClassHeader>();

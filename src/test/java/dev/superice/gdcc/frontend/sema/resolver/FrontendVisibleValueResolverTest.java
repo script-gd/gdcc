@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema.resolver;
 
 import dev.superice.gdcc.exception.ScopeLookupException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
@@ -39,7 +40,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("visible_parameter.gd", """
                 class_name VisibleParameter
                 extends Node
-
+                
                 func ping(value: int):
                     print(value)
                 """);
@@ -66,7 +67,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("future_local_not_found.gd", """
                 class_name FutureLocalNotFound
                 extends Node
-
+                
                 func ping():
                     print(count)
                     var count := 1
@@ -96,9 +97,9 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("self_reference_initializer.gd", """
                 class_name SelfReferenceInitializer
                 extends Node
-
+                
                 var node = 7
-
+                
                 func ping():
                     var node = node
                 """);
@@ -128,9 +129,9 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("class_property_with_future_local.gd", """
                 class_name ClassPropertyWithFutureLocal
                 extends Node
-
+                
                 var a = 1
-
+                
                 func ping():
                     print(a)
                     var a = 2
@@ -160,9 +161,9 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("blocked_class_property.gd", """
                 class_name BlockedClassProperty
                 extends Node
-
+                
                 var hp: int = 1
-
+                
                 func ping():
                     print(hp)
                 """);
@@ -188,7 +189,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("parameter_default_deferred.gd", """
                 class_name ParameterDefaultDeferred
                 extends Node
-
+                
                 func ping(value, alias = value):
                     return alias
                 """);
@@ -217,7 +218,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("lambda_body_deferred.gd", """
                 class_name LambdaBodyDeferred
                 extends Node
-
+                
                 func ping(seed: int):
                     var f = func():
                         return seed
@@ -245,7 +246,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("block_local_const_deferred.gd", """
                 class_name BlockLocalConstDeferred
                 extends Node
-
+                
                 func ping(seed: int):
                     const answer = seed
                 """);
@@ -274,9 +275,9 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("visible_block_local_const_deferred.gd", """
                 class_name VisibleBlockLocalConstDeferred
                 extends Node
-
+                
                 var answer = 99
-
+                
                 func ping():
                     const answer = 1
                     print(answer)
@@ -306,7 +307,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("ordinary_local_initializer_supported.gd", """
                 class_name OrdinaryLocalInitializerSupported
                 extends Node
-
+                
                 func ping(seed: int):
                     var answer = seed
                 """);
@@ -332,9 +333,9 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("for_body_deferred.gd", """
                 class_name ForBodyDeferred
                 extends Node
-
+                
                 var item = 100
-
+                
                 func ping(values):
                     for item in values:
                         print(item)
@@ -364,9 +365,9 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("for_iterable_deferred.gd", """
                 class_name ForIterableDeferred
                 extends Node
-
+                
                 var item = 100
-
+                
                 func ping():
                     for item in [item]:
                         pass
@@ -393,7 +394,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("synthetic_for_body_scope.gd", """
                 class_name SyntheticForBodyScope
                 extends Node
-
+                
                 func ping(value):
                     print(value)
                 """);
@@ -421,7 +422,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("synthetic_match_scope.gd", """
                 class_name SyntheticMatchScope
                 extends Node
-
+                
                 func ping(value):
                     print(value)
                 """);
@@ -452,7 +453,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("synthetic_lambda_scope.gd", """
                 class_name SyntheticLambdaScope
                 extends Node
-
+                
                 func ping(value):
                     print(value)
                 """);
@@ -480,7 +481,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("match_section_deferred.gd", """
                 class_name MatchSectionDeferred
                 extends Node
-
+                
                 func ping(value):
                     match value:
                         var bound when bound > 0:
@@ -509,7 +510,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("unsupported_request_domain.gd", """
                 class_name UnsupportedRequestDomain
                 extends Node
-
+                
                 func ping(value):
                     print(value)
                 """);
@@ -535,7 +536,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("missing_use_site_scope.gd", """
                 class_name MissingUseSiteScope
                 extends Node
-
+                
                 func ping(value):
                     print(value)
                 """);
@@ -562,7 +563,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("shared_scope_exception.gd", """
                 class_name SharedScopeException
                 extends Node
-
+                
                 func ping():
                     print(missing_member)
                 """);
@@ -588,8 +589,7 @@ class FrontendVisibleValueResolverTest {
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
 
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnostics
         );

@@ -95,7 +95,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var topLevelStatements = unit.ast().statements();
         var hpProperty = findVariable(topLevelStatements, "hp");
         var tmpProperty = findVariable(topLevelStatements, "tmp");
@@ -163,9 +163,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var unit = parserService.parseUnit(Path.of("tmp", "module_compile_split.gd"), """
                 class_name ModuleCompileSplit
                 extends Node
-
+                
                 static var blocked := 1
-
+                
                 func ping():
                     pass
                 """, new DiagnosticManager());
@@ -218,7 +218,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var pingFunction = findFunction(unit.ast().statements(), "ping");
         var bodyStatements = pingFunction.body().statements();
         var innerVariable = findVariable(bodyStatements, "inner");
@@ -252,7 +252,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var pingFunction = findFunction(unit.ast().statements(), "ping");
         var headRead = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
@@ -380,7 +380,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var readyValue = findVariable(unit.ast().statements(), "ready_value");
         var readyInitializer = assertInstanceOf(AttributeExpression.class, readyValue.value());
@@ -454,7 +454,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var analyzer = new FrontendSemanticAnalyzer();
         var diagnostics = new DiagnosticManager();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
 
         assertEquals(1, topLevelClassDefs(result.moduleSkeleton()).size());
         assertTrue(diagnostics.isEmpty());
@@ -479,7 +479,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
         var parseSnapshot = diagnostics.snapshot();
         var beforeMutation = result.diagnostics();
         diagnostics.error("sema.synthetic", "late diagnostic", unit.path(), null);
@@ -521,7 +521,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 probeTypeCheckAnalyzer
         );
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
 
         assertTrue(probeScopeAnalyzer.invoked);
         assertTrue(probeScopeAnalyzer.moduleSkeletonPublished);
@@ -647,7 +647,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendTypeCheckAnalyzer(),
                 sharedProbe
         );
-        var sharedResult = sharedAnalyzer.analyze("test_module", List.of(unit), registry, sharedDiagnostics);
+        var sharedResult = analyzeModule(sharedAnalyzer, "test_module", List.of(unit), registry, sharedDiagnostics);
 
         assertFalse(sharedProbe.invoked);
         assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check_phase_probe").isEmpty());
@@ -666,7 +666,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendTypeCheckAnalyzer(),
                 compileProbe
         );
-        var compileResult = compileAnalyzer.analyzeForCompile(
+        var compileResult = analyzeModuleForCompile(
+                compileAnalyzer,
                 "test_module",
                 List.of(unit),
                 registry,
@@ -694,22 +695,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
 
         var sharedDiagnostics = new DiagnosticManager();
-        var sharedResult = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
-                registry,
-                sharedDiagnostics
-        );
+        var sharedResult = analyzeModule("test_module", List.of(unit), registry, sharedDiagnostics);
         assertFalse(sharedResult.diagnostics().hasErrors());
         assertTrue(diagnosticsByCategory(sharedResult.diagnostics(), "sema.compile_check").isEmpty());
 
         var compileDiagnostics = new DiagnosticManager();
-        var compileResult = new FrontendSemanticAnalyzer().analyzeForCompile(
-                "test_module",
-                List.of(unit),
-                registry,
-                compileDiagnostics
-        );
+        var compileResult = analyzeModuleForCompile("test_module", List.of(unit), registry, compileDiagnostics);
         assertTrue(compileResult.diagnostics().hasErrors());
         assertEquals(1, diagnosticsByCategory(compileResult.diagnostics(), "sema.compile_check").size());
         assertEquals(compileDiagnostics.snapshot(), compileResult.diagnostics());
@@ -743,7 +734,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
 
-        var result = analyzer.analyze("test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
+        var result = analyzeModule(analyzer, "test_module", List.of(duplicateA, duplicateB, stable), registry, diagnostics);
 
         assertEquals(
                 List.of("SharedName", "StableAfterError"),
@@ -775,7 +766,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     pass
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var topLevel = findClassByName(topLevelClassDefs(result.moduleSkeleton()), "ScopeTypeResolverParity");
         var inner = findClassByName(result.moduleSkeleton().allClassDefs(), "ScopeTypeResolverParity$Inner");
@@ -817,12 +808,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     var picked: Shared
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(baseUnit, outerUnit),
-                registry,
-                diagnostics
-        );
+        var result = analyzeModule("test_module", List.of(baseUnit, outerUnit), registry, diagnostics);
 
         var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "OuterPrecedence$Leaf");
         var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
@@ -853,7 +839,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     var picked: Shared
                 """, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "HeaderResolverGap$Leaf");
         var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
@@ -907,7 +893,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 )
         );
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
         var sourceRelation = result.moduleSkeleton().sourceClassRelations().getFirst();
@@ -942,7 +928,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     pass
                 """, diagnostics);
         var registry = createRegistryWithSingleton("GameSingleton");
-        var result = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         assertTrue(topLevelClassDefs(result.moduleSkeleton()).isEmpty());
         assertTrue(result.moduleSkeleton().sourceClassRelations().isEmpty());
@@ -974,6 +960,44 @@ class FrontendSemanticAnalyzerFrameworkTest {
         return result.sourceClassRelations().stream()
                 .map(FrontendSourceClassRelation::topLevelClassDef)
                 .toList();
+    }
+
+    private FrontendAnalysisData analyzeModule(
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzeModule(new FrontendSemanticAnalyzer(), moduleName, units, registry, diagnostics);
+    }
+
+    private FrontendAnalysisData analyzeModule(
+            @NotNull FrontendSemanticAnalyzer analyzer,
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzer.analyze(new FrontendModule(moduleName, units), registry, diagnostics);
+    }
+
+    private FrontendAnalysisData analyzeModuleForCompile(
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzeModuleForCompile(new FrontendSemanticAnalyzer(), moduleName, units, registry, diagnostics);
+    }
+
+    private FrontendAnalysisData analyzeModuleForCompile(
+            @NotNull FrontendSemanticAnalyzer analyzer,
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return analyzer.analyzeForCompile(new FrontendModule(moduleName, units), registry, diagnostics);
     }
 
     private FunctionDeclaration findFunction(List<?> statements, String name) {

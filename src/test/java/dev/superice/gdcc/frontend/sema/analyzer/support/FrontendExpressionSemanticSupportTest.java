@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema.analyzer.support;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
@@ -723,8 +724,7 @@ class FrontendExpressionSemanticSupportTest {
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 classRegistry,
                 diagnostics
         );

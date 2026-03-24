@@ -201,7 +201,11 @@ class FrontendScopeAnalyzerTest {
         assertEquals(2, constructor.parameters().size());
 
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var analysisData = new FrontendSemanticAnalyzer().analyze("test_module", List.of(unit), registry, diagnostics);
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics
+        );
         var scopesByAst = analysisData.scopesByAst();
 
         var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(unit.ast()));
@@ -1015,7 +1019,7 @@ class FrontendScopeAnalyzerTest {
         var probeScopeAnalyzer = new RecordingScopeAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(new FrontendClassSkeletonBuilder(), probeScopeAnalyzer);
 
-        var result = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var result = analyzer.analyze(new FrontendModule("test_module", List.of(unit)), registry, diagnostics);
 
         assertTrue(probeScopeAnalyzer.invoked);
         assertTrue(probeScopeAnalyzer.moduleSkeletonPublished);
@@ -1044,7 +1048,7 @@ class FrontendScopeAnalyzerTest {
         var unit = parserService.parseUnit(java.nio.file.Path.of("tmp", "frontend_scope_analyzer_test.gd"), source, diagnostics);
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
-        var analysisData = analyzer.analyze("test_module", List.of(unit), registry, diagnostics);
+        var analysisData = analyzer.analyze(new FrontendModule("test_module", List.of(unit)), registry, diagnostics);
         return new AnalyzedUnit(unit, analysisData);
     }
 
@@ -1105,7 +1109,7 @@ class FrontendScopeAnalyzerTest {
         assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analyzer = new FrontendSemanticAnalyzer();
-        var analysisData = analyzer.analyze("test_module", units, registry, diagnostics);
+        var analysisData = analyzer.analyze(new FrontendModule("test_module", units), registry, diagnostics);
         return new AnalyzedModule(List.copyOf(units), analysisData);
     }
 

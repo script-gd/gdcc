@@ -231,11 +231,11 @@
   - 已新增统一模块输入快照，冻结 `moduleName`、`List<FrontendSourceUnit>` 与顶层类名映射表。
   - 当前阶段映射表仅承载输入，不提前参与 skeleton identity 计算。
 - [x] 1.2 切换 `FrontendClassSkeletonBuilder`、`FrontendSemanticAnalyzer`、`FrontendAnalysisInspectionTool` 主入口到 `FrontendModule`
-  - 已新增 `FrontendModule` 版本主入口，并保留旧签名作为过渡委托层。
+  - 已新增 `FrontendModule` 版本主入口，并完成主链路内部迁移。
   - inspection 单文件路径已改为内部先构造 `FrontendModule`，不再在实现内部平行传递 `moduleName + unit`。
 - [x] 1.3 补充并更新单元测试，覆盖正反行为与兼容入口
   - 已新增 `FrontendModuleTest`，锚定输入快照冻结、单文件工厂与边界空值校验。
-  - 已在 skeleton/analyzer/inspection 测试中补充 `FrontendModule` 主入口、旧委托入口和 compile-only 分流断言。
+  - 已在 skeleton/analyzer/inspection 测试中补充 `FrontendModule` 主入口与 compile-only 分流断言。
 - [x] 1.4 运行 targeted tests 并记录验收结果
   - 已通过：`FrontendModuleTest`、`FrontendParseSmokeTest`、`FrontendAnnotationParseBehaviorTest`、`GdScriptParserServiceDiagnosticManagerTest`
   - 已通过：`FrontendClassSkeletonTest`、`FrontendClassSkeletonAnnotationTest`、`FrontendInheritanceCycleTest`
@@ -270,6 +270,23 @@
 - `FrontendModule` 中的 mapping 进入 skeleton 前已经冻结，后续 phase 不再自行修改它。
 - frontend 主链路不再需要把 `moduleName`、`units`、mapping 三者分开平行传递。
 - 旧调用方如果仍存在兼容重载，在不传 mapping 时行为不变。
+
+第 2 步执行状态（2026-03-24）：
+
+- [x] 2.1 收紧 `FrontendModule` 的映射边界
+  - 已把顶层 runtime-name map 的冻结与合法性校验收口到 `FrontendModule` 构造边界。
+  - 已新增带 mapping 的 `singleUnit(...)` 工厂，避免 inspection/test helper 重新平行传递模块级输入。
+- [x] 2.2 把 skeleton header discovery 切到 `FrontendModule` 快照
+  - `FrontendClassSkeletonBuilder.discoverModuleClassHeaders(...)` 已改为直接接收 `FrontendModule`。
+  - 这一步只把冻结的模块输入带到 discovery 边界，不提前实施第 3 步的 runtime/canonical identity 改造。
+- [x] 2.3 删除残留兼容入口并统一迁移调用方
+  - 已删除 `FrontendSemanticAnalyzer` 中 `moduleName + units` 的旧重载。
+  - 已删除 `FrontendAnalysisInspectionTool.renderSingleUnitReport(String, ...)` 的旧入口，并完成测试侧迁移。
+- [x] 2.4 补充 targeted tests 并记录验收结果
+  - 已补充 `FrontendModule` 的 mapping 工厂与 blank-entry 边界测试，锚定冻结语义与 public boundary 校验。
+  - 已通过：`FrontendModuleTest`、`FrontendClassSkeletonTest`、`FrontendScopeAnalyzerTest`、`FrontendSemanticAnalyzerFrameworkTest`
+  - 已通过：`FrontendAnalysisInspectionToolTest`、`FrontendAnnotationUsageAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendCompileCheckAnalyzerTest`
+  - 已通过：`FrontendExprTypeAnalyzerTest`、`FrontendVisibleValueResolverTest`、`FrontendExpressionSemanticSupportTest`、`FrontendAssignmentSemanticSupportTest`
 
 ### 第 3 步：重构 header identity，先让 top-level header 摆脱“sourceName == canonicalName”
 

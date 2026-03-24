@@ -30,7 +30,7 @@ class FrontendAnnotationUsageAnalyzerTest {
         var preparedInput = prepareAnnotationUsageInput("missing_annotation_usage_scope.gd", """
                 class_name MissingAnnotationUsageScope
                 extends Node
-
+                
                 @onready var child: Variant = null
                 """);
         preparedInput.analysisData().scopesByAst().remove(preparedInput.unit().ast());
@@ -52,7 +52,7 @@ class FrontendAnnotationUsageAnalyzerTest {
         var analyzedModule = analyze("""
                 class_name ValidOnreadyOwner
                 extends Node
-
+                
                 @onready var child: Variant = null
                 """);
 
@@ -77,15 +77,15 @@ class FrontendAnnotationUsageAnalyzerTest {
                 new SourceSpec("non_node_onready.gd", """
                         class_name NonNodeOnready
                         extends RefCounted
-
+                        
                         @onready var child: Variant = null
                         """),
                 new SourceSpec("static_local_onready.gd", """
                         class_name StaticLocalOnready
                         extends Node
-
+                        
                         @onready static var child: Variant = null
-
+                        
                         func ping():
                             @onready var local = null
                         """)
@@ -135,8 +135,7 @@ class FrontendAnnotationUsageAnalyzerTest {
                 .toList();
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                units,
+                new FrontendModule("test_module", units),
                 classRegistry,
                 diagnosticManager
         );

@@ -2,14 +2,12 @@ package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
-import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import dev.superice.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
-import java.util.List;
 
 /// Basic frontend semantic-analyzer framework.
 ///
@@ -300,19 +298,6 @@ public final class FrontendSemanticAnalyzer {
         return analysisData;
     }
 
-    public @NotNull FrontendAnalysisData analyze(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull DiagnosticManager diagnosticManager
-    ) {
-        return analyze(
-                new FrontendModule(moduleName, units),
-                classRegistry,
-                diagnosticManager
-        );
-    }
-
     /// Runs the shared semantic pipeline plus the compile-only final gate.
     ///
     /// This split keeps the default semantic entrypoint reusable for inspection/LSP-style tooling
@@ -328,18 +313,5 @@ public final class FrontendSemanticAnalyzer {
         compileCheckAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
-    }
-
-    public @NotNull FrontendAnalysisData analyzeForCompile(
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull DiagnosticManager diagnosticManager
-    ) {
-        return analyzeForCompile(
-                new FrontendModule(moduleName, units),
-                classRegistry,
-                diagnosticManager
-        );
     }
 }

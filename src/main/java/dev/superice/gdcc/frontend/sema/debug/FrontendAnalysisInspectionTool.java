@@ -98,18 +98,6 @@ public final class FrontendAnalysisInspectionTool {
         return new ReportRenderer(module, unit, analysisData).render();
     }
 
-    public @NotNull String renderSingleUnitReport(
-            @NotNull String moduleName,
-            @NotNull FrontendSourceUnit unit,
-            @NotNull FrontendAnalysisData analysisData
-    ) {
-        return renderSingleUnitReport(
-                FrontendModule.singleUnit(moduleName, unit),
-                unit,
-                analysisData
-        );
-    }
-
     public record InspectionResult(
             @NotNull FrontendModule module,
             @NotNull FrontendSourceUnit unit,

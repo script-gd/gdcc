@@ -668,8 +668,8 @@ class FrontendClassSkeletonTest {
         var discovery = invokeBuilderMethod(
                 builder,
                 "discoverModuleClassHeaders",
-                new Class<?>[]{List.class, ClassRegistry.class, DiagnosticManager.class},
-                List.of(unit),
+                new Class<?>[]{FrontendModule.class, ClassRegistry.class, DiagnosticManager.class},
+                new FrontendModule("phase3_probe_module", List.of(unit)),
                 registry,
                 diagnostics
         );

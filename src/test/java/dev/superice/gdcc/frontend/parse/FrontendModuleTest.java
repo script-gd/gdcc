@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -62,6 +63,24 @@ class FrontendModuleTest {
     }
 
     @Test
+    void singleUnitFactoryFreezesProvidedRuntimeNameMap() {
+        var unit = parse("single_with_map.gd", "class_name SingleWithMap\nextends RefCounted\n");
+        var runtimeNameMap = new LinkedHashMap<String, String>();
+        runtimeNameMap.put("SingleWithMap", "RuntimeSingleWithMap");
+
+        var module = FrontendModule.singleUnit("single_module", unit, runtimeNameMap);
+        runtimeNameMap.put("Late", "LateRuntime");
+
+        assertEquals("single_module", module.moduleName());
+        assertEquals(List.of(unit), module.units());
+        assertEquals(Map.of("SingleWithMap", "RuntimeSingleWithMap"), module.topLevelRuntimeNameMap());
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> module.topLevelRuntimeNameMap().put("Other", "OtherRuntime")
+        );
+    }
+
+    @Test
     void constructorRejectsMissingBoundaryInputs() {
         var unit = parse("boundary.gd", "class_name Boundary\nextends RefCounted\n");
 
@@ -70,6 +89,20 @@ class FrontendModuleTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new FrontendModule("test_module", List.of(unit), null)
+        );
+    }
+
+    @Test
+    void constructorRejectsBlankRuntimeMappingEntries() {
+        var unit = parse("invalid_map.gd", "class_name InvalidMap\nextends RefCounted\n");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendModule("test_module", List.of(unit), Map.of("", "RuntimeName"))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendModule("test_module", List.of(unit), Map.of("InvalidMap", " "))
         );
     }
 

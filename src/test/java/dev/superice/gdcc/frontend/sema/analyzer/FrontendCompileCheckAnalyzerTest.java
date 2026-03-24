@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendCompileCheckAnalyzerTest {
     @Test
-    void analyzeRejectsMissingModuleSkeletonBoundary() throws Exception {
+    void analyzeRejectsMissingModuleSkeletonBoundary() {
         var analyzer = new FrontendCompileCheckAnalyzer();
         var analysisData = FrontendAnalysisData.bootstrap();
 
@@ -697,8 +697,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var diagnosticManager = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyze(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnosticManager
         );
@@ -716,8 +715,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var diagnosticManager = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
-                "test_module",
-                List.of(unit),
+                new FrontendModule("test_module", List.of(unit)),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnosticManager
         );
