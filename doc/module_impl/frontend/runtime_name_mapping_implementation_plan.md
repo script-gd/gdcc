@@ -90,6 +90,9 @@
 - `ClassRegistry`
   - 仍然只按 canonical 注册 gdcc class。
   - 但需要允许顶层映射类也携带 source override，而不再只服务 inner class。
+- `FrontendModuleSkeleton`
+  - 后续 analyzer 现在只稳定持有 skeleton，不再直接持有 `FrontendModule`。
+  - 若要落实“caller-side remap 后再查找”的统一规则，必须把冻结后的 `topLevelCanonicalNameMap` 保留到 `FrontendModuleSkeleton`，避免每条 analyzer 路径各自重新拼装 mapping。
 - `ClassScope`
   - 继承链、属性解析、方法解析依赖 `ClassDef#getName()/getSuperName()` 的 canonical 合同。
   - 只要 canonical 生成正确，`walkInheritedClasses(...)` 的主逻辑可以保持不变。
@@ -465,15 +468,34 @@
 - [x] 6.2 global registry 仍保持 canonical-only 注册键
   - `findGdccClass(...)` / `resolveTypeMetaHere(...)` 的 global lookup 仍只接受 canonical，不额外暴露 source alias。
 
-### 第 7 步：修复 scope / analyzer / resolver 的展示名消费点
+### 第 7 步：落实统一 caller-side remap 规则，并修复 scope / analyzer / resolver 的消费点
 
 目标：
 
+- 把“调用经过映射的顶层类的 frontend 调用者，应先按源码字面名做正常 lexical 查找，只有 miss 时才按 mapping 重试 canonical”冻结为统一规则。
+- 不再通过 `ClassScope` 特判去发布当前顶层类自身的 source-facing type-meta。
+- 让后续 analyzer 能从一个稳定的 skeleton 快照拿到映射表，而不是各自手搓 remap。
 - 让用户诊断和 analyzer debug 路径统一展示映射后的名字。
-- 同时不破坏 source-facing lookup 规则。
+- 同时不破坏 lexical shadowing 与 source-facing lookup 规则。
 
 建议改动：
 
+- 在 `FrontendModuleSkeleton` 中保留冻结后的 `topLevelCanonicalNameMap`。
+- 为 `FrontendModuleSkeleton` 添加配套工具方法，至少覆盖：
+  - `findMappedTopLevelCanonicalName(sourceName)`
+  - `remapTopLevelCanonicalName(sourceName)`
+  - 如有必要，再补一个“只在存在 override 时返回 canonical”的窄接口，避免调用方到处手写 `map.getOrDefault(...)`
+- 明确统一 remap 协议：
+  - 先按 AST/source 中的原始字面名执行正常 lexical `resolveTypeMeta(...)` / strict declared-type 查找
+  - 只有在该路径 miss 后，且名字命中 top-level mapping 时，才以映射后的 canonical 名重试
+  - 禁止任何调用点在 lexical 查找前无条件把源码字面名直接改写成 canonical
+- 下列源码名消费点统一接入上述 helper，而不是各自散落手写 remap：
+  - `FrontendDeclaredTypeSupport`
+  - `FrontendTopBindingAnalyzer`
+  - `FrontendChainHeadReceiverSupport`
+  - `FrontendAssignmentSemanticSupport`
+  - 其他直接把源码字面名传给 `resolveTypeMeta(...)` / `tryResolveDeclaredType(...)` 的 frontend 路径
+- 继续把展示文案从 `receiverTypeMeta.sourceName()` 切换为 `receiverTypeMeta.displayName()`：
 - 以下路径从 `receiverTypeMeta.sourceName()` 切换为 `receiverTypeMeta.displayName()`：
   - `ScopeMethodResolver`
   - `FrontendChainReductionHelper`
@@ -486,16 +508,26 @@
 
 - 诊断消息里的 receiver/type 名字变更会打到大量断言，测试需要整体同步。
 - lookup 逻辑本身不要跟着改成按 `displayName` 查找。
+- 不要重新引入“source-file `ClassScope` 直接发布 mapped top-level 自身 source-facing type-meta”的 scope 级特判；mapped top-level self/cross-file 可见性应由 caller-side remap 规则负责。
 
 优先涉及文件：
 
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendModuleSkeleton.java`
 - `src/main/java/dev/superice/gdcc/scope/resolver/ScopeMethodResolver.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendDeclaredTypeSupport.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendTopBindingAnalyzer.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendChainHeadReceiverSupport.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendAssignmentSemanticSupport.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendChainReductionHelper.java`
 - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
 - 其他 `ScopeTypeMeta.sourceName()` 直接用于消息拼接的路径
 
 验收细则：
 
+- caller-side remap 统一保持“lexical lookup first, remap-on-miss second”，不会破坏 local/inner type-meta 的 shadowing。
+- mapped top-level 自身 declared type、同模块跨文件 top-level static route、compile gate 相关 source-facing 用法都能在 remap-on-miss 规则下恢复工作。
+- `FrontendModuleSkeleton` 已成为后续 analyzer 读取 module mapping 的唯一稳定快照来源。
+- 再次确认顶层 `ClassScope` 不直接发布 mapped top-level 自身 source-facing type-meta。
 - static load / constructor / method resolution 失败消息在 mapped 类上展示映射后的名字。
 - source-facing lexical lookup 仍按源码名工作。
 - top binding / chain binding / expr type / compile check 的 side-table 发布不出现结构性退化。
@@ -506,6 +538,83 @@
   - `ScopeMethodResolver`、`FrontendChainReductionHelper` 已改为展示 `displayName()`，不再默认回显 `sourceName()`。
 - [x] 7.2 property initializer 边界消息与 constructor/static-method 失败消息已同步
   - mapped gdcc type-meta 的用户可见消息现在稳定展示 canonical 派生名。
+- [ ] 7.3 `FrontendModuleSkeleton` 保留 mapping 与 caller-side remap helper 仍待落地
+  - 当前 analyzer 侧还没有统一的 remap-on-miss helper。
+  - mapped top-level source-facing self/cross-file type lookup 仍不能视为已完成能力。
+
+### 第 7A 步：全面迁移 frontend 类型名 / `TYPE_META` 解析到 caller-side remap 规则
+
+目标：
+
+- 对现有 frontend 中所有直接消费源码类型名字面量、`TYPE_META` 标识符和静态路由头的路径做一次完整盘点。
+- 把这些路径统一迁移到“先 lexical lookup，miss 后按 `topLevelCanonicalNameMap` remap 到 canonical 再重试”的规则上。
+- 用充分的单元测试把正反行为钉死，避免后续又通过 scope 特判或局部 alias 回退。
+
+建议改动：
+
+- 先完成一轮代码盘点，明确列出所有会直接把源码字面名传入以下 API 的 frontend 路径：
+  - `Scope#resolveTypeMeta(...)`
+  - `ScopeTypeResolver.tryResolveDeclaredType(...)`
+  - `ClassRegistry.tryResolveDeclaredType(...)`
+  - 以及任何把 `TYPE_META` 作为 chain/static receiver 重新确认的 helper
+- 至少覆盖以下已知主干：
+  - `FrontendDeclaredTypeSupport`
+  - `FrontendTopBindingAnalyzer`
+  - `FrontendChainHeadReceiverSupport`
+  - `FrontendAssignmentSemanticSupport`
+  - `FrontendExpressionSemanticSupport` 中任何重新解析显式类型名的路径
+  - 其他 analyzer/support 中直接按源码字面名探测 type-meta 的路径
+- 对每条路径统一实施同一策略：
+  - 先用当前 lexical scope / 当前 helper 的原始协议查找源码字面名
+  - 仅在 miss 时，再通过 `FrontendModuleSkeleton` 上冻结的 mapping/helper 做 canonical retry
+  - 若第一次已命中 local/inner type-meta，则禁止继续 remap，确保 lexical shadowing 不被破坏
+- 严禁保留以下“局部补洞”方案：
+  - 在某个 analyzer 中直接手写 `map.getOrDefault(...)` 作为私有规则
+  - 在 scope graph 中重新发布 mapped top-level 自身 source-facing type-meta
+  - 在 `ClassRegistry` 中为 mapped top-level 额外开放 source alias 的全局 lookup
+- 为 remap 结果补必要注释，重点解释：
+  - 为什么必须是 remap-on-miss，而不是 unconditional remap
+  - 为什么 caller-side remap 只适用于 top-level mapping，而不适用于 inner class canonical 派生
+
+建议新增/更新的测试面：
+
+- declared type：
+  - mapped top-level 自身 property / parameter / return type 在 caller-side remap 下恢复工作
+  - 同模块跨文件 top-level declared type 在 caller-side remap 下恢复工作
+  - local/inner type-meta 与 mapped top-level 同名时，lexical 命中优先，不能被 remap 覆盖
+- top binding / chain binding / expr type：
+  - mapped top-level static route `MappedWorker.build()` 正向通过
+  - 同模块跨文件调用另一个 mapped top-level 静态方法正向通过
+  - 非 mapped 名字、unknown 名字、shadowed 名字分别保持原有失败或遮蔽行为
+- compile-only gate：
+  - mapped top-level 路由不会因 remap 误报 compile blocker
+  - 真正的 compile blocker 仍会被保留，不会被 remap 吞掉
+- 负向与边界：
+  - unconditional remap 会破坏 lexical shadowing 的场景必须有回归测试，防止实现走偏
+  - inner class 继续只按 lexical `sourceName` 解析，不通过 top-level mapping helper 补 canonical
+
+优先涉及文件：
+
+- `src/main/java/dev/superice/gdcc/frontend/sema/FrontendDeclaredTypeSupport.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendTopBindingAnalyzer.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendChainHeadReceiverSupport.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendAssignmentSemanticSupport.java`
+- `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java`
+- 相关 analyzer/support 测试
+
+验收细则：
+
+- frontend 现有类型名 / `TYPE_META` 解析路径已经完成盘点，不存在已知漏网的源码字面名直接查 canonical-only registry 的路径。
+- mapped top-level 自身与跨文件 top-level 的 source-facing 用法，都通过 caller-side remap-on-miss 恢复工作。
+- local/inner type-meta 的 lexical 优先级不被破坏；相关负向测试能够证明实现没有走成 unconditional remap。
+- 新增测试不只覆盖 happy path，还覆盖 shadowing、unknown name、compile blocker 保留等反向场景。
+
+第 7A 步执行状态（2026-03-25）：
+
+- [ ] 7A.1 frontend 类型名 / `TYPE_META` 解析路径盘点待完成
+- [ ] 7A.2 caller-side remap 统一迁移待完成
+- [ ] 7A.3 正反两方面单元测试待补齐
+- [ ] 7A.4 targeted tests 与事实源同步待完成
 
 ### 第 8 步：确认继承链、属性解析和方法解析只继续依赖 canonical
 
@@ -565,8 +674,9 @@
   - 命中后 `ScopeTypeMeta.sourceName()` 为源码名
   - 命中后 `ScopeTypeMeta.displayName()/canonicalName()` 为映射名
 - analyzer：
-  - top binding / chain binding / expr type 在 mapped 类环境中继续工作
+  - top binding / chain binding / expr type 在 mapped 类环境中通过 caller-side remap-on-miss 继续工作
   - compile-only gate 不因为名字映射而误报或漏报
+  - `FrontendModuleSkeleton` 持有的 mapping/helper 能被上述 analyzer 统一复用，而不是各写一套 remap
 - inheritance/member resolution：
   - mapped 顶层类及其内部类的继承链
   - property lookup
@@ -597,6 +707,7 @@
   - `ScopeMethodResolverTest` 与 `FrontendChainReductionHelperTest` 现覆盖 mapped gdcc type-meta 在失败消息中展示 canonical 派生名。
 - [ ] 9.3 analyzer 与 compile-only gate 的 mapped-module source-facing 回归仍待 caller-side remap 方案落地
   - 当前实现已回退“source-file `ClassScope` 直接发布 mapped top-level 自身 source-facing type-meta”的试探性做法。
+  - 后续应先完成 `FrontendModuleSkeleton` 对 `topLevelCanonicalNameMap` 的保留及 remap helper，再恢复 analyzer/compile-only 正向回归。
   - `FrontendTopBindingAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest`、`FrontendCompileCheckAnalyzerTest` 的 source-facing mapped top-level 正向回归已一并撤回，避免把未实现语义写成既成事实。
 - [x] 9.4 已补充 LIR/backend canonical-only 回归并同步事实源文档
   - `DomLirSerializerTest`、`DomLirParserTest` 已显式锚定 mapped top-level canonical `name/super` 的 parser/serializer 合同。
@@ -614,8 +725,10 @@
 3. 再改 header identity 和 skeleton freeze。
 4. 再把后续模型收敛成“双名 + 派生 displayName”。
 5. 再改 registry publication。
-6. 再改 analyzer / resolver 的展示名消费点。
-7. 最后集中修测试和更新事实源文档。
+6. 再把冻结后的 `topLevelCanonicalNameMap` 保留到 `FrontendModuleSkeleton`，补统一 caller-side remap helper。
+7. 再改 analyzer / resolver 的展示名与 remap 消费点。
+8. 再全面盘点 frontend 类型名 / `TYPE_META` 解析并迁移到 caller-side remap 规则，同时补齐正反测试。
+9. 最后集中修测试和更新事实源文档。
 
 不建议先从 `ClassRegistry` 开始硬塞 alias 表，也不建议在引入统一模块输入载体之前就把 mapping 散着塞进多个 analyzer/build 方法参数里，因为那会把“identity 冻结点”和“模块输入边界”同时推迟，最终还得回头重做 skeleton、relation 和入口 API。
 
