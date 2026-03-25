@@ -111,6 +111,7 @@ public final class FrontendClassSkeletonBuilder {
         return new FrontendSourceClassRelation(
                 sourceUnitGraph.unit(),
                 topLevelHeader.sourceName(),
+                topLevelHeader.canonicalName(),
                 topLevelHeader.superClassRef(),
                 topLevelClassDef,
                 innerClassRelations
@@ -557,6 +558,7 @@ public final class FrontendClassSkeletonBuilder {
         for (var unit : units) {
             var topLevelHeader = discoverTopLevelHeader(
                     unit,
+                    module.topLevelRuntimeNameMap(),
                     discoveredHeadersInOrder,
                     rejectedCandidates,
                     rejectedSubtreeRoots,
@@ -623,20 +625,23 @@ public final class FrontendClassSkeletonBuilder {
     /// on one complete header graph before any skeleton object is published.
     private @NotNull MutableClassHeader discoverTopLevelHeader(
             @NotNull FrontendSourceUnit unit,
+            @NotNull Map<String, String> topLevelRuntimeNameMap,
             @NotNull List<MutableClassHeader> discoveredHeadersInOrder,
             @NotNull List<RejectedClassHeader> rejectedCandidates,
             @NotNull List<Node> rejectedSubtreeRoots,
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var classNameStatement = firstClassNameStatement(unit.ast().statements());
-        var topLevelName = resolveClassName(unit.path(), classNameStatement);
+        var topLevelSourceName = resolveClassName(unit.path(), classNameStatement);
+        var topLevelRuntimeName = resolveTopLevelRuntimeName(topLevelSourceName, topLevelRuntimeNameMap);
         var topLevelHeader = new MutableClassHeader(
                 unit,
                 null,
                 unit.ast(),
                 unit.ast(),
-                topLevelName,
-                topLevelName,
+                topLevelSourceName,
+                topLevelRuntimeName,
+                topLevelRuntimeName,
                 resolveTopLevelRawExtendsText(unit.ast().statements(), classNameStatement),
                 FrontendRange.fromAstRange(topLevelClassRange(unit)),
                 true
@@ -690,6 +695,7 @@ public final class FrontendClassSkeletonBuilder {
                         classDeclaration,
                         null,
                         null,
+                        null,
                         normalizeHeaderText(classDeclaration.extendsTarget()),
                         FrontendRange.fromAstRange(classDeclaration.range())
                 ));
@@ -703,6 +709,7 @@ public final class FrontendClassSkeletonBuilder {
                     lexicalOwner,
                     classDeclaration,
                     innerClassName,
+                    parentCanonicalName + "$" + innerClassName,
                     parentCanonicalName + "$" + innerClassName,
                     normalizeHeaderText(classDeclaration.extendsTarget()),
                     FrontendRange.fromAstRange(classDeclaration.range()),
@@ -831,8 +838,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull MutableClassHeader duplicate,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        var className = duplicate.canonicalName();
-        var message = "Duplicate class name '" + className + "' found in "
+        var className = duplicate.sourceName();
+        var message = "Duplicate top-level class source name '" + className + "' found in "
                 + existing.unit().path() + " and " + duplicate.unit().path()
                 + "; duplicate skeleton subtree will be skipped";
         diagnosticManager.error(
@@ -951,7 +958,7 @@ public final class FrontendClassSkeletonBuilder {
             );
             diagnosticManager.error(
                     "sema.class_skeleton",
-                    "Class '" + discoveredHeader.canonicalName()
+                    "Class '" + discoveredHeader.runtimeName()
                             + "' declares unsupported superclass '" + rawExtendsText
                             + "': " + Objects.requireNonNull(bindingDecision.rejectionReason(), "rejectionReason")
                             + "; its skeleton subtree will be skipped",
@@ -1079,7 +1086,7 @@ public final class FrontendClassSkeletonBuilder {
 
                 diagnosticManager.error(
                         "sema.class_skeleton",
-                        "Class '" + discoveredHeader.canonicalName()
+                        "Class '" + discoveredHeader.runtimeName()
                                 + "' will be skipped because its super class '"
                                 + superHeader.canonicalName()
                                 + "' was rejected by earlier inheritance diagnostics",
@@ -1178,6 +1185,7 @@ public final class FrontendClassSkeletonBuilder {
                 rejectedHeader.lexicalOwner(),
                 rejectedHeader.astOwner(),
                 rejectedHeader.sourceName(),
+                rejectedHeader.runtimeName(),
                 rejectedHeader.canonicalName(),
                 rejectedHeader.rawExtendsText(),
                 rejectedHeader.range()
@@ -1240,6 +1248,7 @@ public final class FrontendClassSkeletonBuilder {
                 discoveredHeader.lexicalOwner(),
                 discoveredHeader.astOwner(),
                 discoveredHeader.sourceName(),
+                discoveredHeader.runtimeName(),
                 discoveredHeader.canonicalName(),
                 resolveHeaderSuperBindingDecision(
                         discoveredHeader,
@@ -1389,18 +1398,31 @@ public final class FrontendClassSkeletonBuilder {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    /// Top-level runtime-name mapping is frozen once at the module boundary and applied during
+    /// header discovery so duplicate/canonical/conflict validation all see the final identity.
+    private @NotNull String resolveTopLevelRuntimeName(
+            @NotNull String sourceName,
+            @NotNull Map<String, String> topLevelRuntimeNameMap
+    ) {
+        return topLevelRuntimeNameMap.getOrDefault(sourceName, sourceName);
+    }
+
     private @NotNull String describeLexicalOwner(@NotNull MutableClassHeader discoveredHeader) {
         var parentHeader = discoveredHeader.parentHeader();
         if (parentHeader != null) {
-            return parentHeader.canonicalName();
+            return parentHeader.runtimeName();
         }
         return discoveredHeader.unit().path().toString();
     }
 
     private @NotNull String describeClassHeaderOrigin(@NotNull MutableClassHeader discoveredHeader) {
         var classKind = discoveredHeader.isTopLevel()
-                ? "top-level class"
-                : "inner class '" + discoveredHeader.sourceName() + "'";
+                ? discoveredHeader.sourceName().equals(discoveredHeader.runtimeName())
+                ? "top-level class '" + discoveredHeader.sourceName() + "'"
+                : "top-level class source '" + discoveredHeader.sourceName()
+                + "' (runtime '" + discoveredHeader.runtimeName() + "')"
+                : "inner class '" + discoveredHeader.sourceName()
+                + "' (canonical '" + discoveredHeader.canonicalName() + "')";
         return discoveredHeader.unit().path() + " (" + classKind + ")";
     }
 
@@ -1480,6 +1502,7 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Node lexicalOwner,
             @NotNull Node astOwner,
             @NotNull String sourceName,
+            @NotNull String runtimeName,
             @NotNull String canonicalName,
             @NotNull FrontendSuperClassRef superClassRef,
             @Nullable String rawExtendsText,
@@ -1496,6 +1519,7 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Node lexicalOwner,
             @NotNull Node astOwner,
             @Nullable String sourceName,
+            @Nullable String runtimeName,
             @Nullable String canonicalName,
             @Nullable String rawExtendsText,
             @Nullable FrontendRange range
@@ -1584,6 +1608,7 @@ public final class FrontendClassSkeletonBuilder {
         private final @NotNull Node lexicalOwner;
         private final @NotNull Node astOwner;
         private final @NotNull String sourceName;
+        private final @NotNull String runtimeName;
         private final @NotNull String canonicalName;
         private final @Nullable String rawExtendsText;
         private final @Nullable FrontendRange range;
@@ -1597,6 +1622,7 @@ public final class FrontendClassSkeletonBuilder {
                 @NotNull Node lexicalOwner,
                 @NotNull Node astOwner,
                 @NotNull String sourceName,
+                @NotNull String runtimeName,
                 @NotNull String canonicalName,
                 @Nullable String rawExtendsText,
                 @Nullable FrontendRange range,
@@ -1607,6 +1633,7 @@ public final class FrontendClassSkeletonBuilder {
             this.lexicalOwner = Objects.requireNonNull(lexicalOwner, "lexicalOwner");
             this.astOwner = Objects.requireNonNull(astOwner, "astOwner");
             this.sourceName = Objects.requireNonNull(sourceName, "sourceName");
+            this.runtimeName = Objects.requireNonNull(runtimeName, "runtimeName");
             this.canonicalName = Objects.requireNonNull(canonicalName, "canonicalName");
             this.rawExtendsText = rawExtendsText;
             this.range = range;
@@ -1631,6 +1658,10 @@ public final class FrontendClassSkeletonBuilder {
 
         private @NotNull String sourceName() {
             return sourceName;
+        }
+
+        private @NotNull String runtimeName() {
+            return runtimeName;
         }
 
         private @NotNull String canonicalName() {

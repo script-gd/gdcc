@@ -743,7 +743,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertFalse(result.scopesByAst().isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("Duplicate class name 'SharedName'")
+                        && diagnostic.message().contains("Duplicate top-level class source name 'SharedName'")
         ));
         assertNotNull(registry.findGdccClass("SharedName"));
         assertNotNull(registry.findGdccClass("StableAfterError"));

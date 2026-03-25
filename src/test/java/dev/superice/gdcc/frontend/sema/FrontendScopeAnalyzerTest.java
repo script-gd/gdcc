@@ -439,6 +439,7 @@ class FrontendScopeAnalyzerTest {
                         List.of(new FrontendSourceClassRelation(
                                 unit,
                                 "SyntheticBlockScope",
+                                "SyntheticBlockScope",
                                 new FrontendSuperClassRef("Node", "Node"),
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticBlockScope", "Node"),
                                 List.of()
@@ -748,6 +749,7 @@ class FrontendScopeAnalyzerTest {
                         List.of(new FrontendSourceClassRelation(
                                 unit,
                                 "SyntheticMissingInner",
+                                "SyntheticMissingInner",
                                 new FrontendSuperClassRef("Node", "Node"),
                                 new dev.superice.gdcc.lir.LirClassDef("SyntheticMissingInner", "Node"),
                                 List.of()
@@ -898,6 +900,7 @@ class FrontendScopeAnalyzerTest {
                                 new FrontendSourceClassRelation(
                                         firstUnit,
                                         "MultiUnitNestedA",
+                                        "MultiUnitNestedA",
                                         new FrontendSuperClassRef("Node", "Node"),
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA", "Node"),
                                         List.of(new FrontendInnerClassRelation(
@@ -911,6 +914,7 @@ class FrontendScopeAnalyzerTest {
                                 ),
                                 new FrontendSourceClassRelation(
                                         secondUnit,
+                                        "MultiUnitNestedB",
                                         "MultiUnitNestedB",
                                         new FrontendSuperClassRef("Node", "Node"),
                                         new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB", "Node"),

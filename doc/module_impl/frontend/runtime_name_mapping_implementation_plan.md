@@ -59,11 +59,11 @@
 
 ### 2.1 现有实现里已经写死的旧假设
 
-以下旧假设必须在实施中显式拆除：
+以下旧假设中，前 3 条已在第 3 步落地时拆除；后 2 条仍是当前待处理事实：
 
-- `FrontendSourceClassRelation` 仍假定顶层类只有一个 `name`，并且 `sourceName == canonicalName`。
-- `FrontendClassSkeletonBuilder.discoverTopLevelHeader(...)` 直接把顶层 `sourceName` 同时写成 `canonicalName`。
-- `FrontendClassSkeletonBuilder.buildSourceClassRelationShell(...)` 为顶层 shell 创建 `LirClassDef` 时，直接使用未映射的顶层名。
+- `FrontendSourceClassRelation` 已不再把顶层类压成单一 `name`，而是显式保留 `sourceName + canonicalName`；但 `runtimeName` 仍未进入 relation/shared ownership 协议。
+- `FrontendClassSkeletonBuilder.discoverTopLevelHeader(...)` 已在 discovery 阶段写入顶层 `sourceName / runtimeName / canonicalName` 三层名字。
+- `FrontendClassSkeletonBuilder.buildSourceClassRelationShell(...)` 现在会为顶层 shell 创建映射后的 canonical `LirClassDef`；但 registry/source-override 与 `ScopeTypeMeta` 仍未跟进 runtime-name 展示层。
 - `ClassRegistry.gdccClassSourceNameByCanonicalName` 当前文档和实现都偏向“只给 inner class 存 source override”。
 - `ScopeTypeMeta.sourceName` 当前同时承担两种职责：
   - lexical type namespace lookup key
@@ -322,20 +322,35 @@
 - 有映射时，内部类 `canonicalName` 自动使用映射后的顶层前缀。
 - “两个不同顶层类映射到同一 runtimeName” 会被 canonical conflict 明确拒绝。
 
+第 3 步执行状态（2026-03-24）：
+
+- [x] 3.1 扩展 header discovery 名字载体
+  - `MutableClassHeader`、`AcceptedClassHeader`、`RejectedClassHeader` 已显式保存 `sourceName / runtimeName / canonicalName`。
+  - `describeClassHeaderOrigin(...)` 等辅助路径已切到新字段，mapped top-level conflict 诊断现在能同时带出 source/runtime 事实。
+- [x] 3.2 在 top-level discovery 阶段应用模块 runtime-name mapping
+  - `discoverTopLevelHeader(...)` 已从 `FrontendModule.topLevelRuntimeNameMap()` 计算顶层 `runtimeName/canonicalName`。
+  - `discoverInnerClassHeaders(...)` 已统一基于“冻结后的 parent canonicalName”派生内部类 canonical 前缀。
+- [x] 3.3 保留 source 冲突与 canonical 冲突双轨校验，并让 shell 保持一致
+  - top-level duplicate 检查仍按 `sourceName` 工作，duplicate diagnostic 也改为显式描述 source-facing 冲突。
+  - canonical conflict 现在能正确拒绝“不同 top-level sourceName 映射到同一 runtime/canonicalName”。
+  - 为保持 step3 后 skeleton contract 自洽，`FrontendSourceClassRelation` 已最小联动升级为 `sourceName + canonicalName` 双名模型，`buildSourceClassRelationShell(...)` 产出的 top-level `LirClassDef.getName()` 现在同步写入 mapped canonical。
+  - `runtimeName` 仍只停留在 header 层；`FrontendOwnedClassRelation`、`FrontendInnerClassRelation`、`ScopeTypeMeta` 的三名模型继续留在后续步骤。
+- [x] 3.4 补充 targeted tests 并记录验收结果
+  - 已新增/更新正向测试，覆盖 mapped top-level canonical、mapped inner canonical 前缀、mapped superclass source lookup -> canonical publication。
+  - 已新增负向测试，覆盖两个不同 top-level sourceName 映射到同一 runtime/canonicalName 时的 canonical conflict。
+  - 已通过：`FrontendClassSkeletonTest`、`FrontendClassHeaderDiscoveryTest`、`FrontendScopeAnalyzerTest`、`FrontendVariableAnalyzerTest`、`FrontendSemanticAnalyzerFrameworkTest`
+
 ### 第 4 步：把 top-level relation 升级成真正的三名模型
 
 目标：
 
-- 删除 `FrontendSourceClassRelation` 当前“只有一个 `name` 字段”的旧约束。
-- 让 top-level relation 与 inner relation 共享同一 identity 语义。
+- 在 step3 已完成 top-level `sourceName + canonicalName` 拆分的基础上，引入真正统一的三名 relation 模型。
+- 让 top-level relation 与 inner relation 共享同一 `sourceName / runtimeName / canonicalName` identity 语义。
 
 建议改动：
 
 - `FrontendOwnedClassRelation` 增加 `runtimeName()`。
-- `FrontendSourceClassRelation` 改为显式保存：
-  - `sourceName`
-  - `runtimeName`
-  - `canonicalName`
+- `FrontendSourceClassRelation` 在现有 `sourceName / canonicalName` 的基础上补入 `runtimeName`。
 - `FrontendInnerClassRelation` 也增加 `runtimeName` 字段。
 - `FrontendOwnedClassRelation.validateOwnedRelation(...)` 改为同时校验：
   - relation `canonicalName == classDef.getName()`
@@ -354,7 +369,7 @@
 
 - top-level relation 能同时返回源码名和映射后的 runtime/canonical 名。
 - inner relation 的 `runtimeName/canonicalName` 前缀随顶层映射变化。
-- `buildSourceClassRelationShell(...)` 产出的顶层 `LirClassDef.getName()` 已是映射后的 canonicalName。
+- 所有 `FrontendOwnedClassRelation` 实现都能通过统一接口暴露 `runtimeName()`。
 
 ### 第 5 步：把 `ScopeTypeMeta` 从“lookup key + 展示名”双重职责中拆开
 

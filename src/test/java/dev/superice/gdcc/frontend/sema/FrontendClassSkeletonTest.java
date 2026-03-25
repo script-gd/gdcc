@@ -57,12 +57,16 @@ class FrontendClassSkeletonTest {
         assertEquals("test_module", result.moduleName());
         assertEquals(List.of(mappedUnit, plainUnit), sourceUnits(result));
         assertEquals(
-                List.of("MappedCandidate", "PlainCandidate"),
+                List.of("MappedRuntimeCandidate", "PlainCandidate"),
                 topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
                 List.of("MappedCandidate", "PlainCandidate"),
-                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList()
+                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::sourceName).toList()
+        );
+        assertEquals(
+                List.of("MappedRuntimeCandidate", "PlainCandidate"),
+                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::canonicalName).toList()
         );
     }
 
@@ -178,7 +182,8 @@ class FrontendClassSkeletonTest {
 
         assertEquals(1, result.sourceClassRelations().size());
         assertSame(unit, relation.unit());
-        assertEquals("OuterWithInner", relation.name());
+        assertEquals("OuterWithInner", relation.sourceName());
+        assertEquals("OuterWithInner", relation.canonicalName());
         assertEquals("OuterWithInner", relation.topLevelClassDef().getName());
         assertEquals(List.of("InnerA", "Deep", "InnerB"), relation.innerClassRelations().stream()
                 .map(FrontendInnerClassRelation::sourceName)
@@ -306,6 +311,91 @@ class FrontendClassSkeletonTest {
                 findClassByName(result.allClassDefs(), "SuperclassContract$LexicalLeaf").getSuperName()
         );
         assertTrue(result.diagnostics().isEmpty());
+    }
+
+    @Test
+    void buildMapsTopLevelAndInnerCanonicalNamesFromFrontendModuleRuntimeNameMap() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "mapped_outer.gd"), """
+                class_name MappedOuter
+                extends RefCounted
+                
+                class Inner:
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule(
+                        "mapped_module",
+                        List.of(unit),
+                        java.util.Map.of("MappedOuter", "RuntimeOuter")
+                ),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var relation = result.sourceClassRelations().getFirst();
+
+        assertEquals("MappedOuter", relation.sourceName());
+        assertEquals("RuntimeOuter", relation.canonicalName());
+        assertEquals("RuntimeOuter", relation.topLevelClassDef().getName());
+        assertEquals(
+                List.of("RuntimeOuter$Inner"),
+                relation.innerClassRelations().stream()
+                        .map(FrontendInnerClassRelation::canonicalName)
+                        .toList()
+        );
+        assertEquals(
+                List.of("RuntimeOuter", "RuntimeOuter$Inner"),
+                result.allClassDefs().stream().map(LirClassDef::getName).toList()
+        );
+        assertNotNull(registry.findGdccClass("RuntimeOuter"));
+        assertNotNull(registry.findGdccClass("RuntimeOuter$Inner"));
+        assertNull(registry.findGdccClass("MappedOuter"));
+    }
+
+    @Test
+    void buildResolvesMappedTopLevelSuperclassBySourceNameButPublishesMappedCanonicalSuperclass() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var baseUnit = parserService.parseUnit(Path.of("tmp", "base_map.gd"), """
+                class_name BaseBySource
+                extends RefCounted
+                """, diagnostics);
+        var childUnit = parserService.parseUnit(Path.of("tmp", "child_map.gd"), """
+                class_name ChildBySource
+                extends BaseBySource
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule(
+                        "mapped_super_module",
+                        List.of(baseUnit, childUnit),
+                        java.util.Map.of("BaseBySource", "RuntimeBase")
+                ),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var childRelation = result.sourceClassRelations().stream()
+                .filter(relation -> relation.sourceName().equals("ChildBySource"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(new FrontendSuperClassRef("BaseBySource", "RuntimeBase"), childRelation.superClassRef());
+        assertEquals("RuntimeBase", childRelation.topLevelClassDef().getSuperName());
+        assertNotNull(registry.findGdccClass("RuntimeBase"));
+        assertEquals(
+                List.of("RuntimeBase", "ChildBySource"),
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
+        );
     }
 
     @Test
@@ -810,7 +900,7 @@ class FrontendClassSkeletonTest {
         assertEquals("from_first", findClassByName(topLevelClassDefs(result), "SharedName").getFunctions().getFirst().getName());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("Duplicate class name 'SharedName'")
+                        && diagnostic.message().contains("Duplicate top-level class source name 'SharedName'")
                         && diagnostic.message().contains("second_shared.gd")
         ));
 

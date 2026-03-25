@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（frontend relation 双名、canonical superclass contract、header binding boundary 已冻结）
-- 更新时间：2026-03-14
+- 状态：事实源维护中（frontend relation 双名、mapped top-level canonical header identity、canonical superclass contract、header binding boundary 已冻结）
+- 更新时间：2026-03-24
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/scope/**`
@@ -71,7 +71,8 @@
 - `FrontendSourceClassRelation` 与 `FrontendInnerClassRelation` 保留：
   - superclass `sourceName`
   - superclass `canonicalName`
-- top-level class 仍满足 `sourceName == canonicalName`
+- top-level gdcc class 在无 mapping 时满足 `sourceName == canonicalName`
+- top-level gdcc class 若命中 runtime-name mapping，则 relation 会保留 `sourceName != canonicalName`
 - inner class 继续满足：
   - `canonicalName = Outer$Inner...`
   - `sourceName = 源代码中的局部类名`

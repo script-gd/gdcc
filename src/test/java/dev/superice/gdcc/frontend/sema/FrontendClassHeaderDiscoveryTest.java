@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -347,7 +348,7 @@ class FrontendClassHeaderDiscoveryTest {
         var result = buildSkeleton("header_discovery", List.of(pathBasedUnit, stableUnit), registry, diagnostics);
 
         assertEquals(List.of("KeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
-        assertEquals(List.of("KeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList());
+        assertEquals(List.of("KeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::sourceName).toList());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
                         && diagnostic.message().contains("PathBasedChild")
@@ -383,7 +384,7 @@ class FrontendClassHeaderDiscoveryTest {
         var result = buildSkeleton("header_discovery", List.of(unit, stableUnit), registry, diagnostics);
 
         assertEquals(List.of("LocalKeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
-        assertEquals(List.of("LocalKeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList());
+        assertEquals(List.of("LocalKeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::sourceName).toList());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
                         && diagnostic.message().contains("UsesExternalBase")
@@ -420,7 +421,7 @@ class FrontendClassHeaderDiscoveryTest {
         var result = buildSkeleton("header_discovery", List.of(singletonUnit, stableUnit), registry, diagnostics);
 
         assertEquals(List.of("KeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
-        assertEquals(List.of("KeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::name).toList());
+        assertEquals(List.of("KeepAlive"), result.sourceClassRelations().stream().map(FrontendSourceClassRelation::sourceName).toList());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
                         && diagnostic.message().contains("SingletonSuperUser")
@@ -476,12 +477,76 @@ class FrontendClassHeaderDiscoveryTest {
         assertNotNull(registry.findGdccClass("ManualMissingInner"));
     }
 
+    @Test
+    void buildRejectsMappedTopLevelCanonicalConflictWhileKeepingStableSources() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var alphaUnit = parserService.parseUnit(
+                Path.of("tmp", "alpha_source.gd"),
+                """
+                        class_name AlphaSource
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+        var betaUnit = parserService.parseUnit(
+                Path.of("tmp", "beta_source.gd"),
+                """
+                        class_name BetaSource
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+        var keepAliveUnit = parserService.parseUnit(
+                Path.of("tmp", "keep_alive.gd"),
+                """
+                        class_name KeepAlive
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(alphaUnit, betaUnit, keepAliveUnit),
+                Map.of(
+                        "AlphaSource", "SharedRuntime",
+                        "BetaSource", "SharedRuntime"
+                ),
+                registry,
+                diagnostics
+        );
+
+        assertEquals(
+                List.of("SharedRuntime", "KeepAlive"),
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("AlphaSource", "KeepAlive"),
+                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::sourceName).toList()
+        );
+        assertEquals(
+                List.of("SharedRuntime", "KeepAlive"),
+                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::canonicalName).toList()
+        );
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Canonical class name conflict 'SharedRuntime'")
+                        && diagnostic.message().contains("AlphaSource")
+                        && diagnostic.message().contains("BetaSource")
+        ));
+        assertNotNull(registry.findGdccClass("SharedRuntime"));
+        assertNotNull(registry.findGdccClass("KeepAlive"));
+        assertNull(registry.findGdccClass("BetaSource"));
+    }
+
     private FrontendSourceClassRelation findSourceRelation(
             FrontendModuleSkeleton result,
             String className
     ) {
         return result.sourceClassRelations().stream()
-                .filter(relation -> relation.name().equals(className))
+                .filter(relation -> relation.sourceName().equals(className))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Source relation not found: " + className));
     }
@@ -498,8 +563,18 @@ class FrontendClassHeaderDiscoveryTest {
             ClassRegistry registry,
             DiagnosticManager diagnostics
     ) {
+        return buildSkeleton(moduleName, units, Map.of(), registry, diagnostics);
+    }
+
+    private FrontendModuleSkeleton buildSkeleton(
+            String moduleName,
+            List<FrontendSourceUnit> units,
+            Map<String, String> topLevelRuntimeNameMap,
+            ClassRegistry registry,
+            DiagnosticManager diagnostics
+    ) {
         return new FrontendClassSkeletonBuilder().build(
-                new FrontendModule(moduleName, units),
+                new FrontendModule(moduleName, units, topLevelRuntimeNameMap),
                 registry,
                 diagnostics,
                 FrontendAnalysisData.bootstrap()

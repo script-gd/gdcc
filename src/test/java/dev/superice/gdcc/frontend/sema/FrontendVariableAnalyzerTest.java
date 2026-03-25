@@ -871,6 +871,7 @@ class FrontendVariableAnalyzerTest {
                 List.of(new FrontendSourceClassRelation(
                         unit,
                         "SkippedInnerClass",
+                        "SkippedInnerClass",
                         new FrontendSuperClassRef("Node", "Node"),
                         new LirClassDef("SkippedInnerClass", "Node"),
                         List.of()
