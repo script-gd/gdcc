@@ -16,6 +16,7 @@
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
+  - `doc/module_impl/frontend/runtime_name_mapping_implementation.md`
   - `doc/module_impl/frontend/scope_architecture_refactor_plan.md`
   - `doc/module_impl/frontend/scope_type_resolver_implementation.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`

@@ -17,6 +17,7 @@
 - 关联文档：
   - `frontend_rules.md`
   - `diagnostic_manager.md`
+  - `runtime_name_mapping_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
   - `scope_type_resolver_implementation.md`

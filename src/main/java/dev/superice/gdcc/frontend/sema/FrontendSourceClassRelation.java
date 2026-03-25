@@ -22,8 +22,8 @@ import java.util.Objects;
 /// be recovered from their exact AST owner and lexical owner chain.
 ///
 /// The top-level script class keeps both its source-facing name and the canonical identity already
-/// frozen for registry/LIR/backend use. This lets module-level runtime-name mapping rewrite the
-/// canonical top-level identity without losing the original source lookup name that same-module
+/// frozen for registry/LIR/backend use. This lets module-level top-level canonical mapping rewrite
+/// the canonical top-level identity without losing the original source lookup name that same-module
 /// lexical scopes still need.
 public record FrontendSourceClassRelation(
         @NotNull FrontendSourceUnit unit,

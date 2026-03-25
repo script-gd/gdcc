@@ -19,6 +19,7 @@
   - `src/test/java/dev/superice/gdcc/backend/**`
 - 关联文档：
   - `frontend_rules.md`
+  - `runtime_name_mapping_implementation.md`
   - `scope_type_resolver_implementation.md`
   - `inner_class_implementation.md`
   - `scope_architecture_refactor_plan.md`

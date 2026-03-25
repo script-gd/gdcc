@@ -14,6 +14,7 @@
   - `src/test/java/dev/superice/gdcc/frontend/**`
   - `src/test/java/dev/superice/gdcc/scope/**`
 - 关联文档：
+  - `runtime_name_mapping_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
   - `inner_class_implementation.md`
