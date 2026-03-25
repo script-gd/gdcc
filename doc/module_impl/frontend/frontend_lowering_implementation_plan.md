@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：规划中（v1 目标：`FrontendModule -> analyzeForCompile -> LirModule(class skeleton only)`）
+- 状态：实施中（已完成第 1-2 步；v1 目标：`FrontendModule -> analyzeForCompile -> LirModule(class skeleton only)`）
 - 更新时间：2026-03-25
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -14,7 +14,7 @@
   - `src/test/java/dev/superice/gdcc/frontend/**`
   - `src/test/java/dev/superice/gdcc/lir/**`
 - 关联文档：
-  - `doc/module_impl/common_rules.md`
+  - `doc/module_impl/common_rule.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
   - `runtime_name_mapping_implementation.md`
@@ -192,6 +192,8 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
 
 ### 3.1 第 1 步：建立 lowering 包与 pass manager 框架
 
+- 状态：已完成（2026-03-25）
+
 实施内容：
 
 - 新建 `src/main/java/dev/superice/gdcc/frontend/lowering/`
@@ -222,7 +224,16 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
   - stop 后短路
   - context 中间状态可被后续 pass 观察
 
+当前实现状态：
+
+- `FrontendLoweringPassManager` 已成为当前唯一 public lowering entrypoint
+- `FrontendLoweringContext` 与 `FrontendLoweringPass` 已按 package-private 内部协议落地
+- manager 已支持固定顺序执行、stop 短路与 `null` 产物返回
+- 当前 default pipeline 已挂入真实 analysis pass，但在第 3 步落地前仍不会发布 `LirModule`
+
 ### 3.2 第 2 步：实现 `FrontendLoweringAnalysisPass`
+
+- 状态：已完成（2026-03-25）
 
 实施内容：
 
@@ -256,6 +267,13 @@ v1 不应 clone 这些 `LirClassDef`。当前计划保持“同一组 class/func
 - `FrontendLoweringAnalysisPassTest`
   - `lower_compileReadyModule_publishesAnalysisDataAndContinues`
   - `lower_compileBlockedModule_stopsAfterAnalysisPass`
+
+当前实现状态：
+
+- `FrontendLoweringAnalysisPass` 已统一调用 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
+- pass 会把 `FrontendAnalysisData` 发布进 lowering context
+- 当 compile-only gate 留下 error diagnostics 时，pass 会立即请求 pipeline stop
+- 当前 default manager 已默认挂载该 pass，保证 lowering 公共入口不会绕开 compile-only gate
 
 ### 3.3 第 3 步：实现 `FrontendLoweringClassSkeletonPass`
 
