@@ -135,6 +135,38 @@ class FrontendLoweringPassManagerTest {
     }
 
     @Test
+    void lowerModuleWithPropertyWithoutInitializerDoesNotPublishFrontendInitShellIntoSerializedLir() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var lowered = new FrontendLoweringPassManager().lower(
+                parseModule(
+                        List.of(new SourceFixture(
+                                "lowering_manager_no_property_initializer.gd",
+                                """
+                                        class_name NoInitializerOuter
+                                        extends RefCounted
+                                        
+                                        var plain_count: int
+                                        
+                                        func ping() -> void:
+                                            pass
+                                        """
+                        )),
+                        Map.of("NoInitializerOuter", "RuntimeNoInitializerOuter")
+                ),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+
+        assertNotNull(lowered);
+        assertFalse(diagnostics.hasErrors());
+
+        var xml = new DomLirSerializer().serializeToString(lowered);
+        assertTrue(xml.contains("name=\"plain_count\""), xml);
+        assertFalse(xml.contains("init_func=\"_field_init_plain_count\""), xml);
+        assertFalse(xml.contains("name=\"_field_init_plain_count\""), xml);
+    }
+
+    @Test
     void lowerCompileBlockedModuleReturnsNullAndKeepsDiagnostics() throws Exception {
         var diagnostics = new DiagnosticManager();
         var lowered = new FrontendLoweringPassManager().lower(

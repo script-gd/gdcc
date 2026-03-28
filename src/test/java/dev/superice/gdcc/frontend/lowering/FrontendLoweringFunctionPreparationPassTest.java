@@ -211,6 +211,38 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
+    void runSkipsPropertyWithoutInitializerAndKeepsInitFuncUnset() throws Exception {
+        var prepared = prepareNoInitializerCompileReadyContext();
+
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+
+        var lirModule = prepared.context().requireLirModule();
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var outerClass = requireClass(lirModule, "RuntimePreparationNoInit");
+        var property = requireProperty(outerClass, "count");
+
+        assertEquals(1, contexts.size());
+        assertEquals(
+                1,
+                contexts.stream().filter(context -> context.kind() == FunctionLoweringContext.Kind.EXECUTABLE_BODY).count()
+        );
+        assertEquals(
+                0,
+                contexts.stream().filter(context -> context.kind() == FunctionLoweringContext.Kind.PROPERTY_INIT).count()
+        );
+        assertNull(property.getInitFunc());
+        assertEquals(
+                1,
+                outerClass.getFunctions().stream()
+                        .filter(function -> function.getName().equals("ping"))
+                        .count()
+        );
+        assertFalse(
+                outerClass.getFunctions().stream().anyMatch(function -> function.getName().equals("_field_init_count"))
+        );
+    }
+
+    @Test
     void functionLoweringContextCanRepresentFutureParameterDefaultInitWithoutShapeChanges() throws Exception {
         var analyzed = analyzeSharedModule(
                 List.of(new SourceFixture(
@@ -730,6 +762,33 @@ class FrontendLoweringFunctionPreparationPassTest {
                                 """
                 )),
                 Map.of("PreparationOuter", "RuntimePreparationOuter")
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        return new PreparedContext(context, diagnostics, module);
+    }
+
+    private static @NotNull PreparedContext prepareNoInitializerCompileReadyContext() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_no_initializer.gd",
+                        """
+                                class_name PreparationNoInit
+                                extends RefCounted
+                                
+                                var count: int
+                                
+                                func ping() -> void:
+                                    pass
+                                """
+                )),
+                Map.of("PreparationNoInit", "RuntimePreparationNoInit")
         );
         var context = new FrontendLoweringContext(
                 module,
