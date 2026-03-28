@@ -6,6 +6,8 @@ import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPas
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
@@ -13,6 +15,7 @@ import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdparser.frontend.ast.Block;
@@ -199,6 +202,67 @@ class FrontendLoweringFunctionPreparationPassTest {
         var exception = assertThrows(IllegalStateException.class, context::requireFunctionLoweringContexts);
 
         assertEquals("functionLoweringContexts have not been published yet", exception.getMessage());
+    }
+
+    @Test
+    void functionLoweringContextCanRepresentFutureParameterDefaultInitWithoutShapeChanges() throws Exception {
+        var analyzed = analyzeSharedModule(
+                List.of(new SourceFixture(
+                        "parameter_default_shape.gd",
+                        """
+                                class_name ParameterDefaultShape
+                                extends RefCounted
+                                
+                                func ping(value: int, alias = value) -> int:
+                                    return alias
+                                """
+                )),
+                Map.of("ParameterDefaultShape", "RuntimeParameterDefaultShape")
+        );
+        var sourceFile = analyzed.module().units().getFirst().ast();
+        var pingFunction = requireStatement(
+                sourceFile.statements(),
+                FunctionDeclaration.class,
+                function -> function.name().equals("ping")
+        );
+        var defaultedParameter = pingFunction.parameters().getLast();
+        var owningClass = analyzed.analysisData().moduleSkeleton().allClassDefs().getFirst();
+        var targetFunction = new LirFunctionDef("_default_ping$alias");
+        targetFunction.setHidden(true);
+        targetFunction.setReturnType(GdIntType.INT);
+        targetFunction.addParameter(new LirParameterDef("self", outerClassAsType(owningClass), null, targetFunction));
+        owningClass.addFunction(targetFunction);
+        var sourceRelation = analyzed.analysisData().moduleSkeleton().sourceClassRelations().getFirst();
+        var defaultValueExpression = java.util.Objects.requireNonNull(
+                defaultedParameter.defaultValue(),
+                "parameter default value must exist"
+        );
+
+        var parameterDefaultContext = new FunctionLoweringContext(
+                FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT,
+                analyzed.module().units().getFirst().path(),
+                sourceRelation,
+                owningClass,
+                targetFunction,
+                defaultedParameter,
+                defaultValueExpression,
+                analyzed.analysisData()
+        );
+        var loweringContext = new FrontendLoweringContext(
+                analyzed.module(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                new DiagnosticManager()
+        );
+
+        loweringContext.publishFunctionLoweringContexts(List.of(parameterDefaultContext));
+
+        var publishedContexts = loweringContext.requireFunctionLoweringContexts();
+        assertEquals(1, publishedContexts.size());
+        assertSame(parameterDefaultContext, publishedContexts.getFirst());
+        assertSame(defaultedParameter, parameterDefaultContext.sourceOwner());
+        assertSame(defaultValueExpression, parameterDefaultContext.loweringRoot());
+        assertEquals(FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT, parameterDefaultContext.kind());
+        assertTrue(parameterDefaultContext.targetFunction().isHidden());
     }
 
     @Test
@@ -480,6 +544,42 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertNull(lowered);
     }
 
+    @Test
+    void lowerParameterDefaultModuleStopsBeforePreparationPublicationAndKeepsUnsupportedDiagnostic() throws Exception {
+        var continuationRan = new AtomicBoolean();
+        var diagnostics = new DiagnosticManager();
+        var lowered = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                new FrontendLoweringClassSkeletonPass(),
+                new FrontendLoweringFunctionPreparationPass(),
+                _ -> continuationRan.set(true)
+        )).lower(
+                parseModule(
+                        List.of(new SourceFixture(
+                                "preparation_blocked_parameter_default.gd",
+                                """
+                                        class_name PreparationBlockedParameterDefault
+                                        extends RefCounted
+                                        
+                                        func ping(seed = 1):
+                                            return seed
+                                        """
+                        )),
+                        Map.of()
+                ),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+
+        assertFalse(continuationRan.get());
+        assertTrue(diagnostics.hasErrors());
+        assertNull(lowered);
+        assertTrue(diagnostics.snapshot().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_parameter_default_value")
+                        && diagnostic.message().contains("Parameter default value")
+        ));
+    }
+
     private static @NotNull PreparedContext prepareCompileReadyContext() throws Exception {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(
@@ -519,6 +619,20 @@ class FrontendLoweringFunctionPreparationPassTest {
         new FrontendLoweringAnalysisPass().run(context);
         new FrontendLoweringClassSkeletonPass().run(context);
         return new PreparedContext(context, diagnostics, module);
+    }
+
+    private static @NotNull SharedAnalyzedModule analyzeSharedModule(
+            @NotNull List<SourceFixture> fixtures,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
+        var module = parseModule(fixtures, topLevelCanonicalNameMap);
+        var diagnostics = new DiagnosticManager();
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        return new SharedAnalyzedModule(module, analysisData, diagnostics);
     }
 
     private static @NotNull FrontendModule parseModule(
@@ -598,6 +712,13 @@ class FrontendLoweringFunctionPreparationPassTest {
     private record SourceFixture(
             @NotNull String fileName,
             @NotNull String source
+    ) {
+    }
+
+    private record SharedAnalyzedModule(
+            @NotNull FrontendModule module,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticManager diagnostics
     ) {
     }
 }

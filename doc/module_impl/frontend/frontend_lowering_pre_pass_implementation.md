@@ -164,6 +164,13 @@ void run(FrontendLoweringContext context)
 
 `PARAMETER_DEFAULT_INIT` 当前只冻结模型，不实际收集。
 
+冻结合同补充：
+
+- future parameter default lowering 单元仍必须走 `FunctionLoweringContext`
+- `sourceOwner` 应保留原始 parameter/default declaration AST 节点
+- `loweringRoot` 只指向 parameter default expression
+- 对应 synthetic function 最终由 `LirParameterDef.defaultValueFunc` 引用，而不是退化成 call-site inline-only 设计
+
 ---
 
 ## 5. 当前固定 pass pipeline
@@ -219,7 +226,7 @@ void run(FrontendLoweringContext context)
 - preparation pass 不写 basic block、不设置 `entryBlockId`、不生成 instruction
 - executable callable 继续复用 skeleton phase 已发布的同一份 `LirFunctionDef`
 - property initializer 的 synthetic shell 只建立函数壳，不代表完整初始化时序已经落地
-- parameter default 仍不生成 context，但 `FunctionLoweringContext.Kind` 必须保留 `PARAMETER_DEFAULT_INIT`
+- parameter default 仍不生成 context，但 `FunctionLoweringContext.Kind` 必须保留 `PARAMETER_DEFAULT_INIT`，且 future `default_value_func` 合同已冻结为 hidden synthetic function route
 
 ---
 

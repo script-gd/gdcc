@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（当前起点为 per-function lowering scaffold 的 Step 1 / Step 2 已落地，下一阶段转入最小 CFG 与 body lowering）
+- 状态：计划维护中（per-function lowering scaffold 的 Step 1 - Step 5 已落地，下一阶段转入最小 CFG 与 body lowering）
 - 更新时间：2026-03-27
 - 当前事实源：
   - `frontend_lowering_pre_pass_implementation.md`
