@@ -14,9 +14,10 @@
   - `src/test/java/dev/superice/gdcc/frontend/**`
   - `src/test/java/dev/superice/gdcc/lir/**`
 - 关联文档：
-  - `doc/module_impl/common_rule.md`
+  - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
+  - `frontend_lowering_func_pre_pass_implementation.md`
   - `runtime_name_mapping_implementation.md`
   - `superclass_canonical_name_contract.md`
   - `doc/analysis/frontend_semantic_analyzer_research_report.md`

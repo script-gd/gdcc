@@ -1,16 +1,16 @@
 # Frontend Lowering 后续计划
 
-> 本文档记录 frontend lowering 在当前 pre-pass 实现之后的后续工程路线图。当前已落地事实以 `frontend_lowering_pre_pass_implementation.md` 为准；本文档只保留尚未实现或尚未冻结的计划内容。
+> 本文档记录 frontend lowering 在当前 pre-pass 实现之后的后续工程路线图。当前已落地事实以 `frontend_lowering_pre_pass_implementation.md` 与 `frontend_lowering_func_pre_pass_implementation.md` 为准；本文档只保留尚未实现或尚未冻结的计划内容。
 
 ## 文档状态
 
-- 状态：计划维护中（per-function lowering scaffold 的 Step 1 - Step 7 已落地，下一阶段转入最小 CFG 与 body lowering）
+- 状态：计划维护中（function pre-pass scaffold 已落地，下一阶段转入最小 CFG 与 body lowering）
 - 更新时间：2026-03-28
 - 当前事实源：
   - `frontend_lowering_pre_pass_implementation.md`
+  - `frontend_lowering_func_pre_pass_implementation.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
-  - `frontend_per_function_lowering_scaffold_plan.md`
   - `runtime_name_mapping_implementation.md`
   - `superclass_canonical_name_contract.md`
   - `doc/gdcc_low_ir.md`
@@ -44,9 +44,9 @@
 
 ## 3. 第一步：建立 per-function lowering scaffold
 
-本步骤的细化实施与验收规则由独立文档维护：
+本步骤当前已落地的事实与后续仍有效的架构约束由独立文档维护：
 
-- `frontend_per_function_lowering_scaffold_plan.md`
+- `frontend_lowering_func_pre_pass_implementation.md`
 
 目标：
 
