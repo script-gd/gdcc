@@ -10,8 +10,11 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
@@ -281,6 +284,39 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
+    void runReusesPreassignedHiddenPropertyInitShell() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var lirModule = prepared.context().requireLirModule();
+        var outerClass = requireClass(lirModule, "RuntimePreparationOuter");
+        var property = requireProperty(outerClass, "count");
+        property.setInitFunc("_field_init_count_preassigned");
+        var existingShell = new LirFunctionDef("_field_init_count_preassigned");
+        existingShell.setStatic(false);
+        existingShell.setHidden(true);
+        existingShell.setReturnType(property.getType());
+        existingShell.addParameter(new LirParameterDef("self", outerClassAsType(outerClass), null, existingShell));
+        outerClass.addFunction(existingShell);
+
+        new FrontendLoweringFunctionPreparationPass().run(prepared.context());
+
+        var contexts = prepared.context().requireFunctionLoweringContexts();
+        var propertyContext = requireContext(
+                contexts,
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationOuter",
+                "_field_init_count_preassigned"
+        );
+        assertSame(existingShell, propertyContext.targetFunction());
+        assertEquals("_field_init_count_preassigned", property.getInitFunc());
+        assertEquals(
+                1,
+                outerClass.getFunctions().stream()
+                        .filter(function -> function.getName().equals("_field_init_count_preassigned"))
+                        .count()
+        );
+    }
+
+    @Test
     void runFailsFastWhenIndexedClassSkeletonIsMissingFromPublishedLirModule() throws Exception {
         var prepared = prepareCompileReadyContext();
         var lirModule = prepared.context().requireLirModule();
@@ -297,6 +333,44 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
+    void runFailsFastWhenPropertyDeclarationScopeIsMissing() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerSourceFile = prepared.module().units().getFirst().ast();
+        var property = requireStatement(
+                outerSourceFile.statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("count")
+        );
+        prepared.context().requireAnalysisData().scopesByAst().remove(property);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("property declaration scope has not been published"));
+    }
+
+    @Test
+    void runFailsFastWhenPropertyInitializerExpressionScopeIsMissing() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerSourceFile = prepared.module().units().getFirst().ast();
+        var property = requireStatement(
+                outerSourceFile.statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("count")
+        );
+        prepared.context().requireAnalysisData().scopesByAst().remove(property.value());
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("property initializer expression scope has not been published"));
+    }
+
+    @Test
     void runFailsFastWhenPropertyMetadataIsMissing() throws Exception {
         var prepared = prepareCompileReadyContext();
         var outerClass = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
@@ -309,6 +383,69 @@ class FrontendLoweringFunctionPreparationPassTest {
         );
 
         assertTrue(exception.getMessage().contains("Expected exactly one property skeleton for RuntimePreparationOuter.count"));
+    }
+
+    @Test
+    void runFailsFastWhenExistingPropertyInitShellIsNotHidden() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerClass = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
+        var property = requireProperty(outerClass, "count");
+        property.setInitFunc("_field_init_count_existing");
+        var existingShell = new LirFunctionDef("_field_init_count_existing");
+        existingShell.setStatic(false);
+        existingShell.setHidden(false);
+        existingShell.setReturnType(property.getType());
+        existingShell.addParameter(new LirParameterDef("self", outerClassAsType(outerClass), null, existingShell));
+        outerClass.addFunction(existingShell);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("must be hidden"));
+    }
+
+    @Test
+    void runFailsFastWhenExistingPropertyInitShellHasIncompatibleContract() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerClass = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
+        var property = requireProperty(outerClass, "count");
+        property.setInitFunc("_field_init_count_existing");
+        var existingShell = new LirFunctionDef("_field_init_count_existing");
+        existingShell.setStatic(false);
+        existingShell.setHidden(true);
+        existingShell.setReturnType(GdStringType.STRING);
+        existingShell.addParameter(new LirParameterDef("self", outerClassAsType(outerClass), null, existingShell));
+        outerClass.addFunction(existingShell);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("return type does not match property"));
+    }
+
+    @Test
+    void runFailsFastWhenExistingPropertyInitShellUsesWrongSelfParameterContract() throws Exception {
+        var prepared = prepareCompileReadyContext();
+        var outerClass = requireClass(prepared.context().requireLirModule(), "RuntimePreparationOuter");
+        var property = requireProperty(outerClass, "count");
+        property.setInitFunc("_field_init_count_existing");
+        var existingShell = new LirFunctionDef("_field_init_count_existing");
+        existingShell.setStatic(false);
+        existingShell.setHidden(true);
+        existingShell.setReturnType(property.getType());
+        existingShell.addParameter(new LirParameterDef("owner", outerClassAsType(outerClass), null, existingShell));
+        outerClass.addFunction(existingShell);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
+        );
+
+        assertTrue(exception.getMessage().contains("must declare the self parameter as 'self'"));
     }
 
     @Test
@@ -416,6 +553,10 @@ class FrontendLoweringFunctionPreparationPassTest {
                 .filter(property -> property.getName().equals(propertyName))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing property " + classDef.getName() + "." + propertyName));
+    }
+
+    private static @NotNull GdObjectType outerClassAsType(@NotNull LirClassDef classDef) {
+        return new GdObjectType(classDef.getName());
     }
 
     private static @NotNull FunctionLoweringContext requireContext(

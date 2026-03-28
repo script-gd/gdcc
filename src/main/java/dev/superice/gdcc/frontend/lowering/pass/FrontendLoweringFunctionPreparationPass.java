@@ -14,6 +14,7 @@ import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -176,6 +177,10 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
             @NotNull VariableDeclaration variableDeclaration,
             @NotNull FrontendAnalysisData analysisData
     ) {
+        if (variableDeclaration.kind() != DeclarationKind.VAR || variableDeclaration.value() == null) {
+            return null;
+        }
+        requirePublishedScope(variableDeclaration, "property declaration", analysisData);
         if (!FrontendPropertyInitializerSupport.isSupportedPropertyInitializer(
                 analysisData.scopesByAst(),
                 variableDeclaration
@@ -186,7 +191,6 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
                 variableDeclaration.value(),
                 "supported property initializer must have a value"
         );
-        requirePublishedScope(variableDeclaration, "property declaration", analysisData);
         requirePublishedScope(initializerExpression, "property initializer expression", analysisData);
 
         var propertyDef = requireProperty(owningClass, variableDeclaration.name());
@@ -314,7 +318,11 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
                 .filter(function -> function.getName().equals(resolvedInitFuncName))
                 .toList();
         if (matches.isEmpty()) {
-            return createPropertyInitShell(owningClass, propertyDef, resolvedInitFuncName);
+            return requireCompatiblePropertyInitShell(
+                    owningClass,
+                    propertyDef,
+                    createPropertyInitShell(owningClass, propertyDef, resolvedInitFuncName)
+            );
         }
         if (matches.size() != 1) {
             throw new IllegalStateException(
@@ -327,17 +335,7 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
             );
         }
 
-        var existing = matches.getFirst();
-        if (!existing.isHidden()) {
-            throw new IllegalStateException(
-                    "Property init function '"
-                            + owningClass.getName()
-                            + "."
-                            + resolvedInitFuncName
-                            + "' must be hidden"
-            );
-        }
-        return existing;
+        return requireCompatiblePropertyInitShell(owningClass, propertyDef, matches.getFirst());
     }
 
     private @NotNull LirFunctionDef createPropertyInitShell(
@@ -358,6 +356,99 @@ public final class FrontendLoweringFunctionPreparationPass implements FrontendLo
             ));
         }
         owningClass.addFunction(function);
+        return function;
+    }
+
+    /// `initFunc` may already point at a synthetic shell created by an earlier phase or by a
+    /// previous preparation run. Reuse is only legal when that shell still matches the property's
+    /// backend-facing contract.
+    private @NotNull LirFunctionDef requireCompatiblePropertyInitShell(
+            @NotNull LirClassDef owningClass,
+            @NotNull LirPropertyDef propertyDef,
+            @NotNull LirFunctionDef function
+    ) {
+        if (!function.isHidden()) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' must be hidden"
+            );
+        }
+        if (function.isStatic() != propertyDef.isStatic()) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' static flag does not match property '"
+                            + propertyDef.getName()
+                            + "'"
+            );
+        }
+        if (!Objects.equals(function.getReturnType().getTypeName(), propertyDef.getType().getTypeName())) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' return type does not match property '"
+                            + propertyDef.getName()
+                            + "'"
+            );
+        }
+        if (function.getBasicBlockCount() != 0 || !function.getEntryBlockId().isEmpty()) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' must remain shell-only during preparation"
+            );
+        }
+        if (propertyDef.isStatic()) {
+            if (function.getParameterCount() != 0) {
+                throw new IllegalStateException(
+                        "Static property init function '"
+                                + owningClass.getName()
+                                + "."
+                                + function.getName()
+                                + "' must not declare parameters"
+                );
+            }
+            return function;
+        }
+
+        if (function.getParameterCount() != 1) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' must declare exactly one self parameter"
+            );
+        }
+        var selfParameter = Objects.requireNonNull(function.getParameter(0), "self parameter must exist");
+        if (!selfParameter.name().equals("self")) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' must declare the self parameter as 'self'"
+            );
+        }
+        var expectedSelfType = new GdObjectType(owningClass.getName());
+        if (!Objects.equals(selfParameter.type().getTypeName(), expectedSelfType.getTypeName())) {
+            throw new IllegalStateException(
+                    "Property init function '"
+                            + owningClass.getName()
+                            + "."
+                            + function.getName()
+                            + "' self parameter type does not match owning class"
+            );
+        }
         return function;
     }
 

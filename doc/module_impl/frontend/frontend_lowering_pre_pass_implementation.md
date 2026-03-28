@@ -212,6 +212,7 @@ void run(FrontendLoweringContext context)
 - 为 compile-ready executable callable 发布 `EXECUTABLE_BODY` context
 - 为 supported property initializer 发布 `PROPERTY_INIT` context
 - 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
+- 当 `LirPropertyDef.initFunc` 已预先指向 synthetic shell 时，仅在该 shell 仍满足 hidden/property-signature/shell-only 合同时复用；冲突则 fail-fast
 
 冻结边界：
 
@@ -239,6 +240,7 @@ void run(FrontendLoweringContext context)
 - `FrontendLoweringFunctionPreparationPass` 允许在 owning class 上追加 hidden synthetic property init shell：
   - 名称来自 `LirPropertyDef.initFunc`
   - `initFunc` 为空时当前兼容命名基线为 `_field_init_<property>`
+  - 若 `initFunc` 已存在，对应 shell 必须保持 hidden、property-compatible 且无 body，才能继续复用
   - shell 仍无 basic block / `entryBlockId`
 - 所有 `LirFunctionDef` 当前都保持 shell-only 状态：
   - `basicBlockCount == 0`
