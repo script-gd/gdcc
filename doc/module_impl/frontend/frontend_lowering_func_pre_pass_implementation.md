@@ -13,7 +13,8 @@
   - `src/test/java/dev/superice/gdcc/frontend/lowering/**`
 - 关联文档：
   - `frontend_lowering_plan.md`
-  - `frontend_lowering_pre_pass_implementation.md`
+  - `frontend_lowering_skeleton_pre_pass_implementation.md`
+  - `frontend_lowering_cfg_pass_plan.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
   - `runtime_name_mapping_implementation.md`

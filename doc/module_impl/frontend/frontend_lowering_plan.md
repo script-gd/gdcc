@@ -1,13 +1,13 @@
 # Frontend Lowering 后续计划
 
-> 本文档记录 frontend lowering 在当前 pre-pass 实现之后的后续工程路线图。当前已落地事实以 `frontend_lowering_pre_pass_implementation.md` 与 `frontend_lowering_func_pre_pass_implementation.md` 为准；本文档只保留尚未实现或尚未冻结的计划内容。
+> 本文档记录 frontend lowering 在当前 pre-pass 实现之后的后续工程路线图。当前已落地事实以 `frontend_lowering_skeleton_pre_pass_implementation.md` 与 `frontend_lowering_func_pre_pass_implementation.md` 为准；本文档只保留尚未实现或尚未冻结的计划内容。
 
 ## 文档状态
 
 - 状态：计划维护中（function pre-pass scaffold 已落地，下一阶段转入最小 CFG 与 body lowering）
 - 更新时间：2026-03-28
 - 当前事实源：
-  - `frontend_lowering_pre_pass_implementation.md`
+  - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
@@ -86,6 +86,10 @@
 
 ## 4. 第二步：实现最小 CFG lowering
 
+本步骤的详细实施计划由独立文档维护：
+
+- `frontend_lowering_cfg_pass_plan.md`
+
 目标：
 
 - 为当前 MVP 已支持的函数级 lowering 单元建立最小 basic block / CFG
@@ -110,20 +114,20 @@
 建议实施内容：
 
 - 引入 `FrontendLoweringCfgPass`
-- 为 function 创建：
-  - `entry` block
-  - branch / merge / loop blocks（需要时）
-- 生成 `GotoInsn` / `GoIfInsn` / `ReturnInsn`
+- 先在 `FunctionLoweringContext` 上增加 AST-keyed 的 CFG block skeleton side table
+- block bundle 必须按 node role 建模，不能退化成“一个 node 只对应一个 block”的平面 map
+- 只有在 terminator 能与 block shape 同步闭合时，才把 block 真正写入 `LirFunctionDef`
 - 在首次写入 basic block 时同步设置 `entryBlockId`
 
 验收细则：
 
 - happy path：
-  - 空函数至少拥有合法 entry / return 结构
+  - executable callable 拥有稳定、可预测的 CFG skeleton shape
   - `if / elif / else` 与 `while` 的 block shape 可预测且有回归测试锚定
 - negative path：
   - 未实现结构不被 silent drop
   - compile gate 尚未解除时，对应脚本仍在 analysis pass 被挡下
+  - 不出现“有 basic block 但没有合法 entry / 无法继续消费”的半成品 LIR
 
 ---
 
@@ -228,6 +232,7 @@
 - 凡是解除 compile gate blocker 的提交，都必须同步更新：
   - `frontend_rules.md`
   - `frontend_compile_check_analyzer_implementation.md`
-  - `frontend_lowering_pre_pass_implementation.md`
+  - `frontend_lowering_skeleton_pre_pass_implementation.md`
+  - `frontend_lowering_cfg_pass_plan.md`
   - 本文档
   - 对应 lowering / backend 测试
