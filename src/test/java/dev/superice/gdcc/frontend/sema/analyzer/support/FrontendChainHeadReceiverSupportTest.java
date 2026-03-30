@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema.analyzer.support;
 
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.BlockScopeKind;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -8,6 +9,7 @@ import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
+import dev.superice.gdcc.frontend.sema.FrontendModuleSkeleton;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -32,10 +34,12 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendChainHeadReceiverSupportTest {
@@ -76,6 +80,20 @@ class FrontendChainHeadReceiverSupportTest {
         assertEquals(FrontendChainReductionHelper.Status.RESOLVED, literalReceiver.status());
         assertEquals(FrontendReceiverKind.INSTANCE, literalReceiver.receiverKind());
         assertEquals(GdStringType.STRING, literalReceiver.receiverType());
+    }
+
+    @Test
+    void resolveHeadReceiverShouldFailFastWhenTypeMetaResolutionStartsWithoutPublishedModuleSkeleton() throws Exception {
+        var context = newTestContext(false);
+        var workerType = identifier("Worker");
+        context.classScope().defineTypeMeta(innerTypeMeta("Hero$Worker", "Worker"));
+        context.analysisData().symbolBindings().put(workerType, new FrontendBinding("Worker", FrontendBindingKind.TYPE_META, null));
+        context.analysisData().scopesByAst().put(workerType, context.bodyScope());
+
+        var support = newSupport(context, ResolveRestriction.unrestricted(), false);
+        var error = assertThrows(IllegalStateException.class, () -> support.resolveHeadReceiver(workerType));
+
+        assertEquals("moduleSkeleton has not been published yet", error.getMessage());
     }
 
     @Test
@@ -274,7 +292,21 @@ class FrontendChainHeadReceiverSupportTest {
     }
 
     private static @NotNull TestContext newTestContext() throws Exception {
+        return newTestContext(true);
+    }
+
+    private static @NotNull TestContext newTestContext(boolean publishModuleSkeleton) throws Exception {
         var analysisData = FrontendAnalysisData.bootstrap();
+        if (publishModuleSkeleton) {
+            analysisData.updateModuleSkeleton(
+                    new FrontendModuleSkeleton(
+                            "test_module",
+                            List.of(),
+                            Map.of(),
+                            new DiagnosticSnapshot(List.of())
+                    )
+            );
+        }
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var heroClass = new LirClassDef("Hero", "Object");
         registry.addGdccClass(heroClass);

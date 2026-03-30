@@ -23,8 +23,10 @@ import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionHeader;
 import dev.superice.gdcc.gdextension.ExtensionSingleton;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -259,6 +261,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var stepCall = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
         var lambdaHolder = findVariable(pingFunction.body().statements(), "f");
         var outerReturn = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getLast());
+        var moveStep = findNode(stepCall, AttributeCallStep.class, step -> step.name().equals("move"));
+        var getPlayerCall = findNode(
+                outerReturn,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifierExpression
+                        && identifierExpression.name().equals("get_player")
+        );
 
         assertEquals(
                 FrontendBindingKind.PARAMETER,
@@ -294,7 +303,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 IdentifierExpression.class,
                 identifierExpression -> identifierExpression.name().equals("helper")
         );
+        var helperDefaultCall = findNode(
+                pingFunction.parameters().getLast().defaultValue(),
+                CallExpression.class,
+                candidate -> true
+        );
         assertNull(result.symbolBindings().get(helperUseSite));
+        assertNull(result.resolvedCalls().get(helperDefaultCall));
 
         var lambdaPlayerUseSite = findNode(
                 lambdaHolder.value(),
@@ -302,10 +317,16 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 identifierExpression -> identifierExpression.name().equals("player")
         );
         assertNull(result.symbolBindings().get(lambdaPlayerUseSite));
+        assertEquals("move", Objects.requireNonNull(result.resolvedCalls().get(moveStep)).callableName());
+        assertEquals(
+                FrontendCallResolutionStatus.RESOLVED,
+                Objects.requireNonNull(result.resolvedCalls().get(getPlayerCall)).status()
+        );
+        assertEquals("get_player", Objects.requireNonNull(result.resolvedCalls().get(getPlayerCall)).callableName());
 
         assertEquals(5, result.symbolBindings().size());
         assertEquals(2, result.resolvedMembers().size());
-        assertEquals(1, result.resolvedCalls().size());
+        assertEquals(2, result.resolvedCalls().size());
         assertEquals(
                 2,
                 result.diagnostics().asList().stream()

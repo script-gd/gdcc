@@ -896,7 +896,7 @@ public final class FrontendAnalysisInspectionTool {
         }
 
         private static void appendIndent(@NotNull StringBuilder report, int indent) {
-            report.append(" ".repeat(Math.max(indent, 0)));
+            report.repeat(" ", Math.max(indent, 0));
         }
 
         private static void appendSnippetLines(
