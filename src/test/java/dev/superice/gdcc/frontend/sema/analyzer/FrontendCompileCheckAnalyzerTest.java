@@ -22,12 +22,14 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -223,7 +225,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileLeavesResolvedUnaryAndBinaryExpressionsOutOfCompileBlocks() throws Exception {
+    void analyzeForCompileLeavesResolvedUnaryAndEagerBinaryExpressionsOutOfCompileBlocks() throws Exception {
         var source = """
                 class_name CompileCheckUnaryBinaryResolved
                 extends RefCounted
@@ -231,14 +233,12 @@ class FrontendCompileCheckAnalyzerTest {
                 func ping(
                     items_a: Array[int],
                     items_b: Array[int],
-                    payload,
                     typed_variant: Variant
                 ):
                     var negated: int = -1
                     var logical_not: bool = !true
                     var dynamic_not := not typed_variant
                     var sum: int = 1 + 2
-                    var truthy: bool = payload and 0
                     var typed_merge := items_a + items_b
                     var dynamic_sum := typed_variant + 1
                 """;
@@ -253,6 +253,45 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeForCompileBlocksShortCircuitBinaryExpressionsUntilDedicatedCfgPathLands() throws Exception {
+        var source = """
+                class_name CompileCheckShortCircuitBinary
+                extends RefCounted
+                
+                func helper(value):
+                    return value
+                
+                func ping(left, right):
+                    var both := left and helper(right)
+                    return left or right
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_short_circuit_binary.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_short_circuit_binary.gd", source);
+        var ping = findFunction(compiled.unit().ast().statements(), "ping");
+        var bothDeclaration = assertInstanceOf(VariableDeclaration.class, ping.body().statements().getFirst());
+        var andExpression = assertInstanceOf(BinaryExpression.class, bothDeclaration.value());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, ping.body().statements().get(1));
+        var orExpression = assertInstanceOf(BinaryExpression.class, returnStatement.value());
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(2, compileDiagnostics.size());
+        assertEquals(
+                Set.of(
+                        FrontendRange.fromAstRange(andExpression.range()),
+                        FrontendRange.fromAstRange(orExpression.range())
+                ),
+                Set.copyOf(compileDiagnostics.stream().map(FrontendDiagnostic::range).toList())
+        );
+        assertTrue(compileDiagnostics.stream().allMatch(diagnostic -> diagnostic.message().contains("short-circuit")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'and'")));
+        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'or'")));
     }
 
     @Test
@@ -511,10 +550,10 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_bare_call_fact.gd", """
                 class_name CompileCheckBareCallFact
                 extends RefCounted
-
+                
                 func helper(value: int) -> int:
                     return value
-
+                
                 static func ping_static(value: int):
                     helper(value)
                 """);

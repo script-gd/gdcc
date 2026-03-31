@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
@@ -57,9 +58,10 @@ import java.util.Objects;
 /// - `ReturnStatement`
 ///
 /// Within that linear statement surface, the builder now recursively expands value evaluation for
-/// call/member/subscript/assignment roots and explicit child operands. This keeps sequence item
-/// data-flow aligned with source evaluation order without forcing structured control-flow support to
-/// land in the same change.
+/// call/member/subscript/assignment roots and explicit child operands. Short-circuit `and` / `or`
+/// are already reserved for a dedicated control-flow path and therefore remain explicit
+/// compile-blockers until that path lands. This keeps sequence item data-flow aligned with source
+/// evaluation order without silently reintroducing eager short-circuit bugs.
 public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAnalysisData analysisData;
     private @Nullable ArrayList<SequenceItem> items;
@@ -159,6 +161,9 @@ public final class FrontendCfgGraphBuilder {
     /// The builder deliberately special-cases only operations whose semantics later lowering must not
     /// rediscover from raw AST alone. Generic expressions still use `OpaqueExprValueItem`, but only
     /// after all of their lowering-ready children have already published explicit operand ids.
+    /// Short-circuit `and` / `or` no longer share that generic eager route; they are intercepted by
+    /// a dedicated unimplemented path so compile-blocked sources cannot accidentally regress into one
+    /// linear binary item.
     private @NotNull String buildValue(@NotNull Expression expression, @Nullable String preferredResultValueId) {
         requireLoweringReadyExpressionType(expression);
         return switch (expression) {
@@ -182,6 +187,8 @@ public final class FrontendCfgGraphBuilder {
                     List.of(buildValue(unaryExpression.operand(), null)),
                     preferredResultValueId
             );
+            case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
+                    buildShortCircuitBinaryValue(binaryExpression);
             case BinaryExpression binaryExpression -> emitOpaqueValue(
                     binaryExpression,
                     List.of(
@@ -299,6 +306,20 @@ public final class FrontendCfgGraphBuilder {
                 resultValueId
         ));
         return resultValueId;
+    }
+
+    /// `and` / `or` never belong to the generic eager binary route.
+    ///
+    /// Their final lowering must allocate a shared result slot, branch on the left operand, and only
+    /// materialize the right operand on the non-short-circuit path. The current linear-only builder
+    /// cannot express that graph shape yet, so reaching this helper means the compile gate was
+    /// bypassed and we must fail before any child operand is eagerly lowered.
+    private @NotNull String buildShortCircuitBinaryValue(@NotNull BinaryExpression binaryExpression) {
+        throw new IllegalStateException(
+                "Binary operator '"
+                        + binaryExpression.operator()
+                        + "' must use the dedicated frontend CFG short-circuit path, but that path is not implemented yet"
+        );
     }
 
     /// Assignment commit preserves target evaluation before RHS evaluation.
@@ -547,6 +568,22 @@ public final class FrontendCfgGraphBuilder {
 
     private @NotNull String chooseResultValueId(@Nullable String preferredResultValueId) {
         return preferredResultValueId == null ? nextValueId() : preferredResultValueId;
+    }
+
+    private static boolean isShortCircuitBinaryExpression(@NotNull BinaryExpression binaryExpression) {
+        var operator = tryResolveBinaryOperator(binaryExpression.operator());
+        return operator == GodotOperator.AND || operator == GodotOperator.OR;
+    }
+
+    private static @Nullable GodotOperator tryResolveBinaryOperator(@NotNull String operatorText) {
+        try {
+            return GodotOperator.fromSourceLexeme(
+                    Objects.requireNonNull(operatorText, "operatorText must not be null"),
+                    GodotOperator.OperatorArity.BINARY
+            );
+        } catch (IllegalArgumentException _) {
+            return null;
+        }
     }
 
     /// Returns whether the given statement can still be represented by the current single-sequence

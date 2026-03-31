@@ -369,6 +369,43 @@ class FrontendCfgGraphBuilderTest {
         assertTrue(exception.getMessage().contains("resolvedCalls()"), exception.getMessage());
     }
 
+    @Test
+    void buildStraightLineExecutableBodyFailsFastForShortCircuitBinaryBeforeEagerChildLowering() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_short_circuit_binary.gd",
+                """
+                        class_name CfgBuilderShortCircuitBinary
+                        extends RefCounted
+                        
+                        func helper(value: int) -> bool:
+                            return value > 0
+                        
+                        func ping(flag: bool, seed: int) -> bool:
+                            return flag and helper(seed)
+                        """,
+                "ping",
+                Map.of("CfgBuilderShortCircuitBinary", "RuntimeCfgBuilderShortCircuitBinary")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, returnStatement.value());
+        var helperCall = assertInstanceOf(CallExpression.class, shortCircuit.right());
+        analyzed.analysisData().resolvedCalls().remove(helperCall);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildStraightLineExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("short-circuit"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("'and'"), exception.getMessage()),
+                () -> assertFalse(exception.getMessage().contains("resolvedCalls()"), exception.getMessage())
+        );
+    }
+
     private static @NotNull AnalyzedFunction analyzeFunction(
             @NotNull String fileName,
             @NotNull String source,

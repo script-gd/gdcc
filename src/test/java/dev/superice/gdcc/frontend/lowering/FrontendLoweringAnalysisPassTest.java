@@ -95,6 +95,17 @@ class FrontendLoweringAnalysisPassTest {
                                 static var shared := 1
                                 """,
                         "Static property 'shared'"
+                ),
+                new CompileBlockedCase(
+                        "lowering_blocked_short_circuit.gd",
+                        """
+                                class_name LoweringBlockedShortCircuit
+                                extends RefCounted
+                                
+                                func ping(left, right):
+                                    return left and right
+                                """,
+                        "Short-circuit binary operator 'and'"
                 )
         )) {
             var module = parseModule(testCase.fileName(), testCase.source());

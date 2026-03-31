@@ -1,10 +1,11 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
-import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
@@ -22,6 +23,7 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
@@ -114,6 +116,13 @@ public class FrontendCompileCheckAnalyzer {
     private static @NotNull String conditionalCompileBlockedMessage() {
         return "Conditional expression is recognized by the frontend but is temporarily blocked in compile mode until "
                 + "lowering CFG support lands";
+    }
+
+    private static @NotNull String shortCircuitBinaryCompileBlockedMessage(@NotNull BinaryExpression binaryExpression) {
+        return "Short-circuit binary operator '"
+                + Objects.requireNonNull(binaryExpression, "binaryExpression must not be null").operator()
+                + "' is recognized by the frontend but remains blocked in compile mode until the dedicated frontend "
+                + "CFG short-circuit lowering path lands";
     }
 
     private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
@@ -410,6 +419,11 @@ public class FrontendCompileCheckAnalyzer {
                     // Lambdas remain outside the current compile surface and keep their upstream
                     // unsupported-subtree owner.
                 }
+                case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
+                        reportExplicitCompileBlock(
+                                binaryExpression,
+                                shortCircuitBinaryCompileBlockedMessage(binaryExpression)
+                        );
                 case ConditionalExpression conditionalExpression -> reportExplicitCompileBlock(
                         conditionalExpression,
                         conditionalCompileBlockedMessage()
@@ -456,6 +470,22 @@ public class FrontendCompileCheckAnalyzer {
                 }
                 markCompileSurfaceNode(child);
                 walkNestedExpressionChildren(child);
+            }
+        }
+
+        private static boolean isShortCircuitBinaryExpression(@NotNull BinaryExpression binaryExpression) {
+            var operator = tryResolveBinaryOperator(binaryExpression.operator());
+            return operator == GodotOperator.AND || operator == GodotOperator.OR;
+        }
+
+        private static @Nullable GodotOperator tryResolveBinaryOperator(@NotNull String operatorText) {
+            try {
+                return GodotOperator.fromSourceLexeme(
+                        Objects.requireNonNull(operatorText, "operatorText must not be null"),
+                        GodotOperator.OperatorArity.BINARY
+                );
+            } catch (IllegalArgumentException _) {
+                return null;
             }
         }
 
@@ -572,7 +602,8 @@ public class FrontendCompileCheckAnalyzer {
             return switch (anchor) {
                 case AttributeCallStep _ -> "Call step '" + publishedCall.callableName() + "'";
                 case CallExpression _ -> "Call expression '" + publishedCall.callableName() + "(...)'";
-                default -> throw new IllegalStateException("unexpected call anchor: " + anchor.getClass().getSimpleName());
+                default ->
+                        throw new IllegalStateException("unexpected call anchor: " + anchor.getClass().getSimpleName());
             };
         }
 

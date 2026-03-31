@@ -137,6 +137,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 以下表达式当前同样由 compile gate 显式拦截：
 
 - `ConditionalExpression`
+- short-circuit `BinaryExpression(and/or/&&/||)`
 - `ArrayExpression`
 - `DictionaryExpression`
 - `PreloadExpression`
@@ -153,6 +154,12 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 - 它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同冻结；当前 legacy metadata-only `FrontendLoweringCfgPass` 仍不足以支撑解封
 - 因此在 CFG 入口尚未定型前，compile gate 必须先把它挡在编译管线外
+
+short-circuit `BinaryExpression` 当前也带有一条更具体的当前事实：
+
+- shared semantic 路径已经稳定发布 `and/or` 的 typed fact；它们不是 parser/semantic 不支持
+- 但 lowering 当前尚未实现 value-context 与 condition-context 共用的短路 CFG 路径
+- 因此 compile gate 必须显式把这类 root 封口，直到 dedicated frontend CFG short-circuit lowering 落地
 
 这些错误不表示：
 
@@ -204,8 +211,9 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 
 这条 blocker 合同当前对 unary / binary 已经产生直接效果：
 
-- 已稳定发布的 `UnaryExpression` / `BinaryExpression` 不会再因为“表达式家族尚未实现”被 compile gate 误封口
-- `RESOLVED` unary / binary 与 `DYNAMIC` unary / binary 一样，都不会命中 generic compile blocker
+- 已稳定发布的 eager `UnaryExpression` / `BinaryExpression` 不会再因为“表达式家族尚未实现”被 compile gate 误封口
+- `RESOLVED` eager unary / binary 与 `DYNAMIC` eager unary / binary 一样，都不会命中 generic compile blocker
+- `and/or` 虽然也会在 shared semantic 路径发布稳定 typed fact，但它们属于独立的显式 AST compile-block，而不是 generic published-fact blocker
 - `not in` 仍会因为 upstream 发布的是显式 `UNSUPPORTED` 而被 compile gate 阻断
 - `ConditionalExpression` 继续依赖显式 AST compile-block，而不是借 unary/binary 的转正被顺带放行
 
@@ -332,6 +340,7 @@ compile gate 当前统一使用：
 
 - `FrontendCompileCheckAnalyzerTest`
   - 显式 AST compile-block
+  - short-circuit binary compile-block
   - generic side-table blocker
   - property initializer island 上的 generic blocker
   - shared-anchor 去重
@@ -357,7 +366,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 7 类显式拦截表达式的真正 lowering/backend 支持仍待后续阶段补齐
+- `assert` 与 8 类显式拦截表达式的真正 lowering/backend 支持仍待后续阶段补齐
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

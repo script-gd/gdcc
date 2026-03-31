@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：实施中（第 1、2、3、4、5 阶段已完成；structured control-flow、显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
-- 更新时间：2026-03-30
+- 更新时间：2026-03-31
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -435,7 +435,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许同一 initializer / RHS 既作为独立 eval item 产出，又在 statement item 中再次作为“待递归 lower”的 subtree 被消费
   - 不允许把 call / member / subscript 的真实执行语义继续藏在 generic statement passthrough 中
 
-当前状态（2026-03-30）：
+当前状态（2026-03-31）：
 
 - 已完成。
 - `FrontendCfgGraph.SequenceNode.items` 已冻结为：
@@ -561,9 +561,12 @@ frontend CFG builder 需要显式维护 loop stack。
   - plain `SubscriptExpression`
   - statement-position `AssignmentExpression`
   - `CastExpression` / `TypeTestExpression` 的预留 item 接线位
-- generic `IdentifierExpression` / `LiteralExpression` / `SelfExpression` / unary / binary 当前继续落为 `OpaqueExprValueItem`，但已不再是“整棵子树黑盒”：
+- generic `IdentifierExpression` / `LiteralExpression` / `SelfExpression` / unary / eager binary 当前继续落为 `OpaqueExprValueItem`，但已不再是“整棵子树黑盒”：
   - item 现在显式保存 `operandValueIds`
   - nested special op child 会先发布 value id，再由 generic root item 显式消费
+- `and` / `or` 已从普通 eager `BinaryExpression` 路由中显式移出：
+  - compile gate 现在会对 compile surface 上的 short-circuit binary root 直接报 `sema.compile_check`
+  - builder 内部已保留 dedicated short-circuit 入口，并在当前阶段 fail-fast 标注“未实现”，避免回退成单个线性 binary item
 - 当前 item contract 已同步增强为：
   - `OpaqueExprValueItem`：显式 child operand ids
   - `CallItem`：`callAnchor + callableName + receiver/argument value ids`
@@ -575,6 +578,8 @@ frontend CFG builder 需要显式维护 loop stack。
   - builder 现在会在 assignment target lowering 中显式求值 receiver/index 前缀，而不会错误要求所有左值前缀都已有 ordinary expression fact
 - `FrontendLoweringBuildCfgPass` 已改为把 per-function `analysisData` 传入 builder，使 build pass 与 compile-ready published fact contract 对齐。
 - 已有单元测试锚定：
+  - `FrontendCompileCheckAnalyzerTest`
+    - short-circuit binary 在 compile-only 路径被显式封口，但不污染 shared analyze
   - `FrontendCfgGraphTest`
     - expanded item anchor / operand / result contract
   - `FrontendCfgGraphBuilderTest`
@@ -582,9 +587,12 @@ frontend CFG builder 需要显式维护 loop stack。
     - explicit declaration commit / assignment commit shape
     - declaration-without-initializer explicit commit
     - missing published call fact fail-fast
+    - short-circuit special path 在 builder 内部 fail-fast，而不是 eager lower child
     - reachable unsupported statement fail-fast
   - `FrontendLoweringBuildCfgPassTest`
     - default pipeline 发布 phase-5 线性 graph 形状并保持 shell-only LIR
+  - `FrontendLoweringAnalysisPassTest`
+    - compile-ready lowering pipeline 会在 analysis pass 因 short-circuit compile blocker 提前停止
   - `FrontendLoweringPassManagerTest`
     - manager 默认 pipeline 已对齐到显式 operand/result id 的线性 graph contract
 
@@ -666,6 +674,14 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 value context 下只因为静态类型是 `bool` 就跳过短路区域构建
   - 不允许 parent item 直接引用 `and` / `or` 的左右 child AST，而绕过中间结果 value id
   - 不允许 body lowering 成为第一个理解 `and` / `or` 短路语义的阶段
+
+当前状态（2026-03-31）：
+
+- 尚未实现真正的短路 CFG 构图。
+- 但当前仓库已经显式冻结了过渡边界：
+  - `FrontendCompileCheckAnalyzer` 会把 compile surface 上的 `and` / `or` 直接作为 compile-only blocker 报错
+  - `FrontendCfgGraphBuilder` 不再把它们归入普通 eager `BinaryExpression` 路由，而是走 dedicated short-circuit entry 并 fail-fast 标注未实现
+- 这条过渡边界的目的不是“长期禁止 `and` / `or`”，而是在第七步真正落地前，防止线性 value-op 层继续错误地把 short-circuit 语义塌缩成单个 eager binary item。
 
 ### 4.8 第八步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 

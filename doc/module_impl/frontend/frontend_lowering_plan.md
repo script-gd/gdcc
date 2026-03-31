@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：计划维护中（function pre-pass scaffold 已落地；当前第二阶段转入 frontend CFG graph migration）
-- 更新时间：2026-03-29
+- 更新时间：2026-03-31
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
@@ -24,7 +24,7 @@
 - public lowering 输入固定为 `FrontendModule`
 - lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
 - default pipeline 已稳定产出 `LirModule(skeleton/shell-only)`、function lowering context scaffold，以及带显式 operand/result value-op 的线性 executable body frontend CFG graph
-- compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface
+- compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface；其中 `and` / `or` 已从普通 eager binary lowering 路由中移出，并在 dedicated short-circuit CFG path 落地前继续显式封口
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
 

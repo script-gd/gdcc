@@ -13,10 +13,11 @@ import org.jetbrains.annotations.NotNull;
 /// Frontend CFG graph publication pass.
 ///
 /// The current implementation materializes the linear executable-body subset into the new frontend
-/// CFG graph with recursive value-op expansion for lowering-ready expressions. Structured bodies
-/// still wait for later migration steps, so this pass intentionally skips those functions after
-/// validating the shared shell-only invariants. Legacy `FrontendLoweringCfgPass` remains in the
-/// default pipeline as a temporary metadata-only fallback for that broader surface.
+/// CFG graph with recursive value-op expansion for lowering-ready expressions. Structured bodies and
+/// short-circuit `and` / `or` still wait for later migration steps, so this pass intentionally skips
+/// only the former and relies on the compile gate to keep the latter out of compile-ready lowering.
+/// Legacy `FrontendLoweringCfgPass` remains in the default pipeline as a temporary metadata-only
+/// fallback for that broader surface.
 public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass {
     @Override
     public void run(@NotNull FrontendLoweringContext context) {
