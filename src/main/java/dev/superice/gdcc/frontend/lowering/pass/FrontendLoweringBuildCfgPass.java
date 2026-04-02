@@ -14,9 +14,7 @@ import org.jetbrains.annotations.NotNull;
 ///
 /// The current implementation materializes compile-ready executable bodies into the new frontend CFG
 /// graph, including structured `if` / `elif` / `while` regions and loop-control edges for
-/// `break` / `continue` plus explicit short-circuit `and` / `or` condition/value subgraphs. Legacy
-/// `FrontendLoweringCfgPass` remains in the default pipeline only as a transitional metadata overlay
-/// until the old block-bundle surface is deleted.
+/// `break` / `continue` plus explicit short-circuit `and` / `or` condition/value subgraphs.
 public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass {
     @Override
     public void run(@NotNull FrontendLoweringContext context) {

@@ -1,10 +1,10 @@
 # Frontend Lowering Frontend CFG Graph 实施计划
 
-> 本文档是 frontend lowering 第二阶段的当前主计划，定义“frontend-only CFG graph”及其 condition-evaluation-region 合同。它替代旧的 `frontend_lowering_cfg_pass_plan.md` 作为当前实施依据。新 CFG 必须在 `frontend.lowering.cfg` 包中独立实现，只由 `FrontendLoweringBuildCfgPass` 构建；现有 `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 只应视为废弃中的过渡实现，尚未完成最终 CFG 架构，后续必须迁移并删除。
+> 本文档是 frontend lowering 第二阶段的当前主计划，定义“frontend-only CFG graph”及其 condition-evaluation-region 合同。它替代旧的 `frontend_lowering_cfg_pass_plan.md` 作为当前实施依据。新 CFG 必须在 `frontend.lowering.cfg` 包中独立实现，只由 `FrontendLoweringBuildCfgPass` 构建；legacy `FrontendLoweringCfgPass` 与 `FunctionLoweringContext.cfgNodeBlocks` 已从默认 pipeline 与代码中移除，后续 body lowering 只允许建立在新 graph/value-op 合同之上。
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4、5、6、7、8、9、10 阶段已完成；body lowering 仍待迁移）
+- 状态：实施中（第 1、2、3、4、5、6、7、8、9、10 阶段与原第十二步清理已完成；body lowering 仍待迁移）
 - 更新时间：2026-04-02
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -45,8 +45,6 @@
 2. `FrontendLoweringClassSkeletonPass`
 3. `FrontendLoweringFunctionPreparationPass`
 4. `FrontendLoweringBuildCfgPass`
-5. `FrontendLoweringCfgPass`（legacy，待删除）
-
 当前稳定输入与边界：
 
 - lowering 入口仍然固定为 `FrontendModule`
@@ -56,18 +54,18 @@
 
 这条链路当前已经稳定，后续 CFG 工程应在其上增量推进，而不是重新发明新的 lowering 入口。
 
-### 1.2 当前 `FrontendLoweringCfgPass` 的真实状态
+### 1.2 legacy `FrontendLoweringCfgPass` 的真实状态
 
-当前代码中的 `FrontendLoweringCfgPass` 已经存在，但它不是最终想要的 frontend CFG。
+仓库中曾存在 `FrontendLoweringCfgPass`，但它不是最终想要的 frontend CFG，目前也已经从默认 pipeline 与代码中删除。
 
-当前 pass 的真实能力只有：
+它当时的能力只有：
 
 - 读取 compile-ready `EXECUTABLE_BODY` context
 - 校验 target function 仍保持 shell-only
 - 在 `FunctionLoweringContext` 上发布 AST identity keyed 的 `CfgNodeBlocks`
 - 用 `LirBasicBlock` 充当 metadata-only block skeleton
 
-它当前还不能正确表达：
+它始终不能正确表达：
 
 - `if` / `elif` 的显式 condition-entry region
 - truthiness / condition normalization 的前置求值区域
@@ -77,9 +75,9 @@
 
 因此，仓库内不应再把它称为“minimal CFG lowering 已完成”。更准确的表述是：
 
-- 当前 pass 已落地一个 legacy metadata-only skeleton
-- 该 skeleton 为后续迁移提供了一部分稳定约束
-- 但它仍然不是可消费的 source-level frontend CFG
+- legacy pass 只落地过一个 metadata-only skeleton
+- 该 skeleton 只在迁移早期提供过少量稳定约束
+- 当前唯一允许继续演进的 CFG 主模型是 `FrontendLoweringBuildCfgPass` 发布的 frontend-only graph/value-op 层
 
 ### 1.3 当前语义合同对 CFG 层提出的要求
 
@@ -926,7 +924,7 @@ frontend CFG builder 需要显式维护 loop stack。
 
 背景：
 
-- 第九步引入 `slotTypes()` 后，body lowering（第十一步）会把它当作 callable-local slot type 的 lowering-only 真源。
+- 第九步引入 `slotTypes()` 后，body lowering（现第十二步）会把它当作 callable-local slot type 的 lowering-only 真源。
 - 但在语义阶段，duplicate local declaration / shadowing local 的处理很容易出现一种“隐性缺洞”：
   - `FrontendVariableAnalyzer` 可能会因为重复声明 / shadowing 而拒绝把该 declaration 写入 block inventory（这是合理的语义拒绝）。
   - 若缺少明确的 user-facing diagnostic，则：
@@ -1020,7 +1018,47 @@ frontend CFG builder 需要显式维护 loop stack。
     - lowering pipeline 会在 variable conflict 后立即 stop，后续 lowering pass 不会被调用
     - stop 前 diagnostics 中会同时保留 earlier variable diagnostic、slot-publication warning 与 compile-check error
 
-### 4.11 第十一步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
+### 4.11 第十一步：先移除 legacy block-bundle 与过渡 pass，再冻结 body lowering 前置合同
+
+实施内容：
+
+- 从默认 pipeline 和代码中移除：
+  - `FrontendLoweringCfgPass`
+  - `FunctionLoweringContext.cfgNodeBlocks`
+  - 以 `LirBasicBlock` 作为 metadata skeleton 的 legacy side table
+- `FrontendLoweringBuildCfgPass` 成为唯一 CFG 构图入口
+- 在进入 `FrontendLoweringBodyInsnPass` 之前，先冻结三类局部变量的命名与类型来源：
+  - CFG value id 对应的 ordinary temp slot 统一命名为 `cfg_tmp_<valueId>`；类型来自 frontend CFG producer item 对应的 published fact
+  - source-level local variable 统一沿用源码名；类型只允许来自 `analysisData.slotTypes()`
+  - merged result slot 统一命名为 `cfg_merge_<valueId>`；类型必须与 merged result value id 的 published type 保持一致
+- 条件分支的 bool-only normalization 方案固定为：
+  - `bool` source：直接对已有 slot 发 `GoIfInsn`
+  - `Variant` source：跳过 `pack_variant`，只发 `unpack_variant -> bool temp -> GoIfInsn`
+  - 非 `bool` 且非 `Variant` source：先 `pack_variant` 到 `cfg_cond_variant_<valueId>`，再 `unpack_variant` 到 `cfg_cond_bool_<valueId>`，最后 `GoIfInsn`
+- `OpaqueExprValueItem` 在 body lowering 前必须先有明确清单：
+  - 本阶段直接处理：`IdentifierExpression`、`LiteralExpression`、`SelfExpression`、eager `UnaryExpression`、非短路 `BinaryExpression`
+  - 延后到 dedicated route / compile gate 继续封口：`ConditionalExpression`、`CastExpression`、`TypeTestExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`
+  - 明确拒绝走 opaque fallback：`and` / `or`、assignment-as-opaque、绕过 dedicated item 的 attribute / call / subscript
+- value-context `and` / `or` 的 LIR 形态必须先被测试锚定为：
+  - branch
+  - branch-local `LiteralBoolInsn`
+  - `AssignInsn` 写入 `cfg_merge_<valueId>`
+  - 绝不允许出现 `BinaryOpInsn(AND/OR)`
+- 在这一阶段结束前，`LirModule` 继续保持 shell-only；不允许提前实现半成品 `FrontendLoweringBodyInsnPass`
+
+验收细则：
+
+- happy path：
+  - 默认 pipeline 中只剩 analysis / class skeleton / function preparation / build CFG 四个 pass
+  - 仓库内不再存在 `FrontendLoweringCfgPass` 与 `cfgNodeBlocks`
+  - unit test 已锚定 bool-only condition normalization 与 value-context `and/or` 的 LIR scaffold
+  - 后续 body lowering 可直接复用已冻结的 slot naming / slot typing / opaque checklist 合同
+- negative path：
+  - 不允许 graph 与 legacy side table 长期双写并各自漂移
+  - 不允许 `and/or` 在 value-context 下回退成 eager binary lowering
+  - 不允许 body lowering 重新发明第二套 local slot naming / type inference 规则
+
+### 4.12 第十二步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
 实施内容：
 
@@ -1029,6 +1067,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - `frontendCfgGraph`
   - `frontendCfgRegions`
   - `analysisData` 中已发布的 `symbolBindings()` / `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`
+  - 第十一步已经冻结的 slot naming / type-resolution / condition normalization / opaque checklist 合同
 - body lowering 不得重新做：
   - chain reduction
   - bare call overload 选择
@@ -1044,7 +1083,7 @@ frontend CFG builder 需要显式维护 loop stack。
   - member call
   - subscript
   - assignment
-- 在这个阶段之前，`LirModule` 继续保持 shell-only；在这个阶段之后才允许把 real block / instruction materialize 到 `LirFunctionDef`
+- 在这个阶段之后才允许把 real block / instruction materialize 到 `LirFunctionDef`
 
 验收细则：
 
@@ -1058,25 +1097,6 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 lowering 自己补做语义路由推导来绕过缺失的 published fact
   - 不允许 body lowering 依赖“一个 value id 只有一个 producer”的假设去处理 merge result
 - 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
-
-### 4.12 第十二步：移除 legacy block-bundle 与过渡 pass
-
-实施内容：
-
-- 当 frontend CFG graph、显式 value-op 层与 body lowering 已全部接通后，删除：
-  - `CfgNodeBlocks`
-  - `FrontendLoweringCfgPass`
-  - 以 `LirBasicBlock` 作为 metadata skeleton 的 legacy side table
-- `FrontendLoweringBuildCfgPass` 成为唯一 CFG 构图入口
-- 若迁移期确实需要兼容层，也只能是短期桥接，不得继续扩展其职责
-
-验收细则：
-
-- happy path：
-  - `FrontendLoweringBuildCfgPassTest`、`FrontendLoweringPassManagerTest` 与 future `FrontendLoweringBodyInsnPassTest` 全部锚定新 graph + value-op contract
-- negative path：
-  - 不允许 graph 与 legacy side table 长期双写并各自漂移
-  - 仓库内不再保留 `FrontendLoweringCfgPass`
 
 ---
 

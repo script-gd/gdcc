@@ -5,7 +5,6 @@ import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendSourceClassRelation;
-import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -13,9 +12,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.IdentityHashMap;
-import java.util.List;
 import java.util.Objects;
 
 /// Lowering-local description of one function-shaped unit that later passes will lower.
@@ -98,14 +94,6 @@ public final class FunctionLoweringContext {
     /// nodes such as `Block`, `if`/`elif`, and `while`. Like the semantic side tables, the lookup
     /// deliberately uses AST identity instead of structural equality.
     private final @NotNull FrontendAstSideTable<FrontendCfgRegion> frontendCfgRegions = new FrontendAstSideTable<>();
-
-    /// Legacy per-function CFG skeleton bundles keyed by original AST node identity.
-    ///
-    /// This side table currently exists only for the metadata-only `FrontendLoweringCfgPass`.
-    /// It freezes deterministic AST-to-role bookkeeping for the migration period, but the new
-    /// frontend CFG architecture is represented by `frontendCfgGraph` plus `frontendCfgRegions`.
-    @Deprecated(since = "2026-03-29")
-    private final @NotNull FrontendAstSideTable<CfgNodeBlocks> cfgNodeBlocks = new FrontendAstSideTable<>();
 
     public FunctionLoweringContext(
             @NotNull Kind kind,
@@ -222,152 +210,10 @@ public final class FunctionLoweringContext {
         return frontendCfgRegions.containsKey(Objects.requireNonNull(astNode, "astNode must not be null"));
     }
 
-    /// Publishes one AST-keyed CFG block bundle for this lowering unit.
-    ///
-    /// Duplicate publication for the same AST node is a protocol violation because later passes
-    /// must be able to rely on a one-to-one mapping from node identity to block-role bundle.
-    ///
-    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
-    /// should publish `frontendCfgGraph` plus `frontendCfgRegions` instead.
-    @Deprecated(since = "2026-03-29")
-    public void publishCfgNodeBlocks(@NotNull Node astNode, @NotNull CfgNodeBlocks blocks) {
-        Objects.requireNonNull(astNode, "astNode must not be null");
-        Objects.requireNonNull(blocks, "blocks must not be null");
-        if (cfgNodeBlocks.containsKey(astNode)) {
-            throw new IllegalStateException(
-                    "CFG node blocks have already been published for " + describeCfgAstNode(astNode)
-            );
-        }
-        cfgNodeBlocks.put(astNode, blocks);
-    }
-
-    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
-    /// should read `frontendCfgGraph` plus `frontendCfgRegions` instead.
-    @Deprecated(since = "2026-03-29")
-    public @Nullable CfgNodeBlocks cfgNodeBlocksOrNull(@NotNull Node astNode) {
-        return cfgNodeBlocks.get(Objects.requireNonNull(astNode, "astNode must not be null"));
-    }
-
-    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
-    /// should read `frontendCfgGraph` plus `frontendCfgRegions` instead.
-    @Deprecated(since = "2026-03-29")
-    public @NotNull CfgNodeBlocks requireCfgNodeBlocks(@NotNull Node astNode) {
-        var blocks = cfgNodeBlocksOrNull(astNode);
-        if (blocks == null) {
-            throw new IllegalStateException(
-                    "CFG node blocks have not been published for " + describeCfgAstNode(astNode)
-            );
-        }
-        return blocks;
-    }
-
-    /// @deprecated Legacy migration-only API for `FrontendLoweringCfgPass`. New frontend CFG work
-    /// should read `frontendCfgGraph` plus `frontendCfgRegions` instead.
-    @Deprecated(since = "2026-03-29")
-    public boolean hasCfgNodeBlocks(@NotNull Node astNode) {
-        return cfgNodeBlocks.containsKey(Objects.requireNonNull(astNode, "astNode must not be null"));
-    }
-
     public enum Kind {
         EXECUTABLE_BODY,
         PROPERTY_INIT,
         PARAMETER_DEFAULT_INIT
-    }
-
-    /// Legacy role-bearing CFG skeleton blocks published for one AST node.
-    ///
-    /// These bundles are a migration aid for the current metadata-only CFG pass. They intentionally
-    /// stop short of expressing full source control-flow semantics and should eventually be
-    /// replaced by frontend CFG graph regions.
-    @Deprecated(since = "2026-03-29")
-    public sealed interface CfgNodeBlocks
-            permits BlockCfgNodeBlocks, IfCfgNodeBlocks, ElifCfgNodeBlocks, WhileCfgNodeBlocks {
-        @NotNull List<LirBasicBlock> blocks();
-    }
-
-    /// CFG bundle for the executable-body root block.
-    @Deprecated(since = "2026-03-29")
-    public record BlockCfgNodeBlocks(@NotNull LirBasicBlock entry) implements CfgNodeBlocks {
-        public BlockCfgNodeBlocks {
-            Objects.requireNonNull(entry, "entry must not be null");
-        }
-
-        @Override
-        public @NotNull List<LirBasicBlock> blocks() {
-            return List.of(entry);
-        }
-    }
-
-    /// CFG bundle for one `if` statement.
-    ///
-    /// `elseOrNextClauseEntry` may alias `merge` when the source statement has neither `else` nor
-    /// `elif`, because the false path then falls through directly into the merge block.
-    @Deprecated(since = "2026-03-29")
-    public record IfCfgNodeBlocks(
-            @NotNull LirBasicBlock thenEntry,
-            @NotNull LirBasicBlock elseOrNextClauseEntry,
-            @NotNull LirBasicBlock merge
-    ) implements CfgNodeBlocks {
-        public IfCfgNodeBlocks {
-            Objects.requireNonNull(thenEntry, "thenEntry must not be null");
-            Objects.requireNonNull(elseOrNextClauseEntry, "elseOrNextClauseEntry must not be null");
-            Objects.requireNonNull(merge, "merge must not be null");
-        }
-
-        @Override
-        public @NotNull List<LirBasicBlock> blocks() {
-            return distinctBlocks(thenEntry, elseOrNextClauseEntry, merge);
-        }
-    }
-
-    /// CFG bundle for one `elif` clause.
-    ///
-    /// `nextClauseOrMerge` may alias the owning `if` merge block when this clause is the final
-    /// false-continuation point in the chain.
-    @Deprecated(since = "2026-03-29")
-    public record ElifCfgNodeBlocks(
-            @NotNull LirBasicBlock bodyEntry,
-            @NotNull LirBasicBlock nextClauseOrMerge
-    ) implements CfgNodeBlocks {
-        public ElifCfgNodeBlocks {
-            Objects.requireNonNull(bodyEntry, "bodyEntry must not be null");
-            Objects.requireNonNull(nextClauseOrMerge, "nextClauseOrMerge must not be null");
-        }
-
-        @Override
-        public @NotNull List<LirBasicBlock> blocks() {
-            return distinctBlocks(bodyEntry, nextClauseOrMerge);
-        }
-    }
-
-    /// CFG bundle for one `while` statement.
-    @Deprecated(since = "2026-03-29")
-    public record WhileCfgNodeBlocks(
-            @NotNull LirBasicBlock conditionEntry,
-            @NotNull LirBasicBlock bodyEntry,
-            @NotNull LirBasicBlock exit
-    ) implements CfgNodeBlocks {
-        public WhileCfgNodeBlocks {
-            Objects.requireNonNull(conditionEntry, "conditionEntry must not be null");
-            Objects.requireNonNull(bodyEntry, "bodyEntry must not be null");
-            Objects.requireNonNull(exit, "exit must not be null");
-        }
-
-        @Override
-        public @NotNull List<LirBasicBlock> blocks() {
-            return distinctBlocks(conditionEntry, bodyEntry, exit);
-        }
-    }
-
-    private static @NotNull List<LirBasicBlock> distinctBlocks(@NotNull LirBasicBlock... blocks) {
-        var seen = new IdentityHashMap<LirBasicBlock, Boolean>();
-        var distinct = new ArrayList<LirBasicBlock>(blocks.length);
-        for (var block : blocks) {
-            if (seen.put(block, true) == null) {
-                distinct.add(block);
-            }
-        }
-        return List.copyOf(distinct);
     }
 
     private static @NotNull String describeCfgAstNode(@NotNull Node astNode) {

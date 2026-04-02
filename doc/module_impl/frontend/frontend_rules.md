@@ -32,7 +32,7 @@
 - `assert` 在共享语义路径中继续沿用 Godot-compatible condition contract；compile-only `FrontendCompileCheckAnalyzer` 只是暂时阻断 statement 自身，不得把它回退成 `sema.type_check` 或 grammar unsupported。
 - 脚本类 `static var` 当前属于“frontend 已识别但 compile target 明确不接受”的 declaration-level compile boundary；共享语义可继续发布 metadata，但 compile-only gate 必须在进入 lowering/backend 前显式封口。
 - `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 当前属于 frontend 已识别但 lowering 尚未就绪的 temporary compile intercept；共享语义路径可以继续发布 deferred/unstable facts，但 compile-only gate 必须在进入 lowering 前最终封口。
-- `ConditionalExpression` 当前之所以在 compile-only gate 中被显式封口，是因为它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同先稳定；现有 metadata-only `FrontendLoweringCfgPass` 还不够支撑这一点，在那之前不得放行进编译管线。
+- `ConditionalExpression` 当前之所以在 compile-only gate 中被显式封口，是因为它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同先稳定；legacy `FrontendLoweringCfgPass` 已移除，但 `FrontendLoweringBodyInsnPass` 尚未接通 value merge / branch-result materialization 之前，仍不得放行进编译管线。
 - 共享 `FrontendSemanticAnalyzer.analyze(...)` 的结果不是 lowering-ready 合同；未来 frontend -> LIR lowering 只能以前置的 `analyzeForCompile(...)` 结果为准，并在 diagnostics 无 error 时继续。
 
 ## 测试约定
@@ -65,6 +65,10 @@
 - 任何按 value id 收集 producer 的代码、测试或 future lowering 都必须按“可能有多个 reaching producers”建模；不得把 merged result 当作可唯一反查的 SSA expression definition。
 - `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
 - backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
+- lowering 侧的 condition normalization 合同已经冻结：`bool` 直接 branch，`Variant` 只做 `unpack_variant -> bool temp -> GoIfInsn`，其余 stable type 必须先 `pack_variant` 再 `unpack_variant`，不得绕过这条路径。
+- body lowering 的三类局部变量命名必须固定：CFG value temp slot 用 `cfg_tmp_<valueId>`，merge slot 用 `cfg_merge_<valueId>`，source-level local 直接沿用源码名；不得在实现期临时发明第二套命名。
+- `OpaqueExprValueItem` 当前只允许承载 leaf / eager unary / 非短路 eager binary；`and` / `or`、assignment-as-opaque、以及绕过 dedicated item 的 attribute / call / subscript 必须视为协议违例。
+- value-context `and` / `or` 的 LIR 形态必须保持为“branch + branch-local bool constant + merge slot assign”；不得生成 `BinaryOpInsn(AND/OR)`。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。
 - `ScopeValue.writable` 当前只表达 bare identifier direct-write contract；不要把它误当成完整的 member/container/property mutation 语义模型。
