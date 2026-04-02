@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4、5、6、7、8 阶段已完成；body lowering 仍待迁移）
+- 状态：实施中（第 1、2、3、4、5、6、7、8、9、10 阶段已完成；body lowering 仍待迁移）
 - 更新时间：2026-04-02
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -830,7 +830,197 @@ frontend CFG builder 需要显式维护 loop stack。
     - `FrontendCompileCheckAnalyzerTest`
     - `FrontendLoweringPassManagerTest`
 
-### 4.9 第九步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
+### 4.9 第九步：发布 callable-local slot type facts（引入 `FrontendVarTypePostAnalyzer`）
+
+动机：
+
+- 语义阶段当前已经对 supported local `:=` 做了 inferred-type backfill（通过 `BlockScope.resetLocalType(...)`），并允许后续表达式类型检查与语义路由按 backfill 后的类型继续推导。
+- 但 lowering 侧（后续 body lowering）按本计划必须“只消费 published facts”，不允许重新读取 scope graph、也不允许对 `:=` 的最终 slot type 做第二套推导。
+- 如果缺少一个稳定的 published slot-type 表，则 `var x := 1` 这类脚本会出现“语义侧认为 `x:int`，lowering 侧只能当 `x:Variant` 或回退推导”的漂移风险。
+
+实施内容：
+
+- 在 `FrontendAnalysisData` 中新增 published side table：`slotTypes()`（类型为 `FrontendAstSideTable<GdType>`）
+  - 说明：该表在实现中应从 `slotTypesByDeclarationSite` 重命名为更简洁的 `slotTypes`，并同步修改所有关联用法（本文档后续也统一使用新名字）。
+  - key 仅允许是 declaration-site AST node identity：
+    - callable parameter：`Parameter`
+    - supported callable-local `var`：`VariableDeclaration`
+  - value 为该 slot 的最终 `GdType`（必须反映 `:=` backfill 后的最终状态）
+- 在 `frontend.sema.analyzer` 包中新增 `FrontendVarTypePostAnalyzer`
+  - analyzer 必须只做“发布”，不得引入新的类型推导规则，也不得重跑 chain reduction / call overload 选择
+  - analyzer 允许读取 `analysisData.scopesByAst()`，但产物必须被写入上述 published side table 以供 lowering 消费
+  - analyzer 必须在 `FrontendExprTypeAnalyzer` 之后运行（保证 `:=` backfill 已稳定落到 `BlockScope` inventory）
+  - analyzer 必须在 compile-only gate 之前闭合发布边界：当 compile surface 放行 executable body 时，对应 callable-local parameter/local slot 的类型必须已经可被 lowering 以 published fact 方式读取
+- published contract 约束：
+  - 对每个进入 compile surface 的 `EXECUTABLE_BODY` callable：
+    - 所有 parameter 的 `Parameter` AST node 必须在 `slotTypes()` 中命中
+    - 所有 supported callable-local `var` 的 `VariableDeclaration` AST node 必须在 `slotTypes()` 中命中
+	  - 对不在 MVP 支持面的变量来源（例如 block-local `const`、`for` iterator、`match` pattern、lambda capture 等）：
+	    - analyzer 必须保持 fail-closed：不发布、不隐式补洞；对应脚本是否 compile-ready 仍由 compile gate 决定
+- 建议实现顺序（实现时按顺序提交，便于 review 与回滚）：
+  1. `FrontendAnalysisData` 增加 `slotTypes()` side table，并提供 `updateSlotTypes(...)` 更新入口
+  2. 新增 `FrontendVarTypePostAnalyzer`，只产出一个新的 `FrontendAstSideTable<GdType>`
+  3. 把 `FrontendVarTypePostAnalyzer` 接入 `FrontendSemanticAnalyzer` pipeline，固定运行位置为：
+     - `FrontendExprTypeAnalyzer` 之后（确保 `:=` backfill 已落到 `BlockScope`）
+     - `FrontendAnnotationUsageAnalyzer` 之前（避免工具/诊断面读取到缺失表）
+  4. 新增 `FrontendVarTypePostAnalyzerTest`，用最小脚本锁定 `:=` backfill 发布面与声明/参数发布面
+  5. 在 lowering 计划文档中把 `slotTypes()` 明确列为 body lowering 的允许消费输入面（本段已更新）
+- `FrontendVarTypePostAnalyzer` 的具体产出逻辑必须固定为“读 inventory → 发布事实”，不得重新推导：
+  - 参数：
+    - 从 `analysisData.scopesByAst().get(parameter)` 取到 `CallableScope`
+    - 从该 `CallableScope` 中取参数名对应的 inventory slot type
+    - 写入 `slotTypes().put(parameter, slotType)`
+  - supported callable-local `var`：
+    - 从 `analysisData.scopesByAst().get(variableDeclaration)` 取到 `BlockScope`
+    - 从该 `BlockScope` 中取同名 local slot 的最终类型（此时必须已反映 `:=` backfill）
+    - 写入 `slotTypes().put(variableDeclaration, slotType)`
+  - 校验（invariant）：
+    - 对 supported declaration，在 error-free（`diagnostics.hasErrors() == false`）的 compile-ready 前提下：
+      - 若 scope 缺失、scope 类型不匹配、或 inventory slot 缺失，必须 fail-fast（代表 phase 边界被破坏）
+    - 对已被 duplicate / shadowing 诊断拒绝入 inventory 的 declaration：
+      - 保持 fail-closed（不发布、不补洞），并由 compile gate 阻止进入 lowering
+    - 对 unsupported declaration，保持 fail-closed：不发布、不补洞
+
+验收细则：
+
+- happy path：
+  - `func foo(): var x := 1; return x + 1`
+    - `slotTypes().get(x_declaration)` 是 `int`，不得是 `Variant`
+  - `func foo(): var x: int; x = 1; return x + 1`
+    - `slotTypes().get(x_declaration)` 是 `int`（即使 initializer 为空也必须发布）
+  - `func foo(seed: int): return seed`
+    - `slotTypes().get(seed_parameter)` 是 `int`
+- negative path：
+  - 不允许该 analyzer 把 scope 内部状态当作 lowering 的隐式依赖（lowering 不得读取 `scopesByAst` 来取 slot type）
+  - 不允许该 analyzer 在缺失 scope 或 inventory slot 时 silent drop supported declaration
+    - 必须 fail-fast 抛出 invariant 错误（代表前置语义边界被破坏，而不是用户源代码错误）
+
+当前状态（2026-04-02）：
+
+- 已完成。
+- `FrontendAnalysisData` 已新增 published side table：`slotTypes()`，并通过稳定引用 + 清空重发布的方式暴露 callable-local slot type facts。
+- `FrontendVarTypePostAnalyzer` 已落地并接入 `FrontendSemanticAnalyzer` shared pipeline：
+  - 固定运行位置为 `FrontendExprTypeAnalyzer` 之后、`FrontendAnnotationUsageAnalyzer` 之前
+  - 只从已发布 inventory 读取 parameter/local 最终 slot type，并发布到 declaration-site keyed side table
+  - 对 supported declaration 的缺失 scope / scope 类型漂移 / inventory slot 缺失保持 invariant fail-fast
+  - 对 `for` body local、lambda 等不在当前 MVP compile surface 的来源继续 fail-closed，不发布、不补洞
+- 相关事实源与消费面文档已同步：
+  - `frontend_lowering_plan.md` 已把 `slotTypes()` 纳入 future body lowering 的允许消费输入面
+  - `diagnostic_manager.md` 已把 `slotTypes()` 纳入共享 `FrontendAnalysisData` side-table 拓扑
+- 已新增并运行的回归重点：
+  - happy path：
+    - shared semantic pipeline 会发布 parameter 的 declared slot type
+    - supported local `var x := ...` 会发布 backfill 后的最终 slot type，而不是残留 `Variant`
+    - 无 initializer 的显式 typed local 也会稳定发布 slot type
+  - negative path：
+    - unsupported `for` body local 不得被错误发布到 slot-type 表中
+    - supported parameter 若 declaration-site scope 缺失，必须 fail-fast
+    - supported local 若 inventory slot 缺失，必须 fail-fast
+  - 已跑通过：
+    - `FrontendAnalysisDataTest`
+    - `FrontendVarTypePostAnalyzerTest`
+    - `FrontendSemanticAnalyzerFrameworkTest`
+    - `FrontendExprTypeAnalyzerTest`
+
+### 4.10 临时修复：duplicate / shadowing local 必须产生详细诊断并阻止进入 lowering
+
+背景：
+
+- 第九步引入 `slotTypes()` 后，body lowering（第十一步）会把它当作 callable-local slot type 的 lowering-only 真源。
+- 但在语义阶段，duplicate local declaration / shadowing local 的处理很容易出现一种“隐性缺洞”：
+  - `FrontendVariableAnalyzer` 可能会因为重复声明 / shadowing 而拒绝把该 declaration 写入 block inventory（这是合理的语义拒绝）。
+  - 若缺少明确的 user-facing diagnostic，则：
+    - `FrontendVarTypePostAnalyzer` 在“读 inventory → 发布事实”时无法为该 `VariableDeclaration` 发布 slot type
+    - lowering 侧会遇到“缺失 published fact”的问题，但根因其实是用户源代码错误，而不是 lowering bug
+    - 更糟的是：如果 lowering 对缺洞做 fallback（例如回退 `Variant`），就会把 user error 变成 silent miscompile。
+
+目标：
+
+- 对 duplicate / shadowing local 给出详细、可定位的错误诊断（包括：后声明位置、被冲突的既有声明位置、所属 callable / source path）。
+- 这些诊断必须被 `FrontendCompileCheckAnalyzer` 视为 compile-blocking 错误，从而阻止模块进入任何 lowering pass。
+- 对这类脚本，`slotTypes()` 允许保持 fail-closed（不为非法 declaration 补洞），并把缺洞解释为“已被诊断的用户错误”，而不是 phase 边界破坏。
+
+实施内容：
+
+- 在 `FrontendVariableAnalyzer`（或其等价的 callable-local inventory 构建阶段）中：
+  - 当遇到同一 block scope 内重复 local `var` 声明时：
+    - 发出 error 级别 diagnostic（建议 category: `sema.variable` / `sema.variable_inventory`）
+    - 消息必须包含：
+      - 冲突变量名
+      - 当前声明的 range
+      - 既有声明的 range（若可得）
+      - source path
+    - inventory 行为必须明确为 fail-closed：拒绝写入冲突 declaration 的 slot（防止后续对错误源代码继续推导）。
+  - 当遇到“当前支持面内”的 shadowing local（例如同一 callable 的嵌套 block 里重复声明同名 local）时：
+    - 当前 frontend 规则：shadowing 禁止
+    - 必须发出 compile-blocking error（同上），并且 diagnostic 必须明确这是 shadowing（而非同一 block 的 duplicate）
+    - 消息必须包含：
+      - 冲突变量名
+      - shadowing 声明的 range
+      - 被 shadow 的既有声明 range（若可得）
+      - source path
+      - enclosing block / callable 的语义归属（至少能让用户知道“发生在 if-body / while-body / block-statement 之类的哪段”）
+    - inventory 行为必须明确为 fail-closed：shadowing 声明不得写入新的 slot（避免后续语义推导在错误代码上继续展开第二套局部真相）。
+  - LSP / 工具场景兼容性约束：
+    - 即使出现 duplicate / shadowing（属于用户代码错误），frontend 仍必须保持“可分析/可遍历/可发布”的能力：
+      - shared semantic pipeline 必须继续执行后续 phase（top binding / chain binding / expr typing / var type post 等），不得因为缺洞而抛出 invariant 异常中止
+      - 允许对冲突 declaration fail-closed（不发布 slot type），但必须保证：
+        - 不冲突的 parameter / local 仍能正常发布 slot type
+        - 对同名 identifier use-site 的 best-effort 解析不会因为“shadowing declaration 被拒绝入 inventory”而出现 null 绑定导致连锁崩溃
+    - compile-only 路径仍必须保持 fail-closed：`analyzeForCompile(...)` 产出的 `diagnostics.hasErrors() == true` 时，一律禁止进入 lowering。
+- 在 `FrontendCompileCheckAnalyzer`（compile-only gate）中：
+  - 明确把上述诊断归类为 compile-blocking，并要求 lowering 入口以 `analyzeForCompile(...) + !diagnostics.hasErrors()` 作为硬前置条件。
+- 在 `FrontendVarTypePostAnalyzer` 中（只做契约收口，不引入推导）：
+  - 对属于“用户源代码错误导致 inventory 拒绝”的 `VariableDeclaration`：
+    - 保持 fail-closed，不发布、不补洞
+    - 额外发出 `warning` 级别诊断，明确该 declaration 没有 lowering-ready slot type published fact
+  - 对 error-free 且属于 supported inventory surface 的 declaration：
+    - 缺失 slot type 必须继续按 invariant fail-fast（代表 phase 边界破坏，而不是用户错误）。
+
+验收细则：
+
+- happy path：
+  - 现有第九步 `slotTypes()` 的发布事实保持不变（`:=` backfill 仍应发布最终类型）。
+- negative path：
+  - `func foo(): var x := 1; var x := 2`：
+    - 必须产生 error 级别 diagnostic（包含两处声明位置信息）
+    - `analyzeForCompile(...)` 后 `diagnostics.hasErrors() == true`
+    - lowering pipeline（含任何 cfg pass / body lowering）不得被调用
+  - `func foo(): if cond: var x := 1; var x := 2`（shadowing 禁止）：
+    - 必须产生 shadowing 错误诊断，并给出被 shadow 的既有声明位置
+    - `analyzeForCompile(...)` 后 `diagnostics.hasErrors() == true`
+    - 仍必须阻止进入 lowering
+    - shared semantic pipeline 仍必须能完成分析并产出 best-effort facts（例如参数 slot type、未冲突 locals 的 slot type），不得因缺洞 crash
+
+当前状态（2026-04-02）：
+
+- 已完成。
+- `FrontendVariableAnalyzer` 现在会对 duplicate / shadowing local 发布详细 `sema.variable_binding` error：
+  - message 同时携带当前声明位置、既有声明位置、source path，以及 `function` / `if-body` 等语义归属
+  - inventory 仍保持 fail-closed：冲突 declaration 不写入新的 slot，不污染既有 binding
+- compile-only / lowering 路径已收口到统一前置条件：
+  - `analyzeForCompile(...)` 后只要 `diagnostics.hasErrors() == true`，就必须阻止进入 lowering
+  - duplicate / shadowing local 不再依赖额外 `sema.compile_check` 才能挡下；root cause 继续保留在 variable phase
+- `FrontendVarTypePostAnalyzer` 与 shared semantic pipeline 已对这类错误脚本保持 best-effort：
+  - 合法 parameter / local 仍可继续发布到 `slotTypes()`
+  - 冲突 declaration 保持 fail-closed，不发布 slot type，也不会因为缺洞触发 invariant crash
+  - 同时额外发出 `sema.variable_slot_publication` warning，明确 lowering-only fact 缺洞的位置与上下文
+  - 对 shadowing local，warning 还会沿当前 callable 的父 block / callable scope 追溯幸存绑定，并在 message 中给出其语义类别与声明位置
+- 已新增并运行的回归重点：
+  - `FrontendVariableAnalyzerTest`
+    - duplicate local diagnostic 包含两处声明位置、callable/block 归属、source path
+    - shadowing parameter / outer local diagnostic 同样携带详细定位信息
+  - `FrontendVarTypePostAnalyzerTest`
+    - duplicate / shadowing local 都会额外触发 `sema.variable_slot_publication` warning
+    - shared semantic pipeline 在 shadowing local 脚本上仍能发布未冲突 declaration 的 slot type，并对冲突 declaration 保持 fail-closed
+  - `FrontendCompileCheckAnalyzerTest`
+    - `analyzeForCompile(...)` 会把已登记为 non-error blocker 的 `sema.variable_slot_publication` warning + 缺失 `slotTypes()` 升级成 `sema.compile_check` error
+    - 相关“允许与 compile_check 共存”的 upstream category 现在通过静态配置维护，不再写死在单独分支中
+  - `FrontendLoweringAnalysisPassTest`
+    - lowering pipeline 会在 variable conflict 后立即 stop，后续 lowering pass 不会被调用
+    - stop 前 diagnostics 中会同时保留 earlier variable diagnostic、slot-publication warning 与 compile-check error
+
+### 4.11 第十一步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
 实施内容：
 
@@ -838,7 +1028,7 @@ frontend CFG builder 需要显式维护 loop stack。
 - body lowering 只允许消费：
   - `frontendCfgGraph`
   - `frontendCfgRegions`
-  - `analysisData` 中已发布的 `symbolBindings()` / `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`
+  - `analysisData` 中已发布的 `symbolBindings()` / `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`
 - body lowering 不得重新做：
   - chain reduction
   - bare call overload 选择
@@ -867,9 +1057,9 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 `FrontendLoweringBodyInsnPass` 遇到 declaration / assignment / call item 时再回到原 statement/expression AST 做第二套递归 lower
   - 不允许 lowering 自己补做语义路由推导来绕过缺失的 published fact
   - 不允许 body lowering 依赖“一个 value id 只有一个 producer”的假设去处理 merge result
-  - 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
+- 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
 
-### 4.10 第十步：移除 legacy block-bundle 与过渡 pass
+### 4.12 第十二步：移除 legacy block-bundle 与过渡 pass
 
 实施内容：
 
@@ -918,6 +1108,11 @@ frontend CFG builder 需要显式维护 loop stack。
 - `FrontendCompileCheckAnalyzerTest`
   - `resolvedCalls()` 的 AST key contract 与 compile gate 描述保持一致
   - `ConditionalExpression` 继续 compile-block
+- `FrontendVarTypePostAnalyzerTest`
+  - `var x := 1` 的 local slot type 被发布为 backfill 后的稳定类型（例如 `int`），不得残留 `Variant`
+  - `var x: int`（无 initializer）仍必须发布 `int` slot type
+  - parameter slot type 被发布（例如 `func foo(seed: int)`）
+  - 负例：supported declaration 缺失 scope/inventory 时必须 invariant fail-fast，不允许 silent drop
 - `FrontendLoweringBodyInsnPassTest`
   - body lowering 只消费 graph + published facts
   - declaration / assignment / call 不会触发二次 AST 递归 lower
@@ -966,7 +1161,21 @@ frontend CFG builder 需要显式维护 loop stack。
 - 尽早把执行语义迁移到显式 value-op item
 - 保持“child 先产出 value id，parent item 只消费 value id”的单向 contract
 
-### 6.3 bare `CallExpression` 的 call fact 发布面继续缺口化
+### 6.3 callable-local slot type 未发布导致语义与 lowering 漂移
+
+风险：
+
+- supported local `:=` 的 inferred-type backfill 当前只落在 `BlockScope` inventory 内部，并未通过 published fact 暴露给 lowering
+- future body lowering 按计划必须只消费 published facts，因此：
+  - 若没有 slot-type 发布面，lowering 只能把 `var x := 1` 当作 `Variant` 或回退二次推导
+  - 这会导致 operator path / call route / assignment legality 在“语义诊断结果”与“实际 lowering 产物”之间出现漂移
+
+缓解：
+
+- 引入第九步 `FrontendVarTypePostAnalyzer` + `FrontendAnalysisData.slotTypes()` published 表
+- 强制 `:=` backfill 的最终 slot type 作为 lowering-only 输入被稳定发布，并禁止 lowering 读取 `scopesByAst`
+
+### 6.4 bare `CallExpression` 的 call fact 发布面继续缺口化
 
 风险：
 
@@ -977,7 +1186,7 @@ frontend CFG builder 需要显式维护 loop stack。
 - 把 bare `CallExpression` 纳入正式 `resolvedCalls()` published 面
 - 同步更新 compile gate、inspection tool 与 lowering 文档，避免 contract 漂移
 
-### 6.4 用 ASTWalker 直接实现控制流构图
+### 6.5 用 ASTWalker 直接实现控制流构图
 
 风险：
 
@@ -993,7 +1202,7 @@ frontend CFG builder 需要显式维护 loop stack。
 - 保持显式状态机构图器
 - 允许局部复用 AST 访问帮助函数，但不要把核心构图逻辑改写成 generic walker callback
 
-### 6.5 过早解除 `ConditionalExpression`
+### 6.6 过早解除 `ConditionalExpression`
 
 风险：
 
@@ -1004,7 +1213,7 @@ frontend CFG builder 需要显式维护 loop stack。
 - 继续维持 compile gate
 - 直到 condition region、value-op contract 与 value merge 合同一起冻结后再解封
 
-### 6.6 property initializer / parameter default 过早接入
+### 6.7 property initializer / parameter default 过早接入
 
 风险：
 

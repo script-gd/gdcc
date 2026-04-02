@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
@@ -8,12 +9,14 @@ import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendAstSideTable;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionType;
 import dev.superice.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
@@ -55,6 +58,7 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -72,6 +76,18 @@ import java.util.Set;
 /// - no new side tables and no rewrites of upstream semantic ownership
 public class FrontendCompileCheckAnalyzer {
     private static final @NotNull String COMPILE_CHECK_CATEGORY = "sema.compile_check";
+    /// Some upstream diagnostics explain a lowering-only gap instead of competing with the compile
+    /// gate's own hard-stop diagnostic. Those categories stay configurable here so future warning-
+    /// based blockers do not need another dedicated ignore-upstream branch.
+    private static final @NotNull Map<String, String> NON_CONFLICTING_UPSTREAM_DIAGNOSTIC_CATEGORIES = Map.of(
+            FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY,
+            "slot-publication warning explains the missing lowering-ready fact and must coexist with compile_check"
+    );
+    /// Compile mode usually blocks only on upstream `ERROR`s. This set is the narrow exception list
+    /// for already-published non-error diagnostics that still represent a lowering-blocking gap.
+    private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
+            FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+    );
 
     public void analyze(
             @NotNull FrontendAnalysisData analysisData,
@@ -101,6 +117,7 @@ public class FrontendCompileCheckAnalyzer {
                     analysisData.expressionTypes(),
                     analysisData.resolvedMembers(),
                     analysisData.resolvedCalls(),
+                    analysisData.slotTypes(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -171,6 +188,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
         private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
         private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
+        private final @NotNull FrontendAstSideTable<GdType> slotTypes;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -184,6 +202,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
                 @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
                 @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
+                @NotNull FrontendAstSideTable<GdType> slotTypes,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -195,6 +214,7 @@ public class FrontendCompileCheckAnalyzer {
             this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
             this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
+            this.slotTypes = Objects.requireNonNull(slotTypes, "slotTypes must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
         }
@@ -292,11 +312,13 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull VariableDeclaration variableDeclaration
         ) {
             if (supportedExecutableBlockDepth > 0) {
-                if (variableDeclaration.kind() != DeclarationKind.VAR || variableDeclaration.value() == null) {
+                if (variableDeclaration.kind() != DeclarationKind.VAR) {
                     return FrontendASTTraversalDirective.SKIP_CHILDREN;
                 }
                 markCompileSurfaceNode(variableDeclaration);
-                walkExpression(variableDeclaration.value());
+                if (variableDeclaration.value() != null) {
+                    walkExpression(variableDeclaration.value());
+                }
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (isStaticClassPropertyDeclaration(variableDeclaration)) {
@@ -463,6 +485,7 @@ public class FrontendCompileCheckAnalyzer {
             scanExpressionTypeCompileBlocks();
             scanResolvedMemberCompileBlocks();
             scanResolvedCallCompileBlocks();
+            scanSlotTypeCompileBlocks();
         }
 
         private void scanExpressionTypeCompileBlocks() {
@@ -519,6 +542,35 @@ public class FrontendCompileCheckAnalyzer {
                                 publishedCall.status(),
                                 publishedCall.detailReason()
                         )
+                );
+            }
+        }
+
+        /// Callable-local slot types are a lowering-only published fact. When the post analyzer had
+        /// to warn that a supported declaration could not publish its slot type, compile mode must
+        /// still stop even if the original publication issue was only emitted as a warning.
+        private void scanSlotTypeCompileBlocks() {
+            for (var compileSurfaceNode : compileSurfaceNodes) {
+                if (!(compileSurfaceNode instanceof VariableDeclaration variableDeclaration)) {
+                    continue;
+                }
+                if (!isSupportedCallableLocalDeclaration(variableDeclaration) || slotTypes.containsKey(variableDeclaration)) {
+                    continue;
+                }
+                var publicationDiagnostic = findPublishedDiagnosticAt(
+                        variableDeclaration,
+                        diagnostic -> diagnostic.severity() != FrontendDiagnosticSeverity.ERROR
+                                && NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category())
+                );
+                if (publicationDiagnostic == null) {
+                    continue;
+                }
+                // The upstream warning explains why `slotTypes()` is missing, while compile mode
+                // still needs its own final hard stop before lowering starts.
+                reportCompileBlock(
+                        variableDeclaration,
+                        slotTypeCompileBlockedMessage(variableDeclaration, publicationDiagnostic),
+                        isNonConflictingPublishedDiagnostic(publicationDiagnostic)
                 );
             }
         }
@@ -583,12 +635,20 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         private void reportCompileBlock(@NotNull Node anchor, @NotNull String message) {
+            reportCompileBlock(anchor, message, false);
+        }
+
+        private void reportCompileBlock(
+                @NotNull Node anchor,
+                @NotNull String message,
+                boolean skipPublishedConflictDedup
+        ) {
             Objects.requireNonNull(anchor, "anchor must not be null");
             Objects.requireNonNull(message, "message must not be null");
             if (!handledAnchors.add(anchor)) {
                 return;
             }
-            if (hasPublishedErrorAt(anchor)) {
+            if (!skipPublishedConflictDedup && hasPublishedConflictingDiagnosticAt(anchor)) {
                 return;
             }
             diagnosticManager.error(
@@ -599,13 +659,44 @@ public class FrontendCompileCheckAnalyzer {
             );
         }
 
-        private boolean hasPublishedErrorAt(@NotNull Node anchor) {
+        private boolean hasPublishedConflictingDiagnosticAt(@NotNull Node anchor) {
+            return findPublishedDiagnosticAt(
+                    anchor,
+                    diagnostic -> isCompileBlockingPublishedDiagnostic(diagnostic)
+                            && !isNonConflictingPublishedDiagnostic(diagnostic)
+            ) != null;
+        }
+
+        private @Nullable FrontendDiagnostic findPublishedDiagnosticAt(
+                @NotNull Node anchor,
+                @NotNull java.util.function.Predicate<FrontendDiagnostic> predicate
+        ) {
             var anchorRange = FrontendRange.fromAstRange(anchor.range());
-            return publishedDiagnostics.asList().stream().anyMatch(diagnostic ->
-                    diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                            && Objects.equals(diagnostic.sourcePath(), sourcePath)
-                            && Objects.equals(diagnostic.range(), anchorRange)
-            );
+            return publishedDiagnostics.asList().stream()
+                    .filter(diagnostic -> Objects.equals(diagnostic.sourcePath(), sourcePath))
+                    .filter(diagnostic -> Objects.equals(diagnostic.range(), anchorRange))
+                    .filter(predicate)
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        private boolean isCompileBlockingPublishedDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
+            return diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                    || NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES.contains(diagnostic.category());
+        }
+
+        private boolean isNonConflictingPublishedDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
+            return NON_CONFLICTING_UPSTREAM_DIAGNOSTIC_CATEGORIES.containsKey(diagnostic.category());
+        }
+
+        private static @NotNull String slotTypeCompileBlockedMessage(
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull FrontendDiagnostic publicationDiagnostic
+        ) {
+            return "Local variable '"
+                    + variableDeclaration.name().trim()
+                    + "' is missing a lowering-ready published slot type in compile mode: "
+                    + publicationDiagnostic.message();
         }
 
         private void markCompileSurfaceNode(@NotNull Node node) {
@@ -616,6 +707,12 @@ public class FrontendCompileCheckAnalyzer {
             return Objects.requireNonNull(variableDeclaration, "variableDeclaration must not be null").kind() == DeclarationKind.VAR
                     && variableDeclaration.isStatic()
                     && scopesByAst.get(variableDeclaration) instanceof ClassScope;
+        }
+
+        private boolean isSupportedCallableLocalDeclaration(@NotNull VariableDeclaration variableDeclaration) {
+            return variableDeclaration.kind() == DeclarationKind.VAR
+                    && scopesByAst.get(variableDeclaration) instanceof dev.superice.gdcc.frontend.scope.BlockScope blockScope
+                    && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
         }
 
         private boolean isNotPublished(@Nullable Node node) {

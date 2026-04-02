@@ -17,6 +17,7 @@
   - top binding 负责 bare `TYPE_META` ordinary-value misuse 的首条 `sema.binding`
   - chain binding 负责 `sema.member_resolution` / `sema.call_resolution` / chain deferred/unsupported boundary
   - expr analyzer 负责 `sema.expression_resolution` / `sema.deferred_expression_resolution` / `sema.unsupported_expression_route` / `sema.discarded_expression`
+  - var-type-post analyzer 负责 `sema.variable_slot_publication`
   - type-check analyzer 负责 `sema.type_check` / `sema.type_hint`
   - annotation-usage analyzer 负责 `sema.annotation_usage`
   - loop-control analyzer 负责 `sema.loop_control_flow`
@@ -26,6 +27,8 @@
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
 - compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
+- compile-only gate 还必须检查 lowering-only published fact 的缺洞：若 supported callable-local `var` 因已登记为 non-error blocker 的 diagnostic（当前为 `sema.variable_slot_publication`）仍缺少 `slotTypes()`，compile gate 必须补发 `sema.compile_check` error 并阻止进入 lowering。
+- compile-only gate 的去重规则不得继续写死单个 category；哪些 upstream diagnostic 与 `sema.compile_check` 不冲突、因此允许共存，必须通过静态 category 配置维护。
 - `assert` 在共享语义路径中继续沿用 Godot-compatible condition contract；compile-only `FrontendCompileCheckAnalyzer` 只是暂时阻断 statement 自身，不得把它回退成 `sema.type_check` 或 grammar unsupported。
 - 脚本类 `static var` 当前属于“frontend 已识别但 compile target 明确不接受”的 declaration-level compile boundary；共享语义可继续发布 metadata，但 compile-only gate 必须在进入 lowering/backend 前显式封口。
 - `ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression` 当前属于 frontend 已识别但 lowering 尚未就绪的 temporary compile intercept；共享语义路径可以继续发布 deferred/unstable facts，但 compile-only gate 必须在进入 lowering 前最终封口。

@@ -147,6 +147,63 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileTreatsVariableInventoryErrorsAsCompileBlockingWithoutSynthesizingCompileCheckDuplicates()
+            throws Exception {
+        var compiled = analyzeForCompile("compile_check_duplicate_local.gd", """
+                class_name CompileCheckDuplicateLocal
+                extends RefCounted
+                
+                func ping():
+                    var value := 1
+                    var value := 2
+                    return value
+                """);
+
+        var variableDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.variable_binding");
+        var slotPublicationWarnings = diagnosticsByCategory(
+                compiled.diagnostics(),
+                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+        );
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, variableDiagnostics.size());
+        assertTrue(variableDiagnostics.getFirst().message().contains("Duplicate local variable 'value'"));
+        assertTrue(variableDiagnostics.getFirst().message().contains(Path.of("tmp", "compile_check_duplicate_local.gd").toString()));
+        assertEquals(1, slotPublicationWarnings.size());
+        assertTrue(slotPublicationWarnings.getFirst().message().contains("has no lowering-ready published slot type"));
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("missing a lowering-ready published slot type"));
+    }
+
+    @Test
+    void analyzeForCompileEscalatesShadowingLocalSlotTypeWarningIntoCompileBlock() throws Exception {
+        var compiled = analyzeForCompile("compile_check_shadowing_local.gd", """
+                class_name CompileCheckShadowingLocal
+                extends RefCounted
+                
+                func ping(seed: int):
+                    var value := seed
+                    if seed > 0:
+                        var value := 1
+                    return value
+                """);
+
+        var slotPublicationWarnings = diagnosticsByCategory(
+                compiled.diagnostics(),
+                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+        );
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, slotPublicationWarnings.size());
+        assertTrue(slotPublicationWarnings.getFirst().message().contains("if-body of function 'ping'"));
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Local variable 'value'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("missing a lowering-ready published slot type"));
+    }
+
+    @Test
     void analyzeForCompileBlocksStaticPropertyDeclarationsWhileAnalyzeLeavesSharedDiagnosticsUntouched() throws Exception {
         var source = """
                 class_name CompileCheckStaticPropertyDeclaration

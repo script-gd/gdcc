@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.scope.Scope;
+import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -23,6 +24,7 @@ public final class FrontendAnalysisData {
     private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
     private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
     private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
+    private final @NotNull FrontendAstSideTable<GdType> slotTypes;
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
@@ -30,7 +32,8 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
             @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
             @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
-            @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls
+            @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
+            @NotNull FrontendAstSideTable<GdType> slotTypes
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
@@ -38,11 +41,16 @@ public final class FrontendAnalysisData {
         this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
         this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
         this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
+        this.slotTypes = Objects.requireNonNull(
+                slotTypes,
+                "slotTypes must not be null"
+        );
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
     public static @NotNull FrontendAnalysisData bootstrap() {
         return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -84,6 +92,14 @@ public final class FrontendAnalysisData {
         replaceSideTableContents(this.resolvedCalls, resolvedCalls, "resolvedCalls");
     }
 
+    public void updateSlotTypes(@NotNull FrontendAstSideTable<GdType> slotTypes) {
+        replaceSideTableContents(
+                this.slotTypes,
+                slotTypes,
+                "slotTypes"
+        );
+    }
+
     public @NotNull FrontendModuleSkeleton moduleSkeleton() {
         return requirePublished(moduleSkeleton, "moduleSkeleton");
     }
@@ -114,6 +130,10 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls() {
         return resolvedCalls;
+    }
+
+    public @NotNull FrontendAstSideTable<GdType> slotTypes() {
+        return slotTypes;
     }
 
     private <T> @NotNull T requirePublished(@Nullable T value, @NotNull String fieldName) {

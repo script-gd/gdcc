@@ -29,6 +29,7 @@
 - `FrontendCfgGraph.BranchNode.conditionRoot` 现在固定表示“当前 branch 直接测试的 condition fragment root”；它必须对齐 `conditionValueId` 的直接 producer subtree，而不是笼统复用外围 source-level condition root，也不能再把 `conditionValueId` 当成可全图反推唯一 producer item 的句柄
 - short-circuit lowering 现在要求每个 `BranchNode.conditionValueId` 都保持为该 fragment 的 branch-local 独立 value id；value-context `and` / `or` 的 outward-facing merged result value id 已单独建模，不能反向复用为 branch condition id
 - frontend CFG value id 现在额外冻结了 merge-slot 合同：一个 value id 若出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；future producer collection 与 body lowering 不得把这类 merged result 当成唯一 SSA expression definition
+- callable-local slot type 现在也已进入 published fact 面：`FrontendVarTypePostAnalyzer` 会把 parameter / supported local `var` 的最终 slot type 写入 `FrontendAnalysisData.slotTypes()`，供 future body lowering 直接消费
 - condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径，`ConditionalExpression` 仍保留 compile gate + builder fail-fast 边界
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
@@ -169,6 +170,7 @@
   - `resolvedMembers`
   - `resolvedCalls`
   - `expressionTypes`
+  - `slotTypes`
 - 不在 lowering 中重新推导语义
 - 对同一个 result value id 的 producer 查询必须支持多出处；若 value id 由多个 `MergeValueItem` 共同写入，body lowering 必须把它视为“merge slot / 变量槽写入”，而不是单个 SSA 表达式节点
 - property initializer 的 expression lowering 应通过其 `PROPERTY_INIT` context 驱动，并最终写入对应 `init_func` 的函数体，而不是作为 callable body lowering 之外的常驻特例

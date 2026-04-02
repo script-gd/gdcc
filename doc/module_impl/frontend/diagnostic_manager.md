@@ -129,6 +129,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `expressionTypes`
 - `resolvedMembers`
 - `resolvedCalls`
+- `slotTypes`
 
 其中：
 
@@ -136,6 +137,7 @@ frontend 当前已经冻结的诊断承载方式如下：
 - `symbolBindings` 已由 `FrontendTopBindingAnalyzer` 稳定发布
 - `resolvedMembers` / `resolvedCalls` 已由 `FrontendChainBindingAnalyzer` MVP 发布
 - `expressionTypes` 已由 `FrontendExprTypeAnalyzer` 稳定发布，并承担 expression-only 恢复状态的 side-table 真源
+- `slotTypes` 已由 `FrontendVarTypePostAnalyzer` 稳定发布，并承担 callable-local parameter/local 最终 slot type 的 lowering-only published fact 真源
 
 ### 2.6 `SkeletonBuildContext` 只服务于 skeleton phase
 
@@ -181,6 +183,10 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.class_skeleton`
 - `sema.inheritance_cycle`
 - `sema.type_resolution`
+- `sema.variable_binding`
+- `sema.unsupported_parameter_default_value`
+- `sema.unsupported_variable_inventory_subtree`
+- `sema.variable_slot_publication`
 - `sema.binding`
 - `sema.unsupported_binding_subtree`
 - `sema.member_resolution`
@@ -199,6 +205,17 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 其中 body/binding phase 新增 category 的语义固定为：
 
+- `sema.variable_binding`
+  - variable analyzer 对 duplicate parameter、duplicate local、same-callable local shadowing、scope kind mismatch 发出的恢复性 source error
+  - duplicate / shadowing local 的消息现在必须包含：当前声明位置、冲突声明位置、callable / block 归属、source path
+- `sema.unsupported_parameter_default_value`
+  - variable analyzer 对 parameter default value 当前尚未接线时发出的 feature-boundary error
+- `sema.unsupported_variable_inventory_subtree`
+  - variable analyzer 对 lambda / `for` / `match` / block-local `const` inventory 边界发出的 feature-boundary error
+- `sema.variable_slot_publication`
+  - var-type-post analyzer 对 supported callable-local `var` 因 earlier duplicate/shadowing reject 而无法发布 `slotTypes()` 时发出的 warning
+  - warning message 若能在当前 callable 边界内找到幸存的 accepted local / parameter / capture，必须带出该幸存绑定的语义类别与声明位置
+  - 该 warning 允许与 earlier `sema.variable_binding` 共存；compile-only gate 必须把“warning + 缺失 slot type”升级为 compile-blocking `sema.compile_check`
 - `sema.binding`
   - top binding 命中的 blocked / unknown / shadowing 诊断
 - `sema.unsupported_binding_subtree`
@@ -239,6 +256,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 同时覆盖：
     - 当前首批显式封口的 `assert`、`ConditionalExpression`、`ArrayExpression`、`DictionaryExpression`、`PreloadExpression`、`GetNodeExpression`、`CastExpression`、`TypeTestExpression`
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
+    - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
   - 上述 7 类表达式属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层

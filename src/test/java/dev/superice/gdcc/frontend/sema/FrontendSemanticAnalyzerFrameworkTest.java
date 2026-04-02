@@ -15,6 +15,7 @@ import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendVarTypePostAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import dev.superice.gdcc.frontend.scope.BlockScope;
 import dev.superice.gdcc.frontend.scope.CallableScope;
@@ -129,6 +130,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNotNull(localBinding);
         assertEquals(GdVariantType.VARIANT, localBinding.type());
         assertEquals(ScopeValueKind.LOCAL, localBinding.kind());
+        assertEquals(GdVariantType.VARIANT, result.slotTypes().get(pingFunction.parameters().getFirst()));
+        assertEquals(
+                GdVariantType.VARIANT,
+                result.slotTypes().get(findVariable(pingFunction.body().statements(), "local"))
+        );
         var localInitializerUseSite = assertInstanceOf(
                 IdentifierExpression.class,
                 findVariable(pingFunction.body().statements(), "local").value()
@@ -530,6 +536,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var probeTopBindingAnalyzer = new RecordingTopBindingAnalyzer();
         var probeChainBindingAnalyzer = new RecordingChainBindingAnalyzer();
         var probeExprTypeAnalyzer = new RecordingExprTypeAnalyzer();
+        var probeVarTypePostAnalyzer = new RecordingVarTypePostAnalyzer();
         var probeAnnotationUsageAnalyzer = new RecordingAnnotationUsageAnalyzer();
         var probeTypeCheckAnalyzer = new RecordingTypeCheckAnalyzer();
         var probeLoopControlFlowAnalyzer = new RecordingLoopControlFlowAnalyzer();
@@ -540,9 +547,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 probeTopBindingAnalyzer,
                 probeChainBindingAnalyzer,
                 probeExprTypeAnalyzer,
+                probeVarTypePostAnalyzer,
                 probeAnnotationUsageAnalyzer,
                 probeTypeCheckAnalyzer,
-                probeLoopControlFlowAnalyzer
+                probeLoopControlFlowAnalyzer,
+                new FrontendCompileCheckAnalyzer()
         );
 
         var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
@@ -570,8 +579,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeExprTypeAnalyzer.preExprTypeDiagnosticsMatchedManager);
         assertTrue(probeExprTypeAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeExprTypeAnalyzer.expressionTypePublicationClearedProbeEntry);
+        assertTrue(probeVarTypePostAnalyzer.invoked);
+        assertTrue(probeVarTypePostAnalyzer.exprTypeBoundaryPublished);
+        assertTrue(probeVarTypePostAnalyzer.preVarTypePostDiagnosticsMatchedManager);
+        assertTrue(probeVarTypePostAnalyzer.stableSlotTypesReferencePreserved);
+        assertTrue(probeVarTypePostAnalyzer.slotTypePublicationClearedProbeEntry);
         assertTrue(probeAnnotationUsageAnalyzer.invoked);
-        assertTrue(probeAnnotationUsageAnalyzer.exprTypeBoundaryPublished);
+        assertTrue(probeAnnotationUsageAnalyzer.varTypeBoundaryPublished);
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnosticsMatchedManager);
         assertTrue(probeAnnotationUsageAnalyzer.stableAnnotationsReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.invoked);
@@ -609,10 +623,17 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertEquals(
                 probeExprTypeAnalyzer.preExprTypeDiagnostics.size() + 1,
+                probeVarTypePostAnalyzer.preVarTypePostDiagnostics.size()
+        );
+        assertTrue(probeVarTypePostAnalyzer.preVarTypePostDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.expr_type_phase_probe")
+        ));
+        assertEquals(
+                probeVarTypePostAnalyzer.preVarTypePostDiagnostics.size() + 1,
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size()
         );
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.expr_type_phase_probe")
+                diagnostic.category().equals("sema.var_type_post_phase_probe")
         ));
         assertEquals(
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size() + 1,
@@ -645,6 +666,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 diagnostic.category().equals("sema.expr_type_phase_probe")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.var_type_post_phase_probe")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
@@ -657,6 +681,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
+        assertFalse(result.slotTypes().isEmpty());
     }
 
     @Test
@@ -1358,9 +1383,49 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    private static final class RecordingAnnotationUsageAnalyzer extends FrontendAnnotationUsageAnalyzer {
+    private static final class RecordingVarTypePostAnalyzer extends FrontendVarTypePostAnalyzer {
         private boolean invoked;
         private boolean exprTypeBoundaryPublished;
+        private boolean preVarTypePostDiagnosticsMatchedManager;
+        private boolean stableSlotTypesReferencePreserved;
+        private boolean slotTypePublicationClearedProbeEntry;
+        private DiagnosticSnapshot preVarTypePostDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preVarTypePostDiagnostics = analysisData.diagnostics();
+            preVarTypePostDiagnosticsMatchedManager = preVarTypePostDiagnostics.equals(diagnosticManager.snapshot());
+            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty();
+            var publishedSlotTypes = analysisData.slotTypes();
+            var probeNode = new PassStatement(SYNTHETIC_RANGE);
+            publishedSlotTypes.put(probeNode, GdVariantType.VARIANT);
+
+            super.analyze(analysisData, diagnosticManager);
+
+            stableSlotTypesReferencePreserved = publishedSlotTypes == analysisData.slotTypes();
+            slotTypePublicationClearedProbeEntry = !analysisData.slotTypes().containsKey(probeNode)
+                    && !analysisData.slotTypes().isEmpty();
+            diagnosticManager.warning(
+                    "sema.var_type_post_phase_probe",
+                    "var-type-post phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingAnnotationUsageAnalyzer extends FrontendAnnotationUsageAnalyzer {
+        private boolean invoked;
+        private boolean varTypeBoundaryPublished;
         private boolean preAnnotationUsageDiagnosticsMatchedManager;
         private boolean stableAnnotationsReferencePreserved;
         private DiagnosticSnapshot preAnnotationUsageDiagnostics;
@@ -1375,12 +1440,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
             preAnnotationUsageDiagnostics = analysisData.diagnostics();
             preAnnotationUsageDiagnosticsMatchedManager =
                     preAnnotationUsageDiagnostics.equals(diagnosticManager.snapshot());
-            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+            varTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
                     .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
                     && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty();
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
             var publishedAnnotations = analysisData.annotationsByAst();
 
             super.analyze(classRegistry, analysisData, diagnosticManager);
@@ -1417,7 +1483,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
                     && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty();
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
             var publishedExpressionTypes = analysisData.expressionTypes();
 
             super.analyze(classRegistry, analysisData, diagnosticManager);
@@ -1453,7 +1520,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
                     && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty();
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
             super.analyze(analysisData, diagnosticManager);
             diagnosticManager.warning(
                     "sema.loop_control_flow_phase_probe",

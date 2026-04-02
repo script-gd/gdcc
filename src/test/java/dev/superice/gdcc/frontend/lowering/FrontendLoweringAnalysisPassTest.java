@@ -4,6 +4,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendVarTypePostAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
@@ -95,17 +96,6 @@ class FrontendLoweringAnalysisPassTest {
                                 static var shared := 1
                                 """,
                         "Static property 'shared'"
-                ),
-                new CompileBlockedCase(
-                        "lowering_blocked_short_circuit.gd",
-                        """
-                                class_name LoweringBlockedShortCircuit
-                                extends RefCounted
-                                
-                                func ping(left, right):
-                                    return left and right
-                                """,
-                        "Short-circuit binary operator 'and'"
                 )
         )) {
             var module = parseModule(testCase.fileName(), testCase.source());
@@ -130,6 +120,49 @@ class FrontendLoweringAnalysisPassTest {
                     testCase.fileName()
             );
         }
+    }
+
+    @Test
+    void lowerVariableConflictModuleStopsAfterAnalysisPassBeforeAnyLoweringPassRuns() throws Exception {
+        var module = parseModule(
+                "lowering_blocked_duplicate_local.gd",
+                """
+                        class_name LoweringBlockedDuplicateLocal
+                        extends RefCounted
+                        
+                        func ping():
+                            var value := 1
+                            var value := 2
+                            return value
+                        """
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var continuationRan = new AtomicBoolean();
+        var manager = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                _ -> continuationRan.set(true)
+        ));
+
+        var lowered = manager.lower(module, registry, diagnostics);
+        var compileDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .toList();
+        var variableDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.variable_binding"))
+                .toList();
+        var slotPublicationWarnings = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY))
+                .toList();
+
+        assertNull(lowered);
+        assertFalse(continuationRan.get());
+        assertTrue(diagnostics.hasErrors());
+        assertEquals(1, variableDiagnostics.size());
+        assertEquals(1, slotPublicationWarnings.size());
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(variableDiagnostics.getFirst().message().contains("Duplicate local variable 'value'"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("missing a lowering-ready published slot type"));
     }
 
     private static @NotNull FrontendModule parseModule(

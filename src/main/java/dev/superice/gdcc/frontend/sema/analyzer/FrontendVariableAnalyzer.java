@@ -105,6 +105,7 @@ public class FrontendVariableAnalyzer {
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull UnsupportedVariableBoundaryReporter unsupportedBoundaryReporter;
+        private @Nullable Node currentCallableOwner;
         /// Counts how many supported executable-block boundaries the walker is currently inside.
         ///
         /// The counter acts as a narrow capability flag rather than a generic nesting metric:
@@ -275,14 +276,20 @@ public class FrontendVariableAnalyzer {
             if (isNotPublished(callableOwner)) {
                 return;
             }
-            for (var parameter : parameters) {
-                bindParameter(parameter);
+            var previousCallableOwner = currentCallableOwner;
+            currentCallableOwner = callableOwner;
+            try {
+                for (var parameter : parameters) {
+                    bindParameter(parameter);
+                }
+                if (isNotPublished(body)) {
+                    return;
+                }
+                unsupportedBoundaryReporter.report(body);
+                walkSupportedExecutableBlock(body);
+            } finally {
+                currentCallableOwner = previousCallableOwner;
             }
-            if (isNotPublished(body)) {
-                return;
-            }
-            unsupportedBoundaryReporter.report(body);
-            walkSupportedExecutableBlock(body);
         }
 
         private void walkStatements(@NotNull List<Statement> statements) {
@@ -383,30 +390,13 @@ public class FrontendVariableAnalyzer {
 
             var existingLocal = blockScope.resolveValueHere(variableName);
             if (existingLocal != null) {
-                reportBindingError(variableDeclaration, switch (existingLocal.kind()) {
-                    case LOCAL -> "Duplicate local variable '" + variableName + "' in the same block";
-                    case CONSTANT -> "Local variable '" + variableName + "' conflicts with existing block constant '"
-                            + variableName + "'";
-                    default -> "Local variable '" + variableName + "' conflicts with existing block binding '"
-                            + variableName + "'";
-                });
+                reportLocalConflict(variableDeclaration, blockScope, existingLocal, false);
                 return;
             }
 
             var sameCallableConflict = findSameCallableConflict(blockScope, variableName);
             if (sameCallableConflict != null) {
-                reportBindingError(variableDeclaration, switch (sameCallableConflict.kind()) {
-                    case PARAMETER -> "Local variable '" + variableName + "' shadows parameter '" + variableName
-                            + "' in the same callable";
-                    case CAPTURE -> "Local variable '" + variableName + "' shadows capture '" + variableName
-                            + "' in the same callable";
-                    case LOCAL -> "Local variable '" + variableName + "' shadows outer local '" + variableName
-                            + "' in the same callable";
-                    case CONSTANT -> "Local variable '" + variableName + "' shadows outer constant '" + variableName
-                            + "' in the same callable";
-                    default -> "Local variable '" + variableName
-                            + "' conflicts with existing callable-local binding '" + variableName + "'";
-                });
+                reportLocalConflict(variableDeclaration, blockScope, sameCallableConflict, true);
                 return;
             }
 
@@ -425,6 +415,89 @@ public class FrontendVariableAnalyzer {
                         "Duplicate local variable '" + variableName + "' in the same block"
                 );
             }
+        }
+
+        /// Duplicate and shadowing locals are user-facing source errors rather than phase
+        /// invariants. The message therefore carries both declaration locations plus the callable /
+        /// block context so compile-only callers can stop before lowering while shared analysis keeps
+        /// processing unaffected facts.
+        private void reportLocalConflict(
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull BlockScope blockScope,
+                @NotNull ScopeValue conflictingBinding,
+                boolean shadowing
+        ) {
+            var variableName = variableDeclaration.name().trim();
+            var currentRange = FrontendRange.fromAstRange(variableDeclaration.range());
+            var conflictingDeclaration = conflictingBinding.declaration();
+            var conflictingRange = conflictingDeclaration instanceof Node conflictingNode
+                    ? FrontendRange.fromAstRange(conflictingNode.range())
+                    : null;
+            var message = shadowing
+                    ? "Local variable '%s' in %s shadows %s; shadowing declaration is at %s and the earlier declaration is at %s in %s"
+                      .formatted(
+                              variableName,
+                              describeLocalContext(blockScope),
+                              describeShadowingTarget(conflictingBinding),
+                              formatRange(currentRange),
+                              formatRange(conflictingRange),
+                              sourcePath
+                      )
+                    : "Duplicate local variable '%s' in %s; current declaration is at %s and the earlier declaration is at %s in %s"
+                      .formatted(
+                              variableName,
+                              describeLocalContext(blockScope),
+                              formatRange(currentRange),
+                              formatRange(conflictingRange),
+                              sourcePath
+                      );
+            reportBindingError(variableDeclaration, message);
+        }
+
+        private @NotNull String describeLocalContext(@NotNull BlockScope blockScope) {
+            return switch (blockScope.kind()) {
+                case FUNCTION_BODY, CONSTRUCTOR_BODY -> describeCallableContext();
+                case BLOCK_STATEMENT -> "block statement of " + describeCallableContext();
+                case IF_BODY -> "if-body of " + describeCallableContext();
+                case ELIF_BODY -> "elif-body of " + describeCallableContext();
+                case ELSE_BODY -> "else-body of " + describeCallableContext();
+                case WHILE_BODY -> "while-body of " + describeCallableContext();
+                case LAMBDA_BODY -> "lambda-body of " + describeCallableContext();
+                case FOR_BODY -> "`for` body of " + describeCallableContext();
+                case MATCH_SECTION_BODY -> "`match` section of " + describeCallableContext();
+            };
+        }
+
+        private @NotNull String describeCallableContext() {
+            return switch (currentCallableOwner) {
+                case FunctionDeclaration functionDeclaration -> "function '" + functionDeclaration.name().trim() + "'";
+                case ConstructorDeclaration _ -> "constructor '_init'";
+                case null -> "callable";
+                default -> currentCallableOwner.getClass().getSimpleName();
+            };
+        }
+
+        private @NotNull String describeShadowingTarget(@NotNull ScopeValue conflictingBinding) {
+            var targetKind = switch (conflictingBinding.kind()) {
+                case PARAMETER -> "parameter";
+                case CAPTURE -> "capture";
+                case LOCAL -> "outer local";
+                case CONSTANT -> "outer constant";
+                default -> "callable-local binding";
+            };
+            return targetKind + " '" + conflictingBinding.name() + "'";
+        }
+
+        private static @NotNull String formatRange(@Nullable FrontendRange range) {
+            if (range == null) {
+                return "<unknown-range>";
+            }
+            return "%d:%d-%d:%d".formatted(
+                    range.start().line(),
+                    range.start().column(),
+                    range.end().line(),
+                    range.end().column()
+            );
         }
 
         /// Local shadowing is forbidden only inside the current callable boundary.

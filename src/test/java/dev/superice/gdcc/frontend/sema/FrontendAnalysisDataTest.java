@@ -6,6 +6,7 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
@@ -36,6 +37,7 @@ class FrontendAnalysisDataTest {
         assertTrue(analysisData.expressionTypes().isEmpty());
         assertTrue(analysisData.resolvedMembers().isEmpty());
         assertTrue(analysisData.resolvedCalls().isEmpty());
+        assertTrue(analysisData.slotTypes().isEmpty());
         assertThrows(IllegalStateException.class, analysisData::moduleSkeleton);
         assertThrows(IllegalStateException.class, analysisData::diagnostics);
     }
@@ -200,6 +202,24 @@ class FrontendAnalysisDataTest {
         assertSame(originalSideTable, analysisData.resolvedCalls());
         assertNull(analysisData.resolvedCalls().get(staleNode));
         assertSame(publishedCall, analysisData.resolvedCalls().get(freshNode));
+    }
+
+    @Test
+    void updateSlotTypesClearsStaleEntriesWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var originalSideTable = analysisData.slotTypes();
+        var staleNode = passNode();
+        var freshNode = passNode();
+        originalSideTable.put(staleNode, GdVariantType.VARIANT);
+
+        var replacement = new FrontendAstSideTable<GdType>();
+        replacement.put(freshNode, GdIntType.INT);
+
+        analysisData.updateSlotTypes(replacement);
+
+        assertSame(originalSideTable, analysisData.slotTypes());
+        assertNull(analysisData.slotTypes().get(staleNode));
+        assertEquals(GdIntType.INT, analysisData.slotTypes().get(freshNode));
     }
 
     private static PassStatement passNode() {

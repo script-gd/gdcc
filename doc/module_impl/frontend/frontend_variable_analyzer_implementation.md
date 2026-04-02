@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-03-15
+- 最后校对：2026-04-02
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -244,6 +244,11 @@
 - 跳过当前 declaration 的写入
 - 保留先前已发布的合法 binding
 - 继续处理同一 module 中其他 subtree
+- 对 duplicate / shadowing local，diagnostic message 还必须显式携带：
+  - 当前 declaration range
+  - 冲突 declaration range（若已有 declaration 可回溯到 AST）
+  - enclosing callable / block 语义归属
+  - source path
 
 ### 5.4 缺 scope 记录的语义
 
@@ -323,8 +328,15 @@
 - `FrontendVariableAnalyzerTest`
   - parameter/local 正向写入
   - unsupported feature-boundary error
-  - duplicate / shadowing / kind mismatch 负向路径
+- duplicate / shadowing / kind mismatch 负向路径
+- duplicate / shadowing local 详细 diagnostic message 锚点
   - missing scope recovery
+
+需要额外保持与 `FrontendVarTypePostAnalyzer` 的边界一致：
+
+- variable analyzer 继续拥有 duplicate / shadowing 的首条 source error owner
+- 若同一 declaration 后续因为 inventory reject 而无法发布 `slotTypes()`，`FrontendVarTypePostAnalyzer` 允许额外补一条 `sema.variable_slot_publication` warning
+- 这条 warning 不是新的 variable-binding owner，它只负责解释 lowering-only fact 为什么缺洞
 - `FrontendSemanticAnalyzerFrameworkTest`
   - `scope -> variable` 主链路顺序
   - diagnostics snapshot refresh
