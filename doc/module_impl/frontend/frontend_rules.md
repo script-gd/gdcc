@@ -54,6 +54,8 @@
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
 - 除 exact `Variant` slot 与 `DYNAMIC` target 外，assignment compatibility 在 MVP 中继续回退 `ClassRegistry.checkAssignable(...)`；`int -> float`、`StringName` / `String` 互转、`null -> Object` 等更宽隐式转换当前不支持，文档和测试都必须按 strict contract 锚定。
 - source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。
+- `frontend.lowering.cfg` 中 `FrontendIfRegion` / `FrontendElifRegion` / `FrontendWhileRegion` 的 `conditionEntryId` 表达的是整个 condition subgraph 的稳定入口；consumer 与测试都不得假设固定 `SequenceNode -> BranchNode` 两节点模板。
+- `FrontendCfgGraph.BranchNode.conditionRoot` 表达的是“当前 branch 直接测试的 condition fragment root”，必须与 `conditionValueId` 的直接 producer subtree 对齐；它不保证等于外围 source-level condition 的最外层根。
 - `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
 - backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。

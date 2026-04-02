@@ -25,7 +25,9 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -125,13 +127,12 @@ class FrontendLoweringBuildCfgPassTest {
                 FrontendIfRegion.class,
                 structuredContext.requireFrontendCfgRegion(branchyIf)
         );
-        var structuredEntry = assertInstanceOf(
-                FrontendCfgGraph.SequenceNode.class,
-                structuredGraph.requireNode(structuredRootRegion.entryId())
-        );
-        var structuredBranch = assertInstanceOf(
-                FrontendCfgGraph.BranchNode.class,
-                structuredGraph.requireNode(structuredEntry.nextId())
+        structuredGraph.requireNode(structuredRootRegion.entryId());
+        var structuredBranch = requireReachableBranch(
+                structuredGraph,
+                structuredIfRegion.conditionEntryId(),
+                structuredIfRegion.thenEntryId(),
+                structuredIfRegion.elseOrNextClauseEntryId()
         );
         var structuredMerge = assertInstanceOf(
                 FrontendCfgGraph.SequenceNode.class,
@@ -161,6 +162,7 @@ class FrontendLoweringBuildCfgPassTest {
                 () -> assertTrue(linearContext.targetFunction().getEntryBlockId().isEmpty()),
                 () -> assertEquals(structuredRootRegion.entryId(), structuredGraph.entryNodeId()),
                 () -> assertEquals(structuredIfRegion.conditionEntryId(), structuredRootRegion.entryId()),
+                () -> assertEquals(branchyIf.condition(), structuredBranch.conditionRoot()),
                 () -> assertEquals(structuredIfRegion.thenEntryId(), structuredBranch.trueTargetId()),
                 () -> assertEquals(structuredIfRegion.elseOrNextClauseEntryId(), structuredBranch.falseTargetId()),
                 () -> assertEquals(structuredIfRegion.mergeId(), structuredMerge.id()),
@@ -209,6 +211,39 @@ class FrontendLoweringBuildCfgPassTest {
         );
 
         assertTrue(exception.getMessage().contains("parameter default"), exception.getMessage());
+    }
+
+    private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranch(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var visited = new LinkedHashSet<String>();
+        var worklist = new ArrayDeque<String>();
+        worklist.add(entryId);
+        while (!worklist.isEmpty()) {
+            var nodeId = worklist.removeFirst();
+            if (!visited.add(nodeId)) {
+                continue;
+            }
+            switch (graph.requireNode(nodeId)) {
+                case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> worklist.addLast(nextId);
+                case FrontendCfgGraph.BranchNode branchNode -> {
+                    if (branchNode.trueTargetId().equals(trueTargetId)
+                            && branchNode.falseTargetId().equals(falseTargetId)) {
+                        return branchNode;
+                    }
+                    worklist.addLast(branchNode.trueTargetId());
+                    worklist.addLast(branchNode.falseTargetId());
+                }
+                case FrontendCfgGraph.StopNode _ -> {
+                }
+            }
+        }
+        throw new AssertionError(
+                "Missing reachable branch from " + entryId + " to " + trueTargetId + " / " + falseTargetId
+        );
     }
 
     private static @NotNull PreparedContext prepareContext(

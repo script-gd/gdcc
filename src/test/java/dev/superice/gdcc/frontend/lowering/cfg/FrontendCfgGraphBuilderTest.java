@@ -6,7 +6,9 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
@@ -30,20 +32,25 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
 import java.nio.file.Path;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -70,7 +77,7 @@ class FrontendCfgGraphBuilderTest {
         );
 
         assertAll(
-                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(analyzed.diagnostics().hasErrors()),
                 () -> assertTrue(exception.getMessage().contains("loop frame"), exception.getMessage())
         );
     }
@@ -412,6 +419,107 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyFailsFastForShortCircuitConditionBeforeEagerChildLowering() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_short_circuit_condition.gd",
+                """
+                        class_name CfgBuilderShortCircuitCondition
+                        extends RefCounted
+                        
+                        func helper(value: int) -> bool:
+                            return value > 0
+                        
+                        func ping(flag: bool, seed: int) -> int:
+                            if flag and helper(seed):
+                                return seed
+                            return seed + 1
+                        """,
+                "ping",
+                Map.of("CfgBuilderShortCircuitCondition", "RuntimeCfgBuilderShortCircuitCondition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, ifStatement.condition());
+        var helperCall = assertInstanceOf(CallExpression.class, shortCircuit.right());
+        analyzed.analysisData().resolvedCalls().remove(helperCall);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("short-circuit"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("'and'"), exception.getMessage()),
+                () -> assertFalse(exception.getMessage().contains("resolvedCalls()"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFlipsLogicalNotConditionWithoutPublishingUnaryValueItem() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_not_condition.gd",
+                """
+                        class_name CfgBuilderNotCondition
+                        extends RefCounted
+                        
+                        func helper(value: int) -> bool:
+                            return value > 0
+                        
+                        func ping(seed: int) -> int:
+                            if not helper(seed):
+                                return seed
+                            return seed + 1
+                        """,
+                "ping",
+                Map.of("CfgBuilderNotCondition", "RuntimeCfgBuilderNotCondition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var notCondition = assertInstanceOf(UnaryExpression.class, ifStatement.condition());
+        var helperCall = assertInstanceOf(CallExpression.class, notCondition.operand());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var rootRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(rootBlock));
+        var ifRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(ifStatement));
+        var conditionBranch = requireReachableBranch(
+                graph,
+                ifRegion.conditionEntryId(),
+                ifRegion.elseOrNextClauseEntryId(),
+                ifRegion.thenEntryId()
+        );
+        var conditionItems = collectReachableItemsBeforeTargets(
+                graph,
+                ifRegion.conditionEntryId(),
+                Set.of(conditionBranch.trueTargetId(), conditionBranch.falseTargetId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(ifRegion.conditionEntryId(), rootRegion.entryId()),
+                () -> assertSame(helperCall, conditionBranch.conditionRoot()),
+                () -> assertSame(
+                        conditionBranch.conditionRoot(),
+                        requireValueProducerForBranch(graph, ifRegion.conditionEntryId(), conditionBranch).anchor()
+                ),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), conditionBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), conditionBranch.falseTargetId()),
+                () -> assertTrue(conditionItems.stream()
+                        .filter(CallItem.class::isInstance)
+                        .map(CallItem.class::cast)
+                        .anyMatch(item -> item.anchor() == helperCall)),
+                () -> assertFalse(conditionItems.stream()
+                        .filter(OpaqueExprValueItem.class::isInstance)
+                        .map(OpaqueExprValueItem.class::cast)
+                        .anyMatch(item -> item.expression() == notCondition))
+        );
+    }
+
+    @Test
     void buildExecutableBodyPublishesIfElifElseRegionsAndSharedMerge() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_if_elif_else.gd",
@@ -446,21 +554,17 @@ class FrontendCfgGraphBuilderTest {
         var elseBlockRegion = assertInstanceOf(FrontendCfgRegion.BlockRegion.class, build.regions().get(elseBody));
         var thenEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(ifRegion.thenEntryId()));
         var mergeEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode(ifRegion.mergeId()));
-        var conditionEntry = assertInstanceOf(
-                FrontendCfgGraph.SequenceNode.class,
-                graph.requireNode(ifRegion.conditionEntryId())
+        var conditionBranch = requireReachableBranch(
+                graph,
+                ifRegion.conditionEntryId(),
+                ifRegion.thenEntryId(),
+                ifRegion.elseOrNextClauseEntryId()
         );
-        var conditionBranch = assertInstanceOf(
-                FrontendCfgGraph.BranchNode.class,
-                graph.requireNode(conditionEntry.nextId())
-        );
-        var elifConditionEntry = assertInstanceOf(
-                FrontendCfgGraph.SequenceNode.class,
-                graph.requireNode(elifRegion.conditionEntryId())
-        );
-        var elifConditionBranch = assertInstanceOf(
-                FrontendCfgGraph.BranchNode.class,
-                graph.requireNode(elifConditionEntry.nextId())
+        var elifConditionBranch = requireReachableBranch(
+                graph,
+                elifRegion.conditionEntryId(),
+                elifRegion.bodyEntryId(),
+                elifRegion.nextClauseOrMergeId()
         );
         var elifBodyEntry = assertInstanceOf(
                 FrontendCfgGraph.SequenceNode.class,
@@ -474,9 +578,19 @@ class FrontendCfgGraphBuilderTest {
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertEquals(ifRegion.conditionEntryId(), rootRegion.entryId()),
+                () -> assertSame(outerIf.condition(), conditionBranch.conditionRoot()),
+                () -> assertSame(
+                        conditionBranch.conditionRoot(),
+                        requireValueProducerForBranch(graph, ifRegion.conditionEntryId(), conditionBranch).anchor()
+                ),
                 () -> assertEquals(thenEntry.id(), conditionBranch.trueTargetId()),
                 () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), conditionBranch.falseTargetId()),
                 () -> assertEquals(elifRegion.conditionEntryId(), ifRegion.elseOrNextClauseEntryId()),
+                () -> assertSame(elifClause.condition(), elifConditionBranch.conditionRoot()),
+                () -> assertSame(
+                        elifConditionBranch.conditionRoot(),
+                        requireValueProducerForBranch(graph, elifRegion.conditionEntryId(), elifConditionBranch).anchor()
+                ),
                 () -> assertEquals(elifBodyEntry.id(), elifConditionBranch.trueTargetId()),
                 () -> assertEquals(elseEntry.id(), elifConditionBranch.falseTargetId()),
                 () -> assertEquals(elseEntry.id(), elifRegion.nextClauseOrMergeId()),
@@ -521,13 +635,11 @@ class FrontendCfgGraphBuilderTest {
         var whileRegion = assertInstanceOf(FrontendWhileRegion.class, build.regions().get(whileStatement));
         var breakIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(breakIf));
         var continueIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(continueIf));
-        var conditionEntry = assertInstanceOf(
-                FrontendCfgGraph.SequenceNode.class,
-                graph.requireNode(whileRegion.conditionEntryId())
-        );
-        var conditionBranch = assertInstanceOf(
-                FrontendCfgGraph.BranchNode.class,
-                graph.requireNode(conditionEntry.nextId())
+        var conditionBranch = requireReachableBranch(
+                graph,
+                whileRegion.conditionEntryId(),
+                whileRegion.bodyEntryId(),
+                whileRegion.exitId()
         );
         var breakThenEntry = assertInstanceOf(
                 FrontendCfgGraph.SequenceNode.class,
@@ -549,6 +661,11 @@ class FrontendCfgGraphBuilderTest {
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
                 () -> assertEquals(whileRegion.conditionEntryId(), rootRegion.entryId()),
+                () -> assertSame(whileStatement.condition(), conditionBranch.conditionRoot()),
+                () -> assertSame(
+                        conditionBranch.conditionRoot(),
+                        requireValueProducerForBranch(graph, whileRegion.conditionEntryId(), conditionBranch).anchor()
+                ),
                 () -> assertEquals(whileRegion.bodyEntryId(), conditionBranch.trueTargetId()),
                 () -> assertEquals(whileRegion.exitId(), conditionBranch.falseTargetId()),
                 () -> assertEquals(whileRegion.exitId(), breakThenEntry.nextId()),
@@ -625,9 +742,87 @@ class FrontendCfgGraphBuilderTest {
         );
 
         assertAll(
-                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(analyzed.diagnostics().hasErrors()),
                 () -> assertTrue(exception.getMessage().contains("loop frame"), exception.getMessage())
         );
+    }
+
+    private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranch(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var visited = new LinkedHashSet<String>();
+        var worklist = new ArrayDeque<String>();
+        worklist.add(entryId);
+        while (!worklist.isEmpty()) {
+            var nodeId = worklist.removeFirst();
+            if (!visited.add(nodeId)) {
+                continue;
+            }
+            switch (graph.requireNode(nodeId)) {
+                case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> worklist.addLast(nextId);
+                case FrontendCfgGraph.BranchNode branchNode -> {
+                    if (branchNode.trueTargetId().equals(trueTargetId)
+                            && branchNode.falseTargetId().equals(falseTargetId)) {
+                        return branchNode;
+                    }
+                    worklist.addLast(branchNode.trueTargetId());
+                    worklist.addLast(branchNode.falseTargetId());
+                }
+                case FrontendCfgGraph.StopNode _ -> {
+                }
+            }
+        }
+        throw new AssertionError(
+                "Missing reachable branch from " + entryId + " to " + trueTargetId + " / " + falseTargetId
+        );
+    }
+
+    private static @NotNull List<SequenceItem> collectReachableItemsBeforeTargets(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull Set<String> boundaryIds
+    ) {
+        var items = new java.util.ArrayList<SequenceItem>();
+        var visited = new LinkedHashSet<String>();
+        var worklist = new ArrayDeque<String>();
+        worklist.add(entryId);
+        while (!worklist.isEmpty()) {
+            var nodeId = worklist.removeFirst();
+            if (boundaryIds.contains(nodeId) || !visited.add(nodeId)) {
+                continue;
+            }
+            switch (graph.requireNode(nodeId)) {
+                case FrontendCfgGraph.SequenceNode(_, var nodeItems, var nextId) -> {
+                    items.addAll(nodeItems);
+                    worklist.addLast(nextId);
+                }
+                case FrontendCfgGraph.BranchNode(_, _, _, var trueTargetId, var falseTargetId) -> {
+                    worklist.addLast(trueTargetId);
+                    worklist.addLast(falseTargetId);
+                }
+                case FrontendCfgGraph.StopNode _ -> {
+                }
+            }
+        }
+        return List.copyOf(items);
+    }
+
+    private static @NotNull ValueOpItem requireValueProducerForBranch(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull FrontendCfgGraph.BranchNode branchNode
+    ) {
+        return collectReachableItemsBeforeTargets(graph, entryId, Set.of(branchNode.id())).stream()
+                .filter(ValueOpItem.class::isInstance)
+                .map(ValueOpItem.class::cast)
+                .filter(item -> branchNode.conditionValueId().equals(item.resultValueIdOrNull()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "Missing producer for branch condition value " + branchNode.conditionValueId()
+                ));
     }
 
     private static @NotNull AnalyzedFunction analyzeFunction(

@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4、5、6 阶段已完成；共享表达式构图内核、显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
-- 更新时间：2026-04-01
+- 状态：实施中（第 1、2、3、4、5、6、7 阶段已完成；显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
+- 更新时间：2026-04-02
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -172,6 +172,9 @@ frontend 与 LIR 当前已经冻结了两条必须同时满足的事实：
 - `BranchNode`
   - `id`
   - `conditionRoot`
+    - 表示当前 branch 直接测试的 condition fragment root
+    - 必须与 `conditionValueId` 的直接 producer subtree 对齐
+    - 不要求等于外围 source-level condition 的最外层 root
   - `conditionValueId`
   - `trueTargetId`
   - `falseTargetId`
@@ -714,14 +717,39 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 `buildValue(...)` 在需要控制流的表达式上继续依赖“只追加到当前 `items` 容器”的线性假设
   - 不允许 future `ConditionalExpression` 因共享内核缺失而再次引入第三套表达式构图路径
 
-当前状态（2026-04-01）：
+当前状态（2026-04-02）：
 
-- 尚未实现。
-- 当前仓库已经确认存在两个必须先消除的隐含假设：
-  - `buildConditionIntoSequence(...)` 把 condition region 固定成“前置 `SequenceNode` + 后继 `BranchNode`”
-  - `buildValue(...)` 及其 helper 默认假设表达式构图永远只在线性 `items` 容器内发生
-- 若不先完成这一步，第八步 short-circuit 落地后仍会在 value context、nested `and` / `or` 与 future `ConditionalExpression` 上继续出现合同漂移。
-- 因此第七步的目标不是直接解封语义，而是先冻结共享表达式构图内核，使第八步 short-circuit 与 future `ConditionalExpression` 都复用同一套基础设施。
+- 已完成。
+- 本步产出已经落地到 `FrontendCfgGraphBuilder` 私有内部合同：
+  - 引入 `BuildCursor(entryId, currentSequence)`、`ValueBuild`、`ConditionBuild` 与 `ValueListBuild`
+  - `buildValue(...)` 不再只返回 `resultValueId`，而是显式返回 continuation-aware 内部状态
+  - `buildCondition(...)` 不再编码固定“1 个 `SequenceNode` + 1 个 `BranchNode`”，只发布 condition subgraph `entryId`
+- 共享表达式递归入口已经统一：
+  - value-context 与 condition-context 共用同一套递归 builder 骨架
+  - condition-context `not` 已改为 target flip，而不是先产出 eager unary bool item 再 branch
+  - `and` / `or` 仍统一走 dedicated short-circuit entry 并 fail-fast，避免回退为 eager child lowering
+  - `ConditionalExpression` 仍保留 compile gate / builder fail-fast 边界，未提前解封
+- 为 future branch-result merge 预留了显式 `MergeValueItem`，但在第八步 short-circuit 与后续 `ConditionalExpression` 真正接通前不会提前发布伪语义 item。
+- 文档与注释已同步升级：
+  - `FrontendCfgGraph.BranchNode`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion` 已改为“condition subgraph stable entry / fragment root”表述
+  - `frontend_rules.md` 与 `frontend_lowering_plan.md` 已同步 condition-entry 合同与 shared-expression-core 当前事实
+- `BranchNode.conditionRoot` 的严格合同已冻结为“当前 branch 直接测试的 condition fragment root”，具体规则如下：
+  - 它必须与 `conditionValueId` 的直接 producer subtree 对齐，而不是仅仅记录外围 `if` / `while` 的原始 condition root
+  - `conditionEntryId` 继续负责整个 condition subgraph 入口；`conditionRoot` 只负责当前这个 branch 的 immediate tested fragment
+  - `not x` 若通过 target flip 实现，则 branch 必须保留 `x` 作为 `conditionRoot`，而不是 `not x`
+  - future `a and b` / `a or b` / `a or (b and c)` 中，多个 `BranchNode` 必须分别持有 `a`、`b`、`c` 这类被实际测试的 fragment，而不是都重复外层复合表达式 root
+- 例子：
+  - `if flag:` 的 branch 保留 `flag`
+  - `if not helper(seed):` 的 branch 保留 `helper(seed)`，同时通过 true/false target 交换表达逻辑翻转
+  - future `if a and b:` 的第一个 branch 保留 `a`，第二个 branch 保留 `b`
+  - future `if a or (b and c):` 的分支序列应分别保留 `a`、`b`、`c`
+- 现有 structured CFG 测试已改成锚定 reachable branch / region contract，而不是锚定 `conditionEntryId -> SequenceNode.nextId() -> BranchNode` 固定模板。
+- 已新增并运行的回归重点：
+  - happy path：condition-context `not` 使用 target flip，且不会再先发布 unary `OpaqueExprValueItem`
+  - negative path：short-circuit binary 无论出现在 value context 还是 condition context，都继续在 eager child lowering 之前 fail-fast
+  - 已跑通过：
+    - `FrontendCfgGraphBuilderTest`
+    - `FrontendLoweringBuildCfgPassTest`
 
 ### 4.8 第八步：显式实现 `and` / `or` 的短路构图步骤
 

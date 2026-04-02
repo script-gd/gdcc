@@ -12,7 +12,7 @@ import java.util.List;
 /// they publish instead of re-walking AST subtrees. Items that exist only for source anchoring, such
 /// as `pass`, must use `SourceAnchorItem` so execution semantics remain explicit.
 public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, LocalDeclarationItem,
-        AssignmentItem, MemberLoadItem, SubscriptLoadItem, CallItem, CastItem, TypeTestItem {
+        AssignmentItem, MemberLoadItem, SubscriptLoadItem, CallItem, CastItem, TypeTestItem, MergeValueItem {
     /// Result value id published by this item, or `null` when the item only commits state.
     @Nullable String resultValueIdOrNull();
 

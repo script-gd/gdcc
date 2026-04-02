@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：计划维护中（function pre-pass scaffold 已落地；当前第二阶段转入 frontend CFG graph migration）
-- 更新时间：2026-03-31
+- 状态：计划维护中（function pre-pass scaffold 与 frontend CFG graph shared-expression core 已落地；显式 short-circuit CFG 与 body lowering 仍待迁移）
+- 更新时间：2026-04-02
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
@@ -25,6 +25,9 @@
 - lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
 - default pipeline 已稳定产出 `LirModule(skeleton/shell-only)`、function lowering context scaffold，以及带显式 operand/result value-op、structured region 与 loop-control edge 的 executable body frontend CFG graph
 - compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface；其中 `and` / `or` 已从普通 eager binary lowering 路由中移出，并在 dedicated short-circuit CFG path 落地前继续显式封口
+- `FrontendCfgGraphBuilder` 内部已冻结共享表达式构图内核：`buildValue(...)` 现在返回 continuation-aware 内部状态，`buildCondition(...)` 现在只承诺发布 condition subgraph 的稳定入口，而不再编码固定 `SequenceNode -> BranchNode` 形状
+- `FrontendCfgGraph.BranchNode.conditionRoot` 现在固定表示“当前 branch 直接测试的 condition fragment root”；它必须对齐 `conditionValueId` 的直接 producer，而不是笼统复用外围 source-level condition root
+- condition-context `not` 已切到 target-flip 路径；`and` / `or` 与 `ConditionalExpression` 继续保留 compile gate + builder fail-fast 边界，等待专门的 branch-result merge lowering 落地
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
 

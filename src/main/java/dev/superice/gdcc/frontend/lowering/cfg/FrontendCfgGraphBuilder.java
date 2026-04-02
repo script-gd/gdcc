@@ -31,6 +31,7 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.BreakStatement;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
@@ -63,7 +64,7 @@ import java.util.Objects;
 ///
 /// The graph stays frontend-only:
 /// - `SequenceNode` holds explicit source-level value-op items
-/// - `BranchNode` keeps the original condition root and published condition value id
+/// - `BranchNode` keeps the condition fragment root and published condition value id
 /// - `StopNode` marks function termination or a synthetic fully-terminated merge anchor
 ///
 /// This builder now owns structured executable control flow for the current MVP statement surface:
@@ -137,12 +138,10 @@ public final class FrontendCfgGraphBuilder {
         switch (statement) {
             case PassStatement passStatement ->
                     requireCurrentSequence(state).items().add(new SourceAnchorItem(passStatement));
-            case ExpressionStatement expressionStatement -> buildExpressionStatement(
-                    requireCurrentSequence(state).items(),
-                    expressionStatement.expression()
-            );
+            case ExpressionStatement expressionStatement ->
+                    processExpressionStatement(state, expressionStatement.expression());
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.VAR ->
-                    buildLocalDeclaration(requireCurrentSequence(state).items(), variableDeclaration);
+                    processLocalDeclaration(state, variableDeclaration);
             case ReturnStatement returnStatement -> processReturnStatement(state, returnStatement);
             case IfStatement ifStatement -> processIfStatement(state, ifStatement);
             case WhileStatement whileStatement -> processWhileStatement(state, whileStatement);
@@ -157,32 +156,49 @@ public final class FrontendCfgGraphBuilder {
         }
     }
 
-    private void buildLocalDeclaration(
-            @NotNull ArrayList<SequenceItem> items,
+    private void processLocalDeclaration(
+            @NotNull BlockState state,
             @NotNull VariableDeclaration variableDeclaration
     ) {
+        var cursor = new BuildCursor(requireCurrentSequence(state));
         var initializer = variableDeclaration.value();
-        var initializerValueId = initializer == null
+        ValueBuild initializerBuild = initializer == null
                 ? null
-                : buildValue(items, initializer, nextVariableValueId(variableDeclaration.name()));
-        items.add(new LocalDeclarationItem(variableDeclaration, initializerValueId));
+                : buildValue(cursor, initializer, nextVariableValueId(variableDeclaration.name()));
+        var currentCursor = initializerBuild == null ? cursor : initializerBuild.cursor();
+        currentCursor.currentSequence().items().add(new LocalDeclarationItem(
+                variableDeclaration,
+                initializerBuild == null ? null : initializerBuild.resultValueId()
+        ));
+        state.setCurrentSequence(currentCursor.currentSequence());
     }
 
-    private void buildExpressionStatement(
-            @NotNull ArrayList<SequenceItem> items,
+    private void processExpressionStatement(
+            @NotNull BlockState state,
             @NotNull Expression expression
     ) {
         requireLoweringReadyExpressionType(expression);
         switch (expression) {
-            case AssignmentExpression assignmentExpression -> buildAssignmentCommit(items, assignmentExpression);
-            default -> buildValue(items, expression, null);
+            case AssignmentExpression assignmentExpression -> state.setCurrentSequence(buildAssignmentCommit(
+                    new BuildCursor(requireCurrentSequence(state)),
+                    assignmentExpression
+            ).currentSequence());
+            default -> state.setCurrentSequence(buildValue(
+                    new BuildCursor(requireCurrentSequence(state)),
+                    expression,
+                    null
+            ).cursor().currentSequence());
         }
     }
 
     private void processReturnStatement(@NotNull BlockState state, @NotNull ReturnStatement returnStatement) {
-        var sequence = requireCurrentSequence(state);
         var returnValue = returnStatement.value();
-        var returnValueId = returnValue == null ? null : buildValue(sequence.items(), returnValue, null);
+        String returnValueId = null;
+        if (returnValue != null) {
+            var returnBuild = buildValue(new BuildCursor(requireCurrentSequence(state)), returnValue, null);
+            state.setCurrentSequence(returnBuild.cursor().currentSequence());
+            returnValueId = returnBuild.resultValueId();
+        }
         closeCurrentSequence(state, publishStopNode(returnValueId));
         state.setReachable(false);
     }
@@ -268,17 +284,17 @@ public final class FrontendCfgGraphBuilder {
 
     private void processWhileStatement(@NotNull BlockState state, @NotNull WhileStatement whileStatement) {
         var exitSequence = new OpenSequence(nextSequenceId());
-        var conditionSequence = new OpenSequence(nextSequenceId());
-        loopStack.push(new LoopFrame(conditionSequence.id(), exitSequence.id()));
+        var conditionCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        loopStack.push(new LoopFrame(conditionCursor.entryId(), exitSequence.id()));
         BlockBuild bodyBuild;
         try {
-            bodyBuild = buildBlock(whileStatement.body(), conditionSequence.id());
+            bodyBuild = buildBlock(whileStatement.body(), conditionCursor.entryId());
         } finally {
             loopStack.pop();
         }
 
-        var conditionBuild = buildConditionIntoSequence(
-                conditionSequence,
+        var conditionBuild = buildCondition(
+                conditionCursor,
                 whileStatement.condition(),
                 bodyBuild.entryId(),
                 exitSequence.id()
@@ -309,26 +325,79 @@ public final class FrontendCfgGraphBuilder {
             @NotNull String trueTargetId,
             @NotNull String falseTargetId
     ) {
-        return buildConditionIntoSequence(new OpenSequence(nextSequenceId()), condition, trueTargetId, falseTargetId);
+        return buildCondition(new BuildCursor(new OpenSequence(nextSequenceId())), condition, trueTargetId, falseTargetId);
     }
 
-    private @NotNull ConditionBuild buildConditionIntoSequence(
-            @NotNull OpenSequence conditionSequence,
+    private @NotNull ConditionBuild buildCondition(
+            @NotNull BuildCursor cursor,
             @NotNull Expression condition,
             @NotNull String trueTargetId,
             @NotNull String falseTargetId
     ) {
-        var conditionValueId = buildValue(conditionSequence.items(), condition, null);
+        requireLoweringReadyExpressionType(condition);
+        return switch (condition) {
+            case UnaryExpression unaryExpression when isLogicalNotExpression(unaryExpression) ->
+                    buildCondition(cursor, unaryExpression.operand(), falseTargetId, trueTargetId);
+            case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
+                    buildShortCircuitCondition(binaryExpression);
+            case ConditionalExpression conditionalExpression ->
+                    buildConditionalExpressionCondition(conditionalExpression);
+            default -> buildConditionFromValue(cursor, condition, trueTargetId, falseTargetId);
+        };
+    }
+
+    private @NotNull ConditionBuild buildConditionFromValue(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression condition,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var conditionValueBuild = buildValue(cursor, condition, null);
+        var conditionSequence = conditionValueBuild.cursor().currentSequence();
+        return publishConditionBranch(
+                conditionValueBuild.cursor().entryId(),
+                conditionSequence,
+                condition,
+                conditionValueBuild.resultValueId(),
+                trueTargetId,
+                falseTargetId
+        );
+    }
+
+    /// Publishes one branch that immediately tests the given fragment value.
+    ///
+    /// The caller must pass the expression root that directly produced `conditionValueId`, not the
+    /// outer source-level condition root. This keeps `BranchNode.conditionRoot` aligned with the
+    /// concrete value being tested:
+    /// - plain condition roots keep themselves
+    /// - `not x` strips the wrapper and only swaps true/false targets
+    /// - future short-circuit branches will publish separate roots for `a`, `b`, ... instead of
+    ///   repeating the outer `a and b` / `a or b` shell on every split
+    private @NotNull ConditionBuild publishConditionBranch(
+            @NotNull String entryId,
+            @NotNull OpenSequence conditionSequence,
+            @NotNull Expression conditionFragmentRoot,
+            @NotNull String conditionValueId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
         var branchId = nextBranchId();
         publishSequenceNode(conditionSequence.id(), conditionSequence.items(), branchId);
         requireNodes().put(
                 branchId,
-                new FrontendCfgGraph.BranchNode(branchId, condition, conditionValueId, trueTargetId, falseTargetId)
+                new FrontendCfgGraph.BranchNode(
+                        branchId,
+                        conditionFragmentRoot,
+                        conditionValueId,
+                        trueTargetId,
+                        falseTargetId
+                )
         );
-        return new ConditionBuild(conditionSequence.id(), branchId);
+        return new ConditionBuild(entryId);
     }
 
-    /// Recursively materializes one lowering-ready value and returns the published frontend-local id.
+    /// Recursively materializes one lowering-ready value and returns both the current writable
+    /// continuation and the published frontend-local value id.
     ///
     /// The builder deliberately special-cases only operations whose semantics later lowering must not
     /// rediscover from raw AST alone. Generic expressions still use `OpaqueExprValueItem`, but only
@@ -336,8 +405,8 @@ public final class FrontendCfgGraphBuilder {
     /// Short-circuit `and` / `or` no longer share that generic eager route; they are intercepted by
     /// a dedicated unimplemented path so compile-blocked sources cannot accidentally regress into one
     /// linear binary item.
-    private @NotNull String buildValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildValue(
+            @NotNull BuildCursor cursor,
             @NotNull Expression expression,
             @Nullable String preferredResultValueId
     ) {
@@ -347,38 +416,43 @@ public final class FrontendCfgGraphBuilder {
                     "Assignment expressions do not produce a lowering-ready value in the current compile surface"
             );
             case AttributeExpression attributeExpression -> buildAttributeExpressionValue(
-                    items,
+                    cursor,
                     attributeExpression,
                     preferredResultValueId
             );
-            case CallExpression callExpression -> buildBareCallValue(items, callExpression, preferredResultValueId);
+            case CallExpression callExpression -> buildBareCallValue(cursor, callExpression, preferredResultValueId);
             case SubscriptExpression subscriptExpression -> buildPlainSubscriptValue(
-                    items,
+                    cursor,
                     subscriptExpression,
                     preferredResultValueId
             );
-            case CastExpression castExpression -> buildCastValue(items, castExpression, preferredResultValueId);
+            case CastExpression castExpression -> buildCastValue(cursor, castExpression, preferredResultValueId);
             case TypeTestExpression typeTestExpression ->
-                    buildTypeTestValue(items, typeTestExpression, preferredResultValueId);
-            case UnaryExpression unaryExpression -> emitOpaqueValue(
-                    items,
-                    unaryExpression,
-                    List.of(buildValue(items, unaryExpression.operand(), null)),
-                    preferredResultValueId
-            );
+                    buildTypeTestValue(cursor, typeTestExpression, preferredResultValueId);
+            case ConditionalExpression conditionalExpression -> buildConditionalExpressionValue(conditionalExpression);
+            case UnaryExpression unaryExpression -> {
+                var operandBuild = buildValue(cursor, unaryExpression.operand(), null);
+                yield emitOpaqueValue(
+                        operandBuild.cursor(),
+                        unaryExpression,
+                        List.of(operandBuild.resultValueId()),
+                        preferredResultValueId
+                );
+            }
             case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
                     buildShortCircuitBinaryValue(binaryExpression);
-            case BinaryExpression binaryExpression -> emitOpaqueValue(
-                    items,
-                    binaryExpression,
-                    List.of(
-                            buildValue(items, binaryExpression.left(), null),
-                            buildValue(items, binaryExpression.right(), null)
-                    ),
-                    preferredResultValueId
-            );
+            case BinaryExpression binaryExpression -> {
+                var leftBuild = buildValue(cursor, binaryExpression.left(), null);
+                var rightBuild = buildValue(leftBuild.cursor(), binaryExpression.right(), null);
+                yield emitOpaqueValue(
+                        rightBuild.cursor(),
+                        binaryExpression,
+                        List.of(leftBuild.resultValueId(), rightBuild.resultValueId()),
+                        preferredResultValueId
+                );
+            }
             case IdentifierExpression _, LiteralExpression _, SelfExpression _ -> emitOpaqueValue(
-                    items,
+                    cursor,
                     expression,
                     List.of(),
                     preferredResultValueId
@@ -389,25 +463,25 @@ public final class FrontendCfgGraphBuilder {
 
     /// Attribute chains are expanded step by step so later lowering receives explicit intermediate
     /// value ids instead of having to rerun chain reduction over the full outer expression root.
-    private @NotNull String buildAttributeExpressionValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildAttributeExpressionValue(
+            @NotNull BuildCursor cursor,
             @NotNull AttributeExpression attributeExpression,
             @Nullable String preferredResultValueId
     ) {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression must contain at least one step");
         }
-        var currentValueId = buildValue(items, attributeExpression.base(), null);
+        var currentBuild = buildValue(cursor, attributeExpression.base(), null);
         for (var stepIndex = 0; stepIndex < attributeExpression.steps().size(); stepIndex++) {
             var step = attributeExpression.steps().get(stepIndex);
-            currentValueId = applyAttributeStep(
-                    items,
-                    currentValueId,
+            currentBuild = applyAttributeStep(
+                    currentBuild.cursor(),
+                    currentBuild.resultValueId(),
                     step,
                     stepIndex + 1 == attributeExpression.steps().size() ? preferredResultValueId : null
             );
         }
-        return currentValueId;
+        return currentBuild;
     }
 
     /// Bare call lowering consumes the published `resolvedCalls()` fact directly.
@@ -415,8 +489,8 @@ public final class FrontendCfgGraphBuilder {
     /// The current compile-ready contract only permits bare/global/static calls here. Callable-value
     /// invocation remains a separate future route, so a non-identifier callee is treated as a
     /// protocol violation instead of being silently dropped from operand ordering.
-    private @NotNull String buildBareCallValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildBareCallValue(
+            @NotNull BuildCursor cursor,
             @NotNull CallExpression callExpression,
             @Nullable String preferredResultValueId
     ) {
@@ -427,72 +501,72 @@ public final class FrontendCfgGraphBuilder {
             );
         }
         var publishedCall = requireLoweringReadyCall(callExpression);
-        var argumentValueIds = buildArgumentValues(items, callExpression.arguments());
+        var argumentsBuild = buildArgumentValues(cursor, callExpression.arguments());
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        items.add(new CallItem(
+        argumentsBuild.cursor().currentSequence().items().add(new CallItem(
                 callExpression,
                 publishedCall.callableName(),
                 null,
-                argumentValueIds,
+                argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return resultValueId;
+        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
     }
 
     /// Plain subscripts first materialize their base and arguments, then commit one explicit indexed
     /// read item that consumes those operand ids.
-    private @NotNull String buildPlainSubscriptValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildPlainSubscriptValue(
+            @NotNull BuildCursor cursor,
             @NotNull SubscriptExpression subscriptExpression,
             @Nullable String preferredResultValueId
     ) {
-        var baseValueId = buildValue(items, subscriptExpression.base(), null);
-        var argumentValueIds = buildArgumentValues(items, subscriptExpression.arguments());
+        var baseBuild = buildValue(cursor, subscriptExpression.base(), null);
+        var argumentsBuild = buildArgumentValues(baseBuild.cursor(), subscriptExpression.arguments());
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        items.add(new SubscriptLoadItem(
+        argumentsBuild.cursor().currentSequence().items().add(new SubscriptLoadItem(
                 subscriptExpression,
                 null,
-                baseValueId,
-                argumentValueIds,
+                baseBuild.resultValueId(),
+                argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return resultValueId;
+        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
     }
 
     /// Cast expressions are still compile-blocked by the default pipeline, but the item contract is
     /// already wired so targeted builder tests and later compile-surface expansion do not require a
     /// structural rewrite of the frontend CFG surface.
-    private @NotNull String buildCastValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildCastValue(
+            @NotNull BuildCursor cursor,
             @NotNull CastExpression castExpression,
             @Nullable String preferredResultValueId
     ) {
-        var operandValueId = buildValue(items, castExpression.value(), null);
+        var operandBuild = buildValue(cursor, castExpression.value(), null);
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        items.add(new CastItem(
+        operandBuild.cursor().currentSequence().items().add(new CastItem(
                 castExpression,
-                operandValueId,
+                operandBuild.resultValueId(),
                 resultValueId
         ));
-        return resultValueId;
+        return new ValueBuild(operandBuild.cursor(), resultValueId);
     }
 
     /// Type-test expressions share the same “child first, then one explicit result item” contract as
     /// casts. They remain compile-blocked today, but the CFG item surface is ready for that future
     /// migration.
-    private @NotNull String buildTypeTestValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildTypeTestValue(
+            @NotNull BuildCursor cursor,
             @NotNull TypeTestExpression typeTestExpression,
             @Nullable String preferredResultValueId
     ) {
-        var operandValueId = buildValue(items, typeTestExpression.value(), null);
+        var operandBuild = buildValue(cursor, typeTestExpression.value(), null);
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        items.add(new TypeTestItem(
+        operandBuild.cursor().currentSequence().items().add(new TypeTestItem(
                 typeTestExpression,
-                operandValueId,
+                operandBuild.resultValueId(),
                 resultValueId
         ));
-        return resultValueId;
+        return new ValueBuild(operandBuild.cursor(), resultValueId);
     }
 
     /// `and` / `or` never belong to the generic eager binary route.
@@ -501,30 +575,41 @@ public final class FrontendCfgGraphBuilder {
     /// materialize the right operand on the non-short-circuit path. Reaching this helper therefore
     /// means the compile gate was bypassed and we must fail before any child operand is eagerly
     /// lowered.
-    private @NotNull String buildShortCircuitBinaryValue(@NotNull BinaryExpression binaryExpression) {
-        throw new IllegalStateException(
-                "Binary operator '"
-                        + binaryExpression.operator()
-                        + "' must use the dedicated frontend CFG short-circuit path, but that path is not implemented yet"
-        );
+    private @NotNull ValueBuild buildShortCircuitBinaryValue(@NotNull BinaryExpression binaryExpression) {
+        throw unsupportedShortCircuitBinary(binaryExpression);
+    }
+
+    private @NotNull ConditionBuild buildShortCircuitCondition(@NotNull BinaryExpression binaryExpression) {
+        throw unsupportedShortCircuitBinary(binaryExpression);
+    }
+
+    private @NotNull ValueBuild buildConditionalExpressionValue(@NotNull ConditionalExpression conditionalExpression) {
+        throw unsupportedConditionalExpression(conditionalExpression);
+    }
+
+    private @NotNull ConditionBuild buildConditionalExpressionCondition(
+            @NotNull ConditionalExpression conditionalExpression
+    ) {
+        throw unsupportedConditionalExpression(conditionalExpression);
     }
 
     /// Assignment commit preserves target evaluation before RHS evaluation.
     ///
     /// The returned operand list on `AssignmentItem` therefore starts with any already-evaluated
     /// target receiver/index operands, then appends the RHS value id as the final consumed operand.
-    private void buildAssignmentCommit(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull BuildCursor buildAssignmentCommit(
+            @NotNull BuildCursor cursor,
             @NotNull AssignmentExpression assignmentExpression
     ) {
-        var targetOperandValueIds = buildAssignmentTargetOperands(items, assignmentExpression.left());
-        var rhsValueId = buildValue(items, assignmentExpression.right(), null);
-        items.add(new AssignmentItem(
+        var targetOperandsBuild = buildAssignmentTargetOperands(cursor, assignmentExpression.left());
+        var rhsBuild = buildValue(targetOperandsBuild.cursor(), assignmentExpression.right(), null);
+        rhsBuild.cursor().currentSequence().items().add(new AssignmentItem(
                 assignmentExpression,
-                targetOperandValueIds,
-                rhsValueId,
+                targetOperandsBuild.valueIds(),
+                rhsBuild.resultValueId(),
                 null
         ));
+        return rhsBuild.cursor();
     }
 
     /// Builds the already-evaluated operands required to commit one assignment target.
@@ -532,18 +617,20 @@ public final class FrontendCfgGraphBuilder {
     /// The target AST itself remains on `AssignmentItem`, but any child expressions with real
     /// evaluation order, such as chain prefixes or subscript arguments, are materialized here so
     /// later lowering does not need to recurse back into the target subtree to discover them.
-    private @NotNull List<String> buildAssignmentTargetOperands(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueListBuild buildAssignmentTargetOperands(
+            @NotNull BuildCursor cursor,
             @NotNull Expression targetExpression
     ) {
         return switch (targetExpression) {
-            case IdentifierExpression _ -> List.of();
-            case AttributeExpression attributeExpression -> buildAttributeTargetOperands(items, attributeExpression);
+            case IdentifierExpression _ -> new ValueListBuild(cursor, List.of());
+            case AttributeExpression attributeExpression -> buildAttributeTargetOperands(cursor, attributeExpression);
             case SubscriptExpression subscriptExpression -> {
                 var operands = new ArrayList<String>(1 + subscriptExpression.arguments().size());
-                operands.add(buildAssignmentTargetValue(items, subscriptExpression.base()));
-                operands.addAll(buildArgumentValues(items, subscriptExpression.arguments()));
-                yield List.copyOf(operands);
+                var baseBuild = buildAssignmentTargetValue(cursor, subscriptExpression.base());
+                operands.add(baseBuild.resultValueId());
+                var argumentsBuild = buildArgumentValues(baseBuild.cursor(), subscriptExpression.arguments());
+                operands.addAll(argumentsBuild.valueIds());
+                yield new ValueListBuild(argumentsBuild.cursor(), List.copyOf(operands));
             }
             default -> throw unsupportedReachableAssignmentTarget(targetExpression);
         };
@@ -557,27 +644,36 @@ public final class FrontendCfgGraphBuilder {
     /// - `obj.items[i] = rhs` publishes the receiver value for `obj` plus the index operand ids
     /// - `obj.a().items[i] = rhs` first builds `obj.a()` as explicit prefix value-ops, then exports
     ///   the final target receiver/index operands
-    private @NotNull List<String> buildAttributeTargetOperands(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueListBuild buildAttributeTargetOperands(
+            @NotNull BuildCursor cursor,
             @NotNull AttributeExpression attributeExpression
     ) {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression assignment target must contain at least one step");
         }
 
-        var currentValueId = buildAssignmentTargetValue(items, attributeExpression.base());
+        var currentBuild = buildAssignmentTargetValue(cursor, attributeExpression.base());
         for (var stepIndex = 0; stepIndex + 1 < attributeExpression.steps().size(); stepIndex++) {
-            currentValueId = applyAttributeStep(items, currentValueId, attributeExpression.steps().get(stepIndex), null);
+            currentBuild = applyAttributeStep(
+                    currentBuild.cursor(),
+                    currentBuild.resultValueId(),
+                    attributeExpression.steps().get(stepIndex),
+                    null
+            );
         }
 
         var finalStep = attributeExpression.steps().getLast();
         return switch (finalStep) {
-            case AttributePropertyStep _ -> List.of(currentValueId);
+            case AttributePropertyStep _ -> new ValueListBuild(
+                    currentBuild.cursor(),
+                    List.of(currentBuild.resultValueId())
+            );
             case AttributeSubscriptStep attributeSubscriptStep -> {
                 var operands = new ArrayList<String>(1 + attributeSubscriptStep.arguments().size());
-                operands.add(currentValueId);
-                operands.addAll(buildArgumentValues(items, attributeSubscriptStep.arguments()));
-                yield List.copyOf(operands);
+                operands.add(currentBuild.resultValueId());
+                var argumentsBuild = buildArgumentValues(currentBuild.cursor(), attributeSubscriptStep.arguments());
+                operands.addAll(argumentsBuild.valueIds());
+                yield new ValueListBuild(argumentsBuild.cursor(), List.copyOf(operands));
             }
             default -> throw new IllegalStateException(
                     "Assignment target step '"
@@ -595,20 +691,20 @@ public final class FrontendCfgGraphBuilder {
     /// materializes the receiver value. This helper therefore falls back to a target-specific value
     /// path for those prefixes while still reusing ordinary `buildValue(...)` whenever a lowering-ready
     /// expression fact actually exists.
-    private @NotNull String buildAssignmentTargetValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildAssignmentTargetValue(
+            @NotNull BuildCursor cursor,
             @NotNull Expression expression
     ) {
         if (hasLoweringReadyExpressionType(expression)) {
-            return buildValue(items, expression, null);
+            return buildValue(cursor, expression, null);
         }
         return switch (expression) {
-            case IdentifierExpression _, SelfExpression _ -> emitOpaqueValue(items, expression, List.of(), null);
+            case IdentifierExpression _, SelfExpression _ -> emitOpaqueValue(cursor, expression, List.of(), null);
             case AttributeExpression attributeExpression ->
-                    buildAssignmentTargetAttributeValue(items, attributeExpression);
+                    buildAssignmentTargetAttributeValue(cursor, attributeExpression);
             case SubscriptExpression subscriptExpression ->
-                    buildAssignmentTargetSubscriptValue(items, subscriptExpression);
-            case CallExpression callExpression -> buildBareCallValue(items, callExpression, null);
+                    buildAssignmentTargetSubscriptValue(cursor, subscriptExpression);
+            case CallExpression callExpression -> buildBareCallValue(cursor, callExpression, null);
             default -> throw new IllegalStateException(
                     "Assignment target value "
                             + expression.getClass().getSimpleName()
@@ -617,35 +713,35 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
-    private @NotNull String buildAssignmentTargetAttributeValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildAssignmentTargetAttributeValue(
+            @NotNull BuildCursor cursor,
             @NotNull AttributeExpression attributeExpression
     ) {
         if (attributeExpression.steps().isEmpty()) {
             throw new IllegalStateException("AttributeExpression target value must contain at least one step");
         }
-        var currentValueId = buildAssignmentTargetValue(items, attributeExpression.base());
+        var currentBuild = buildAssignmentTargetValue(cursor, attributeExpression.base());
         for (var step : attributeExpression.steps()) {
-            currentValueId = applyAttributeStep(items, currentValueId, step, null);
+            currentBuild = applyAttributeStep(currentBuild.cursor(), currentBuild.resultValueId(), step, null);
         }
-        return currentValueId;
+        return currentBuild;
     }
 
-    private @NotNull String buildAssignmentTargetSubscriptValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild buildAssignmentTargetSubscriptValue(
+            @NotNull BuildCursor cursor,
             @NotNull SubscriptExpression subscriptExpression
     ) {
-        var baseValueId = buildAssignmentTargetValue(items, subscriptExpression.base());
-        var argumentValueIds = buildArgumentValues(items, subscriptExpression.arguments());
+        var baseBuild = buildAssignmentTargetValue(cursor, subscriptExpression.base());
+        var argumentsBuild = buildArgumentValues(baseBuild.cursor(), subscriptExpression.arguments());
         var resultValueId = chooseResultValueId(null);
-        items.add(new SubscriptLoadItem(
+        argumentsBuild.cursor().currentSequence().items().add(new SubscriptLoadItem(
                 subscriptExpression,
                 null,
-                baseValueId,
-                argumentValueIds,
+                baseBuild.resultValueId(),
+                argumentsBuild.valueIds(),
                 resultValueId
         ));
-        return resultValueId;
+        return new ValueBuild(argumentsBuild.cursor(), resultValueId);
     }
 
     /// Applies one attribute-chain step to the current receiver value and returns the produced value id.
@@ -653,8 +749,8 @@ public final class FrontendCfgGraphBuilder {
     /// The step kind decides which explicit item is emitted, but the overall contract stays uniform:
     /// the receiver value id arrives from the previous chain segment, step-local arguments are built
     /// before the item is appended, and the returned value id becomes the receiver for the next step.
-    private @NotNull String applyAttributeStep(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild applyAttributeStep(
+            @NotNull BuildCursor cursor,
             @NotNull String receiverValueId,
             @NotNull AttributeStep step,
             @Nullable String preferredResultValueId
@@ -663,38 +759,38 @@ public final class FrontendCfgGraphBuilder {
             case AttributePropertyStep attributePropertyStep -> {
                 var publishedMember = requireLoweringReadyMember(attributePropertyStep);
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                items.add(new MemberLoadItem(
+                cursor.currentSequence().items().add(new MemberLoadItem(
                         attributePropertyStep,
                         publishedMember.memberName(),
                         receiverValueId,
                         resultValueId
                 ));
-                yield resultValueId;
+                yield new ValueBuild(cursor, resultValueId);
             }
             case AttributeCallStep attributeCallStep -> {
                 var publishedCall = requireLoweringReadyCall(attributeCallStep);
-                var argumentValueIds = buildArgumentValues(items, attributeCallStep.arguments());
+                var argumentsBuild = buildArgumentValues(cursor, attributeCallStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                items.add(new CallItem(
+                argumentsBuild.cursor().currentSequence().items().add(new CallItem(
                         attributeCallStep,
                         publishedCall.callableName(),
                         receiverValueId,
-                        argumentValueIds,
+                        argumentsBuild.valueIds(),
                         resultValueId
                 ));
-                yield resultValueId;
+                yield new ValueBuild(argumentsBuild.cursor(), resultValueId);
             }
             case AttributeSubscriptStep attributeSubscriptStep -> {
-                var argumentValueIds = buildArgumentValues(items, attributeSubscriptStep.arguments());
+                var argumentsBuild = buildArgumentValues(cursor, attributeSubscriptStep.arguments());
                 var resultValueId = chooseResultValueId(preferredResultValueId);
-                items.add(new SubscriptLoadItem(
+                argumentsBuild.cursor().currentSequence().items().add(new SubscriptLoadItem(
                         attributeSubscriptStep,
                         attributeSubscriptStep.name(),
                         receiverValueId,
-                        argumentValueIds,
+                        argumentsBuild.valueIds(),
                         resultValueId
                 ));
-                yield resultValueId;
+                yield new ValueBuild(argumentsBuild.cursor(), resultValueId);
             }
             default -> throw new IllegalStateException(
                     "Unsupported attribute step in frontend CFG builder: " + step.getClass().getSimpleName()
@@ -702,28 +798,31 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
-    private @NotNull List<String> buildArgumentValues(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueListBuild buildArgumentValues(
+            @NotNull BuildCursor cursor,
             @NotNull List<Expression> arguments
     ) {
+        var currentCursor = cursor;
         var valueIds = new ArrayList<String>(arguments.size());
         for (var argument : arguments) {
-            valueIds.add(buildValue(items, argument, null));
+            var argumentBuild = buildValue(currentCursor, argument, null);
+            currentCursor = argumentBuild.cursor();
+            valueIds.add(argumentBuild.resultValueId());
         }
-        return List.copyOf(valueIds);
+        return new ValueListBuild(currentCursor, List.copyOf(valueIds));
     }
 
     /// Generic opaque items still exist as a bridge for simple expression forms whose exact lowering
     /// will be finalized later, but they no longer hide nested child evaluation order.
-    private @NotNull String emitOpaqueValue(
-            @NotNull ArrayList<SequenceItem> items,
+    private @NotNull ValueBuild emitOpaqueValue(
+            @NotNull BuildCursor cursor,
             @NotNull Expression expression,
             @NotNull List<String> operandValueIds,
             @Nullable String preferredResultValueId
     ) {
         var resultValueId = chooseResultValueId(preferredResultValueId);
-        items.add(new OpaqueExprValueItem(expression, operandValueIds, resultValueId));
-        return resultValueId;
+        cursor.currentSequence().items().add(new OpaqueExprValueItem(expression, operandValueIds, resultValueId));
+        return new ValueBuild(cursor, resultValueId);
     }
 
     private @NotNull String finalizeBlockState(@NotNull BlockState state, @NotNull String continuationId) {
@@ -897,9 +996,24 @@ public final class FrontendCfgGraphBuilder {
         return preferredResultValueId == null ? nextValueId() : preferredResultValueId;
     }
 
+    private static boolean isLogicalNotExpression(@NotNull UnaryExpression unaryExpression) {
+        return tryResolveUnaryOperator(unaryExpression.operator()) == GodotOperator.NOT;
+    }
+
     private static boolean isShortCircuitBinaryExpression(@NotNull BinaryExpression binaryExpression) {
         var operator = tryResolveBinaryOperator(binaryExpression.operator());
         return operator == GodotOperator.AND || operator == GodotOperator.OR;
+    }
+
+    private static @Nullable GodotOperator tryResolveUnaryOperator(@NotNull String operatorText) {
+        try {
+            return GodotOperator.fromSourceLexeme(
+                    Objects.requireNonNull(operatorText, "operatorText must not be null"),
+                    GodotOperator.OperatorArity.UNARY
+            );
+        } catch (IllegalArgumentException _) {
+            return null;
+        }
     }
 
     private static @Nullable GodotOperator tryResolveBinaryOperator(@NotNull String operatorText) {
@@ -1010,6 +1124,25 @@ public final class FrontendCfgGraphBuilder {
         );
     }
 
+    private static @NotNull IllegalStateException unsupportedShortCircuitBinary(
+            @NotNull BinaryExpression binaryExpression
+    ) {
+        return new IllegalStateException(
+                "Binary operator '"
+                        + binaryExpression.operator()
+                        + "' must use the dedicated frontend CFG short-circuit path, but that path is not implemented yet"
+        );
+    }
+
+    private static @NotNull IllegalStateException unsupportedConditionalExpression(
+            @NotNull ConditionalExpression conditionalExpression
+    ) {
+        return new IllegalStateException(
+                "ConditionalExpression must use the shared frontend CFG branch-result merge path, but that path is not implemented yet at "
+                        + conditionalExpression.range()
+        );
+    }
+
     private static @NotNull FrontendAstSideTable<FrontendCfgRegion> copyRegions(
             @NotNull FrontendAstSideTable<FrontendCfgRegion> regions
     ) {
@@ -1028,13 +1161,48 @@ public final class FrontendCfgGraphBuilder {
         }
     }
 
-    private record ConditionBuild(
+    /// `entryId` freezes the first node of one expression subgraph while `currentSequence` tracks
+    /// the currently writable continuation. Linear expressions keep both on the same sequence;
+    /// future branchy expressions can move only the continuation to a later merge sequence.
+    private record BuildCursor(
             @NotNull String entryId,
-            @NotNull String branchId
+            @NotNull OpenSequence currentSequence
+    ) {
+        private BuildCursor(@NotNull OpenSequence currentSequence) {
+            this(currentSequence.id(), currentSequence);
+        }
+
+        private BuildCursor {
+            entryId = FrontendCfgGraph.validateNodeId(entryId, "entryId");
+            Objects.requireNonNull(currentSequence, "currentSequence must not be null");
+        }
+    }
+
+    private record ValueBuild(
+            @NotNull BuildCursor cursor,
+            @NotNull String resultValueId
+    ) {
+        private ValueBuild {
+            Objects.requireNonNull(cursor, "cursor must not be null");
+            resultValueId = FrontendCfgGraph.validateValueId(resultValueId, "resultValueId");
+        }
+    }
+
+    private record ValueListBuild(
+            @NotNull BuildCursor cursor,
+            @NotNull List<String> valueIds
+    ) {
+        private ValueListBuild {
+            Objects.requireNonNull(cursor, "cursor must not be null");
+            valueIds = List.copyOf(Objects.requireNonNull(valueIds, "valueIds must not be null"));
+        }
+    }
+
+    private record ConditionBuild(
+            @NotNull String entryId
     ) {
         private ConditionBuild {
-            Objects.requireNonNull(entryId, "entryId must not be null");
-            Objects.requireNonNull(branchId, "branchId must not be null");
+            entryId = FrontendCfgGraph.validateNodeId(entryId, "entryId");
         }
     }
 

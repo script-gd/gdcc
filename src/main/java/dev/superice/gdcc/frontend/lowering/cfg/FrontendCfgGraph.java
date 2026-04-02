@@ -15,7 +15,8 @@ import java.util.Objects;
 ///
 /// This graph intentionally stays independent from LIR basic blocks:
 /// - node ids are frontend-local stable names
-/// - `BranchNode` keeps the source condition root and value id without forcing bool normalization
+/// - `BranchNode` keeps the source condition fragment root and value id without forcing bool
+///   normalization
 /// - `SequenceNode` carries linear source evaluation items instead of already-lowered instructions
 ///
 /// The graph is expected to be self-contained when it is published into a
@@ -74,8 +75,18 @@ public record FrontendCfgGraph(
 
     /// Branch node for one source-level condition split.
     ///
-    /// `conditionValueId` is the value already computed by a preceding sequence. It may still be a
-    /// non-bool source value; truthiness normalization is deferred to frontend CFG -> LIR lowering.
+    /// `conditionRoot` is the immediate tested condition fragment for this split: it must be the
+    /// AST expression root whose evaluation directly published `conditionValueId`.
+    /// That means it may differ from the outer source-level condition root of the owning `if` /
+    /// `elif` / `while` region:
+    /// - plain `if flag` branches keep `flag`
+    /// - `if not helper(seed)` keeps `helper(seed)`, because the builder flips branch targets
+    ///   instead of materializing a separate `not ...` value
+    /// - future short-circuit `if a and b` keeps `a` on the first branch and `b` on the second
+    ///
+    /// `conditionValueId` is the value already computed by the reachable condition region before
+    /// this branch. It may still be a non-bool source value; truthiness normalization is deferred
+    /// to frontend CFG -> LIR lowering.
     public record BranchNode(
             @NotNull String id,
             @NotNull Expression conditionRoot,
