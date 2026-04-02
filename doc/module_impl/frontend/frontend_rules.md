@@ -56,7 +56,10 @@
 - source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。
 - `frontend.lowering.cfg` 中 `FrontendIfRegion` / `FrontendElifRegion` / `FrontendWhileRegion` 的 `conditionEntryId` 表达的是整个 condition subgraph 的稳定入口；consumer 与测试都不得假设固定 `SequenceNode -> BranchNode` 两节点模板。
 - `FrontendCfgGraph.BranchNode.conditionRoot` 表达的是“当前 branch 直接测试的 condition fragment root”，必须与 `conditionValueId` 的直接 producer subtree 对齐；它不保证等于外围 source-level condition 的最外层根，也不承诺可以仅凭 `conditionValueId` 从整个 condition region 中反推出唯一一个 producer item。
-- 第八步 short-circuit lowering 落地时，每个 `BranchNode.conditionValueId` 都必须保持为当前 fragment 自己计算出的 branch-local 独立 value id；不得复用 value-context `and` / `or` 的 outward-facing merge result value id 作为 branch condition id。
+- short-circuit lowering 现已要求每个 `BranchNode.conditionValueId` 都保持为当前 fragment 自己计算出的 branch-local 独立 value id；不得复用 value-context `and` / `or` 的 outward-facing merge result value id 作为 branch condition id。
+- frontend CFG value id 默认仍是 single-definition 合同，但有一个刻意保留的例外：同一个 outward-facing merged result value id 可以由多个 `MergeValueItem` 在互斥路径上写入。
+- 这个例外必须保持收口：若同一个 value id 出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；`MergeValueItem.resultValueId` 不允许与 `OpaqueExprValueItem`、`CallItem`、`CastItem`、`BoolConstantItem` 等普通 producer 共享同一个 value id。
+- 任何按 value id 收集 producer 的代码、测试或 future lowering 都必须按“可能有多个 reaching producers”建模；不得把 merged result 当作可唯一反查的 SSA expression definition。
 - `assert` 的 compile-only block 不改变这条 source-level 合同；真正的 backend / lowering 缺口必须继续留在 compile gate，而不是反向污染 shared type-check 规则。
 - backend/LIR 的 control-flow 仍保持 bool-only 边界；当未来接上 frontend -> LIR lowering 时，必须在 lowering 侧补上显式 truthiness / condition normalization，不得再反向把 frontend 收紧成 undocumented strict-bool dialect。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。

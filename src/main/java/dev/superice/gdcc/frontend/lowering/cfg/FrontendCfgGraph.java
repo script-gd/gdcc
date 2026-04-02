@@ -1,10 +1,13 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
+import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import dev.superice.gdparser.frontend.ast.Expression;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,6 +33,7 @@ public record FrontendCfgGraph(
         nodes = copyNodes(nodes);
         validateEntryNode(nodes, entryNodeId);
         validateSuccessorTargets(nodes);
+        validateValueProducerContracts(nodes);
     }
 
     public boolean hasNode(@NotNull String nodeId) {
@@ -154,6 +158,50 @@ public record FrontendCfgGraph(
         }
     }
 
+    /// Frontend value ids are mostly single-definition, but branch-result merge slots are not:
+    /// short-circuit lowering and future conditional-value lowering may write the same outward-facing
+    /// result id along multiple mutually-exclusive paths.
+    ///
+    /// That exception is deliberately narrow. If a value id has more than one producer, every producer
+    /// must be a `MergeValueItem`; mixed definitions such as `OpaqueExprValueItem + MergeValueItem` or
+    /// `CallItem + MergeValueItem` are rejected at graph publication time.
+    ///
+    /// Any consumer that collects producers by value id must therefore handle multiple reaching
+    /// producers instead of assuming a unique reverse lookup.
+    private static void validateValueProducerContracts(@NotNull Map<String, NodeDef> nodes) {
+        var producersByValueId = new LinkedHashMap<String, List<ValueProducerOccurrence>>();
+        for (var node : nodes.values()) {
+            if (!(node instanceof SequenceNode(var nodeId, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (!(item instanceof ValueOpItem valueOpItem)) {
+                    continue;
+                }
+                var resultValueId = valueOpItem.resultValueIdOrNull();
+                if (resultValueId == null) {
+                    continue;
+                }
+                producersByValueId.computeIfAbsent(resultValueId, _ -> new ArrayList<>())
+                        .add(new ValueProducerOccurrence(nodeId, valueOpItem));
+            }
+        }
+        for (var entry : producersByValueId.entrySet()) {
+            var producers = entry.getValue();
+            if (producers.size() <= 1) {
+                continue;
+            }
+            if (producers.stream().allMatch(producer -> producer.item() instanceof MergeValueItem)) {
+                continue;
+            }
+            throw new IllegalArgumentException(
+                    "Frontend CFG value id '" + entry.getKey()
+                            + "' has multiple producers, but only merge-result slots may do that: "
+                            + describeProducers(producers)
+            );
+        }
+    }
+
     private static void validateTargetNode(
             @NotNull Map<String, NodeDef> nodes,
             @NotNull String sourceNodeId,
@@ -191,5 +239,19 @@ public record FrontendCfgGraph(
 
     private static @Nullable String validateOptionalValueId(@Nullable String id, @NotNull String fieldName) {
         return id == null ? null : validateValueId(id, fieldName);
+    }
+
+    private static @NotNull String describeProducers(@NotNull List<ValueProducerOccurrence> producers) {
+        var parts = new ArrayList<String>(producers.size());
+        for (var producer : producers) {
+            parts.add(producer.nodeId() + ":" + producer.item().getClass().getSimpleName());
+        }
+        return String.join(", ", parts);
+    }
+
+    private record ValueProducerOccurrence(
+            @NotNull String nodeId,
+            @NotNull ValueOpItem item
+    ) {
     }
 }

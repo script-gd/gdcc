@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1、2、3、4、5、6、7 阶段已完成；显式 `and` / `or` 短路构图与 body lowering 仍待迁移）
+- 状态：实施中（第 1、2、3、4、5、6、7、8 阶段已完成；body lowering 仍待迁移）
 - 更新时间：2026-04-02
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
@@ -727,9 +727,9 @@ frontend CFG builder 需要显式维护 loop stack。
 - 共享表达式递归入口已经统一：
   - value-context 与 condition-context 共用同一套递归 builder 骨架
   - condition-context `not` 已改为 target flip，而不是先产出 eager unary bool item 再 branch
-  - `and` / `or` 仍统一走 dedicated short-circuit entry 并 fail-fast，避免回退为 eager child lowering
+  - `and` / `or` 的 dedicated short-circuit entry 合同已被冻结；第八步在此基础上接通了真实 branch/merge 构图，而不是另起第三套表达式 builder
   - `ConditionalExpression` 仍保留 compile gate / builder fail-fast 边界，未提前解封
-- 为 future branch-result merge 预留了显式 `MergeValueItem`，但在第八步 short-circuit 与后续 `ConditionalExpression` 真正接通前不会提前发布伪语义 item。
+- 显式 `MergeValueItem` 已在第八步的 value-context short-circuit path 中承担共享结果写入；`ConditionalExpression` 仍待后续复用同一 contract。
 - 文档与注释已同步升级：
   - `FrontendCfgGraph.BranchNode`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion` 已改为“condition subgraph stable entry / fragment root”表述
   - `frontend_rules.md` 与 `frontend_lowering_plan.md` 已同步 condition-entry 合同与 shared-expression-core 当前事实
@@ -738,17 +738,17 @@ frontend CFG builder 需要显式维护 loop stack。
   - 它绑定的是 direct producer subtree，而不是“可从整个 condition region 里唯一反推出来的某一个 producer item”
   - `conditionEntryId` 继续负责整个 condition subgraph 入口；`conditionRoot` 只负责当前这个 branch 的 immediate tested fragment
   - `not x` 若通过 target flip 实现，则 branch 必须保留 `x` 作为 `conditionRoot`，而不是 `not x`
-  - future `a and b` / `a or b` / `a or (b and c)` 中，多个 `BranchNode` 必须分别持有 `a`、`b`、`c` 这类被实际测试的 fragment，而不是都重复外层复合表达式 root
-  - future short-circuit lowering 中，每个 `BranchNode.conditionValueId` 都必须保持为该 fragment 自己计算出的 branch-local 独立 value id，而不是 value-context branch-result merge 的共享结果槽
+  - `a and b` / `a or b` / `a or (b and c)` 中，多个 `BranchNode` 必须分别持有 `a`、`b`、`c` 这类被实际测试的 fragment，而不是都重复外层复合表达式 root
+  - short-circuit lowering 中，每个 `BranchNode.conditionValueId` 都必须保持为该 fragment 自己计算出的 branch-local 独立 value id，而不是 value-context branch-result merge 的共享结果槽
 - 例子：
   - `if flag:` 的 branch 保留 `flag`
   - `if not helper(seed):` 的 branch 保留 `helper(seed)`，同时通过 true/false target 交换表达逻辑翻转
-  - future `if a and b:` 的第一个 branch 保留 `a`，第二个 branch 保留 `b`
-  - future `if a or (b and c):` 的分支序列应分别保留 `a`、`b`、`c`
+  - `if a and b:` 的第一个 branch 保留 `a`，第二个 branch 保留 `b`
+  - `if a or (b and c):` 的分支序列应分别保留 `a`、`b`、`c`
 - 现有 structured CFG 测试已改成锚定 reachable branch / region contract，而不是锚定 `conditionEntryId -> SequenceNode.nextId() -> BranchNode` 固定模板。
 - 已新增并运行的回归重点：
   - happy path：condition-context `not` 使用 target flip，且不会再先发布 unary `OpaqueExprValueItem`
-  - negative path：short-circuit binary 无论出现在 value context 还是 condition context，都继续在 eager child lowering 之前 fail-fast
+  - 相关 short-circuit 正反回归已移入第八步专属测试面，继续复用这里冻结的 shared-expression-core 合同
   - 已跑通过：
     - `FrontendCfgGraphBuilderTest`
     - `FrontendLoweringBuildCfgPassTest`
@@ -773,6 +773,8 @@ frontend CFG builder 需要显式维护 loop stack。
   - 每个 short-circuit `BranchNode.conditionValueId` 都必须是当前 `conditionRoot` fragment-local 直接产出的独立 value id
   - branch-local condition value id 与 value-context `and` / `or` 的 outward-facing merged result value id 必须严格分离；后者允许多条互斥路径写入，前者不得复用该共享结果槽
   - consumer / 测试不得再把 `conditionValueId` 当作“从整个 condition subgraph 中反推唯一 producer item”的句柄；需要锚定 fragment root 或 reaching producer set
+  - merged result value id 不是普通 SSA 单定义值；若一个 value id 存在多个 producer，则所有 producer 都必须是 `MergeValueItem`
+  - `MergeValueItem.resultValueId` 可以与其他 `MergeValueItem` 相同，但不得与 `OpaqueExprValueItem`、`CallItem`、`CastItem`、`BoolConstantItem` 等普通 producer 共享同一个 value id
 - 这一步必须覆盖所有 value context 消费点，而不是只覆盖顶层赋值/返回：
   - `var x = a and b`
   - `return a or b`
@@ -800,13 +802,33 @@ frontend CFG builder 需要显式维护 loop stack。
   - 不允许 parent item 直接引用 `and` / `or` 的左右 child AST，而绕过中间结果 value id
   - 不允许 body lowering 成为第一个理解 `and` / `or` 短路语义的阶段
 
-当前状态（2026-03-31）：
+当前状态（2026-04-02）：
 
-- 尚未实现真正的短路 CFG 构图。
-- 但当前仓库已经显式冻结了过渡边界：
-  - `FrontendCompileCheckAnalyzer` 会把 compile surface 上的 `and` / `or` 直接作为 compile-only blocker 报错
-  - `FrontendCfgGraphBuilder` 不再把它们归入普通 eager `BinaryExpression` 路由，而是走 dedicated short-circuit entry 并 fail-fast 标注未实现
-- 这条过渡边界的目的不是“长期禁止 `and` / `or`”，而是在第八步真正落地前，防止线性 value-op 层继续错误地把 short-circuit 语义塌缩成单个 eager binary item。
+- 已完成。
+- `FrontendCfgGraphBuilder` 已正式接通 dedicated short-circuit CFG path：
+  - condition-context `and` / `or` 会展开为多段 `SequenceNode` / `BranchNode`，只在必要路径上构图右操作数
+  - value-context `and` / `or` 会分配 outward-facing merged result value id，并通过显式 `BoolConstantItem + MergeValueItem` 把 `true` / `false` 写入统一结果槽
+- branch-local / merged-result 合同已落实为代码与测试事实：
+  - 每个 `BranchNode.conditionValueId` 都是当前 `conditionRoot` fragment-local 直接产出的独立 value id
+  - value-context merged result value id 与 branch-local condition value id 严格分离
+  - parent consumer 继续只消费 child result value id，而不会直接回看 short-circuit child AST
+  - 同一个 value id 若有多个 producer，这些 producer 现在被强约束为全体 `MergeValueItem`；任何 producer lookup 都必须按多出处处理
+- compile gate 已同步收口：
+  - `FrontendCompileCheckAnalyzer` 不再对 compile surface 上的 `and` / `or` 追加显式 AST compile-block
+  - compile-ready lowering pipeline 现在允许 short-circuit binary 进入 frontend CFG builder / default pass manager
+- 已新增并运行的回归重点：
+  - happy path：
+    - condition-context `if flag and helper(seed)` 会先 branch `flag`，再只在 true path 上进入 `helper(seed)`
+    - value-context `return consume(flag or helper(seed))` 会把 branch-local condition id 与 merged result id 严格分离，并让父 `CallItem` 只消费 merged result
+    - default lowering pipeline 会放行 short-circuit binary，并发布 frontend CFG graph
+  - negative path：
+    - compile gate 不得继续把 short-circuit binary 误报为 `sema.compile_check`
+    - graph / 测试不得把 `conditionValueId` 当成“唯一 producer item”的反查句柄
+    - value-context short-circuit 不得回退成单个 eager binary item，也不得让右操作数出现在左分支切分之前的 reachable item 集中
+  - 已跑通过：
+    - `FrontendCfgGraphBuilderTest`
+    - `FrontendCompileCheckAnalyzerTest`
+    - `FrontendLoweringPassManagerTest`
 
 ### 4.9 第九步：实现 `FrontendLoweringBodyInsnPass`，只消费 frontend CFG 与 published facts
 
@@ -821,6 +843,10 @@ frontend CFG builder 需要显式维护 loop stack。
   - chain reduction
   - bare call overload 选择
   - AST 级“哪些 child 先求值”的第二套推导
+- merged result lowering 策略必须固定为“merge slot / 变量槽写入”：
+  - producer 侧按多个 `MergeValueItem` 对同一 result value id 的互斥写入处理
+  - consumer 侧读取的是该 merged slot，而不是某一个唯一 SSA producer item
+  - future body lowering 若需要按 value id 查 producer，必须接受一个 value id 命中多个 `MergeValueItem`
 - 先打通 MVP surface：
   - identifier / literal / unary / binary
   - bare/global call
@@ -835,10 +861,12 @@ frontend CFG builder 需要显式维护 loop stack。
 - happy path：
   - body lowering 可以直接按 sequence item 的 operand/result id 生成 instruction，而不需要重走已 lower 的 child AST
   - bare call 与 attribute call 都直接消费 published `resolvedCall`
+  - merged result value id 会被 materialize 成 slot-style 写入/读取，而不是压平为单表达式 SSA 定义
   - 输出 block / terminator / instruction 与 frontend CFG control-flow shape 一致
 - negative path：
   - 不允许 `FrontendLoweringBodyInsnPass` 遇到 declaration / assignment / call item 时再回到原 statement/expression AST 做第二套递归 lower
   - 不允许 lowering 自己补做语义路由推导来绕过缺失的 published fact
+  - 不允许 body lowering 依赖“一个 value id 只有一个 producer”的假设去处理 merge result
   - 在 body lowering 未闭环前，不得偷偷向 `LirFunctionDef` 写半成品 block
 
 ### 4.10 第十步：移除 legacy block-bundle 与过渡 pass

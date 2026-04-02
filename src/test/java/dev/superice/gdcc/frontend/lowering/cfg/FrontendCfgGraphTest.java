@@ -1,8 +1,10 @@
 package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
@@ -101,6 +103,68 @@ class FrontendCfgGraphTest {
     }
 
     @Test
+    void constructorAllowsMergeOnlyMultiProducerResultSlots() {
+        var mergedNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        mergedNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(
+                                new BoolConstantItem(identifier("left"), true, "left0"),
+                                new MergeValueItem(identifier("left_merge"), "left0", "merged0"),
+                                new BoolConstantItem(identifier("right"), false, "right0"),
+                                new MergeValueItem(identifier("right_merge"), "right0", "merged0")
+                        ),
+                        "stop"
+                )
+        );
+        mergedNodes.put("stop", new FrontendCfgGraph.StopNode("stop", "merged0"));
+
+        var graph = new FrontendCfgGraph("entry", mergedNodes);
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("entry"));
+
+        assertAll(
+                () -> assertEquals("merged0", assertInstanceOf(
+                        MergeValueItem.class,
+                        entryNode.items().get(1)
+                ).resultValueId()),
+                () -> assertEquals("merged0", assertInstanceOf(
+                        MergeValueItem.class,
+                        entryNode.items().get(3)
+                ).resultValueId())
+        );
+    }
+
+    @Test
+    void constructorRejectsMixedMergeAndOrdinaryProducersForSameValueId() {
+        var invalidNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        invalidNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(
+                                new OpaqueExprValueItem(identifier("flag"), "v0"),
+                                new MergeValueItem(identifier("merged"), "src0", "v0")
+                        ),
+                        "stop"
+                )
+        );
+        invalidNodes.put("stop", new FrontendCfgGraph.StopNode("stop", "v0"));
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", invalidNodes)
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("multiple producers")),
+                () -> assertTrue(exception.getMessage().contains("v0")),
+                () -> assertTrue(exception.getMessage().contains("OpaqueExprValueItem")),
+                () -> assertTrue(exception.getMessage().contains("MergeValueItem"))
+        );
+    }
+
+    @Test
     void valueOpItemsExposeStableAnchorOperandAndResultContracts() {
         var passStatement = new PassStatement(SYNTHETIC_RANGE);
         var expression = identifier("seed");
@@ -111,6 +175,8 @@ class FrontendCfgGraphTest {
         var memberItem = new MemberLoadItem(propertyStep, "payload", "recv0", "v1");
         var subscriptItem = new SubscriptLoadItem(expression, "items", "recv1", List.of("arg0"), "v2");
         var callItem = new CallItem(expression, "build", "recv2", List.of("arg1", "arg2"), "v3");
+        var boolItem = new BoolConstantItem(expression, true, "v4");
+        var mergeItem = new MergeValueItem(expression, "v4", "v5");
         var assignmentItem = new AssignmentItem(assignmentExpression, List.of("slot0", "index0"), "rhs3", null);
 
         assertAll(
@@ -130,6 +196,12 @@ class FrontendCfgGraphTest {
                 () -> assertEquals("build", callItem.callableName()),
                 () -> assertEquals("v3", callItem.resultValueIdOrNull()),
                 () -> assertEquals(List.of("recv2", "arg1", "arg2"), callItem.operandValueIds()),
+                () -> assertSame(expression, boolItem.anchor()),
+                () -> assertEquals(List.of(), boolItem.operandValueIds()),
+                () -> assertEquals("v4", boolItem.resultValueIdOrNull()),
+                () -> assertSame(expression, mergeItem.anchor()),
+                () -> assertEquals(List.of("v4"), mergeItem.operandValueIds()),
+                () -> assertEquals("v5", mergeItem.resultValueIdOrNull()),
                 () -> assertSame(assignmentExpression, assignmentItem.anchor()),
                 () -> assertEquals(List.of("slot0", "index0", "rhs3"), assignmentItem.operandValueIds()),
                 () -> assertNull(assignmentItem.resultValueIdOrNull())

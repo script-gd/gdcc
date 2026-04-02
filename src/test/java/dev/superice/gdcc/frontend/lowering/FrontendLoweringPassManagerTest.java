@@ -10,17 +10,22 @@ import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.parser.DomLirSerializer;
+import dev.superice.gdparser.frontend.ast.BinaryExpression;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -312,6 +317,58 @@ class FrontendLoweringPassManagerTest {
     }
 
     @Test
+    void lowerToContextAllowsShortCircuitBinariesOnceCfgLoweringIsPresent() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var manager = new FrontendLoweringPassManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "lowering_manager_short_circuit_cfg.gd",
+                        """
+                                class_name ShortCircuitCfgOuter
+                                extends RefCounted
+                                
+                                func helper(value: int) -> bool:
+                                    return value > 0
+                                
+                                func consume(value: bool) -> bool:
+                                    return value
+                                
+                                func ping(flag: bool, seed: int) -> bool:
+                                    return consume(flag and helper(seed))
+                                """
+                )),
+                Map.of("ShortCircuitCfgOuter", "RuntimeShortCircuitCfgOuter")
+        );
+
+        var context = manager.lowerToContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        var functionContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeShortCircuitCfgOuter",
+                "ping"
+        );
+        var pingFunction = requireFunctionDeclaration(module.units().getFirst().ast(), "ping");
+        var returnStatement = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().getFirst());
+        var consumeCall = assertInstanceOf(CallExpression.class, returnStatement.value());
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, consumeCall.arguments().getFirst());
+        var graph = functionContext.requireFrontendCfgGraph();
+        var firstBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), shortCircuit.left());
+        var secondBranch = requireReachableBranchByConditionRoot(graph, firstBranch.trueTargetId(), shortCircuit.right());
+
+        assertAll(
+                () -> assertFalse(context.isStopRequested()),
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertSame(shortCircuit.left(), firstBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.right(), secondBranch.conditionRoot()),
+                () -> assertTrue(graph.nodeIds().size() >= 6)
+        );
+    }
+
+    @Test
     void lowerModuleWithPropertyWithoutInitializerDoesNotPublishFrontendInitShellIntoSerializedLir() throws Exception {
         var diagnostics = new DiagnosticManager();
         var lowered = new FrontendLoweringPassManager().lower(
@@ -419,6 +476,35 @@ class FrontendLoweringPassManagerTest {
                 .orElseThrow(() -> new AssertionError(
                         "Missing context " + kind + " " + owningClassName + "." + functionName
                 ));
+    }
+
+    private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranchByConditionRoot(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull dev.superice.gdparser.frontend.ast.Expression conditionRoot
+    ) {
+        var visited = new LinkedHashSet<String>();
+        var worklist = new ArrayDeque<String>();
+        worklist.add(entryId);
+        while (!worklist.isEmpty()) {
+            var nodeId = worklist.removeFirst();
+            if (!visited.add(nodeId)) {
+                continue;
+            }
+            switch (graph.requireNode(nodeId)) {
+                case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> worklist.addLast(nextId);
+                case FrontendCfgGraph.BranchNode branchNode -> {
+                    if (branchNode.conditionRoot() == conditionRoot) {
+                        return branchNode;
+                    }
+                    worklist.addLast(branchNode.trueTargetId());
+                    worklist.addLast(branchNode.falseTargetId());
+                }
+                case FrontendCfgGraph.StopNode _ -> {
+                }
+            }
+        }
+        throw new AssertionError("Missing reachable branch for condition root " + conditionRoot.getClass().getSimpleName());
     }
 
     private static @NotNull FunctionDeclaration requireFunctionDeclaration(

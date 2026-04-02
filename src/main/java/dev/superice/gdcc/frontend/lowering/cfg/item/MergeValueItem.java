@@ -13,6 +13,10 @@ import java.util.Objects;
 /// `ConditionalExpression` must let both arms publish the same outward-facing result id before
 /// control flow rejoins. Making that write explicit keeps the parent contract one-way: children
 /// publish value ids, and parent items consume only those ids instead of re-reading child AST.
+/// This is also the only legal multi-definition form for one frontend value id: if a result value id
+/// has multiple producers, every producer must be a `MergeValueItem`. Future producer collection code
+/// must treat `resultValueId` as a merge-slot key with potentially multiple reaching writes, not as a
+/// globally unique SSA expression definition.
 public record MergeValueItem(
         @NotNull Node mergeAnchor,
         @NotNull String sourceValueId,

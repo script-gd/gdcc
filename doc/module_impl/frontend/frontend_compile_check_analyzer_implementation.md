@@ -137,7 +137,6 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 以下表达式当前同样由 compile gate 显式拦截：
 
 - `ConditionalExpression`
-- short-circuit `BinaryExpression(and/or/&&/||)`
 - `ArrayExpression`
 - `DictionaryExpression`
 - `PreloadExpression`
@@ -155,11 +154,11 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - 它的 lowering 需要依赖 frontend CFG graph / condition-evaluation-region 合同冻结；当前 legacy metadata-only `FrontendLoweringCfgPass` 仍不足以支撑解封
 - 因此在 CFG 入口尚未定型前，compile gate 必须先把它挡在编译管线外
 
-short-circuit `BinaryExpression` 当前也带有一条更具体的当前事实：
+short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-block 列表中移除：
 
-- shared semantic 路径已经稳定发布 `and/or` 的 typed fact；它们不是 parser/semantic 不支持
-- 但 lowering 当前尚未实现 value-context 与 condition-context 共用的短路 CFG 路径
-- 因此 compile gate 必须显式把这类 root 封口，直到 dedicated frontend CFG short-circuit lowering 落地
+- shared semantic 路径继续稳定发布 `and/or` 的 typed fact
+- dedicated frontend CFG short-circuit lowering 已能同时覆盖 condition-context 与 value-context
+- compile gate 现在只要求这类表达式的 published facts 处于 lowering-ready 状态，而不再额外按 AST root 封口
 
 这些错误不表示：
 
@@ -340,7 +339,7 @@ compile gate 当前统一使用：
 
 - `FrontendCompileCheckAnalyzerTest`
   - 显式 AST compile-block
-  - short-circuit binary compile-block
+  - short-circuit binary 不再被 compile gate 误封口
   - generic side-table blocker
   - property initializer island 上的 generic blocker
   - shared-anchor 去重

@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中（function pre-pass scaffold 与 frontend CFG graph shared-expression core 已落地；显式 short-circuit CFG 与 body lowering 仍待迁移）
+- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core 与显式 short-circuit CFG 已落地；body lowering 仍待迁移）
 - 更新时间：2026-04-02
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
@@ -24,11 +24,12 @@
 - public lowering 输入固定为 `FrontendModule`
 - lowering 内部统一走 `FrontendSemanticAnalyzer.analyzeForCompile(...)`
 - default pipeline 已稳定产出 `LirModule(skeleton/shell-only)`、function lowering context scaffold，以及带显式 operand/result value-op、structured region 与 loop-control edge 的 executable body frontend CFG graph
-- compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface；其中 `and` / `or` 已从普通 eager binary lowering 路由中移出，并在 dedicated short-circuit CFG path 落地前继续显式封口
+- compile-only gate 仍负责拦截当前未打通 lowering/backend 的 surface；`and` / `or` 已不再停留在 compile-only blocker，而是作为 compile-ready surface 进入 dedicated short-circuit CFG lowering
 - `FrontendCfgGraphBuilder` 内部已冻结共享表达式构图内核：`buildValue(...)` 现在返回 continuation-aware 内部状态，`buildCondition(...)` 现在只承诺发布 condition subgraph 的稳定入口，而不再编码固定 `SequenceNode -> BranchNode` 形状
 - `FrontendCfgGraph.BranchNode.conditionRoot` 现在固定表示“当前 branch 直接测试的 condition fragment root”；它必须对齐 `conditionValueId` 的直接 producer subtree，而不是笼统复用外围 source-level condition root，也不能再把 `conditionValueId` 当成可全图反推唯一 producer item 的句柄
-- future short-circuit lowering 必须让每个 `BranchNode.conditionValueId` 保持为该 fragment 的 branch-local 独立 value id；value-context `and` / `or` 的 outward-facing merged result value id 需要单独建模，不能反向复用为 branch condition id
-- condition-context `not` 已切到 target-flip 路径；`and` / `or` 与 `ConditionalExpression` 继续保留 compile gate + builder fail-fast 边界，等待专门的 branch-result merge lowering 落地
+- short-circuit lowering 现在要求每个 `BranchNode.conditionValueId` 都保持为该 fragment 的 branch-local 独立 value id；value-context `and` / `or` 的 outward-facing merged result value id 已单独建模，不能反向复用为 branch condition id
+- frontend CFG value id 现在额外冻结了 merge-slot 合同：一个 value id 若出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；future producer collection 与 body lowering 不得把这类 merged result 当成唯一 SSA expression definition
+- condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径，`ConditionalExpression` 仍保留 compile gate + builder fail-fast 边界
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
 
@@ -169,6 +170,7 @@
   - `resolvedCalls`
   - `expressionTypes`
 - 不在 lowering 中重新推导语义
+- 对同一个 result value id 的 producer 查询必须支持多出处；若 value id 由多个 `MergeValueItem` 共同写入，body lowering 必须把它视为“merge slot / 变量槽写入”，而不是单个 SSA 表达式节点
 - property initializer 的 expression lowering 应通过其 `PROPERTY_INIT` context 驱动，并最终写入对应 `init_func` 的函数体，而不是作为 callable body lowering 之外的常驻特例
 
 验收细则：
@@ -176,9 +178,11 @@
 - happy path：
   - lowering 只依赖 frontend 已发布 facts，不再做第二套 binder
   - 输出 instruction 的类型与 owner 路径和 frontend 已发布事实一致
+  - merged result value id 会按 merge slot 写入/读取语义进入 lowering，而不是被错误压平成单个 SSA expression producer
   - supported property initializer 通过 `init_func` 产生产物，而不是内联伪装进别的函数体
 - negative path：
   - 对缺失或冲突的 published fact 采用 invariant fail-fast
+  - 不允许 lowering 通过“value id 只能有一个 producer”的假设绕过 multi-merge producer contract
   - 不因为 backend 已有某条指令就跳过 frontend 事实校验
 
 ---

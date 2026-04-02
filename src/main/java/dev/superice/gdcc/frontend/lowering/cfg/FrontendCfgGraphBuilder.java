@@ -2,10 +2,12 @@ package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
@@ -75,8 +77,13 @@ import java.util.Objects;
 /// - `while`
 /// - loop-local `break` / `continue`
 ///
-/// Short-circuit `and` / `or` remain outside this step. They still fail fast here so compile-only
-/// blockers cannot silently collapse them back into eager binary value ops.
+/// Short-circuit `and` / `or` now lower through explicit condition/value CFG paths:
+/// - condition-context binaries expand into multi-branch condition subgraphs
+/// - value-context binaries materialize branch-local `true` / `false` writes into one merged result
+///   slot before continuation rejoins
+///
+/// `ConditionalExpression` still stays outside the current compile-ready surface until its
+/// branch-result merge contract is finalized.
 public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAnalysisData analysisData;
     private @Nullable LinkedHashMap<String, FrontendCfgGraph.NodeDef> nodes;
@@ -200,6 +207,8 @@ public final class FrontendCfgGraphBuilder {
             var returnBuild = buildValue(new BuildCursor(requireCurrentSequence(state)), returnValue, null);
             state.setCurrentSequence(returnBuild.cursor().currentSequence());
             returnValueId = returnBuild.resultValueId();
+        } else {
+            requireCurrentSequence(state).items().add(new SourceAnchorItem(returnStatement));
         }
         closeCurrentSequence(state, publishStopNode(returnValueId));
         state.setReachable(false);
@@ -341,7 +350,7 @@ public final class FrontendCfgGraphBuilder {
             case UnaryExpression unaryExpression when isLogicalNotExpression(unaryExpression) ->
                     buildCondition(cursor, unaryExpression.operand(), falseTargetId, trueTargetId);
             case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
-                    buildShortCircuitCondition(binaryExpression);
+                    buildShortCircuitCondition(cursor, binaryExpression, trueTargetId, falseTargetId);
             case ConditionalExpression conditionalExpression ->
                     buildConditionalExpressionCondition(conditionalExpression);
             default -> buildConditionFromValue(cursor, condition, trueTargetId, falseTargetId);
@@ -404,9 +413,8 @@ public final class FrontendCfgGraphBuilder {
     /// The builder deliberately special-cases only operations whose semantics later lowering must not
     /// rediscover from raw AST alone. Generic expressions still use `OpaqueExprValueItem`, but only
     /// after all of their lowering-ready children have already published explicit operand ids.
-    /// Short-circuit `and` / `or` no longer share that generic eager route; they are intercepted by
-    /// a dedicated unimplemented path so compile-blocked sources cannot accidentally regress into one
-    /// linear binary item.
+    /// Short-circuit `and` / `or` no longer share the generic eager route; they branch through the
+    /// shared condition core and merge one explicit bool result value back to the parent consumer.
     private @NotNull ValueBuild buildValue(
             @NotNull BuildCursor cursor,
             @NotNull Expression expression,
@@ -442,7 +450,7 @@ public final class FrontendCfgGraphBuilder {
                 );
             }
             case BinaryExpression binaryExpression when isShortCircuitBinaryExpression(binaryExpression) ->
-                    buildShortCircuitBinaryValue(binaryExpression);
+                    buildShortCircuitBinaryValue(cursor, binaryExpression, preferredResultValueId);
             case BinaryExpression binaryExpression -> {
                 var leftBuild = buildValue(cursor, binaryExpression.left(), null);
                 var rightBuild = buildValue(leftBuild.cursor(), binaryExpression.right(), null);
@@ -571,18 +579,114 @@ public final class FrontendCfgGraphBuilder {
         return new ValueBuild(operandBuild.cursor(), resultValueId);
     }
 
-    /// `and` / `or` never belong to the generic eager binary route.
-    ///
-    /// Their final lowering must allocate a shared result slot, branch on the left operand, and only
-    /// materialize the right operand on the non-short-circuit path. Reaching this helper therefore
-    /// means the compile gate was bypassed and we must fail before any child operand is eagerly
-    /// lowered.
-    private @NotNull ValueBuild buildShortCircuitBinaryValue(@NotNull BinaryExpression binaryExpression) {
-        throw unsupportedShortCircuitBinary(binaryExpression);
+    /// Value-context `and` / `or` reuse the condition builder so only the necessary operand path is
+    /// evaluated. The taken arm then writes an explicit bool constant into a shared merged result id.
+    private @NotNull ValueBuild buildShortCircuitBinaryValue(
+            @NotNull BuildCursor cursor,
+            @NotNull BinaryExpression binaryExpression,
+            @Nullable String preferredResultValueId
+    ) {
+        var resultValueId = chooseResultValueId(preferredResultValueId);
+        var mergeSequence = new OpenSequence(nextSequenceId());
+        var rightCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var trueWriteSequence = new OpenSequence(nextSequenceId());
+        var falseWriteSequence = new OpenSequence(nextSequenceId());
+
+        var shortCircuitOperator = requireShortCircuitBinaryOperator(binaryExpression);
+        var entryBuild = switch (shortCircuitOperator) {
+            case AND -> {
+                var leftCondition = buildCondition(
+                        cursor,
+                        binaryExpression.left(),
+                        rightCursor.entryId(),
+                        falseWriteSequence.id()
+                );
+                buildCondition(
+                        rightCursor,
+                        binaryExpression.right(),
+                        trueWriteSequence.id(),
+                        falseWriteSequence.id()
+                );
+                yield leftCondition;
+            }
+            case OR -> {
+                var leftCondition = buildCondition(
+                        cursor,
+                        binaryExpression.left(),
+                        trueWriteSequence.id(),
+                        rightCursor.entryId()
+                );
+                buildCondition(
+                        rightCursor,
+                        binaryExpression.right(),
+                        trueWriteSequence.id(),
+                        falseWriteSequence.id()
+                );
+                yield leftCondition;
+            }
+            default -> throw unsupportedShortCircuitBinary(binaryExpression);
+        };
+
+        publishMergedBooleanWriteSequence(
+                trueWriteSequence,
+                binaryExpression,
+                true,
+                resultValueId,
+                mergeSequence.id()
+        );
+        publishMergedBooleanWriteSequence(
+                falseWriteSequence,
+                binaryExpression,
+                false,
+                resultValueId,
+                mergeSequence.id()
+        );
+        return new ValueBuild(new BuildCursor(entryBuild.entryId(), mergeSequence), resultValueId);
     }
 
-    private @NotNull ConditionBuild buildShortCircuitCondition(@NotNull BinaryExpression binaryExpression) {
-        throw unsupportedShortCircuitBinary(binaryExpression);
+    /// Condition-context `and` / `or` split the left fragment first, then only build the right
+    /// fragment on the path where source semantics require it.
+    private @NotNull ConditionBuild buildShortCircuitCondition(
+            @NotNull BuildCursor cursor,
+            @NotNull BinaryExpression binaryExpression,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var shortCircuitOperator = requireShortCircuitBinaryOperator(binaryExpression);
+        var rightCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        return switch (shortCircuitOperator) {
+            case AND -> {
+                var leftCondition = buildCondition(
+                        cursor,
+                        binaryExpression.left(),
+                        rightCursor.entryId(),
+                        falseTargetId
+                );
+                buildCondition(
+                        rightCursor,
+                        binaryExpression.right(),
+                        trueTargetId,
+                        falseTargetId
+                );
+                yield leftCondition;
+            }
+            case OR -> {
+                var leftCondition = buildCondition(
+                        cursor,
+                        binaryExpression.left(),
+                        trueTargetId,
+                        rightCursor.entryId()
+                );
+                buildCondition(
+                        rightCursor,
+                        binaryExpression.right(),
+                        trueTargetId,
+                        falseTargetId
+                );
+                yield leftCondition;
+            }
+            default -> throw unsupportedShortCircuitBinary(binaryExpression);
+        };
     }
 
     private @NotNull ValueBuild buildConditionalExpressionValue(@NotNull ConditionalExpression conditionalExpression) {
@@ -827,6 +931,21 @@ public final class FrontendCfgGraphBuilder {
         return new ValueBuild(cursor, resultValueId);
     }
 
+    private void publishMergedBooleanWriteSequence(
+            @NotNull OpenSequence sequence,
+            @NotNull BinaryExpression mergeAnchor,
+            boolean constantValue,
+            @NotNull String mergedResultValueId,
+            @NotNull String nextId
+    ) {
+        var constantValueId = nextValueId();
+        sequence.items().add(new BoolConstantItem(mergeAnchor, constantValue, constantValueId));
+        // The outward-facing short-circuit result behaves like a merge slot written on mutually
+        // exclusive paths, not like one unique SSA expression definition.
+        sequence.items().add(new MergeValueItem(mergeAnchor, constantValueId, mergedResultValueId));
+        publishSequenceNode(sequence.id(), sequence.items(), nextId);
+    }
+
     private @NotNull String finalizeBlockState(@NotNull BlockState state, @NotNull String continuationId) {
         if (state.reachable()) {
             closeCurrentSequence(state, continuationId);
@@ -1007,6 +1126,16 @@ public final class FrontendCfgGraphBuilder {
         return operator == GodotOperator.AND || operator == GodotOperator.OR;
     }
 
+    private static @NotNull GodotOperator requireShortCircuitBinaryOperator(
+            @NotNull BinaryExpression binaryExpression
+    ) {
+        var operator = tryResolveBinaryOperator(binaryExpression.operator());
+        if (operator == GodotOperator.AND || operator == GodotOperator.OR) {
+            return operator;
+        }
+        throw unsupportedShortCircuitBinary(binaryExpression);
+    }
+
     private static @Nullable GodotOperator tryResolveUnaryOperator(@NotNull String operatorText) {
         try {
             return GodotOperator.fromSourceLexeme(
@@ -1132,7 +1261,7 @@ public final class FrontendCfgGraphBuilder {
         return new IllegalStateException(
                 "Binary operator '"
                         + binaryExpression.operator()
-                        + "' must use the dedicated frontend CFG short-circuit path, but that path is not implemented yet"
+                        + "' must use the dedicated frontend CFG short-circuit path"
         );
     }
 

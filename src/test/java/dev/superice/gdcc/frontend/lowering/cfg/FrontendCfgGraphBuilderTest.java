@@ -2,9 +2,11 @@ package dev.superice.gdcc.frontend.lowering.cfg;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
@@ -50,6 +52,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -382,7 +385,7 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
-    void buildExecutableBodyFailsFastForShortCircuitBinaryBeforeEagerChildLowering() throws Exception {
+    void buildExecutableBodyPublishesShortCircuitValueGraphForNestedConsumer() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_short_circuit_binary.gd",
                 """
@@ -392,34 +395,80 @@ class FrontendCfgGraphBuilderTest {
                         func helper(value: int) -> bool:
                             return value > 0
                         
+                        func consume(value: bool) -> bool:
+                            return value
+                        
                         func ping(flag: bool, seed: int) -> bool:
-                            return flag and helper(seed)
+                            return consume(flag or helper(seed))
                         """,
                 "ping",
                 Map.of("CfgBuilderShortCircuitBinary", "RuntimeCfgBuilderShortCircuitBinary")
         );
 
         var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
         var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
-        var shortCircuit = assertInstanceOf(BinaryExpression.class, returnStatement.value());
+        var consumeCall = assertInstanceOf(CallExpression.class, returnStatement.value());
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, consumeCall.arguments().getFirst());
         var helperCall = assertInstanceOf(CallExpression.class, shortCircuit.right());
-        analyzed.analysisData().resolvedCalls().remove(helperCall);
 
-        var exception = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        var firstBranch = requireReachableBranchByConditionRoot(graph, graph.entryNodeId(), shortCircuit.left());
+        var secondBranch = requireReachableBranchByConditionRoot(graph, firstBranch.falseTargetId(), shortCircuit.right());
+        var firstProducer = requireSingleReachableValueProducerForBranch(graph, graph.entryNodeId(), firstBranch);
+        var secondProducer = requireSingleReachableValueProducerForBranch(graph, firstBranch.falseTargetId(), secondBranch);
+        var itemsBeforeLeftSplit = collectReachableItemsBeforeTargets(
+                graph,
+                graph.entryNodeId(),
+                Set.of(firstBranch.trueTargetId(), firstBranch.falseTargetId())
         );
+        var reachableValueItems = collectReachableItemsBeforeTargets(graph, graph.entryNodeId(), Set.of()).stream()
+                .filter(ValueOpItem.class::isInstance)
+                .map(ValueOpItem.class::cast)
+                .toList();
+        var consumeItem = reachableValueItems.stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .filter(item -> item.anchor() == consumeCall)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing consume CallItem"));
+        var mergedResultValueId = consumeItem.argumentValueIds().getFirst();
+        var mergeItems = reachableValueItems.stream()
+                .filter(MergeValueItem.class::isInstance)
+                .map(MergeValueItem.class::cast)
+                .filter(item -> item.resultValueId().equals(mergedResultValueId))
+                .toList();
+        var boolConstantsById = reachableValueItems.stream()
+                .filter(BoolConstantItem.class::isInstance)
+                .map(BoolConstantItem.class::cast)
+                .collect(java.util.stream.Collectors.toMap(BoolConstantItem::resultValueId, item -> item));
 
         assertAll(
-                () -> assertTrue(analyzed.diagnostics().hasErrors()),
-                () -> assertTrue(exception.getMessage().contains("short-circuit"), exception.getMessage()),
-                () -> assertTrue(exception.getMessage().contains("'and'"), exception.getMessage()),
-                () -> assertFalse(exception.getMessage().contains("resolvedCalls()"), exception.getMessage())
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(shortCircuit.left(), firstBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.right(), secondBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.left(), firstProducer.anchor()),
+                () -> assertSame(shortCircuit.right(), secondProducer.anchor()),
+                () -> assertEquals(List.of(mergedResultValueId), consumeItem.operandValueIds()),
+                () -> assertNotEquals(mergedResultValueId, firstBranch.conditionValueId()),
+                () -> assertNotEquals(mergedResultValueId, secondBranch.conditionValueId()),
+                () -> assertEquals(2, mergeItems.size()),
+                () -> assertEquals(
+                        Set.of(true, false),
+                        mergeItems.stream()
+                                .map(MergeValueItem::sourceValueId)
+                                .map(boolConstantsById::get)
+                                .map(BoolConstantItem::value)
+                                .collect(java.util.stream.Collectors.toSet())
+                ),
+                () -> assertFalse(itemsBeforeLeftSplit.stream().anyMatch(item ->
+                        item instanceof CallItem callItem && callItem.anchor() == helperCall
+                ))
         );
     }
 
     @Test
-    void buildExecutableBodyFailsFastForShortCircuitConditionBeforeEagerChildLowering() throws Exception {
+    void buildExecutableBodyPublishesShortCircuitConditionGraphWithoutEagerRightOperand() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_short_circuit_condition.gd",
                 """
@@ -440,20 +489,198 @@ class FrontendCfgGraphBuilderTest {
 
         var rootBlock = analyzed.function().body();
         var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                build.regions().get(ifStatement)
+        );
         var shortCircuit = assertInstanceOf(BinaryExpression.class, ifStatement.condition());
         var helperCall = assertInstanceOf(CallExpression.class, shortCircuit.right());
-        analyzed.analysisData().resolvedCalls().remove(helperCall);
-
-        var exception = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        var firstBranch = requireReachableBranchByConditionRoot(graph, ifRegion.conditionEntryId(), shortCircuit.left());
+        var secondBranch = requireReachableBranchByConditionRoot(graph, firstBranch.trueTargetId(), shortCircuit.right());
+        var firstProducer = requireSingleReachableValueProducerForBranch(graph, ifRegion.conditionEntryId(), firstBranch);
+        var secondProducer = requireSingleReachableValueProducerForBranch(graph, firstBranch.trueTargetId(), secondBranch);
+        var itemsBeforeLeftSplit = collectReachableItemsBeforeTargets(
+                graph,
+                ifRegion.conditionEntryId(),
+                Set.of(firstBranch.trueTargetId(), firstBranch.falseTargetId())
         );
 
         assertAll(
-                () -> assertTrue(analyzed.diagnostics().hasErrors()),
-                () -> assertTrue(exception.getMessage().contains("short-circuit"), exception.getMessage()),
-                () -> assertTrue(exception.getMessage().contains("'and'"), exception.getMessage()),
-                () -> assertFalse(exception.getMessage().contains("resolvedCalls()"), exception.getMessage())
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(shortCircuit.left(), firstBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.right(), secondBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.left(), firstProducer.anchor()),
+                () -> assertSame(shortCircuit.right(), secondProducer.anchor()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), firstBranch.falseTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), secondBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), secondBranch.falseTargetId()),
+                () -> assertNotEquals(firstBranch.conditionValueId(), secondBranch.conditionValueId()),
+                () -> assertFalse(itemsBeforeLeftSplit.stream().anyMatch(item ->
+                        item instanceof CallItem callItem && callItem.anchor() == helperCall
+                ))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesNestedAndConditionBranchesWithoutEagerLaterCalls() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_nested_and_condition.gd",
+                """
+                        class_name CfgBuilderNestedAndCondition
+                        extends RefCounted
+                        
+                        func first(value: int) -> bool:
+                            return value > 0
+                        
+                        func second(value: int) -> bool:
+                            return value > 1
+                        
+                        func ping(flag: bool, seed: int) -> int:
+                            if flag and first(seed) and second(seed):
+                                return seed
+                            return seed + 1
+                        """,
+                "ping",
+                Map.of("CfgBuilderNestedAndCondition", "RuntimeCfgBuilderNestedAndCondition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                build.regions().get(ifStatement)
+        );
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, ifStatement.condition());
+        var nestedLeft = assertInstanceOf(BinaryExpression.class, shortCircuit.left());
+        var firstCall = assertInstanceOf(CallExpression.class, nestedLeft.right());
+        var secondCall = assertInstanceOf(CallExpression.class, shortCircuit.right());
+        var firstBranch = requireReachableBranchByConditionRoot(graph, ifRegion.conditionEntryId(), nestedLeft.left());
+        var secondBranch = requireReachableBranchByConditionRoot(graph, firstBranch.trueTargetId(), nestedLeft.right());
+        var thirdBranch = requireReachableBranchByConditionRoot(graph, secondBranch.trueTargetId(), shortCircuit.right());
+        var firstProducer = requireSingleReachableValueProducerForBranch(graph, ifRegion.conditionEntryId(), firstBranch);
+        var secondProducer = requireSingleReachableValueProducerForBranch(graph, firstBranch.trueTargetId(), secondBranch);
+        var thirdProducer = requireSingleReachableValueProducerForBranch(graph, secondBranch.trueTargetId(), thirdBranch);
+        var itemsBeforeFirstSplit = collectReachableItemsBeforeTargets(
+                graph,
+                ifRegion.conditionEntryId(),
+                Set.of(firstBranch.trueTargetId(), firstBranch.falseTargetId())
+        );
+        var itemsBeforeSecondSplit = collectReachableItemsBeforeTargets(
+                graph,
+                firstBranch.trueTargetId(),
+                Set.of(secondBranch.trueTargetId(), secondBranch.falseTargetId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(nestedLeft.left(), firstBranch.conditionRoot()),
+                () -> assertSame(nestedLeft.right(), secondBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.right(), thirdBranch.conditionRoot()),
+                () -> assertSame(nestedLeft.left(), firstProducer.anchor()),
+                () -> assertSame(nestedLeft.right(), secondProducer.anchor()),
+                () -> assertSame(shortCircuit.right(), thirdProducer.anchor()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), firstBranch.falseTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), secondBranch.falseTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), thirdBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), thirdBranch.falseTargetId()),
+                () -> assertNotEquals(firstBranch.conditionValueId(), secondBranch.conditionValueId()),
+                () -> assertNotEquals(secondBranch.conditionValueId(), thirdBranch.conditionValueId()),
+                () -> assertNotEquals(firstBranch.conditionValueId(), thirdBranch.conditionValueId()),
+                () -> assertFalse(itemsBeforeFirstSplit.stream().anyMatch(item ->
+                        item instanceof CallItem callItem
+                                && (callItem.anchor() == firstCall || callItem.anchor() == secondCall)
+                )),
+                () -> assertTrue(itemsBeforeSecondSplit.stream()
+                        .filter(CallItem.class::isInstance)
+                        .map(CallItem.class::cast)
+                        .anyMatch(item -> item.anchor() == firstCall)),
+                () -> assertFalse(itemsBeforeSecondSplit.stream().anyMatch(item ->
+                        item instanceof CallItem callItem && callItem.anchor() == secondCall
+                ))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesNestedOrConditionBranchesWithoutEagerFallbackCalls() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_nested_or_condition.gd",
+                """
+                        class_name CfgBuilderNestedOrCondition
+                        extends RefCounted
+                        
+                        func first(value: int) -> bool:
+                            return value > 0
+                        
+                        func second(value: int) -> bool:
+                            return value > 1
+                        
+                        func ping(flag: bool, seed: int) -> int:
+                            if (flag and first(seed)) or second(seed):
+                                return seed
+                            return seed + 1
+                        """,
+                "ping",
+                Map.of("CfgBuilderNestedOrCondition", "RuntimeCfgBuilderNestedOrCondition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var ifStatement = assertInstanceOf(IfStatement.class, rootBlock.statements().getFirst());
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var ifRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                build.regions().get(ifStatement)
+        );
+        var shortCircuit = assertInstanceOf(BinaryExpression.class, ifStatement.condition());
+        var nestedLeft = assertInstanceOf(BinaryExpression.class, shortCircuit.left());
+        var firstCall = assertInstanceOf(CallExpression.class, nestedLeft.right());
+        var secondCall = assertInstanceOf(CallExpression.class, shortCircuit.right());
+        var firstBranch = requireReachableBranchByConditionRoot(graph, ifRegion.conditionEntryId(), nestedLeft.left());
+        var secondBranch = requireReachableBranchByConditionRoot(graph, firstBranch.trueTargetId(), nestedLeft.right());
+        var fallbackBranch = requireReachableBranchByConditionRoot(graph, firstBranch.falseTargetId(), shortCircuit.right());
+        var firstProducer = requireSingleReachableValueProducerForBranch(graph, ifRegion.conditionEntryId(), firstBranch);
+        var secondProducer = requireSingleReachableValueProducerForBranch(graph, firstBranch.trueTargetId(), secondBranch);
+        var fallbackProducer = requireSingleReachableValueProducerForBranch(graph, firstBranch.falseTargetId(), fallbackBranch);
+        var itemsBeforeFirstSplit = collectReachableItemsBeforeTargets(
+                graph,
+                ifRegion.conditionEntryId(),
+                Set.of(firstBranch.trueTargetId(), firstBranch.falseTargetId())
+        );
+        var itemsBeforeSecondSplit = collectReachableItemsBeforeTargets(
+                graph,
+                firstBranch.trueTargetId(),
+                Set.of(secondBranch.trueTargetId(), secondBranch.falseTargetId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(nestedLeft.left(), firstBranch.conditionRoot()),
+                () -> assertSame(nestedLeft.right(), secondBranch.conditionRoot()),
+                () -> assertSame(shortCircuit.right(), fallbackBranch.conditionRoot()),
+                () -> assertSame(nestedLeft.left(), firstProducer.anchor()),
+                () -> assertSame(nestedLeft.right(), secondProducer.anchor()),
+                () -> assertSame(shortCircuit.right(), fallbackProducer.anchor()),
+                () -> assertEquals(ifRegion.thenEntryId(), secondBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.thenEntryId(), fallbackBranch.trueTargetId()),
+                () -> assertEquals(ifRegion.elseOrNextClauseEntryId(), fallbackBranch.falseTargetId()),
+                () -> assertNotEquals(firstBranch.conditionValueId(), secondBranch.conditionValueId()),
+                () -> assertNotEquals(secondBranch.conditionValueId(), fallbackBranch.conditionValueId()),
+                () -> assertNotEquals(firstBranch.conditionValueId(), fallbackBranch.conditionValueId()),
+                () -> assertFalse(itemsBeforeFirstSplit.stream().anyMatch(item ->
+                        item instanceof CallItem callItem
+                                && (callItem.anchor() == firstCall || callItem.anchor() == secondCall)
+                )),
+                () -> assertTrue(itemsBeforeSecondSplit.stream()
+                        .filter(CallItem.class::isInstance)
+                        .map(CallItem.class::cast)
+                        .anyMatch(item -> item.anchor() == firstCall)),
+                () -> assertFalse(itemsBeforeSecondSplit.stream().anyMatch(item ->
+                        item instanceof CallItem callItem && callItem.anchor() == secondCall
+                ))
         );
     }
 
@@ -824,6 +1051,45 @@ class FrontendCfgGraphBuilderTest {
             throw new AssertionError("Missing producer for branch condition value " + branchNode.conditionValueId());
         }
         return producers;
+    }
+
+    private static @NotNull ValueOpItem requireSingleReachableValueProducerForBranch(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull FrontendCfgGraph.BranchNode branchNode
+    ) {
+        var producers = requireReachableValueProducersForBranch(graph, entryId, branchNode);
+        assertEquals(1, producers.size());
+        return producers.getFirst();
+    }
+
+    private static @NotNull FrontendCfgGraph.BranchNode requireReachableBranchByConditionRoot(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String entryId,
+            @NotNull dev.superice.gdparser.frontend.ast.Expression conditionRoot
+    ) {
+        var visited = new LinkedHashSet<String>();
+        var worklist = new ArrayDeque<String>();
+        worklist.add(entryId);
+        while (!worklist.isEmpty()) {
+            var nodeId = worklist.removeFirst();
+            if (!visited.add(nodeId)) {
+                continue;
+            }
+            switch (graph.requireNode(nodeId)) {
+                case FrontendCfgGraph.SequenceNode(_, _, var nextId) -> worklist.addLast(nextId);
+                case FrontendCfgGraph.BranchNode branchNode -> {
+                    if (branchNode.conditionRoot() == conditionRoot) {
+                        return branchNode;
+                    }
+                    worklist.addLast(branchNode.trueTargetId());
+                    worklist.addLast(branchNode.falseTargetId());
+                }
+                case FrontendCfgGraph.StopNode _ -> {
+                }
+            }
+        }
+        throw new AssertionError("Missing reachable branch for condition root " + conditionRoot.getClass().getSimpleName());
     }
 
     private static @NotNull AnalyzedFunction analyzeFunction(

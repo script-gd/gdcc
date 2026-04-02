@@ -22,14 +22,12 @@ import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
-import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -256,7 +254,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void analyzeForCompileBlocksShortCircuitBinaryExpressionsUntilDedicatedCfgPathLands() throws Exception {
+    void analyzeForCompileLeavesShortCircuitBinaryExpressionsOnCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckShortCircuitBinary
                 extends RefCounted
@@ -274,24 +272,10 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
 
         var compiled = analyzeForCompile("compile_check_short_circuit_binary.gd", source);
-        var ping = findFunction(compiled.unit().ast().statements(), "ping");
-        var bothDeclaration = assertInstanceOf(VariableDeclaration.class, ping.body().statements().getFirst());
-        var andExpression = assertInstanceOf(BinaryExpression.class, bothDeclaration.value());
-        var returnStatement = assertInstanceOf(ReturnStatement.class, ping.body().statements().get(1));
-        var orExpression = assertInstanceOf(BinaryExpression.class, returnStatement.value());
-        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-
-        assertEquals(2, compileDiagnostics.size());
-        assertEquals(
-                Set.of(
-                        FrontendRange.fromAstRange(andExpression.range()),
-                        FrontendRange.fromAstRange(orExpression.range())
-                ),
-                Set.copyOf(compileDiagnostics.stream().map(FrontendDiagnostic::range).toList())
-        );
-        assertTrue(compileDiagnostics.stream().allMatch(diagnostic -> diagnostic.message().contains("short-circuit")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'and'")));
-        assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("'or'")));
+        assertFalse(compiled.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.deferred_chain_resolution").isEmpty());
     }
 
     @Test
