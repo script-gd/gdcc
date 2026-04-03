@@ -1,6 +1,5 @@
 package dev.superice.gdcc.frontend.lowering;
 
-import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
@@ -11,20 +10,9 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
-import dev.superice.gdcc.lir.LirBasicBlock;
-import dev.superice.gdcc.lir.LirFunctionDef;
-import dev.superice.gdcc.lir.insn.AssignInsn;
-import dev.superice.gdcc.lir.insn.BinaryOpInsn;
-import dev.superice.gdcc.lir.insn.GoIfInsn;
-import dev.superice.gdcc.lir.insn.GotoInsn;
-import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
-import dev.superice.gdcc.lir.insn.PackVariantInsn;
-import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
-import dev.superice.gdcc.type.GdVariantType;
-import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -38,13 +26,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSupportTest {
@@ -71,10 +56,10 @@ class FrontendBodyLoweringSupportTest {
                 () -> assertEquals("local", FrontendBodyLoweringSupport.sourceLocalSlotId(local)),
                 () -> assertEquals("cfg_cond_variant_v7", FrontendBodyLoweringSupport.conditionVariantSlotId("v7")),
                 () -> assertEquals("cfg_cond_bool_v7", FrontendBodyLoweringSupport.conditionBoolSlotId("v7")),
-                () -> assertEquals(GdIntType.INT, FrontendBodyLoweringSupport.requireSourceLocalSlotType(
-                        analyzed.analysisData(),
-                        local
-                ))
+                () -> assertEquals(
+                        GdIntType.INT,
+                        FrontendBodyLoweringSupport.requireSourceLocalSlotType(analyzed.analysisData(), local)
+                )
         );
     }
 
@@ -118,247 +103,6 @@ class FrontendBodyLoweringSupportTest {
                 () -> assertEquals(GdBoolType.BOOL, valueTypes.get(mergedResultValueId)),
                 () -> assertEquals("cfg_merge_" + mergedResultValueId, FrontendBodyLoweringSupport.mergeSlotId(mergedResultValueId))
         );
-    }
-
-    @Test
-    void emitConditionBranchUsesDirectBoolValueWithoutNormalization() {
-        var function = new LirFunctionDef("bool_condition");
-        var entry = new LirBasicBlock("entry");
-
-        var materialization = FrontendBodyLoweringSupport.emitConditionBranch(
-                function,
-                entry,
-                "v0",
-                GdBoolType.BOOL,
-                "bb_true",
-                "bb_false"
-        );
-
-        var tempVar = Objects.requireNonNull(function.getVariableById("cfg_tmp_v0"));
-        var terminator = assertInstanceOf(GoIfInsn.class, entry.getTerminator());
-        assertAll(
-                () -> assertEquals("cfg_tmp_v0", materialization.branchInputSlotId()),
-                () -> assertNull(materialization.variantSlotId()),
-                () -> assertNull(materialization.boolSlotId()),
-                () -> assertTrue(entry.getNonTerminatorInstructions().isEmpty()),
-                () -> assertEquals("cfg_tmp_v0", terminator.conditionVarId()),
-                () -> assertEquals(GdBoolType.BOOL, tempVar.type())
-        );
-    }
-
-    @Test
-    void emitConditionBranchUnpacksVariantAndPackThenUnpackForNonBool() {
-        var variantFunction = new LirFunctionDef("variant_condition");
-        var variantEntry = new LirBasicBlock("entry");
-        var variantMaterialization = FrontendBodyLoweringSupport.emitConditionBranch(
-                variantFunction,
-                variantEntry,
-                "v1",
-                GdVariantType.VARIANT,
-                "bb_true",
-                "bb_false"
-        );
-        var variantUnpack = assertInstanceOf(UnpackVariantInsn.class, variantEntry.getNonTerminatorInstructions().getFirst());
-        var variantTerminator = assertInstanceOf(GoIfInsn.class, variantEntry.getTerminator());
-
-        var intFunction = new LirFunctionDef("int_condition");
-        var intEntry = new LirBasicBlock("entry");
-        var intMaterialization = FrontendBodyLoweringSupport.emitConditionBranch(
-                intFunction,
-                intEntry,
-                "v2",
-                GdIntType.INT,
-                "bb_true",
-                "bb_false"
-        );
-        var packInsn = assertInstanceOf(PackVariantInsn.class, intEntry.getNonTerminatorInstructions().getFirst());
-        var unpackInsn = assertInstanceOf(UnpackVariantInsn.class, intEntry.getNonTerminatorInstructions().get(1));
-        var intTerminator = assertInstanceOf(GoIfInsn.class, intEntry.getTerminator());
-
-        assertAll(
-                () -> assertNull(variantMaterialization.variantSlotId()),
-                () -> assertEquals("cfg_cond_bool_v1", variantMaterialization.boolSlotId()),
-                () -> assertEquals("cfg_cond_bool_v1", variantUnpack.resultId()),
-                () -> assertEquals("cfg_tmp_v1", variantUnpack.variantId()),
-                () -> assertEquals("cfg_cond_bool_v1", variantTerminator.conditionVarId()),
-                () -> assertEquals("cfg_cond_variant_v2", intMaterialization.variantSlotId()),
-                () -> assertEquals("cfg_cond_bool_v2", intMaterialization.boolSlotId()),
-                () -> assertEquals("cfg_cond_variant_v2", packInsn.resultId()),
-                () -> assertEquals("cfg_tmp_v2", packInsn.valueId()),
-                () -> assertEquals("cfg_cond_bool_v2", unpackInsn.resultId()),
-                () -> assertEquals("cfg_cond_variant_v2", unpackInsn.variantId()),
-                () -> assertEquals("cfg_cond_bool_v2", intTerminator.conditionVarId())
-        );
-    }
-
-    @Test
-    void classifyOpaqueExpressionSeparatesHandleNowDeferredAndRejectedRoots() {
-        var function = parseFunction(
-                "body_lowering_support_opaque_policy.gd",
-                """
-                        class_name BodyLoweringSupportOpaquePolicy
-                        extends RefCounted
-                        
-                        func helper(seed: int) -> int:
-                            return seed
-                        
-                        func ping(flag: bool, left: bool, right: bool, seed: int, value):
-                            var leaf = seed
-                            var unary_value = -seed
-                            var eager = seed + 1
-                            var shorted = left and right
-                            var conditional_value = seed if flag else 1
-                            var call_value = helper(seed)
-                            var cast_value = value as int
-                            var type_test_value = value is int
-                        """,
-                "ping",
-                Map.of("BodyLoweringSupportOpaquePolicy", "RuntimeBodyLoweringSupportOpaquePolicy")
-        );
-
-        var leaf = Objects.requireNonNull(findVariable(function.body().statements(), "leaf").value());
-        var unaryValue = Objects.requireNonNull(findVariable(function.body().statements(), "unary_value").value());
-        var eager = Objects.requireNonNull(findVariable(function.body().statements(), "eager").value());
-        var shorted = Objects.requireNonNull(findVariable(function.body().statements(), "shorted").value());
-        var conditionalValue = Objects.requireNonNull(findVariable(function.body().statements(), "conditional_value").value());
-        var callValue = Objects.requireNonNull(findVariable(function.body().statements(), "call_value").value());
-        var castValue = Objects.requireNonNull(findVariable(function.body().statements(), "cast_value").value());
-        var typeTestValue = Objects.requireNonNull(findVariable(function.body().statements(), "type_test_value").value());
-
-        assertAll(
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.HANDLE_NOW,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(leaf).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.HANDLE_NOW,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(unaryValue).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.HANDLE_NOW,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(eager).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.REJECT,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(shorted).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.DEFER,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(conditionalValue).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.REJECT,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(callValue).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.DEFER,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(castValue).handling()
-                ),
-                () -> assertEquals(
-                        FrontendBodyLoweringSupport.OpaqueExprHandling.DEFER,
-                        FrontendBodyLoweringSupport.classifyOpaqueExpression(typeTestValue).handling()
-                )
-        );
-    }
-
-    @Test
-    void shortCircuitValueMaterializationUsesBranchConstantWritesAndMergeSlotForAndOr() {
-        assertAll(
-                () -> assertShortCircuitValueMaterialization("and"),
-                () -> assertShortCircuitValueMaterialization("or")
-        );
-    }
-
-    private void assertShortCircuitValueMaterialization(@NotNull String operator) throws Exception {
-        var className = "and".equals(operator)
-                ? "BodyLoweringSupportShortCircuitAnd"
-                : "BodyLoweringSupportShortCircuitOr";
-        var analyzed = analyzeFunction(
-                "body_lowering_support_short_circuit_" + operator + ".gd",
-                """
-                        class_name %s
-                        extends RefCounted
-                        
-                        func consume(value: bool) -> bool:
-                            return value
-                        
-                        func helper(seed: int) -> bool:
-                            return seed > 0
-                        
-                        func ping(flag: bool, seed: int) -> bool:
-                            return consume(flag %s helper(seed))
-                        """.formatted(className, operator),
-                "ping",
-                Map.of(className, "Runtime" + className)
-        );
-
-        var graph = new FrontendCfgGraphBuilder()
-                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
-                .graph();
-        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
-        var consumeCall = assertInstanceOf(CallExpression.class, returnStatement.value());
-        assertInstanceOf(BinaryExpression.class, consumeCall.arguments().getFirst());
-        var reachableValueItems = collectReachableValueItems(graph);
-        var consumeItem = reachableValueItems.stream()
-                .filter(CallItem.class::isInstance)
-                .map(CallItem.class::cast)
-                .filter(item -> item.anchor() == consumeCall)
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("Missing consume CallItem"));
-        var mergedResultValueId = consumeItem.argumentValueIds().getFirst();
-
-        var function = new LirFunctionDef("ping_" + operator);
-        var entry = new LirBasicBlock("entry");
-        var trueBlock = new LirBasicBlock("bb_true");
-        var falseBlock = new LirBasicBlock("bb_false");
-        var mergeBlock = new LirBasicBlock("bb_merge");
-        function.addBasicBlock(entry);
-        function.addBasicBlock(trueBlock);
-        function.addBasicBlock(falseBlock);
-        function.addBasicBlock(mergeBlock);
-        function.setEntryBlockId("entry");
-        function.createAndAddVariable("cond", GdBoolType.BOOL);
-        entry.setTerminator(new GoIfInsn("cond", "bb_true", "bb_false"));
-
-        var materialization = FrontendBodyLoweringSupport.emitShortCircuitBooleanMaterialization(
-                function,
-                trueBlock,
-                falseBlock,
-                mergedResultValueId,
-                "bb_merge"
-        );
-        var trueLiteral = assertInstanceOf(LiteralBoolInsn.class, trueBlock.getNonTerminatorInstructions().getFirst());
-        var trueAssign = assertInstanceOf(AssignInsn.class, trueBlock.getNonTerminatorInstructions().get(1));
-        var falseLiteral = assertInstanceOf(LiteralBoolInsn.class, falseBlock.getNonTerminatorInstructions().getFirst());
-        var falseAssign = assertInstanceOf(AssignInsn.class, falseBlock.getNonTerminatorInstructions().get(1));
-
-        var mergeVar = Objects.requireNonNull(function.getVariableById(materialization.mergeSlotId()));
-        assertAll(
-                () -> assertEquals(2, trueBlock.getNonTerminatorInstructions().size()),
-                () -> assertEquals(2, falseBlock.getNonTerminatorInstructions().size()),
-                () -> assertEquals(materialization.trueConstantSlotId(), trueLiteral.resultId()),
-                () -> assertTrue(trueLiteral.value()),
-                () -> assertEquals(materialization.mergeSlotId(), trueAssign.resultId()),
-                () -> assertEquals(materialization.trueConstantSlotId(), trueAssign.sourceId()),
-                () -> assertEquals(materialization.falseConstantSlotId(), falseLiteral.resultId()),
-                () -> assertFalse(falseLiteral.value()),
-                () -> assertEquals(materialization.mergeSlotId(), falseAssign.resultId()),
-                () -> assertEquals(materialization.falseConstantSlotId(), falseAssign.sourceId()),
-                () -> assertEquals("bb_merge", assertInstanceOf(GotoInsn.class, trueBlock.getTerminator()).targetBbId()),
-                () -> assertEquals("bb_merge", assertInstanceOf(GotoInsn.class, falseBlock.getTerminator()).targetBbId()),
-                () -> assertEquals(GdBoolType.BOOL, mergeVar.type()),
-                () -> assertTrue(function.getVariables().containsKey(materialization.trueConstantSlotId())),
-                () -> assertTrue(function.getVariables().containsKey(materialization.falseConstantSlotId())),
-                () -> assertFalse(Objects.requireNonNull(function.getBasicBlock("entry")).getInstructions().stream().anyMatch(this::isAndOrBinaryInsn)),
-                () -> assertFalse(trueBlock.getInstructions().stream().anyMatch(this::isAndOrBinaryInsn)),
-                () -> assertFalse(falseBlock.getInstructions().stream().anyMatch(this::isAndOrBinaryInsn)),
-                () -> assertFalse(mergeBlock.getInstructions().stream().anyMatch(this::isAndOrBinaryInsn))
-        );
-    }
-
-    private boolean isAndOrBinaryInsn(@NotNull Object instruction) {
-        return instruction instanceof BinaryOpInsn binaryOpInsn
-                && (binaryOpInsn.op() == GodotOperator.AND || binaryOpInsn.op() == GodotOperator.OR);
     }
 
     private static @NotNull List<ValueOpItem> collectReachableValueItems(@NotNull FrontendCfgGraph graph) {
@@ -407,15 +151,6 @@ class FrontendBodyLoweringSupportTest {
                 module.units().getFirst().ast(),
                 functionName
         ));
-    }
-
-    private static @NotNull FunctionDeclaration parseFunction(
-            @NotNull String fileName,
-            @NotNull String source,
-            @NotNull String functionName,
-            @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) {
-        return requireFunctionDeclaration(parseModule(fileName, source, topLevelCanonicalNameMap).units().getFirst().ast(), functionName);
     }
 
     private static @NotNull FrontendModule parseModule(

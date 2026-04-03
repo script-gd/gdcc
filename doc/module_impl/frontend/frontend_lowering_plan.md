@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core 与显式 short-circuit CFG 已落地；body lowering 仍待迁移）
-- 更新时间：2026-04-02
+- 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core、executable-body body lowering 与 processor-registry 重构已落地；property initializer / parameter default / staged surface 仍待继续推进）
+- 更新时间：2026-04-04
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
@@ -31,6 +31,7 @@
 - frontend CFG value id 现在额外冻结了 merge-slot 合同：一个 value id 若出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；future producer collection 与 body lowering 不得把这类 merged result 当成唯一 SSA expression definition
 - callable-local slot type 现在也已进入 published fact 面：`FrontendVarTypePostAnalyzer` 会把 parameter / supported local `var` 的最终 slot type 写入 `FrontendAnalysisData.slotTypes()`，供 future body lowering 直接消费
 - condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径，`ConditionalExpression` 仍保留 compile gate + builder fail-fast 边界
+- executable-body `FrontendLoweringBodyInsnPass` 现在也已落地：实际 lowering state 收口在 `frontend.lowering.pass.body.FrontendBodyLoweringSession`，并通过 `FrontendInsnLoweringProcessor` 注册表按 CFG node / item / AST target 的实际类型分派处理，便于后续按节点扩面而不回退成单个巨型 pass
 
 后续工程应在这条稳定链路之上继续推进，不要回退到“先手工做一份分析结果再喂 lowering”的分叉入口。
 
@@ -145,12 +146,12 @@
 
 ---
 
-## 5. 第三步：实现 frontend CFG -> LIR body lowering
+## 5. 第三步：继续扩展 frontend CFG -> LIR body lowering
 
 目标：
 
-- 在 frontend CFG graph 已冻结的前提下，打通当前 frontend 已稳定发布事实的 MVP surface
-- 让 executable callable body 与 supported property initializer function 都通过同一套函数级 lowering 管线进入 instruction 生成
+- 在 frontend CFG graph 已冻结且 executable-body core pass 已落地的前提下，继续扩展当前 frontend 已稳定发布事实的 lowering surface
+- 让 executable callable body 与 future supported property initializer function 都通过同一套函数级 lowering 管线进入 instruction 生成
 
 建议优先顺序：
 
@@ -164,6 +165,7 @@
 
 - 引入 `FrontendLoweringBodyInsnPass`
 - 让 body lowering 以 `frontend.lowering.cfg` 中发布的 frontend CFG graph 为直接输入，而不是重新从 AST + `CfgNodeBlocks` 推断控制流
+- executable-body core path 内部统一维持“`FrontendBodyLoweringSession` + typed processor registry”分层，不要把新 surface 回填成单个 session 巨型 `switch`
 - 严格消费已发布的：
   - `symbolBindings`
   - `resolvedMembers`

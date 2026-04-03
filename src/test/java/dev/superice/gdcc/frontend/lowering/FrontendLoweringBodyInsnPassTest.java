@@ -23,8 +23,10 @@ import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
+import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
+import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.lir.insn.VariantGetInsn;
 import dev.superice.gdcc.lir.insn.VariantGetIndexedInsn;
 import dev.superice.gdcc.lir.insn.VariantGetKeyedInsn;
@@ -262,6 +264,56 @@ class FrontendLoweringBodyInsnPassTest {
                                 && resultId.equals(mergeSlotId)
                 )),
                 () -> assertTrue(function.hasVariable(mergeSlotId))
+        );
+    }
+
+    @Test
+    void runNormalizesVariantAndStableNonBoolConditionsAtBranchProcessors() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_condition_normalization.gd",
+                """
+                        class_name BodyInsnConditionNormalization
+                        extends RefCounted
+                        
+                        func branch_on_variant(box: Variant) -> int:
+                            if box:
+                                return 1
+                            return 2
+                        
+                        func branch_on_int(count: int) -> int:
+                            if count:
+                                return 1
+                            return 2
+                        """,
+                Map.of("BodyInsnConditionNormalization", "RuntimeBodyInsnConditionNormalization"),
+                true
+        );
+        var variantContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionNormalization",
+                "branch_on_variant"
+        );
+        var intContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConditionNormalization",
+                "branch_on_int"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var variantInstructions = allInstructions(variantContext.targetFunction());
+        var intInstructions = allInstructions(intContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(variantInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(variantInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(variantInstructions, GoIfInsn.class)),
+                () -> assertEquals(1, countInstructions(intInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(intInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(intInstructions, GoIfInsn.class))
         );
     }
 
