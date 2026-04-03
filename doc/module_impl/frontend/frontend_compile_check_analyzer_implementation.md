@@ -251,6 +251,13 @@ compile gate 当前对 shared publication 不变量保持 fail-fast：
 - `resolvedCalls()` 必须以 `AttributeCallStep` 或 bare `CallExpression` 为 key
 - compile gate 启动前，对每个 source file 都必须已经发布 scope graph
 
+`expressionTypes()` 的这条合同还有一个容易被忽视但已经冻结的含义：
+
+- 下游消费者不得再假定它是 “只以 `Expression` 为 key 的 side table”
+- `entrySet()` 既不是全部 `Expression` 的全集，也不是 expression-only 视图
+- 任何 generic scan / debug dump / helper API 若要处理 `expressionTypes()`，都必须显式接受
+  `AttributePropertyStep` / `AttributeCallStep` / `AttributeSubscriptStep`
+
 这些 guard rail 属于实现协议损坏，不属于普通源码错误。
 
 ---

@@ -26,6 +26,13 @@ import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.StorePropertyInsn;
 import dev.superice.gdcc.lir.insn.VariantGetInsn;
+import dev.superice.gdcc.lir.insn.VariantGetIndexedInsn;
+import dev.superice.gdcc.lir.insn.VariantGetKeyedInsn;
+import dev.superice.gdcc.lir.insn.VariantGetNamedInsn;
+import dev.superice.gdcc.lir.insn.VariantSetInsn;
+import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
+import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
+import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import org.jetbrains.annotations.NotNull;
@@ -93,7 +100,12 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertTrue(function.getVariables().keySet().stream().anyMatch(id -> id.startsWith("cfg_tmp_"))),
                 () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(CallMethodInsn.class::isInstance)),
                 () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(StorePropertyInsn.class::isInstance)),
-                () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(insn ->
+                        insn instanceof VariantGetInsn
+                                || insn instanceof VariantGetIndexedInsn
+                                || insn instanceof VariantGetKeyedInsn
+                                || insn instanceof VariantGetNamedInsn
+                )),
                 () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(LoadPropertyInsn.class::isInstance)),
                 () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(insn ->
                         insn instanceof BinaryOpInsn(_, var op, _, _) && op == GodotOperator.ADD
@@ -141,7 +153,8 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals("seq_0", function.getEntryBlockId()),
                 () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(CallMethodInsn.class::isInstance)),
-                () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(VariantGetIndexedInsn.class::isInstance)),
+                () -> assertFalse(nonTerminatorInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
                 () -> assertTrue(nonTerminatorInstructions.stream().anyMatch(LoadPropertyInsn.class::isInstance)),
                 () -> assertInstanceOf(GotoInsn.class, entryBlock.getTerminator()),
                 () -> assertInstanceOf(ReturnInsn.class, stopBlock.getTerminator())
@@ -249,6 +262,93 @@ class FrontendLoweringBodyInsnPassTest {
                                 && resultId.equals(mergeSlotId)
                 )),
                 () -> assertTrue(function.hasVariable(mergeSlotId))
+        );
+    }
+
+    @Test
+    void runChoosesIndexedNamedAndKeyedSubscriptInstructionsFromPublishedKeyTypes() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_subscript_modes.gd",
+                """
+                        class_name BodyInsnSubscriptModes
+                        extends RefCounted
+                        
+                        func ping(
+                            values: Array[int],
+                            dict_by_name: Dictionary[StringName, int],
+                            dict_by_text: Dictionary[String, int],
+                            idx: int,
+                            name_key: StringName,
+                            text_key: String
+                        ) -> int:
+                            values[idx] = 11
+                            dict_by_name[name_key] = 22
+                            dict_by_text[text_key] = 33
+                            return values[idx] + dict_by_name[name_key] + dict_by_text[text_key]
+                        """,
+                Map.of("BodyInsnSubscriptModes", "RuntimeBodyInsnSubscriptModes"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSubscriptModes",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var allInstructions = allInstructions(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantSetIndexedInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantSetNamedInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantGetNamedInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantSetKeyedInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantGetKeyedInsn.class)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantGetInsn.class::isInstance))
+        );
+    }
+
+    @Test
+    void runKeepsGenericSubscriptInstructionsWhenOnlyVariantKeyKindIsKnown() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_subscript_variant_key.gd",
+                """
+                        class_name BodyInsnSubscriptVariantKey
+                        extends RefCounted
+                        
+                        func ping(box: Variant, key: Variant, value: Variant) -> Variant:
+                            box[key] = value
+                            return box[key]
+                        """,
+                Map.of("BodyInsnSubscriptVariantKey", "RuntimeBodyInsnSubscriptVariantKey"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSubscriptVariantKey",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var allInstructions = allInstructions(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantSetInsn.class)),
+                () -> assertEquals(1, countInstructions(allInstructions, VariantGetInsn.class)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantSetIndexedInsn.class::isInstance)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantSetNamedInsn.class::isInstance)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantGetIndexedInsn.class::isInstance)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance)),
+                () -> assertFalse(allInstructions.stream().anyMatch(VariantGetNamedInsn.class::isInstance))
         );
     }
 
@@ -383,6 +483,13 @@ class FrontendLoweringBodyInsnPassTest {
             instructions.addAll(block.getInstructions());
         }
         return List.copyOf(instructions);
+    }
+
+    private static int countInstructions(
+            @NotNull List<LirInstruction> instructions,
+            @NotNull Class<? extends LirInstruction> instructionType
+    ) {
+        return (int) instructions.stream().filter(instructionType::isInstance).count();
     }
 
     private static @NotNull String requireSingleMergeValueId(@NotNull FrontendCfgGraph graph) {

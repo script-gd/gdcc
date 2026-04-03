@@ -66,6 +66,9 @@ import java.util.Objects;
 ///
 /// The phase rebuilds `expressionTypes()` in place so nested chain reduction can immediately consume
 /// freshly published inner expression facts without introducing a second temporary table.
+/// `expressionTypes()` is not expression-only: besides ordinary expression roots, this phase also
+/// publishes attribute property/call/subscript steps when downstream compile/lowering needs the step
+/// itself as the stable fact anchor.
 public class FrontendExprTypeAnalyzer {
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =

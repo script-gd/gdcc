@@ -604,7 +604,10 @@ public class FrontendCompileCheckAnalyzer {
                     || node instanceof AttributeSubscriptStep) {
                 return node;
             }
-            throw new IllegalStateException("expressionTypes must be keyed by expression nodes or attribute steps");
+            throw new IllegalStateException(
+                    "expressionTypes must be keyed by Expression / AttributePropertyStep / "
+                            + "AttributeCallStep / AttributeSubscriptStep"
+            );
         }
 
         private static @NotNull AttributePropertyStep requireAttributePropertyStep(@NotNull Node node) {
@@ -632,8 +635,7 @@ public class FrontendCompileCheckAnalyzer {
             return switch (Objects.requireNonNull(node, "node must not be null")) {
                 case AttributePropertyStep attributePropertyStep ->
                         "Member access '" + attributePropertyStep.name() + "'";
-                case AttributeCallStep attributeCallStep ->
-                        "Call step '" + attributeCallStep.name() + "(...)'";
+                case AttributeCallStep attributeCallStep -> "Call step '" + attributeCallStep.name() + "(...)'";
                 case AttributeSubscriptStep attributeSubscriptStep ->
                         "Subscript step '" + attributeSubscriptStep.name() + "[...]'";
                 case Expression expression -> describeExpression(expression);

@@ -20,9 +20,17 @@ import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPackedArrayType;
+import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVectorType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -79,6 +87,13 @@ public final class FrontendBodyLoweringSupport {
         HANDLE_NOW,
         DEFER,
         REJECT
+    }
+
+    public enum SubscriptAccessKind {
+        GENERIC,
+        KEYED,
+        NAMED,
+        INDEXED
     }
 
     public record OpaqueExprPolicy(
@@ -193,6 +208,26 @@ public final class FrontendBodyLoweringSupport {
         };
     }
 
+    /// Picks the most specific index instruction family that the published receiver/key types can
+    /// satisfy without re-running semantic inference.
+    public static @NotNull SubscriptAccessKind chooseSubscriptAccessKind(
+            @NotNull GdType receiverType,
+            @NotNull GdType keyType
+    ) {
+        Objects.requireNonNull(receiverType, "receiverType must not be null");
+        Objects.requireNonNull(keyType, "keyType must not be null");
+        if (keyType instanceof GdIntType && supportsIndexedSubscript(receiverType)) {
+            return SubscriptAccessKind.INDEXED;
+        }
+        if (keyType instanceof GdStringNameType && supportsNamedSubscript(receiverType)) {
+            return SubscriptAccessKind.NAMED;
+        }
+        if (!(keyType instanceof GdVariantType) && supportsKeyedSubscript(receiverType)) {
+            return SubscriptAccessKind.KEYED;
+        }
+        return SubscriptAccessKind.GENERIC;
+    }
+
     public static @NotNull ConditionBranchMaterialization emitConditionBranch(
             @NotNull LirFunctionDef function,
             @NotNull LirBasicBlock block,
@@ -258,6 +293,29 @@ public final class FrontendBodyLoweringSupport {
         return new ShortCircuitBooleanMaterialization(mergeSlotId, trueConstantSlotId, falseConstantSlotId);
     }
 
+    private static boolean supportsKeyedSubscript(@NotNull GdType receiverType) {
+        return receiverType instanceof GdVariantType
+                || receiverType instanceof GdDictionaryType
+                || receiverType instanceof GdObjectType;
+    }
+
+    private static boolean supportsNamedSubscript(@NotNull GdType receiverType) {
+        return receiverType instanceof GdVariantType
+                || receiverType instanceof GdDictionaryType
+                || receiverType instanceof GdObjectType
+                || receiverType instanceof GdStringType
+                || receiverType instanceof GdVectorType;
+    }
+
+    private static boolean supportsIndexedSubscript(@NotNull GdType receiverType) {
+        return receiverType instanceof GdVariantType
+                || receiverType instanceof GdArrayType
+                || receiverType instanceof GdDictionaryType
+                || receiverType instanceof GdStringType
+                || receiverType instanceof GdVectorType
+                || receiverType instanceof GdPackedArrayType;
+    }
+
     private static void collectProducedValueType(
             @NotNull SequencedMap<String, GdType> valueTypes,
             @NotNull ValueOpItem item,
@@ -288,7 +346,7 @@ public final class FrontendBodyLoweringSupport {
                     resolvedValueTypes,
                     mergeValueItem.sourceValueId()
             );
-            case OpaqueExprValueItem opaqueExprValueItem -> requireExpressionType(
+            case OpaqueExprValueItem opaqueExprValueItem -> requireOpaqueValueType(
                     analysisData,
                     opaqueExprValueItem.expression()
             );
@@ -358,6 +416,31 @@ public final class FrontendBodyLoweringSupport {
             );
         }
         throw new IllegalStateException("Unsupported subscript anchor: " + subscriptLoadItem.anchor().getClass().getSimpleName());
+    }
+
+    /// Assignment-target prefixes may materialize identifier/self leaves through the opaque route
+    /// before ordinary expression publication exists. Reuse published slot types for those trusted
+    /// binding-backed leaves instead of forcing them through the generic expression table.
+    private static @NotNull GdType requireOpaqueValueType(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression
+    ) {
+        var publishedType = analysisData.expressionTypes().get(expression);
+        if (publishedType != null) {
+            return requireLoweringReadyExpressionType(
+                    analysisData,
+                    expression,
+                    expression.getClass().getSimpleName()
+            );
+        }
+        var binding = analysisData.symbolBindings().get(expression);
+        if (binding != null && binding.declarationSite() instanceof Node declarationNode) {
+            var slotType = analysisData.slotTypes().get(declarationNode);
+            if (slotType != null) {
+                return slotType;
+            }
+        }
+        return requireExpressionType(analysisData, expression);
     }
 
     /// Lowering may be invoked from tests, incremental tooling, or other non-compile-gated flows. When

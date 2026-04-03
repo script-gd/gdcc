@@ -118,13 +118,21 @@ public final class FrontendAnalysisInspectionTool {
 
 ### 3.2 `expressionTypes()` 不是表达式全集
 
-`FrontendAnalysisData.expressionTypes()` 只承载已发布的表达式类型事实，不覆盖所有 AST `Expression` 节点。当前至少存在以下缺席来源：
+`FrontendAnalysisData.expressionTypes()` 只承载已发布的表达式类型事实。
+
+它当前同时具备两个稳定特征：
+
+- 不覆盖所有 AST `Expression` 节点
+- key-space 也不再是 `Expression`-only；attribute property/call/subscript step 也可能直接作为 key
+
+当前至少存在以下 “表达式缺席但 table 仍合法” 的来源：
 
 - unsupported / deferred subtree
 - route-head `TYPE_META`
 - 当前 phase 明确不发布结果的中间表达式
 
-因此 inspection tool 必须遍历 AST 中的全部 `Expression`，而不是只遍历 `expressionTypes().entrySet()`。
+因此 inspection tool 必须遍历 AST 中的全部 `Expression`，而不是只遍历
+`expressionTypes().entrySet()`；同时也不能把 `entrySet()` 中的每个 key 都强制当作 `Expression`。
 
 ### 3.3 `resolvedCalls()` 的 published 面
 

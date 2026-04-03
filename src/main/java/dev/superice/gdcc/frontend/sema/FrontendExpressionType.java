@@ -14,6 +14,11 @@ import java.util.Objects;
 /// - `RESOLVED` publishes an exact type.
 /// - `BLOCKED` may still carry the blocked winner type.
 /// - `DYNAMIC` publishes widened `Variant` while preserving dynamic provenance in `status`.
+///
+/// The surrounding side table is keyed by the AST anchor that owns the fact. That key is usually an
+/// `Expression`, but current analyzers also publish the same payload for
+/// `AttributePropertyStep` / `AttributeCallStep` / `AttributeSubscriptStep` so downstream consumers
+/// can anchor compile and lowering decisions to the exact chain step.
 public record FrontendExpressionType(
         @NotNull FrontendExpressionTypeStatus status,
         @Nullable GdType publishedType,

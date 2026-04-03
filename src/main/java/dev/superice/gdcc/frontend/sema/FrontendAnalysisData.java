@@ -21,6 +21,10 @@ public final class FrontendAnalysisData {
     private final @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
+    /// Published expression-typing facts consumed by compile-check, lowering, and debug tooling.
+    /// The key space is intentionally wider than `Expression`: publishers may anchor facts on
+    /// `Expression`, `AttributePropertyStep`, `AttributeCallStep`, or `AttributeSubscriptStep`.
+    /// Consumers must not assume `entrySet()` is expression-only.
     private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
     private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
     private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
@@ -80,6 +84,8 @@ public final class FrontendAnalysisData {
         replaceSideTableContents(this.symbolBindings, symbolBindings, "symbolBindings");
     }
 
+    /// Replaces the published expression-fact snapshot in place while preserving the stable table
+    /// reference. Callers may publish both expression-root facts and attribute-step facts here.
     public void updateExpressionTypes(@NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes) {
         replaceSideTableContents(this.expressionTypes, expressionTypes, "expressionTypes");
     }
@@ -120,6 +126,9 @@ public final class FrontendAnalysisData {
         return symbolBindings;
     }
 
+    /// Returns the stable published expression-fact table.
+    /// Key space note: this table is not `Expression`-only; attribute property/call/subscript steps
+    /// are also valid keys when their published facts need a more precise downstream anchor.
     public @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes() {
         return expressionTypes;
     }

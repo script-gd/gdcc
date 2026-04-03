@@ -48,8 +48,12 @@ import dev.superice.gdcc.lir.insn.StorePropertyInsn;
 import dev.superice.gdcc.lir.insn.StoreStaticInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
 import dev.superice.gdcc.lir.insn.VariantGetInsn;
+import dev.superice.gdcc.lir.insn.VariantGetIndexedInsn;
+import dev.superice.gdcc.lir.insn.VariantGetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetInsn;
+import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
+import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
@@ -454,13 +458,19 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
 
         private void lowerSubscriptLoadItem(@NotNull LirBasicBlock block, @NotNull SubscriptLoadItem item) {
             requireSingleSubscriptArgument(item.anchor(), item.argumentValueIds());
+            var baseSlotId = slotIdForValue(item.baseValueId());
+            var keyValueId = item.argumentValueIds().getFirst();
             var keySlotId = slotIdForValue(item.argumentValueIds().getFirst());
+            var keyType = requireValueType(keyValueId);
             if (item.memberNameOrNull() == null) {
-                block.appendNonTerminatorInstruction(new VariantGetInsn(
+                appendSubscriptLoadInstruction(
+                        block,
                         FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId()),
-                        slotIdForValue(item.baseValueId()),
-                        keySlotId
-                ));
+                        baseSlotId,
+                        requireValueType(item.baseValueId()),
+                        keySlotId,
+                        keyType
+                );
                 return;
             }
 
@@ -469,14 +479,17 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
             block.appendNonTerminatorInstruction(new LiteralStringNameInsn(nameSlotId, item.memberNameOrNull()));
             block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
                     namedBaseSlotId,
-                    slotIdForValue(item.baseValueId()),
+                    baseSlotId,
                     nameSlotId
             ));
-            block.appendNonTerminatorInstruction(new VariantGetInsn(
+            appendSubscriptLoadInstruction(
+                    block,
                     FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId()),
                     namedBaseSlotId,
-                    keySlotId
-            ));
+                    GdVariantType.VARIANT,
+                    keySlotId,
+                    keyType
+            );
         }
 
         /// Assignment lowering is allowed to inspect the target AST shape only to choose the final
@@ -604,12 +617,20 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
                 );
             }
             var receiverSlotId = slotIdForValue(item.targetOperandValueIds().getFirst());
-            var keySlotId = slotIdForValue(item.targetOperandValueIds().getLast());
+            var keyValueId = item.targetOperandValueIds().getLast();
+            var keySlotId = slotIdForValue(keyValueId);
             var namedBaseSlotId = namedBaseSlotId("assign_" + item.rhsValueId());
             var nameSlotId = namedKeySlotId("assign_" + item.rhsValueId());
             block.appendNonTerminatorInstruction(new LiteralStringNameInsn(nameSlotId, attributeSubscriptStep.name()));
             block.appendNonTerminatorInstruction(new VariantGetNamedInsn(namedBaseSlotId, receiverSlotId, nameSlotId));
-            block.appendNonTerminatorInstruction(new VariantSetInsn(namedBaseSlotId, keySlotId, rhsSlotId));
+            appendSubscriptStoreInstruction(
+                    block,
+                    namedBaseSlotId,
+                    GdVariantType.VARIANT,
+                    keySlotId,
+                    requireValueType(keyValueId),
+                    rhsSlotId
+            );
             block.appendNonTerminatorInstruction(new VariantSetNamedInsn(receiverSlotId, nameSlotId, namedBaseSlotId));
         }
 
@@ -623,10 +644,83 @@ public final class FrontendLoweringBodyInsnPass implements FrontendLoweringPass 
             if (item.targetOperandValueIds().size() != 2) {
                 throw unsupportedSequenceItem(item, "subscript assignment must publish base plus one key operand");
             }
-            var baseSlotId = slotIdForValue(item.targetOperandValueIds().getFirst());
-            var keySlotId = slotIdForValue(item.targetOperandValueIds().getLast());
-            block.appendNonTerminatorInstruction(new VariantSetInsn(baseSlotId, keySlotId, rhsSlotId));
+            var baseValueId = item.targetOperandValueIds().getFirst();
+            var keyValueId = item.targetOperandValueIds().getLast();
+            var baseSlotId = slotIdForValue(baseValueId);
+            var keySlotId = slotIdForValue(keyValueId);
+            appendSubscriptStoreInstruction(
+                    block,
+                    baseSlotId,
+                    requireValueType(baseValueId),
+                    keySlotId,
+                    requireValueType(keyValueId),
+                    rhsSlotId
+            );
             writeBackPropertyBaseIfNeeded(block, subscriptExpression.base(), baseSlotId);
+        }
+
+        private void appendSubscriptLoadInstruction(
+                @NotNull LirBasicBlock block,
+                @NotNull String resultSlotId,
+                @NotNull String receiverSlotId,
+                @NotNull GdType receiverType,
+                @NotNull String keySlotId,
+                @NotNull GdType keyType
+        ) {
+            switch (FrontendBodyLoweringSupport.chooseSubscriptAccessKind(receiverType, keyType)) {
+                case GENERIC -> block.appendNonTerminatorInstruction(new VariantGetInsn(
+                        resultSlotId,
+                        receiverSlotId,
+                        keySlotId
+                ));
+                case KEYED -> block.appendNonTerminatorInstruction(new VariantGetKeyedInsn(
+                        resultSlotId,
+                        receiverSlotId,
+                        keySlotId
+                ));
+                case NAMED -> block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
+                        resultSlotId,
+                        receiverSlotId,
+                        keySlotId
+                ));
+                case INDEXED -> block.appendNonTerminatorInstruction(new VariantGetIndexedInsn(
+                        resultSlotId,
+                        receiverSlotId,
+                        keySlotId
+                ));
+            }
+        }
+
+        private void appendSubscriptStoreInstruction(
+                @NotNull LirBasicBlock block,
+                @NotNull String receiverSlotId,
+                @NotNull GdType receiverType,
+                @NotNull String keySlotId,
+                @NotNull GdType keyType,
+                @NotNull String rhsSlotId
+        ) {
+            switch (FrontendBodyLoweringSupport.chooseSubscriptAccessKind(receiverType, keyType)) {
+                case GENERIC -> block.appendNonTerminatorInstruction(new VariantSetInsn(
+                        receiverSlotId,
+                        keySlotId,
+                        rhsSlotId
+                ));
+                case KEYED -> block.appendNonTerminatorInstruction(new VariantSetKeyedInsn(
+                        receiverSlotId,
+                        keySlotId,
+                        rhsSlotId
+                ));
+                case NAMED -> block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
+                        receiverSlotId,
+                        keySlotId,
+                        rhsSlotId
+                ));
+                case INDEXED -> block.appendNonTerminatorInstruction(new VariantSetIndexedInsn(
+                        receiverSlotId,
+                        keySlotId,
+                        rhsSlotId
+                ));
+            }
         }
 
         private void writeBackPropertyBaseIfNeeded(

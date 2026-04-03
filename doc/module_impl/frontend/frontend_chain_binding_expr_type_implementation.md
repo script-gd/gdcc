@@ -216,6 +216,13 @@
 - `DEFERRED` / `FAILED` / `UNSUPPORTED`
   - 不发布 concrete type，只保留状态与 detail reason
 
+`expressionTypes()` 的 key-space 合同也已经冻结：
+
+- 默认 expression root 仍以 `Expression` 自身为 key
+- 当 compile/lowering 需要更精确的 chain anchor 时，`AttributePropertyStep` /
+  `AttributeCallStep` / `AttributeSubscriptStep` 也会直接作为 key 发布同类 fact
+- 因而任何消费者都不得再假定 `expressionTypes()` 是 expression-only side table
+
 `rootOwnsOutcome` 也是正式合同的一部分：
 
 - 它区分“当前 root 自己产生的非成功结果”和“从依赖上传播上来的结果”
