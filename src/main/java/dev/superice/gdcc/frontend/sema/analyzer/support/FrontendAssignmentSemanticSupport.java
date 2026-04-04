@@ -747,6 +747,7 @@ public final class FrontendAssignmentSemanticSupport {
     /// This API intentionally stays narrower than assignment semantic resolution:
     /// - exact `Variant` targets accept any stable source
     /// - stable `Variant` sources may flow into concrete targets
+    /// - `Nil` may flow into object targets and lowering will materialize object-typed `NULL`
     /// - all other pairs stay on the strict shared assignability contract
     ///
     /// Assignment-specific routes such as `DYNAMIC` targets stay encapsulated in this helper and do

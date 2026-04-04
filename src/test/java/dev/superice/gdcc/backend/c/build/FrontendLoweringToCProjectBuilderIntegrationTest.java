@@ -12,7 +12,6 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,17 +25,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class FrontendLoweringToCProjectBuilderIntegrationTest {
     @Test
-    void lowerFrontendModuleBuildNativeLibraryAndRunInGodot(@TempDir Path tempDir) throws Exception {
+    void lowerFrontendModuleBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping frontend-to-native Godot integration test");
             return;
         }
+
+        var tempDir = Path.of("tmp/test/frontend_lowering_build_smoke");
+        Files.createDirectories(tempDir);
 
         var source = """
                 class_name FrontendBuildSmoke
                 extends Node
                 
                 func ping() -> int:
+                    var obj: Object = null;
                     return 1
                 """;
         var module = parseModule(

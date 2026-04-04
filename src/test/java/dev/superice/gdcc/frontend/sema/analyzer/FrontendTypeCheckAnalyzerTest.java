@@ -731,6 +731,54 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeAcceptsNullAtObjectInitializerAndReturnBoundariesButKeepsNilToScalarRejected()
+            throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_null_object_boundaries.gd", """
+                class_name TypeCheckNullObjectBoundaries
+                extends RefCounted
+                
+                var accepted_obj: Object = null
+                var rejected_int: int = null
+                
+                func ping() -> void:
+                    var local_obj: Object = null
+                    var local_i: int = null
+                
+                func ret_obj() -> Object:
+                    return null
+                
+                func ret_int() -> int:
+                    return null
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(3, diagnostics.size());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Property 'rejected_int'")
+                        && diagnostic.message().contains("Nil")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Local variable 'local_i'")
+                        && diagnostic.message().contains("Nil")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'Nil'")
+                        && diagnostic.message().contains("int")
+        ));
+    }
+
+    @Test
     void analyzeReportsTypeMismatchWhenVoidUtilityFeedsTypedInitializerInsteadOfCrashing()
             throws Exception {
         var preparedInput = prepareTypeCheckInput("type_check_void_utility_initializer.gd", """

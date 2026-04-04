@@ -35,7 +35,8 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
     /// Writes assignment results into a bare binding-backed slot or property route.
     ///
     /// The processor only maps already-published binding kinds to runtime stores; it must not infer
-    /// writability or read/write usage semantics beyond the facts already produced upstream.
+    /// writability or read/write usage semantics beyond the facts already produced upstream. Any
+    /// `Variant` boundary needed by the target slot is materialized before the final store emits.
     private static final class FrontendIdentifierAssignmentInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<IdentifierExpression, FrontendBodyLoweringSession.AssignmentTargetLoweringContext> {
         @Override
@@ -56,15 +57,24 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                 throw session.unsupportedSequenceItem(item, "identifier assignment must not publish target operand values");
             }
             var binding = session.requireBinding(node);
+            var materializedRhsSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    actualContext.rhsSlotId(),
+                    session.requireValueType(item.rhsValueId()),
+                    session.requireBindingAssignmentTargetType(binding),
+                    binding.kind() == dev.superice.gdcc.frontend.sema.FrontendBindingKind.PROPERTY
+                            ? "store_property"
+                            : "assign_slot"
+            );
             switch (binding.kind()) {
                 case LOCAL_VAR, PARAMETER, CAPTURE ->
-                        block.appendNonTerminatorInstruction(new AssignInsn(binding.symbolName(), actualContext.rhsSlotId()));
+                        block.appendNonTerminatorInstruction(new AssignInsn(binding.symbolName(), materializedRhsSlotId));
                 case PROPERTY -> {
                     if (session.isStaticPropertyBinding(binding)) {
                         block.appendNonTerminatorInstruction(new StoreStaticInsn(
                                 session.currentClassName(),
                                 binding.symbolName(),
-                                actualContext.rhsSlotId()
+                                materializedRhsSlotId
                         ));
                         return;
                     }
@@ -72,7 +82,7 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                     block.appendNonTerminatorInstruction(new StorePropertyInsn(
                             binding.symbolName(),
                             "self",
-                            actualContext.rhsSlotId()
+                            materializedRhsSlotId
                     ));
                 }
                 default -> throw session.unsupportedSequenceItem(
@@ -156,7 +166,9 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
     /// Emits the final property or static-store route for an attribute-chain assignment tail.
     ///
     /// Only the last step is interpreted here; the receiver object/type and all prior chain
-    /// evaluation were already materialized into `targetOperandValueIds` by CFG build.
+    /// evaluation were already materialized into `targetOperandValueIds` by CFG build. The final
+    /// property slot type comes from the published member fact, so the processor can materialize
+    /// the ordinary `Variant` boundary without reopening member resolution.
     private static final class FrontendAttributePropertyAssignmentInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<AttributePropertyStep, FrontendBodyLoweringSession.AssignmentTargetLoweringContext> {
         @Override
@@ -178,16 +190,23 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
             }
             var receiverSlotId = session.slotIdForValue(item.targetOperandValueIds().getFirst());
             var resolvedMember = session.requireResolvedMember(node);
+            var materializedRhsSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    actualContext.rhsSlotId(),
+                    session.requireValueType(item.rhsValueId()),
+                    Objects.requireNonNull(resolvedMember.resultType(), "resultType must not be null"),
+                    "store_property"
+            );
             switch (resolvedMember.receiverKind()) {
                 case INSTANCE -> block.appendNonTerminatorInstruction(new StorePropertyInsn(
                         node.name(),
                         receiverSlotId,
-                        actualContext.rhsSlotId()
+                        materializedRhsSlotId
                 ));
                 case TYPE_META -> block.appendNonTerminatorInstruction(new StoreStaticInsn(
                         session.requireClassName(resolvedMember.receiverType()),
                         node.name(),
-                        actualContext.rhsSlotId()
+                        materializedRhsSlotId
                 ));
                 default -> throw session.unsupportedSequenceItem(
                         item,

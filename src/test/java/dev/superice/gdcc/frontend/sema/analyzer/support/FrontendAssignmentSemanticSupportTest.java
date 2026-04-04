@@ -13,6 +13,8 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -298,6 +300,10 @@ class FrontendAssignmentSemanticSupportTest {
                 GdIntType.INT,
                 GdVariantType.VARIANT
         ));
+        assertTrue(support.checkAssignmentCompatible(
+                GdObjectType.OBJECT,
+                GdNilType.NIL
+        ));
         assertTrue(!support.checkAssignmentCompatible(
                 GdFloatType.FLOAT,
                 GdIntType.INT
@@ -425,6 +431,49 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, strictMismatch.expressionType().status());
         assertTrue(strictMismatch.expressionType().detailReason().contains("String"));
         assertTrue(strictMismatch.expressionType().detailReason().contains("int"));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeAcceptsNullSourcesForObjectTargetsButKeepsNilToScalarRejected()
+            throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_null_object_source.gd",
+                """
+                        class_name AssignmentSemanticSupportNullObjectSource
+                        extends RefCounted
+                        
+                        var payload_obj: Object
+                        var payload_i: int = 0
+                        
+                        func ping() -> void:
+                            payload_obj = null
+                            payload_i = null
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+
+        var objectAssignment = support.resolveAssignmentExpressionType(
+                assignments.get(0),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var scalarMismatch = support.resolveAssignmentExpressionType(
+                assignments.get(1),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, objectAssignment.expressionType().status());
+        assertEquals(GdVoidType.VOID, objectAssignment.expressionType().publishedType());
+        assertTrue(scalarMismatch.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, scalarMismatch.expressionType().status());
+        assertTrue(scalarMismatch.expressionType().detailReason().contains("Nil"));
+        assertTrue(scalarMismatch.expressionType().detailReason().contains("int"));
     }
 
     private @NotNull FrontendAssignmentSemanticSupport createSupport(

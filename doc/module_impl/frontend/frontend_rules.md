@@ -51,11 +51,11 @@
 - class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
 - callable scope / block scope 中手动声明或发布的类型别名不在 MVP 范围内；frontend body phase 必须对这类 scope-local `type-meta` 采用 fail-closed 的 deferred / unsupported 处理，而不是把它们当成普通 class-like `TYPE_META` 消费。
 - H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
-- 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、`null -> Object`、以及 `Array` / packed array 的 float index 兼容。
+- 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、以及 `Array` / packed array 的 float index 兼容。
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
-- H2 assignment compatibility 当前通过公开 API `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 复用 concrete slot 的兼容判断：exact `Variant` slot 允许任意来源类型，其余 slot 回退 generic `ClassRegistry.checkAssignable(...)`。
+- H2 assignment compatibility 当前通过公开 API `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 复用 concrete slot 的兼容判断：exact `Variant` slot 允许任意来源类型，`Nil -> object` 作为 frontend 普通 typed boundary 的冻结特判，其余 slot 回退 generic `ClassRegistry.checkAssignable(...)`。
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
-- 除 exact `Variant` slot 与 `DYNAMIC` target 外，assignment compatibility 在 MVP 中继续回退 `ClassRegistry.checkAssignable(...)`；`int -> float`、`StringName` / `String` 互转、`null -> Object` 等更宽隐式转换当前不支持，文档和测试都必须按 strict contract 锚定。
+- 除 exact `Variant` slot、已冻结的 `Nil -> object` 以及 `DYNAMIC` target 外，assignment compatibility 在 MVP 中继续回退 `ClassRegistry.checkAssignable(...)`；`int -> float`、`StringName` / `String` 互转等更宽隐式转换当前不支持，文档和测试都必须按 strict contract 锚定。
 - source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。
 - `frontend.lowering.cfg` 中 `FrontendIfRegion` / `FrontendElifRegion` / `FrontendWhileRegion` 的 `conditionEntryId` 表达的是整个 condition subgraph 的稳定入口；consumer 与测试都不得假设固定 `SequenceNode -> BranchNode` 两节点模板。
 - `FrontendCfgGraph.BranchNode.conditionRoot` 表达的是“当前 branch 直接测试的 condition fragment root”，必须与 `conditionValueId` 的直接 producer subtree 对齐；它不保证等于外围 source-level condition 的最外层根，也不承诺可以仅凭 `conditionValueId` 从整个 condition region 中反推出唯一一个 producer item。

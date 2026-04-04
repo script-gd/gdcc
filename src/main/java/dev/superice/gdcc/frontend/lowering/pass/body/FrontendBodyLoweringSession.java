@@ -12,14 +12,20 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBinding;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
 import dev.superice.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedCall;
 import dev.superice.gdcc.frontend.sema.FrontendResolvedMember;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirInstruction;
+import dev.superice.gdcc.lir.insn.LiteralNullInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
+import dev.superice.gdcc.scope.FunctionDef;
+import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.PropertyDef;
+import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdType;
@@ -227,28 +233,60 @@ public final class FrontendBodyLoweringSession {
                 : FrontendBodyLoweringSupport.cfgTempSlotId(valueId);
     }
 
-    @Nullable String slotIdForValueOrNull(@Nullable String valueIdOrNull) {
-        return valueIdOrNull == null ? null : slotIdForValue(valueIdOrNull);
-    }
-
     @NotNull String resultSlotId(@NotNull OpaqueExprValueItem item) {
         return FrontendBodyLoweringSupport.cfgTempSlotId(item.resultValueId());
+    }
+
+    @NotNull GdType requireSourceLocalSlotType(@NotNull VariableDeclaration declaration) {
+        return FrontendBodyLoweringSupport.requireSourceLocalSlotType(analysisData, declaration);
+    }
+
+    @NotNull GdType requireFunctionVariableType(@NotNull String variableId) {
+        var variable = function.getVariableById(StringUtil.requireNonBlank(variableId, "variableId"));
+        if (variable == null) {
+            throw new IllegalStateException("Missing lowered function variable '" + variableId + "'");
+        }
+        return variable.type();
+    }
+
+    /// Resolves the concrete storage type for one already-published bare assignment binding.
+    ///
+    /// Local/parameter/capture targets reuse the lowered function variable table, while property
+    /// targets must carry shared property metadata so stores can materialize `Variant` boundaries
+    /// without reopening resolver logic in the body pass.
+    @NotNull GdType requireBindingAssignmentTargetType(@NotNull FrontendBinding binding) {
+        return switch (Objects.requireNonNull(binding, "binding must not be null").kind()) {
+            case LOCAL_VAR, PARAMETER, CAPTURE -> requireFunctionVariableType(binding.symbolName());
+            case PROPERTY -> switch (Objects.requireNonNull(
+                    binding.declarationSite(),
+                    "Property binding must carry declaration metadata"
+            )) {
+                case PropertyDef propertyDef -> propertyDef.getType();
+                default -> throw new IllegalStateException(
+                        "Property binding '" + binding.symbolName() + "' does not carry property metadata"
+                );
+            };
+            default -> throw new IllegalStateException(
+                    "Binding '" + binding.symbolName() + "' is not an assignment-backed storage location"
+            );
+        };
     }
 
     @NotNull LirFunctionDef targetFunction() {
         return function;
     }
 
-    /// Materializes one already-approved ordinary `Variant` boundary into an explicit LIR slot.
+    /// Materializes one already-approved ordinary frontend typed boundary into an explicit LIR slot.
     ///
     /// This helper deliberately stays narrower than condition normalization:
     /// - concrete -> `Variant` inserts `PackVariantInsn`
     /// - stable `Variant` -> concrete inserts `UnpackVariantInsn`
+    /// - `Nil` -> object inserts an object-typed `LiteralNullInsn`
     /// - all remaining pairs stay direct because semantic analysis already decided legality
     ///
     /// Later assignment/call/return processors should route all ordinary boundary writes through
-    /// this helper instead of duplicating ad-hoc `instanceof GdVariantType` branches.
-    @NotNull String materializeVariantBoundaryValue(
+    /// this helper instead of duplicating ad-hoc boundary branches.
+    @NotNull String materializeFrontendBoundaryValue(
             @NotNull LirBasicBlock block,
             @NotNull String sourceSlotId,
             @NotNull GdType sourceType,
@@ -275,13 +313,64 @@ public final class FrontendBodyLoweringSession {
             block.appendNonTerminatorInstruction(new UnpackVariantInsn(unpackedSlotId, sourceSlot));
             return unpackedSlotId;
         }
+        if (source instanceof GdNilType && target instanceof GdObjectType) {
+            var nullSlotId = nextBoundaryMaterializationSlotId(use, "null_object");
+            ensureVariable(nullSlotId, target);
+            block.appendNonTerminatorInstruction(new LiteralNullInsn(nullSlotId));
+            return nullSlotId;
+        }
         return sourceSlot;
     }
 
-    @NotNull List<LirInstruction.Operand> variableOperands(@NotNull List<String> valueIds) {
-        var operands = new ArrayList<LirInstruction.Operand>(valueIds.size());
-        for (var valueId : valueIds) {
-            operands.add(new LirInstruction.VariableOperand(slotIdForValue(valueId)));
+    /// Materializes fixed arguments against their declared parameter slots and packs any vararg
+    /// tail values into `Variant`.
+    ///
+    /// Resolved-call facts already froze overload selection, so this helper only consumes the final
+    /// callable signature and emits the minimal boundary `(un)pack` instructions needed for the
+    /// selected route. It never retries overload resolution or re-derives parameter metadata.
+    @NotNull List<LirInstruction.Operand> materializeCallArguments(
+            @NotNull LirBasicBlock block,
+            @NotNull CallItem item,
+            @NotNull FrontendResolvedCall resolvedCall
+    ) {
+        Objects.requireNonNull(block, "block must not be null");
+        Objects.requireNonNull(item, "item must not be null");
+        var callable = requireResolvedCallableSignature(resolvedCall);
+        var parameterTypes = callBoundaryParameterTypes(callable, resolvedCall.callKind());
+        var argumentValueIds = item.argumentValueIds();
+        if (!callable.isVararg() && argumentValueIds.size() > parameterTypes.size()) {
+            throw new IllegalStateException(
+                    "Resolved call '" + resolvedCall.callableName() + "' provides "
+                            + argumentValueIds.size()
+                            + " arguments for a non-vararg signature with "
+                            + parameterTypes.size()
+                            + " fixed parameters"
+            );
+        }
+
+        var operands = new ArrayList<LirInstruction.Operand>(argumentValueIds.size());
+        var fixedPrefixCount = Math.min(argumentValueIds.size(), parameterTypes.size());
+        for (var index = 0; index < fixedPrefixCount; index++) {
+            var argumentValueId = argumentValueIds.get(index);
+            var materializedSlotId = materializeFrontendBoundaryValue(
+                    block,
+                    slotIdForValue(argumentValueId),
+                    requireValueType(argumentValueId),
+                    parameterTypes.get(index),
+                    "call_fixed_" + index
+            );
+            operands.add(new LirInstruction.VariableOperand(materializedSlotId));
+        }
+        for (var index = fixedPrefixCount; index < argumentValueIds.size(); index++) {
+            var argumentValueId = argumentValueIds.get(index);
+            var materializedSlotId = materializeFrontendBoundaryValue(
+                    block,
+                    slotIdForValue(argumentValueId),
+                    requireValueType(argumentValueId),
+                    GdVariantType.VARIANT,
+                    "call_vararg_" + index
+            );
+            operands.add(new LirInstruction.VariableOperand(materializedSlotId));
         }
         return List.copyOf(operands);
     }
@@ -396,6 +485,40 @@ public final class FrontendBodyLoweringSession {
                 + StringUtil.requireNonBlank(operation, "operation")
                 + "_"
                 + boundaryMaterializationCounter++;
+    }
+
+    private @NotNull FunctionDef requireResolvedCallableSignature(@NotNull FrontendResolvedCall resolvedCall) {
+        var declarationSite = Objects.requireNonNull(
+                Objects.requireNonNull(resolvedCall, "resolvedCall must not be null").declarationSite(),
+                "Resolved call must carry declaration metadata"
+        );
+        return switch (declarationSite) {
+            case FunctionDef functionDef -> functionDef;
+            default -> throw new IllegalStateException(
+                    "Resolved call '" + resolvedCall.callableName() + "' does not carry callable signature metadata"
+            );
+        };
+    }
+
+    /// Call instructions materialize the receiver separately, so any frontend-facing signature
+    /// metadata that still exposes an implicit `self` parameter must be normalized away here.
+    private @NotNull List<GdType> callBoundaryParameterTypes(
+            @NotNull FunctionDef callable,
+            @NotNull FrontendCallResolutionKind callKind
+    ) {
+        var parameters = List.copyOf(callable.getParameters());
+        if (callKind == FrontendCallResolutionKind.INSTANCE_METHOD
+                && !callable.isStatic()
+                && !parameters.isEmpty()
+                && parameters.getFirst().getName().equals("self")) {
+            return parameters.stream()
+                    .skip(1)
+                    .map(ParameterDef::getType)
+                    .toList();
+        }
+        return parameters.stream()
+                .map(ParameterDef::getType)
+                .toList();
     }
 
     private static @NotNull Set<String> collectMergeValueIds(@NotNull FrontendCfgGraph graph) {

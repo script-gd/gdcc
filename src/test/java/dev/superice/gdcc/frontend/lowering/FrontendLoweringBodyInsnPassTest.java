@@ -18,10 +18,12 @@ import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.insn.AssignInsn;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.CallGlobalInsn;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
+import dev.superice.gdcc.lir.insn.LiteralNullInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
@@ -42,6 +44,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -366,6 +369,314 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runMaterializesVariantBoundariesForLocalInitializersAndOrdinaryPropertyAssignments() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_assignment_variant_boundary.gd",
+                """
+                        class_name BodyInsnAssignmentVariantBoundary
+                        extends RefCounted
+                        
+                        var payload_int: int
+                        var payload_variant: Variant
+                        
+                        func ping(seed: int, box: Variant) -> void:
+                            var any = seed
+                            var typed: int = any
+                            payload_variant = seed
+                            payload_int = box
+                        """,
+                Map.of("BodyInsnAssignmentVariantBoundary", "RuntimeBodyInsnAssignmentVariantBoundary"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnAssignmentVariantBoundary",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var packedResultIds = packResultIds(instructions);
+        var unpackedResultIds = unpackResultIds(instructions);
+        var assignSourcesByTarget = assignSourcesByTarget(instructions);
+        var payloadVariantStoreIds = storeValueIdsForProperty(instructions, "payload_variant");
+        var payloadIntStoreIds = storeValueIdsForProperty(instructions, "payload_int");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, packedResultIds.size()),
+                () -> assertEquals(2, unpackedResultIds.size()),
+                () -> assertTrue(packedResultIds.contains(assignSourcesByTarget.get("any"))),
+                () -> assertTrue(unpackedResultIds.contains(assignSourcesByTarget.get("typed"))),
+                () -> assertEquals(1, payloadVariantStoreIds.size()),
+                () -> assertEquals(1, payloadIntStoreIds.size()),
+                () -> assertTrue(packedResultIds.contains(payloadVariantStoreIds.getFirst())),
+                () -> assertTrue(unpackedResultIds.contains(payloadIntStoreIds.getFirst()))
+        );
+    }
+
+    @Test
+    void runKeepsDirectLocalPropertyAndReturnRoutesInstructionFreeWhenNoVariantBoundaryExists() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_direct_routes.gd",
+                """
+                        class_name BodyInsnDirectRoutes
+                        extends RefCounted
+                        
+                        var payload_int: int
+                        
+                        func ping(seed: int) -> int:
+                            var copy: int = seed
+                            payload_int = copy
+                            return copy
+                        """,
+                Map.of("BodyInsnDirectRoutes", "RuntimeBodyInsnDirectRoutes"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDirectRoutes",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var returnInsn = requireOnlyReturnInsn(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class)),
+                () -> assertNotNull(assignSourcesByTarget(instructions).get("copy")),
+                () -> assertEquals(1, storeValueIdsForProperty(instructions, "payload_int").size()),
+                () -> assertNotNull(returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runMaterializesVariantBoundariesForFixedCallsAndVarargTailArguments() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_call_variant_boundary.gd",
+                """
+                        class_name BodyInsnCallVariantBoundary
+                        extends RefCounted
+                        
+                        func take_i(value: int) -> int:
+                            return value
+                        
+                        func take_any(value: Variant) -> Variant:
+                            return value
+                        
+                        func call_concrete(box: Variant) -> int:
+                            return take_i(box)
+                        
+                        func call_variant(seed: int) -> Variant:
+                            return take_any(seed)
+                        
+                        func call_vararg(seed: int) -> void:
+                            print(seed)
+                        
+                        func call_vararg_variant(box: Variant) -> void:
+                            print(box)
+                        """,
+                Map.of("BodyInsnCallVariantBoundary", "RuntimeBodyInsnCallVariantBoundary"),
+                true
+        );
+        var callConcreteContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallVariantBoundary",
+                "call_concrete"
+        );
+        var callVariantContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallVariantBoundary",
+                "call_variant"
+        );
+        var callVarargContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallVariantBoundary",
+                "call_vararg"
+        );
+        var callVarargVariantContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCallVariantBoundary",
+                "call_vararg_variant"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var concreteInstructions = allInstructions(callConcreteContext.targetFunction());
+        var variantInstructions = allInstructions(callVariantContext.targetFunction());
+        var varargInstructions = allInstructions(callVarargContext.targetFunction());
+        var varargVariantInstructions = allInstructions(callVarargVariantContext.targetFunction());
+
+        var callConcreteInsn = requireOnlyInstruction(callConcreteContext.targetFunction(), CallMethodInsn.class);
+        var callVariantInsn = requireOnlyInstruction(callVariantContext.targetFunction(), CallMethodInsn.class);
+        var callVarargInsn = requireOnlyInstruction(callVarargContext.targetFunction(), CallGlobalInsn.class);
+        var callVarargVariantInsn = requireOnlyInstruction(callVarargVariantContext.targetFunction(), CallGlobalInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(concreteInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(concreteInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(unpackResultIds(concreteInstructions).contains(onlyVariableOperandId(callConcreteInsn.args()))),
+                () -> assertEquals(1, countInstructions(variantInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(variantInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(packResultIds(variantInstructions).contains(onlyVariableOperandId(callVariantInsn.args()))),
+                () -> assertEquals(1, countInstructions(varargInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(varargInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(packResultIds(varargInstructions).contains(onlyVariableOperandId(callVarargInsn.args()))),
+                () -> assertEquals(0, countInstructions(varargVariantInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(varargVariantInstructions, UnpackVariantInsn.class)),
+                () -> assertNotNull(onlyVariableOperandId(callVarargVariantInsn.args()))
+        );
+    }
+
+    @Test
+    void runMaterializesVariantBoundariesAtReturnSlots() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_return_variant_boundary.gd",
+                """
+                        class_name BodyInsnReturnVariantBoundary
+                        extends RefCounted
+                        
+                        func ret_any(seed: int) -> Variant:
+                            return seed
+                        
+                        func ret_i(value) -> int:
+                            return value
+                        
+                        func ret_i_explicit(value: Variant) -> int:
+                            return value
+                        
+                        func ret_direct(seed: int) -> int:
+                            return seed
+                        """,
+                Map.of("BodyInsnReturnVariantBoundary", "RuntimeBodyInsnReturnVariantBoundary"),
+                true
+        );
+        var retAnyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnReturnVariantBoundary",
+                "ret_any"
+        );
+        var retImplicitVariantContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnReturnVariantBoundary",
+                "ret_i"
+        );
+        var retExplicitVariantContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnReturnVariantBoundary",
+                "ret_i_explicit"
+        );
+        var retDirectContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnReturnVariantBoundary",
+                "ret_direct"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var retAnyInstructions = allInstructions(retAnyContext.targetFunction());
+        var retImplicitVariantInstructions = allInstructions(retImplicitVariantContext.targetFunction());
+        var retExplicitVariantInstructions = allInstructions(retExplicitVariantContext.targetFunction());
+        var retDirectInstructions = allInstructions(retDirectContext.targetFunction());
+
+        var retAnyInsn = requireOnlyReturnInsn(retAnyContext.targetFunction());
+        var retImplicitVariantInsn = requireOnlyReturnInsn(retImplicitVariantContext.targetFunction());
+        var retExplicitVariantInsn = requireOnlyReturnInsn(retExplicitVariantContext.targetFunction());
+        var retDirectInsn = requireOnlyReturnInsn(retDirectContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(retAnyInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(retAnyInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(packResultIds(retAnyInstructions).contains(retAnyInsn.returnValueId())),
+                () -> assertEquals(0, countInstructions(retImplicitVariantInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(retImplicitVariantInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(unpackResultIds(retImplicitVariantInstructions).contains(retImplicitVariantInsn.returnValueId())),
+                () -> assertEquals(0, countInstructions(retExplicitVariantInstructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(retExplicitVariantInstructions, UnpackVariantInsn.class)),
+                () -> assertTrue(unpackResultIds(retExplicitVariantInstructions).contains(retExplicitVariantInsn.returnValueId())),
+                () -> assertEquals(0, countInstructions(retDirectInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(retDirectInstructions, UnpackVariantInsn.class)),
+                () -> assertNotNull(retDirectInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runMaterializesObjectNullBoundariesForLocalPropertyCallAndReturnRoutes() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_null_object_boundary.gd",
+                """
+                        class_name BodyInsnNullObjectBoundary
+                        extends RefCounted
+                        
+                        var payload_obj: Object
+                        
+                        func take_obj(value: Object) -> Object:
+                            return value
+                        
+                        func ping() -> Object:
+                            var local_obj: Object = null
+                            payload_obj = null
+                            take_obj(null)
+                            return local_obj
+                        
+                        func ret_obj() -> Object:
+                            return null
+                        """,
+                Map.of("BodyInsnNullObjectBoundary", "RuntimeBodyInsnNullObjectBoundary"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNullObjectBoundary",
+                "ping"
+        );
+        var retObjContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNullObjectBoundary",
+                "ret_obj"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pingInstructions = allInstructions(pingContext.targetFunction());
+        var retObjInstructions = allInstructions(retObjContext.targetFunction());
+        var objectNullIds = literalNullResultIds(pingInstructions);
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var retObjInsn = requireOnlyReturnInsn(retObjContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(3, objectNullIds.size()),
+                () -> assertTrue(objectNullIds.contains(assignSourcesByTarget(pingInstructions).get("local_obj"))),
+                () -> assertTrue(objectNullIds.contains(storeValueIdsForProperty(pingInstructions, "payload_obj").getFirst())),
+                () -> assertTrue(objectNullIds.contains(onlyVariableOperandId(callInsn.args()))),
+                () -> assertEquals(0, countInstructions(pingInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(pingInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(retObjInstructions, LiteralNullInsn.class)),
+                () -> assertTrue(literalNullResultIds(retObjInstructions).contains(retObjInsn.returnValueId()))
+        );
+    }
+
+    @Test
     void runKeepsGenericSubscriptInstructionsWhenOnlyVariantKeyKindIsKnown() throws Exception {
         var prepared = prepareContext(
                 "body_insn_subscript_variant_key.gd",
@@ -542,6 +853,82 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull Class<? extends LirInstruction> instructionType
     ) {
         return (int) instructions.stream().filter(instructionType::isInstance).count();
+    }
+
+    private static @NotNull List<String> packResultIds(@NotNull List<LirInstruction> instructions) {
+        return instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .map(PackVariantInsn::resultId)
+                .toList();
+    }
+
+    private static @NotNull List<String> unpackResultIds(@NotNull List<LirInstruction> instructions) {
+        return instructions.stream()
+                .filter(UnpackVariantInsn.class::isInstance)
+                .map(UnpackVariantInsn.class::cast)
+                .map(UnpackVariantInsn::resultId)
+                .toList();
+    }
+
+    private static @NotNull List<String> literalNullResultIds(@NotNull List<LirInstruction> instructions) {
+        return instructions.stream()
+                .filter(LiteralNullInsn.class::isInstance)
+                .map(LiteralNullInsn.class::cast)
+                .map(LiteralNullInsn::resultId)
+                .toList();
+    }
+
+    private static @NotNull Map<String, String> assignSourcesByTarget(@NotNull List<LirInstruction> instructions) {
+        var assignSources = new LinkedHashMap<String, String>();
+        for (var instruction : instructions) {
+            if (instruction instanceof AssignInsn(var resultId, var sourceId)) {
+                assignSources.put(resultId, sourceId);
+            }
+        }
+        return Map.copyOf(assignSources);
+    }
+
+    private static @NotNull List<String> storeValueIdsForProperty(
+            @NotNull List<LirInstruction> instructions,
+            @NotNull String propertyName
+    ) {
+        return instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals(propertyName))
+                .map(StorePropertyInsn::valueId)
+                .toList();
+    }
+
+    private static <T extends LirInstruction> @NotNull T requireOnlyInstruction(
+            @NotNull dev.superice.gdcc.lir.LirFunctionDef function,
+            @NotNull Class<T> instructionType
+    ) {
+        var matches = allInstructions(function).stream()
+                .filter(instructionType::isInstance)
+                .map(instructionType::cast)
+                .toList();
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + instructionType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull ReturnInsn requireOnlyReturnInsn(
+            @NotNull dev.superice.gdcc.lir.LirFunctionDef function
+    ) {
+        var matches = new ArrayList<ReturnInsn>();
+        for (var block : function) {
+            if (block.getTerminator() instanceof ReturnInsn returnInsn) {
+                matches.add(returnInsn);
+            }
+        }
+        assertEquals(1, matches.size(), "Expected exactly one ReturnInsn terminator");
+        return matches.getFirst();
+    }
+
+    private static @NotNull String onlyVariableOperandId(@NotNull List<LirInstruction.Operand> operands) {
+        assertEquals(1, operands.size(), "Expected exactly one variable argument");
+        return assertInstanceOf(LirInstruction.VariableOperand.class, operands.getFirst()).id();
     }
 
     private static @NotNull String requireSingleMergeValueId(@NotNull FrontendCfgGraph graph) {

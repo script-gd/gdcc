@@ -17,6 +17,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.type.GdCallableType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
@@ -250,6 +251,45 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(List.of(GdVariantType.VARIANT), exactVariantCall.publishedCallOrNull().argumentTypes());
         assertEquals(List.of(GdVariantType.VARIANT), dynamicVariantCall.publishedCallOrNull().argumentTypes());
         assertEquals(List.of(GdIntType.INT), packToVariantCall.publishedCallOrNull().argumentTypes());
+    }
+
+    @Test
+    void resolveCallExpressionTypeAcceptsNullSourcesAtObjectParameterBoundariesButRejectsScalarTargets()
+            throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_null_object_calls.gd",
+                """
+                        class_name ExpressionSemanticSupportNullObjectCalls
+                        extends RefCounted
+                        
+                        func take_obj(value: Object) -> int:
+                            return 1
+                        
+                        func take_i(value: int) -> int:
+                            return value
+                        
+                        func ping() -> void:
+                            take_obj(null)
+                            take_i(null)
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var calls = findNodes(findFunction(analyzed.ast(), "ping"), CallExpression.class, _ -> true);
+
+        var objectCall = support.resolveCallExpressionType(calls.get(0), publishedResolver, true, false);
+        var scalarCall = support.resolveCallExpressionType(calls.get(1), publishedResolver, true, false);
+
+        assertTrue(objectCall.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, objectCall.expressionType().status());
+        assertNotNull(objectCall.publishedCallOrNull());
+        assertEquals(List.of(GdNilType.NIL), objectCall.publishedCallOrNull().argumentTypes());
+
+        assertTrue(scalarCall.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, scalarCall.expressionType().status());
+        assertTrue(scalarCall.expressionType().detailReason().contains("Nil"));
+        assertTrue(scalarCall.expressionType().detailReason().contains("int"));
     }
 
     @Test

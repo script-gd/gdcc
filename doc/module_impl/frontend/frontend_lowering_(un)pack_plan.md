@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（第 1 / 2 / 3 步已完成）
+- 状态：实施中（第 1 / 2 / 3 / 4 / 5 / 6 步已完成）
 - 更新时间：2026-04-04
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -256,7 +256,6 @@ frontend 若不显式 materialize 自己的 `Variant` 边界，backend 不应该
 
 - `int -> float`
 - `StringName <-> String`
-- `null -> Object`
 - 其他当前仓库文档明确未支持的隐式转换
 
 文档和测试必须继续按 strict contract 锚定，避免把一次局部修复升级成类型系统重写。
@@ -451,7 +450,7 @@ frontend sema 不负责：
 - negative path：
   - `int -> float` 仍不因此变为可接受
   - `StringName <-> String` 仍不因此放宽
-  - `null -> Object` 仍不因此放宽
+  - `null -> int` / `null -> float` 等非 object target 仍保持拒绝
 
 ---
 
@@ -513,8 +512,8 @@ frontend sema 不负责：
 
 - 状态：已完成（2026-04-04）
 - 已落地产出：
-  - `FrontendBodyLoweringSession` 新增 ordinary boundary helper `materializeVariantBoundaryValue(...)`
-  - helper 统一承载三类动作：direct / `PackVariantInsn` / `UnpackVariantInsn`
+  - `FrontendBodyLoweringSession` 新增 ordinary boundary helper `materializeFrontendBoundaryValue(...)`
+  - helper 统一承载四类动作：direct / `PackVariantInsn` / `UnpackVariantInsn` / object-typed `LiteralNullInsn`
   - helper 的 temp 命名已收口在 session 内部递增计数器，不把命名细节暴露成下游 contract
 - 已补测试锚点：
   - `FrontendBodyLoweringSessionTest`
@@ -566,6 +565,20 @@ frontend sema 不负责：
 - concrete -> `Variant` 的 pack
 - stable `Variant` -> concrete 的 unpack
 
+### 当前状态
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - `FrontendLocalDeclarationInsnLoweringProcessor` 现在会按 local slot type 对 initializer 统一走 session helper，再发最终 `AssignInsn`
+  - `FrontendIdentifierAssignmentInsnLoweringProcessor` 现在会针对 local / parameter / capture / property target 先物化 ordinary `Variant` boundary，再发 `AssignInsn` / `StorePropertyInsn` / `StoreStaticInsn`
+  - `FrontendAttributePropertyAssignmentInsnLoweringProcessor` 现在会直接复用 published member result type 做 target-side boundary materialization
+- 已补测试锚点：
+  - `FrontendLoweringBodyInsnPassTest.runMaterializesVariantBoundariesForLocalInitializersAndOrdinaryPropertyAssignments`
+  - `FrontendLoweringBodyInsnPassTest.runKeepsDirectLocalPropertyAndReturnRoutesInstructionFreeWhenNoVariantBoundaryExists`
+- 本步确认仍保持的边界：
+  - `SubscriptExpression` / `AttributeSubscriptStep` store 路径未被顺手扩大成 typed element conversion 工程
+  - 非 `Variant` boundary 的 direct local/property store 继续不引入多余指令
+
 ### 建议实施内容
 
 - `FrontendLocalDeclarationInsnLoweringProcessor`
@@ -611,6 +624,20 @@ frontend sema 不负责：
 
 让 call applicability 与 call lowering 同时支持双向 stable-`Variant` 边界。
 
+### 当前状态
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - `FrontendBodyLoweringSession` 新增 call-scoped helper，按 selected callable signature 统一处理 fixed parameter 与 vararg tail 的 boundary materialization
+  - `FrontendCallInsnLoweringProcessor` 现在不再直接透传 `argumentValueIds`，而是先按形参类型物化 `PackVariantInsn` / `UnpackVariantInsn`
+  - vararg tail 继续固定视为 `Variant`，concrete extra arg 会 pack，stable `Variant` extra arg 保持 direct
+  - helper 对 instance call 做了 receiver-separated normalization：若 signature metadata 仍暴露前置 `self` 形参，会在 argument materialization 前剥离该隐式 receiver
+- 已补测试锚点：
+  - `FrontendLoweringBodyInsnPassTest.runMaterializesVariantBoundariesForFixedCallsAndVarargTailArguments`
+- 本步确认仍保持的边界：
+  - lowering 只消费已选中的 callable signature，不重做 overload 选择
+  - stable `Variant` vararg tail 不会被重复 pack
+
 ### 建议实施内容
 
 - fixed parameter sema：
@@ -652,6 +679,19 @@ frontend sema 不负责：
 
 - concrete -> `Variant` 的 pack
 - stable `Variant` -> concrete 的 unpack
+
+### 当前状态
+
+- 状态：已完成（2026-04-04）
+- 已落地产出：
+  - `FrontendStopNodeInsnLoweringProcessor` 现在会按当前函数 return slot type 对 published return value 统一走 ordinary boundary helper，再发最终 `ReturnInsn`
+  - `return expr` 的 pack/unpack 逻辑现已与 local/assignment/call 共用同一 session helper，不再保留 stop-node 专属分支
+- 已补测试锚点：
+  - `FrontendLoweringBodyInsnPassTest.runMaterializesVariantBoundariesAtReturnSlots`
+  - `FrontendLoweringBodyInsnPassTest.runKeepsDirectLocalPropertyAndReturnRoutesInstructionFreeWhenNoVariantBoundaryExists`
+- 本步确认仍保持的边界：
+  - direct concrete -> concrete return 继续 instruction-free
+  - `ReturnInsn(null)` 的 void 路径未被这次改动扰动
 
 ### 建议实施内容
 
@@ -707,7 +747,7 @@ frontend sema 不负责：
 2. stable `Variant` source 可以流向 concrete target，并由 lowering 显式 unpack
 3. `DYNAMIC(Variant)` 也纳入本次自动拆箱范围
 4. runtime unpack 成功与否由后续 backend `PackUnpackVariantInsnGen` 负责做类型校验与错误处理
-5. 本次不引入 `int -> float`、`null -> Object` 等其他隐式转换
+5. 本次不引入 `int -> float` 等其他隐式转换；`Nil -> object` 已作为单独冻结的 frontend boundary contract 接通
 
 ---
 
@@ -750,7 +790,7 @@ frontend sema 不负责：
 10. negative regression
    - `int -> float`
    - `String -> int`
-   - `null -> Object`
+   - `null -> int`
    - 都应继续失败
 
 ---
@@ -796,7 +836,6 @@ frontend sema 不负责：
 
 - `int -> float` 等宽隐式数值提升
 - `StringName` / `String` 互转
-- `null -> Object`
 - 尚未冻结 contract 的 container element widening
 - backend 自动帮 frontend 猜 `(un)pack` 点
 

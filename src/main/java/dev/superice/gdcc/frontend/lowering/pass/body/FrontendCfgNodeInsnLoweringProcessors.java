@@ -116,8 +116,9 @@ final class FrontendCfgNodeInsnLoweringProcessors {
 
     /// Finishes one CFG stop node by wiring the already-materialized return slot into `ReturnInsn`.
     ///
-    /// Stop nodes never inspect source AST again; they only forward the optional published return
-    /// value id through the session's slot-resolution contract.
+    /// Stop nodes never inspect source AST again; they only consume the published return value id,
+    /// materialize the ordinary return-slot `Variant` boundary when needed, and then emit the
+    /// final `ReturnInsn`.
     private static final class FrontendStopNodeInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<FrontendCfgGraph.StopNode, Void> {
         @Override
@@ -132,7 +133,19 @@ final class FrontendCfgNodeInsnLoweringProcessors {
                 @NotNull FrontendCfgGraph.StopNode node,
                 @Nullable Void context
         ) {
-            block.setTerminator(new ReturnInsn(session.slotIdForValueOrNull(node.returnValueIdOrNull())));
+            var returnValueId = node.returnValueIdOrNull();
+            if (returnValueId == null) {
+                block.setTerminator(new ReturnInsn(null));
+                return;
+            }
+            var materializedReturnSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    session.slotIdForValue(returnValueId),
+                    session.requireValueType(returnValueId),
+                    session.targetFunction().getReturnType(),
+                    "return_value"
+            );
+            block.setTerminator(new ReturnInsn(materializedReturnSlotId));
         }
     }
 }

@@ -29,7 +29,7 @@
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
   - 不在这里转正 parameter default、lambda、`for`、`match`、block-local `const`、class constant 的正式 body 语义
-  - 不在这里扩张 keyed builtin、numeric promotion、`StringName` / `String` 互转、`null -> Object` 等更宽隐式兼容
+  - 不在这里扩张 keyed builtin、numeric promotion、`StringName` / `String` 互转等更宽隐式兼容
 
 ---
 

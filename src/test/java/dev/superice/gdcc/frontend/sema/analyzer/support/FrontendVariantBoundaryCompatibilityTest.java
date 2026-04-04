@@ -4,6 +4,8 @@ import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
@@ -44,6 +46,14 @@ class FrontendVariantBoundaryCompatibilityTest {
                         classRegistry,
                         GdIntType.INT,
                         GdIntType.INT
+                )
+        );
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_LITERAL_NULL,
+                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                        classRegistry,
+                        GdNilType.NIL,
+                        GdObjectType.OBJECT
                 )
         );
         assertEquals(

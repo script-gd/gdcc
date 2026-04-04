@@ -11,10 +11,13 @@ import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirBasicBlock;
+import dev.superice.gdcc.lir.insn.LiteralNullInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -33,12 +36,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSessionTest {
     @Test
-    void materializeVariantBoundaryValuePacksConcreteSourcesForVariantTargets() throws Exception {
+    void materializeFrontendBoundaryValuePacksConcreteSourcesForVariantTargets() throws Exception {
         var session = prepareSession();
         var block = new LirBasicBlock("entry");
         session.ensureVariable("source_value", GdIntType.INT);
 
-        var materializedSlotId = session.materializeVariantBoundaryValue(
+        var materializedSlotId = session.materializeFrontendBoundaryValue(
                 block,
                 "source_value",
                 GdIntType.INT,
@@ -61,12 +64,12 @@ class FrontendBodyLoweringSessionTest {
     }
 
     @Test
-    void materializeVariantBoundaryValueUnpacksStableVariantSourcesForConcreteTargets() throws Exception {
+    void materializeFrontendBoundaryValueUnpacksStableVariantSourcesForConcreteTargets() throws Exception {
         var session = prepareSession();
         var block = new LirBasicBlock("entry");
         session.ensureVariable("source_variant", GdVariantType.VARIANT);
 
-        var materializedSlotId = session.materializeVariantBoundaryValue(
+        var materializedSlotId = session.materializeFrontendBoundaryValue(
                 block,
                 "source_variant",
                 GdVariantType.VARIANT,
@@ -89,21 +92,48 @@ class FrontendBodyLoweringSessionTest {
     }
 
     @Test
-    void materializeVariantBoundaryValueKeepsDirectRoutesInstructionFree() throws Exception {
+    void materializeFrontendBoundaryValueMaterializesObjectNullForNilSources() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("source_nil", GdNilType.NIL);
+
+        var materializedSlotId = session.materializeFrontendBoundaryValue(
+                block,
+                "source_nil",
+                GdNilType.NIL,
+                GdObjectType.OBJECT,
+                "object_return"
+        );
+
+        var instructions = block.getNonTerminatorInstructions();
+        var literalNullInsn = assertInstanceOf(LiteralNullInsn.class, instructions.getFirst());
+        var nullVariable = session.targetFunction().getVariableById(materializedSlotId);
+        assertNotNull(nullVariable);
+
+        assertAll(
+                () -> assertEquals(1, instructions.size()),
+                () -> assertNotEquals("source_nil", materializedSlotId),
+                () -> assertEquals(materializedSlotId, literalNullInsn.resultId()),
+                () -> assertEquals(GdObjectType.OBJECT, nullVariable.type())
+        );
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueKeepsDirectRoutesInstructionFree() throws Exception {
         var session = prepareSession();
         var concreteBlock = new LirBasicBlock("concrete_direct");
         var variantBlock = new LirBasicBlock("variant_direct");
         session.ensureVariable("source_value", GdIntType.INT);
         session.ensureVariable("source_variant", GdVariantType.VARIANT);
 
-        var directConcreteSlotId = session.materializeVariantBoundaryValue(
+        var directConcreteSlotId = session.materializeFrontendBoundaryValue(
                 concreteBlock,
                 "source_value",
                 GdIntType.INT,
                 GdIntType.INT,
                 "local_init"
         );
-        var directVariantSlotId = session.materializeVariantBoundaryValue(
+        var directVariantSlotId = session.materializeFrontendBoundaryValue(
                 variantBlock,
                 "source_variant",
                 GdVariantType.VARIANT,

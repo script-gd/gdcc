@@ -102,8 +102,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
 
     /// Commits a published local initializer into the stable source-local slot.
     ///
-    /// Slot declaration itself already happened before instruction lowering; this processor only
-    /// emits the runtime assignment when the CFG item carries an initializer value id.
+    /// Slot declaration itself already happened before instruction lowering. The remaining job here
+    /// is to materialize any ordinary `Variant` boundary required by the published local slot type
+    /// and then commit the final value into the stable source-local storage.
     private static final class FrontendLocalDeclarationInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<LocalDeclarationItem, Void> {
         @Override
@@ -122,9 +123,16 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             if (initializerValueId == null) {
                 return;
             }
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    session.slotIdForValue(initializerValueId),
+                    session.requireValueType(initializerValueId),
+                    session.requireSourceLocalSlotType(node.declaration()),
+                    "local_init"
+            );
             block.appendNonTerminatorInstruction(new AssignInsn(
                     FrontendBodyLoweringSupport.sourceLocalSlotId(node.declaration()),
-                    session.slotIdForValue(initializerValueId)
+                    materializedSlotId
             ));
         }
     }
@@ -273,7 +281,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// Emits call instructions strictly from the published resolved-call route.
     ///
     /// The processor is not allowed to repair missing receiver information, redo overload choice,
-    /// or guess between global/static/instance call families once compile-ready facts exist.
+    /// or guess between global/static/instance call families once compile-ready facts exist. It
+    /// only materializes the already-approved argument-side `Variant` boundaries required by the
+    /// selected callable signature before emitting the final call instruction.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override
@@ -290,7 +300,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         ) {
             var resolvedCall = session.requireResolvedCall(node.anchor());
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
-            var arguments = session.variableOperands(node.argumentValueIds());
+            var arguments = session.materializeCallArguments(block, node, resolvedCall);
             switch (resolvedCall.callKind()) {
                 case INSTANCE_METHOD -> block.appendNonTerminatorInstruction(new CallMethodInsn(
                         resultSlotId,

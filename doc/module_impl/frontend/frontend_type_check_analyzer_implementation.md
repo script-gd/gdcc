@@ -33,7 +33,7 @@
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
   - 不在这里转正 `lambda`、`for`、`match`、parameter default、block-local `const`、class `const` 的正式 body 语义
-  - 不在这里实现 property-side inference/backfill，或放宽 `int -> float`、`StringName` / `String`、`null -> Object` 等当前未支持的更宽隐式兼容
+  - 不在这里实现 property-side inference/backfill，或放宽 `int -> float`、`StringName` / `String` 等当前未支持的更宽隐式兼容
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义
 
 ---
@@ -175,6 +175,7 @@ type-check 当前只消费稳定 expression fact：
 当前冻结行为是：
 
 - exact `Variant` slot 接受任意已解析值
+- `Nil` 可以流向 object slot
 - 其余 slot 继续回退 `ClassRegistry.checkAssignable(...)`
 
 因此，local/property/return typed gate 不得直接手写 `Variant` 分支，也不得直接拿 `ClassRegistry.checkAssignable(...)` 替代 shared helper。
@@ -225,7 +226,7 @@ return contract 当前冻结为：
 
 - `Variant` return slot 可以接受 bare `return`
 - strict numeric / object / bool slot 不会因为 bare `return` 被误判为可接受
-- 当前 frontend 仍未放宽 `null -> Object`
+- object return slot 现在接受 `Nil`，因此 `return null` 与 bare `return` 都可通过 typed gate
 
 ### 3.6 condition contract
 
