@@ -34,6 +34,7 @@ public record FrontendCfgGraph(
         nodes = copyNodes(nodes);
         validateEntryNode(nodes, entryNodeId);
         validateSuccessorTargets(nodes);
+        validateMergeSourceContracts(nodes);
         validateValueProducerContracts(nodes);
     }
 
@@ -116,7 +117,8 @@ public record FrontendCfgGraph(
     ///
     /// `RETURN` models a real callable exit and may optionally carry a return value id.
     /// `TERMINAL_MERGE` is a synthetic anchor used only to represent "this structured construct fully
-    /// terminates" inside the frontend graph; it must never pretend to be a real source `return`.
+    /// terminates" inside the frontend graph; it must never pretend to be a real source `return`,
+    /// an executable entry node, or an executable edge target.
     public record StopNode(
             @NotNull String id,
             @NotNull StopKind kind,
@@ -154,8 +156,14 @@ public record FrontendCfgGraph(
     }
 
     private static void validateEntryNode(@NotNull Map<String, NodeDef> nodes, @NotNull String entryNodeId) {
-        if (!nodes.containsKey(entryNodeId)) {
+        var entryNode = nodes.get(entryNodeId);
+        if (entryNode == null) {
             throw new IllegalArgumentException("Frontend CFG entry node does not exist: " + entryNodeId);
+        }
+        if (entryNode instanceof StopNode stopNode && stopNode.kind() == StopKind.TERMINAL_MERGE) {
+            throw new IllegalArgumentException(
+                    "Frontend CFG entry node must not be a synthetic terminal-merge stop: " + entryNodeId
+            );
         }
     }
 
@@ -180,6 +188,8 @@ public record FrontendCfgGraph(
     /// That exception is deliberately narrow. If a value id has more than one producer, every producer
     /// must be a `MergeValueItem`; mixed definitions such as `OpaqueExprValueItem + MergeValueItem` or
     /// `CallItem + MergeValueItem` are rejected at graph publication time.
+    /// Each merge write must also source a value already produced earlier in the same sequence node, so
+    /// later type collection does not depend on cross-sequence traversal order.
     ///
     /// Any consumer that collects producers by value id must therefore handle multiple reaching
     /// producers instead of assuming a unique reverse lookup.
@@ -217,15 +227,53 @@ public record FrontendCfgGraph(
         }
     }
 
+    /// Merge-slot writes are only valid when the branch-local source value has already been produced in
+    /// the same sequence node. This makes the current short-circuit shape explicit and prevents type
+    /// collection from depending on cross-sequence traversal order.
+    private static void validateMergeSourceContracts(@NotNull Map<String, NodeDef> nodes) {
+        for (var node : nodes.values()) {
+            if (!(node instanceof SequenceNode(var nodeId, var items, _))) {
+                continue;
+            }
+            var locallyPublishedValueIds = new ArrayList<String>();
+            for (var item : items) {
+                if (item instanceof MergeValueItem mergeValueItem
+                        && !locallyPublishedValueIds.contains(mergeValueItem.sourceValueId())) {
+                    throw new IllegalArgumentException(
+                            "Frontend CFG merge item in sequence '"
+                                    + nodeId
+                                    + "' must source a value produced earlier in the same sequence, but '"
+                                    + mergeValueItem.sourceValueId()
+                                    + "' has no prior local producer"
+                    );
+                }
+                if (item instanceof ValueOpItem valueOpItem && valueOpItem.resultValueIdOrNull() != null) {
+                    locallyPublishedValueIds.add(valueOpItem.resultValueIdOrNull());
+                }
+            }
+        }
+    }
+
     private static void validateTargetNode(
             @NotNull Map<String, NodeDef> nodes,
             @NotNull String sourceNodeId,
             @NotNull String edgeName,
             @NotNull String targetNodeId
     ) {
-        if (!nodes.containsKey(targetNodeId)) {
+        var targetNode = nodes.get(targetNodeId);
+        if (targetNode == null) {
             throw new IllegalArgumentException(
                     "Frontend CFG node '" + sourceNodeId + "' references missing " + edgeName + " '" + targetNodeId + "'"
+            );
+        }
+        if (targetNode instanceof StopNode stopNode && stopNode.kind() == StopKind.TERMINAL_MERGE) {
+            throw new IllegalArgumentException(
+                    "Frontend CFG node '"
+                            + sourceNodeId
+                            + "' must not target synthetic terminal-merge stop '"
+                            + targetNodeId
+                            + "' via "
+                            + edgeName
             );
         }
     }

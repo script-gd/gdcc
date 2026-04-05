@@ -73,6 +73,12 @@ public final class FrontendBodyLoweringSupport {
         return slotType;
     }
 
+    /// Collects runtime slot types for all frontend CFG value ids.
+    ///
+    /// This pass intentionally consumes the graph in published node/item order. Graph publication
+    /// therefore must already have enforced the branch-result merge rule that every `MergeValueItem`
+    /// sources a value produced earlier in the same sequence node; this collector does not try to
+    /// recover from cross-sequence merge dependencies.
     public static @NotNull SequencedMap<String, GdType> collectCfgValueSlotTypes(
             @NotNull FrontendCfgGraph graph,
             @NotNull FrontendAnalysisData analysisData,
@@ -298,7 +304,12 @@ public final class FrontendBodyLoweringSupport {
     ) {
         var resolvedType = resolvedValueTypes.get(StringUtil.requireNonBlank(valueId, "valueId"));
         if (resolvedType == null) {
-            throw new IllegalStateException("Missing previously resolved value type for '" + valueId + "'");
+            throw new IllegalStateException(
+                    "Missing previously resolved value type for '"
+                            + valueId
+                            + "'. FrontendCfgGraph publication should have rejected any merge item that depends "
+                            + "on a not-yet-published source value."
+            );
         }
         return resolvedType;
     }

@@ -148,6 +148,7 @@ class FrontendCfgGraphTest {
                 new FrontendCfgGraph.SequenceNode(
                         "entry",
                         List.of(
+                                new BoolConstantItem(identifier("source"), true, "src0"),
                                 new OpaqueExprValueItem(identifier("flag"), "v0"),
                                 new MergeValueItem(identifier("merged"), "src0", "v0")
                         ),
@@ -233,6 +234,96 @@ class FrontendCfgGraphTest {
         );
 
         assertTrue(exception.getMessage().contains("Terminal-merge stop node"));
+    }
+
+    @Test
+    void constructorRejectsTerminalMergeAsEntryOrExecutableTarget() {
+        var terminalEntryNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        terminalEntryNodes.put(
+                "merge",
+                new FrontendCfgGraph.StopNode("merge", FrontendCfgGraph.StopKind.TERMINAL_MERGE, null)
+        );
+        var terminalTargetNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        terminalTargetNodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", List.of(), "merge"));
+        terminalTargetNodes.put(
+                "merge",
+                new FrontendCfgGraph.StopNode("merge", FrontendCfgGraph.StopKind.TERMINAL_MERGE, null)
+        );
+
+        var terminalEntry = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("merge", terminalEntryNodes)
+        );
+        var terminalTarget = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", terminalTargetNodes)
+        );
+
+        assertAll(
+                () -> assertTrue(terminalEntry.getMessage().contains("must not be a synthetic terminal-merge stop")),
+                () -> assertTrue(terminalTarget.getMessage().contains("must not target synthetic terminal-merge stop"))
+        );
+    }
+
+    @Test
+    void constructorRejectsMergeSourceWithoutEarlierProducerInSameSequence() {
+        var laterProducerNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        laterProducerNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(
+                                new MergeValueItem(identifier("merge"), "src0", "merged0"),
+                                new BoolConstantItem(identifier("source"), true, "src0")
+                        ),
+                        "stop"
+                )
+        );
+        laterProducerNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "merged0"));
+
+        var crossSequenceNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
+        crossSequenceNodes.put(
+                "entry",
+                new FrontendCfgGraph.SequenceNode(
+                        "entry",
+                        List.of(new OpaqueExprValueItem(identifier("flag"), "v0")),
+                        "branch"
+                )
+        );
+        crossSequenceNodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "else"));
+        crossSequenceNodes.put(
+                "then",
+                new FrontendCfgGraph.SequenceNode(
+                        "then",
+                        List.of(new MergeValueItem(identifier("merge"), "src0", "merged0")),
+                        "stop"
+                )
+        );
+        crossSequenceNodes.put(
+                "else",
+                new FrontendCfgGraph.SequenceNode(
+                        "else",
+                        List.of(new BoolConstantItem(identifier("source"), true, "src0")),
+                        "stop"
+                )
+        );
+        crossSequenceNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "merged0"));
+
+        var laterProducer = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", laterProducerNodes)
+        );
+        var crossSequence = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph("entry", crossSequenceNodes)
+        );
+
+        assertAll(
+                () -> assertTrue(laterProducer.getMessage().contains("produced earlier in the same sequence")),
+                () -> assertTrue(laterProducer.getMessage().contains("src0")),
+                () -> assertTrue(crossSequence.getMessage().contains("produced earlier in the same sequence")),
+                () -> assertTrue(crossSequence.getMessage().contains("then"))
+        );
     }
 
     @Test
