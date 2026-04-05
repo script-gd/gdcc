@@ -172,7 +172,7 @@ short-circuit `BinaryExpression(and/or/&&/||)` 当前已经从显式 compile-blo
 compound assignment 当前属于另一个阶段性例外：
 
 - shared semantic 已经接通 closed-set compound operator 的 assignment contract，并复用 ordinary binary operator typing
-- 但 frontend CFG / body lowering 的 read-modify-write item shape 尚未落地
+- frontend CFG 的 read-modify-write item shape 已冻结，但 body lowering 对应 materialization 仍未接通
 - 因此 compile gate 继续按 assignment root 做 explicit temporary block，避免把 shared-semantic 已成功的 route 提前放进 lowering
 
 constructor route 当前也不再属于 compile-only blocker：

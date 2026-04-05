@@ -5,6 +5,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -486,7 +487,7 @@ public final class FrontendCfgGraphBuilder {
             throw new IllegalStateException("AttributeExpression must contain at least one step");
         }
         if (attributeExpression.base() instanceof IdentifierExpression identifierExpression
-                && analysisData.symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
+                && Objects.requireNonNull(analysisData).symbolBindings().get(identifierExpression) instanceof FrontendBinding binding
                 && binding.kind() == FrontendBindingKind.TYPE_META) {
             return buildTypeMetaHeadAttributeExpressionValue(cursor, attributeExpression, preferredResultValueId);
         }
@@ -759,20 +760,61 @@ public final class FrontendCfgGraphBuilder {
         throw unsupportedConditionalExpression(conditionalExpression);
     }
 
-    /// Assignment commit preserves target evaluation before RHS evaluation.
+    /// Plain assignment preserves target evaluation before RHS evaluation.
     ///
-    /// The returned operand list on `AssignmentItem` therefore starts with any already-evaluated
-    /// target receiver/index operands, then appends the RHS value id as the final consumed operand.
+    /// Compound assignment uses a separate read-modify-write path so `AssignmentItem` can stay the
+    /// minimal "final store commit" node.
     private @NotNull BuildCursor buildAssignmentCommit(
             @NotNull BuildCursor cursor,
             @NotNull AssignmentExpression assignmentExpression
     ) {
+        if (isCompoundAssignmentOperator(assignmentExpression)) {
+            return buildCompoundAssignmentCommit(cursor, assignmentExpression);
+        }
         var targetOperandsBuild = buildAssignmentTargetOperands(cursor, assignmentExpression.left());
         var rhsBuild = buildValue(targetOperandsBuild.cursor(), assignmentExpression.right(), null);
         rhsBuild.cursor().currentSequence().items().add(new AssignmentItem(
                 assignmentExpression,
                 targetOperandsBuild.valueIds(),
                 rhsBuild.resultValueId(),
+                null
+        ));
+        return rhsBuild.cursor();
+    }
+
+    /// Compound assignment must freeze read-modify-write explicitly instead of pretending the target
+    /// can be rebuilt from source later.
+    ///
+    /// The source-order contract is:
+    /// 1. freeze target receiver/index operands once
+    /// 2. read the current target value from those frozen operands
+    /// 3. evaluate the RHS
+    /// 4. publish one explicit compound-op value item
+    /// 5. commit the computed result through the ordinary assignment store route
+    private @NotNull BuildCursor buildCompoundAssignmentCommit(
+            @NotNull BuildCursor cursor,
+            @NotNull AssignmentExpression assignmentExpression
+    ) {
+        var binaryOperatorLexeme = requireCompoundBinaryOperatorLexeme(assignmentExpression);
+        var targetOperandsBuild = buildAssignmentTargetOperands(cursor, assignmentExpression.left());
+        var currentTargetValueBuild = buildCompoundAssignmentCurrentTargetValue(
+                targetOperandsBuild.cursor(),
+                assignmentExpression.left(),
+                targetOperandsBuild.valueIds()
+        );
+        var rhsBuild = buildValue(currentTargetValueBuild.cursor(), assignmentExpression.right(), null);
+        var compoundResultValueId = nextValueId();
+        rhsBuild.cursor().currentSequence().items().add(new CompoundAssignmentBinaryOpItem(
+                assignmentExpression,
+                binaryOperatorLexeme,
+                currentTargetValueBuild.resultValueId(),
+                rhsBuild.resultValueId(),
+                compoundResultValueId
+        ));
+        rhsBuild.cursor().currentSequence().items().add(new AssignmentItem(
+                assignmentExpression,
+                targetOperandsBuild.valueIds(),
+                compoundResultValueId,
                 null
         ));
         return rhsBuild.cursor();
@@ -798,6 +840,30 @@ public final class FrontendCfgGraphBuilder {
                 operands.addAll(argumentsBuild.valueIds());
                 yield new ValueListBuild(argumentsBuild.cursor(), List.copyOf(operands));
             }
+            default -> throw unsupportedReachableAssignmentTarget(targetExpression);
+        };
+    }
+
+    /// Compound assignment reuses the already-frozen assignment-target operands to read the current
+    /// target value. Rebuilding the original LHS expression here would duplicate side effects such as
+    /// prefix calls or subscript indexes.
+    private @NotNull ValueBuild buildCompoundAssignmentCurrentTargetValue(
+            @NotNull BuildCursor cursor,
+            @NotNull Expression targetExpression,
+            @NotNull List<String> frozenTargetOperandValueIds
+    ) {
+        return switch (targetExpression) {
+            case IdentifierExpression identifierExpression -> emitOpaqueValue(cursor, identifierExpression, List.of(), null);
+            case AttributeExpression attributeExpression -> buildCompoundAssignmentAttributeTargetValue(
+                    cursor,
+                    attributeExpression,
+                    frozenTargetOperandValueIds
+            );
+            case SubscriptExpression subscriptExpression -> buildCompoundAssignmentSubscriptTargetValue(
+                    cursor,
+                    subscriptExpression,
+                    frozenTargetOperandValueIds
+            );
             default -> throw unsupportedReachableAssignmentTarget(targetExpression);
         };
     }
@@ -847,6 +913,86 @@ public final class FrontendCfgGraphBuilder {
                             + "' is not supported by the current frontend CFG contract"
             );
         };
+    }
+
+    /// Attribute compound-assignment reads reuse the frozen final receiver/index operands instead of
+    /// replaying the prefix chain. The final writable step becomes one explicit load item that feeds
+    /// the later compound binary op.
+    private @NotNull ValueBuild buildCompoundAssignmentAttributeTargetValue(
+            @NotNull BuildCursor cursor,
+            @NotNull AttributeExpression attributeExpression,
+            @NotNull List<String> frozenTargetOperandValueIds
+    ) {
+        if (attributeExpression.steps().isEmpty()) {
+            throw new IllegalStateException("AttributeExpression compound target must contain at least one step");
+        }
+        var finalStep = attributeExpression.steps().getLast();
+        return switch (finalStep) {
+            case AttributePropertyStep attributePropertyStep -> {
+                requireLoweringReadyCompoundMemberRead(
+                        attributePropertyStep,
+                        "compound attribute-property current-value read"
+                );
+                var receiverValueId = requireFrozenTargetOperandValue(
+                        frozenTargetOperandValueIds,
+                        0,
+                        attributeExpression,
+                        "receiver"
+                );
+                var resultValueId = nextValueId();
+                cursor.currentSequence().items().add(new MemberLoadItem(
+                        attributePropertyStep,
+                        attributePropertyStep.name(),
+                        receiverValueId,
+                        resultValueId
+                ));
+                yield new ValueBuild(cursor, resultValueId);
+            }
+            case AttributeSubscriptStep attributeSubscriptStep -> {
+                var receiverValueId = requireFrozenTargetOperandValue(
+                        frozenTargetOperandValueIds,
+                        0,
+                        attributeExpression,
+                        "receiver"
+                );
+                var resultValueId = nextValueId();
+                cursor.currentSequence().items().add(new SubscriptLoadItem(
+                        attributeSubscriptStep,
+                        attributeSubscriptStep.name(),
+                        receiverValueId,
+                        requireFrozenTargetTrailingOperands(frozenTargetOperandValueIds, attributeExpression),
+                        resultValueId
+                ));
+                yield new ValueBuild(cursor, resultValueId);
+            }
+            default -> throw new IllegalStateException(
+                    "Compound assignment target step '"
+                            + finalStep.getClass().getSimpleName()
+                            + "' is not supported by the current frontend CFG contract"
+            );
+        };
+    }
+
+    private @NotNull ValueBuild buildCompoundAssignmentSubscriptTargetValue(
+            @NotNull BuildCursor cursor,
+            @NotNull SubscriptExpression subscriptExpression,
+            @NotNull List<String> frozenTargetOperandValueIds
+    ) {
+        var receiverValueId = requireFrozenTargetOperandValue(
+                frozenTargetOperandValueIds,
+                0,
+                subscriptExpression,
+                "base"
+        );
+        var resultValueId = nextValueId();
+        cursor.currentSequence().items().add(new SubscriptLoadItem(
+                subscriptExpression,
+                null,
+                receiverValueId,
+                requireFrozenTargetTrailingOperands(frozenTargetOperandValueIds, subscriptExpression),
+                resultValueId
+        ));
+        return new ValueBuild(cursor, resultValueId);
     }
 
     /// Assignment-target prefixes are not always part of the ordinary published `expressionTypes()`
@@ -1189,6 +1335,68 @@ public final class FrontendCfgGraphBuilder {
         return operator == GodotOperator.AND || operator == GodotOperator.OR;
     }
 
+    private static boolean isCompoundAssignmentOperator(@NotNull AssignmentExpression assignmentExpression) {
+        return !Objects.requireNonNull(assignmentExpression, "assignmentExpression must not be null")
+                .operator()
+                .equals("=");
+    }
+
+    private static @NotNull String requireCompoundBinaryOperatorLexeme(
+            @NotNull AssignmentExpression assignmentExpression
+    ) {
+        var operatorText = Objects.requireNonNull(assignmentExpression, "assignmentExpression must not be null")
+                .operator();
+        var binaryOperatorLexeme = switch (operatorText) {
+            case "+=" -> "+";
+            case "-=" -> "-";
+            case "*=" -> "*";
+            case "/=" -> "/";
+            case "%=" -> "%";
+            case "**=" -> "**";
+            case ">>=" -> ">>";
+            case "<<=" -> "<<";
+            case "&=" -> "&";
+            case "^=" -> "^";
+            case "|=" -> "|";
+            default -> null;
+        };
+        if (binaryOperatorLexeme != null) {
+            return binaryOperatorLexeme;
+        }
+        throw new IllegalStateException(
+                "Compound assignment operator '"
+                        + operatorText
+                        + "' is not recognized by the current frontend CFG read-modify-write contract"
+        );
+    }
+
+    private void requireLoweringReadyCompoundMemberRead(
+            @NotNull AttributePropertyStep attributePropertyStep,
+            @NotNull String contractDetail
+    ) {
+        var publishedMember = requireAnalysisData().resolvedMembers().get(attributePropertyStep);
+        if (publishedMember == null) {
+            throw new IllegalStateException(
+                    "compound-assignment publication contract is missing a lowering-ready member fact for "
+                            + "AttributePropertyStep '"
+                            + attributePropertyStep.name()
+                            + "' during "
+                            + contractDetail
+            );
+        }
+        if (publishedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                && publishedMember.status() != FrontendMemberResolutionStatus.DYNAMIC) {
+            throw new IllegalStateException(
+                    "compound-assignment member read for AttributePropertyStep '"
+                            + attributePropertyStep.name()
+                            + "' is not lowering-ready during "
+                            + contractDetail
+                            + ": "
+                            + publishedMember.status()
+            );
+        }
+    }
+
     private static @NotNull GodotOperator requireShortCircuitBinaryOperator(
             @NotNull BinaryExpression binaryExpression
     ) {
@@ -1219,6 +1427,38 @@ public final class FrontendCfgGraphBuilder {
         } catch (IllegalArgumentException _) {
             return null;
         }
+    }
+
+    private static @NotNull String requireFrozenTargetOperandValue(
+            @NotNull List<String> frozenTargetOperandValueIds,
+            int index,
+            @NotNull Expression targetExpression,
+            @NotNull String operandRole
+    ) {
+        if (index < frozenTargetOperandValueIds.size()) {
+            return frozenTargetOperandValueIds.get(index);
+        }
+        throw new IllegalStateException(
+                "Compound assignment target "
+                        + targetExpression.getClass().getSimpleName()
+                        + " is missing frozen "
+                        + operandRole
+                        + " operands in the frontend CFG read-modify-write contract"
+        );
+    }
+
+    private static @NotNull List<String> requireFrozenTargetTrailingOperands(
+            @NotNull List<String> frozenTargetOperandValueIds,
+            @NotNull Expression targetExpression
+    ) {
+        if (frozenTargetOperandValueIds.size() >= 2) {
+            return List.copyOf(frozenTargetOperandValueIds.subList(1, frozenTargetOperandValueIds.size()));
+        }
+        throw new IllegalStateException(
+                "Compound assignment target "
+                        + targetExpression.getClass().getSimpleName()
+                        + " is missing frozen index operands in the frontend CFG read-modify-write contract"
+        );
     }
 
     /// Compile-ready lowering must only see expressions whose type facts already stabilized to a

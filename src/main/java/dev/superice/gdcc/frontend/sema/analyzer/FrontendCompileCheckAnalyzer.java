@@ -147,7 +147,7 @@ public class FrontendCompileCheckAnalyzer {
         return "Compound assignment operator '"
                 + Objects.requireNonNull(operatorText, "operatorText must not be null")
                 + "' is recognized by shared semantic analysis but remains temporarily blocked in compile mode "
-                + "until frontend CFG/body lowering lands its read-modify-write contract";
+                + "until frontend body lowering lands its read-modify-write materialization contract";
     }
 
     private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {

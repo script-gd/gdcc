@@ -16,8 +16,8 @@ import java.util.List;
 /// paths. Any code that collects producers for a value id must therefore handle multiple producers
 /// instead of assuming a unique reverse lookup.
 public sealed interface ValueOpItem extends SequenceItem permits OpaqueExprValueItem, LocalDeclarationItem,
-        AssignmentItem, MemberLoadItem, SubscriptLoadItem, CallItem, CastItem, TypeTestItem, MergeValueItem,
-        BoolConstantItem {
+        AssignmentItem, CompoundAssignmentBinaryOpItem, MemberLoadItem, SubscriptLoadItem, CallItem, CastItem,
+        TypeTestItem, MergeValueItem, BoolConstantItem {
     /// Result value id published by this item, or `null` when the item only commits state.
     @Nullable String resultValueIdOrNull();
 

@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.lowering;
 import dev.superice.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CastItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -124,6 +125,10 @@ public final class FrontendBodyLoweringSupport {
             case OpaqueExprValueItem opaqueExprValueItem -> requireOpaqueValueType(
                     analysisData,
                     opaqueExprValueItem.expression()
+            );
+            case CompoundAssignmentBinaryOpItem compoundAssignmentItem -> throw new IllegalStateException(
+                    "Compound assignment value item reached body-lowering type collection before its processor "
+                            + "contract landed: " + compoundAssignmentItem.binaryOperatorLexeme()
             );
             case CallItem callItem -> requireCallReturnType(analysisData, callItem.anchor());
             case MemberLoadItem memberLoadItem -> requireMemberResultType(analysisData, memberLoadItem.anchor());

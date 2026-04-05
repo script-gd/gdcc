@@ -391,7 +391,7 @@
 - plain `=` 与 parser 已识别的 closed-set compound assignment 现在都进入 shared assignment semantic contract
 - compound assignment 当前共享语义支持面固定为：`+=`、`-=`、`*=`、`/=`、`%=`、`**=`、`>>=`、`<<=`、`&=`、`^=`、`|=`
 - compound operator 的中间结果类型统一复用 ordinary binary operator typing；若 operator 对给定 operand 不成立，继续发布 `FAILED` 而不是回退成 `UNSUPPORTED`
-- compile-only gate 在 CFG/body lowering 落地前仍会对 compound assignment 做 temporary block；这里描述的是 shared semantic 事实，不等于当前 compile-ready lowering surface 已经解封
+- compile-only gate 在 body lowering 完成 compound assignment materialization 前仍会对它做 temporary block；这里描述的是 shared semantic 事实，不等于当前 compile-ready lowering surface 已经解封
 
 当前正式支持的 assignment target 为：
 

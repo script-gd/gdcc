@@ -4,6 +4,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -315,6 +316,316 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(List.of("v4", "v6", "v8"), assignmentCommit.operandValueIds()),
                 () -> assertEquals("v9", returnValue.resultValueId()),
                 () -> assertEquals("v9", stopNode.returnValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesCompoundIdentifierReadModifyWriteSequence() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_compound_identifier.gd",
+                """
+                        class_name CfgBuilderCompoundIdentifier
+                        extends RefCounted
+                        
+                        func step(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(seed: int) -> int:
+                            var count: int = seed
+                            count += step(seed)
+                            return count
+                        """,
+                "ping",
+                Map.of("CfgBuilderCompoundIdentifier", "RuntimeCfgBuilderCompoundIdentifier")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode("stop_1"));
+        var localDeclaration = assertInstanceOf(VariableDeclaration.class, rootBlock.statements().getFirst());
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var targetIdentifier = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
+        var rhsCall = assertInstanceOf(CallExpression.class, assignmentExpression.right());
+        var rhsSeed = assertInstanceOf(IdentifierExpression.class, rhsCall.arguments().getFirst());
+
+        var items = entryNode.items();
+        var localInitializer = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var localCommit = assertInstanceOf(LocalDeclarationItem.class, items.get(1));
+        var currentTargetValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(2));
+        var rhsSeedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(3));
+        var rhsCallValue = assertInstanceOf(CallItem.class, items.get(4));
+        var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
+        var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
+        var returnValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(7));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(8, items.size()),
+                () -> assertEquals(localDeclaration.value(), localInitializer.expression()),
+                () -> assertEquals("count_0", localInitializer.resultValueId()),
+                () -> assertEquals(localDeclaration, localCommit.declaration()),
+                () -> assertEquals("count_0", localCommit.initializerValueIdOrNull()),
+                () -> assertSame(targetIdentifier, currentTargetValue.expression()),
+                () -> assertEquals(List.of(), currentTargetValue.operandValueIds()),
+                () -> assertEquals("v1", currentTargetValue.resultValueId()),
+                () -> assertSame(rhsSeed, rhsSeedValue.expression()),
+                () -> assertEquals("v2", rhsSeedValue.resultValueId()),
+                () -> assertSame(rhsCall, rhsCallValue.anchor()),
+                () -> assertEquals(List.of("v2"), rhsCallValue.operandValueIds()),
+                () -> assertEquals("v3", rhsCallValue.resultValueId()),
+                () -> assertSame(assignmentExpression, compoundValue.anchor()),
+                () -> assertEquals("+", compoundValue.binaryOperatorLexeme()),
+                () -> assertEquals(List.of("v1", "v3"), compoundValue.operandValueIds()),
+                () -> assertEquals("v4", compoundValue.resultValueId()),
+                () -> assertSame(assignmentExpression, assignmentCommit.anchor()),
+                () -> assertEquals(List.of(), assignmentCommit.targetOperandValueIds()),
+                () -> assertEquals("v4", assignmentCommit.rhsValueId()),
+                () -> assertEquals(List.of("v4"), assignmentCommit.operandValueIds()),
+                () -> assertEquals("v5", returnValue.resultValueId()),
+                () -> assertEquals("v5", stopNode.returnValueIdOrNull())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesCompoundPropertyReadModifyWriteSequence() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_compound_property.gd",
+                """
+                        class_name CfgBuilderCompoundProperty
+                        extends RefCounted
+                        
+                        var hp: int
+                        
+                        func heal(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(seed: int) -> void:
+                            self.hp += heal(seed)
+                        """,
+                "ping",
+                Map.of("CfgBuilderCompoundProperty", "RuntimeCfgBuilderCompoundProperty")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var targetAttribute = assertInstanceOf(AttributeExpression.class, assignmentExpression.left());
+        var propertyStep = assertInstanceOf(AttributePropertyStep.class, targetAttribute.steps().getLast());
+        var rhsCall = assertInstanceOf(CallExpression.class, assignmentExpression.right());
+
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var currentPropertyValue = assertInstanceOf(MemberLoadItem.class, items.get(1));
+        var rhsSeedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(2));
+        var rhsCallValue = assertInstanceOf(CallItem.class, items.get(3));
+        var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(4));
+        var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(5));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(6, items.size()),
+                () -> assertSame(targetAttribute.base(), receiverValue.expression()),
+                () -> assertEquals(1, items.stream()
+                        .filter(OpaqueExprValueItem.class::isInstance)
+                        .map(OpaqueExprValueItem.class::cast)
+                        .filter(item -> item.expression() == targetAttribute.base())
+                        .count()),
+                () -> assertSame(propertyStep, currentPropertyValue.anchor()),
+                () -> assertEquals("hp", currentPropertyValue.memberName()),
+                () -> assertEquals(List.of(receiverValue.resultValueId()), currentPropertyValue.operandValueIds()),
+                () -> assertSame(rhsCall, rhsCallValue.anchor()),
+                () -> assertEquals(List.of(rhsSeedValue.resultValueId()), rhsCallValue.operandValueIds()),
+                () -> assertEquals("+", compoundValue.binaryOperatorLexeme()),
+                () -> assertEquals(
+                        List.of(currentPropertyValue.resultValueId(), rhsCallValue.resultValueId()),
+                        compoundValue.operandValueIds()
+                ),
+                () -> assertEquals(List.of(receiverValue.resultValueId()), assignmentCommit.targetOperandValueIds()),
+                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesCompoundSubscriptReadModifyWriteSequence() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_compound_subscript.gd",
+                """
+                        class_name CfgBuilderCompoundSubscript
+                        extends RefCounted
+                        
+                        var items: Array[int]
+                        
+                        func next_index() -> int:
+                            return 0
+                        
+                        func produce(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(seed: int) -> void:
+                            items[next_index()] += produce(seed)
+                        """,
+                "ping",
+                Map.of("CfgBuilderCompoundSubscript", "RuntimeCfgBuilderCompoundSubscript")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var targetSubscript = assertInstanceOf(dev.superice.gdparser.frontend.ast.SubscriptExpression.class, assignmentExpression.left());
+        var indexCall = assertInstanceOf(CallExpression.class, targetSubscript.arguments().getFirst());
+        var rhsCall = assertInstanceOf(CallExpression.class, assignmentExpression.right());
+
+        var items = entryNode.items();
+        var baseValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var indexCallValue = assertInstanceOf(CallItem.class, items.get(1));
+        var currentSubscriptValue = assertInstanceOf(SubscriptLoadItem.class, items.get(2));
+        var rhsSeedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(3));
+        var rhsCallValue = assertInstanceOf(CallItem.class, items.get(4));
+        var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
+        var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(7, items.size()),
+                () -> assertSame(targetSubscript.base(), baseValue.expression()),
+                () -> assertSame(indexCall, indexCallValue.anchor()),
+                () -> assertEquals(1, items.stream()
+                        .filter(CallItem.class::isInstance)
+                        .map(CallItem.class::cast)
+                        .filter(item -> item.anchor() == indexCall)
+                        .count()),
+                () -> assertEquals(List.of(baseValue.resultValueId(), indexCallValue.resultValueId()),
+                        currentSubscriptValue.operandValueIds()),
+                () -> assertSame(rhsCall, rhsCallValue.anchor()),
+                () -> assertEquals(List.of(rhsSeedValue.resultValueId()), rhsCallValue.operandValueIds()),
+                () -> assertEquals("+", compoundValue.binaryOperatorLexeme()),
+                () -> assertEquals(
+                        List.of(currentSubscriptValue.resultValueId(), rhsCallValue.resultValueId()),
+                        compoundValue.operandValueIds()
+                ),
+                () -> assertEquals(
+                        List.of(baseValue.resultValueId(), indexCallValue.resultValueId()),
+                        assignmentCommit.targetOperandValueIds()
+                ),
+                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyPublishesCompoundAttributeSubscriptReadModifyWriteSequence() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_compound_attribute_subscript.gd",
+                """
+                        class_name CfgBuilderCompoundAttributeSubscript
+                        extends RefCounted
+                        
+                        var payloads: Array[int]
+                        var holder: CfgBuilderCompoundAttributeSubscript
+                        
+                        func delta(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(seed: int) -> void:
+                            holder.payloads[seed] += delta(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderCompoundAttributeSubscript",
+                        "RuntimeCfgBuilderCompoundAttributeSubscript"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var targetAttribute = assertInstanceOf(AttributeExpression.class, assignmentExpression.left());
+        var targetStep = assertInstanceOf(AttributeSubscriptStep.class, targetAttribute.steps().getLast());
+        var rhsCall = assertInstanceOf(CallExpression.class, assignmentExpression.right());
+
+        var items = entryNode.items();
+        var baseValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var indexValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(1));
+        var currentAttributeSubscriptValue = assertInstanceOf(SubscriptLoadItem.class, items.get(2));
+        var rhsSeedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(3));
+        var rhsCallValue = assertInstanceOf(CallItem.class, items.get(4));
+        var compoundValue = assertInstanceOf(CompoundAssignmentBinaryOpItem.class, items.get(5));
+        var assignmentCommit = assertInstanceOf(AssignmentItem.class, items.get(6));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(7, items.size()),
+                () -> assertSame(targetAttribute.base(), baseValue.expression()),
+                () -> assertSame(targetStep.arguments().getFirst(), indexValue.expression()),
+                () -> assertSame(targetStep, currentAttributeSubscriptValue.anchor()),
+                () -> assertEquals("payloads", currentAttributeSubscriptValue.memberNameOrNull()),
+                () -> assertEquals(
+                        List.of(baseValue.resultValueId(), indexValue.resultValueId()),
+                        currentAttributeSubscriptValue.operandValueIds()
+                ),
+                () -> assertSame(rhsCall, rhsCallValue.anchor()),
+                () -> assertEquals(List.of(rhsSeedValue.resultValueId()), rhsCallValue.operandValueIds()),
+                () -> assertEquals("+", compoundValue.binaryOperatorLexeme()),
+                () -> assertEquals(
+                        List.of(currentAttributeSubscriptValue.resultValueId(), rhsCallValue.resultValueId()),
+                        compoundValue.operandValueIds()
+                ),
+                () -> assertEquals(
+                        List.of(baseValue.resultValueId(), indexValue.resultValueId()),
+                        assignmentCommit.targetOperandValueIds()
+                ),
+                () -> assertEquals(compoundValue.resultValueId(), assignmentCommit.rhsValueId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenCompoundPropertyReadFactIsMissing() throws Exception {
+        var analyzed = analyzeSharedSemanticFunction(
+                "cfg_builder_compound_missing_property_fact.gd",
+                """
+                        class_name CfgBuilderCompoundMissingPropertyFact
+                        extends RefCounted
+                        
+                        var hp: int
+                        
+                        func heal(value: int) -> int:
+                            return value + 1
+                        
+                        func ping(seed: int) -> void:
+                            self.hp += heal(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderCompoundMissingPropertyFact",
+                        "RuntimeCfgBuilderCompoundMissingPropertyFact"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var targetAttribute = assertInstanceOf(AttributeExpression.class, assignmentExpression.left());
+        var propertyStep = assertInstanceOf(AttributePropertyStep.class, targetAttribute.steps().getLast());
+        analyzed.analysisData().resolvedMembers().remove(propertyStep);
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(exception.getMessage().contains("compound-assignment publication contract")),
+                () -> assertTrue(exception.getMessage().contains("AttributePropertyStep 'hp'")),
+                () -> assertFalse(exception.getMessage().contains("unsupported assignment target"))
         );
     }
 
@@ -1104,6 +1415,27 @@ class FrontendCfgGraphBuilderTest {
         var module = parseModule(fileName, source, topLevelCanonicalNameMap);
         var diagnostics = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        return new AnalyzedFunction(
+                module,
+                diagnostics,
+                analysisData,
+                requireFunctionDeclaration(module.units().getFirst().ast(), functionName)
+        );
+    }
+
+    private static @NotNull AnalyzedFunction analyzeSharedSemanticFunction(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull String functionName,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) throws Exception {
+        var module = parseModule(fileName, source, topLevelCanonicalNameMap);
+        var diagnostics = new DiagnosticManager();
+        var analysisData = new FrontendSemanticAnalyzer().analyze(
                 module,
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 diagnostics

@@ -173,6 +173,7 @@ fully-terminated 的 `if` / `elif` / `else` 当前继续允许把 region `mergeI
 - `BoolConstantItem`
 - `LocalDeclarationItem`
 - `AssignmentItem`
+- `CompoundAssignmentBinaryOpItem`
 - `MemberLoadItem`
 - `SubscriptLoadItem`
 - `CallItem`
@@ -185,6 +186,16 @@ fully-terminated 的 `if` / `elif` / `else` 当前继续允许把 region `mergeI
 - child subtree 先产出 value id
 - parent item 只消费 operand value ids
 - body lowering 不允许回到原 AST 子树重做第二套递归 lower
+
+其中 plain / compound assignment 的 CFG 分工当前也已经冻结：
+
+- `AssignmentItem`
+  - 只表示最终 store commit
+  - target receiver/index operand 与将要写回的 RHS value id 都必须预先冻结
+- `CompoundAssignmentBinaryOpItem`
+  - 只表示 compound assignment 的当前值读取结果与 RHS 之间的 binary op
+  - 不承载最终写回
+  - 其 result value id 必须再由后续 `AssignmentItem` 提交到 target
 
 value id 目前“基本单一定义”，但有一条刻意保留的窄例外：
 
@@ -463,7 +474,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 - `DictionaryExpression`
 - `PreloadExpression`
 - `GetNodeExpression`
-- compound assignment
+- compound assignment body lowering / compile-ready route
 - callable-value invocation
 
 `ConditionalExpression` 当前继续 compile-block 的原因已经固定：
@@ -818,7 +829,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 ## 14. Compound Assignment 实施计划
 
-本节用于收口当前 `+=` / `-=` / `*=` 等 compound assignment 的支持缺口。当前 parser/gdparser 已经把这些语法稳定映射为 `AssignmentExpression.operator()` 的一部分，但 frontend 共享语义仍将其整体冻结为 `UNSUPPORTED`；同时 CFG/body lowering 的现有 `AssignmentItem` 只表达“把已算出的 RHS 提交到 target”，并不表达 read-modify-write。因此这个缺口不能只靠放宽 analyzer 解决，必须同时冻结语义合同、CFG 求值顺序和 body lowering materialization。
+本节用于收口当前 `+=` / `-=` / `*=` 等 compound assignment 的支持缺口。当前 parser/gdparser 已经把这些语法稳定映射为 `AssignmentExpression.operator()` 的一部分，frontend 共享语义也已接通 closed-set compound operator contract；但 compile-only gate 仍保持封锁，且 executable-body body lowering 尚未 materialize 新增的 read-modify-write CFG item。因此这个缺口不能只靠放宽 analyzer 解决，必须同时冻结语义合同、CFG 求值顺序和 body lowering materialization。
 
 ### 14.1 背景与现状缺口
 
@@ -875,7 +886,7 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
   - `FrontendAssignmentSemanticSupport` 不再把 compound assignment 一律判成 `UNSUPPORTED`；当前已接通 parser 已识别的闭合集合：`+=`、`-=`、`*=`、`/=`、`%=`、`**=`、`>>=`、`<<=`、`&=`、`^=`、`|=`
   - compound assignment 现在复用 `FrontendExpressionSemanticSupport` 抽出的 shared binary-operator typing 入口，不再依赖 synthetic `BinaryExpression` AST 回灌 analyzer
   - operator 对 operand 不成立时，现在与普通 binary expression 一样走 `sema.expression_resolution`；未知 compound token 仍保持 `sema.unsupported_expression_route`
-  - 为避免在 `14.4` / `14.5` 落地前出现“shared semantic 已放行、CFG/body lowering 仍未实现”的半开状态，`FrontendCompileCheckAnalyzer` 已新增 temporary compile-only block，继续把 compound assignment 挡在 lowering 入口外
+  - 为避免在 `14.5` 落地前出现“shared semantic 与 CFG 已放行、body lowering 仍未实现”的半开状态，`FrontendCompileCheckAnalyzer` 已新增 temporary compile-only block，继续把 compound assignment 挡在 lowering 入口外
 
 需要完成的工作：
 
@@ -926,7 +937,32 @@ ordinary `Variant` boundary materialization 现在也已经冻结为 executable-
 
 ### 14.4 第二步：冻结 CFG build 的 read-modify-write 形状
 
-- 状态：未开始（2026-04-05）
+- 状态：已完成（2026-04-05）
+
+- 已落地产出：
+  - `AssignmentItem` 继续保持最小“最终 store commit”合同，没有被扩展成混合 read-modify-write 节点
+  - frontend CFG 新增 `CompoundAssignmentBinaryOpItem`，显式冻结：
+    - assignment anchor
+    - binary operator lexeme
+    - current-target-value id
+    - rhs value id
+    - computed-result value id
+  - `FrontendCfgGraphBuilder` 已新增 compound 专用 current-target read helper：
+    - bare identifier 复用最窄的 identifier read route
+    - attribute property 从已冻结 receiver 发 `MemberLoadItem`
+    - plain subscript 从已冻结 base/index 发 `SubscriptLoadItem`
+    - attribute-subscript 继续复用 named-member + keyed load 形状
+  - `buildAssignmentCommit(...)` 现在会对 compound assignment 分流到 `buildCompoundAssignmentCommit(...)`，顺序固定为：
+    1. 冻结 target operands
+    2. 从 frozen operands 读取当前 target value
+    3. 构图 RHS
+    4. 发 `CompoundAssignmentBinaryOpItem`
+    5. 发 `AssignmentItem(..., computedResultValueId, null)`
+  - 回归测试已覆盖 identifier / attribute-property / subscript / attribute-subscript 四类 target 的 graph shape，以及缺失 compound read fact 时指向 contract gap 的 fail-fast 文案
+
+- 当前仍保留的边界：
+  - compile-only gate 继续封锁 compound assignment，避免新 CFG item 在 body lowering materialization 落地前提前进入默认编译管线
+  - `FrontendBodyLoweringSupport` 当前仅把 `CompoundAssignmentBinaryOpItem` 视为 staged fail-fast，占位等待 `14.5` 接通真实 lowering
 
 需要完成的工作：
 

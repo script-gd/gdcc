@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.lowering.cfg;
 import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
@@ -181,6 +182,13 @@ class FrontendCfgGraphTest {
         var callItem = new CallItem(expression, "build", "recv2", List.of("arg1", "arg2"), "v3");
         var boolItem = new BoolConstantItem(expression, true, "v4");
         var mergeItem = new MergeValueItem(expression, "v4", "v5");
+        var compoundItem = new CompoundAssignmentBinaryOpItem(
+                new AssignmentExpression("+=", identifier("target"), expression, SYNTHETIC_RANGE),
+                "+",
+                "current0",
+                "rhs3",
+                "v6"
+        );
         var assignmentItem = new AssignmentItem(assignmentExpression, List.of("slot0", "index0"), "rhs3", null);
 
         assertAll(
@@ -206,6 +214,8 @@ class FrontendCfgGraphTest {
                 () -> assertSame(expression, mergeItem.anchor()),
                 () -> assertEquals(List.of("v4"), mergeItem.operandValueIds()),
                 () -> assertEquals("v5", mergeItem.resultValueIdOrNull()),
+                () -> assertEquals(List.of("current0", "rhs3"), compoundItem.operandValueIds()),
+                () -> assertEquals("v6", compoundItem.resultValueIdOrNull()),
                 () -> assertSame(assignmentExpression, assignmentItem.anchor()),
                 () -> assertEquals(List.of("slot0", "index0", "rhs3"), assignmentItem.operandValueIds()),
                 () -> assertNull(assignmentItem.resultValueIdOrNull())

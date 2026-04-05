@@ -362,7 +362,8 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(1, compileDiagnostics.size());
         assertEquals(FrontendDiagnosticSeverity.ERROR, compileDiagnostics.getFirst().severity());
         assertTrue(compileDiagnostics.getFirst().message().contains("Compound assignment operator '+='"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("read-modify-write contract"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("read-modify-write"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("body lowering"));
     }
 
     @Test

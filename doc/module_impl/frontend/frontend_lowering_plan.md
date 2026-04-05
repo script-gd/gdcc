@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：计划维护中（function pre-pass scaffold、frontend CFG graph shared-expression core、executable-body body lowering 与 processor-registry 重构已落地；property initializer / parameter default / staged surface 仍待继续推进）
-- 更新时间：2026-04-04
+- 更新时间：2026-04-05
 - 当前事实源：
   - `frontend_lowering_skeleton_pre_pass_implementation.md`
   - `frontend_lowering_func_pre_pass_implementation.md`
@@ -29,6 +29,7 @@
 - `FrontendCfgGraph.BranchNode.conditionRoot` 现在固定表示“当前 branch 直接测试的 condition fragment root”；它必须对齐 `conditionValueId` 的直接 producer subtree，而不是笼统复用外围 source-level condition root，也不能再把 `conditionValueId` 当成可全图反推唯一 producer item 的句柄
 - short-circuit lowering 现在要求每个 `BranchNode.conditionValueId` 都保持为该 fragment 的 branch-local 独立 value id；value-context `and` / `or` 的 outward-facing merged result value id 已单独建模，不能反向复用为 branch condition id
 - frontend CFG value id 现在额外冻结了 merge-slot 合同：一个 value id 若出现多个 producer，则所有 producer 都必须是 `MergeValueItem`；future producer collection 与 body lowering 不得把这类 merged result 当成唯一 SSA expression definition
+- compound assignment 的 frontend CFG 现在也已冻结 read-modify-write 形状：`AssignmentItem` 继续只承载最终 store commit，当前值读取与 compound binary 结果改由前置 value item 显式表达；compile-only gate 仍保持关闭直到 body lowering materialization 落地
 - callable-local slot type 现在也已进入 published fact 面：`FrontendVarTypePostAnalyzer` 会把 parameter / supported local `var` 的最终 slot type 写入 `FrontendAnalysisData.slotTypes()`，供 future body lowering 直接消费
 - condition-context `not` 已切到 target-flip 路径；`and` / `or` 已正式接通 shared-expression-core + branch-result merge 路径，`ConditionalExpression` 仍保留 compile gate + builder fail-fast 边界
 - executable-body `FrontendLoweringBodyInsnPass` 现在也已落地：实际 lowering state 收口在 `frontend.lowering.pass.body.FrontendBodyLoweringSession`，并通过 `FrontendInsnLoweringProcessor` 注册表按 CFG node / item / AST target 的实际类型分派处理，便于后续按节点扩面而不回退成单个巨型 pass
