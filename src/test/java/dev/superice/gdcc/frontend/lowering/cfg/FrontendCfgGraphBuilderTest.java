@@ -940,7 +940,10 @@ class FrontendCfgGraphBuilderTest {
 
         assertAll(
                 () -> assertFalse(analyzed.diagnostics().hasErrors()),
-                () -> assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(ifRegion.mergeId())),
+                () -> assertEquals(
+                        FrontendCfgGraph.StopKind.TERMINAL_MERGE,
+                        assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(ifRegion.mergeId())).kind()
+                ),
                 () -> assertFalse(containsTrailingExpression)
         );
     }

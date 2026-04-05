@@ -19,7 +19,6 @@ import dev.superice.gdcc.scope.ResolveRestriction;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdcc.scope.ScopeValue;
 import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -204,10 +203,10 @@ public class FrontendTypeCheckAnalyzer {
             if (returnSlot instanceof GdVoidType) {
                 return;
             }
-            if (access.checkAssignmentCompatible(returnSlot, GdNilType.NIL)) {
+            if (returnSlot instanceof GdVariantType) {
                 return;
             }
-            reportReturnTypeMismatch(access, returnStatement, returnSlot, GdNilType.NIL);
+            reportBareReturnNotAllowed(access, returnStatement, returnSlot);
             return;
         }
         if (returnSlot instanceof GdVoidType) {
@@ -441,6 +440,23 @@ public class FrontendTypeCheckAnalyzer {
                 TYPE_CHECK_CATEGORY,
                 "Return value type '" + valueType.getTypeName()
                         + "' is not assignable to callable return slot type '" + slotType.getTypeName() + "'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(returnStatement.range())
+        );
+    }
+
+    private static void reportBareReturnNotAllowed(
+            @NotNull TypeCheckAccess access,
+            @NotNull ReturnStatement returnStatement,
+            @NotNull GdType slotType
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(returnStatement, "returnStatement must not be null");
+        Objects.requireNonNull(slotType, "slotType must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Bare 'return' is only allowed for callables returning 'void' or 'Variant', but current return slot type is '"
+                        + slotType.getTypeName() + "'",
                 access.sourcePath(),
                 FrontendRange.fromAstRange(returnStatement.range())
         );

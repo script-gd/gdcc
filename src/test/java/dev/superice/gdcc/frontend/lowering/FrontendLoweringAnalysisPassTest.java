@@ -165,6 +165,39 @@ class FrontendLoweringAnalysisPassTest {
         assertTrue(compileDiagnostics.getFirst().message().contains("missing a lowering-ready published slot type"));
     }
 
+    @Test
+    void lowerTypeCheckBlockedModuleStopsAfterAnalysisPassBeforeAnyLoweringPassRuns() throws Exception {
+        var module = parseModule(
+                "lowering_blocked_bare_return.gd",
+                """
+                        class_name LoweringBlockedBareReturn
+                        extends RefCounted
+                        
+                        func ping() -> Object:
+                            return
+                        """
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var continuationRan = new AtomicBoolean();
+        var manager = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                _ -> continuationRan.set(true)
+        ));
+
+        var lowered = manager.lower(module, registry, diagnostics);
+        var typeCheckDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.type_check"))
+                .toList();
+
+        assertNull(lowered);
+        assertFalse(continuationRan.get());
+        assertTrue(diagnostics.hasErrors());
+        assertEquals(1, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("Bare 'return'"));
+        assertTrue(typeCheckDiagnostics.getFirst().message().contains("Object"));
+    }
+
     private static @NotNull FrontendModule parseModule(
             @NotNull String fileName,
             @NotNull String source

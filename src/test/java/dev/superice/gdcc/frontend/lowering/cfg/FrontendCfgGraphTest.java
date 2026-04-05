@@ -41,8 +41,8 @@ class FrontendCfgGraphTest {
         var nodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         nodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", sequenceItems, "branch"));
         nodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "else"));
-        nodes.put("then", new FrontendCfgGraph.StopNode("then", "ret0"));
-        nodes.put("else", new FrontendCfgGraph.StopNode("else", null));
+        nodes.put("then", new FrontendCfgGraph.StopNode("then", FrontendCfgGraph.StopKind.RETURN, "ret0"));
+        nodes.put("else", new FrontendCfgGraph.StopNode("else", FrontendCfgGraph.StopKind.RETURN, null));
 
         var graph = new FrontendCfgGraph("entry", nodes);
         sequenceItems.clear();
@@ -60,11 +60,15 @@ class FrontendCfgGraphTest {
                 () -> assertEquals("branch", entryNode.nextId()),
                 () -> assertEquals("v0", branchNode.conditionValueId()),
                 () -> assertEquals(List.of("then", "else"), List.of(branchNode.trueTargetId(), branchNode.falseTargetId())),
+                () -> assertEquals(FrontendCfgGraph.StopKind.RETURN, thenNode.kind()),
                 () -> assertEquals("ret0", thenNode.returnValueIdOrNull()),
                 () -> assertNull(graph.nodeOrNull("missing")),
                 () -> assertThrows(
                         UnsupportedOperationException.class,
-                        () -> graph.nodes().put("extra", new FrontendCfgGraph.StopNode("extra", null))
+                        () -> graph.nodes().put(
+                                "extra",
+                                new FrontendCfgGraph.StopNode("extra", FrontendCfgGraph.StopKind.RETURN, null)
+                        )
                 )
         );
     }
@@ -72,15 +76,15 @@ class FrontendCfgGraphTest {
     @Test
     void constructorRejectsBrokenEntryAndEdgeContracts() {
         var missingEntryNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
-        missingEntryNodes.put("stop", new FrontendCfgGraph.StopNode("stop", null));
+        missingEntryNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, null));
 
         var keyMismatchNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
-        keyMismatchNodes.put("entry", new FrontendCfgGraph.StopNode("other", null));
+        keyMismatchNodes.put("entry", new FrontendCfgGraph.StopNode("other", FrontendCfgGraph.StopKind.RETURN, null));
 
         var brokenTargetNodes = new LinkedHashMap<String, FrontendCfgGraph.NodeDef>();
         brokenTargetNodes.put("entry", new FrontendCfgGraph.SequenceNode("entry", List.of(), "branch"));
         brokenTargetNodes.put("branch", new FrontendCfgGraph.BranchNode("branch", identifier("flag"), "v0", "then", "missing"));
-        brokenTargetNodes.put("then", new FrontendCfgGraph.StopNode("then", null));
+        brokenTargetNodes.put("then", new FrontendCfgGraph.StopNode("then", FrontendCfgGraph.StopKind.RETURN, null));
 
         var missingEntry = assertThrows(
                 IllegalArgumentException.class,
@@ -118,7 +122,7 @@ class FrontendCfgGraphTest {
                         "stop"
                 )
         );
-        mergedNodes.put("stop", new FrontendCfgGraph.StopNode("stop", "merged0"));
+        mergedNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "merged0"));
 
         var graph = new FrontendCfgGraph("entry", mergedNodes);
         var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("entry"));
@@ -149,7 +153,7 @@ class FrontendCfgGraphTest {
                         "stop"
                 )
         );
-        invalidNodes.put("stop", new FrontendCfgGraph.StopNode("stop", "v0"));
+        invalidNodes.put("stop", new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.RETURN, "v0"));
 
         var exception = assertThrows(
                 IllegalArgumentException.class,
@@ -206,6 +210,16 @@ class FrontendCfgGraphTest {
                 () -> assertEquals(List.of("slot0", "index0", "rhs3"), assignmentItem.operandValueIds()),
                 () -> assertNull(assignmentItem.resultValueIdOrNull())
         );
+    }
+
+    @Test
+    void stopNodeRejectsReturnValueOnSyntheticTerminalMerge() {
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendCfgGraph.StopNode("stop", FrontendCfgGraph.StopKind.TERMINAL_MERGE, "ret0")
+        );
+
+        assertTrue(exception.getMessage().contains("Terminal-merge stop node"));
     }
 
     @Test

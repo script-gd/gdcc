@@ -466,6 +466,10 @@ public final class FrontendBodyLoweringSession {
 
     private void createBlocks() {
         for (var nodeId : graph.nodeIds()) {
+            if (graph.requireNode(nodeId) instanceof FrontendCfgGraph.StopNode stopNode
+                    && stopNode.kind() == FrontendCfgGraph.StopKind.TERMINAL_MERGE) {
+                continue;
+            }
             function.addBasicBlock(new LirBasicBlock(nodeId));
         }
         function.setEntryBlockId(graph.entryNodeId());
@@ -473,6 +477,10 @@ public final class FrontendBodyLoweringSession {
 
     private void lowerBlocks() {
         for (var nodeId : graph.nodeIds()) {
+            if (graph.requireNode(nodeId) instanceof FrontendCfgGraph.StopNode stopNode
+                    && stopNode.kind() == FrontendCfgGraph.StopKind.TERMINAL_MERGE) {
+                continue;
+            }
             var block = requireBlock(nodeId);
             cfgNodeProcessors.lower(this, block, graph.requireNode(nodeId), null);
         }

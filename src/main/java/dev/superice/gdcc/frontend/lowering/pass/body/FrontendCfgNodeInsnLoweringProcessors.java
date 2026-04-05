@@ -114,11 +114,12 @@ final class FrontendCfgNodeInsnLoweringProcessors {
         }
     }
 
-    /// Finishes one CFG stop node by wiring the already-materialized return slot into `ReturnInsn`.
+    /// Finishes one real CFG return stop by wiring the already-materialized return slot into
+    /// `ReturnInsn`.
     ///
-    /// Stop nodes never inspect source AST again; they only consume the published return value id,
-    /// materialize the ordinary return-slot `Variant` boundary when needed, and then emit the
-    /// final `ReturnInsn`.
+    /// Synthetic terminal-merge anchors are frontend-only structure markers and must be removed
+    /// before this stage creates real LIR basic blocks. Reaching one here indicates a CFG/body
+    /// lowering contract violation.
     private static final class FrontendStopNodeInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<FrontendCfgGraph.StopNode, Void> {
         @Override
@@ -133,6 +134,11 @@ final class FrontendCfgNodeInsnLoweringProcessors {
                 @NotNull FrontendCfgGraph.StopNode node,
                 @Nullable Void context
         ) {
+            if (node.kind() == FrontendCfgGraph.StopKind.TERMINAL_MERGE) {
+                throw new IllegalStateException(
+                        "Synthetic terminal-merge stop node must not be lowered into a LIR basic block: " + node.id()
+                );
+            }
             var returnValueId = node.returnValueIdOrNull();
             if (returnValueId == null) {
                 block.setTerminator(new ReturnInsn(null));

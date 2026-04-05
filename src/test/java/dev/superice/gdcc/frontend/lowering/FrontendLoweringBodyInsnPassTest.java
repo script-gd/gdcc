@@ -682,6 +682,56 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runSkipsSyntheticTerminalMergeStopsWhenLoweringFullyTerminatingIfChains() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_terminal_merge_stop.gd",
+                """
+                        class_name BodyInsnTerminalMergeStop
+                        extends RefCounted
+                        
+                        func ping(flag: bool, seed: int) -> int:
+                            if flag:
+                                return seed
+                            else:
+                                return seed + 1
+                        """,
+                Map.of("BodyInsnTerminalMergeStop", "RuntimeBodyInsnTerminalMergeStop"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTerminalMergeStop",
+                "ping"
+        );
+        var graph = pingContext.requireFrontendCfgGraph();
+        var terminalMergeStopIds = graph.nodes().values().stream()
+                .filter(FrontendCfgGraph.StopNode.class::isInstance)
+                .map(FrontendCfgGraph.StopNode.class::cast)
+                .filter(stopNode -> stopNode.kind() == FrontendCfgGraph.StopKind.TERMINAL_MERGE)
+                .map(FrontendCfgGraph.StopNode::id)
+                .toList();
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var returnTerminators = new ArrayList<ReturnInsn>();
+        for (var block : function) {
+            if (block.getTerminator() instanceof ReturnInsn returnInsn) {
+                returnTerminators.add(returnInsn);
+            }
+        }
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, terminalMergeStopIds.size()),
+                () -> assertTrue(function.getBasicBlock(terminalMergeStopIds.getFirst()) == null),
+                () -> assertEquals(2, returnTerminators.size()),
+                () -> assertTrue(returnTerminators.stream().allMatch(returnInsn -> returnInsn.returnValueId() != null))
+        );
+    }
+
+    @Test
     void runMaterializesBuiltinAndObjectConstructorsFromPublishedConstructorRoutes() throws Exception {
         var prepared = prepareContext(
                 "body_insn_constructor_routes.gd",

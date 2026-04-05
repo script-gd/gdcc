@@ -170,7 +170,7 @@ class FunctionLoweringContextTest {
                 stopId,
                 stopId
         ));
-        nodes.put(stopId, new FrontendCfgGraph.StopNode(stopId, null));
+        nodes.put(stopId, new FrontendCfgGraph.StopNode(stopId, FrontendCfgGraph.StopKind.RETURN, null));
         return new FrontendCfgGraph(entryId, nodes);
     }
 

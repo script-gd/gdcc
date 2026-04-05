@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.lowering.cfg;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Expression;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -111,15 +112,29 @@ public record FrontendCfgGraph(
         }
     }
 
-    /// Terminal node that ends frontend control flow for the current function.
+    /// Terminal node that closes one frontend control-flow path.
+    ///
+    /// `RETURN` models a real callable exit and may optionally carry a return value id.
+    /// `TERMINAL_MERGE` is a synthetic anchor used only to represent "this structured construct fully
+    /// terminates" inside the frontend graph; it must never pretend to be a real source `return`.
     public record StopNode(
             @NotNull String id,
+            @NotNull StopKind kind,
             @Nullable String returnValueIdOrNull
     ) implements NodeDef {
         public StopNode {
             id = validateNodeId(id, "id");
+            Objects.requireNonNull(kind, "kind must not be null");
             returnValueIdOrNull = validateOptionalValueId(returnValueIdOrNull, "returnValueIdOrNull");
+            if (kind == StopKind.TERMINAL_MERGE && returnValueIdOrNull != null) {
+                throw new IllegalArgumentException("Terminal-merge stop node must not carry a return value id");
+            }
         }
+    }
+
+    public enum StopKind {
+        RETURN,
+        TERMINAL_MERGE
     }
 
     private static @NotNull Map<String, NodeDef> copyNodes(@NotNull Map<String, NodeDef> nodes) {
@@ -221,18 +236,14 @@ public record FrontendCfgGraph(
     /// auxiliary overlays all enforce one identical identifier contract.
     public static @NotNull String validateNodeId(@Nullable String id, @NotNull String fieldName) {
         Objects.requireNonNull(fieldName, "fieldName must not be null");
-        var nonNullId = Objects.requireNonNull(id, fieldName + " must not be null");
-        if (nonNullId.isBlank()) {
-            throw new IllegalArgumentException(fieldName + " must not be blank");
-        }
-        return nonNullId;
+        return StringUtil.requireNonBlank(id, fieldName);
     }
 
     /// Shared validator for frontend-local value ids.
     ///
     /// Value ids currently follow the same non-null / non-blank rule as node ids, but exposing a
     /// dedicated helper keeps the call sites semantically explicit and leaves room for later value-id
-/// specific validation without changing every consumer.
+    /// specific validation without changing every consumer.
     public static @NotNull String validateValueId(@Nullable String id, @NotNull String fieldName) {
         return validateNodeId(id, fieldName);
     }

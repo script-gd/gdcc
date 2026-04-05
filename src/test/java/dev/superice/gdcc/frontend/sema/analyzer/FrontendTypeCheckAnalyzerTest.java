@@ -690,6 +690,9 @@ class FrontendTypeCheckAnalyzerTest {
                 func accepts_variant_bare() -> Variant:
                     return
                 
+                func accepts_weak_bare():
+                    return
+                
                 func accepts_exact_variant_source(value: Variant) -> int:
                     return value
                 
@@ -697,6 +700,9 @@ class FrontendTypeCheckAnalyzerTest {
                     return worker.ping().length
                 
                 func rejects_bare() -> int:
+                    return
+                
+                func rejects_object_bare() -> Object:
                     return
                 
                 func rejects_type() -> int:
@@ -720,15 +726,19 @@ class FrontendTypeCheckAnalyzerTest {
 
         var diagnostics = preparedInput.diagnosticManager().snapshot();
         var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
-        assertEquals(3, typeCheckDiagnostics.size());
+        assertEquals(4, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && Path.of("tmp", "type_check_return_compatibility.gd").equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.message().contains("Return value type 'Nil'")
+                diagnostic.message().contains("Bare 'return'")
                         && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Bare 'return'")
+                        && diagnostic.message().contains("Object")
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("Return value type 'String'")

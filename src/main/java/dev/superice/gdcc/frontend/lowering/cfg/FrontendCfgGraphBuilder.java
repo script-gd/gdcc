@@ -71,7 +71,7 @@ import java.util.Objects;
 /// The graph stays frontend-only:
 /// - `SequenceNode` holds explicit source-level value-op items
 /// - `BranchNode` keeps the condition fragment root and published condition value id
-/// - `StopNode` marks function termination or a synthetic fully-terminated merge anchor
+/// - `StopNode` marks either a real function return or a synthetic fully-terminated merge anchor
 ///
 /// This builder owns structured executable control flow for the current supported statement surface:
 /// - straight-line statements and local `var`
@@ -115,7 +115,7 @@ public final class FrontendCfgGraphBuilder {
         nextStopIndex = 0;
         nextValueIndex = 0;
 
-        var fallthroughStopId = publishStopNode(null);
+        var fallthroughStopId = publishStopNode(FrontendCfgGraph.StopKind.RETURN, null);
         var rootBuild = buildBlock(rootBlock, fallthroughStopId);
         var entryId = rootBuild.entryId();
         if (entryId.equals(fallthroughStopId)) {
@@ -212,7 +212,7 @@ public final class FrontendCfgGraphBuilder {
         } else {
             requireCurrentSequence(state).items().add(new SourceAnchorItem(returnStatement));
         }
-        closeCurrentSequence(state, publishStopNode(returnValueId));
+        closeCurrentSequence(state, publishStopNode(FrontendCfgGraph.StopKind.RETURN, returnValueId));
         state.setReachable(false);
     }
 
@@ -231,7 +231,9 @@ public final class FrontendCfgGraphBuilder {
         attachStructuredEntry(state, conditionBuild.entryId());
 
         var fallsThrough = thenBuild.fallsThrough() || falseBuild.fallsThrough();
-        var mergeId = fallsThrough ? mergeSequence.id() : publishStopNode(null);
+        var mergeId = fallsThrough
+                ? mergeSequence.id()
+                : publishStopNode(FrontendCfgGraph.StopKind.TERMINAL_MERGE, null);
         requireRegions().put(
                 ifStatement,
                 new FrontendIfRegion(
@@ -1110,9 +1112,12 @@ public final class FrontendCfgGraphBuilder {
         requireNodes().put(sequenceId, new FrontendCfgGraph.SequenceNode(sequenceId, items, nextId));
     }
 
-    private @NotNull String publishStopNode(@Nullable String returnValueIdOrNull) {
+    private @NotNull String publishStopNode(
+            @NotNull FrontendCfgGraph.StopKind kind,
+            @Nullable String returnValueIdOrNull
+    ) {
         var stopId = nextStopId();
-        requireNodes().put(stopId, new FrontendCfgGraph.StopNode(stopId, returnValueIdOrNull));
+        requireNodes().put(stopId, new FrontendCfgGraph.StopNode(stopId, kind, returnValueIdOrNull));
         return stopId;
     }
 

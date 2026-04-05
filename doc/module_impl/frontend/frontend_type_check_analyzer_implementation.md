@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、unary/binary stable-fact consumption、property initializer boundary consumption、`@onready` usage validation 已落地）
-- 更新时间：2026-03-20
+- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、unary/binary stable-fact consumption、property initializer boundary consumption、bare-return contract 收紧、`@onready` usage validation 已落地）
+- 更新时间：2026-04-05
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -219,14 +219,17 @@ return contract 当前冻结为：
 - callable return slot 直接消费 skeleton 已发布的 metadata
 - constructor 与 `_init` 当前统一建模为 `void`
 - `return expr` on `void` callable -> `sema.type_check`
-- bare `return` on non-`void` callable -> 把返回值按 synthetic `Nil` 参与 compatibility check
+- bare `return` 只允许用于 `void` callable 或 return slot = `Variant` 的 callable
+- bare `return` on `Variant` callable -> 语义上等价于返回 `nil`
+- bare `return` on 非 `void` 且非 `Variant` callable -> `sema.type_check`
+- bare `return` 的合法性判断不得借道 ordinary assignment compatibility
 - `return expr` 只有在 RHS root 已稳定时才进入 compatibility check
 
 因此：
 
-- `Variant` return slot 可以接受 bare `return`
+- weak 未声明返回类型的 callable 与显式 `-> Variant` callable 都可以接受 bare `return`
 - strict numeric / object / bool slot 不会因为 bare `return` 被误判为可接受
-- object return slot 现在接受 `Nil`，因此 `return null` 与 bare `return` 都可通过 typed gate
+- `return null` 仍继续走 ordinary value compatibility，因此 object return slot 允许 `return null`，但不允许 bare `return`
 
 ### 3.6 condition contract
 
@@ -355,6 +358,7 @@ owner 分工固定为：
 
 - `FrontendTypeCheckAnalyzerTest`
   - local / property / return typed contract
+  - bare `return` 仅允许 `void` / `Variant`，并继续区分 `return null` 与 bare `return`
   - property `:=` / missing-type `sema.type_hint`
   - `void` utility 进入 value-required slot 的显式错误
   - Godot-compatible condition contract
