@@ -340,6 +340,32 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileKeepsCompoundAssignmentBehindTemporaryCompileGate() throws Exception {
+        var source = """
+                class_name CompileCheckCompoundAssignment
+                extends RefCounted
+                
+                var hp: int = 0
+                
+                func ping():
+                    hp += 1
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_compound_assignment.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.unsupported_expression_route").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_compound_assignment.gd", source);
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compileDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, compileDiagnostics.getFirst().severity());
+        assertTrue(compileDiagnostics.getFirst().message().contains("Compound assignment operator '+='"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("read-modify-write contract"));
+    }
+
+    @Test
     void analyzeForCompileLeavesStaticMethodRoutesOutOfStaticPropertyCompileBlocks() throws Exception {
         var source = """
                 class_name CompileCheckStaticMethodRoute

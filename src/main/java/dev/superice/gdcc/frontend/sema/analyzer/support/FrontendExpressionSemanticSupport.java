@@ -434,58 +434,72 @@ public final class FrontendExpressionSemanticSupport {
             return propagated(rightDependencyIssue);
         }
 
-        var publishedLeftType = Objects.requireNonNull(
-                leftOperandType.publishedType(),
-                "publishedType must not be null for stable binary left operand"
-        );
-        var publishedRightType = Objects.requireNonNull(
-                rightOperandType.publishedType(),
-                "publishedType must not be null for stable binary right operand"
-        );
+        return rootOutcome(resolveBinaryOperatorResultType(
+                classRegistry,
+                binaryExpression.operator(),
+                leftOperandType,
+                rightOperandType
+        ));
+    }
 
-        if ("not in".equals(binaryExpression.operator())) {
-            return rootOutcome(FrontendExpressionType.unsupported(
+    /// Shared binary-operator typing entry used by ordinary `BinaryExpression` roots and compound
+    /// assignment semantic checks.
+    ///
+    /// Callers must pass only stable operands (`RESOLVED` / `DYNAMIC`) whose published type is already
+    /// available. Dependency propagation stays outside this helper so the owner can keep precise
+    /// root-vs-propagated diagnostic ownership.
+    static @NotNull FrontendExpressionType resolveBinaryOperatorResultType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull String operatorText,
+            @NotNull FrontendExpressionType leftOperandType,
+            @NotNull FrontendExpressionType rightOperandType
+    ) {
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        var actualOperatorText = Objects.requireNonNull(operatorText, "operatorText must not be null");
+        var publishedLeftType = requireStableOperatorOperandType("leftOperandType", leftOperandType);
+        var publishedRightType = requireStableOperatorOperandType("rightOperandType", rightOperandType);
+
+        if ("not in".equals(actualOperatorText)) {
+            return FrontendExpressionType.unsupported(
                     "Binary operator 'not in' is recognized but still uses an explicit unsupported boundary; "
                             + "it must not be silently normalized to 'in'"
-            ));
+            );
         }
 
         final GodotOperator operator;
         try {
-            operator = GodotOperator.fromSourceLexeme(
-                    binaryExpression.operator(),
-                    GodotOperator.OperatorArity.BINARY
-            );
+            operator = GodotOperator.fromSourceLexeme(actualOperatorText, GodotOperator.OperatorArity.BINARY);
         } catch (IllegalArgumentException ex) {
-            return rootOutcome(FrontendExpressionType.failed(ex.getMessage()));
+            return FrontendExpressionType.failed(ex.getMessage());
         }
 
-        var specialReturnType = resolveBinarySpecialReturnType(
-                operator,
-                publishedLeftType,
-                publishedRightType
-        );
+        var specialReturnType = resolveBinarySpecialReturnType(operator, publishedLeftType, publishedRightType);
         if (specialReturnType != null) {
-            return rootOutcome(FrontendExpressionType.resolved(specialReturnType));
+            return FrontendExpressionType.resolved(specialReturnType);
         }
 
         if (isRuntimeOpenOperatorOperand(leftOperandType, publishedLeftType)
                 || isRuntimeOpenOperatorOperand(rightOperandType, publishedRightType)) {
-            return rootOutcome(FrontendExpressionType.dynamic(
-                    "Runtime-open operand routes binary operator '" + binaryExpression.operator()
+            return FrontendExpressionType.dynamic(
+                    "Runtime-open operand routes binary operator '" + actualOperatorText
                             + "' through Variant semantics"
-            ));
+            );
         }
 
-        var exactReturnType = resolveBinaryExactReturnType(operator, publishedLeftType, publishedRightType);
+        var exactReturnType = resolveBinaryExactReturnType(
+                classRegistry,
+                operator,
+                publishedLeftType,
+                publishedRightType
+        );
         if (exactReturnType != null) {
-            return rootOutcome(FrontendExpressionType.resolved(exactReturnType));
+            return FrontendExpressionType.resolved(exactReturnType);
         }
-        return rootOutcome(FrontendExpressionType.failed(
-                "Binary operator '" + binaryExpression.operator()
+        return FrontendExpressionType.failed(
+                "Binary operator '" + actualOperatorText
                         + "' is not defined for operand types '" + publishedLeftType.getTypeName()
                         + "' and '" + publishedRightType.getTypeName() + "'"
-        ));
+        );
     }
 
     /// Exhaustive routing for the remaining explicitly deferred expression kinds.
@@ -956,7 +970,7 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull GodotOperator operator,
             @NotNull GdType operandType
     ) {
-        var builtinClass = findOperatorOwnerClass(operandType);
+        var builtinClass = findOperatorOwnerClass(classRegistry, operandType);
         if (builtinClass == null) {
             return null;
         }
@@ -967,7 +981,7 @@ public final class FrontendExpressionSemanticSupport {
             if (!StringUtil.trimToEmpty(classOperator.rightType()).isEmpty()) {
                 continue;
             }
-            var returnType = parseOperatorReturnType(classOperator);
+            var returnType = parseOperatorReturnType(classRegistry, classOperator);
             if (returnType != null) {
                 return returnType;
             }
@@ -975,7 +989,25 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private @Nullable GdType resolveBinarySpecialReturnType(
+    private static @NotNull GdType requireStableOperatorOperandType(
+            @NotNull String operandName,
+            @NotNull FrontendExpressionType operandType
+    ) {
+        var actualOperandType = Objects.requireNonNull(operandType, "operandType must not be null");
+        if (actualOperandType.status() != FrontendExpressionTypeStatus.RESOLVED
+                && actualOperandType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+            throw new IllegalStateException(
+                    Objects.requireNonNull(operandName, "operandName must not be null")
+                            + " must be RESOLVED or DYNAMIC before binary operator typing"
+            );
+        }
+        return Objects.requireNonNull(
+                actualOperandType.publishedType(),
+                operandName + ".publishedType() must not be null for stable operator typing"
+        );
+    }
+
+    private static @Nullable GdType resolveBinarySpecialReturnType(
             @NotNull GodotOperator operator,
             @NotNull GdType publishedLeftType,
             @NotNull GdType publishedRightType
@@ -993,7 +1025,7 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private boolean isRuntimeOpenOperatorOperand(
+    private static boolean isRuntimeOpenOperatorOperand(
             @NotNull FrontendExpressionType operandType,
             @NotNull GdType publishedOperandType
     ) {
@@ -1001,12 +1033,13 @@ public final class FrontendExpressionSemanticSupport {
                 || publishedOperandType instanceof GdVariantType;
     }
 
-    private @Nullable GdType resolveBinaryExactReturnType(
+    private static @Nullable GdType resolveBinaryExactReturnType(
+            @NotNull ClassRegistry classRegistry,
             @NotNull GodotOperator operator,
             @NotNull GdType leftType,
             @NotNull GdType rightType
     ) {
-        var builtinClass = findOperatorOwnerClass(leftType);
+        var builtinClass = findOperatorOwnerClass(classRegistry, leftType);
         if (builtinClass == null) {
             return null;
         }
@@ -1019,7 +1052,7 @@ public final class FrontendExpressionSemanticSupport {
             if (metadataRightType.isEmpty() || !metadataRightType.equals(normalizedRightType)) {
                 continue;
             }
-            var returnType = parseOperatorReturnType(classOperator);
+            var returnType = parseOperatorReturnType(classRegistry, classOperator);
             if (returnType != null) {
                 return returnType;
             }
@@ -1027,11 +1060,15 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
-    private @Nullable ExtensionBuiltinClass findOperatorOwnerClass(@NotNull GdType operandType) {
-        return classRegistry.findBuiltinClass(operatorOperandTypeName(operandType));
+    private static @Nullable ExtensionBuiltinClass findOperatorOwnerClass(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull GdType operandType
+    ) {
+        return Objects.requireNonNull(classRegistry, "classRegistry must not be null")
+                .findBuiltinClass(operatorOperandTypeName(operandType));
     }
 
-    private @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
+    private static @NotNull String operatorOperandTypeName(@NotNull GdType operandType) {
         if (operandType instanceof GdArrayType) {
             return "Array";
         }
@@ -1041,12 +1078,16 @@ public final class FrontendExpressionSemanticSupport {
         return operandType.getTypeName();
     }
 
-    private @Nullable GdType parseOperatorReturnType(@NotNull ExtensionBuiltinClass.ClassOperator classOperator) {
+    private static @Nullable GdType parseOperatorReturnType(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull ExtensionBuiltinClass.ClassOperator classOperator
+    ) {
         var returnTypeName = StringUtil.trimToEmpty(classOperator.returnType());
         if (returnTypeName.isEmpty()) {
             return null;
         }
-        return classRegistry.tryResolveDeclaredType(returnTypeName);
+        return Objects.requireNonNull(classRegistry, "classRegistry must not be null")
+                .tryResolveDeclaredType(returnTypeName);
     }
 
     private boolean canOmitTrailingParameters(

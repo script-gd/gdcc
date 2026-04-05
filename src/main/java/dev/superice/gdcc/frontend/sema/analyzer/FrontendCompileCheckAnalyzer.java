@@ -22,6 +22,7 @@ import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -140,6 +141,13 @@ public class FrontendCompileCheckAnalyzer {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
                 + " is recognized by the frontend but is temporarily blocked in compile mode until "
                 + "lowering support lands";
+    }
+
+    private static @NotNull String compoundAssignmentCompileBlockedMessage(@NotNull String operatorText) {
+        return "Compound assignment operator '"
+                + Objects.requireNonNull(operatorText, "operatorText must not be null")
+                + "' is recognized by shared semantic analysis but remains temporarily blocked in compile mode "
+                + "until frontend CFG/body lowering lands its read-modify-write contract";
     }
 
     private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {
@@ -502,6 +510,11 @@ public class FrontendCompileCheckAnalyzer {
                         typeTestExpression,
                         expressionCompileBlockedMessage("Type-test expression")
                 );
+                case AssignmentExpression assignmentExpression when !"=".equals(assignmentExpression.operator()) ->
+                        reportExplicitCompileBlock(
+                                assignmentExpression,
+                                compoundAssignmentCompileBlockedMessage(assignmentExpression.operator())
+                        );
                 default -> {
                     markCompileSurfaceNode(expression);
                     walkNestedExpressionChildren(expression);

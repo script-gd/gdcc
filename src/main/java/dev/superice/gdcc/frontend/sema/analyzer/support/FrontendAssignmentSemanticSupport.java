@@ -230,14 +230,34 @@ public final class FrontendAssignmentSemanticSupport {
         if (dependencyIssue != null) {
             return propagated(dependencyIssue);
         }
-        if (!"=".equals(assignmentExpression.operator())) {
-            return rootOutcome(FrontendExpressionType.unsupported(
-                    "Compound assignment operator '" + assignmentExpression.operator()
-                            + "' is not supported by the current frontend assignment contract"
-            ));
+
+        var operatorText = assignmentExpression.operator();
+        var valueType = Objects.requireNonNull(rightType.publishedType(), "publishedType must not be null");
+        if (!"=".equals(operatorText)) {
+            var compoundBinaryOperator = resolveCompoundBinaryOperatorLexeme(operatorText);
+            if (compoundBinaryOperator == null) {
+                return rootOutcome(FrontendExpressionType.unsupported(
+                        "Compound assignment operator '" + operatorText
+                                + "' is not supported by the current frontend assignment contract"
+                ));
+            }
+            var targetValueType = requireCompoundTargetValueType(targetResult);
+            var compoundResultType = FrontendExpressionSemanticSupport.resolveBinaryOperatorResultType(
+                    classRegistry,
+                    compoundBinaryOperator,
+                    targetValueType,
+                    rightType
+            );
+            if (compoundResultType.status() != FrontendExpressionTypeStatus.RESOLVED
+                    && compoundResultType.status() != FrontendExpressionTypeStatus.DYNAMIC) {
+                return rootOutcome(compoundResultType);
+            }
+            valueType = Objects.requireNonNull(
+                    compoundResultType.publishedType(),
+                    "publishedType must not be null for successful compound assignment"
+            );
         }
 
-        var valueType = Objects.requireNonNull(rightType.publishedType(), "publishedType must not be null");
         var compatibilityIssue = resolveAssignmentCompatibilityIssue(targetResult, valueType);
         if (compatibilityIssue != null) {
             return rootOutcome(compatibilityIssue);
@@ -778,6 +798,44 @@ public final class FrontendAssignmentSemanticSupport {
                 "Assignment value type '" + valueType.getTypeName()
                         + "' is not assignable to target slot type '" + slotType.getTypeName() + "'"
         );
+    }
+
+    /// Compound assignment reuses ordinary binary-operator typing, but the left operand comes from the
+    /// already-validated assignment target instead of the ordinary nested expression resolver.
+    private static @NotNull FrontendExpressionType requireCompoundTargetValueType(
+            @NotNull AssignmentTargetResult targetResult
+    ) {
+        var actualTargetResult = Objects.requireNonNull(targetResult, "targetResult must not be null");
+        return switch (actualTargetResult.status()) {
+            case RESOLVED -> FrontendExpressionType.resolved(
+                    Objects.requireNonNull(actualTargetResult.slotType(), "slotType must not be null")
+            );
+            case DYNAMIC -> FrontendExpressionType.dynamic(
+                    Objects.requireNonNull(actualTargetResult.detailReason(), "detailReason must not be null")
+            );
+            case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> throw new IllegalStateException(
+                    "compound assignment target must be stable before operator typing: " + actualTargetResult.status()
+            );
+        };
+    }
+
+    /// The mapping intentionally stays closed over the parser-recognized compound token set so the
+    /// frontend keeps fail-closed behavior for any future syntax it has not implemented yet.
+    private static @Nullable String resolveCompoundBinaryOperatorLexeme(@NotNull String assignmentOperator) {
+        return switch (Objects.requireNonNull(assignmentOperator, "assignmentOperator must not be null")) {
+            case "+=" -> "+";
+            case "-=" -> "-";
+            case "*=" -> "*";
+            case "/=" -> "/";
+            case "%=" -> "%";
+            case "**=" -> "**";
+            case ">>=" -> ">>";
+            case "<<=" -> "<<";
+            case "&=" -> "&";
+            case "^=" -> "^";
+            case "|=" -> "|";
+            default -> null;
+        };
     }
 
     private @NotNull AttributeExpression syntheticPropertyExpression(

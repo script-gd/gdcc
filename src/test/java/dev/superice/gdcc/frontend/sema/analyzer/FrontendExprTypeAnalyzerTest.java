@@ -1390,7 +1390,8 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeReportsUnsupportedForCompoundAssignmentStatementsWithoutDiscardedWarnings() throws Exception {
+    void analyzePublishesResolvedVoidForSupportedCompoundAssignmentStatementsWithoutDiscardedWarnings()
+            throws Exception {
         var analyzed = analyze(
                 "expr_type_assignment_compound.gd",
                 """
@@ -1398,9 +1399,39 @@ class FrontendExprTypeAnalyzerTest {
                         extends RefCounted
                         
                         var hp: int = 0
+                        var payload
                         
                         func ping():
                             hp += 1
+                            payload += 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignments = findNodes(pingFunction, AssignmentExpression.class, _ -> true);
+        for (var compoundAssignment : assignments) {
+            var compoundAssignmentType = analyzed.analysisData().expressionTypes().get(compoundAssignment);
+            assertNotNull(compoundAssignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, compoundAssignmentType.status());
+            assertEquals(GdVoidType.VOID, compoundAssignmentType.publishedType());
+        }
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeReportsExpressionResolutionForCompoundAssignmentWritebackMismatch() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_compound_writeback_mismatch.gd",
+                """
+                        class_name ExprTypeAssignmentCompoundWritebackMismatch
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], raw_array: Array):
+                            values += raw_array
                         """
         );
 
@@ -1412,14 +1443,15 @@ class FrontendExprTypeAnalyzerTest {
 
         var compoundAssignmentType = analyzed.analysisData().expressionTypes().get(compoundAssignment);
         assertNotNull(compoundAssignmentType);
-        assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, compoundAssignmentType.status());
-        assertTrue(compoundAssignmentType.detailReason().contains("Compound assignment operator"));
+        assertEquals(FrontendExpressionTypeStatus.FAILED, compoundAssignmentType.status());
+        assertTrue(compoundAssignmentType.detailReason().contains("not assignable"));
+        assertTrue(compoundAssignmentType.detailReason().contains("Array[int]"));
 
-        var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
-        assertEquals(1, unsupportedDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, unsupportedDiagnostics.getFirst().severity());
-        assertTrue(unsupportedDiagnostics.getFirst().message().contains("Compound assignment operator"));
-        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
+        assertEquals(1, expressionDiagnostics.size());
+        assertEquals(FrontendDiagnosticSeverity.ERROR, expressionDiagnostics.getFirst().severity());
+        assertTrue(expressionDiagnostics.getFirst().message().contains("not assignable"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
     }

@@ -192,11 +192,70 @@ class FrontendAssignmentSemanticSupportTest {
     }
 
     @Test
-    void resolveAssignmentExpressionTypeRejectsCompoundAssignmentOperators() throws Exception {
+    void resolveAssignmentExpressionTypeSupportsClosedCompoundOperatorSetButKeepsValueAndWritebackChecks()
+            throws Exception {
         var analyzed = analyze(
                 "assignment_semantic_support_compound.gd",
                 """
                         class_name AssignmentSemanticSupportCompound
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        var payload
+                        
+                        func ping(values: Array[int], raw_array: Array):
+                            hp += 1
+                            self.hp -= 1
+                            values[0] |= 1
+                            payload += 1
+                            values += raw_array
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var assignments = findNodes(pingFunction, AssignmentExpression.class, _ -> true);
+
+        for (var successfulAssignment : assignments.subList(0, 4)) {
+            var result = support.resolveAssignmentExpressionType(
+                    successfulAssignment,
+                    FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                    publishedResolver,
+                    false
+            );
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+            assertEquals(GdVoidType.VOID, result.expressionType().publishedType());
+        }
+
+        var assignabilityFailure = support.resolveAssignmentExpressionType(
+                assignments.get(4),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        assertTrue(assignabilityFailure.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, assignabilityFailure.expressionType().status());
+        assertTrue(assignabilityFailure.expressionType().detailReason().contains("not assignable"));
+        assertTrue(assignabilityFailure.expressionType().detailReason().contains("Array[int]"));
+
+        var valueRequiredResult = support.resolveAssignmentExpressionType(
+                assignments.getFirst(),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
+                publishedResolver,
+                false
+        );
+        assertTrue(valueRequiredResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, valueRequiredResult.expressionType().status());
+        assertTrue(valueRequiredResult.expressionType().detailReason().contains("ordinary value"));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeKeepsUnknownCompoundOperatorsFailClosed() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_unknown_compound.gd",
+                """
+                        class_name AssignmentSemanticSupportUnknownCompound
                         extends RefCounted
                         
                         var hp: int = 0
@@ -208,14 +267,16 @@ class FrontendAssignmentSemanticSupportTest {
 
         var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
         var publishedResolver = publishedExpressionResolver(analyzed);
-        var pingFunction = findFunction(analyzed.ast(), "ping");
-        var compoundAssignment = assertInstanceOf(
-                AssignmentExpression.class,
-                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        var compoundAssignment = findNode(analyzed.ast(), AssignmentExpression.class, assignment -> "+=".equals(assignment.operator()));
+        var syntheticUnknownOperator = new AssignmentExpression(
+                "??=",
+                compoundAssignment.left(),
+                compoundAssignment.right(),
+                compoundAssignment.range()
         );
 
         var result = support.resolveAssignmentExpressionType(
-                compoundAssignment,
+                syntheticUnknownOperator,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -223,7 +284,7 @@ class FrontendAssignmentSemanticSupportTest {
 
         assertTrue(result.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, result.expressionType().status());
-        assertTrue(result.expressionType().detailReason().contains("Compound assignment operator"));
+        assertTrue(result.expressionType().detailReason().contains("Compound assignment operator '??='"));
     }
 
     @Test
