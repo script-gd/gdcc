@@ -446,7 +446,8 @@ ordinary `Variant` boundary materialization 现在已经冻结为 executable-bod
 - `DYNAMIC_FALLBACK` instance call
   - frontend 不读取 callable signature，也不做 fixed-parameter boundary materialization
   - 已求值的 argument slot 直接透传给 `CallMethodInsn`
-  - backend dynamic dispatch 继续作为参数 pack / 结果 unpack 的唯一承担方
+  - backend dynamic dispatch 继续承担 runtime-open call 的实际分派与直接 `Variant` 结果发布
+  - 该 `Variant` 结果若随后跨越 ordinary typed boundary，再由 frontend ordinary boundary helper 做后续 `(un)pack`
 - return
   - stop-node lowering 按当前函数 return slot type 做同一套 boundary materialization
 

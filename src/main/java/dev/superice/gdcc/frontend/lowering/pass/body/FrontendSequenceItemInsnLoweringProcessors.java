@@ -291,8 +291,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// or guess between global/static/instance call families once compile-ready facts exist. It
     /// only materializes the already-approved argument-side `Variant` boundaries required by the
     /// selected callable signature for exact routes. Runtime-open `DYNAMIC_FALLBACK` instance calls
-    /// reuse the ordinary `CallMethodInsn` surface and forward their already-evaluated operands so
-    /// backend dynamic dispatch remains the sole owner of argument pack/result unpack.
+    /// reuse the ordinary `CallMethodInsn` surface and forward their already-evaluated operands.
+    /// Dynamic dispatch stays on the backend route; later typed consumers of the published
+    /// `Variant` result still use the ordinary frontend boundary helper.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override
@@ -353,7 +354,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     if (resolvedCall.receiverKind() != FrontendReceiverKind.INSTANCE) {
                         throw session.unsupportedSequenceItem(
                                 node,
-                                "dynamic call lowering currently requires an instance receiver route, but got "
+                                "dynamic call lowering requires an instance receiver route, but got "
                                         + resolvedCall.receiverKind()
                         );
                     }

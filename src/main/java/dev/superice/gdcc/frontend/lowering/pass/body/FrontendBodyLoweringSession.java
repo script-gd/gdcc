@@ -342,7 +342,8 @@ public final class FrontendBodyLoweringSession {
     /// Exact `RESOLVED` calls still consume their final callable signature here so fixed parameters
     /// can materialize the minimal ordinary `Variant` boundaries and vararg tails can be packed.
     /// `DYNAMIC` calls intentionally bypass signature lookup and forward their already-evaluated
-    /// operand slots unchanged; runtime pack/unpack stays on the backend dynamic-dispatch route.
+    /// operand slots unchanged. Runtime dispatch stays on the backend route, while any later typed
+    /// consumer of the published `Variant` result still goes through the ordinary boundary helper.
     @NotNull List<LirInstruction.Operand> materializeCallArguments(
             @NotNull LirBasicBlock block,
             @NotNull CallItem item,
