@@ -57,8 +57,8 @@ public final class FunctionLoweringContext {
     /// Target function whose body will be populated by lowering.
     ///
     /// During preparation the only requirement is that this function shell already exists on the
-    /// owning class. Later CFG/body passes are responsible for filling blocks, entry metadata, and
-    /// instructions into this shell when the architecture allows materialization.
+    /// owning class. The default pipeline later fills blocks, entry metadata, and instructions into
+    /// this shell for published `EXECUTABLE_BODY` and `PROPERTY_INIT` units.
     private final @NotNull LirFunctionDef targetFunction;
 
     /// Original declaration-level AST owner used by shared frontend side tables.

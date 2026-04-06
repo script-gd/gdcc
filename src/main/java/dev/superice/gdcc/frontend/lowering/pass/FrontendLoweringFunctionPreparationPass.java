@@ -31,8 +31,9 @@ import java.util.Objects;
 ///
 /// The pass keeps the current LIR in skeleton/shell form:
 /// - executable callables reuse their published `LirFunctionDef`
-/// - property initializers get hidden synthetic function shells
-/// - no basic blocks or instructions are emitted yet
+/// - property initializers get hidden synthetic helper scaffolds
+/// - no basic blocks or instructions are emitted yet; later CFG/body passes materialize the default
+///   pipeline's executable callable and property-init bodies
 public final class FrontendLoweringFunctionPreparationPass implements FrontendLoweringPass {
     /// Compiler-owned helper namespace. Source members that start with this prefix must already have
     /// been rejected by skeleton-driven skipped-subtree recovery before preparation runs.
