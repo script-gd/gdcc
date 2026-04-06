@@ -14,6 +14,7 @@
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`
+  - `frontend_lowering_(un)pack_implementation.md`
   - `frontend_chain_binding_expr_type_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
   - `frontend_lowering_cfg_pass_implementation.md`
@@ -306,6 +307,7 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `FrontendSubscriptSemanticSupport.resolveSubscriptType(...)`
 - `FrontendTypeCheckAnalyzer`
 - `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
+  - ordinary `(un)pack` consumer/materialization 的长期合同以 `frontend_lowering_(un)pack_implementation.md` 为准
 
 ### 9.2 当前明确拒绝 widened conversion 的文档锚点
 

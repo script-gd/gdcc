@@ -57,7 +57,7 @@
 - H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
 - 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、以及 `Array` / packed array 的 float index 兼容。
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
-- H2 assignment compatibility 的具体 source/target 规则以 `frontend_implicit_conversion_matrix.md` 为唯一真源；`FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只是 concrete slot gate 的统一入口，不得在其他 frontend 路径里各自复制一份 conversion 清单。
+- H2 assignment compatibility 的具体 source/target 规则以 `frontend_implicit_conversion_matrix.md` 为唯一真源；`FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只是 concrete slot gate 的统一入口，不得在其他 frontend 路径里各自复制一份 conversion 清单。ordinary boundary consumer/materialization 的长合同以 `frontend_lowering_(un)pack_implementation.md` 为准。
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
 - 除 `DYNAMIC` target 的 runtime-open 语义外，frontend 若需要调整 typed boundary compatibility，必须先更新 `frontend_implicit_conversion_matrix.md`，再改 shared helper、测试与下游 materialization；不得直接在某个 consumer 中偷偷放宽 `int -> float`、`StringName` / `String` 等 widened conversion。
 - source-level `if` / `elif` / `while` / `assert` condition 当前采用 Godot-compatible 合同：frontend 只要求 condition root 已稳定发布 typed fact，不再把非 `bool` 一概当作 `sema.type_check`。

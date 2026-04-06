@@ -17,6 +17,7 @@
 - 关联文档：
   - `doc/module_impl/common_rules.md`
   - `frontend_rules.md`
+  - `frontend_lowering_(un)pack_implementation.md`
   - `diagnostic_manager.md`
   - `frontend_top_binding_analyzer_implementation.md`
   - `frontend_chain_binding_expr_type_implementation.md`

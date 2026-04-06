@@ -900,7 +900,9 @@ public final class FrontendExpressionSemanticSupport {
     /// Fixed-argument call compatibility is another direct consumer of the typed-boundary matrix in
     /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`.
     /// Call resolution must reuse the shared frontend boundary helper instead of carrying a
-    /// call-specific handwritten conversion table.
+    /// call-specific handwritten conversion table. The corresponding ordinary `(un)pack`
+    /// materialization contract is documented in
+    /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
     private boolean matchesCallableArguments(
             @NotNull FunctionDef callable,
             @NotNull List<GdType> argumentTypes

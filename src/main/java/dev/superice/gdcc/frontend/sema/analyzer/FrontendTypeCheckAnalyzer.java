@@ -275,7 +275,10 @@ public class FrontendTypeCheckAnalyzer {
 
         /// Type-check intentionally delegates the full typed-boundary matrix to the shared helper.
         /// See `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md` for the single
-        /// source of truth; do not reintroduce local `Variant`/`Nil`/scalar special cases here.
+        /// compatibility source of truth and
+        /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md` for the matching
+        /// consumer/materialization contract; do not reintroduce local
+        /// `Variant`/`Nil`/scalar special cases here.
         public boolean checkAssignmentCompatible(
                 @NotNull GdType slotType,
                 @NotNull GdType valueType

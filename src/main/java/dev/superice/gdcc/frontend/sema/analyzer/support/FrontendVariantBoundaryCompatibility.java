@@ -17,6 +17,8 @@ import java.util.Objects;
 /// - it does not emit diagnostics and does not weaken backend/global `ClassRegistry.checkAssignable(...)`
 /// - the exact allowed matrix is owned by `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`;
 ///   this helper must stay mechanically aligned with that document instead of evolving its own rule list
+/// - the consumer/lowering contract for these decisions is documented in
+///   `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
 public final class FrontendVariantBoundaryCompatibility {
     public enum Decision {
         ALLOW_DIRECT,
@@ -35,7 +37,9 @@ public final class FrontendVariantBoundaryCompatibility {
 
     /// Frontend semantic boundary rule for one already-typed source/target pair.
     /// The authoritative compatibility matrix lives in
-    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`.
+    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`, while the downstream
+    /// consumer/materialization contract lives in
+    /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
     /// This method only encodes that matrix as a lowering-friendly decision:
     /// - `ALLOW_WITH_PACK`
     /// - `ALLOW_WITH_UNPACK`

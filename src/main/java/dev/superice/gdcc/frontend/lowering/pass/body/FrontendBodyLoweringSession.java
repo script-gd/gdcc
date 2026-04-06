@@ -297,7 +297,9 @@ public final class FrontendBodyLoweringSession {
     /// The authoritative boundary matrix lives in
     /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`; semantic legality is owned
     /// by `FrontendVariantBoundaryCompatibility`, and this helper must stay isomorphic to that
-    /// decision table instead of inventing extra lowering-only conversions.
+    /// decision table instead of inventing extra lowering-only conversions. The long-form consumer and
+    /// materialization contract lives in
+    /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
     ///
     /// Later assignment/call/return processors should route all ordinary boundary writes through
     /// this helper instead of duplicating ad-hoc boundary branches.

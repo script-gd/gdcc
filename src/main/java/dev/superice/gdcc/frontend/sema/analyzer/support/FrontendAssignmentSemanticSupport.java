@@ -42,6 +42,10 @@ import java.util.function.Supplier;
 /// - target resolution needs its own writable-slot model
 /// - successful assignment publishes `RESOLVED(void)` instead of the RHS type
 /// - value-required contexts must fail closed after the target and RHS are otherwise valid
+/// - ordinary typed-boundary legality is still owned by
+///   `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`, with the corresponding
+///   `(un)pack` lowering contract documented in
+///   `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
 public final class FrontendAssignmentSemanticSupport {
     public enum AssignmentUsage {
         STATEMENT_ROOT,
