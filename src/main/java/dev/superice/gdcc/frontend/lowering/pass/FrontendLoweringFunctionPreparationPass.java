@@ -34,6 +34,8 @@ import java.util.Objects;
 /// - property initializers get hidden synthetic function shells
 /// - no basic blocks or instructions are emitted yet
 public final class FrontendLoweringFunctionPreparationPass implements FrontendLoweringPass {
+    /// Compiler-owned helper namespace. Source members that start with this prefix must already have
+    /// been rejected by skeleton-driven skipped-subtree recovery before preparation runs.
     private static final String PROPERTY_INIT_PREFIX = "_field_init_";
 
     @Override

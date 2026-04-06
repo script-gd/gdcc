@@ -66,7 +66,12 @@ public class FrontendScopeAnalyzer {
         analysisData.diagnostics();
 
         var scopesByAst = new FrontendAstSideTable<Scope>();
-        new ScopeBuildingHandler(classRegistry, moduleSkeleton, scopesByAst).walk();
+        new ScopeBuildingHandler(
+                classRegistry,
+                moduleSkeleton,
+                analysisData.skippedSubtreeRoots(),
+                scopesByAst
+        ).walk();
         analysisData.updateScopesByAst(scopesByAst);
     }
 
@@ -87,6 +92,7 @@ public class FrontendScopeAnalyzer {
     /// - skipped on purpose because its dedicated scope semantics are still deferred to later work.
     private static final class ScopeBuildingHandler implements ASTNodeHandler {
         private final @NotNull ClassRegistry classRegistry;
+        private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull List<SourceFile> sourceFilesInOrder;
         private final @NotNull IdentityHashMap<Node, ClassDef> classByAstOwner = new IdentityHashMap<>();
@@ -98,9 +104,14 @@ public class FrontendScopeAnalyzer {
         private ScopeBuildingHandler(
                 @NotNull ClassRegistry classRegistry,
                 @NotNull FrontendModuleSkeleton moduleSkeleton,
+                @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst
         ) {
             this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry");
+            this.skippedSubtreeRoots = Objects.requireNonNull(
+                    skippedSubtreeRoots,
+                    "skippedSubtreeRoots"
+            );
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst");
             sourceFilesInOrder = indexClassDefsByAstOwner(
                     Objects.requireNonNull(moduleSkeleton, "moduleSkeleton")
@@ -119,6 +130,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleNode(@NotNull Node node) {
+            if (isSkippedSubtreeRoot(node)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             recordScope(node, currentScope());
             return FrontendASTTraversalDirective.CONTINUE;
         }
@@ -148,6 +162,9 @@ public class FrontendScopeAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleFunctionDeclaration(
                 @NotNull FunctionDeclaration functionDeclaration
         ) {
+            if (isSkippedSubtreeRoot(functionDeclaration)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             visitCallableBoundary(
                     functionDeclaration,
                     functionDeclaration.parameters(),
@@ -163,6 +180,9 @@ public class FrontendScopeAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleConstructorDeclaration(
                 @NotNull ConstructorDeclaration constructorDeclaration
         ) {
+            if (isSkippedSubtreeRoot(constructorDeclaration)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             visitCallableBoundary(
                     constructorDeclaration,
                     constructorDeclaration.parameters(),
@@ -178,6 +198,9 @@ public class FrontendScopeAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(
                 @NotNull LambdaExpression lambdaExpression
         ) {
+            if (isSkippedSubtreeRoot(lambdaExpression)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             visitCallableBoundary(
                     lambdaExpression,
                     lambdaExpression.parameters(),
@@ -244,6 +267,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleClassDeclaration(@NotNull ClassDeclaration node) {
+            if (isSkippedSubtreeRoot(node)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             var classDef = classByAstOwner.get(node);
             if (classDef == null) {
                 // Skeleton build may already have rejected this subtree because its class metadata
@@ -344,6 +370,10 @@ public class FrontendScopeAnalyzer {
 
         private void recordScope(@NotNull Node astNode, @NotNull Scope scope) {
             scopesByAst.put(astNode, scope);
+        }
+
+        private boolean isSkippedSubtreeRoot(@NotNull Node node) {
+            return skippedSubtreeRoots.containsKey(Objects.requireNonNull(node, "node"));
         }
 
         private @NotNull Scope currentScope() {

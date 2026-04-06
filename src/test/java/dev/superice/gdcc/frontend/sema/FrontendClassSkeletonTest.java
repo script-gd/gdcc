@@ -377,9 +377,9 @@ class FrontendClassSkeletonTest {
         var unit = parserService.parseUnit(Path.of("tmp", "mapped_self_declared_type.gd"), """
                 class_name MappedWorker
                 extends RefCounted
-
+                
                 var peer: MappedWorker
-
+                
                 func copy(value: MappedWorker) -> MappedWorker:
                     return value
                 """, diagnostics);
@@ -418,7 +418,7 @@ class FrontendClassSkeletonTest {
         var consumerUnit = parserService.parseUnit(Path.of("tmp", "consumer_decl.gd"), """
                 class_name Consumer
                 extends RefCounted
-
+                
                 var worker: MappedWorker
                 """, diagnostics);
 
@@ -452,10 +452,10 @@ class FrontendClassSkeletonTest {
         var unit = parserService.parseUnit(Path.of("tmp", "mapped_shadowed_declared_type.gd"), """
                 class_name MappedWorker
                 extends RefCounted
-
+                
                 class MappedWorker:
                     pass
-
+                
                 var local_worker: MappedWorker
                 """, diagnostics);
 
@@ -1027,6 +1027,57 @@ class FrontendClassSkeletonTest {
     }
 
     @Test
+    void buildRejectsReservedSyntheticPropertyHelperPrefixesButKeepsBoundaryNamesAlive() throws IOException {
+        var parserService = new GdScriptParserService();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classSkeletonBuilder = new FrontendClassSkeletonBuilder();
+        var diagnostics = new DiagnosticManager();
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_property_helper_names.gd"), """
+                class_name ReservedPropertyHelperNames
+                extends RefCounted
+                
+                signal _field_init_changed()
+                signal _field_setter
+                
+                var _field_getter_value: int = 1
+                var _field_getter: int = 2
+                
+                func _field_setter_value():
+                    pass
+                
+                func _field_init():
+                    pass
+                
+                func ok():
+                    pass
+                """, diagnostics);
+
+        var result = classSkeletonBuilder.build(
+                new FrontendModule("test_module", List.of(unit)),
+                registry,
+                diagnostics,
+                analysisData
+        );
+        var classDef = findClassByName(topLevelClassDefs(result), "ReservedPropertyHelperNames");
+        var skeletonDiagnostics = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(findSignalByNameOrNull(classDef, "_field_init_changed"));
+        assertNotNull(findSignalByNameOrNull(classDef, "_field_setter"));
+        assertNull(findPropertyByNameOrNull(classDef, "_field_getter_value"));
+        assertNotNull(findPropertyByNameOrNull(classDef, "_field_getter"));
+        assertNull(findFunctionByNameOrNull(classDef, "_field_setter_value"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "_field_init"));
+        assertNotNull(findFunctionByNameOrNull(classDef, "ok"));
+        assertEquals(3, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.message().contains("reserved synthetic property-helper prefix")
+        ));
+    }
+
+    @Test
     void buildDoesNotSynthesizeParseDiagnosticsForManualUnitsWithoutSharedManagerState() throws IOException {
         var parserService = new GdScriptParserService();
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
@@ -1142,11 +1193,25 @@ class FrontendClassSkeletonTest {
                 .orElseThrow(() -> new AssertionError("Property not found: " + propertyName));
     }
 
+    private PropertyDef findPropertyByNameOrNull(LirClassDef classDef, String propertyName) {
+        return classDef.getProperties().stream()
+                .filter(propertyDef -> propertyDef.getName().equals(propertyName))
+                .findFirst()
+                .orElse(null);
+    }
+
     private SignalDef findSignalByName(LirClassDef classDef, String signalName) {
         return classDef.getSignals().stream()
                 .filter(signalDef -> signalDef.getName().equals(signalName))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Signal not found: " + signalName));
+    }
+
+    private SignalDef findSignalByNameOrNull(LirClassDef classDef, String signalName) {
+        return classDef.getSignals().stream()
+                .filter(signalDef -> signalDef.getName().equals(signalName))
+                .findFirst()
+                .orElse(null);
     }
 
     private LirFunctionDef findFunctionByName(LirClassDef classDef, String functionName) {
@@ -1155,6 +1220,14 @@ class FrontendClassSkeletonTest {
                 .findFirst()
                 .map(functionDef -> assertInstanceOf(LirFunctionDef.class, functionDef))
                 .orElseThrow(() -> new AssertionError("Function not found: " + functionName));
+    }
+
+    private LirFunctionDef findFunctionByNameOrNull(LirClassDef classDef, String functionName) {
+        return classDef.getFunctions().stream()
+                .filter(functionDef -> functionDef.getName().equals(functionName))
+                .findFirst()
+                .map(functionDef -> assertInstanceOf(LirFunctionDef.class, functionDef))
+                .orElse(null);
     }
 
     private void assertObjectTypeName(GdType type, String expectedTypeName) {

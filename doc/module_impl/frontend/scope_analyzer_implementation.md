@@ -256,6 +256,7 @@ mapped top-level gdcc class 当前已同时满足：
 
 - 如果 top-level source unit 在 header/skeleton phase 就未进入 `moduleSkeleton.sourceClassRelations()`，scope phase 不会再为该 `SourceFile` 物化顶层 `ClassScope`
 - 如果某个 inner class subtree 没有已发布 relation/classDef，scope analyzer 只跳过该 subtree，不扩大成整条 source 的失败
+- 如果 skeleton phase 明确把某个 member subtree 标记进 `FrontendAnalysisData.skippedSubtreeRoots()`，scope phase 同样必须跳过该 root，并且不为其任意后代发布 `scopesByAst()` 条目
 - 已接受的 sibling subtree 仍应继续分析
 
 ### 5.4 outer class 可见性

@@ -198,6 +198,40 @@ class FrontendLoweringAnalysisPassTest {
         assertTrue(typeCheckDiagnostics.getFirst().message().contains("Object"));
     }
 
+    @Test
+    void lowerReservedSyntheticPropertyHelperMemberModuleStopsBeforeFurtherLoweringRuns() throws Exception {
+        var module = parseModule(
+                "lowering_blocked_reserved_helper_member.gd",
+                """
+                        class_name LoweringBlockedReservedHelperMember
+                        extends RefCounted
+                        
+                        var _field_getter_value := 1
+                        
+                        func ping() -> int:
+                            return 1
+                        """
+        );
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var diagnostics = new DiagnosticManager();
+        var continuationRan = new AtomicBoolean();
+        var manager = new FrontendLoweringPassManager(List.of(
+                new FrontendLoweringAnalysisPass(),
+                _ -> continuationRan.set(true)
+        ));
+
+        var lowered = manager.lower(module, registry, diagnostics);
+        var skeletonDiagnostics = diagnostics.snapshot().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.class_skeleton"))
+                .toList();
+
+        assertNull(lowered);
+        assertFalse(continuationRan.get());
+        assertTrue(diagnostics.hasErrors());
+        assertEquals(1, skeletonDiagnostics.size());
+        assertTrue(skeletonDiagnostics.getFirst().message().contains("_field_getter_"));
+    }
+
     private static @NotNull FrontendModule parseModule(
             @NotNull String fileName,
             @NotNull String source

@@ -112,6 +112,7 @@ pre-pass 不新增新的 public lowering 入口，也不接受 `FrontendAnalysis
 - 为 supported property initializer 发布 `PROPERTY_INIT` context
 - 在 `LirPropertyDef.initFunc` 缺失时补 `_field_init_<property>` hidden synthetic function shell
 - 当 `LirPropertyDef.initFunc` 已预先指向 synthetic shell 时，只在 shell 仍满足 property-signature 与 shell-only 合同时复用
+- `_field_init_` / `_field_getter_` / `_field_setter_` helper namespace 属于 compiler-owned synthetic surface；source member 若以这些前缀开头，必须早于本 pass 在 skeleton/scope 恢复边界被诊断并跳过
 
 `FrontendLoweringFunctionPreparationPass` 明确不负责：
 

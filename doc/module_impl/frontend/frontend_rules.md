@@ -11,6 +11,7 @@
 
 - parser 必须保持 tolerant：`gdparser` lowering diagnostics 映射为 `parse.lowering`，parser/runtime 失败映射为 `parse.internal`，不要把运行时异常直接抛给调用方。
 - skeleton / 当前 analyzers / 后续新增 frontend phase 对可恢复错误都必须采用“diagnostic + skip subtree”策略；不要因为单个坏节点打断整条 frontend pipeline。
+- 若 skeleton phase 已判定某个 member subtree 必须跳过，必须把该 root 显式发布到 `FrontendAnalysisData.skippedSubtreeRoots()`，并由 scope phase 停止为该 subtree 发布 scope；后续 analyzer 只能沿用既有 skipped-subtree 合同恢复，不得再假设这些节点仍拥有完整 skeleton metadata。
 - 新增 frontend 诊断或恢复路径时，必须同步更新 `diagnostic_manager.md`、相关实现注释和受影响的模块文档，避免代码与文档冲突。
 - 当前合同中“已识别但明确不支持”的 feature boundary 统一发 error；只有真正的 deferred/暂缓恢复路径才保留 warning。
 - body phase 的 diagnostic owner 必须保持单一：
@@ -24,6 +25,7 @@
   - compile-only `FrontendCompileCheckAnalyzer` 负责 `sema.compile_check`
   - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
 - `break` / `continue` 的位置合法性属于 shared semantic contract；`FrontendLoopControlFlowAnalyzer` 必须在进入 compile-only gate 前就对非法 loop control 发出 `sema.loop_control_flow`，lowering 中的 loop-frame fail-fast 只能保留为实现不变量保护。
+- `_field_init_`、`_field_getter_`、`_field_setter_` 是 compiler-owned synthetic property helper 前缀；source class member 一旦以这些前缀开头，skeleton phase 必须发出清晰的 `sema.class_skeleton` 并跳过该 member subtree，而不是等到 lowering/backend 再因 helper 名冲突抛异常。
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
 - compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
 - compile-only gate 一旦放行 supported property initializer，默认 lowering pipeline 必须把它 materialize 为真实 `init_func` helper；backend 不得再把同名 shell-only function 当作可修补中间态消费。

@@ -1013,6 +1013,46 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.scopesByAst().get(unit.ast()));
     }
 
+    @Test
+    void semanticAnalysisSkipsReservedSyntheticPropertyHelperMemberSubtrees() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "reserved_helper_subtree_skip.gd"), """
+                class_name ReservedHelperSubtreeSkip
+                extends RefCounted
+                
+                var _field_getter_value := 1
+                
+                func _field_setter_value() -> int:
+                    return 1
+                
+                func ok() -> int:
+                    return 2
+                """, diagnostics);
+        var reservedProperty = findVariable(unit.ast().statements(), "_field_getter_value");
+        var reservedFunction = findFunction(unit.ast().statements(), "_field_setter_value");
+        var okFunction = findFunction(unit.ast().statements(), "ok");
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
+        var classDef = findClassByName(topLevelClassDefs(result.moduleSkeleton()), "ReservedHelperSubtreeSkip");
+
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("_field_getter_value")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("_field_setter_value")
+        ));
+        assertNull(result.scopesByAst().get(reservedProperty));
+        assertNull(result.scopesByAst().get(reservedFunction));
+        assertNotNull(result.scopesByAst().get(okFunction));
+        assertTrue(classDef.getProperties().stream().noneMatch(property -> property.getName().equals("_field_getter_value")));
+        assertTrue(classDef.getFunctions().stream().noneMatch(function -> function.getName().equals("_field_setter_value")));
+        assertTrue(classDef.getFunctions().stream().anyMatch(function -> function.getName().equals("ok")));
+    }
+
     private VariableDeclaration findVariable(List<?> statements, String name) {
         return statements.stream()
                 .filter(VariableDeclaration.class::isInstance)

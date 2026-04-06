@@ -55,6 +55,7 @@ public final class FrontendClassSkeletonBuilder {
             analysisData.annotationsByAst().putAll(annotationCollector.collect(unit));
         }
         var headerDiscovery = discoverModuleClassHeaders(module, classRegistry, diagnosticManager);
+        markSkippedSubtreeRoots(headerDiscovery.rejectedSubtreeRoots(), analysisData);
         var sourceClassRelations = new ArrayList<FrontendSourceClassRelation>();
 
         for (var sourceUnitGraph : headerDiscovery.sourceUnitGraphs()) {
@@ -242,28 +243,54 @@ public final class FrontendClassSkeletonBuilder {
     ) {
         for (var statement : statements) {
             switch (statement) {
-                case SignalStatement signalStatement -> classDef.addSignal(
-                        toLirSignal(signalStatement, declaredTypeScope, context)
-                );
+                case SignalStatement signalStatement -> {
+                    if (rejectReservedSyntheticPropertyHelperMember(
+                            signalStatement,
+                            "Signal",
+                            signalStatement.name(),
+                            context
+                    )) {
+                        continue;
+                    }
+                    classDef.addSignal(toLirSignal(signalStatement, declaredTypeScope, context));
+                }
                 case VariableDeclaration variableDeclaration -> {
                     if (variableDeclaration.kind() == DeclarationKind.VAR) {
+                        if (rejectReservedSyntheticPropertyHelperMember(
+                                variableDeclaration,
+                                "Property",
+                                variableDeclaration.name(),
+                                context
+                        )) {
+                            continue;
+                        }
                         classDef.addProperty(
                                 toLirProperty(variableDeclaration, declaredTypeScope, context)
                         );
                     }
                 }
-                case FunctionDeclaration functionDeclaration -> addFunctionMember(
-                        classDef,
-                        functionDeclaration.name().trim().equals("_init")
-                                ? toLirInitFunction(
-                                functionDeclaration.parameters(),
-                                declaredTypeScope,
-                                context
-                        )
-                                : toLirFunction(functionDeclaration, declaredTypeScope, context),
-                        functionDeclaration,
-                        context
-                );
+                case FunctionDeclaration functionDeclaration -> {
+                    if (rejectReservedSyntheticPropertyHelperMember(
+                            functionDeclaration,
+                            "Function",
+                            functionDeclaration.name(),
+                            context
+                    )) {
+                        continue;
+                    }
+                    addFunctionMember(
+                            classDef,
+                            functionDeclaration.name().trim().equals("_init")
+                                    ? toLirInitFunction(
+                                    functionDeclaration.parameters(),
+                                    declaredTypeScope,
+                                    context
+                            )
+                                    : toLirFunction(functionDeclaration, declaredTypeScope, context),
+                            functionDeclaration,
+                            context
+                    );
+                }
                 case ConstructorDeclaration constructorDeclaration -> addFunctionMember(
                         classDef,
                         toLirInitFunction(
@@ -483,6 +510,45 @@ public final class FrontendClassSkeletonBuilder {
             return;
         }
         classDef.addFunction(functionDef);
+    }
+
+    private void markSkippedSubtreeRoots(
+            @NotNull List<? extends Node> skippedRoots,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        for (var skippedRoot : skippedRoots) {
+            analysisData.skippedSubtreeRoots().put(
+                    Objects.requireNonNull(skippedRoot, "skippedRoot must not be null"),
+                    Boolean.TRUE
+            );
+        }
+    }
+
+    /// Compiler-owned synthetic property helpers are materialized later under `_field_init_*`,
+    /// `_field_getter_*`, and `_field_setter_*`. Rejecting source members that reuse those prefixes
+    /// keeps later lowering/backend phases from colliding with user-defined names.
+    private boolean rejectReservedSyntheticPropertyHelperMember(
+            @NotNull Node sourceNode,
+            @NotNull String memberKind,
+            @NotNull String memberName,
+            @NotNull SkeletonBuildContext context
+    ) {
+        var matchedPrefix = FrontendSyntheticPropertyHelperSupport.reservedPrefixOrNull(memberName);
+        if (matchedPrefix == null) {
+            return false;
+        }
+        context.diagnostics().error(
+                "sema.class_skeleton",
+                FrontendSyntheticPropertyHelperSupport.reservedPrefixDiagnosticMessage(
+                        memberKind,
+                        memberName,
+                        matchedPrefix
+                ),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(sourceNode.range())
+        );
+        markSkippedSubtreeRoots(List.of(sourceNode), context.analysisData());
+        return true;
     }
 
     /// Skeleton member filling still runs before the real scope phase, so it materializes a minimal

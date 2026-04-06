@@ -19,6 +19,10 @@ public final class FrontendAnalysisData {
     private @Nullable FrontendModuleSkeleton moduleSkeleton;
     private @Nullable DiagnosticSnapshot diagnostics;
     private final @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst;
+    /// Skeleton/header phases mark roots here when later semantic traversal must skip the whole
+    /// subtree. Scope analysis then withholds `scopesByAst()` publication for those roots and their
+    /// descendants so downstream analyzers can reuse the existing skipped-subtree contract.
+    private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
     /// Published expression-typing facts consumed by compile-check, lowering, and debug tooling.
@@ -32,6 +36,7 @@ public final class FrontendAnalysisData {
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
+            @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots,
             @NotNull FrontendAstSideTable<Scope> scopesByAst,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
             @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
@@ -40,6 +45,10 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<GdType> slotTypes
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
+        this.skippedSubtreeRoots = Objects.requireNonNull(
+                skippedSubtreeRoots,
+                "skippedSubtreeRoots must not be null"
+        );
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
         this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
         this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
@@ -54,6 +63,7 @@ public final class FrontendAnalysisData {
     /// Creates an empty analysis data carrier with the full side-table topology already present.
     public static @NotNull FrontendAnalysisData bootstrap() {
         return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -116,6 +126,10 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst() {
         return annotationsByAst;
+    }
+
+    public @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots() {
+        return skippedSubtreeRoots;
     }
 
     public @NotNull FrontendAstSideTable<Scope> scopesByAst() {
