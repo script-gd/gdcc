@@ -18,6 +18,9 @@ import java.util.Objects;
 /// - `Variant` receiver as runtime-dynamic `Variant`
 /// - keyed builtin metadata outside the container family as explicit `UNSUPPORTED`
 /// - everything else as explicit `FAILED`
+/// Key/index compatibility details are owned by
+/// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`; this helper currently keeps
+/// subscript rules narrower than Godot's wider keyed/index conversion surface on purpose.
 public final class FrontendSubscriptSemanticSupport {
     private final @NotNull ClassRegistry classRegistry;
 

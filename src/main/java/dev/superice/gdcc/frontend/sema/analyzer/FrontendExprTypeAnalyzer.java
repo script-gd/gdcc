@@ -123,7 +123,7 @@ public class FrontendExprTypeAnalyzer {
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull FrontendChainReductionFacade chainReduction;
-        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
+        private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
         private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedExpressionRoots = new IdentityHashMap<>();
@@ -159,7 +159,7 @@ public class FrontendExprTypeAnalyzer {
                     classRegistry,
                     this::resolveExpressionDependency
             );
-            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+            assignmentSemanticContext = FrontendAssignmentSemanticSupport.createContext(
                     analysisData.symbolBindings(),
                     scopesByAst,
                     analysisData.moduleSkeleton(),
@@ -546,7 +546,8 @@ public class FrontendExprTypeAnalyzer {
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
                 case AssignmentExpression assignmentExpression -> finishSemanticResolution(
                         assignmentExpression,
-                        assignmentSemanticSupport.resolveAssignmentExpressionType(
+                        FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                                assignmentSemanticContext,
                                 assignmentExpression,
                                 allowStatementResult
                                         ? FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT

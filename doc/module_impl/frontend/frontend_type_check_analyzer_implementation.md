@@ -171,14 +171,9 @@ type-check 当前只消费稳定 expression fact：
 当前所有 concrete-slot compatibility 都必须统一复用：
 
 - `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(slotType, valueType)`
+- 具体兼容矩阵以 `frontend_implicit_conversion_matrix.md` 为唯一真源
 
-当前冻结行为是：
-
-- exact `Variant` slot 接受任意已解析值
-- `Nil` 可以流向 object slot
-- 其余 slot 继续回退 `ClassRegistry.checkAssignable(...)`
-
-因此，local/property/return typed gate 不得直接手写 `Variant` 分支，也不得直接拿 `ClassRegistry.checkAssignable(...)` 替代 shared helper。
+因此，local/property/return typed gate 不得直接手写 `Variant` 分支、`Nil -> object` 特判、或其他 widened conversion，也不得直接拿 `ClassRegistry.checkAssignable(...)` 替代 shared helper。若矩阵未来扩张，这里的 consumer 应随 shared helper 自动收敛，而不是再维护一份并行规则摘要。
 
 ### 3.3 ordinary local 显式 initializer
 
@@ -393,7 +388,7 @@ owner 分工固定为：
 后续工程若继续扩展本区域，必须遵守以下约束：
 
 1. type-check 继续保持 diagnostics-only，不新增 side table。
-2. slot compatibility 继续只走 `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`。
+2. slot compatibility 继续只走 `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`，具体 conversion 支持面继续以 `frontend_implicit_conversion_matrix.md` 为唯一真源。
 3. property initializer boundary 继续保持 upstream owner 单一责任，不把 boundary 错误重新翻译成 type-check 错误。
 4. condition source contract 与 downstream bool-only lowering contract 必须同时写清楚，不允许再次出现“代码 strict bool、文档默认兼容 GDScript、backend 另有要求”的分叉。
 5. `@onready` 的 frontend usage validation 与 runtime semantics 必须继续分层记录，不得混写成“已完成 annotation 就等于已完成 ready-time 语义”。

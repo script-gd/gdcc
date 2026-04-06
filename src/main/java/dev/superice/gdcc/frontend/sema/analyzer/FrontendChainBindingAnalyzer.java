@@ -118,7 +118,7 @@ public class FrontendChainBindingAnalyzer {
         private final @NotNull IdentityHashMap<Node, Boolean> reportedDeferredRoots = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Node, Boolean> reportedUnsupportedRoots = new IdentityHashMap<>();
         private final @NotNull FrontendChainReductionFacade chainReduction;
-        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
+        private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
@@ -151,7 +151,7 @@ public class FrontendChainBindingAnalyzer {
                     classRegistry,
                     this::resolveExpressionType
             );
-            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+            assignmentSemanticContext = FrontendAssignmentSemanticSupport.createContext(
                     analysisData.symbolBindings(),
                     scopesByAst,
                     analysisData.moduleSkeleton(),
@@ -613,7 +613,8 @@ public class FrontendChainBindingAnalyzer {
                         )
                 );
                 case AssignmentExpression assignmentExpression -> bridgeExpressionResolution(
-                        assignmentSemanticSupport.resolveAssignmentExpressionType(
+                        FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                                assignmentSemanticContext,
                                 assignmentExpression,
                                 FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
                                 this::resolveExpressionDependencyType,

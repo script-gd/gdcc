@@ -262,22 +262,29 @@ public class FrontendTypeCheckAnalyzer {
             @NotNull Path sourcePath,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager,
-            @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport,
+            @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext,
             @NotNull TypeCheckVisitContext context
     ) {
         public TypeCheckAccess {
             Objects.requireNonNull(sourcePath, "sourcePath must not be null");
             Objects.requireNonNull(analysisData, "analysisData must not be null");
             Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
-            Objects.requireNonNull(assignmentSemanticSupport, "assignmentSemanticSupport must not be null");
+            Objects.requireNonNull(assignmentSemanticContext, "assignmentSemanticContext must not be null");
             Objects.requireNonNull(context, "context must not be null");
         }
 
+        /// Type-check intentionally delegates the full typed-boundary matrix to the shared helper.
+        /// See `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md` for the single
+        /// source of truth; do not reintroduce local `Variant`/`Nil`/scalar special cases here.
         public boolean checkAssignmentCompatible(
                 @NotNull GdType slotType,
                 @NotNull GdType valueType
         ) {
-            return assignmentSemanticSupport.checkAssignmentCompatible(slotType, valueType);
+            return FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                    assignmentSemanticContext,
+                    slotType,
+                    valueType
+            );
         }
     }
 
@@ -483,7 +490,7 @@ public class FrontendTypeCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
-        private final @NotNull FrontendAssignmentSemanticSupport assignmentSemanticSupport;
+        private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private int supportedExecutableBlockDepth;
         private @Nullable ClassDef currentClass;
         private @Nullable GdType currentCallableReturnSlot;
@@ -513,7 +520,7 @@ public class FrontendTypeCheckAnalyzer {
                     classRegistry,
                     this::resolvePublishedExpressionType
             );
-            assignmentSemanticSupport = new FrontendAssignmentSemanticSupport(
+            assignmentSemanticContext = FrontendAssignmentSemanticSupport.createContext(
                     analysisData.symbolBindings(),
                     scopesByAst,
                     analysisData.moduleSkeleton(),
@@ -852,7 +859,7 @@ public class FrontendTypeCheckAnalyzer {
                     sourcePath,
                     analysisData,
                     diagnosticManager,
-                    assignmentSemanticSupport,
+                    assignmentSemanticContext,
                     snapshotContext()
             );
         }

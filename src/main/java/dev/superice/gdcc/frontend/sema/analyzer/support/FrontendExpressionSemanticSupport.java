@@ -897,6 +897,10 @@ public final class FrontendExpressionSemanticSupport {
         return null;
     }
 
+    /// Fixed-argument call compatibility is another direct consumer of the typed-boundary matrix in
+    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`.
+    /// Call resolution must reuse the shared frontend boundary helper instead of carrying a
+    /// call-specific handwritten conversion table.
     private boolean matchesCallableArguments(
             @NotNull FunctionDef callable,
             @NotNull List<GdType> argumentTypes

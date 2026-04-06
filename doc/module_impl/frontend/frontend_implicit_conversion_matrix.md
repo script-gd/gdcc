@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（Godot 规则已梳理，GDCC 当前支持面已对齐到现有实现）
-- 更新时间：2026-04-04
+- 更新时间：2026-04-06
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/dev/superice/gdcc/frontend/**`
@@ -16,13 +16,27 @@
   - `frontend_rules.md`
   - `frontend_chain_binding_expr_type_implementation.md`
   - `frontend_type_check_analyzer_implementation.md`
-  - `frontend_lowering_(un)pack_plan.md`
+  - `frontend_lowering_cfg_pass_implementation.md`
   - `doc/gdcc_type_system.md`
 - 主要事实来源：
   - Godot `GDScriptAnalyzer::check_type_compatibility(...)`
   - Godot `Variant::can_convert_strict(...)`
   - `ClassRegistry.checkAssignable(...)`
   - `FrontendVariantBoundaryCompatibility`
+
+## 0. 维护合同
+
+- `frontend_implicit_conversion_matrix.md` 是 frontend typed-boundary implicit conversion 的唯一真源。
+- 任何会改变 frontend typed boundary 兼容性的实现、测试、诊断或 lowering materialization 行为，都必须先修改本文档，再修改代码与测试。
+- 其他 frontend 事实源文档不得重新维护一份 source/target conversion 清单；它们只能：
+  - 说明自己消费的是哪一类 boundary
+  - 引用本文档中的矩阵与维护合同
+- 代码注释同样不得私自扩写“当前支持哪些 implicit conversion”的平行规则表；关键入口只允许引用本文档，并说明自己在整条链路中的职责。
+- 若未来新增 `int -> float`、`String <-> StringName`、packed array widened conversion 等支持面，验收顺序固定为：
+  1. 更新本文档矩阵与摘要
+  2. 更新 shared helper / consumer 实现
+  3. 更新对应测试
+  4. 最后再更新依赖本文档的其他事实源文档中的引用性描述
 
 ---
 
@@ -290,13 +304,34 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`
 - `FrontendExpressionSemanticSupport.matchesCallableArguments(...)`
 - `FrontendSubscriptSemanticSupport.resolveSubscriptType(...)`
+- `FrontendTypeCheckAnalyzer`
+- `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
 
 ### 9.2 当前明确拒绝 widened conversion 的文档锚点
 
 - `frontend_rules.md`
 - `frontend_chain_binding_expr_type_implementation.md`
 - `frontend_type_check_analyzer_implementation.md`
-- `frontend_lowering_(un)pack_plan.md`
+- `frontend_lowering_cfg_pass_implementation.md`
+
+### 9.3 实现职责分层
+
+- `FrontendVariantBoundaryCompatibility`
+  - shared semantic helper
+  - 定义 frontend ordinary typed boundary 的 compatibility decision
+  - 其支持面必须与本文矩阵保持一一对应
+- `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)`
+  - assignment / initializer / return 的 public semantic gate
+  - 不得重新定义矩阵，只能委托 shared helper
+- `FrontendExpressionSemanticSupport.matchesCallableArguments(...)`
+  - call-site fixed argument compatibility gate
+  - 只能复用 shared helper，不得在 call path 单独放宽 conversion
+- `FrontendTypeCheckAnalyzer`
+  - 只消费已发布稳定类型事实，并通过 shared helper 执行 typed gate
+  - 不得在 type-check phase 私自添加平行 conversion 规则
+- `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
+  - 只负责把“已经被 shared semantic helper 允许”的 ordinary boundary 物化成显式 LIR
+  - 不得独立决定新的 compatibility 规则；materialization 分支必须与本文矩阵和 shared helper 保持同构
 
 ---
 

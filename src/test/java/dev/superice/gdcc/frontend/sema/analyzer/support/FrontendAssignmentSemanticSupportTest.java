@@ -79,7 +79,8 @@ class FrontendAssignmentSemanticSupportTest {
         );
 
         for (var assignment : assignments) {
-            var result = support.resolveAssignmentExpressionType(
+            var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                    support,
                     assignment,
                     FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                     publishedResolver,
@@ -140,7 +141,8 @@ class FrontendAssignmentSemanticSupportTest {
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(4)).expression()
         );
 
-        var signalResult = support.resolveAssignmentExpressionType(
+        var signalResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 signalAssignment,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -150,7 +152,8 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, signalResult.expressionType().status());
         assertTrue(signalResult.expressionType().detailReason().contains("Signal"));
 
-        var typeMetaResult = support.resolveAssignmentExpressionType(
+        var typeMetaResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 typeMetaAssignment,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -160,7 +163,8 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, typeMetaResult.expressionType().status());
         assertTrue(typeMetaResult.expressionType().detailReason().contains("Type-meta"));
 
-        var callableResult = support.resolveAssignmentExpressionType(
+        var callableResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 callableAssignment,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -170,7 +174,8 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, callableResult.expressionType().status());
         assertTrue(callableResult.expressionType().detailReason().contains("cannot be assigned"));
 
-        var assignabilityResult = support.resolveAssignmentExpressionType(
+        var assignabilityResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignabilityFailure,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -180,7 +185,8 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, assignabilityResult.expressionType().status());
         assertTrue(assignabilityResult.expressionType().detailReason().contains("not assignable"));
 
-        var valueRequiredResult = support.resolveAssignmentExpressionType(
+        var valueRequiredResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 valueRequiredAssignment,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
                 publishedResolver,
@@ -218,7 +224,8 @@ class FrontendAssignmentSemanticSupportTest {
         var assignments = findNodes(pingFunction, AssignmentExpression.class, _ -> true);
 
         for (var successfulAssignment : assignments.subList(0, 4)) {
-            var result = support.resolveAssignmentExpressionType(
+            var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                    support,
                     successfulAssignment,
                     FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                     publishedResolver,
@@ -228,7 +235,8 @@ class FrontendAssignmentSemanticSupportTest {
             assertEquals(GdVoidType.VOID, result.expressionType().publishedType());
         }
 
-        var assignabilityFailure = support.resolveAssignmentExpressionType(
+        var assignabilityFailure = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(4),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -239,7 +247,8 @@ class FrontendAssignmentSemanticSupportTest {
         assertTrue(assignabilityFailure.expressionType().detailReason().contains("not assignable"));
         assertTrue(assignabilityFailure.expressionType().detailReason().contains("Array[int]"));
 
-        var valueRequiredResult = support.resolveAssignmentExpressionType(
+        var valueRequiredResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.getFirst(),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
                 publishedResolver,
@@ -275,7 +284,8 @@ class FrontendAssignmentSemanticSupportTest {
                 compoundAssignment.range()
         );
 
-        var result = support.resolveAssignmentExpressionType(
+        var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 syntheticUnknownOperator,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -314,13 +324,15 @@ class FrontendAssignmentSemanticSupportTest {
                 assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
         );
 
-        var bareResult = support.resolveAssignmentExpressionType(
+        var bareResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 bareAssignment,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var attributeResult = support.resolveAssignmentExpressionType(
+        var attributeResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 attributeAssignment,
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -353,19 +365,23 @@ class FrontendAssignmentSemanticSupportTest {
                 false
         );
 
-        assertTrue(support.checkAssignmentCompatible(
+        assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
                 GdVariantType.VARIANT,
                 GdIntType.INT
         ));
-        assertTrue(support.checkAssignmentCompatible(
+        assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
                 GdIntType.INT,
                 GdVariantType.VARIANT
         ));
-        assertTrue(support.checkAssignmentCompatible(
+        assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
                 GdObjectType.OBJECT,
                 GdNilType.NIL
         ));
-        assertTrue(!support.checkAssignmentCompatible(
+        assertTrue(!FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
                 GdFloatType.FLOAT,
                 GdIntType.INT
         ));
@@ -397,31 +413,36 @@ class FrontendAssignmentSemanticSupportTest {
         var publishedResolver = publishedExpressionResolver(analyzed);
         var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
 
-        var localVariantResult = support.resolveAssignmentExpressionType(
+        var localVariantResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(0),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var bareVariantPropertyResult = support.resolveAssignmentExpressionType(
+        var bareVariantPropertyResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(1),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var attributeVariantPropertyResult = support.resolveAssignmentExpressionType(
+        var attributeVariantPropertyResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(2),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var dynamicTargetResult = support.resolveAssignmentExpressionType(
+        var dynamicTargetResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(3),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var strictImplicitConversionFailure = support.resolveAssignmentExpressionType(
+        var strictImplicitConversionFailure = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(4),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -464,19 +485,22 @@ class FrontendAssignmentSemanticSupportTest {
         var publishedResolver = publishedExpressionResolver(analyzed);
         var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
 
-        var exactVariantSource = support.resolveAssignmentExpressionType(
+        var exactVariantSource = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(0),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var dynamicVariantSource = support.resolveAssignmentExpressionType(
+        var dynamicVariantSource = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(1),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var strictMismatch = support.resolveAssignmentExpressionType(
+        var strictMismatch = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(2),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -516,13 +540,15 @@ class FrontendAssignmentSemanticSupportTest {
         var publishedResolver = publishedExpressionResolver(analyzed);
         var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
 
-        var objectAssignment = support.resolveAssignmentExpressionType(
+        var objectAssignment = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(0),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
         );
-        var scalarMismatch = support.resolveAssignmentExpressionType(
+        var scalarMismatch = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
                 assignments.get(1),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
@@ -537,7 +563,7 @@ class FrontendAssignmentSemanticSupportTest {
         assertTrue(scalarMismatch.expressionType().detailReason().contains("int"));
     }
 
-    private @NotNull FrontendAssignmentSemanticSupport createSupport(
+    private @NotNull FrontendAssignmentSemanticSupport.Context createSupport(
             @NotNull AnalyzedScript analyzed,
             @NotNull ResolveRestriction restriction,
             boolean staticContext
@@ -553,7 +579,7 @@ class FrontendAssignmentSemanticSupportTest {
                         publishedExpressionResolver(analyzed).resolve(expression, finalizeWindow)
                 )
         );
-        return new FrontendAssignmentSemanticSupport(
+        return FrontendAssignmentSemanticSupport.createContext(
                 analyzed.analysisData().symbolBindings(),
                 analyzed.analysisData().scopesByAst(),
                 analyzed.analysisData().moduleSkeleton(),

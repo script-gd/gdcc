@@ -405,10 +405,9 @@ writable / compatibility 规则为：
 - bare identifier property 与 attribute-property 必须共用同一 property writable 解释
 - `ScopeValue.writable` 只表达 bare identifier direct-write contract
 - `PropertyDefAccessSupport` 是唯一允许解释 engine/builtin property writable 元数据的 shared helper
-- `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只负责 concrete slot compatibility
-- exact `Variant` slot 允许任意来源类型
+- `FrontendAssignmentSemanticSupport.checkAssignmentCompatible(...)` 只负责 concrete slot compatibility，具体 conversion 规则以 `frontend_implicit_conversion_matrix.md` 为唯一真源
 - `DYNAMIC` target 的 runtime-open 语义只允许保留在 assignment helper 内部
-- 其余 compatibility 继续回退 `ClassRegistry.checkAssignable(...)`
+- 其他 consumer 不得在 assignment path 单独补写一份 `Variant` / `Nil` / scalar family conversion 规则
 
 当前仍需明确保留的一条边界是：
 

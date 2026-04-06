@@ -294,11 +294,10 @@ public final class FrontendBodyLoweringSession {
 
     /// Materializes one already-approved ordinary frontend typed boundary into an explicit LIR slot.
     ///
-    /// This helper deliberately stays narrower than condition normalization:
-    /// - concrete -> `Variant` inserts `PackVariantInsn`
-    /// - stable `Variant` -> concrete inserts `UnpackVariantInsn`
-    /// - `Nil` -> object inserts an object-typed `LiteralNullInsn`
-    /// - all remaining pairs stay direct because semantic analysis already decided legality
+    /// The authoritative boundary matrix lives in
+    /// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`; semantic legality is owned
+    /// by `FrontendVariantBoundaryCompatibility`, and this helper must stay isomorphic to that
+    /// decision table instead of inventing extra lowering-only conversions.
     ///
     /// Later assignment/call/return processors should route all ordinary boundary writes through
     /// this helper instead of duplicating ad-hoc boundary branches.

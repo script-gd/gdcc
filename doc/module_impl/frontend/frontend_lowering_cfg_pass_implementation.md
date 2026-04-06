@@ -454,6 +454,7 @@ ordinary `Variant` boundary materialization 现在已经冻结为 executable-bod
 
 - condition 只在 `FrontendCfgNodeInsnLoweringProcessors` 中做 bool-only branch normalization
 - local / assignment / call / return 统一走 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
+- `materializeFrontendBoundaryValue(...)` 只负责物化 `frontend_implicit_conversion_matrix.md` 已允许、且已由 shared semantic helper 放行的 ordinary boundary；不得在 lowering 侧独立新增 conversion
 
 ### 8.2 Constructor materialization 合同
 
