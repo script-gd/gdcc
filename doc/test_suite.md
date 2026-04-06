@@ -121,9 +121,16 @@ To add a new end-to-end unit case:
 
 1. Create a source script under `src/test/test_suite/unit_test/script`.
 2. Create a validation script under `src/test/test_suite/unit_test/validation` using the same relative path.
-3. Keep the source script within currently supported frontend behavior.
-4. Make the validation script print `__UNIT_TEST_PASS_MARKER__` only on success.
-5. Use `push_error(...)` for failure paths so Godot output remains diagnosable.
+3. Make the compiled script class inherit from `Node`.
+4. Keep the source script within currently supported frontend behavior.
+5. Make the validation script print `__UNIT_TEST_PASS_MARKER__` only on success.
+6. Use `push_error(...)` for failure paths so Godot output remains diagnosable.
+
+Why `extends Node` is mandatory:
+
+- `GdScriptUnitTestCompileRunner` installs the compiled runtime class as a scene node through `GodotGdextensionTestRunner.SceneNodeSpec`.
+- If the compiled class does not inherit from `Node`, Godot cannot instantiate it into the scene tree and will create a placeholder node instead.
+- Once that happens, the validation script will observe a generic placeholder `Node` and all target-method calls become invalid, which hides the real behavior under test.
 
 Recommended conventions:
 
