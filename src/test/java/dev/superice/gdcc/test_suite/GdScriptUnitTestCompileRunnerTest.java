@@ -13,11 +13,18 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> EXPECTED_SCRIPT_PATHS = List.of(
+            "control_flow/if_elif_truthiness.gd",
+            "control_flow/recursive_factorial.gd",
             "initializer/local/arithmetic_chain.gd",
             "initializer/local/constructors_and_constants.gd",
             "initializer/local/object_and_engine_constructor.gd",
             "initializer/local/variant_boundaries.gd",
-            "smoke/basic_arithmetic.gd"
+            "initializer/property/object_and_scalar.gd",
+            "member/builtin_property_access.gd",
+            "member/compound_assignment.gd",
+            "runtime/dynamic_call.gd",
+            "smoke/basic_arithmetic.gd",
+            "subscript/array_roundtrip.gd"
     );
 
     @TestFactory
