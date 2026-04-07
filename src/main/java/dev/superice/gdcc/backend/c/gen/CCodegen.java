@@ -235,11 +235,43 @@ public class CCodegen implements Codegen {
             @NotNull LirClassDef classDef,
             @NotNull LirPropertyDef propertyDef
     ) {
+        var function = resolvePropertyInitFunction(classDef, propertyDef);
+        validatePropertyInitFunctionSignature(classDef, propertyDef, function);
+        if (function.getBasicBlockCount() == 0 || function.getEntryBlockId().isEmpty()) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references shell-only init function '"
+                            + function.getName()
+                            + "'; property init must be fully lowered before backend codegen"
+            );
+        }
+        if (!function.hasBasicBlock(function.getEntryBlockId())) {
+            throw new IllegalStateException(
+                    "Property '"
+                            + classDef.getName()
+                            + "."
+                            + propertyDef.getName()
+                            + "' references init function '"
+                            + function.getName()
+                            + "' with invalid entry block ID: "
+                            + function.getEntryBlockId()
+            );
+        }
+    }
+
+    private @NotNull LirFunctionDef resolvePropertyInitFunction(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
         var initFuncName = propertyDef.getInitFunc();
         if (initFuncName == null) {
-            return;
+            throw new IllegalStateException(
+                    "Property '" + classDef.getName() + "." + propertyDef.getName() + "' does not define initFunc"
+            );
         }
-
         var matches = classDef.getFunctions().stream()
                 .filter(function -> function.getName().equals(initFuncName))
                 .toList();
@@ -266,32 +298,7 @@ public class CCodegen implements Codegen {
                             + matches.size()
             );
         }
-
-        var function = matches.getFirst();
-        validatePropertyInitFunctionSignature(classDef, propertyDef, function);
-        if (function.getBasicBlockCount() == 0 || function.getEntryBlockId().isEmpty()) {
-            throw new IllegalStateException(
-                    "Property '"
-                            + classDef.getName()
-                            + "."
-                            + propertyDef.getName()
-                            + "' references shell-only init function '"
-                            + function.getName()
-                            + "'; property init must be fully lowered before backend codegen"
-            );
-        }
-        if (!function.hasBasicBlock(function.getEntryBlockId())) {
-            throw new IllegalStateException(
-                    "Property '"
-                            + classDef.getName()
-                            + "."
-                            + propertyDef.getName()
-                            + "' references init function '"
-                            + function.getName()
-                            + "' with invalid entry block ID: "
-                            + function.getEntryBlockId()
-            );
-        }
+        return matches.getFirst();
     }
 
     /// Property-init helpers are always internal single-return helpers with the owning-class `self`
@@ -420,6 +427,29 @@ public class CCodegen implements Codegen {
                 insnGen.generateCCode(bodyBuilder);
             }
         }
+        return bodyBuilder.build();
+    }
+
+    /// Renders the constructor-time property initializer apply body.
+    /// The init helper still only produces a value; this method owns the direct backing-field first-write
+    /// route so property initialization keeps unified slot-write semantics without becoming a setter call.
+    public @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
+                                                         @NotNull LirPropertyDef property) {
+        if (ctx == null || module == null) {
+            throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating property init apply code.");
+        }
+        var initFunction = resolvePropertyInitFunction(clazz, property);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, initFunction);
+        bodyBuilder.applyPropertyInitializerFirstWrite(
+                "self->" + property.getName(),
+                property.getType(),
+                clazz.getName() + "_" + initFunction.getName() + "(self)",
+                initFunction.getReturnType(),
+                initFunction.getReturnType() instanceof GdObjectType objectType
+                        ? (objectType.checkGdccType(ctx.classRegistry()) ? CBodyBuilder.PtrKind.GDCC_PTR : CBodyBuilder.PtrKind.GODOT_PTR)
+                        : CBodyBuilder.PtrKind.NON_OBJECT,
+                CBodyBuilder.OwnershipKind.OWNED
+        );
         return bodyBuilder.build();
     }
 

@@ -141,6 +141,10 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 var ready_value: int = (1 + 2) * (3 + 4)
                 var ready_angle: float = deg_to_rad(180.0)
                 var ready_flag: bool = true
+                var ready_node: Node = Node.new()
+                var ready_obj: Object = Node.new()
+                var ready_ref: RefCounted = RefCounted.new()
+                var ready_worker: Worker = Worker.new()
                 
                 func read_value() -> int:
                     return ready_value
@@ -150,11 +154,42 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 
                 func read_flag() -> bool:
                     return ready_flag
+                
+                func read_node_class() -> String:
+                    return ready_node.get_class()
+                
+                func read_object_class() -> String:
+                    return ready_obj.get_class()
+                
+                func read_ref_count() -> int:
+                    return ready_ref.get_reference_count()
+                
+                func read_worker_value() -> int:
+                    return ready_worker.read()
+                
+                func read_worker_ref_count() -> int:
+                    return ready_worker.get_reference_count()
+                
+                func read_worker_runtime_class() -> String:
+                    return ready_worker.get_class()
+                """;
+        var workerSource = """
+                class_name Worker
+                extends RefCounted
+                
+                func read() -> int:
+                    return 7
                 """;
         var module = parseModule(
-                tempDir.resolve("property_init_smoke.gd"),
-                source,
-                Map.of("PropertyInitSmoke", "RuntimePropertyInitSmoke")
+                "frontend_property_init_runtime",
+                List.of(
+                        new SourceFileSpec(tempDir.resolve("property_init_smoke.gd"), source),
+                        new SourceFileSpec(tempDir.resolve("worker.gd"), workerSource)
+                ),
+                Map.of(
+                        "PropertyInitSmoke", "RuntimePropertyInitSmoke",
+                        "Worker", "RuntimePropertyInitWorker"
+                )
         );
         var diagnostics = new DiagnosticManager();
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
@@ -162,11 +197,19 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
 
         assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
-        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals(2, lowered.getClassDefs().size());
 
-        var loweredClass = lowered.getClassDefs().getFirst();
+        var loweredClass = lowered.getClassDefs().stream()
+                .filter(classDef -> classDef.getName().equals("RuntimePropertyInitSmoke"))
+                .findFirst()
+                .orElseThrow();
+        var loweredWorkerClass = lowered.getClassDefs().stream()
+                .filter(classDef -> classDef.getName().equals("RuntimePropertyInitWorker"))
+                .findFirst()
+                .orElseThrow();
         assertEquals("RuntimePropertyInitSmoke", loweredClass.getName());
-        assertEquals(3, loweredClass.getProperties().size());
+        assertEquals("RuntimePropertyInitWorker", loweredWorkerClass.getName());
+        assertEquals(7, loweredClass.getProperties().size());
         assertTrue(
                 loweredClass.getProperties().stream()
                         .allMatch(property -> property.getInitFunc() != null && !property.getInitFunc().isBlank())
@@ -212,6 +255,22 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 entrySource.contains("self->ready_flag = RuntimePropertyInitSmoke__field_init_ready_flag(self);"),
                 entrySource
         );
+        assertTrue(
+                entrySource.contains("self->ready_node = RuntimePropertyInitSmoke__field_init_ready_node(self);"),
+                entrySource
+        );
+        assertTrue(
+                entrySource.contains("self->ready_obj = RuntimePropertyInitSmoke__field_init_ready_obj(self);"),
+                entrySource
+        );
+        assertTrue(
+                entrySource.contains("self->ready_ref = RuntimePropertyInitSmoke__field_init_ready_ref(self);"),
+                entrySource
+        );
+        assertTrue(
+                entrySource.contains("self->ready_worker = RuntimePropertyInitSmoke__field_init_ready_worker(self);"),
+                entrySource
+        );
         assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), entrySource);
         assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_angle\")"), entrySource);
         assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_flag\")"), entrySource);
@@ -246,6 +305,10 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 () -> "Godot output should confirm property initializer values.\nOutput:\n" + combinedOutput
         );
         assertTrue(
+                combinedOutput.contains("frontend property init object runtime check passed."),
+                () -> "Godot output should confirm object-valued property initializer values.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
                 combinedOutput.contains("frontend property init runtime class check passed."),
                 () -> "Godot output should confirm mapped runtime class name.\nOutput:\n" + combinedOutput
         );
@@ -256,6 +319,10 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertFalse(
                 combinedOutput.contains("frontend property init runtime class check failed."),
                 () -> "Mapped runtime class-name check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend property init object runtime check failed."),
+                () -> "Object-valued property initializer runtime check should not fail.\nOutput:\n" + combinedOutput
         );
     }
 
@@ -880,6 +947,17 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend property init runtime check passed.")
                     else:
                         push_error("frontend property init runtime check failed.")
+                
+                    var node_class = String(target.call("read_node_class"))
+                    var object_class = String(target.call("read_object_class"))
+                    var ref_count = int(target.call("read_ref_count"))
+                    var worker_value = int(target.call("read_worker_value"))
+                    var worker_ref_count = int(target.call("read_worker_ref_count"))
+                    var worker_runtime_class = String(target.call("read_worker_runtime_class"))
+                    if node_class == "Node" and object_class == "Node" and ref_count >= 1 and worker_value == 7 and worker_ref_count >= 1 and worker_runtime_class == "RuntimePropertyInitWorker":
+                        print("frontend property init object runtime check passed.")
+                    else:
+                        push_error("frontend property init object runtime check failed.")
                 
                     var runtime_class = String(target.get_class())
                     if runtime_class == "RuntimePropertyInitSmoke" and target.is_class("RuntimePropertyInitSmoke") and not target.is_class("PropertyInitSmoke"):

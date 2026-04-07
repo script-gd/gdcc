@@ -35,10 +35,11 @@
   1. 满足条件时 destroy old（`destroyOldValue && !__prepare__ && type.isDestroyable()`）
   2. 赋值
 - `markTargetInitialized(...)` 与 temp 生命周期仍由调用方控制（未内聚到槽位写入 helper）。
-- constructor-time property initializer apply 当前已先从模板裸直赋值中收口到专用 direct backing-field helper：
+- constructor-time property initializer apply 当前通过 `CCodegen#generatePropertyInitApplyBody(...)` 调用 direct backing-field helper：
   - `${Class}_class_apply_property_init_<property>(self)`
   - 该 helper 明确不是 setter route
-  - object lifecycle fully-unified write semantics 仍在后续修复计划中继续接通
+  - object-valued apply 通过 `applyPropertyInitializerFirstWrite(...)` 复用统一 ptr conversion / ownership consume 语义
+  - constructor-time first write 仍不释放旧字段值
 
 ### 2.2 所有权与值来源模型
 
@@ -105,6 +106,7 @@
 
 - 在 `__prepare__` 顶部声明 `_return_val`；对象返回类型初始化为 `NULL`。
 - 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）。
+- 当返回值来自本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
 - 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）。
 
 ## 5. TempVar 与首写语义
@@ -142,7 +144,7 @@
 ### 7.2 FTL 与 Java 路径演进偏差风险
 
 - 模板层（`entry.c.ftl`）仍保留部分生命周期代码。
-- property initializer constructor-time apply 已先收口为单一 apply helper，降低了 class constructor 继续内联字段写入的漂移风险。
+- property initializer constructor-time apply 已通过 Java 侧统一 body generation 收口为单一 apply helper，降低了 class constructor 或模板层继续内联字段写入的漂移风险。
 - 后续若 Java 语义继续收敛，需同步审计模板逻辑，避免双轨语义漂移。
 
 ### 7.3 helper 宏可移植性

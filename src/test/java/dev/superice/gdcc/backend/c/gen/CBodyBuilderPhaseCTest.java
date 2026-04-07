@@ -13,6 +13,7 @@ import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.NopInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
@@ -587,8 +588,8 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("Returning borrowed RefCounted outside finally should write return slot with own")
-        void testReturnBorrowedObjectOutsideFinallyUsesSlotSemantics() {
+        @DisplayName("Returning owning local RefCounted outside finally should move into return slot without extra own")
+        void testReturnLocalObjectOutsideFinallyMovesIntoReturnSlot() {
             var objectBuilder = createBuilderWithReturnType(new GdObjectType("RefCounted"));
             objectBuilder.beginBasicBlock("__prepare__");
             var objVar = new LirVariable("obj", new GdObjectType("RefCounted"), objectBuilder.func());
@@ -599,7 +600,8 @@ public class CBodyBuilderPhaseCTest {
             assertTrue(result.contains("godot_RefCounted* _return_val = NULL;"), "Prepare block should init return slot");
             assertTrue(result.contains("release_object(__gdcc_tmp_old_obj_0);"), "Writing return slot should release captured old value");
             assertTrue(result.contains("_return_val = $obj;"), "Should write returned object into slot");
-            assertTrue(result.contains("own_object(_return_val);"), "Borrowed object source should be retained for return slot");
+            assertTrue(result.contains("$obj = NULL;"), "Moved local object should be cleared so __finally__ does not release it again");
+            assertFalse(result.contains("own_object(_return_val);"), "Owning local object should move into return slot without extra own");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
         }
 
@@ -621,6 +623,22 @@ public class CBodyBuilderPhaseCTest {
             assertTrue(result.contains("_return_val = create_object();"), "Should assign owned return expression");
             assertFalse(result.contains("own_object(_return_val);"), "Owned return value must not be owned again");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
+        }
+
+        @Test
+        @DisplayName("Returning borrowed object parameter outside finally should retain return slot and keep source untouched")
+        void testReturnBorrowedParameterOutsideFinallyUsesOwn() {
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("RefCounted"));
+            objectBuilder.func().addParameter(new LirParameterDef("obj", new GdObjectType("RefCounted"), null, objectBuilder.func()));
+            objectBuilder.beginBasicBlock("__prepare__");
+            var parameterVar = new LirVariable("obj", new GdObjectType("RefCounted"), objectBuilder.func());
+
+            objectBuilder.returnValue(objectBuilder.valueOfVar(parameterVar));
+
+            var result = objectBuilder.build();
+            assertTrue(result.contains("_return_val = $obj;"), "Borrowed parameter should still write into return slot");
+            assertTrue(result.contains("own_object(_return_val);"), "Borrowed parameter should be retained for the caller");
+            assertFalse(result.contains("$obj = NULL;"), "Borrowed parameter must not be cleared by move logic");
         }
 
         @Test
@@ -1288,6 +1306,69 @@ public class CBodyBuilderPhaseCTest {
             assertTrue(captureIndex < assignIndex, "Old capture should come before assignment");
             assertTrue(assignIndex < ownIndex, "Assignment should come before own");
             assertTrue(ownIndex < releaseOldIndex, "Release of captured old value should happen last");
+        }
+    }
+
+    @Nested
+    @DisplayName("Property Initializer First-Write Tests")
+    class PropertyInitializerFirstWriteTests {
+
+        @Test
+        @DisplayName("Object-valued property init first-write should convert GODOT_PTR and consume OWNED without own/release")
+        void testObjectPropertyInitFirstWriteConsumesOwnedReturn() {
+            builder.applyPropertyInitializerFirstWrite(
+                    "self->worker",
+                    new GdObjectType("MyGdccClass"),
+                    "godot_make_worker()",
+                    new GdObjectType("MyGdccClass"),
+                    CBodyBuilder.PtrKind.GODOT_PTR,
+                    CBodyBuilder.OwnershipKind.OWNED
+            );
+
+            var result = builder.build();
+            assertTrue(
+                    result.contains("self->worker = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_make_worker());"),
+                    "First-write should convert GODOT_PTR helper result before storing. Actual:\n" + result
+            );
+            assertFalse(result.contains("__gdcc_tmp_old_obj_"), "First-write should not capture an old field value. Actual:\n" + result);
+            assertFalse(result.contains("own_object("), "OWNED helper result should be consumed without extra own. Actual:\n" + result);
+            assertFalse(result.contains("release_object("), "First-write should not release an old field value. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("Borrowed object property init first-write should retain new field value without release-old flow")
+        void testBorrowedObjectPropertyInitFirstWriteOwnsWithoutReleaseOld() {
+            builder.applyPropertyInitializerFirstWrite(
+                    "self->node_ref",
+                    new GdObjectType("RefCounted"),
+                    "borrowed_ref()",
+                    new GdObjectType("RefCounted"),
+                    CBodyBuilder.PtrKind.GODOT_PTR,
+                    CBodyBuilder.OwnershipKind.BORROWED
+            );
+
+            var result = builder.build();
+            assertTrue(result.contains("self->node_ref = borrowed_ref();"), "Borrowed object result should still assign directly. Actual:\n" + result);
+            assertTrue(result.contains("own_object(self->node_ref);"), "Borrowed object result should be retained by the field. Actual:\n" + result);
+            assertFalse(result.contains("__gdcc_tmp_old_obj_"), "First-write should not capture old value even for borrowed rhs. Actual:\n" + result);
+            assertFalse(result.contains("release_object("), "First-write should not release old value. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("Destroyable non-object property init first-write should not destroy an old value")
+        void testDestroyableNonObjectPropertyInitFirstWriteSkipsDestroyOld() {
+            builder.applyPropertyInitializerFirstWrite(
+                    "self->label",
+                    GdStringType.STRING,
+                    "make_label()",
+                    GdStringType.STRING,
+                    CBodyBuilder.PtrKind.NON_OBJECT,
+                    CBodyBuilder.OwnershipKind.OWNED
+            );
+
+            var result = builder.build();
+            assertEquals("self->label = make_label();\n", result);
+            assertFalse(result.contains("godot_String_destroy"), "First-write should not destroy an old String field value. Actual:\n" + result);
         }
     }
 }

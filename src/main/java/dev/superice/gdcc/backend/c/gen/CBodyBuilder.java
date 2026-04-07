@@ -402,6 +402,40 @@ public final class CBodyBuilder {
         return assignVar(target, valueOfExpr(expr, type, ptrKind));
     }
 
+    /// Emits constructor-time property initializer application as a direct backing-field first write.
+    /// This route intentionally stays separate from setter dispatch and from ordinary overwrite stores:
+    /// - it never destroys/releases an old field value
+    /// - object writes still reuse the unified ptr-conversion and ownership-consume rules
+    /// - OWNED rhs is consumed directly; BORROWED rhs is retained by the field
+    public @NotNull CBodyBuilder applyPropertyInitializerFirstWrite(@NotNull String targetCode,
+                                                                    @NotNull GdType targetType,
+                                                                    @NotNull String rhsCode,
+                                                                    @NotNull GdType rhsType,
+                                                                    @NotNull PtrKind rhsPtrKind,
+                                                                    @NotNull OwnershipKind ownership) {
+        checkAssignable(rhsType, targetType);
+        if (targetType instanceof GdObjectType targetObjType) {
+            if (!(rhsType instanceof GdObjectType rhsObjType)) {
+                throw invalidInsn(
+                        "Property initializer first-write target '" + targetObjType.getTypeName()
+                                + "' requires object rhs, but got '" + rhsType.getTypeName() + "'"
+                );
+            }
+            emitObjectSlotWrite(
+                    targetCode,
+                    targetObjType,
+                    false,
+                    rhsCode,
+                    rhsPtrKind,
+                    rhsObjType,
+                    ownership
+            );
+            return this;
+        }
+        emitNonObjectSlotWrite(targetCode, targetType, false, rhsCode);
+        return this;
+    }
+
     /// Assigns a global enum constant to a target variable.
     public @NotNull CBodyBuilder assignGlobalConst(@NotNull TargetRef target,
                                                    @NotNull String enumName,
@@ -596,6 +630,7 @@ public final class CBodyBuilder {
             throw invalidInsn("Cannot return a value from void function");
         }
         checkAssignable(value.type(), returnType);
+        var movedReturnSource = resolveMovedObjectReturnSource(value, returnType);
 
         var returnResult = prepareReturnValue(value);
         emitTempDecls(returnResult.temps());
@@ -611,8 +646,13 @@ public final class CBodyBuilder {
                         returnCode,
                         value.ptrKind(),
                         value.type() instanceof GdObjectType objectType ? objectType : null,
-                        value.ownership()
+                        movedReturnSource != null ? OwnershipKind.OWNED : value.ownership()
                 );
+                if (movedReturnSource != null) {
+                    // Returning an owning local object slot transfers that ownership to `_return_val`.
+                    // Clearing the source slot prevents `__finally__` auto-destruction from releasing it again.
+                    out.append(movedReturnSource.generateCode()).append(" = NULL;\n");
+                }
             } else {
                 // Keep non-object return-slot write as a direct assignment.
                 // _return_val for non-object return types is not modeled as a regular managed slot:
@@ -640,6 +680,20 @@ public final class CBodyBuilder {
         emitTempDestroys(returnResult.temps());
         out.append("return ").append(retTemp.name()).append(";\n");
         return this;
+    }
+
+    private @Nullable VarValue resolveMovedObjectReturnSource(@NotNull ValueRef value, @NotNull GdType returnType) {
+        if (!(returnType instanceof GdObjectType)) {
+            return null;
+        }
+        if (!(value instanceof VarValue varValue)) {
+            return null;
+        }
+        var variable = varValue.variable();
+        if (variable.ref() || func.checkVariableParameter(variable.id())) {
+            return null;
+        }
+        return varValue;
     }
 
     private @NotNull RenderResult renderArgs(@NotNull String funcName, @NotNull List<ValueRef> args) {

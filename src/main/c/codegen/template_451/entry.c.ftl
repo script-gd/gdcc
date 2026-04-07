@@ -125,10 +125,10 @@ static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property
     // Constructor-time property initialization is a direct backing-field first write.
     // It must stay separate from setter dispatch so future custom accessors do not change
     // initializer semantics.
-    self->${property.name} = ${classDef.name}_${property.initFunc}(self);
+    ${gen.generatePropertyInitApplyBody(classDef, property)}
 }
-
 </#list>
+
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
     GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${helper.resolveNearestNativeAncestorName(classDef)}"));
     ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));

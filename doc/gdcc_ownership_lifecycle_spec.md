@@ -76,13 +76,18 @@ Implementation note:
 - Constructor-time property initializer apply is also a first-write route:
   - it writes the backing field directly
   - it must not be modeled as a property setter call
-  - later semantic expansion may refine how this route consumes object ownership, but it must stay distinct from ordinary overwrite store semantics
+  - object-valued apply still follows the unified slot-write core for ptr conversion and ownership consume
+  - it skips old-value release because constructor-time property apply is not an overwrite route
 
 ### 3.4 Return Rules
 
 - Object values returned to the caller are considered `OWNED`.
 - In non-`__finally__` paths: write to `_return_val`, then `goto __finally__`.
 - Writing `_return_val` follows the same slot write rules from 3.2.
+- Returning an owning local object slot moves that slot into `_return_val`:
+  - write `_return_val` with `OWNED` rhs semantics
+  - clear the source slot before entering `__finally__`
+  - this prevents local auto-destruction from releasing the published return object again
 - `_return_val` is outside the LIR variable table auto-destruction scope (it is published through return flow).
 
 ### 3.5 Discard Rules
