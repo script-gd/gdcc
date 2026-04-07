@@ -7,6 +7,7 @@ import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirModule;
+import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
@@ -568,6 +569,16 @@ public final class CGenHelper {
             throw new IllegalArgumentException("Type " + gdObjectType.getTypeName() + " is not a GDCC object type");
         }
         return gdObjectType.getTypeName() + "_object_ptr";
+    }
+
+    /// Render the dedicated constructor-time property-init apply helper name.
+    /// This stays in `CGenHelper` because it is pure generated-symbol naming, not a codegen-phase
+    /// control-flow concern.
+    public @NotNull String renderPropertyInitApplyHelperName(
+            @NotNull LirClassDef classDef,
+            @NotNull LirPropertyDef propertyDef
+    ) {
+        return classDef.getName() + "_class_apply_property_init_" + propertyDef.getName();
     }
 
     /// Resolve the nearest constructible native ancestor for a GDCC class.

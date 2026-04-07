@@ -120,6 +120,15 @@ static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExt
 
 // GdExtension Methods for each class
 <#list module.classDefs as classDef>
+<#list classDef.properties as property>
+static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
+    // Constructor-time property initialization is a direct backing-field first write.
+    // It must stay separate from setter dispatch so future custom accessors do not change
+    // initializer semantics.
+    self->${property.name} = ${classDef.name}_${property.initFunc}(self);
+}
+
+</#list>
 GDExtensionObjectPtr ${classDef.name}_class_create_instance(void* p_class_userdata, GDExtensionBool p_notify_postinitialize) {
     GDExtensionObjectPtr obj = godot_classdb_construct_object2(GD_STATIC_SN(u8"${helper.resolveNearestNativeAncestorName(classDef)}"));
     ${classDef.name}* self = godot_mem_alloc(sizeof(${classDef.name}));
@@ -148,7 +157,7 @@ void ${classDef.name}_class_constructor(${classDef.name}* self) {
         ${classDef.superName}_class_constructor(&self->_super);
     </#if>
     <#list classDef.properties as property>
-        self->${property.name} = ${classDef.name}_${property.initFunc}(self);
+        ${helper.renderPropertyInitApplyHelperName(classDef, property)}(self);
     </#list>
     <#list classDef.functions as function>
         <#if function.name == "_init" && !function.static && function.parameters?size == 1>

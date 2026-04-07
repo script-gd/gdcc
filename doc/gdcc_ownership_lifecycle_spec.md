@@ -73,6 +73,10 @@ Implementation note:
 
 - For first write to an uninitialized slot, skip step 1 (no old value to release).
 - Variable initialization in `__prepare__` is first-write semantics and must not clean old value.
+- Constructor-time property initializer apply is also a first-write route:
+  - it writes the backing field directly
+  - it must not be modeled as a property setter call
+  - later semantic expansion may refine how this route consumes object ownership, but it must stay distinct from ordinary overwrite store semantics
 
 ### 3.4 Return Rules
 
@@ -141,6 +145,7 @@ Interaction with `__prepare__` / `__finally__`:
 
 - Keep `__prepare__` / `__finally__` framework unchanged.
 - `_return_val` is still generated and managed by `CBodyBuilder`, and must not be moved into variable-table auto-destruction.
+- Property initializer lowering may materialize helper-produced values, but constructor-time application of those values to backing fields remains a separate backend-owned route.
 
 ### 4.3 Instruction Generators
 

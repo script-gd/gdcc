@@ -219,7 +219,14 @@ public class CCodegenTest {
         assertTrue(initFunc.hasBasicBlock("entry"));
         assertEquals("__prepare__", initFunc.getEntryBlockId());
         assertTrue(initFunc.hasBasicBlock("__prepare__"));
-        assertTrue(cCode.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), cCode);
+        assertTrue(
+                cCode.contains("static inline void GDWorkerNode_class_apply_property_init_ready_value(GDWorkerNode* self)"),
+                cCode
+        );
+        assertTrue(cCode.contains("GDWorkerNode_class_apply_property_init_ready_value(self);"), cCode);
+        var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
+        assertTrue(applyHelperBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), applyHelperBody);
+        assertFalse(applyHelperBody.contains("_field_setter_"), applyHelperBody);
         assertFalse(cCode.contains("GD_STATIC_SN(u8\"_field_init_ready_value\")"), cCode);
     }
 
@@ -255,7 +262,99 @@ public class CCodegenTest {
         assertTrue(cCode.contains("godot_int GDWorkerNode__field_init_ready_value("), cCode);
         assertTrue(cCode.contains("GDWorkerNode* $self"), cCode);
         assertTrue(cCode.contains("$0 = 7;"), cCode);
-        assertTrue(cCode.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), cCode);
+        assertTrue(cCode.contains("GDWorkerNode_class_apply_property_init_ready_value(self);"), cCode);
+        var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
+        assertTrue(applyHelperBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), applyHelperBody);
+        assertFalse(applyHelperBody.contains("_field_setter_"), applyHelperBody);
+    }
+
+    @Test
+    void generateUsesDedicatedDirectFieldApplyHelpersForObjectAndScalarPropertyInit() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        workerClass.addProperty(new LirPropertyDef("ready_value", GdIntType.INT));
+        workerClass.addProperty(new LirPropertyDef("ready_node", new GdObjectType("Node")));
+        var module = new LirModule("property_init_apply_helper_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+        var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
+
+        assertTrue(constructorBody.contains("GDWorkerNode_class_apply_property_init_ready_value(self);"), constructorBody);
+        assertTrue(constructorBody.contains("GDWorkerNode_class_apply_property_init_ready_node(self);"), constructorBody);
+
+        var intApplyBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
+        var objectApplyBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_node");
+        assertTrue(intApplyBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), intApplyBody);
+        assertTrue(objectApplyBody.contains("self->ready_node = GDWorkerNode__field_init_ready_node(self);"), objectApplyBody);
+        assertFalse(intApplyBody.contains("_field_setter_"), intApplyBody);
+        assertFalse(objectApplyBody.contains("_field_setter_"), objectApplyBody);
+        assertFalse(constructorBody.contains("self->ready_value ="), constructorBody);
+        assertFalse(constructorBody.contains("self->ready_node ="), constructorBody);
+    }
+
+    @Test
+    void generatePropertyInitApplyHelperDoesNotReuseExplicitSetterRoute() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        var property = new LirPropertyDef(
+                "ready_value",
+                GdIntType.INT,
+                false,
+                "_field_init_ready_value",
+                "_field_getter_ready_value",
+                "custom_ready_value_setter",
+                Map.of()
+        );
+        workerClass.addProperty(property);
+
+        var initFunction = new LirFunctionDef("_field_init_ready_value");
+        initFunction.setHidden(true);
+        initFunction.setReturnType(GdIntType.INT);
+        initFunction.addParameter(new LirParameterDef("self", new GdObjectType("GDWorkerNode"), null, initFunction));
+        var result = initFunction.createAndAddTmpVariable(GdIntType.INT);
+        var initEntry = new LirBasicBlock("entry");
+        initEntry.appendInstruction(new LiteralIntInsn(result.id(), 7));
+        initEntry.setTerminator(new ReturnInsn(result.id()));
+        initFunction.addBasicBlock(initEntry);
+        initFunction.setEntryBlockId("entry");
+        workerClass.addFunction(initFunction);
+
+        var setter = new LirFunctionDef("custom_ready_value_setter");
+        setter.setReturnType(GdVoidType.VOID);
+        setter.addParameter(new LirParameterDef("self", new GdObjectType("GDWorkerNode"), null, setter));
+        setter.addParameter(new LirParameterDef("value", GdIntType.INT, null, setter));
+        var setterEntry = new LirBasicBlock("entry");
+        setterEntry.setTerminator(new ReturnInsn(null));
+        setter.addBasicBlock(setterEntry);
+        setter.setEntryBlockId("entry");
+        workerClass.addFunction(setter);
+
+        var module = new LirModule("property_init_apply_helper_setter_boundary_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+        var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_value");
+        var constructorBody = resolveClassConstructorBody(cCode, "GDWorkerNode");
+
+        assertTrue(applyHelperBody.contains("self->ready_value = GDWorkerNode__field_init_ready_value(self);"), applyHelperBody);
+        assertFalse(applyHelperBody.contains("custom_ready_value_setter"), applyHelperBody);
+        assertFalse(constructorBody.contains("custom_ready_value_setter"), constructorBody);
+        assertTrue(cCode.contains("GD_STATIC_SN(u8\"custom_ready_value_setter\")"), cCode);
     }
 
     @Test
@@ -622,6 +721,28 @@ public class CCodegenTest {
         var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)return obj;\\s*}", Pattern.DOTALL);
         var matcher = pattern.matcher(cCode);
         assertTrue(matcher.find(), "Missing create_instance body for class " + className);
+        return matcher.group(1);
+    }
+
+    private static String resolveClassConstructorBody(String cCode, String className) {
+        var functionPrefix = "void\\s+" + Pattern.quote(className) + "_class_constructor";
+        var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)\\n}", Pattern.DOTALL);
+        var matcher = pattern.matcher(cCode);
+        assertTrue(matcher.find(), "Missing class_constructor body for class " + className);
+        return matcher.group(1);
+    }
+
+    private static String resolvePropertyInitApplyHelperBody(String cCode, String className, String propertyName) {
+        var functionPrefix = "static inline void\\s+"
+                + Pattern.quote(className)
+                + "_class_apply_property_init_"
+                + Pattern.quote(propertyName);
+        var pattern = Pattern.compile(functionPrefix + "\\([^)]*\\)\\s*\\{(.*?)\\n}", Pattern.DOTALL);
+        var matcher = pattern.matcher(cCode);
+        assertTrue(
+                matcher.find(),
+                "Missing property-init apply helper for " + className + "." + propertyName
+        );
         return matcher.group(1);
     }
 
