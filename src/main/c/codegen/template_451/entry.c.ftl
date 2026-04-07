@@ -122,9 +122,6 @@ static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExt
 <#list module.classDefs as classDef>
 <#list classDef.properties as property>
 static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
-    // Constructor-time property initialization is a direct backing-field first write.
-    // It must stay separate from setter dispatch so future custom accessors do not change
-    // initializer semantics.
     ${gen.generatePropertyInitApplyBody(classDef, property)}
 }
 </#list>
