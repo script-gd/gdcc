@@ -223,6 +223,78 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyBuildsBuiltinInstancePropertyReadsAsLoweringReadyMemberLoads() throws Exception {
+        var source = """
+                class_name CfgBuilderBuiltinPropertyRead
+                extends RefCounted
+                
+                func axis_x(vector: Vector3) -> float:
+                    return vector.x
+                
+                func constructed_y() -> float:
+                    return Vector3(1.0, 2.0, 3.0).y
+                """;
+        var axisAnalyzed = analyzeFunction(
+                "cfg_builder_builtin_property_read.gd",
+                source,
+                "axis_x",
+                Map.of("CfgBuilderBuiltinPropertyRead", "RuntimeCfgBuilderBuiltinPropertyRead")
+        );
+        var constructedAnalyzed = analyzeFunction(
+                "cfg_builder_builtin_property_read.gd",
+                source,
+                "constructed_y",
+                Map.of("CfgBuilderBuiltinPropertyRead", "RuntimeCfgBuilderBuiltinPropertyRead")
+        );
+
+        var axisBuild = new FrontendCfgGraphBuilder().buildExecutableBody(axisAnalyzed.function().body(), axisAnalyzed.analysisData());
+        var constructedBuild = new FrontendCfgGraphBuilder().buildExecutableBody(
+                constructedAnalyzed.function().body(),
+                constructedAnalyzed.analysisData()
+        );
+
+        var axisGraph = axisBuild.graph();
+        var constructedGraph = constructedBuild.graph();
+        var axisEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, axisGraph.requireNode("seq_0"));
+        var axisStop = assertInstanceOf(FrontendCfgGraph.StopNode.class, axisGraph.requireNode("stop_1"));
+        var constructedEntry = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, constructedGraph.requireNode("seq_0"));
+        var constructedStop = assertInstanceOf(FrontendCfgGraph.StopNode.class, constructedGraph.requireNode("stop_1"));
+
+        var axisReturn = assertInstanceOf(ReturnStatement.class, axisAnalyzed.function().body().statements().getFirst());
+        var axisExpression = assertInstanceOf(AttributeExpression.class, axisReturn.value());
+        var axisStep = assertInstanceOf(AttributePropertyStep.class, axisExpression.steps().getFirst());
+        var axisReceiver = assertInstanceOf(OpaqueExprValueItem.class, axisEntry.items().get(0));
+        var axisLoad = assertInstanceOf(MemberLoadItem.class, axisEntry.items().get(1));
+
+        var constructedReturn = assertInstanceOf(ReturnStatement.class, constructedAnalyzed.function().body().statements().getFirst());
+        var constructedExpression = assertInstanceOf(AttributeExpression.class, constructedReturn.value());
+        var constructorCall = assertInstanceOf(CallExpression.class, constructedExpression.base());
+        var yStep = assertInstanceOf(AttributePropertyStep.class, constructedExpression.steps().getFirst());
+        var constructedItems = constructedEntry.items();
+        var constructorCallItem = assertInstanceOf(CallItem.class, constructedItems.get(3));
+        var constructedLoad = assertInstanceOf(MemberLoadItem.class, constructedItems.get(4));
+
+        assertAll(
+                () -> assertFalse(axisAnalyzed.diagnostics().hasErrors()),
+                () -> assertFalse(constructedAnalyzed.diagnostics().hasErrors()),
+                () -> assertEquals(2, axisEntry.items().size()),
+                () -> assertEquals(axisExpression.base(), axisReceiver.expression()),
+                () -> assertEquals(axisStep, axisLoad.anchor()),
+                () -> assertEquals("x", axisLoad.memberName()),
+                () -> assertEquals(List.of(axisReceiver.resultValueId()), axisLoad.operandValueIds()),
+                () -> assertEquals(axisLoad.resultValueId(), axisStop.returnValueIdOrNull()),
+                () -> assertEquals(5, constructedItems.size()),
+                () -> assertEquals(constructorCall, constructorCallItem.anchor()),
+                () -> assertEquals("Vector3", constructorCallItem.callableName()),
+                () -> assertEquals(3, constructorCallItem.operandValueIds().size()),
+                () -> assertEquals(yStep, constructedLoad.anchor()),
+                () -> assertEquals("y", constructedLoad.memberName()),
+                () -> assertEquals(List.of(constructorCallItem.resultValueId()), constructedLoad.operandValueIds()),
+                () -> assertEquals(constructedLoad.resultValueId(), constructedStop.returnValueIdOrNull())
+        );
+    }
+
+    @Test
     void buildExecutableBodyKeepsDeclarationAndAssignmentCommitsExplicit() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_assignment_commit.gd",

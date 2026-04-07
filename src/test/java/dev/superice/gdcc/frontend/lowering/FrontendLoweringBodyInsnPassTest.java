@@ -1308,6 +1308,67 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersBuiltinInstancePropertyReadsIntoLoadPropertyInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_builtin_property_read.gd",
+                """
+                        class_name BodyInsnBuiltinPropertyRead
+                        extends RefCounted
+                        
+                        func axis_x(vector: Vector3) -> float:
+                            return vector.x
+                        
+                        func constructed_y() -> float:
+                            return Vector3(1.0, 2.0, 3.0).y
+                        """,
+                Map.of("BodyInsnBuiltinPropertyRead", "RuntimeBodyInsnBuiltinPropertyRead"),
+                true
+        );
+        var axisContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinPropertyRead",
+                "axis_x"
+        );
+        var constructedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBuiltinPropertyRead",
+                "constructed_y"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var axisInstructions = allInstructions(axisContext.targetFunction());
+        var axisLoad = requireOnlyInstruction(axisContext.targetFunction(), LoadPropertyInsn.class);
+        var axisReturn = requireOnlyReturnInsn(axisContext.targetFunction());
+
+        var constructedInstructions = allInstructions(constructedContext.targetFunction());
+        var constructedLoad = requireOnlyInstruction(constructedContext.targetFunction(), LoadPropertyInsn.class);
+        var constructedConstruct = requireOnlyInstruction(constructedContext.targetFunction(), ConstructBuiltinInsn.class);
+        var constructedReturn = requireOnlyReturnInsn(constructedContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(axisInstructions, LoadPropertyInsn.class)),
+                () -> assertEquals("x", axisLoad.propertyName()),
+                () -> assertEquals(axisLoad.resultId(), axisReturn.returnValueId()),
+                () -> assertEquals(0, countInstructions(axisInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(0, countInstructions(axisInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(axisInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(constructedInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(1, countInstructions(constructedInstructions, LoadPropertyInsn.class)),
+                () -> assertEquals(3, constructedConstruct.args().size()),
+                () -> assertEquals("y", constructedLoad.propertyName()),
+                () -> assertEquals(constructedConstruct.resultId(), constructedLoad.objectId()),
+                () -> assertEquals(constructedLoad.resultId(), constructedReturn.returnValueId()),
+                () -> assertEquals(0, countInstructions(constructedInstructions, CallMethodInsn.class)),
+                () -> assertEquals(0, countInstructions(constructedInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(constructedInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runKeepsGenericSubscriptInstructionsWhenOnlyVariantKeyKindIsKnown() throws Exception {
         var prepared = prepareContext(
                 "body_insn_subscript_variant_key.gd",

@@ -148,6 +148,13 @@ backend 侧其实已经具备 builtin property 读写能力：
 
 - 让 builtin property route 在 shared semantic、expression typing、compile gate、CFG builder 之间闭环
 
+当前状态：
+
+- 已完成：chain binding 现可对 `vector.x`、`Basis.IDENTITY.x` 这类 builtin property step 发布 `RESOLVED` member fact
+- 已完成：expr typing 现可对 `vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 发布稳定结果类型，并继续把 `vector.missing` 锚定为 `FAILED`
+- 已完成：compile-ready CFG build / body lowering regression tests 已覆盖 `return vector.x` 与 `return Vector3(...).y`
+- 已完成：实现注释与事实源文档已明确 builtin property access 走 ordinary property route，builtin keyed access 仍保持 unsupported
+
 实施建议：
 
 1. 依赖 Step 1 的 normalized metadata，让 `ScopePropertyResolver.resolveBuiltinProperty(...)` 直接复用统一 surface

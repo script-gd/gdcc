@@ -376,7 +376,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// Emits one property/static-member read from the published member-resolution result.
     ///
     /// Member receiver kind is already frozen by semantic analysis, so the processor only maps it
-    /// to the concrete load instruction family and never re-inspects the original chain.
+    /// to the concrete load instruction family and never re-inspects the original chain. Builtin
+    /// instance fields such as `vector.x` therefore lower through the same `LoadPropertyInsn`
+    /// contract as engine/GDCC ordinary property reads.
     private static final class FrontendMemberLoadInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<MemberLoadItem, Void> {
         @Override

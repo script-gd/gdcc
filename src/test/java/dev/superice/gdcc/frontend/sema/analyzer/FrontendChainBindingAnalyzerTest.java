@@ -1491,6 +1491,60 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesBuiltinInstancePropertyFactsAndKeepsMissingMemberAsFailure() throws Exception {
+        var analyzed = analyze(
+                "builtin_instance_property_routes.gd",
+                """
+                        class_name BuiltinInstancePropertyRoutes
+                        extends RefCounted
+                        
+                        func ping(vector: Vector3):
+                            vector.x
+                            Basis.IDENTITY.x
+                            vector.missing
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var vectorStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var basisStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var missingStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2));
+
+        var vectorX = analyzed.analysisData().resolvedMembers().get(
+                findNode(vectorStatement, AttributePropertyStep.class, step -> step.name().equals("x"))
+        );
+        assertNotNull(vectorX);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, vectorX.status());
+        assertEquals(FrontendBindingKind.PROPERTY, vectorX.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, vectorX.receiverKind());
+        assertNotNull(vectorX.resultType());
+        assertEquals("float", vectorX.resultType().getTypeName());
+
+        var basisX = analyzed.analysisData().resolvedMembers().get(
+                findNode(basisStatement, AttributePropertyStep.class, step -> step.name().equals("x"))
+        );
+        assertNotNull(basisX);
+        assertEquals(FrontendMemberResolutionStatus.RESOLVED, basisX.status());
+        assertEquals(FrontendBindingKind.PROPERTY, basisX.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, basisX.receiverKind());
+        assertNotNull(basisX.resultType());
+        assertEquals("Vector3", basisX.resultType().getTypeName());
+
+        var missingMember = analyzed.analysisData().resolvedMembers().get(
+                findNode(missingStatement, AttributePropertyStep.class, step -> step.name().equals("missing"))
+        );
+        assertNotNull(missingMember);
+        assertEquals(FrontendMemberResolutionStatus.FAILED, missingMember.status());
+        assertEquals(FrontendBindingKind.UNKNOWN, missingMember.bindingKind());
+        assertEquals(FrontendReceiverKind.INSTANCE, missingMember.receiverKind());
+        assertTrue(missingMember.detailReason().contains("missing"));
+        assertTrue(missingMember.detailReason().contains("Vector3"));
+
+        assertEquals(1, diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").size());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
     void analyzeFailsTypeMetaCallToInstanceMethod() throws Exception {
         var analyzed = analyze(
                 "failed_static_call.gd",

@@ -717,6 +717,62 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesBuiltinInstancePropertyTypesAndKeepsMissingMemberAsFailure() throws Exception {
+        var analyzed = analyze(
+                "expr_type_builtin_instance_properties.gd",
+                """
+                        class_name ExprTypeBuiltinInstanceProperties
+                        extends RefCounted
+                        
+                        func ping(vector: Vector3):
+                            vector.x
+                            Color(1.0, 0.5, 0.25, 1.0).r
+                            Basis.IDENTITY.x
+                            vector.missing
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var vectorStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var colorStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var basisStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(2));
+        var missingStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(3));
+
+        var vectorExpression = assertInstanceOf(AttributeExpression.class, vectorStatement.expression());
+        var colorExpression = assertInstanceOf(AttributeExpression.class, colorStatement.expression());
+        var basisExpression = assertInstanceOf(AttributeExpression.class, basisStatement.expression());
+        var missingExpression = assertInstanceOf(AttributeExpression.class, missingStatement.expression());
+
+        var vectorType = analyzed.analysisData().expressionTypes().get(vectorExpression);
+        assertNotNull(vectorType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, vectorType.status());
+        assertNotNull(vectorType.publishedType());
+        assertEquals("float", vectorType.publishedType().getTypeName());
+
+        var colorType = analyzed.analysisData().expressionTypes().get(colorExpression);
+        assertNotNull(colorType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, colorType.status());
+        assertNotNull(colorType.publishedType());
+        assertEquals("float", colorType.publishedType().getTypeName());
+
+        var basisType = analyzed.analysisData().expressionTypes().get(basisExpression);
+        assertNotNull(basisType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, basisType.status());
+        assertNotNull(basisType.publishedType());
+        assertEquals("Vector3", basisType.publishedType().getTypeName());
+
+        var missingType = analyzed.analysisData().expressionTypes().get(missingExpression);
+        assertNotNull(missingType);
+        assertEquals(FrontendExpressionTypeStatus.FAILED, missingType.status());
+        assertTrue(missingType.detailReason().contains("missing"));
+        assertTrue(missingType.detailReason().contains("Vector3"));
+
+        assertEquals(1, diagnosticsByCategory(analyzed, "sema.member_resolution").size());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_chain_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
     void analyzePublishesCallableTypesForBareCallableValuesAndMethodReferences() throws Exception {
         var analyzed = analyze(
                 "expr_type_callable_values.gd",

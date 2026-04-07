@@ -170,6 +170,12 @@
 - `FrontendReceiverKind`
 - owner / receiver type / return type / argument type snapshot / declaration metadata / detail reason
 
+当前与 builtin property 相关的稳定事实还包括：
+
+- builtin instance property access（例如 `vector.x`、`Color(...).r`、`Basis.IDENTITY.x`）已经属于 compile-ready shared semantic surface
+- 这类 route 继续走 ordinary attribute/member contract，chain binding 产出 `FrontendResolvedMember(status = RESOLVED)`，expr typing 直接桥接其 result type
+- builtin keyed access 仍与之严格区分，继续保持 unsupported；不得因为 builtin property 支持已经闭环，就把 `vector["x"]` 之类 route 静默并入同一条规则
+
 `resolvedCalls()` 的当前 AST key 合同同样冻结为：
 
 - `AttributeCallStep`

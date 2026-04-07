@@ -630,6 +630,11 @@ public final class FrontendChainReductionHelper {
         );
     }
 
+    /// Builtin instance member access stays on the ordinary property route.
+    ///
+    /// The metadata normalization layer already maps Godot builtin JSON `members` into the shared
+    /// property-like surface consumed by `ScopePropertyResolver`, so this helper must not add a
+    /// second schema fallback or silently widen the route into builtin keyed access.
     private static @NotNull StepTrace reduceBuiltinPropertyStep(
             int stepIndex,
             @NotNull AttributePropertyStep step,

@@ -478,6 +478,10 @@ CFG / body-lowering 合同：
   - static member load 产出 `MemberLoadItem(..., null, ...)`
   - static/constructor call 产出 `CallItem(..., null, ...)`
 - 因而 `Vector3.ZERO`、`Color.RED`、`ClassName.SOME_CONST` 以及它们后续继续链式访问的写法都属于当前 compile-ready surface
+- builtin instance property read 同样已经闭环为 compile-ready surface：
+  - `vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 在 CFG 中继续只是 ordinary `MemberLoadItem`
+  - body lowering 对其统一发出 `LoadPropertyInsn`
+  - 这条 contract 不会放宽 builtin keyed access；`vector["x"]` 仍不走这里
 - body lowering 依据已发布的 constructor result type 选择 LIR：
   - builtin/container constructor -> `ConstructBuiltinInsn`
   - object constructor -> `ConstructObjectInsn`
