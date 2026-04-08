@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中
+- 状态：计划维护中（Step 1 共享合同冻结 / 漂移面清理已完成并通过回归验证；shared writable-route support 与后续 lowering / backend 接通仍待继续推进）
 - 更新时间：2026-04-08
 - 本计划覆盖范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/cfg/**`
@@ -118,6 +118,12 @@
 - `FrontendSequenceItemInsnLoweringProcessors`
 - `FrontendAssignmentTargetInsnLoweringProcessors`
 
+### 当前状态（2026-04-08）
+
+- 已完成：Step 1 要求的事实源与实现注释已同步到当前代码库。
+- 已完成：dynamic call 不再被定义为永久 receiver direct-pass-through 路线；receiver side writable access-chain payload、`IndexStoreInsnGen` 的非真源地位、以及 `Packed*Array` 的 requires-writeback family 分类都已写入对应事实源。
+- 已完成：以 `FrontendCfgGraphTest`、`FrontendLoweringBodyInsnPassTest` 与 `FrontendCompileCheckAnalyzerTest` 作为 Step 1 的 happy/negative 回归锚点重新验证通过。
+
 ### 验收细则
 
 - happy path：
@@ -184,6 +190,7 @@
 - 扩展 `AssignmentItem` 与 `CallItem`，让它们可携带 writable access-chain payload
 - payload 至少冻结：
   - route anchor
+  - leaf value id
   - route operand value ids
   - explicit step descriptors
   - leaf kind
@@ -194,6 +201,128 @@
 - 对 assignment / compound assignment：
   - writable target chain 不再依赖“AST tail-step + targetOperandValueIds + lowering 时二次推断”
   - 后续应整体切向同一个 route payload
+
+### payload 最小不变量（必须可在 lowering support 层 fail-fast 校验）
+
+本步骤的目标不是“再发明一套 value 求值链”，而是冻结 *writeback/commit* 所需的 owner provenance，使 body lowering **不需要**回头解释 AST target/receiver 子树就能完成：
+
+1. leaf selection（必要时 materialize 临时 leaf 值）
+2. leaf 写入或 mutating-call 调用
+3. reverse commit（按 route 反向写回外层 owner）
+
+因此 payload 必须满足以下最小不变量，且 support 层必须把它们当成硬性协议校验：
+
+1. payload 表达的是 “writeback 路径”，而不是 “value 求值路径”。payload 只能引用 CFG 已发布的 value ids；不得承载“重新计算 receiver/base/key”的备用 AST 解释。
+2. `routeOperandValueIds` 的顺序必须是 source-order，且每个 step descriptor 都能无歧义声明它消耗哪些 operand ids（例如：property step 消耗 1 个 receiver；subscript step 消耗 receiver + 1 个 key）。
+3. step descriptor 的枚举集合必须足够闭合，至少包含：
+   - property member（最终写回走 `StorePropertyInsn` / `StoreStaticInsn` 或变体 `variant_set_named`）
+   - subscript indexed（最终写回走 `variant_set_indexed`）
+   - subscript named（最终写回走 `variant_set_named`）
+   - subscript keyed / generic（最终写回走 `variant_set_keyed` / `variant_set`）
+4. payload 的 `leafKind` 必须明确告诉 support：leaf 是“哪一层的值”，从而支持生成 “leafSlotId” 以及后续 commit plan。
+5. payload 不允许和现存的 `MemberLoadItem` / `SubscriptLoadItem` / `CallItem` 形成 “双账本”：
+   - CFG 负责发布 value 求值 item；
+   - payload 只负责发布 writeback route；
+   - 两者共享同一批 frozen value ids 作为连接点。
+
+### step descriptor 格式
+
+为降低“operand 错位、step 解释漂移、嵌套链无法组合”的风险，payload 的 step descriptor 采用固定格式，且 support 层按本节规则机械解析并校验。
+
+#### 术语约定
+
+- `leafValueId`：本次 leaf mutation 的直接承载值 id。
+  - 对 mutating call：它是 call receiver 的 leaf value。
+  - 对 assignment：它是最终 writable leaf 的“容器值”（例如 `self.position.x = 1` 中的 `self.position`，而不是 `x`）。
+- `routeOperandValueIds`：只用于描述 reverse commit 所需的“写回位置参数”，不得用于重新求值。
+- `steps`：描述“写回到外层”的 commit steps 列表。执行顺序固定为：从 `steps.getLast()` 向前逆序执行，逐层把当前 `writtenBackValue` 写回到外层 owner。
+
+#### `WritableRouteStepDescriptor` 必须包含的字段
+
+每个 step descriptor 必须包含以下字段（名称是概念字段名，具体 Java record 命名可调整，但语义不得变）：
+
+- `stepAnchor`：AST node identity，用于定位 diagnostics 与读取已发布 semantic fact（仅用于查表，不得用于重新求值）。
+- `kind`：step kind，取值见下表。
+- `memberNameOrNull`：
+  - `PROPERTY`：必须非空，表示 property 名。
+  - `SUBSCRIPT`：可为空；非空表示 attribute-subscript 的 named-base（等价于 “先 `get_named` 再对其做下标 set，再 `set_named` 写回”）。
+- `subscriptAccessKindOrNull`：
+  - `PROPERTY`：必须为空。
+  - `SUBSCRIPT`：必须非空，且只能取：
+    - `GENERIC`（`variant_set`）
+    - `KEYED`（`variant_set_keyed`）
+    - `NAMED`（`variant_set_named`）
+    - `INDEXED`（`variant_set_indexed`）
+
+`subscriptAccessKindOrNull` 的冻结目的是：避免 lowering/support 在后续阶段重新推断 “该用哪个 set 指令族”，从而把 payload 变成隐式推理点。
+
+#### step kind 与 operand arity（必须可静态推导并校验）
+
+step kind 的含义与其 operand arity 固定为：
+
+- `PROPERTY`
+  - 描述：把 `writtenBackValue` 写回到某个 property（instance 或 type-meta 由已发布 member fact 决定）。
+  - route operands：1 个。
+  - operand 语义：`receiverValueId`。
+- `SUBSCRIPT`
+  - 描述：把 `writtenBackValue` 写回到某个下标位置（可能先经 named-base）。
+  - route operands：2 个。
+  - operand 语义：`baseValueId`、`keyValueId`。
+
+对应的 `routeOperandValueIds` 布局规则固定为：
+
+- `routeOperandValueIds` 必须按 `steps` 顺序线性拼接每个 step 的 operands。
+- `PROPERTY` step 贡献 1 个 operand：`receiverValueId`。
+- `SUBSCRIPT` step 贡献 2 个 operands：`baseValueId`、`keyValueId`。
+- 因此必须满足：`routeOperandValueIds.size() == steps.aritySum()`。
+- support 层必须校验以上不变量，否则 fail-fast。
+
+#### 两个示例（用于锁定格式，不是实现限制）
+
+Example 1: `self.items[i].push_back(1)`（leaf mutation 是 mutating call，reverse commit 写回 `items[i]`，再尝试写回 `self.items`）
+
+- `leafValueId`：`self.items[i]` 的 value id
+- `steps`（outer-to-inner）：
+  - `PROPERTY(name = "items")`，operand：`self`
+  - `SUBSCRIPT(access = INDEXED, memberNameOrNull = null)`，operands：`self.items`, `i`
+- 执行 reverse commit 时倒序执行：
+  - 先对 `self.items[i]` 写回到 `self.items[i] = writtenBackValue`（必要时 runtime gate）
+  - 再尝试写回 `self.items = writtenBackValue`（shared 值通过 gate 跳过）
+
+Example 2: `self.position.x = 1`（leaf mutation 是 leaf property store，reverse commit 写回 `self.position`）
+
+- `leafValueId`：`self.position` 的 value id
+- `leafKind`：`STORE_PROPERTY(name = "x")`（leaf store 发生在 leaf 容器值上）
+- `steps`（outer-to-inner）：
+  - `PROPERTY(name = "position")`，operand：`self`
+
+### 嵌套表达（payload 不递归嵌套，靠 CFG item 顺序组合）
+
+writable access chain 的 payload 只描述“一条 receiver/target 的 writeback 路径”，它本身不需要、也不应该递归嵌套表达其子表达式内部的另一条 writable chain。
+
+当出现嵌套形态，例如：
+
+```gdscript
+# index 表达式内部还有一条链式访问，并且最后调用了可能 mutate receiver 的方法
+self.items[self.cursor.next().pop_back()].push_back(1)
+```
+
+计划中的正确表达方式是“组合而非嵌套”：
+
+1. CFG build 仍按 source-order 先 build `self.items` 的 receiver value id（冻结为外层 payload 的第一个 operand）。
+2. CFG build 递归 build index 子表达式 `self.cursor.next().pop_back()`：
+   - 其中 `pop_back()` 对其 receiver 若命中 mutating receiver route，则它自身对应的 `CallItem` 也发布一个 *独立的* writable-route payload，并在该 `CallItem` 周围完成 leaf selection 与 post-call commit。
+   - 该子表达式最终只对外发布一个稳定的 result value id，作为外层 payload 的 key operand value id。
+3. 最后 CFG build append 外层 mutating call 的 `CallItem`，并在该 `CallItem` 上发布外层 writable-route payload。
+
+因此：嵌套链上的“内层 writeback”通过其 own `CallItem` payload 先闭合，外层 payload 只引用内层求值产出的 key value id，不承担内层 route 的描述责任。
+
+这种组合方式的收益是：
+
+- 保持 “body lowering 不重跑 AST” 的硬合同：每条 payload 都只引用 frozen value ids。
+- 避免 payload 变成第二套递归解释器，从而产生双账本与漂移风险。
+
+同时这也引入一个必须显式承认的约束：payload 的 step descriptors 必须使用“消费 operand value ids 的位置/数量”而不是“重新解释 key AST”，否则无法在组合模式下可靠引用内层结果。
 
 ### 明确禁止
 
@@ -232,6 +361,13 @@
   4. 计算 compound binary result
   5. 对同一条 route 执行 leaf write + reverse commit
 - 逐步缩减 assignment-only step registry 在 writable target 上的职责
+
+### 迁移期去重约束（避免双写回与 setter 副作用重复触发）
+
+引入 shared writable-route support 之后，旧的 assignment 路径上存在的“窄 writeback 补丁”必须被整体替换掉，而不是与新 route 并存。最低限度需要满足：
+
+1. 当某个 assignment target 已经改为消费 writable-route payload 时，禁止继续调用 `FrontendSubscriptInsnSupport.writeBackPropertyBaseIfNeeded(...)` 或其他 ad-hoc writeback 辅助逻辑。
+2. 必须有回归测试锚定：同一条链式写入只触发一次 setter/一次外层回写，而不是“route reverse commit + 旧补丁回写”的双发。
 
 ### 重点覆盖
 
@@ -274,6 +410,24 @@
 - 对静态已知不需要 writeback 的 family：
   - 允许保留 ordinary route 或省略 reverse commit
 
+### 启用条件（必须同时满足，避免过度 writeback）
+
+mutating receiver route 不是 “所有 instance call 的统一后处理”，它只能在满足以下条件时启用：
+
+1. call site 已发布为 lowering-ready 的 instance route（`RESOLVED` 或 `DYNAMIC` 的 instance 形态）；lowering 不得补救缺失事实。
+2. 该方法在语义上被判定为 may-mutate receiver（`isConst == false` 或 conservative may-mutate）。
+3. receiver 静态家族属于 requires-writeback family（例如：`String` / `Vector*` / `Packed*Array` 等），否则禁止走 value-style reverse commit。
+4. receiver provenance 可被冻结为 writable-route payload（即：CFG 已发布该 payload）；禁止 body lowering 回退成重跑 AST receiver 解释来“拼凑一条 route”。
+
+### call lowering 的顺序约束（避免破坏可观测求值顺序）
+
+当某个 call site 命中 mutating receiver route 时，body lowering 内部必须按以下顺序组织逻辑：
+
+1. 解析 frozen writable-route payload，并 materialize “用于本次调用的 receiver leafSlotId”（必要时创建临时 leaf 值）。
+2. 再 materialize argument boundary（exact route 做 ordinary pack/unpack；dynamic route 仅保留已求值 argument slot，不新增 fixed-parameter boundary）。
+3. 发出同一条 `CallMethodInsn`。
+4. 根据 commit plan 执行 reverse commit（必要时带 runtime gate）。
+
 ### 非目标
 
 - 不引入新的 call LIR instruction
@@ -307,20 +461,30 @@
 
 - 对 `DYNAMIC` instance call：
   - 继续复用 `CallMethodInsn` surface
-  - 但 receiver 侧始终生成 commit plan
-  - 是否真正 reverse commit 由 runtime helper 决定
+  - receiver 侧允许保守生成 commit plan
+  - 是否真正执行某一层 reverse commit 由 runtime helper 决定
 - 静态 helper 负责：
   - 判断已知 `GdType` family 是否 requires writeback
 - runtime helper 负责：
   - `gdcc_variant_requires_writeback(const godot_Variant *value)`
   - 对 runtime `Variant` 承载值做 family 分类
 - codegen 在 unknown owner 上发出 gate：
-  - `if (gdcc_variant_requires_writeback(&owner_variant)) { ... }`
+  - `if (gdcc_variant_requires_writeback(&written_back_value_variant)) { ... }`
 
 ### Godot 对齐范围
 
 - 对齐的是 `JUMP_IF_SHARED` 的可观测写回决策
 - 不对齐其 bytecode opcode 形式
+
+### gate 的判定对象与粒度（必须与 Godot 可观测语义对齐）
+
+为避免实现错位，本计划把 runtime gate 的语义钉死为：
+
+1. gate 判断的是“当前准备写回到外层的那个值”是否 requires writeback，而不是外层 base/owner 的类型是否 shared。
+2. gate 的粒度是“每一层 reverse commit step”：当某一层要写回的值是 runtime-unknown（通常是 `Variant`）时，该层 writeback 必须被 `gdcc_variant_requires_writeback(&written_back_value_variant)` 包裹。
+3. 这与 Godot 的 `JUMP_IF_SHARED(assigned)` 在可观测层面等价：
+   - Godot：shared 值跳过 writeback
+   - gdcc：只有 requires-writeback 的值才执行 writeback
 
 ### 关联文档与注释同步
 
@@ -352,6 +516,7 @@
   - simple binding receiver
   - property-backed receiver
   - nested property/subscript receiver
+  - nested mutating call inside subscript key (inner call writeback must complete before outer route consumes the key)
   - `const` method negative path
   - non-gdextension may-mutate conservative path
   - `DYNAMIC` / `Variant` route 的 runtime-gated plan
@@ -440,3 +605,13 @@
 5. 关联文档与注释同步完成
 6. 本文档可归档为 implementation fact source，而不再保留计划口吻
 
+---
+
+## 15. 四个潜在风险澄清（必须显式承认并锁定为回归锚点）
+
+本节不是“恐吓清单”，而是把本计划在工程上最容易翻车的四个点写死，避免实现阶段用隐式假设掩盖风险。
+
+1. setter 重入 / 递归风险：reverse commit 可能触发 property setter。若 setter 内部又间接触发同一条 writable route（例如修改自身 property 或调用会回写的 mutating call），可能造成重入或递归。即便本计划不复刻 Godot 的全部 setter-in-setter guard，也必须通过测试与 fail-fast 观察点确保该风险可见且可定位。
+2. runtime helper 覆盖面风险：`gdcc_variant_requires_writeback(...)` 必须明确其对未列举 Variant 类型的默认策略（保守 true 还是保守 false）。否则“新增一种 builtin 值语义类型”时会出现 silent 行为偏差，且难以从单点定位。
+3. payload 双账本风险：writable-route payload 与现有 CFG value items 必须保持职责分离（payload 只描述 writeback，items 描述求值）。若 payload 开始承载求值解释或 AST 回退路径，将造成两套解释器漂移，最终只能靠补丁粘合，复现当前问题。
+4. 性能与 code size 风险：对 `DYNAMIC` route 的保守 commit plan + runtime gate 会增加指令与分支。必须通过 gate 粒度收敛（仅在 runtime-unknown 时包裹，且 shared 快速跳过）把开销限制在“必要时才付费”的范围内，并通过 codegen 测试锚定生成形状不发生无界膨胀。
