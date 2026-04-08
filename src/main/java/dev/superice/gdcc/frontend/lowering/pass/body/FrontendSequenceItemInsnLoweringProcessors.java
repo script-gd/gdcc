@@ -26,10 +26,7 @@ import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
-import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
-import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
-import dev.superice.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -52,6 +49,7 @@ import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 
 final class FrontendSequenceItemInsnLoweringProcessors {
@@ -318,7 +316,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 case INSTANCE_METHOD -> block.appendNonTerminatorInstruction(new CallMethodInsn(
                         resultSlotId,
                         resolvedCall.callableName(),
-                        session.resolveInstanceCallReceiver(node),
+                        session.materializeCallReceiverLeaf(block, node),
                         arguments
                 ));
                 case STATIC_METHOD -> {
@@ -364,7 +362,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     block.appendNonTerminatorInstruction(new CallMethodInsn(
                             resultSlotId,
                             resolvedCall.callableName(),
-                            session.resolveInstanceCallReceiver(node),
+                            session.materializeCallReceiverLeaf(block, node),
                             arguments
                     ));
                 }
@@ -406,11 +404,27 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                                 "instance member load is missing a receiver value id"
                         );
                     }
-                    block.appendNonTerminatorInstruction(new LoadPropertyInsn(
-                            resultSlotId,
-                            node.memberName(),
-                            session.slotIdForValue(node.baseValueIdOrNull())
-                    ));
+                    var receiverSlotId = session.slotIdForValue(node.baseValueIdOrNull());
+                    var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                            node.anchor(),
+                            new FrontendWritableRouteSupport.FrontendWritableRoot(
+                                    "member receiver",
+                                    receiverSlotId,
+                                    session.requireValueType(node.baseValueIdOrNull())
+                            ),
+                            new FrontendWritableRouteSupport.InstancePropertyLeaf(
+                                    receiverSlotId,
+                                    node.memberName(),
+                                    session.requireValueType(node.resultValueId())
+                            ),
+                            List.of()
+                    );
+                    FrontendWritableRouteSupport.materializeLeafReadInto(
+                            session,
+                            block,
+                            chain,
+                            resultSlotId
+                    );
                 }
                 case TYPE_META -> {
                     if (node.baseValueIdOrNull() != null) {
@@ -456,33 +470,33 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var keyValueId = node.argumentValueIds().getFirst();
             var keySlotId = session.slotIdForValue(keyValueId);
             var keyType = session.requireValueType(keyValueId);
-            if (node.memberNameOrNull() == null) {
-                FrontendSubscriptInsnSupport.appendLoad(
-                        block,
-                        FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
-                        baseSlotId,
-                        session.requireValueType(node.baseValueId()),
-                        keySlotId,
-                        keyType
-                );
-                return;
-            }
-
-            var namedBaseSlotId = session.namedBaseSlotId(node.resultValueId());
-            var nameSlotId = session.namedKeySlotId(node.resultValueId());
-            block.appendNonTerminatorInstruction(new LiteralStringNameInsn(nameSlotId, node.memberNameOrNull()));
-            block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
-                    namedBaseSlotId,
-                    baseSlotId,
-                    nameSlotId
-            ));
-            FrontendSubscriptInsnSupport.appendLoad(
-                    block,
-                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
-                    namedBaseSlotId,
-                    GdVariantType.VARIANT,
-                    keySlotId,
+            var accessKind = node.memberNameOrNull() == null
+                    ? FrontendSubscriptInsnSupport.determineAccessKind(
+                    session.requireValueType(node.baseValueId()),
                     keyType
+            )
+                    : FrontendSubscriptInsnSupport.determineAccessKind(GdVariantType.VARIANT, keyType);
+            var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                    node.anchor(),
+                    new FrontendWritableRouteSupport.FrontendWritableRoot(
+                            node.memberNameOrNull() == null ? "subscript base" : "attribute-subscript receiver",
+                            baseSlotId,
+                            session.requireValueType(node.baseValueId())
+                    ),
+                    new FrontendWritableRouteSupport.SubscriptLeaf(
+                            baseSlotId,
+                            node.memberNameOrNull(),
+                            keySlotId,
+                            accessKind,
+                            session.requireValueType(node.resultValueId())
+                    ),
+                    List.of()
+            );
+            FrontendWritableRouteSupport.materializeLeafReadInto(
+                    session,
+                    block,
+                    chain,
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
             );
         }
     }

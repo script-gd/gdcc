@@ -171,6 +171,14 @@
 - `FrontendBodyLoweringSession`
 - shared support 自身类注释
 
+### 当前状态（2026-04-08）
+
+- 已完成：`frontend.lowering.pass.body` 中已落地 package-private 的 `FrontendWritableRouteSupport`，统一承接 leaf read / leaf write / reverse commit / gate hook。
+- 已完成：assignment target、member load、subscript load，以及当前 `CallItem` 可表达的 direct-slot receiver leaf 都已改为复用同一套 shared support 入口。
+- 已完成：原先 subscript assignment 的 property-backed ad-hoc writeback 补丁已被 shared route flow 替换，避免 assignment path 与 call path 各维护一套平行 reverse-commit 逻辑。
+- 已完成：`FrontendWritableRouteSupportTest`、`FrontendLoweringBodyInsnPassTest`、`FrontendBodyLoweringSessionTest` 已作为 Step 2 的回归锚点验证通过。
+- 未完成：CFG 仍未发布完整 writable-route payload；assignment 与 mutating receiver 当前仍是基于既有 published operand surface 组装 route，这部分继续由 Step 3 收口。
+
 ### 验收细则
 
 - happy path：

@@ -1408,6 +1408,43 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runWritesBackPropertyBackedSubscriptAssignmentsThroughSingleCarrierSlot() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_subscript_writeback.gd",
+                """
+                        class_name BodyInsnPropertySubscriptWriteback
+                        extends RefCounted
+                        
+                        var payloads: Array[int]
+                        
+                        func ping(idx: int, value: int) -> void:
+                            payloads[idx] = value
+                        """,
+                Map.of("BodyInsnPropertySubscriptWriteback", "RuntimeBodyInsnPropertySubscriptWriteback"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnPropertySubscriptWriteback",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var indexedStore = requireOnlyInstruction(pingContext.targetFunction(), VariantSetIndexedInsn.class);
+        var propertyStoreValueIds = storeValueIdsForProperty(instructions, "payloads");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(instructions, VariantSetIndexedInsn.class)),
+                () -> assertEquals(1, propertyStoreValueIds.size()),
+                () -> assertEquals(indexedStore.variantId(), propertyStoreValueIds.getFirst())
+        );
+    }
+
+    @Test
     void runLowersLiteralPropertyInitializerIntoExecutableInitFunction() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_literal.gd",

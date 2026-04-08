@@ -1,15 +1,12 @@
 package dev.superice.gdcc.frontend.lowering.pass.body;
 
-import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.lir.LirBasicBlock;
-import dev.superice.gdcc.lir.insn.StorePropertyInsn;
-import dev.superice.gdcc.lir.insn.StoreStaticInsn;
-import dev.superice.gdcc.lir.insn.VariantGetInsn;
 import dev.superice.gdcc.lir.insn.VariantGetIndexedInsn;
+import dev.superice.gdcc.lir.insn.VariantGetInsn;
 import dev.superice.gdcc.lir.insn.VariantGetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantGetNamedInsn;
-import dev.superice.gdcc.lir.insn.VariantSetInsn;
 import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
+import dev.superice.gdcc.lir.insn.VariantSetInsn;
 import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.type.GdArrayType;
@@ -22,11 +19,9 @@ import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVectorType;
-import dev.superice.gdparser.frontend.ast.Expression;
-import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import org.jetbrains.annotations.NotNull;
 
-final class FrontendSubscriptInsnSupport {
+public final class FrontendSubscriptInsnSupport {
     private FrontendSubscriptInsnSupport() {
     }
 
@@ -38,7 +33,23 @@ final class FrontendSubscriptInsnSupport {
             @NotNull String keySlotId,
             @NotNull GdType keyType
     ) {
-        switch (chooseAccessKind(receiverType, keyType)) {
+        appendLoad(
+                block,
+                resultSlotId,
+                receiverSlotId,
+                keySlotId,
+                determineAccessKind(receiverType, keyType)
+        );
+    }
+
+    static void appendLoad(
+            @NotNull LirBasicBlock block,
+            @NotNull String resultSlotId,
+            @NotNull String receiverSlotId,
+            @NotNull String keySlotId,
+            @NotNull SubscriptAccessKind accessKind
+    ) {
+        switch (accessKind) {
             case GENERIC -> block.appendNonTerminatorInstruction(new VariantGetInsn(
                     resultSlotId,
                     receiverSlotId,
@@ -70,7 +81,23 @@ final class FrontendSubscriptInsnSupport {
             @NotNull GdType keyType,
             @NotNull String rhsSlotId
     ) {
-        switch (chooseAccessKind(receiverType, keyType)) {
+        appendStore(
+                block,
+                receiverSlotId,
+                keySlotId,
+                rhsSlotId,
+                determineAccessKind(receiverType, keyType)
+        );
+    }
+
+    static void appendStore(
+            @NotNull LirBasicBlock block,
+            @NotNull String receiverSlotId,
+            @NotNull String keySlotId,
+            @NotNull String rhsSlotId,
+            @NotNull SubscriptAccessKind accessKind
+    ) {
+        switch (accessKind) {
             case GENERIC -> block.appendNonTerminatorInstruction(new VariantSetInsn(
                     receiverSlotId,
                     keySlotId,
@@ -94,32 +121,10 @@ final class FrontendSubscriptInsnSupport {
         }
     }
 
-    static void writeBackPropertyBaseIfNeeded(
-            @NotNull FrontendBodyLoweringSession session,
-            @NotNull LirBasicBlock block,
-            @NotNull Expression baseExpression,
-            @NotNull String baseSlotId
-    ) {
-        if (!(baseExpression instanceof IdentifierExpression identifierExpression)) {
-            return;
-        }
-        var binding = session.requireBinding(identifierExpression);
-        if (binding.kind() != FrontendBindingKind.PROPERTY) {
-            return;
-        }
-        if (session.isStaticPropertyBinding(binding)) {
-            block.appendNonTerminatorInstruction(new StoreStaticInsn(
-                    session.currentClassName(),
-                    binding.symbolName(),
-                    baseSlotId
-            ));
-            return;
-        }
-        session.requireSelfSlot();
-        block.appendNonTerminatorInstruction(new StorePropertyInsn(binding.symbolName(), "self", baseSlotId));
-    }
-
-    private static @NotNull SubscriptAccessKind chooseAccessKind(
+    /// Resolves the already-frozen subscript instruction family from published base/key types.
+    /// Shared writable-route support reuses the same helper so read/write lowering and future
+    /// reverse-commit logic stay on one access-kind contract.
+    static @NotNull SubscriptAccessKind determineAccessKind(
             @NotNull GdType receiverType,
             @NotNull GdType keyType
     ) {
@@ -158,7 +163,7 @@ final class FrontendSubscriptInsnSupport {
                 || receiverType instanceof GdPackedArrayType;
     }
 
-    private enum SubscriptAccessKind {
+    enum SubscriptAccessKind {
         GENERIC,
         KEYED,
         NAMED,

@@ -7,6 +7,7 @@ import dev.superice.gdparser.frontend.ast.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 
 final class FrontendAssignmentTargetInsnLoweringProcessors {
@@ -70,30 +71,67 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                             ? "store_property"
                             : "assign_slot"
             );
-            switch (binding.kind()) {
-                case LOCAL_VAR, PARAMETER, CAPTURE ->
-                        block.appendNonTerminatorInstruction(new AssignInsn(binding.symbolName(), materializedRhsSlotId));
-                case PROPERTY -> {
-                    if (session.isStaticPropertyBinding(binding)) {
-                        block.appendNonTerminatorInstruction(new StoreStaticInsn(
-                                session.currentClassName(),
+            var chain = switch (binding.kind()) {
+                case LOCAL_VAR, PARAMETER, CAPTURE -> new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                        node,
+                        new FrontendWritableRouteSupport.FrontendWritableRoot(
+                                "binding slot",
                                 binding.symbolName(),
-                                materializedRhsSlotId
-                        ));
-                        return;
+                                session.requireBindingAssignmentTargetType(binding)
+                        ),
+                        new FrontendWritableRouteSupport.DirectSlotLeaf(
+                                binding.symbolName(),
+                                session.requireBindingAssignmentTargetType(binding)
+                        ),
+                        List.of()
+                );
+                case PROPERTY -> {
+                    var propertyType = session.requireBindingAssignmentTargetType(binding);
+                    if (session.isStaticPropertyBinding(binding)) {
+                        yield new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                                node,
+                                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                                        "static property target",
+                                        null,
+                                        propertyType
+                                ),
+                                new FrontendWritableRouteSupport.StaticPropertyLeaf(
+                                        session.currentClassName(),
+                                        binding.symbolName(),
+                                        propertyType
+                                ),
+                                List.of()
+                        );
                     }
                     session.requireSelfSlot();
-                    block.appendNonTerminatorInstruction(new StorePropertyInsn(
-                            binding.symbolName(),
-                            "self",
-                            materializedRhsSlotId
-                    ));
+                    yield new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                            node,
+                            new FrontendWritableRouteSupport.FrontendWritableRoot(
+                                    "self property target",
+                                    "self",
+                                    session.requireFunctionVariableType("self")
+                            ),
+                            new FrontendWritableRouteSupport.InstancePropertyLeaf(
+                                    "self",
+                                    binding.symbolName(),
+                                    propertyType
+                            ),
+                            List.of()
+                    );
                 }
                 default -> throw session.unsupportedSequenceItem(
                         item,
                         "identifier assignment binding kind is not supported: " + binding.kind()
                 );
-            }
+            };
+            var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, materializedRhsSlotId);
+            FrontendWritableRouteSupport.reverseCommit(
+                    session,
+                    block,
+                    chain,
+                    carrierSlotId,
+                    FrontendWritableRouteSupport.ALWAYS_APPLY
+            );
         }
     }
 
@@ -127,10 +165,11 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
         }
     }
 
-    /// Commits a direct subscript store using the already-published base/key operands.
+    /// Commits a direct subscript store through the shared writable-route support.
     ///
-    /// If the mutated base is itself a property-backed identifier, the processor also performs the
-    /// required write-back so the container mutation is reflected in the owning property slot.
+    /// The processor translates the published base/key operands into one route description and lets
+    /// the shared helper perform both the leaf mutation and any required reverse commit, including
+    /// the property-backed carrier case that previously relied on an ad-hoc write-back patch.
     private static final class FrontendSubscriptAssignmentInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<SubscriptExpression, FrontendBodyLoweringSession.AssignmentTargetLoweringContext> {
         @Override
@@ -155,15 +194,38 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
             var keyValueId = item.targetOperandValueIds().getLast();
             var baseSlotId = session.slotIdForValue(baseValueId);
             var keySlotId = session.slotIdForValue(keyValueId);
-            FrontendSubscriptInsnSupport.appendStore(
+            var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                    item.anchor(),
+                    new FrontendWritableRouteSupport.FrontendWritableRoot(
+                            "subscript target base",
+                            baseSlotId,
+                            session.requireValueType(baseValueId)
+                    ),
+                    new FrontendWritableRouteSupport.SubscriptLeaf(
+                            baseSlotId,
+                            null,
+                            keySlotId,
+                            FrontendSubscriptInsnSupport.determineAccessKind(
+                                    session.requireValueType(baseValueId),
+                                    session.requireValueType(keyValueId)
+                            ),
+                            session.requireValueType(baseValueId)
+                    ),
+                    propertyCommitStepsIfNeeded(session, node.base())
+            );
+            var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(
+                    session,
                     block,
-                    baseSlotId,
-                    session.requireValueType(baseValueId),
-                    keySlotId,
-                    session.requireValueType(keyValueId),
+                    chain,
                     actualContext.rhsSlotId()
             );
-            FrontendSubscriptInsnSupport.writeBackPropertyBaseIfNeeded(session, block, node.base(), baseSlotId);
+            FrontendWritableRouteSupport.reverseCommit(
+                    session,
+                    block,
+                    chain,
+                    carrierSlotId,
+                    FrontendWritableRouteSupport.ALWAYS_APPLY
+            );
         }
     }
 
@@ -201,23 +263,49 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                     Objects.requireNonNull(resolvedMember.resultType(), "resultType must not be null"),
                     "store_property"
             );
-            switch (resolvedMember.receiverKind()) {
-                case INSTANCE -> block.appendNonTerminatorInstruction(new StorePropertyInsn(
-                        node.name(),
-                        receiverSlotId,
-                        materializedRhsSlotId
-                ));
-                case TYPE_META -> block.appendNonTerminatorInstruction(new StoreStaticInsn(
-                        session.requireStaticReceiverName(resolvedMember.receiverType()),
-                        node.name(),
-                        materializedRhsSlotId
-                ));
+            var chain = switch (resolvedMember.receiverKind()) {
+                case INSTANCE -> new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                        node,
+                        new FrontendWritableRouteSupport.FrontendWritableRoot(
+                                "attribute receiver",
+                                receiverSlotId,
+                                session.requireValueType(item.targetOperandValueIds().getFirst())
+                        ),
+                        new FrontendWritableRouteSupport.InstancePropertyLeaf(
+                                receiverSlotId,
+                                node.name(),
+                                Objects.requireNonNull(resolvedMember.resultType(), "resultType must not be null")
+                        ),
+                        List.of()
+                );
+                case TYPE_META -> new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                        node,
+                        new FrontendWritableRouteSupport.FrontendWritableRoot(
+                                "type-meta property target",
+                                null,
+                                Objects.requireNonNull(resolvedMember.receiverType(), "receiverType must not be null")
+                        ),
+                        new FrontendWritableRouteSupport.StaticPropertyLeaf(
+                                session.requireStaticReceiverName(resolvedMember.receiverType()),
+                                node.name(),
+                                Objects.requireNonNull(resolvedMember.resultType(), "resultType must not be null")
+                        ),
+                        List.of()
+                );
                 default -> throw session.unsupportedSequenceItem(
                         item,
                         "attribute property assignment receiver kind is not lowering-ready: "
                                 + resolvedMember.receiverKind()
                 );
-            }
+            };
+            var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, materializedRhsSlotId);
+            FrontendWritableRouteSupport.reverseCommit(
+                    session,
+                    block,
+                    chain,
+                    carrierSlotId,
+                    FrontendWritableRouteSupport.ALWAYS_APPLY
+            );
         }
     }
 
@@ -252,20 +340,63 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
             var receiverSlotId = session.slotIdForValue(item.targetOperandValueIds().getFirst());
             var keyValueId = item.targetOperandValueIds().getLast();
             var keySlotId = session.slotIdForValue(keyValueId);
-            var namedBaseSlotId = session.namedBaseSlotId("assign_" + item.rhsValueId());
-            var nameSlotId = session.namedKeySlotId("assign_" + item.rhsValueId());
-            block.appendNonTerminatorInstruction(new LiteralStringNameInsn(nameSlotId, node.name()));
-            block.appendNonTerminatorInstruction(new VariantGetNamedInsn(namedBaseSlotId, receiverSlotId, nameSlotId));
-            FrontendSubscriptInsnSupport.appendStore(
+            var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                    node,
+                    new FrontendWritableRouteSupport.FrontendWritableRoot(
+                            "attribute-subscript receiver",
+                            receiverSlotId,
+                            session.requireValueType(item.targetOperandValueIds().getFirst())
+                    ),
+                    new FrontendWritableRouteSupport.SubscriptLeaf(
+                            receiverSlotId,
+                            node.name(),
+                            keySlotId,
+                            FrontendSubscriptInsnSupport.determineAccessKind(
+                                    GdVariantType.VARIANT,
+                                    session.requireValueType(keyValueId)
+                            ),
+                            GdVariantType.VARIANT
+                    ),
+                    List.of()
+            );
+            var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(
+                    session,
                     block,
-                    namedBaseSlotId,
-                    GdVariantType.VARIANT,
-                    keySlotId,
-                    session.requireValueType(keyValueId),
+                    chain,
                     actualContext.rhsSlotId()
             );
-            block.appendNonTerminatorInstruction(new VariantSetNamedInsn(receiverSlotId, nameSlotId, namedBaseSlotId));
+            FrontendWritableRouteSupport.reverseCommit(
+                    session,
+                    block,
+                    chain,
+                    carrierSlotId,
+                    FrontendWritableRouteSupport.ALWAYS_APPLY
+            );
         }
+    }
+
+    private static @NotNull List<FrontendWritableRouteSupport.FrontendWritableCommitStep> propertyCommitStepsIfNeeded(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull Expression baseExpression
+    ) {
+        if (!(baseExpression instanceof IdentifierExpression identifierExpression)) {
+            return List.of();
+        }
+        var binding = session.requireBinding(identifierExpression);
+        if (binding.kind() != dev.superice.gdcc.frontend.sema.FrontendBindingKind.PROPERTY) {
+            return List.of();
+        }
+        if (session.isStaticPropertyBinding(binding)) {
+            return List.of(new FrontendWritableRouteSupport.StaticPropertyCommitStep(
+                    session.currentClassName(),
+                    binding.symbolName()
+            ));
+        }
+        session.requireSelfSlot();
+        return List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep(
+                "self",
+                binding.symbolName()
+        ));
     }
 
     private static @NotNull FrontendBodyLoweringSession.AssignmentTargetLoweringContext requireContext(

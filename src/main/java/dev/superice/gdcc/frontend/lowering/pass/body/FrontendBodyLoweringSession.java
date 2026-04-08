@@ -28,7 +28,6 @@ import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
-import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.util.StringUtil;
@@ -71,6 +70,7 @@ public final class FrontendBodyLoweringSession {
     private final @NotNull FrontendInsnLoweringProcessorRegistry<Node, AssignmentTargetLoweringContext>
             attributeStepProcessors;
     private int boundaryMaterializationCounter;
+    private int writableRouteMaterializationCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -201,6 +201,27 @@ public final class FrontendBodyLoweringSession {
         }
         requireSelfSlot();
         return "self";
+    }
+
+    /// Materializes the current call-receiver leaf through the shared writable-route support.
+    ///
+    /// Current `CallItem` publication still exposes only the direct-slot subset because it does not
+    /// yet carry a frozen writable-route payload. Routing even the trivial receiver path through the
+    /// shared support keeps call lowering on the same leaf-selection entry point as
+    /// assignment/compound-assignment routes and avoids a second receiver-specific helper stack.
+    @NotNull String materializeCallReceiverLeaf(@NotNull LirBasicBlock block, @NotNull CallItem item) {
+        Objects.requireNonNull(block, "block must not be null");
+        var receiverSlotId = resolveInstanceCallReceiver(Objects.requireNonNull(item, "item must not be null"));
+        var receiverType = item.receiverValueIdOrNull() == null
+                ? requireFunctionVariableType(receiverSlotId)
+                : requireValueType(item.receiverValueIdOrNull());
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                item.anchor(),
+                new FrontendWritableRouteSupport.FrontendWritableRoot("call receiver", receiverSlotId, receiverType),
+                new FrontendWritableRouteSupport.DirectSlotLeaf(receiverSlotId, receiverType),
+                List.of()
+        );
+        return FrontendWritableRouteSupport.materializeLeafRead(this, block, chain, "call_receiver");
     }
 
     void requireSelfSlot() {
@@ -435,15 +456,20 @@ public final class FrontendBodyLoweringSession {
         );
     }
 
-    @NotNull String namedBaseSlotId(@NotNull String valueId) {
-        var slotId = FrontendBodyLoweringSupport.cfgTempSlotId(valueId) + "_named_base";
-        ensureVariable(slotId, GdVariantType.VARIANT);
-        return slotId;
-    }
-
-    @NotNull String namedKeySlotId(@NotNull String valueId) {
-        var slotId = FrontendBodyLoweringSupport.cfgTempSlotId(valueId) + "_named_key";
-        ensureVariable(slotId, GdStringNameType.STRING_NAME);
+    /// Allocates one body-local helper temp owned by writable-route lowering.
+    ///
+    /// Ordinary CFG value slots continue to use `cfgTempSlotId(...)` / `mergeSlotId(...)`. This
+    /// helper is reserved for support-local scratch values such as named-member intermediates and
+    /// leaf-read temps so those scratch slots stay clearly separated from published CFG value ids.
+    @NotNull String allocateWritableRouteTemp(
+            @NotNull String purpose,
+            @NotNull GdType type
+    ) {
+        var slotId = "cfg_writable_"
+                + StringUtil.requireNonBlank(purpose, "purpose")
+                + "_"
+                + writableRouteMaterializationCounter++;
+        ensureVariable(slotId, Objects.requireNonNull(type, "type must not be null"));
         return slotId;
     }
 

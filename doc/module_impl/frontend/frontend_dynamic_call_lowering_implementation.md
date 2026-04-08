@@ -89,6 +89,7 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
 - writable receiver access chain 必须作为同一个 `CallItem` 上的单个 frozen payload 发布
 - body lowering 必须整体消费这条 frozen chain 做 leaf selection 与 post-call commit
 - body lowering 不得把同一条 receiver chain 再拆成额外的 per-step item，也不得回头重跑 AST receiver 解释
+- 当前实现已经先把 call receiver 的 leaf materialization 入口收敛到 shared writable-route support；在 `CallItem` 真正发布整条 chain payload 之前，实际落地的仍是 direct-slot receiver 子集
 
 call-route / dispatch 的长合同仍以本文档为准；receiver-side writable chain / writeback 的长合同由 `frontend_complex_writable_target_plan.md` 约束。
 
