@@ -882,6 +882,38 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("Variable reads should default to BORROWED ownership")
+        void testVarReadDefaultsToBorrowedOwnership() {
+            var value = builder.valueOfVar(new LirVariable("obj", new GdObjectType("MyGdccClass"), lirFunctionDef));
+
+            assertEquals(CBodyBuilder.OwnershipKind.BORROWED, value.ownership());
+        }
+
+        @Test
+        @DisplayName("Raw object expressions should stay BORROWED until a fresh producer marks them OWNED")
+        void testExprDefaultsToBorrowedOwnership() {
+            var value = builder.valueOfExpr("make_obj()", new GdObjectType("MyGdccClass"), CBodyBuilder.PtrKind.GODOT_PTR);
+
+            assertEquals(CBodyBuilder.OwnershipKind.BORROWED, value.ownership());
+        }
+
+        @Test
+        @DisplayName("valueOfCastedVar should keep BORROWED ownership across ptr conversion")
+        void testCastedVarKeepsBorrowedOwnership() {
+            var value = builder.valueOfCastedVar(
+                    new LirVariable("obj", new GdObjectType("MyGdccClass"), lirFunctionDef),
+                    new GdObjectType("RefCounted")
+            );
+
+            assertEquals(CBodyBuilder.OwnershipKind.BORROWED, value.ownership());
+            assertEquals(CBodyBuilder.PtrKind.GODOT_PTR, value.ptrKind());
+            assertTrue(
+                    value.generateCode().contains("gdcc_object_to_godot_object_ptr($obj, MyGdccClass_object_ptr)"),
+                    "Borrowed casted value should still render the ptr conversion helper. Actual:\n" + value.generateCode()
+            );
+        }
+
+        @Test
         @DisplayName("Owned expression should expose OWNED ownership kind")
         void testOwnedExprOwnershipKind() {
             var value = builder.valueOfOwnedExpr(

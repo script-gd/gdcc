@@ -130,19 +130,36 @@ Object category rules:
       - `Dictionary[K, V]` -> `Dictionary` / `Dictionary[Variant, Variant]`
       - `Dictionary[K1, V1]` -> `Dictionary[K2, V2]` when both key/value directions are assignable.
     - Always remember if the value that is assigning into a result variable whose type is a GDCC object is returned from a GDExtension function, it is always a `godot_Object*` that needs to be converted to the correct GDCC type.
-- When assigning a value to a variable, it implies that we destroy the old value in the variable and replace it with the new value. 
-  If they are `Object`, that means we have to release the ownership of the old value and obtain the ownership of the new value properly, 
-  otherwise it will cause memory leak or premature destruction. 
-  So always remember to call `try_release_object` on the old value and `try_own_object` on the new value if they are Objects, and use non-try version if you are 100% sure they are ref-counted (no operation if 100% sure they are not ref-counted).
+- For object slot writes, ownership comes from producer provenance, not from the target slot shape alone:
+  - fresh function/method/constructor/property-init helper results are `OWNED`
+  - reads from existing storage (`local` / `parameter` / `field` / property / index / `self`) are `BORROWED`
+  - ptr conversion (`gdcc_object_from_godot_object_ptr(...)` / `gdcc_object_to_godot_object_ptr(...)`) is representation-only and does not change ownership
+- The canonical object slot write order is:
+  1. capture old value when this is an overwrite route
+  2. assign new value after ptr conversion if needed
+  3. retain the new value only when RHS is `BORROWED`
+  4. release the captured old value
+- Do not blanket `try_own_object`/`own_object` the new object value for every object assignment.
+  `OWNED` RHS must be consumed directly, otherwise fresh call results leak an extra reference.
 
 ### Lifecycle
 
-- `gdcc_object_from_godot_object_ptr` does not own the object, you still need to call `try_own_object` or `own_object` to retain the object if you want to keep it.
+- `gdcc_object_from_godot_object_ptr(...)` and `gdcc_object_to_godot_object_ptr(...)` are ownership-neutral.
+  They only change pointer representation and must not be treated as retain/release boundaries.
 - When construct a `Variant` from an object, the new `Variant` owns the object, so you do not need to call `try_own_object` or `own_object` again.
 - `try_own_object`, `try_release_object` are safe to use on non-ref-counted objects, they will do nothing in that case, but always use non-try version if you are 100% sure the object is ref-counted for better performance.
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.
 - `try_destroy_object` is used to destroy an object that we own, if an object is ref-counted it is the same as `try_release_object`, if it is not ref-counted, it will be actually destroyed, so always remember to check the type and use it properly.
 - Call lifecycle functions on `NULL` is safe, they will do nothing in that case, so you do not need to check if the pointer is `NULL` before calling lifecycle functions.
+- Object return publishing is modeled as writing `_return_val`:
+  - borrowed source -> retain at `_return_val`
+  - owned source -> consume directly into `_return_val`
+  - do not add a blanket retain step for all returns at function end
+- `__finally__` auto-cleanup is limited to managed local slots.
+  `_return_val`, moved-out return sources, `ref` locals, and definite non-`RefCounted` locals are outside that blanket cleanup set.
+- Explicitly reject these maintenance shortcuts:
+  - “retain every object return once before function exit”
+  - “release every object slot once at function exit”
 
 ### Lifecycle Provenance Restrictions
 

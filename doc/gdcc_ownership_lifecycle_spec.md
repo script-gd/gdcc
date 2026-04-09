@@ -1,6 +1,6 @@
 # GDCC C Backend Lifecycle and Ownership Specification (Unified)
 
-> Status: Draft (proposed)  
+> Status: Active baseline (Step 1 synced on 2026-04-09)  
 > Scope: Code generation semantics under `src/main/java/dev/superice/gdcc/backend/c/**` and `src/main/c/codegen/**`
 
 ## 1. Background and Goals
@@ -44,8 +44,18 @@ A writable storage location, including but not limited to:
 
 ### 3.1 Production Rules
 
-- Function calls that return object values produce `OWNED` by default.
-- Reading object values from variables produces `BORROWED` by default.
+- Fresh object-producing routes produce `OWNED` by default:
+  - function calls
+  - method calls
+  - constructor/materialization helpers
+  - property-init helpers that semantically return a fresh object value
+- Reading object values from existing storage produces `BORROWED` by default:
+  - local variables
+  - parameters
+  - backing fields / `self` field reads
+  - property reads
+  - index reads
+- Raw expression wrappers stay `BORROWED` unless the producer route explicitly upgrades them to `OWNED`.
 - `literal_null` / `NULL` is treated as `BORROWED` (no release needed for null).
 - Pure representation-converted values keep their original ownership category.
 
@@ -83,7 +93,9 @@ Implementation note:
 
 - Object values returned to the caller are considered `OWNED`.
 - In non-`__finally__` paths: write to `_return_val`, then `goto __finally__`.
-- Writing `_return_val` follows the same slot write rules from 3.2.
+- Writing `_return_val` follows the same slot write rules from 3.2:
+  - borrowed source -> retain in `_return_val`
+  - owned source -> consume directly into `_return_val`
 - Returning an owning local object slot moves that slot into `_return_val`:
   - write `_return_val` with `OWNED` rhs semantics
   - clear the source slot before entering `__finally__`
@@ -119,7 +131,16 @@ Automatic local cleanup rule:
 - Do not treat `gdcc_object_from_godot_object_ptr(...)` as a retain operation.
 - `OWNED` values must be consumed exactly once; repeated consumption is forbidden.
 
-### 3.8 Lifecycle Instruction Provenance Restrictions
+### 3.8 Explicitly Rejected Shortcuts
+
+- Reject “retain every object return once before function exit”.
+  - Fresh `OWNED` call results are already caller-owned at the producer boundary.
+  - Re-retaining them at function exit leaks one reference.
+- Reject “release every object slot once at function exit”.
+  - Scope-exit cleanup applies only to managed local slots.
+  - `_return_val`, moved-out sources, `ref` locals, and definite non-`RefCounted` locals are outside that blanket model.
+
+### 3.9 Lifecycle Instruction Provenance Restrictions
 
 Lifecycle instructions are controlled by provenance and validated before backend generation.
 

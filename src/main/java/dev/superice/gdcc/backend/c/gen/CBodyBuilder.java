@@ -215,13 +215,17 @@ public final class CBodyBuilder {
         return PtrKind.NON_OBJECT;
     }
 
-    /// Creates a value reference from a variable.
+    /// Creates a value reference from an existing storage read.
+    /// Reads from locals/parameters/fields remain `BORROWED` producers even when the value later
+    /// needs pointer-shape conversion, because the conversion changes representation only.
     public @NotNull ValueRef valueOfVar(@NotNull LirVariable variable) {
         return new VarValue(variable, resolvePtrKind(variable.type()));
     }
 
     /// Creates a value reference by explicitly casting a variable expression to `castType`.
     /// This is expression-only and must not be used as an assignment target.
+    /// Cast/render helpers keep the source storage provenance, so the returned value stays
+    /// `BORROWED` unless a fresh producer explicitly marks it as `OWNED`.
     public @NotNull ValueRef valueOfCastedVar(@NotNull LirVariable variable, @NotNull GdType castType) {
         var sourceType = variable.type();
         if (sourceType instanceof GdObjectType sourceObjectType && castType instanceof GdObjectType targetObjectType) {
@@ -538,8 +542,9 @@ public final class CBodyBuilder {
         return this;
     }
 
-    /// Common logic for writing a call expression result into a target variable.
-    /// Handles: capture old slot value → ptr conversion + assignment → ownership consume/own → release captured old → mark initialized.
+    /// Common logic for writing a fresh call result into a target variable.
+    /// Call/construct/helper returns are treated as `OWNED` producers and therefore flow into the
+    /// slot-write core without an extra retain on the new value.
     private void emitCallResultAssignment(@NotNull TargetRef target,
                                           @NotNull String cFuncName,
                                           @NotNull GdType returnType,
@@ -638,7 +643,9 @@ public final class CBodyBuilder {
 
         if (!checkInFinallyBlock()) {
             if (returnType instanceof GdObjectType objType) {
-                // _return_val follows the same slot-write rules as normal object assignments.
+                // Object return publishing is modeled as writing `_return_val`, not as a blanket
+                // "retain everything before function exit" rule. Borrowed sources retain here;
+                // owned sources are consumed here.
                 emitObjectSlotWrite(
                         RETURN_SLOT_NAME,
                         objType,
@@ -1094,6 +1101,7 @@ public final class CBodyBuilder {
     }
 
     /// Converts an object pointer expression between GDCC and Godot representations if needed.
+    /// This helper is ownership-neutral: it must never introduce retain/release behavior.
     ///
     /// - GODOT_PTR value → GDCC_PTR target: wraps with `fromGodotObjectPtr`
     /// - GDCC_PTR value → GODOT_PTR target: wraps with `gdcc_object_to_godot_object_ptr(...)`

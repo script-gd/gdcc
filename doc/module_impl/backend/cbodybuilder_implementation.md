@@ -8,7 +8,7 @@
 >
 > 目标：仅保留当前代码库已落地且可验证的实现语义、长期风险和工程反思。
 >
-> 校对基线：2026-02-25（代码与单测已交叉检查）
+> 校对基线：2026-04-09（代码与单测已交叉检查）
 
 ## 1. 范围与对齐关系
 
@@ -45,8 +45,10 @@
 
 - `OwnershipKind`：`BORROWED` / `OWNED`
 - `ValueRef#ownership()` 默认 `BORROWED`
+- `valueOfVar(...)`、`valueOfCastedVar(...)`、默认 `valueOfExpr(...)` 都表示“读取现有值或包装现有表达式”，因此保持 `BORROWED`
 - `valueOfOwnedExpr(...)` 用于显式 `OWNED` 值来源（例如 call result 语义）
-- `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own。
+- `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own
+- constructor/materialization helper 与 property-init helper 这类 fresh object producer 也必须显式走 `OWNED`
 - `generatePropertyInitApplyBody(...)` 也会把 property init helper 的对象返回值标记为 `OWNED`，因为该 helper 语义上返回 fresh value。
 - `OwnershipKind` 不是“注释性标记”，而是直接驱动对象槽位写入行为：
   - `emitObjectSlotWrite(...)` 遇到 `BORROWED` rhs 会补发 `own_object` / `try_own_object`
@@ -67,6 +69,7 @@
 - 显式类型转换表达式统一由 `CBodyBuilder#valueOfCastedVar(LirVariable, GdType)` 构造：
   - 返回 `ExprValueRef`（表达式值），不可作为赋值目标使用。
   - 用于生成器中的“按目标类型强制转换后参与调用参数”的场景，避免手工拼接 cast 字符串。
+  - cast/render helper 不会把 `BORROWED` 读值提升成 `OWNED`
 
 ### 2.4 赋值可兼容性（`ClassRegistry#checkAssignable`）
 
@@ -113,13 +116,23 @@
 ### 4.2 `_return_val` 语义
 
 - 在 `__prepare__` 顶部声明 `_return_val`；对象返回类型初始化为 `NULL`。
-- 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）。
+- 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）：
+  - borrowed source -> `_return_val` retain
+  - owned source -> `_return_val` consume
 - 当返回值来自本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
 - 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）。
+- `_return_val` 不属于变量表 auto-cleanup 集合；它是 return publish 边界，而不是普通 local slot。
 - `CCodegen` 的 `__finally__` auto-destruction 目前只覆盖：
   - value-semantic destroyable locals
   - `RefCountedStatus.YES/UNKNOWN` 的对象 locals
 - `RefCountedStatus.NO` 的对象 local 不会自动生成 cleanup；这类对象遵循 Godot 的显式生命周期合同，不因离开局部作用域而自动 `free` / destroy。
+
+### 4.3 明确拒绝的误读
+
+- 不允许把 object return 理解成“函数尾部统一 retain 一次”。
+  当前实现的 retain/consume 决策发生在写 `_return_val` 时，而不是函数退出时的额外补救逻辑。
+- 不允许把 finally cleanup 理解成“对所有对象 slot 统一 release 一次”。
+  cleanup 面向 managed locals；`_return_val`、moved source、`ref` 变量和 definite non-`RefCounted` locals 都不在这个集合内。
 
 ## 5. TempVar 与首写语义
 
