@@ -146,6 +146,8 @@ Object category rules:
 
 - `gdcc_object_from_godot_object_ptr(...)` and `gdcc_object_to_godot_object_ptr(...)` are ownership-neutral.
   They only change pointer representation and must not be treated as retain/release boundaries.
+  Converting an `OWNED` object value does not force an extra retain, and converting a `BORROWED` value
+  does not upgrade it; the later slot write / return publish decides whether retain is needed.
 - When construct a `Variant` from an object, the new `Variant` owns the object, so you do not need to call `try_own_object` or `own_object` again.
 - `try_own_object`, `try_release_object` are safe to use on non-ref-counted objects, they will do nothing in that case, but always use non-try version if you are 100% sure the object is ref-counted for better performance.
 - `try_own_object`, `try_release_object`, `own_object` and `release_object` receives only Godot object ptr but not GDCC object ptr, so remember to pass helper-converted Godot object ptr instead of raw `gdcc_object`.

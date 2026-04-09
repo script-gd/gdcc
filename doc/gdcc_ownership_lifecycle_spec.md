@@ -39,6 +39,8 @@ A writable storage location, including but not limited to:
 - For example: `gdcc_object_from_godot_object_ptr(...)`, `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)`
 
 **Representation conversion does not change ownership category.**
+An `OWNED` value stays `OWNED` after conversion, and a `BORROWED` value stays `BORROWED`;
+slot-write / discard / `_return_val` publish remain the only boundaries that may add or consume ownership.
 
 ## 3. Unified Semantic Rules (Normative)
 

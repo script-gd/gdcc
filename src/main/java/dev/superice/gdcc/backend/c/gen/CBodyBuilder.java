@@ -1111,9 +1111,11 @@ public final class CBodyBuilder {
         ownOrTryOwn(godotPtrCode, objType);
     }
 
-    /// Converts a GDCC object pointer to Godot object pointer.
+    /// Converts a GDCC object pointer expression to the Godot raw-object representation expected by
+    /// engine helpers and lifecycle calls.
+    /// This is representation-only: caller-owned vs borrowed state stays unchanged across conversion.
     /// For GDCC types: use class-specific helper through gdcc_object_to_godot_object_ptr.
-    /// For engine types: use as-is
+    /// For engine types: use as-is.
     private @NotNull String toGodotObjectPtr(@NotNull String varCode, @NotNull GdObjectType objType) {
         if (objType.checkGdccType(classRegistry())) {
             var objectPtrHelper = helper.renderGdccObjectPtrHelperName(objType);
@@ -1146,9 +1148,10 @@ public final class CBodyBuilder {
         return code;
     }
 
-    /// Converts a Godot object pointer to a GDCC object pointer when needed.
-    /// For GDCC types: wraps with gdcc_object_from_godot_object_ptr
-    /// For engine types: use as-is
+    /// Converts a Godot raw-object pointer to the GDCC native-object representation when needed.
+    /// This is representation-only: caller-owned vs borrowed state stays unchanged across conversion.
+    /// For GDCC types: wraps with gdcc_object_from_godot_object_ptr.
+    /// For engine types: use as-is.
     private @NotNull String fromGodotObjectPtr(@NotNull String godotPtrCode, @NotNull GdObjectType objType) {
         if (objType.checkGdccType(classRegistry())) {
             var castType = helper.renderGdTypeInC(objType);

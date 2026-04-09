@@ -128,6 +128,8 @@ static void try_destroy_object(const GDExtensionObjectPtr obj) {
     }
 }
 
+/// Converts a Godot raw object pointer back to the bound GDCC native instance.
+/// This helper is representation-only and must not be treated as a retain/release boundary.
 static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr) {
     const GDExtensionInstanceBindingCallbacks callbacks = {
         .create_callback = NULL,
@@ -139,6 +141,7 @@ static GDExtensionClassInstancePtr gdcc_object_from_godot_object_ptr(GDExtension
 
 /// Preferred conversion entry for GDCC -> Godot object pointers.
 /// `object_ptr_helper` must be a generated per-class helper like `MyClass_object_ptr`.
+/// This macro is representation-only and must not be treated as a retain/release boundary.
 #define gdcc_object_to_godot_object_ptr(obj, object_ptr_helper) ({ __typeof__(obj) _o = (obj); _o ? object_ptr_helper(_o) : NULL; })
 
 static GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant* value) {

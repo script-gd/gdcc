@@ -70,6 +70,9 @@
 - Godot -> GDCC 统一使用：
   - `gdcc_object_from_godot_object_ptr(...)`
 - `convertPtrIfNeeded(...)` 仅做表示转换，不改变所有权类别。
+- 这条合同同时约束 owned/borrowed 两种路径：
+  - `OWNED` 值跨表示转换后仍然是 `OWNED`，不能因为转换而补 own
+  - `BORROWED` 值跨表示转换后仍然是 `BORROWED`，是否 retain 只由后续槽位写入 / `_return_val` 发布决定
 - 显式类型转换表达式统一由 `CBodyBuilder#valueOfCastedVar(LirVariable, GdType)` 构造：
   - 返回 `ExprValueRef`（表达式值），不可作为赋值目标使用。
   - 用于生成器中的“按目标类型强制转换后参与调用参数”的场景，避免手工拼接 cast 字符串。

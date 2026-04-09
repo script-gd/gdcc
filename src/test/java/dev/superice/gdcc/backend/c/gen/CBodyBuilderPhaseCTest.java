@@ -626,6 +626,34 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("Returning owned GODOT_PTR for GDCC return type should convert representation without own")
+        void testReturnOwnedGodotPtrToGdccReturnTypeDoesNotOwnAgain() {
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("MyGdccClass"));
+            objectBuilder.beginBasicBlock("__prepare__");
+            var ownedValue = objectBuilder.valueOfOwnedExpr(
+                    "godot_make_worker()",
+                    new GdObjectType("MyGdccClass"),
+                    CBodyBuilder.PtrKind.GODOT_PTR
+            );
+
+            objectBuilder.returnValue(ownedValue);
+
+            var result = objectBuilder.build();
+            assertTrue(
+                    result.contains("_return_val = (MyGdccClass*)gdcc_object_from_godot_object_ptr(godot_make_worker());"),
+                    "OWNED Godot ptr return should be converted before publishing into GDCC return slot. Actual:\n" + result
+            );
+            assertFalse(
+                    result.contains("own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
+                    "Representation conversion must not add an extra retain at the publish boundary. Actual:\n" + result
+            );
+            assertFalse(
+                    result.contains("try_own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
+                    "Representation conversion must stay ownership-neutral for unknown refcount status too. Actual:\n" + result
+            );
+        }
+
+        @Test
         @DisplayName("Returning borrowed object parameter outside finally should retain return slot and keep source untouched")
         void testReturnBorrowedParameterOutsideFinallyUsesOwn() {
             var objectBuilder = createBuilderWithReturnType(new GdObjectType("RefCounted"));
@@ -662,6 +690,34 @@ public class CBodyBuilderPhaseCTest {
             assertFalse(result.contains("cached_resource = NULL;"),
                     "Borrowed expression return must not trigger move-return source clearing");
             assertTrue(result.contains("goto __finally__;"), "Non-finally return should jump to __finally__");
+        }
+
+        @Test
+        @DisplayName("Returning borrowed GODOT_PTR for GDCC return type should retain only at publish boundary")
+        void testReturnBorrowedGodotPtrToGdccReturnTypeOwnsAtPublishBoundary() {
+            var objectBuilder = createBuilderWithReturnType(new GdObjectType("MyGdccClass"));
+            objectBuilder.beginBasicBlock("__prepare__");
+            var borrowedValue = objectBuilder.valueOfExpr(
+                    "self->cached_worker",
+                    new GdObjectType("MyGdccClass"),
+                    CBodyBuilder.PtrKind.GODOT_PTR
+            );
+
+            objectBuilder.returnValue(borrowedValue);
+
+            var result = objectBuilder.build();
+            assertTrue(
+                    result.contains("_return_val = (MyGdccClass*)gdcc_object_from_godot_object_ptr(self->cached_worker);"),
+                    "Borrowed Godot ptr should still be converted before publishing into GDCC return slot. Actual:\n" + result
+            );
+            assertTrue(
+                    result.contains("own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
+                    "Borrowed return should retain exactly at the publish boundary after conversion. Actual:\n" + result
+            );
+            assertFalse(
+                    result.contains("try_own_object(gdcc_object_to_godot_object_ptr(_return_val, MyGdccClass_object_ptr));"),
+                    "Known RefCounted GDCC return type should use the precise own path. Actual:\n" + result
+            );
         }
 
         @Test
@@ -1235,6 +1291,34 @@ public class CBodyBuilderPhaseCTest {
             var result = builder.build();
             assertTrue(result.contains("$obj = gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr)"),
                     "Should convert GDCC_PTR to GODOT_PTR via helper conversion. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("OWNED GDCC_PTR assigned to engine target should convert representation without extra own")
+        void testOwnedGdccPtrValueToEngineTargetDoesNotOwnAgain() {
+            var target = new LirVariable("rc", new GdObjectType("RefCounted"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var ownedValue = builder.valueOfOwnedExpr(
+                    "fresh_worker()",
+                    new GdObjectType("MyGdccClass"),
+                    CBodyBuilder.PtrKind.GDCC_PTR
+            );
+
+            builder.assignVar(targetRef, ownedValue);
+
+            var result = builder.build();
+            assertTrue(
+                    result.contains("$rc = gdcc_object_to_godot_object_ptr(fresh_worker(), MyGdccClass_object_ptr);"),
+                    "OWNED GDCC_PTR should still convert before storing into engine slot. Actual:\n" + result
+            );
+            assertFalse(
+                    result.contains("own_object($rc);"),
+                    "Pointer conversion must not silently re-own an already owned value. Actual:\n" + result
+            );
+            assertFalse(
+                    result.contains("try_own_object($rc);"),
+                    "Pointer conversion must stay ownership-neutral for try-own paths too. Actual:\n" + result
+            );
         }
 
         @Test
