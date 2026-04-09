@@ -271,6 +271,22 @@ class CConstructInsnGenTest {
     }
 
     @Test
+    @DisplayName("construct_object should consume fresh engine RefCounted results without extra own")
+    void constructObjectShouldNotRetainFreshEngineRefCountedResultAgain() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_engine_refcounted");
+        func.createAndAddVariable("resource", new GdObjectType("RefCounted"));
+
+        entry(func).appendInstruction(new ConstructObjectInsn("resource", "RefCounted"));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithConstructibleObjectClasses());
+        assertTrue(body.contains("$resource = godot_new_RefCounted();"), body);
+        assertFalse(body.contains("own_object($resource);"), body);
+        assertFalse(body.contains("try_own_object($resource);"), body);
+    }
+
+    @Test
     @DisplayName("construct_object should externally initialize RefCounted gdcc create_instance results and convert into gdcc wrapper target")
     void constructObjectShouldConvertToGdccRefCountedWrapperTarget() {
         var holderClass = new LirClassDef("Holder", "Node", false, false, Map.of(), List.of(), List.of(), List.of());

@@ -87,6 +87,8 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                     var constructCall = renderObjectConstructCall(objectTarget);
                     bodyBuilder.assignVar(
                             target,
+                            // `construct_object` materializes a fresh object. Mark it as OWNED here so
+                            // the destination slot consumes the constructor result instead of retaining it again.
                             bodyBuilder.valueOfOwnedExpr(
                                     constructCall,
                                     objectTarget.constructedType(),

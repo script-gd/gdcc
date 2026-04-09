@@ -1,6 +1,6 @@
 # Backend 对象所有权与生命周期对齐实施计划
 
-> Status: In Progress (`Step 1` completed on 2026-04-09)  
+> Status: In Progress (`Step 1-2` completed on 2026-04-09)  
 > Scope: `src/main/java/dev/superice/gdcc/backend/c/**`, `src/main/c/codegen/**`  
 > 校对基线: 2026-04-09  
 > 上游对齐基线: Godot `755fa449c4aa94fdf2c58e2b726fd62efde07e09`
@@ -200,6 +200,21 @@ Godot 并不会因为局部变量离开作用域而自动 `free()` / `queue_free
 - 文档中显式写出本计划拒绝的两条错误路线
 
 ### Step 2. 收口 object ownership producer 入口
+
+#### 当前状态
+
+- Status: Completed on 2026-04-09
+- Audited and code-bound fresh object producer entries:
+  - `CBodyBuilder.emitCallResultAssignment(...)`
+  - `ConstructInsnGen#generateCCode(...)` for `construct_object`
+  - `CCodegen.generatePropertyInitApplyBody(...)`
+- Added producer-contract binding comments in:
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/ConstructInsnGen.java`
+- Added regression anchors in:
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
 
 #### 修改范围
 

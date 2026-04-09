@@ -301,6 +301,34 @@ public class CCodegenTest {
     }
 
     @Test
+    void generatePropertyInitApplyHelperConsumesFreshRefCountedResultWithoutExtraOwn() throws Exception {
+        var workerClass = new LirClassDef("GDWorkerNode", "Node");
+        workerClass.addProperty(new LirPropertyDef("ready_ref", new GdObjectType("RefCounted")));
+        var module = new LirModule("property_init_refcounted_apply_module", List.of(workerClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = new String(files.getFirst().contentWriter());
+
+        var applyHelperBody = resolvePropertyInitApplyHelperBody(cCode, "GDWorkerNode", "ready_ref");
+        assertTrue(
+                applyHelperBody.contains("self->ready_ref = GDWorkerNode__field_init_ready_ref(self);"),
+                applyHelperBody
+        );
+        assertFalse(applyHelperBody.contains("own_object(self->ready_ref);"), applyHelperBody);
+        assertFalse(applyHelperBody.contains("try_own_object(self->ready_ref);"), applyHelperBody);
+        assertFalse(applyHelperBody.contains("release_object("), applyHelperBody);
+        assertFalse(applyHelperBody.contains("try_release_object("), applyHelperBody);
+    }
+
+    @Test
     void generatePropertyInitApplyHelperDoesNotReuseExplicitSetterRoute() throws Exception {
         var workerClass = new LirClassDef("GDWorkerNode", "Node");
         var property = new LirPropertyDef(

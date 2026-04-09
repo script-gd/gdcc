@@ -455,6 +455,8 @@ public class CCodegen implements Codegen {
                 initFunction.getReturnType() instanceof GdObjectType objectType
                         ? (objectType.checkGdccType(ctx.classRegistry()) ? CBodyBuilder.PtrKind.GDCC_PTR : CBodyBuilder.PtrKind.GODOT_PTR)
                         : CBodyBuilder.PtrKind.NON_OBJECT,
+                // Property-init helpers are a dedicated fresh-producer entry: the apply helper must
+                // consume the returned object directly instead of re-owning the field write.
                 CBodyBuilder.OwnershipKind.OWNED
         );
         return bodyBuilder.build();

@@ -311,16 +311,24 @@ public final class CBodyBuilder {
 
     /// Creates a value reference from a raw C expression and type.
     /// PtrKind is auto-resolved from the type.
+    ///
+    /// Even for object-typed expressions this route stays `BORROWED`: it is only a raw wrapper over
+    /// an existing C expression and must not be used for fresh object producers such as call/construct
+    /// results. Fresh object routes must opt into `valueOfOwnedExpr(...)` explicitly so slot writes do
+    /// not re-retain caller-owned results.
     public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type) {
         return new ExprValue(code, type, resolvePtrKind(type));
     }
 
     /// Creates a value reference from a raw C expression, type, and explicit pointer kind.
+    /// This overload keeps the same `BORROWED` provenance contract as `valueOfExpr(code, type)`.
     public @NotNull ValueRef valueOfExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         return new ExprValue(code, type, ptrKind);
     }
 
     /// Creates an OWNED value reference from a raw C expression.
+    /// Use this only for audited fresh object producer routes where the expression already transfers
+    /// ownership to the current lowering site, for example direct constructor/materialization calls.
     public @NotNull ValueRef valueOfOwnedExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         // OWNED sources are consumed by destination slots and must not be owned again.
         return new ExprValue(code, type, ptrKind, OwnershipKind.OWNED);

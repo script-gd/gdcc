@@ -50,6 +50,10 @@
 - `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own
 - constructor/materialization helper 与 property-init helper 这类 fresh object producer 也必须显式走 `OWNED`
 - `generatePropertyInitApplyBody(...)` 也会把 property init helper 的对象返回值标记为 `OWNED`，因为该 helper 语义上返回 fresh value。
+- 当前已审计并绑定到该合同的 backend fresh-object 入口只有三类：
+  - `emitCallResultAssignment(...)`
+  - `ConstructInsnGen` 中的 `construct_object`
+  - `CCodegen.generatePropertyInitApplyBody(...)`
 - `OwnershipKind` 不是“注释性标记”，而是直接驱动对象槽位写入行为：
   - `emitObjectSlotWrite(...)` 遇到 `BORROWED` rhs 会补发 `own_object` / `try_own_object`
   - 遇到 `OWNED` rhs 则直接 consume，不重复 own
