@@ -257,20 +257,20 @@ class CConstructInsnGenEngineTest {
                 countedCreateInstanceBody.contains("gdcc_ref_counted_init_raw("),
                 "RefCounted GDCC create_instance itself should remain raw; external C callers own init.\n" + countedCreateInstanceBody
         );
-        assertTrue(
+        assertFalse(
                 resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_make_engine_node_class_name")
                         .contains("try_destroy_object($node);"),
-                "Engine non-ref local destroy path should be emitted."
+                "Engine non-ref local should not be auto-destroyed."
         );
         assertTrue(
                 resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_measure_engine_ref_counted_reference_count")
                         .contains("release_object($ref_counted);"),
                 "Engine RefCounted local release path should be emitted."
         );
-        assertTrue(
+        assertFalse(
                 resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_make_gdcc_plain_object_label")
                         .contains("try_destroy_object(gdcc_object_to_godot_object_ptr($plain_object, GDConstructRuntimePlainObject_object_ptr));"),
-                "GDCC plain-object local destroy path should be emitted."
+                "GDCC plain-object local should not be auto-destroyed."
         );
         assertTrue(
                 resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_measure_gdcc_counted_worker_reference_count")

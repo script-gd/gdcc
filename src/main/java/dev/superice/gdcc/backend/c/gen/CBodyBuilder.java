@@ -1200,6 +1200,26 @@ public final class CBodyBuilder {
     }
 
     /// Ownership category for object values.
+    /// This is executable lowering data, not passive metadata.
+    ///
+    /// Current production sites:
+    /// - `ValueRef#ownership()` defaults existing vars/exprs to `BORROWED`
+    /// - `valueOfOwnedExpr(...)` marks explicit fresh/transfer-producing expressions as `OWNED`
+    /// - `callAssign(...)` currently treats object call returns as `OWNED`
+    /// - constructor/property-init first-write uses `OWNED` when the init helper semantically produces a fresh value
+    ///
+    /// Current consumers:
+    /// - `assignVar(...)`
+    /// - `emitCallResultAssignment(...)`
+    /// - `returnValue(...)`
+    ///
+    /// All of those routes funnel into `emitObjectSlotWrite(...)`, which uses the ownership kind to decide
+    /// whether the destination slot must retain the RHS:
+    /// - `BORROWED` => emit `own_object` / `try_own_object`
+    /// - `OWNED` => consume directly, do not retain again
+    ///
+    /// Because of that, changing a value source from `OWNED` to `BORROWED` (or the reverse) changes generated C
+    /// and reference-count balance. It is not safe to treat this enum as documentation-only metadata.
     public enum OwnershipKind {
         BORROWED,
         OWNED

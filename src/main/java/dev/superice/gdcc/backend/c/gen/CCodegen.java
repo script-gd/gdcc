@@ -12,6 +12,7 @@ import dev.superice.gdcc.lir.insn.*;
 import dev.superice.gdcc.lir.validation.ControlFlowIntegrityValidator;
 import dev.superice.gdcc.lir.validation.LifecycleInstructionRestrictionValidator;
 import dev.superice.gdcc.scope.ParameterDef;
+import dev.superice.gdcc.scope.RefCountedStatus;
 import dev.superice.gdcc.type.*;
 import dev.superice.gdcc.util.CCodeFormatter;
 import freemarker.template.TemplateException;
@@ -386,6 +387,12 @@ public class CCodegen implements Codegen {
                         continue;
                     }
                     if (!variable.type().isDestroyable()) {
+                        continue;
+                    }
+                    if (variable.type() instanceof GdObjectType objectType
+                            && ctx.classRegistry().getRefCountedStatus(objectType) == RefCountedStatus.NO) {
+                        // Godot does not auto-free non-RefCounted objects at local scope exit.
+                        // They stay under explicit user-managed lifetime (`free`, `queue_free`, etc.).
                         continue;
                     }
                     appendInsnIfAbsent(func, finallyBB,

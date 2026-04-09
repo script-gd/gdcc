@@ -104,6 +104,15 @@ Select operation by `RefCountedStatus`:
 - `UNKNOWN`: `try_own_object` / `try_release_object`
 - `NO`: object own/release is a no-op
 
+Automatic local cleanup rule:
+
+- `AUTO_GENERATED` `destruct` in `__finally__` must never destroy definite non-`RefCounted` object locals.
+- Scope-exit cleanup for object locals is only allowed to release reference-managed object slots:
+  - `YES` -> `release_object`
+  - `UNKNOWN` -> `try_release_object`
+  - `NO` -> no cleanup
+- This matches Godot's contract where non-`RefCounted` objects stay under explicit user-managed lifetime (`free`, `queue_free`, etc.) even when stored in local variables.
+
 ### 3.7 Constraints
 
 - Do not infer ownership from function name prefixes (e.g. `godot_`).
@@ -135,6 +144,7 @@ Strict/compat policy:
 
 Interaction with `__prepare__` / `__finally__`:
 - `__finally__` auto-destruct remains enabled and uses `AUTO_GENERATED`.
+- For object locals, that auto-destruct path is refcount-only; it must not synthesize destruction for definite non-`RefCounted` types.
 - `USER_EXPLICIT` is rejected in `__prepare__` and `__finally__` to avoid semantic collision with auto lifecycle flow.
 - Conflict is resolved by validation stage before code generation.
 

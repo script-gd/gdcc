@@ -47,6 +47,14 @@
 - `ValueRef#ownership()` 默认 `BORROWED`
 - `valueOfOwnedExpr(...)` 用于显式 `OWNED` 值来源（例如 call result 语义）
 - `callAssign(...)` 将对象返回值按 `OWNED` 路径写入目标槽，避免重复 own。
+- `generatePropertyInitApplyBody(...)` 也会把 property init helper 的对象返回值标记为 `OWNED`，因为该 helper 语义上返回 fresh value。
+- `OwnershipKind` 不是“注释性标记”，而是直接驱动对象槽位写入行为：
+  - `emitObjectSlotWrite(...)` 遇到 `BORROWED` rhs 会补发 `own_object` / `try_own_object`
+  - 遇到 `OWNED` rhs 则直接 consume，不重复 own
+- 因此把某个值来源从 `OWNED` 改成 `BORROWED` 的连锁反应不是文档层面的，而是会真实改变引用计数平衡：
+  - `callAssign(...)` 的对象返回若改成 `BORROWED`，当前所有“fresh owned call result”写槽都会额外 retain 一次
+  - constructor/property-init 这类 fresh object first-write 若误标成 `BORROWED`，字段析构只释放一次，最终会留下泄漏
+  - `returnValue(...)` 对 borrowed 参数/字段返回依赖该标记来决定是否为 `_return_val` retain；误标会在“缺 retain”与“多 retain”之间直接切换
 
 ### 2.3 指针表示模型与转换
 
@@ -108,6 +116,10 @@
 - 对象返回槽写入复用对象槽位写入语义（含 own/release/转换）。
 - 当返回值来自本地 owning object slot 时，Builder 会把该 slot move 到 `_return_val` 并清空源槽，避免 `__finally__` auto-destruction 释放已发布的返回对象。
 - 非对象返回槽目前保持 direct assignment（不走 `emitNonObjectSlotWrite`）。
+- `CCodegen` 的 `__finally__` auto-destruction 目前只覆盖：
+  - value-semantic destroyable locals
+  - `RefCountedStatus.YES/UNKNOWN` 的对象 locals
+- `RefCountedStatus.NO` 的对象 local 不会自动生成 cleanup；这类对象遵循 Godot 的显式生命周期合同，不因离开局部作用域而自动 `free` / destroy。
 
 ## 5. TempVar 与首写语义
 

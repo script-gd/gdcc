@@ -32,7 +32,7 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
         switch (variable.type()) {
             case GdVoidType _ ->
                     throw bodyBuilder.invalidInsn("Cannot destruct variable of type " + variable.type().getTypeName());
-            case GdObjectType objectType -> generateObjectDestruct(bodyBuilder, objectType, variable);
+            case GdObjectType objectType -> generateObjectDestruct(bodyBuilder, insn, objectType, variable);
             case GdVariantType _, GdStringLikeType _, GdMetaType _, GdContainerType _ -> {
                 var destroyFunc = bodyBuilder.helper().renderDestroyFunctionName(variable.type());
                 bodyBuilder.callVoid(destroyFunc, List.of(bodyBuilder.valueOfVar(variable)));
@@ -61,9 +61,16 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
     }
 
     private void generateObjectDestruct(@NotNull CBodyBuilder bodyBuilder,
+                                        @NotNull DestructInsn insn,
                                         @NotNull GdObjectType objectType,
                                         @NotNull LirVariable variable) {
-        var releaseFunc = switch (bodyBuilder.classRegistry().getRefCountedStatus(objectType)) {
+        var refCountedStatus = bodyBuilder.classRegistry().getRefCountedStatus(objectType);
+        if (insn.getProvenance() == LifecycleProvenance.AUTO_GENERATED && refCountedStatus == RefCountedStatus.NO) {
+            // AUTO_GENERATED object cleanup models local scope-exit maintenance only for reference-managed objects.
+            // Non-RefCounted objects follow Godot's explicit lifetime contract and must not be destroyed here.
+            return;
+        }
+        var releaseFunc = switch (refCountedStatus) {
             case RefCountedStatus.YES -> "release_object";
             case RefCountedStatus.UNKNOWN -> "try_release_object";
             case RefCountedStatus.NO -> "try_destroy_object";
