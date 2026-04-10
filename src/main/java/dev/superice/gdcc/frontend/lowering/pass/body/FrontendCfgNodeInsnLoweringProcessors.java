@@ -27,10 +27,12 @@ final class FrontendCfgNodeInsnLoweringProcessors {
         );
     }
 
-    /// Replays one already-built linear CFG sequence into a single LIR basic block.
+    /// Replays one already-built linear CFG sequence starting from the node's entry LIR basic block.
     ///
     /// The processor is intentionally narrow: it only walks the published `SequenceItem` list in
-    /// order and then wires the block to the single lexical continuation encoded by `nextId`.
+    /// order, threading through any synthetic continuation blocks that item lowering may allocate,
+    /// and finally wires the last active block to the single lexical continuation encoded by
+    /// `nextId`.
     private static final class FrontendSequenceNodeInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<FrontendCfgGraph.SequenceNode, Void> {
         @Override
@@ -39,16 +41,18 @@ final class FrontendCfgNodeInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull FrontendCfgGraph.SequenceNode node,
                 @Nullable Void context
         ) {
+            var currentBlock = block;
             for (var item : node.items()) {
-                session.lowerSequenceItem(block, item);
+                currentBlock = session.lowerSequenceItem(currentBlock, item);
             }
-            block.setTerminator(new GotoInsn(node.nextId()));
+            currentBlock.setTerminator(new GotoInsn(node.nextId()));
+            return currentBlock;
         }
     }
 
@@ -65,7 +69,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull FrontendCfgGraph.BranchNode node,
@@ -79,6 +83,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
                     node.trueTargetId(),
                     node.falseTargetId()
             );
+            return block;
         }
 
         private void emitConditionBranch(
@@ -128,7 +133,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull FrontendCfgGraph.StopNode node,
@@ -142,7 +147,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
             var returnValueId = node.returnValueIdOrNull();
             if (returnValueId == null) {
                 block.setTerminator(new ReturnInsn(null));
-                return;
+                return block;
             }
             var materializedReturnSlotId = session.materializeFrontendBoundaryValue(
                     block,
@@ -152,6 +157,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
                     "return_value"
             );
             block.setTerminator(new ReturnInsn(materializedReturnSlotId));
+            return block;
         }
     }
 }

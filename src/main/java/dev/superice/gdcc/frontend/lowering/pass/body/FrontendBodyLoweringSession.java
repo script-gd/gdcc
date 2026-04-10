@@ -54,7 +54,8 @@ import java.util.Set;
 /// - published semantic tables already accepted by compile gate
 /// - declared temp/local/merge slots
 /// - block materialization order
-/// - processor registries for CFG nodes, sequence items, and opaque expressions
+/// - processor registries for CFG nodes, sequence items, and opaque expressions, including
+///   continuation-block threading when writable-route lowering splices synthetic blocks
 /// - one dedicated writable-route entry for published assignment targets
 ///
 /// Processors may query this session for already-frozen information, but they must not rebuild
@@ -103,12 +104,12 @@ public final class FrontendBodyLoweringSession {
         lowerBlocks();
     }
 
-    void lowerSequenceItem(@NotNull LirBasicBlock block, @NotNull SequenceItem item) {
-        sequenceItemProcessors.lower(this, block, item, null);
+    @NotNull LirBasicBlock lowerSequenceItem(@NotNull LirBasicBlock block, @NotNull SequenceItem item) {
+        return sequenceItemProcessors.lower(this, block, item, null);
     }
 
-    void lowerOpaqueExpression(@NotNull LirBasicBlock block, @NotNull OpaqueExprValueItem item) {
-        opaqueExprProcessors.lower(this, block, item.expression(), new OpaqueExprLoweringContext(item));
+    @NotNull LirBasicBlock lowerOpaqueExpression(@NotNull LirBasicBlock block, @NotNull OpaqueExprValueItem item) {
+        return opaqueExprProcessors.lower(this, block, item.expression(), new OpaqueExprLoweringContext(item));
     }
 
     void lowerAssignmentTarget(@NotNull LirBasicBlock block, @NotNull AssignmentItem item, @NotNull String rhsSlotId) {

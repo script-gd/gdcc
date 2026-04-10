@@ -53,7 +53,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull IdentifierExpression node,
@@ -73,7 +73,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                                 session.currentClassName(),
                                 binding.symbolName()
                         ));
-                        return;
+                        return block;
                     }
                     session.requireSelfSlot();
                     block.appendNonTerminatorInstruction(new LoadPropertyInsn(resultSlotId, binding.symbolName(), "self"));
@@ -83,6 +83,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                         "identifier binding kind is not supported by frontend body lowering: " + binding.kind()
                 );
             }
+            return block;
         }
     }
 
@@ -98,7 +99,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull LiteralExpression node,
@@ -117,7 +118,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                                 resultSlotId,
                                 Double.parseDouble(node.sourceText())
                         ));
-                        return;
+                        return block;
                     }
                     block.appendNonTerminatorInstruction(new LiteralIntInsn(
                             resultSlotId,
@@ -144,6 +145,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                         "literal kind is not supported by frontend body lowering: " + node.kind()
                 );
             }
+            return block;
         }
     }
 
@@ -159,7 +161,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull SelfExpression node,
@@ -167,6 +169,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         ) {
             var item = requireContext(context);
             block.appendNonTerminatorInstruction(new AssignInsn(session.resultSlotId(item), "self"));
+            return block;
         }
     }
 
@@ -182,7 +185,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull UnaryExpression node,
@@ -195,6 +198,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     GodotOperator.fromSourceLexeme(node.operator(), GodotOperator.OperatorArity.UNARY),
                     session.slotIdForValue(item.operandValueIds().getFirst())
             ));
+            return block;
         }
     }
 
@@ -210,7 +214,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull BinaryExpression node,
@@ -224,6 +228,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     session.slotIdForValue(item.operandValueIds().getFirst()),
                     session.slotIdForValue(item.operandValueIds().getLast())
             ));
+            return block;
         }
     }
 

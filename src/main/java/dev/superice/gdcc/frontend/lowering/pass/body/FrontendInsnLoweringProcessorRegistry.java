@@ -12,7 +12,9 @@ import java.util.Objects;
 ///
 /// The registry keeps the routing rules explicit and fail-fast: when a new frontend node reaches
 /// lowering without a registered processor, the error points directly at the missing node class
-/// instead of silently falling back to a giant `switch`.
+/// instead of silently falling back to a giant `switch`. It also threads through the active
+/// continuation block selected by each processor so later lowering keeps appending to the right
+/// synthetic block after branchy writable-route helpers.
 final class FrontendInsnLoweringProcessorRegistry<TNode, TContext> {
     private final @NotNull String registryName;
     private final @NotNull Map<Class<?>, FrontendInsnLoweringProcessor<? extends TNode, TContext>> processors;
@@ -34,13 +36,13 @@ final class FrontendInsnLoweringProcessorRegistry<TNode, TContext> {
         this.processors = copyProcessors(processors);
     }
 
-    <TActual extends TNode> void lower(
+    <TActual extends TNode> @NotNull LirBasicBlock lower(
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
             @NotNull TActual node,
             @Nullable TContext context
     ) {
-        requireProcessor(node).lower(
+        return requireProcessor(node).lower(
                 session,
                 block,
                 node,

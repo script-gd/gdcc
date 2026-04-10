@@ -94,12 +94,15 @@ call result type 的正式真源是 call anchor 对应的 `analysisData.expressi
   - `CallMethodInsn.objectId` 优先复用 CFG 已发布的 receiver value slot
   - payload-backed call 若缺失 dedicated `receiverValueIdOrNull`，属于 publication invariant violation；body lowering 不会再回退成按 payload 临时重读 receiver leaf
   - 同一个 payload 仅负责 exact route 的 post-call reverse commit
-  - 若 receiver leaf 是 direct-slot payload，则 lowering 仍需把 synthetic CFG temp 映射回真实源 slot
+  - 若 receiver leaf 是 direct-slot payload，当前 Step 5 实现仍会把已发布 receiver value 最终落回真实源 slot；但这只是过渡事实，不是最终长期合同
+  - Step 6 的收口目标是：direct-slot mutating receiver 直接发布 alias-backed receiver value，让 call lowering 继续只消费 dedicated `receiverValueIdOrNull`，而不是长期保留“synthetic CFG temp -> 真实源 slot”的额外解释路径
+  - 这里的 direct-slot publication surface 只包含 explicit `SelfExpression` 与 direct-slot identifier binding；`receiverValueIdOrNull == null` 时由 `resolveInstanceCallReceiver(...)` fallback 到 `self` 的 implicit self receiver 仍属于 call execution fallback，不属于 alias publication
 - post-call reverse commit / runtime gate 仍由 `frontend_complex_writable_target_plan.md` 的后续步骤继续闭合，不在 dynamic dispatch 合同中重复定义
 - shared writable-route support 现已同时提供：
   - 静态 gate 入口 `reverseCommit(..., ReverseCommitGateHook)`
   - 动态 gate 入口 `reverseCommitWithRuntimeGate(...)`
   dynamic call path 后续若接入 mutating receiver runtime gate，必须复用后者返回的 continuation block，而不是自建第二套 per-layer branch 拼装逻辑
+- 为承接这条 continuation-block 合同，body lowering 的 processor / registry / sequence-item 调度面也必须显式 thread 当前 block；call lowering 不得再假设“所有后续 instruction 永远继续附着在原始 sequence block 上”
 
 call-route / dispatch 的长合同仍以本文档为准；receiver-side writable chain / writeback 的长合同由 `frontend_complex_writable_target_plan.md` 约束。
 

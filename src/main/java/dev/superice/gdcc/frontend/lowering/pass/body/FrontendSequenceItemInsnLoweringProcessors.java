@@ -89,7 +89,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull SourceAnchorItem node,
@@ -99,6 +99,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             if (lineNumber > 0) {
                 block.appendNonTerminatorInstruction(new LineNumberInsn(lineNumber));
             }
+            return block;
         }
 
         private int sourceLine(@NotNull Statement statement) {
@@ -120,7 +121,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull LocalDeclarationItem node,
@@ -128,7 +129,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         ) {
             var initializerValueId = node.initializerValueIdOrNull();
             if (initializerValueId == null) {
-                return;
+                return block;
             }
             var materializedSlotId = session.materializeFrontendBoundaryValue(
                     block,
@@ -141,6 +142,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     FrontendBodyLoweringSupport.sourceLocalSlotId(node.declaration()),
                     materializedSlotId
             ));
+            return block;
         }
     }
 
@@ -156,7 +158,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull BoolConstantItem node,
@@ -166,6 +168,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
                     node.value()
             ));
+            return block;
         }
     }
 
@@ -182,7 +185,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull MergeValueItem node,
@@ -192,6 +195,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     FrontendBodyLoweringSupport.mergeSlotId(node.resultValueId()),
                     session.slotIdForValue(node.sourceValueId())
             ));
+            return block;
         }
     }
 
@@ -208,7 +212,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull OpaqueExprValueItem node,
@@ -218,7 +222,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             if (policy.handling() != OpaqueExprHandling.HANDLE_NOW) {
                 throw session.unsupportedSequenceItem(node, policy.detail());
             }
-            session.lowerOpaqueExpression(block, node);
+            return session.lowerOpaqueExpression(block, node);
         }
 
         private @NotNull OpaqueExprPolicy classifyOpaqueExpression(@NotNull Expression expression) {
@@ -298,6 +302,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     /// instance calls already use that route to drive post-call reverse commit when the declaration
     /// may mutate the receiver; dynamic dispatch stays on the backend route for now, and later typed
     /// consumers of the published `Variant` result still use the ordinary frontend boundary helper.
+    /// The processor therefore returns the currently-active continuation block instead of assuming
+    /// every call site stays in the original lexical block: Step 7 runtime-gated receiver writeback
+    /// will need to splice branches and continue later sequence items on the returned block.
     private static final class FrontendCallInsnLoweringProcessor
             implements FrontendInsnLoweringProcessor<CallItem, Void> {
         @Override
@@ -306,7 +313,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull CallItem node,
@@ -314,83 +321,132 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         ) {
             var resolvedCall = session.requireResolvedCall(node.anchor());
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
-            switch (resolvedCall.callKind()) {
-                case INSTANCE_METHOD -> {
-                    var mutatingReceiverRoute = resolvedMutatingReceiverRouteOrNull(session, node, resolvedCall);
-                    var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
-                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
-                    block.appendNonTerminatorInstruction(new CallMethodInsn(
-                            resultSlotId,
-                            resolvedCall.callableName(),
-                            receiverSlotId,
-                            arguments
-                    ));
-                    if (mutatingReceiverRoute != null) {
-                        FrontendWritableRouteSupport.reverseCommit(
-                                session,
-                                block,
-                                mutatingReceiverRoute,
-                                receiverSlotId,
-                                FrontendWritableRouteSupport.createStaticCarrierWritebackGate(session)
-                        );
-                    }
-                }
-                case STATIC_METHOD -> {
-                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
-                    if (resolvedCall.receiverType() == null) {
-                        block.appendNonTerminatorInstruction(new CallGlobalInsn(
-                                resultSlotId,
-                                resolvedCall.callableName(),
-                                arguments
-                        ));
-                        return;
-                    }
-                    block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
-                            resultSlotId,
-                            session.requireStaticReceiverName(resolvedCall.receiverType()),
-                            resolvedCall.callableName(),
-                            arguments
-                    ));
-                }
-                case CONSTRUCTOR -> {
-                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
-                    var constructorResultType = Objects.requireNonNull(
-                            resolvedCall.returnType(),
-                            "resolved constructor call must carry a result type"
-                    );
-                    switch (constructorResultType) {
-                        // Builtin/container constructors materialize directly from the published call route.
-                        case dev.superice.gdcc.type.GdObjectType _ ->
-                                block.appendNonTerminatorInstruction(new ConstructObjectInsn(
-                                        resultSlotId,
-                                        session.requireClassName(constructorResultType)
-                                ));
-                        default ->
-                                block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
-                    }
-                }
-                case DYNAMIC_FALLBACK -> {
-                    if (resolvedCall.receiverKind() != FrontendReceiverKind.INSTANCE) {
-                        throw session.unsupportedSequenceItem(
-                                node,
-                                "dynamic call lowering requires an instance receiver route, but got "
-                                        + resolvedCall.receiverKind()
-                        );
-                    }
-                    var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
-                    var arguments = session.materializeCallArguments(block, node, resolvedCall);
-                    block.appendNonTerminatorInstruction(new CallMethodInsn(
-                            resultSlotId,
-                            resolvedCall.callableName(),
-                            receiverSlotId,
-                            arguments
-                    ));
-                }
+            return switch (resolvedCall.callKind()) {
+                case INSTANCE_METHOD -> lowerExactInstanceCall(session, block, node, resolvedCall, resultSlotId);
+                case STATIC_METHOD -> lowerStaticMethodCall(session, block, node, resolvedCall, resultSlotId);
+                case CONSTRUCTOR -> lowerConstructorCall(session, block, node, resolvedCall, resultSlotId);
+                case DYNAMIC_FALLBACK -> lowerDynamicInstanceCall(session, block, node, resolvedCall, resultSlotId);
                 case UNKNOWN -> throw session.unsupportedSequenceItem(
                         node,
                         "call route is not lowering-ready: " + resolvedCall.callKind()
                 );
+            };
+        }
+
+        private @NotNull LirBasicBlock lowerExactInstanceCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull CallItem node,
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
+                @NotNull String resultSlotId
+        ) {
+            var mutatingReceiverRoute = resolvedMutatingReceiverRouteOrNull(session, node, resolvedCall);
+            var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
+            var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            block.appendNonTerminatorInstruction(new CallMethodInsn(
+                    resultSlotId,
+                    resolvedCall.callableName(),
+                    receiverSlotId,
+                    arguments
+            ));
+            return continueAfterReceiverWriteback(session, block, mutatingReceiverRoute, receiverSlotId);
+        }
+
+        private @NotNull LirBasicBlock lowerStaticMethodCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull CallItem node,
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
+                @NotNull String resultSlotId
+        ) {
+            var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            if (resolvedCall.receiverType() == null) {
+                block.appendNonTerminatorInstruction(new CallGlobalInsn(
+                        resultSlotId,
+                        resolvedCall.callableName(),
+                        arguments
+                ));
+                return block;
             }
+            block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
+                    resultSlotId,
+                    session.requireStaticReceiverName(resolvedCall.receiverType()),
+                    resolvedCall.callableName(),
+                    arguments
+            ));
+            return block;
+        }
+
+        private @NotNull LirBasicBlock lowerConstructorCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull CallItem node,
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
+                @NotNull String resultSlotId
+        ) {
+            var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            var constructorResultType = Objects.requireNonNull(
+                    resolvedCall.returnType(),
+                    "resolved constructor call must carry a result type"
+            );
+            switch (constructorResultType) {
+                // Builtin/container constructors materialize directly from the published call route.
+                case dev.superice.gdcc.type.GdObjectType _ ->
+                        block.appendNonTerminatorInstruction(new ConstructObjectInsn(
+                                resultSlotId,
+                                session.requireClassName(constructorResultType)
+                        ));
+                default -> block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
+            }
+            return block;
+        }
+
+        private @NotNull LirBasicBlock lowerDynamicInstanceCall(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull CallItem node,
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
+                @NotNull String resultSlotId
+        ) {
+            if (resolvedCall.receiverKind() != FrontendReceiverKind.INSTANCE) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "dynamic call lowering requires an instance receiver route, but got "
+                                + resolvedCall.receiverKind()
+                );
+            }
+            var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
+            var arguments = session.materializeCallArguments(block, node, resolvedCall);
+            block.appendNonTerminatorInstruction(new CallMethodInsn(
+                    resultSlotId,
+                    resolvedCall.callableName(),
+                    receiverSlotId,
+                    arguments
+            ));
+            return block;
+        }
+
+        /// Returns the block that later lowering must keep appending to after post-call receiver
+        /// writeback. Exact routes still stay in-place today, but Step 7 runtime-gated dynamic
+        /// writeback will replace this with `reverseCommitWithRuntimeGate(...)` and continue on the
+        /// returned synthetic block.
+        private @NotNull LirBasicBlock continueAfterReceiverWriteback(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @Nullable FrontendWritableRouteSupport.FrontendWritableAccessChain mutatingReceiverRoute,
+                @NotNull String receiverSlotId
+        ) {
+            if (mutatingReceiverRoute == null) {
+                return block;
+            }
+            FrontendWritableRouteSupport.reverseCommit(
+                    session,
+                    block,
+                    mutatingReceiverRoute,
+                    receiverSlotId,
+                    FrontendWritableRouteSupport.createStaticCarrierWritebackGate(session)
+            );
+            return block;
         }
 
         /// Exact instance-call post-commit is enabled only for already-published writable receiver
@@ -424,7 +480,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull MemberLoadItem node,
@@ -480,6 +536,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         "member receiver kind is not lowering-ready: " + resolvedMember.receiverKind()
                 );
             }
+            return block;
         }
     }
 
@@ -495,7 +552,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull SubscriptLoadItem node,
@@ -534,6 +591,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     chain,
                     FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
             );
+            return block;
         }
     }
 
@@ -550,7 +608,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull CompoundAssignmentBinaryOpItem node,
@@ -562,6 +620,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     session.slotIdForValue(node.currentTargetValueId()),
                     session.slotIdForValue(node.rhsValueId())
             ));
+            return block;
         }
 
         private @NotNull GodotOperator requireCompoundOperator(
@@ -596,7 +655,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull AssignmentItem node,
@@ -610,6 +669,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         rhsSlotId
                 ));
             }
+            return block;
         }
     }
 
@@ -626,7 +686,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull CastItem node,
@@ -648,7 +708,7 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         }
 
         @Override
-        public void lower(
+        public @NotNull LirBasicBlock lower(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull TypeTestItem node,

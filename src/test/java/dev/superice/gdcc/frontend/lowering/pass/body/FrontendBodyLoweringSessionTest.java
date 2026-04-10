@@ -20,6 +20,7 @@ import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -32,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSessionTest {
@@ -149,6 +151,38 @@ class FrontendBodyLoweringSessionTest {
         );
     }
 
+    @Test
+    void loweringProcessorRegistryReturnsContinuationBlockChosenByProcessor() throws Exception {
+        var session = prepareSession();
+        var entryBlock = new LirBasicBlock("entry");
+        var continuationBlock = new LirBasicBlock("continuation");
+        var registry = FrontendInsnLoweringProcessorRegistry.of(
+                "test node",
+                new FrontendInsnLoweringProcessor<TestNode, Void>() {
+                    @Override
+                    public @NotNull Class<TestNode> nodeType() {
+                        return TestNode.class;
+                    }
+
+                    @Override
+                    public @NotNull LirBasicBlock lower(
+                            @NotNull FrontendBodyLoweringSession innerSession,
+                            @NotNull LirBasicBlock block,
+                            @NotNull TestNode node,
+                            @Nullable Void context
+                    ) {
+                        assertSame(session, innerSession);
+                        assertSame(entryBlock, block);
+                        return continuationBlock;
+                    }
+                }
+        );
+
+        var actualBlock = registry.lower(session, entryBlock, new TestNode(), null);
+
+        assertSame(continuationBlock, actualBlock);
+    }
+
     private static @NotNull FrontendBodyLoweringSession prepareSession() throws Exception {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(
@@ -206,5 +240,8 @@ class FrontendBodyLoweringSessionTest {
             @NotNull String fileName,
             @NotNull String source
     ) {
+    }
+
+    private record TestNode() {
     }
 }
