@@ -433,6 +433,15 @@ generated `call_func` wrapper 必须满足：
 - native body 建议行为：
   - 对 `value` 做最小可观察消费，例如 `size()` / `typeof` / 路由判断，返回确定值
 
+状态（2026-04-11）：
+
+- 已完成。
+- `FrontendLoweringToCProjectBuilderIntegrationTest.lowerFrontendVariantMethodAbiBuildNativeLibraryAndRunInGodot()` 已覆盖 `target.call("accept_variant", PackedInt32Array(...))` 的正向入口。
+- 运行时断言固定了两件事：
+  - native body 确实被执行，而不是在 wrapper 前置 gate 被拦下
+  - `read_variant_calls()` 的 side effect 与返回值一起证明 payload 按真实 `Variant` 进入了 native body
+- 同一用例还显式断言运行输出中不再出现 `expected = GDEXTENSION_VARIANT_TYPE_NIL` 对应的 `Nil` gate 回归。
+
 验收：
 
 - native body 确实被执行
@@ -448,6 +457,15 @@ generated `call_func` wrapper 必须满足：
   - 返回值可以赋给脚本变量
   - `typeof(...)` 正确
   - payload 可继续被脚本消费
+
+状态（2026-04-11）：
+
+- 已完成。
+- 同一集成用例中的 `echo_variant(PackedInt32Array(...))` direct call 已证明：
+  - 返回值不会被当作 `void`
+  - GDScript 端看到的仍是 `TYPE_PACKED_INT32_ARRAY`
+  - payload 内容未在 return surface 上丢失
+- 这条覆盖与 dynamic `call()` 路径分离，避免只修 wrapper 却遗漏 return metadata surface。
 
 验收：
 
@@ -465,6 +483,14 @@ generated `call_func` wrapper 必须满足：
   - 类型正确
   - 值正确
 
+状态（2026-04-11）：
+
+- 已完成。
+- `FrontendLoweringToCProjectBuilderIntegrationTest.lowerFrontendVariantPropertyAbiBuildNativeLibraryAndRunInGodot()` 已固定 direct property set/get 的运行时语义：
+  - hidden `Variant` property 与 exported `Variant` property 都能发布并读回非空 payload
+  - `read_payload_size()` / `read_visible_payload_size()` 进一步证明 native body 内部读取看到的仍是同一 `Variant` payload
+- 同一用例还保留了非 `Variant` property 的正向检查，防止 property metadata 改动顺手漂移普通 property surface。
+
 验收：
 
 - property set/get 两侧都以真正的 `Variant` 语义工作
@@ -475,6 +501,15 @@ generated `call_func` wrapper 必须满足：
 - 必须保留至少一个非 `Variant` 参数的 negative integration 或 codegen guard：
   - 例如 `int` 参数仍然拒绝 `PackedInt32Array`
 - 目的是证明本次 patch 没把全部 runtime gate 一并撤掉
+
+状态（2026-04-11）：
+
+- 已完成。
+- codegen 层由 `CCodegenTest.generatesVariantMethodBindingMetadataAndKeepsNonVariantGate()` 持续锚定 `expected = GDEXTENSION_VARIANT_TYPE_INT` 仍存在。
+- runtime 层由 `FrontendLoweringToCProjectBuilderIntegrationTest.lowerFrontendNonVariantMethodGuardRejectsPackedArrayAtRuntime()` 继续验证：
+  - `target.call("accept_int", PackedInt32Array(...))` 仍然失败
+  - Godot 输出保持 `Cannot convert argument 2 from PackedInt32Array to int.`
+  - 失败不会退化成 `... to Nil`，从而证明 negative path 仍归因于非 `Variant` 精确 gate，而不是 `Variant` ABI regression
 
 验收：
 
@@ -496,6 +531,15 @@ generated `call_func` wrapper 必须满足：
     - `usage |= NIL_IS_VARIANT`
     - `call_func` 不得对 Variant slot 做 NIL 精确 gate
 
+状态（2026-04-11）：
+
+- 已完成。
+- `doc/test_error/frontend_variant_and_typed_dictionary_abi.md` 现已改写为：
+  - 当前 ordinary method/property `Variant` surface 已修复
+  - 修复 contract 与运行时回归覆盖已明确写出
+  - 剩余 open item 只保留 typed dictionary boundary fidelity
+- 文档中的“未来修复方向”也已收束成“已修复的 Variant contract + 独立的 typed dictionary follow-up”，避免继续按过期故障状态推进工程。
+
 验收：
 
 - 文档不再只描述现状 bug，也明确记录修复目标和判定标准
@@ -509,6 +553,15 @@ generated `call_func` wrapper 必须满足：
   - 不属于 frontend ordinary lowering boundary
   - typed dictionary ABI fidelity 是单独问题
 
+状态（2026-04-11）：
+
+- 已完成。
+- `doc/gdcc_c_backend.md` 已新增 `Variant Outward ABI Contract` 段落，明确：
+  - outward `Variant` slot 的 `NIL + PROPERTY_USAGE_NIL_IS_VARIANT` 约定
+  - `call_func` 只对 `Variant` 参数跳过 exact type gate，`ptrcall` ABI 不变
+  - 该语义是 backend metadata / wrapper contract，不应上移到 frontend / LIR ordinary lowering 规则
+- 文档同时把 typed dictionary ABI 单列为后续问题，避免后续工程在错误层级上“顺手修 ABI”。
+
 验收：
 
 - 文档能阻止后续工程去错误修改 frontend boundary helper 来“修 ABI”
@@ -518,6 +571,14 @@ generated `call_func` wrapper 必须满足：
 - 可在本计划或 ABI 调查文档中补一句：
   - 后续 typed dictionary patch 应复用本次整理出的 helper 触点
   - 但测试、验收、风险分析必须独立进行
+
+状态（2026-04-11）：
+
+- 已完成。
+- 计划文档、ABI 调查文档与 backend 总体文档现在都统一说明：
+  - typed dictionary patch 应复用本次整理出的 backend helper 触点
+  - 但它必须拥有独立的测试夹具、验收矩阵与风险归因
+- 这样后续 typed dictionary 工程不会再被混入当前 `Variant` ABI regression surface。
 
 验收：
 

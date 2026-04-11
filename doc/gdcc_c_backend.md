@@ -113,6 +113,29 @@
   - it does not participate in callable resolution, receiver provenance, or owner-route reconstruction
   - its false/true family matrix is owned by `gdcc_type_system.md` and `gdcc_helper.h`; backend must not drift into a second independent classification table
 
+### Variant Outward ABI Contract
+
+- Ordinary method/property `Variant` ABI is owned by backend metadata generation plus generated `call_func` wrappers.
+- For ordinary outward `Variant` slots:
+  - publish `GDEXTENSION_VARIANT_TYPE_NIL`
+  - append `godot_PROPERTY_USAGE_NIL_IS_VARIANT`
+- This applies to:
+  - method arguments
+  - method return metadata
+  - property registration metadata
+- `call_func` wrappers must skip the exact `type == NIL` gate only for `Variant` parameters.
+- Non-`Variant` parameters must keep their existing exact runtime type gate.
+- `ptrcall` ABI shape is not part of this patch and must remain unchanged.
+- Implementation touchpoints should stay centralized in backend helpers/templates:
+  - `CGenHelper.renderBoundMetadata(...)`
+  - `CGenHelper.renderPropertyMetadata(...)`
+  - `gdcc_make_property_full(...)`
+  - `gdcc_bind_property_full(...)`
+- Do not push this metadata contract into frontend ordinary lowering or LIR shape just to carry `hint/usage/class_name`.
+- Typed dictionary ABI fidelity is a separate follow-up topic:
+  - it may reuse the touchpoints above
+  - but it requires independent metadata rules, tests, and risk analysis
+
 ### Receiver Value Terminology
 
 - **Receiver Value** means the final C argument expression used as the receiver (`self/this`) when emitting a method call or property getter/setter call.

@@ -1058,6 +1058,82 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendNonVariantMethodGuardRejectsPackedArrayAtRuntime() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping non-Variant method guard integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_non_variant_method_guard_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name NonVariantMethodGuardSmoke
+                extends Node
+                
+                func accept_int(value: int) -> int:
+                    return value + 1
+                """;
+        var module = parseModule(
+                tempDir.resolve("non_variant_method_guard_smoke.gd"),
+                source,
+                Map.of("NonVariantMethodGuardSmoke", "RuntimeNonVariantMethodGuardSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeNonVariantMethodGuardSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_non_variant_method_guard_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "NonVariantMethodGuardSmokeNode",
+                        "RuntimeNonVariantMethodGuardSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(nonVariantMethodGuardTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("Cannot convert argument 2 from PackedInt32Array to int."),
+                () -> "The exact non-Variant runtime gate should still reject PackedInt32Array.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("Cannot convert argument 2 from PackedInt32Array to Nil."),
+                () -> "The negative guard must still be the non-Variant exact gate, not a Variant/Nil regression.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendVariantPropertyAbiBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping Variant property ABI integration test");
@@ -1329,7 +1405,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                     payloads[slot_key].push_back(seed)
                     var zero_key: Variant = 0
                     return payloads[zero_key].size() * 10 + keys.size()
-
+                
                 func typed_payload_size() -> int:
                     return typed_payload.size()
                 """;
@@ -1888,6 +1964,22 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend Variant method ABI runtime class check passed.")
                     else:
                         push_error("frontend Variant method ABI runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String nonVariantMethodGuardTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "NonVariantMethodGuardSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    target.call("accept_int", PackedInt32Array([9]))
                 """;
     }
 

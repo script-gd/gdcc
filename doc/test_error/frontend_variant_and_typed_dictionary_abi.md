@@ -23,10 +23,20 @@ As of 2026-04-11, the backend `Variant` ABI has been repaired for ordinary metho
 - generated `call_func` wrappers no longer keep the erroneous `type != NIL` exact gate for `Variant` parameters
 - method return metadata now also publishes `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
 - property registration now publishes the same outward `Variant` contract, and direct property get/set integration coverage has passed against Godot runtime
+- focused runtime coverage now explicitly includes both:
+  - positive paths for dynamic `call()` + direct return + direct property get/set
+  - a negative guard proving non-`Variant` parameters still fail as `PackedInt32Array -> int`, not `PackedInt32Array -> Nil`
 
 The remaining open item from this investigation is:
 
 - typed dictionary boundary fidelity
+
+The repaired `Variant` contract is now:
+
+- outward metadata for method args / returns / properties uses `type = NIL`
+- the same outward surfaces append `PROPERTY_USAGE_NIL_IS_VARIANT`
+- generated `call_func` wrappers skip the exact `NIL` gate only for `Variant` slots
+- non-`Variant` slots keep their original exact runtime gate
 
 The historical sections below are kept because they explain the original failure chain and why the writable-route fixture was initially shaped to avoid mixing ABI defects into the continuation tests.
 
@@ -365,15 +375,20 @@ Otherwise the test stops being a precise probe of:
 
 and starts mixing in unrelated ABI defects.
 
-## Suggested Fix Directions
+## Follow-up Direction
 
-### `Variant` boundary fix
+### `Variant` boundary
 
-To make external `Variant` parameters/properties semantically correct, investigate:
+This part is no longer an open investigation item for ordinary method/property surfaces.
 
-- emitting `PROPERTY_USAGE_NIL_IS_VARIANT` for `GdVariantType` argument/property metadata
-- teaching generated call wrappers not to reject all non-null values for `Variant` slots
-- adding a direct integration test that passes a non-null value through a `Variant` parameter boundary and mutates it inside the native method
+The stable backend touchpoints are now:
+
+- `CGenHelper.renderBoundMetadata(...)`
+- `CGenHelper.renderPropertyMetadata(...)`
+- `gdcc_make_property_full(...)`
+- `gdcc_bind_property_full(...)`
+
+Any future maintenance on ordinary `Variant` ABI should reuse those touchpoints and keep the existing runtime/codegen regression coverage aligned with them.
 
 ### Typed dictionary boundary fix
 
@@ -386,10 +401,12 @@ To make typed dictionaries semantically survive the ABI boundary, investigate:
   - exported properties
 - adding focused end-to-end tests specifically for typed dictionary parameter/property boundaries, separate from writable-route continuation coverage
 
-Until those fixes land,  integration tests should keep using:
+Until those fixes land, integration tests should keep using:
 
 - internal `Variant` state for dynamic carriers
 - external plain `Dictionary` for the outer mutable route
 - explicit `Variant` locals for generic dictionary keys
 
 so that failures remain attributable to itself.
+
+The typed dictionary follow-up should reuse the backend helper touchpoints established by the `Variant` ABI repair, but its tests, acceptance criteria, and risk analysis must remain independent from the `Variant` regression surface documented here.
