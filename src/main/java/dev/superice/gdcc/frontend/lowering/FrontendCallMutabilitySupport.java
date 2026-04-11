@@ -20,6 +20,7 @@ import java.util.Objects;
 /// - every other declaration source is treated as may-mutate so frontend does not silently skip
 ///   receiver writeback for GDCC/user-defined methods or future metadata carriers without constness
 /// - dynamic instance routes also count as may-mutate because Step 7 has no runtime constness fact;
+///   a const-like method name such as `size` is not enough to prove immutability on a runtime-open route
 ///   frontend must therefore preserve direct-slot alias/writeback eligibility instead of letting a
 ///   potentially mutating dynamic call tunnel through a temp snapshot
 public final class FrontendCallMutabilitySupport {

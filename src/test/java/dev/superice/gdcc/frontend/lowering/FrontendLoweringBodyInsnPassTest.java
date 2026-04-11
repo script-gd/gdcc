@@ -1010,6 +1010,50 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runKeepsDynamicConstLikeDirectSlotReceiverOnAliasSurface() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_const_like_direct_slot_receiver.gd",
+                """
+                        class_name BodyInsnDynamicConstLikeDirectSlotReceiver
+                        extends RefCounted
+                        
+                        func ping(values) -> int:
+                            return values.size()
+                        """,
+                Map.of(
+                        "BodyInsnDynamicConstLikeDirectSlotReceiver",
+                        "RuntimeBodyInsnDynamicConstLikeDirectSlotReceiver"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicConstLikeDirectSlotReceiver",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var unpackInsn = requireOnlyInstruction(pingContext.targetFunction(), UnpackVariantInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("size", callInsn.methodName()),
+                () -> assertEquals("values", callInsn.objectId()),
+                () -> assertFalse(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
+                () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
+                () -> assertTrue(assignSourcesByTarget(instructions).values().stream().noneMatch("values"::equals)),
+                () -> assertEquals(callInsn.resultId(), unpackInsn.variantId()),
+                () -> assertEquals(0, countInstructions(instructions, CallGlobalInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, GoIfInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class))
+        );
+    }
+
+    @Test
     void runFallsBackToSnapshotReceiverWhenArgumentContainsNestedCall() throws Exception {
         var prepared = prepareContext(
                 "body_insn_receiver_snapshot_fallback.gd",
@@ -1510,6 +1554,95 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertTrue(instructionIndex(instructions, callInsn) < instructionIndex(instructions, gateCallInsn)),
                 () -> assertTrue(instructionIndex(instructions, gateCallInsn) < instructionIndex(instructions, applyStore)),
                 () -> assertTrue(instructionIndex(instructions, applyStore) < instructionIndex(instructions, continuationLoad))
+        );
+    }
+
+    @Test
+    void runStillEmitsRuntimeGatedWritebackForDynamicConstLikePropertyReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_const_like_property_call.gd",
+                """
+                        class_name BodyInsnDynamicConstLikePropertyCall
+                        extends RefCounted
+                        
+                        var payloads: Variant
+                        
+                        func ping() -> int:
+                            return payloads.size()
+                        """,
+                Map.of(
+                        "BodyInsnDynamicConstLikePropertyCall",
+                        "RuntimeBodyInsnDynamicConstLikePropertyCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicConstLikePropertyCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var entryBlock = requireBlock(function, "seq_0");
+        var entryLoads = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .toList();
+        var entryCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var skipBlock = requireBlock(function, gateBranch.falseBbId());
+        var applyStore = assertInstanceOf(StorePropertyInsn.class, applyBlock.getNonTerminatorInstructions().getFirst());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        var continuationGoto = assertInstanceOf(GotoInsn.class, continuationBlock.getTerminator());
+        var stopBlock = requireBlock(function, continuationGoto.targetBbId());
+        var stopUnpacks = stopBlock.getNonTerminatorInstructions().stream()
+                .filter(UnpackVariantInsn.class::isInstance)
+                .map(UnpackVariantInsn.class::cast)
+                .toList();
+        var returnInsn = assertInstanceOf(ReturnInsn.class, stopBlock.getTerminator());
+        var entryLoad = entryLoads.getFirst();
+        var callInsn = entryCalls.getFirst();
+        var gateCallInsn = gateCalls.getFirst();
+        var unpackInsn = stopUnpacks.getFirst();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryLoads.size()),
+                () -> assertEquals(1, entryCalls.size()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("payloads", entryLoad.propertyName()),
+                () -> assertEquals("self", entryLoad.objectId()),
+                () -> assertEquals("size", callInsn.methodName()),
+                () -> assertEquals(entryLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCallInsn.functionName()),
+                () -> assertEquals(callInsn.objectId(), onlyVariableOperandId(gateCallInsn.args())),
+                () -> assertEquals(gateCallInsn.resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals("payloads", applyStore.propertyName()),
+                () -> assertEquals("self", applyStore.objectId()),
+                () -> assertEquals(callInsn.objectId(), applyStore.valueId()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId()),
+                () -> assertEquals(1, stopUnpacks.size()),
+                () -> assertEquals(callInsn.resultId(), unpackInsn.variantId()),
+                () -> assertEquals(unpackInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(1, countInstructions(instructions, CallGlobalInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, GoIfInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertTrue(instructionIndex(instructions, callInsn) < instructionIndex(instructions, gateCallInsn)),
+                () -> assertTrue(instructionIndex(instructions, gateCallInsn) < instructionIndex(instructions, applyStore))
         );
     }
 

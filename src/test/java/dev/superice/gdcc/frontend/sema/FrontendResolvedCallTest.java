@@ -129,6 +129,43 @@ class FrontendResolvedCallTest {
     }
 
     @Test
+    void constructorRejectsResolvedInstanceMethodWithVariantReceiverType() {
+        var ex = assertThrows(IllegalArgumentException.class, () -> FrontendResolvedCall.resolved(
+                "callv",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.BUILTIN,
+                GdVariantType.VARIANT,
+                GdIntType.INT,
+                List.of(),
+                "Variant.callv"
+        ));
+
+        assertEquals(
+                "RESOLVED instance method calls must not publish Variant receiverType; use DYNAMIC_FALLBACK instead",
+                ex.getMessage()
+        );
+    }
+
+    @Test
+    void resolvedFactoryStillAllowsVariantReturnTypeWhenReceiverIsConcrete() {
+        var result = FrontendResolvedCall.resolved(
+                "call",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.BUILTIN,
+                new GdObjectType("Callable"),
+                GdVariantType.VARIANT,
+                List.of(),
+                "Callable.call"
+        );
+
+        assertEquals(FrontendCallResolutionStatus.RESOLVED, result.status());
+        assertEquals("Callable", result.receiverType().getTypeName());
+        assertEquals(GdVariantType.VARIANT, result.returnType());
+    }
+
+    @Test
     void constructorRejectsNullArgumentTypeElements() {
         var argumentTypes = new ArrayList<GdType>();
         argumentTypes.add(GdIntType.INT);
