@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CStorePropertyInsnGenTest {
     @Test
-    @DisplayName("GDCC setter should store field directly when inside the setter itself")
+    @DisplayName("GDCC setter should stage a stable carrier for ref-parameter aliases when storing field inside the setter itself")
     void gdccSetterStoresFieldDirectlyInsideSetter() {
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         gdccClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_value", Map.of()));
@@ -61,14 +61,15 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("godot_String_destroy(&$self->value);"));
-        assertTrue(body.contains("$self->value = godot_new_String_with_String($value);"), body);
-        assertFalse(body.contains("__gdcc_tmp_string_0"), body);
+        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String($value);"), body);
+        assertTrue(body.contains("godot_String_destroy(&$self->value);"), body);
+        assertTrue(body.contains("$self->value = __gdcc_tmp_string_0;"), body);
+        assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
         assertFalse(body.contains("MyClass__field_setter_value("));
     }
 
     @Test
-    @DisplayName("GDCC Variant setter should copy directly into backing field without temp lifetime leakage")
+    @DisplayName("GDCC Variant setter should stage a stable carrier for ref-parameter aliases without temp lifetime leakage")
     void gdccVariantSetterCopiesDirectlyIntoBackingField() {
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         gdccClass.addProperty(new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, "_field_setter_payload", Map.of()));
@@ -87,9 +88,10 @@ public class CStorePropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant($value);"), body);
         assertTrue(body.contains("godot_Variant_destroy(&$self->payload);"), body);
-        assertTrue(body.contains("$self->payload = godot_new_Variant_with_Variant($value);"), body);
-        assertFalse(body.contains("__gdcc_tmp_variant_0"), body);
+        assertTrue(body.contains("$self->payload = __gdcc_tmp_variant_0;"), body);
+        assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
         assertFalse(body.contains("MyClass__field_setter_payload("), body);
     }
 

@@ -42,11 +42,14 @@
     - or pass `&` of a non-`ref` variable.
   - When returning them from functions, we need to return the struct by value.
   - When assigning them to variables or using them to call functions, we have to copy them using `godot_new_<TypeName>_with_<TypeName>(TypeName* value)`.
-  - For writes into an existing managed slot, emit that copy constructor directly into the slot:
-    - `slot = godot_new_<TypeName>_with_<TypeName>(source_ptr)`
+  - For writes into an existing managed slot:
+    - backend centralizes the overwrite/stable-carrier decision in `CBodyBuilderAliasSafetySupport`
+    - `proven no-alias` overwrite routes can still emit `slot = godot_new_<TypeName>_with_<TypeName>(source_ptr)`
+    - `may-alias` overwrite routes must first materialize a stable carrier with the copy ctor, then destroy the old slot, then consume the carrier into the slot
     - do not lower it as `tmp = godot_new_<TypeName>_with_<TypeName>(source_ptr); slot = tmp; destroy(tmp);`
       because the plain `slot = tmp` step is only a shallow struct assignment, and destroying the temp can
-      prematurely release the same engine-side state that the slot now refers to.
+      prematurely release the same engine-side state that the slot now refers to
+    - once a stable carrier has been consumed by the slot, it must not enter the ordinary temp-destroy path again
   - When a value of these types are no longer used, call `godot_destroy_<TypeName>(TypeName* value)` to destroy them properly.
 - For `Dictionary`, `Array` and `Variant`:
   - They are wrapper structs with shared/ref-counted internals (not raw C pointers).
@@ -58,8 +61,11 @@
     - or pass `&` of non-`ref` variable.
   - Return value convention remains struct-by-value.
   - The copy function of these actually creates a new struct pointing to the same underlying C++ object, so we still need to use `godot_new_<TypeName>_with_<TypeName>(TypeName* value)` to copy them.
-  - The same slot-write rule applies here: copy directly from the current source address into the destination slot.
-    For backing-field reads, prefer `&($self->field)` over first shallow-copying `self->field` into a temp.
+  - The same slot-write rule applies here:
+    - backend centralizes the overwrite/stable-carrier decision in `CBodyBuilderAliasSafetySupport`
+    - `proven no-alias` overwrite routes copy directly from the current source address into the destination slot
+    - `may-alias` overwrite routes stage a stable carrier first, then destroy the old slot, then consume that carrier into the destination slot
+    - for backing-field reads, prefer `&($self->field)` over first shallow-copying `self->field` into a temp
   - Destroying them using `godot_destroy_<TypeName>(TypeName* value)` is also needed which will decrease the reference count, and actually destroy the underlying C++ object only when the reference count reaches zero.
 - Especially for `Variant` & `Object`gdcc_object_from_godot_object_ptr the copy, construct and destroy function name use `variant` and `object` (lowercase).
 - Some objects that extends `RefCounted` are reference counted, and they need to be retained and released properly.

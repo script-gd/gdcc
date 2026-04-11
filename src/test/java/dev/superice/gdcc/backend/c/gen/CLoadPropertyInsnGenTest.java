@@ -41,7 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CLoadPropertyInsnGenTest {
     @Test
-    @DisplayName("GDCC getter should load field directly when inside getter")
+    @DisplayName("GDCC getter should stage a stable carrier from backing field address when overwriting target inside getter")
     void gdccGetterUsesFieldAccessInsideGetter() {
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var propertyDef = new LirPropertyDef("value", GdStringType.STRING, false, null, "_field_getter_value", null, Map.of());
@@ -67,14 +67,16 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("$tmp = godot_new_String_with_String(&($self->value));"), body);
+        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String(&($self->value));"), body);
+        assertTrue(body.contains("godot_String_destroy(&$tmp);"), body);
+        assertTrue(body.contains("$tmp = __gdcc_tmp_string_0;"), body);
         assertFalse(body.contains("__gdcc_tmp_string_0 = $self->value;"), body);
         assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
         assertFalse(body.contains("MyClass__field_getter_value("));
     }
 
     @Test
-    @DisplayName("GDCC Variant getter should copy backing field by address instead of shallow temp materialization")
+    @DisplayName("GDCC Variant getter should stage a stable carrier from backing field address instead of shallow temp materialization")
     void gdccVariantGetterCopiesBackingFieldByAddress() {
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var propertyDef = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, "_field_getter_payload", null, Map.of());
@@ -100,7 +102,9 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("$tmp = godot_new_Variant_with_Variant(&($self->payload));"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&($self->payload));"), body);
+        assertTrue(body.contains("godot_Variant_destroy(&$tmp);"), body);
+        assertTrue(body.contains("$tmp = __gdcc_tmp_variant_0;"), body);
         assertFalse(body.contains("__gdcc_tmp_variant_0 = $self->payload;"), body);
         assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
         assertFalse(body.contains("MyClass__field_getter_payload("), body);

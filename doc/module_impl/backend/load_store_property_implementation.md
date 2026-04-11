@@ -6,7 +6,7 @@
 ## 文档状态
 
 - 状态：Implemented / Maintained
-- 更新时间：2026-04-10
+- 更新时间：2026-04-11
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/LoadPropertyInsnGen.java`
   - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/StorePropertyInsnGen.java`
@@ -68,7 +68,8 @@
 - 以上约束避免继承场景下“同名函数误判”导致错误 `self->field` 路径。
 - 对 value-semantic backing field：
   - getter-self 直读必须按 `&self->field` 做 copy-by-address，不得先 shallow-copy 到 temp 再 destroy temp
-  - setter-self 直写必须直接把 copy ctor 结果写回 backing field，不得走“copy temp -> field = temp -> destroy temp”
+  - 若当前 target overwrite 在 Builder 的 sealed provenance 模型下属于 `may-alias`，getter-self 允许先用 copy ctor 从 `&self->field` 生成 stable carrier，再 destroy target 并 consume 该 carrier
+  - setter-self 直写同理：对 `ref=true` parameter 这类 alias-open source，Builder 会先生成 stable carrier，再 destroy backing field，并把 carrier consume 到 field；但仍不得走“copy temp -> field = temp -> destroy temp”
 
 ### 2.5 可读写校验状态
 
@@ -157,7 +158,8 @@
   - capture old -> assign -> own(BORROWED only) -> release old
 - 不允许在生成器层绕开该顺序直接拼接生命周期调用。
 - 非对象 destroyable/value-semantic 槽位写入也有对应硬约束：
-  - 对现有 `BORROWED` source，必须直接生成 `slot = godot_new_<Type>_with_<Type>(source_ptr)`
+  - `proven no-alias` 的 `BORROWED` source，继续生成 `slot = godot_new_<Type>_with_<Type>(source_ptr)`
+  - `may-alias` 的 `BORROWED` source，必须先生成 stable carrier，再 destroy old slot，并把 carrier consume 到 slot
   - 不允许生成“copy temp -> plain `slot = temp` -> destroy temp”，因为 `slot = temp` 只做浅层 struct 赋值
 - getter-self 读取 backing field 时，若后续 copy helper 需要地址，必须优先使用 `&self->field` 这类现有 storage 地址；
   不得通过 `tmp = self->field` 人工物化地址。

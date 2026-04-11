@@ -1514,6 +1514,82 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runEmitsRuntimeGatedWritebackForExplicitVariantPropertyOnObjectReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_variant_property_mutating_call.gd",
+                """
+                        class_name BodyInsnObjectVariantPropertyMutatingCall
+                        extends RefCounted
+                        
+                        var payloads: Variant
+                        
+                        func ping(box: BodyInsnObjectVariantPropertyMutatingCall, seed: int) -> void:
+                            box.payloads.push_back(seed)
+                        """,
+                Map.of(
+                        "BodyInsnObjectVariantPropertyMutatingCall",
+                        "RuntimeBodyInsnObjectVariantPropertyMutatingCall"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectVariantPropertyMutatingCall",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var assignSources = assignSourcesByTarget(instructions);
+        var entryBlock = requireBlock(function, "seq_0");
+        var entryLoads = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .toList();
+        var entryCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallMethodInsn.class::isInstance)
+                .map(CallMethodInsn.class::cast)
+                .toList();
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var skipBlock = requireBlock(function, gateBranch.falseBbId());
+        var applyStore = assertInstanceOf(StorePropertyInsn.class, applyBlock.getNonTerminatorInstructions().getFirst());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var entryLoad = entryLoads.getFirst();
+        var callInsn = entryCalls.getFirst();
+        var gateCallInsn = gateCalls.getFirst();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryLoads.size()),
+                () -> assertEquals(1, entryCalls.size()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("payloads", entryLoad.propertyName()),
+                () -> assertTrue(entryLoad.objectId().startsWith("cfg_tmp_"), entryLoad.objectId()),
+                () -> assertEquals("box", assignSources.get(entryLoad.objectId())),
+                () -> assertTrue(function.getVariables().containsKey(entryLoad.objectId())),
+                () -> assertNotEquals("box", entryLoad.objectId()),
+                () -> assertEquals("push_back", callInsn.methodName()),
+                () -> assertEquals(entryLoad.resultId(), callInsn.objectId()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCallInsn.functionName()),
+                () -> assertEquals(callInsn.objectId(), onlyVariableOperandId(gateCallInsn.args())),
+                () -> assertEquals(gateCallInsn.resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals("payloads", applyStore.propertyName()),
+                () -> assertEquals("box", applyStore.objectId()),
+                () -> assertEquals(callInsn.objectId(), applyStore.valueId()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId())
+        );
+    }
+
+    @Test
     void runLowersExplicitSelfMutatingReceiverWithoutReceiverDeadTemp() throws Exception {
         var prepared = prepareContext(
                 "body_insn_self_receiver_alias.gd",

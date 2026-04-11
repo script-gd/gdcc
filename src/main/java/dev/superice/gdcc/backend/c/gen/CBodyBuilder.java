@@ -391,11 +391,11 @@ public final class CBodyBuilder {
         var targetType = target.type();
         var canDestroyOldValue = canDestroyOldValue(target);
 
-        // Prepare RHS first to avoid destroying sources for self/alias assignments.
-        var rhsResult = prepareRhsValue(value, targetType);
-        emitTempDecls(rhsResult.temps());
-
         if (targetType instanceof GdObjectType objType) {
+            // Object writes only need representation conversion; alias-sensitive borrow handling is specific
+            // to non-object value-semantic slots where destroy(target) can invalidate source_ptr.
+            var rhsResult = prepareRhsValue(value, targetType);
+            emitTempDecls(rhsResult.temps());
             // Route all object writes through one ownership-aware slot write path.
             emitObjectSlotWrite(
                     targetCode,
@@ -406,13 +406,17 @@ public final class CBodyBuilder {
                     value.type() instanceof GdObjectType objectType ? objectType : null,
                     value.ownership()
             );
+            markTargetInitialized(target);
+            emitTempDestroys(rhsResult.temps());
+            return this;
         } else {
-            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsResult.code());
+            var rhsPlan = prepareAssignedNonObjectRhs(target, value);
+            emitTempDecls(rhsPlan.tempsToDeclare());
+            emitNonObjectSlotWrite(targetCode, targetType, canDestroyOldValue, rhsPlan.code());
+            markTargetInitialized(target);
+            emitTempDestroys(rhsPlan.tempsToDestroy());
+            return this;
         }
-
-        markTargetInitialized(target);
-        emitTempDestroys(rhsResult.temps());
-        return this;
     }
 
     /// Assigns a raw expression into a target variable.
@@ -941,15 +945,58 @@ public final class CBodyBuilder {
         // For String, StringName, Variant, Array, Dictionary, etc.
         var copyFunc = helper.renderCopyAssignFunctionName(type);
         if (!copyFunc.isEmpty()) {
-            // BORROWED non-object reads must copy directly into the destination slot.
-            // Emitting `tmp = copy(source); slot = tmp; destroy(tmp);` is wrong because the plain
-            // `slot = tmp` step only performs a shallow struct assignment, and destroying the temp
-            // can then release the same engine-side storage that the slot now points to.
+            // This is the proven-no-alias fast path used when the destination slot can consume the
+            // copy result directly. may-alias overwrite routes must stage a separate stable carrier
+            // before destroy(target); see prepareAssignedNonObjectRhs(...).
             var sourcePtr = renderValueAddress(value);
             return new RenderResult(copyFunc + "(" + sourcePtr.code() + ")", sourcePtr.temps());
         }
 
         return new RenderResult(code, List.of());
+    }
+
+    /// Prepares the RHS for non-object assignment.
+    /// - proven no-alias: keep the direct `slot = copy(source_ptr)` fast path
+    /// - may-alias overwrite: stage an independent stable carrier before destroy(target)
+    private @NotNull PreparedAssignmentRhs prepareAssignedNonObjectRhs(@NotNull TargetRef target,
+                                                                       @NotNull ValueRef value) {
+        var rhsResult = prepareRhsValue(value, target.type());
+        if (!CBodyBuilderAliasSafetySupport.requiresStableCarrier(
+                checkInPrepareBlock(),
+                canDestroyOldValue(target),
+                target,
+                value,
+                !helper.renderCopyAssignFunctionName(value.type()).isEmpty()
+        )) {
+            return PreparedAssignmentRhs.ordinary(rhsResult);
+        }
+
+        var copyFunc = helper.renderCopyAssignFunctionName(value.type());
+        if (copyFunc.isEmpty()) {
+            throw new IllegalStateException(
+                    "Alias-safe stable carrier requires copy helper for type '" + value.type().getTypeName() + "'"
+            );
+        }
+
+        var sourcePtr = renderValueAddress(value);
+        var stableCarrier = newTempVariable(
+                renderSafeTempPrefix(target.type()),
+                target.type(),
+                copyFunc + "(" + sourcePtr.code() + ")"
+        );
+        var tempsToDeclare = new ArrayList<TempVar>(sourcePtr.temps().size() + 1);
+        tempsToDeclare.addAll(sourcePtr.temps());
+        tempsToDeclare.add(stableCarrier);
+
+        // `target = stableCarrier;` is a plain struct assignment that transfers the copied carrier
+        // into the managed slot. The temp must not flow into the ordinary destroy-temp path after
+        // assignment, otherwise we would reintroduce the old "copy temp -> assign -> destroy temp"
+        // premature-release bug through a different code shape.
+        return new PreparedAssignmentRhs(
+                stableCarrier.name(),
+                List.copyOf(tempsToDeclare),
+                List.copyOf(sourcePtr.temps())
+        );
     }
 
     /// Prepares a value for return, copying if needed.
@@ -1022,8 +1069,6 @@ public final class CBodyBuilder {
                 // Existing lvalue storage can be borrowed by address directly; avoid materializing a
                 // shallow temp from the slot before copy helpers such as `godot_new_Variant_with_Variant`.
                 return new RenderResult("&(" + addressableExprValue.generateCode() + ")", List.of());
-                // Existing lvalue storage can be borrowed by address directly; avoid materializing a
-                // shallow temp from the slot before copy helpers such as `godot_new_Variant_with_Variant`.
             }
             case ExprValue exprValue -> {
                 var temp = newTempVariable(renderSafeTempPrefix(exprValue.type()), exprValue.type(), exprValue.generateCode());
@@ -1083,6 +1128,7 @@ public final class CBodyBuilder {
 
     /// Writes a non-object value into a storage slot with value-lifecycle semantics:
     /// destroy old when needed (skip in __prepare__/first-write) -> assign rhs.
+    /// Any may-alias stable carrier must already have been prepared before entering this helper.
     /// Caller keeps target-initialization and temp lifecycle responsibilities.
     private void emitNonObjectSlotWrite(@NotNull String targetCode,
                                         @NotNull GdType targetType,
@@ -1568,6 +1614,20 @@ public final class CBodyBuilder {
         public RenderResult {
             Objects.requireNonNull(code);
             Objects.requireNonNull(temps);
+        }
+    }
+
+    private record PreparedAssignmentRhs(@NotNull String code,
+                                         @NotNull List<TempVar> tempsToDeclare,
+                                         @NotNull List<TempVar> tempsToDestroy) {
+        private PreparedAssignmentRhs {
+            Objects.requireNonNull(code);
+            Objects.requireNonNull(tempsToDeclare);
+            Objects.requireNonNull(tempsToDestroy);
+        }
+
+        private static @NotNull PreparedAssignmentRhs ordinary(@NotNull RenderResult rhsResult) {
+            return new PreparedAssignmentRhs(rhsResult.code(), rhsResult.temps(), rhsResult.temps());
         }
     }
 }

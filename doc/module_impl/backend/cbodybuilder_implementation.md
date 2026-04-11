@@ -8,7 +8,7 @@
 >
 > 目标：仅保留当前代码库已落地且可验证的实现语义、长期风险和工程反思。
 >
-> 校对基线：2026-04-10（代码与单测已交叉检查）
+> 校对基线：2026-04-11（代码与单测已交叉检查）
 
 ## 1. 范围与对齐关系
 
@@ -34,10 +34,20 @@
 - 非对象类型写入统一走 `emitNonObjectSlotWrite(...)`：
   1. 满足条件时 destroy old（`destroyOldValue && !__prepare__ && type.isDestroyable()`）
   2. 赋值
-- 对 destroyable/value-semantic 非对象 RHS，`prepareRhsValue(...)` 生成
-  `godot_new_<Type>_with_<Type>(source_ptr)` 作为 slot write 的 RHS，而不是
-  “copy 到 temp -> 裸 `=` 写槽 -> destroy temp”。
-  这条约束是必要的，因为后者只有浅层 struct 赋值，销毁 temp 会提前释放 slot 刚接管的底层状态。
+- 对 destroyable/value-semantic 非对象 overwrite，Builder 先在
+  `CBodyBuilderAliasSafetySupport` 中统一判定 stable-carrier 需求与 alias safety：
+  - `requiresStableCarrier(...)` 先收口 overwrite 前提（`!__prepare__`、可 destroy old、copy helper 可用、`BORROWED` source 等）
+  - `classifyNonObjectSlotWriteAliasSafety(...)` 再只回答当前 sealed `ValueRef` / `TargetRef` surface 上的
+    `PROVEN_NO_ALIAS` / `MAY_ALIAS`
+  - `PROVEN_NO_ALIAS`：
+    - 继续使用 `destroy old -> slot = godot_new_<Type>_with_<Type>(source_ptr)` 快路
+  - `MAY_ALIAS`：
+    - 先生成 stable carrier
+      `__gdcc_tmp_* = godot_new_<Type>_with_<Type>(source_ptr)`
+    - 再 `destroy old -> slot = __gdcc_tmp_*`
+    - 这个 carrier 被 slot consume 后不会再进入普通 temp destroy 路径
+- 这条约束的核心不是“总要造 temp”，而是“不允许生成 `copy temp -> 裸 = 写槽 -> destroy temp`”。
+  后者只有浅层 struct 赋值，销毁 temp 会提前释放 slot 刚接管的底层状态。
 - `markTargetInitialized(...)` 与 temp 生命周期仍由调用方控制（未内聚到槽位写入 helper）。
 - constructor-time property initializer apply 当前通过 `CCodegen#generatePropertyInitApplyBody(...)` 调用 direct backing-field helper：
   - `${Class}_class_apply_property_init_<property>(self)`

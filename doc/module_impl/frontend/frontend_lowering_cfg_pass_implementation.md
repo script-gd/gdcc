@@ -227,6 +227,12 @@ dynamic instance-call receiver 现也冻结为同一套 payload consumer：
 - 若 current carrier 静态可判定，则继续复用 `FrontendWritableTypeWritebackSupport` 的 fast-path/fast-skip
 - 只有 runtime-open `Variant` carrier 才会发 `CallGlobalInsn("gdcc_variant_requires_writeback", ...) + GoIfInsn`
 - `SequenceNode` 线程化的 continuation block 现在就是 Step 7 dynamic receiver writeback 的正式承载面；后续 item 不得再假设“继续挂回原 entry block”
+- 对 `box.payloads.push_back(seed)` 这类“direct-slot owner + property leaf + dynamic mutating call”：
+  - ordinary read 侧仍是 `OpaqueExprValueItem(box)` -> `MemberLoadItem(payloads, baseValueId = box_value_id)` -> `CallItem`
+  - 但同一个 `CallItem.writableRoutePayloadOrNull` 会把 root 冻结为 direct-slot `box`，并把 property leaf 提升到
+    `reverseCommitSteps`
+  - 因此后续 body lowering 允许出现“entry property read 经过 `cfg_tmp_*`，runtime-gated property store 写回 `box`”
+    的双轨形状；这是 publication 合同，不是 body lowering 临时修补
 
 Step 6 当前事实已经冻结为：
 

@@ -75,6 +75,46 @@ public class CAssignInsnGenTest {
     }
 
     @Test
+    @DisplayName("assign self String should stage a stable carrier before destroy and consume it into the slot")
+    void assignSelfStringShouldUseStableCarrier() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_self_string");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("a", GdStringType.STRING);
+        addEntryAssignAndReturn(func, new AssignInsn("a", "a"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_String __gdcc_tmp_string_0 = godot_new_String_with_String(&$a);"), body);
+        assertTrue(body.contains("godot_String_destroy(&$a);"), body);
+        assertTrue(body.contains("$a = __gdcc_tmp_string_0;"), body);
+        assertFalse(body.contains("godot_String_destroy(&__gdcc_tmp_string_0);"), body);
+    }
+
+    @Test
+    @DisplayName("assign self Variant should stage a stable carrier before destroy and consume it into the slot")
+    void assignSelfVariantShouldUseStableCarrier() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_self_variant");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("payload", GdVariantType.VARIANT);
+        addEntryAssignAndReturn(func, new AssignInsn("payload", "payload"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&$payload);"), body);
+        assertTrue(body.contains("godot_Variant_destroy(&$payload);"), body);
+        assertTrue(body.contains("$payload = __gdcc_tmp_variant_0;"), body);
+        assertFalse(body.contains("godot_Variant_destroy(&__gdcc_tmp_variant_0);"), body);
+    }
+
+    @Test
     @DisplayName("assign RefCounted object should follow capture-assign-own-release order")
     void assignRefCountedObjectShouldFollowObjectSlotWriteSemantics() {
         var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());

@@ -453,7 +453,7 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
-        @DisplayName("Self String assignment should copy before destroy and destroy temp after")
+        @DisplayName("Self String assignment should stage stable carrier before destroy and consume it into target")
         void testSelfStringAssignmentOrder() {
             var target = new LirVariable("s", GdStringType.STRING, lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
@@ -475,10 +475,37 @@ public class CBodyBuilderPhaseCTest {
             assertTrue(tempIndex >= 0, "Should materialize copy temp");
             assertTrue(destroyOldIndex >= 0, "Should destroy old value");
             assertTrue(assignIndex >= 0, "Should assign new value");
-            assertTrue(destroyTempIndex >= 0, "Should destroy temp");
+            assertEquals(-1, destroyTempIndex, "Consumed stable carrier must not be destroyed afterwards");
             assertTrue(tempIndex < destroyOldIndex, "Should copy before destroying old value");
             assertTrue(destroyOldIndex < assignIndex, "Should destroy old value before assignment");
-            assertTrue(assignIndex < destroyTempIndex, "Should destroy temp after assignment");
+        }
+
+        @Test
+        @DisplayName("Self Variant assignment should stage stable carrier before destroy and consume it into target")
+        void testSelfVariantAssignmentOrder() {
+            var target = new LirVariable("payload", GdVariantType.VARIANT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            var value = builder.valueOfVar(target);
+
+            builder.assignVar(targetRef, value);
+
+            var result = builder.build();
+            var tempDecl = "godot_Variant __gdcc_tmp_variant_0 = godot_new_Variant_with_Variant(&$payload);";
+            var destroyOld = "godot_Variant_destroy(&$payload);";
+            var assign = "$payload = __gdcc_tmp_variant_0;";
+            var destroyTemp = "godot_Variant_destroy(&__gdcc_tmp_variant_0);";
+
+            var tempIndex = result.indexOf(tempDecl);
+            var destroyOldIndex = result.indexOf(destroyOld);
+            var assignIndex = result.indexOf(assign);
+            var destroyTempIndex = result.indexOf(destroyTemp);
+
+            assertTrue(tempIndex >= 0, "Should materialize copy temp");
+            assertTrue(destroyOldIndex >= 0, "Should destroy old value");
+            assertTrue(assignIndex >= 0, "Should assign new value");
+            assertEquals(-1, destroyTempIndex, "Consumed stable carrier must not be destroyed afterwards");
+            assertTrue(tempIndex < destroyOldIndex, "Should copy before destroying old value");
+            assertTrue(destroyOldIndex < assignIndex, "Should destroy old value before assignment");
         }
     }
 

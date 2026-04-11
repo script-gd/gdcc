@@ -374,6 +374,78 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyKeepsObjectPropertyDynamicReceiverReadOnSnapshotButPublishesDirectOwnerWriteback() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_object_variant_property_call.gd",
+                """
+                        class_name CfgBuilderObjectVariantPropertyCall
+                        extends RefCounted
+                        
+                        var payloads: Variant
+                        
+                        func ping(box: CfgBuilderObjectVariantPropertyCall, seed: int) -> void:
+                            box.payloads.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderObjectVariantPropertyCall",
+                        "RuntimeCfgBuilderObjectVariantPropertyCall"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var statement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var box = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var propertyStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().get(0));
+        var callStep = assertInstanceOf(AttributeCallStep.class, expression.steps().get(1));
+        var seed = assertInstanceOf(IdentifierExpression.class, callStep.arguments().getFirst());
+
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var propertyValue = assertInstanceOf(MemberLoadItem.class, items.get(1));
+        var seedValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(2));
+        var callValue = assertInstanceOf(CallItem.class, items.get(3));
+        var callPayload = requireNotNull(
+                callValue.writableRoutePayloadOrNull(),
+                "object property dynamic call should publish a writable payload"
+        );
+        var promotedPropertyStep = callPayload.reverseCommitSteps().getFirst();
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(4, items.size()),
+                () -> assertSame(box, receiverValue.expression()),
+                () -> assertSame(propertyStep, propertyValue.anchor()),
+                () -> assertEquals("payloads", propertyValue.memberName()),
+                () -> assertEquals(List.of(receiverValue.resultValueId()), propertyValue.operandValueIds()),
+                () -> assertSame(seed, seedValue.expression()),
+                () -> assertSame(callStep, callValue.anchor()),
+                () -> assertEquals("push_back", callValue.callableName()),
+                () -> assertEquals(propertyValue.resultValueId(), callValue.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(seedValue.resultValueId()), callValue.argumentValueIds()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
+                () -> assertSame(box, callPayload.root().anchor()),
+                () -> assertNull(callPayload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.PROPERTY, callPayload.leaf().kind()),
+                () -> assertSame(propertyStep, callPayload.leaf().anchor()),
+                () -> assertNull(callPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(), callPayload.leaf().operandValueIds()),
+                () -> assertEquals("payloads", callPayload.leaf().memberNameOrNull()),
+                () -> assertNull(callPayload.leaf().subscriptAccessKindOrNull()),
+                () -> assertEquals(1, callPayload.reverseCommitSteps().size()),
+                () -> assertEquals(FrontendWritableRoutePayload.StepKind.PROPERTY, promotedPropertyStep.kind()),
+                () -> assertSame(propertyStep, promotedPropertyStep.anchor()),
+                () -> assertNull(promotedPropertyStep.containerValueIdOrNull()),
+                () -> assertEquals(List.of(), promotedPropertyStep.operandValueIds()),
+                () -> assertEquals("payloads", promotedPropertyStep.memberNameOrNull()),
+                () -> assertNull(promotedPropertyStep.subscriptAccessKindOrNull())
+        );
+    }
+
+    @Test
     void buildExecutableBodyPublishesDirectSlotAliasValueForExplicitSelfMutatingReceiverCalls() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_self_receiver_call.gd",

@@ -1605,6 +1605,11 @@ public final class FrontendCfgGraphBuilder {
                 new FrontendWritableRoutePayload.LeafDescriptor(
                         FrontendWritableRoutePayload.LeafKind.PROPERTY,
                         propertyAnchor,
+                        // Ordinary property reads still use `receiverBuild.resultValueId()` through the
+                        // published `MemberLoadItem`. When the base is an unwrapped direct-slot root such
+                        // as `self` or `box`, reverse commit must *not* freeze that transient read slot as
+                        // the owner; otherwise `box.payloads.push_back(seed)` would try to write the
+                        // property back into the snapshot temp instead of the real `box` slot.
                         useImplicitRootContainer(baseRoute) ? null : receiverBuild.resultValueId(),
                         List.of(),
                         StringUtil.requireNonBlank(propertyName, "propertyName"),
