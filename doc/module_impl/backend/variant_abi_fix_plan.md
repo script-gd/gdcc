@@ -260,6 +260,12 @@ generated `call_func` wrapper 必须满足：
   - usage
   - 当前阶段 hint / hint_string / class_name 仍可先保持默认
 
+状态（2026-04-11）：
+
+- 已完成。
+- `entry.h.ftl` 的 `args_info[]` 现在统一通过 `renderBoundMetadata(...)` 发射 outward usage / hint / class_name，`Variant` 参数会稳定带出 `godot_PROPERTY_USAGE_NIL_IS_VARIANT`。
+- 非 `Variant` 参数仍保持默认 metadata 形态；本阶段没有把 typed-container hint/class_name 逻辑提前混入 method binding。
+
 验收：
 
 - `Variant` 参数的 `args_info[]` 使用 `NIL` + `PROPERTY_USAGE_NIL_IS_VARIANT`
@@ -274,6 +280,12 @@ generated `call_func` wrapper 必须满足：
 - 本次改为：
   - 仅对非 `Variant` 参数发射该检查
   - `Variant` 参数跳过该检查，直接进入 unpack / copy 流程
+
+状态（2026-04-11）：
+
+- 已完成。
+- `entry.h.ftl` 的 `call_*` wrapper 现在只对非 `Variant` 参数保留 `actual_type != declared_type` gate；`Variant` outward slot 不再把 `NIL` 当作 runtime payload 类型去做精确比较。
+- 回归测试同时固定了反向约束：`int` 等非 `Variant` 参数仍继续发射严格 gate，避免本 patch 误放宽全部参数检查。
 
 验收：
 
@@ -292,6 +304,12 @@ generated `call_func` wrapper 必须满足：
 - 本次要让 `Variant` return 也走：
   - `type = NIL`
   - `usage |= PROPERTY_USAGE_NIL_IS_VARIANT`
+
+状态（2026-04-11）：
+
+- 已完成。
+- `return_value_info` 已改为走 `gdcc_make_property_full(...) + renderBoundMetadata(...)`，因此 `Variant` 返回值会稳定发布 `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`，而非继续停留在 plain `PROPERTY_USAGE_DEFAULT`。
+- `gdcc_bind.h` 在本阶段无需改动；现有 `gdcc_make_property_full(...)` 已足够承载 method return surface 所需 metadata。
 
 验收：
 

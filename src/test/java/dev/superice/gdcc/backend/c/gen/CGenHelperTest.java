@@ -240,7 +240,7 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderBoundMetadata should keep placeholder metadata at defaults in Phase A")
+    @DisplayName("renderBoundMetadata should keep placeholder metadata at defaults until typed-container metadata lands")
     void renderBoundMetadataShouldKeepPlaceholderMetadataAtDefaults() {
         var variantMetadata = helper.renderBoundMetadata(GdVariantType.VARIANT, "godot_PROPERTY_USAGE_DEFAULT");
         var intMetadata = helper.renderBoundMetadata(GdIntType.INT, "godot_PROPERTY_USAGE_DEFAULT");

@@ -190,6 +190,74 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesVariantMethodBindingMetadataAndKeepsNonVariantGate() throws Exception {
+        var workerClass = new LirClassDef("VariantAbiWorker", "Node");
+
+        var acceptVariant = new LirFunctionDef("accept_variant");
+        acceptVariant.setReturnType(GdIntType.INT);
+        acceptVariant.addParameter(new LirParameterDef("self", new GdObjectType("VariantAbiWorker"), null, acceptVariant));
+        acceptVariant.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, acceptVariant));
+        var acceptResult = acceptVariant.createAndAddTmpVariable(GdIntType.INT);
+        var acceptEntry = new LirBasicBlock("entry");
+        acceptEntry.appendInstruction(new LiteralIntInsn(acceptResult.id(), 1));
+        acceptEntry.setTerminator(new ReturnInsn(acceptResult.id()));
+        acceptVariant.addBasicBlock(acceptEntry);
+        acceptVariant.setEntryBlockId("entry");
+        workerClass.addFunction(acceptVariant);
+
+        var echoVariant = new LirFunctionDef("echo_variant");
+        echoVariant.setReturnType(GdVariantType.VARIANT);
+        echoVariant.addParameter(new LirParameterDef("self", new GdObjectType("VariantAbiWorker"), null, echoVariant));
+        echoVariant.addParameter(new LirParameterDef("value", GdVariantType.VARIANT, null, echoVariant));
+        var echoEntry = new LirBasicBlock("entry");
+        echoEntry.setTerminator(new ReturnInsn("value"));
+        echoVariant.addBasicBlock(echoEntry);
+        echoVariant.setEntryBlockId("entry");
+        workerClass.addFunction(echoVariant);
+
+        var acceptInt = new LirFunctionDef("accept_int");
+        acceptInt.setReturnType(GdIntType.INT);
+        acceptInt.addParameter(new LirParameterDef("self", new GdObjectType("VariantAbiWorker"), null, acceptInt));
+        acceptInt.addParameter(new LirParameterDef("value", GdIntType.INT, null, acceptInt));
+        var acceptIntEntry = new LirBasicBlock("entry");
+        acceptIntEntry.setTerminator(new ReturnInsn("value"));
+        acceptInt.addBasicBlock(acceptIntEntry);
+        acceptInt.setEntryBlockId("entry");
+        workerClass.addFunction(acceptInt);
+
+        var module = new LirModule("variant_method_bind_metadata_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var hCode = new String(files.getLast().contentWriter());
+
+        assertEquals(
+                2,
+                countOccurrences(
+                        hCode,
+                        "gdcc_make_property_full(arg0_type, arg0_name, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT)"
+                ),
+                hCode
+        );
+        assertEquals(
+                1,
+                countOccurrences(
+                        hCode,
+                        "GDExtensionPropertyInfo return_info = gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_NIL, GD_STATIC_SN(u8\"\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT);"
+                ),
+                hCode
+        );
+        assertFalse(hCode.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"), hCode);
+        assertEquals(1, countOccurrences(hCode, "expected = GDEXTENSION_VARIANT_TYPE_INT;"), hCode);
+    }
+
+    @Test
     public void generateCreatesDefaultPropertyInitHelperWhenInitFuncIsUnset() throws Exception {
         var workerClass = new LirClassDef("GDWorkerNode", "Node");
         var property = new LirPropertyDef("ready_value", GdIntType.INT);

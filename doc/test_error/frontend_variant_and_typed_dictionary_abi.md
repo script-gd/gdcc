@@ -15,6 +15,21 @@ These are real problems, but they are **orthogonal** to Step 8's main objective:
 
 If the integration test keeps `Variant` parameters or typed-dictionary parameters on the external boundary, a failure can come from the boundary ABI itself instead of the writable-route implementation. That is why the final integration fixture keeps the dynamic key carrier inside the object and passes the outer container as a plain `Dictionary`.
 
+## Current Status
+
+As of 2026-04-11, the backend `Variant` **method** ABI has been partially repaired:
+
+- method argument metadata now publishes `PROPERTY_USAGE_NIL_IS_VARIANT`
+- generated `call_func` wrappers no longer keep the erroneous `type != NIL` exact gate for `Variant` parameters
+- method return metadata now also publishes `NIL + PROPERTY_USAGE_NIL_IS_VARIANT`
+
+The remaining open items from this investigation are still:
+
+- property registration surface for `Variant` metadata
+- typed dictionary boundary fidelity
+
+The historical sections below are kept because they explain the original failure chain and why the writable-route fixture was initially shaped to avoid mixing ABI defects into the continuation tests.
+
 ## Issue A: `Variant` Parameters Are Exported as `Nil` Slots
 
 ### Failing source shape

@@ -937,6 +937,127 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerFrontendVariantMethodAbiBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping Variant method ABI integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_variant_method_abi_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name VariantMethodAbiSmoke
+                extends Node
+                
+                var variant_calls: int
+                
+                func accept_variant(value: Variant) -> int:
+                    variant_calls += 1
+                    return typeof(value) * 10 + variant_calls
+                
+                func echo_variant(value: Variant) -> Variant:
+                    return value
+                
+                func accept_int(value: int) -> int:
+                    return value + 1
+                
+                func read_variant_calls() -> int:
+                    return variant_calls
+                """;
+        var module = parseModule(
+                tempDir.resolve("variant_method_abi_smoke.gd"),
+                source,
+                Map.of("VariantMethodAbiSmoke", "RuntimeVariantMethodAbiSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(1, lowered.getClassDefs().size());
+        assertEquals("RuntimeVariantMethodAbiSmoke", lowered.getClassDefs().getFirst().getName());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_variant_method_abi_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entryHeader = Files.readString(projectDir.resolve("entry.h"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(
+                entryHeader.contains("godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT"),
+                () -> "Variant method binding metadata should publish the NIL_IS_VARIANT flag.\nHeader:\n" + entryHeader
+        );
+        assertTrue(
+                entryHeader.contains("GDExtensionPropertyInfo return_info = gdcc_make_property_full(GDEXTENSION_VARIANT_TYPE_NIL, GD_STATIC_SN(u8\"\"), godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8\"\"), GD_STATIC_SN(u8\"\"), godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT);"),
+                () -> "Variant return info should use outward NIL metadata plus NIL_IS_VARIANT usage.\nHeader:\n" + entryHeader
+        );
+        assertFalse(
+                entryHeader.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"),
+                () -> "Variant parameters must not keep the exact NIL runtime gate.\nHeader:\n" + entryHeader
+        );
+        assertTrue(
+                entryHeader.contains("expected = GDEXTENSION_VARIANT_TYPE_INT;"),
+                () -> "Non-Variant parameters must keep their exact runtime gate.\nHeader:\n" + entryHeader
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "VariantMethodAbiSmokeNode",
+                        "RuntimeVariantMethodAbiSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(variantMethodAbiTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant method ABI dynamic call check passed."),
+                () -> "Variant dynamic call check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant method ABI direct return check passed."),
+                () -> "Variant direct return check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Variant method ABI runtime class check passed."),
+                () -> "Variant method ABI runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant method ABI dynamic call check failed."),
+                () -> "Variant dynamic call check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant method ABI direct return check failed."),
+                () -> "Variant direct return check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Variant method ABI runtime class check failed."),
+                () -> "Variant method ABI runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendDynamicVariantReceiverWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping frontend dynamic Variant writeback integration test");
@@ -1614,6 +1735,39 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 """;
     }
 
+    private static @NotNull String variantMethodAbiTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "VariantMethodAbiSmokeNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var accepted = int(target.call("accept_variant", PackedInt32Array([4, 5])))
+                    var variant_calls = int(target.call("read_variant_calls"))
+                    if accepted == TYPE_PACKED_INT32_ARRAY * 10 + 1 and variant_calls == 1:
+                        print("frontend Variant method ABI dynamic call check passed.")
+                    else:
+                        push_error("frontend Variant method ABI dynamic call check failed.")
+                
+                    var echoed = target.echo_variant(PackedInt32Array([6, 7, 8]))
+                    if typeof(echoed) == TYPE_PACKED_INT32_ARRAY and echoed.size() == 3 and echoed[2] == 8:
+                        print("frontend Variant method ABI direct return check passed.")
+                    else:
+                        push_error("frontend Variant method ABI direct return check failed.")
+                
+                    var runtime_class = String(target.get_class())
+                    if runtime_class == "RuntimeVariantMethodAbiSmoke" and target.is_class("RuntimeVariantMethodAbiSmoke") and not target.is_class("VariantMethodAbiSmoke"):
+                        print("frontend Variant method ABI runtime class check passed.")
+                    else:
+                        push_error("frontend Variant method ABI runtime class check failed.")
+                """;
+    }
+
     private static @NotNull String dynamicVariantWritebackTestScript() {
         return """
                 extends Node
@@ -1671,9 +1825,9 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                     else:
                         push_error("frontend typed property receiver writeback check failed.")
                 
-                    # Variant parameters are currently exported to the engine as Nil-typed
-                    # ABI slots, so this coverage keeps the dynamic key carrier inside the
-                    # native object and passes the outer dictionary through the call.
+                    # This fixture keeps the dynamic key carrier inside the native object so
+                    # the coverage stays focused on writable-route continuation semantics
+                    # instead of mixing in separate outer-boundary ABI concerns.
                     target.call("reset_side_effect_keys")
                     var payloads = {0: PackedInt32Array()}
                     var first_route = int(target.call("measure_side_effect_key_route", payloads, 4))

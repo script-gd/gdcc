@@ -136,8 +136,11 @@ static void call${helper.renderFuncBindName(bindingData)}(
         return;
     }
 
-    // Check the argument type
+    <#-- Check the argument type. -->
+    <#-- Variant outward slots are encoded as NIL metadata, so only non-Variant -->
+    <#-- parameters keep the exact runtime gate here. -->
     <#list bindingData.paramTypes as paramType>
+    <#if paramType.typeName != "Variant">
     {
         const GDExtensionVariantType type = godot_variant_get_type(p_args[${paramType_index}]);
         if (type != GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()}) {
@@ -147,6 +150,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
             return;
         }
     }
+    </#if>
     </#list>
 
     // Extract the argument
@@ -194,7 +198,8 @@ static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
 
     GDExtensionPropertyInfo args_info[] = {
     <#list bindingData.paramTypes as paramType>
-        gdcc_make_property_full(arg${paramType_index}_type, arg${paramType_index}_name, godot_PROPERTY_HINT_NONE, GD_STATIC_S(u8""), GD_STATIC_SN(u8"${helper.renderGdTypeName(paramType)}"), godot_PROPERTY_USAGE_DEFAULT),
+        <#assign boundMetadata = helper.renderBoundMetadata(paramType, "godot_PROPERTY_USAGE_DEFAULT")>
+        gdcc_make_property_full(arg${paramType_index}_type, arg${paramType_index}_name, ${boundMetadata.hintEnumLiteral}, ${boundMetadata.hintStringExpr}, ${boundMetadata.classNameExpr}, ${boundMetadata.usageExpr}),
     </#list>
     };
     GDExtensionClassMethodArgumentMetadata args_metadata[] = {
@@ -216,7 +221,8 @@ static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
         };
     </#if>
     <#if bindingData.returnType.typeName != "void">
-        GDExtensionPropertyInfo return_info = gdcc_make_property(GDEXTENSION_VARIANT_TYPE_${bindingData.returnType.gdExtensionType.name()}, GD_STATIC_SN(u8""));
+        <#assign returnMetadata = helper.renderBoundMetadata(bindingData.returnType, "godot_PROPERTY_USAGE_DEFAULT")>
+        GDExtensionPropertyInfo return_info = gdcc_make_property_full(${returnMetadata.typeEnumLiteral}, GD_STATIC_SN(u8""), ${returnMetadata.hintEnumLiteral}, ${returnMetadata.hintStringExpr}, ${returnMetadata.classNameExpr}, ${returnMetadata.usageExpr});
     </#if>
     GDExtensionClassMethodInfo method_info = {
         .name = method_name,
