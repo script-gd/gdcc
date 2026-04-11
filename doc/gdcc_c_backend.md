@@ -125,7 +125,7 @@
   - property registration metadata
 - `call_func` wrappers must skip the exact `type == NIL` gate only for `Variant` parameters.
 - Non-`Variant` parameters must keep their existing exact runtime type gate.
-- `ptrcall` ABI shape is not part of this patch and must remain unchanged.
+- `ptrcall` ABI shape remains unchanged by this contract.
 - Implementation touchpoints should stay centralized in backend helpers/templates:
   - `CGenHelper.renderBoundMetadata(...)`
   - `CGenHelper.renderPropertyMetadata(...)`

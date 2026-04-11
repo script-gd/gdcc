@@ -513,11 +513,11 @@ public final class CGenHelper {
 
     /// Renders the outward-facing metadata literals for a bound slot.
     ///
-    /// The current Variant ABI patch only customizes the outward type/usage contract:
+    /// The current outward ABI contract only customizes the type/usage surface:
     /// - `Variant` stays encoded as `NIL`
     /// - `PROPERTY_USAGE_NIL_IS_VARIANT` is appended without rewriting the caller's base usage
     ///
-    /// hint/class_name still stay on the default surface until typed-container metadata lands.
+    /// hint/class_name keep the existing backend defaults; typed-container metadata is a separate contract.
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr) {
         var extensionType = requireBoundMetadataType(type);
