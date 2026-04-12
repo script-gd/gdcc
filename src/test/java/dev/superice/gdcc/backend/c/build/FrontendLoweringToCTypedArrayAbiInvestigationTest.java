@@ -70,7 +70,7 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
     }
 
     @Test
-    void lowerFrontendTypedArrayMethodAbiCurrentlyCrashesOnExactTypedArrayAtRuntime() throws Exception {
+    void lowerFrontendTypedArrayMethodAbiExactTypedArrayNoLongerCrashesBeforeMetadataFix() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping typed array method ABI investigation");
             return;
@@ -119,31 +119,29 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
                         ".",
                         Map.of()
                 )),
-                new GodotGdextensionTestRunner.TestScriptSpec(typedArrayMethodExactCrashProbeScript())
+                new GodotGdextensionTestRunner.TestScriptSpec(typedArrayMethodExactProbeScript())
         ));
 
         var runResult = runner.run(true);
         var combinedOutput = runResult.combinedOutput();
 
-        assertFalse(
+        assertTrue(
                 runResult.stopSignalSeen(),
-                () -> "Exact typed-array method probe currently crashes before the stop signal.\nOutput:\n" + combinedOutput
+                () -> "The exact typed-array method probe should now reach the stop signal.\nOutput:\n" + combinedOutput
         );
         assertContainsAll(
                 combinedOutput,
                 "frontend typed array method ABI exact setup passed.",
                 "frontend typed array method ABI exact before call.",
-                "CrashHandlerException",
-                "signal 11"
+                "frontend typed array method ABI exact after call.",
+                GodotGdextensionTestRunner.TEST_STOP_SIGNAL
         );
-        assertFalse(
-                combinedOutput.contains("frontend typed array method ABI exact after call."),
-                () -> "The exact typed-array method probe should not return past the boundary in the current implementation.\nOutput:\n" + combinedOutput
-        );
+        assertFalse(combinedOutput.contains("CrashHandlerException"), combinedOutput);
+        assertFalse(combinedOutput.contains("signal 11"), combinedOutput);
     }
 
     @Test
-    void lowerFrontendTypedArrayPropertyAbiCurrentlyCrashesDuringNodeConstruction() throws Exception {
+    void lowerFrontendTypedArrayPropertyAbiExactTypedArrayNoLongerCrashesDuringNodeConstruction() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping typed array property ABI investigation");
             return;
@@ -187,7 +185,12 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         assertContainsAll(
                 entrySource,
                 "RuntimeTypedArrayPropertyAbiProbe__field_init_payloads",
-                "godot_new_Array_with_Array_int_StringName_Variant(&__gdcc_tmp_array_1, (godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME, GD_STATIC_SN(u8\"\"), NULL);"
+                "godot_Variant __gdcc_tmp_array_script_",
+                "godot_new_Variant_nil();"
+        );
+        assertFalse(
+                entrySource.contains("godot_new_Array_with_Array_int_StringName_Variant(&__gdcc_tmp_array_1, (godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME, GD_STATIC_SN(u8\\\"\\\"), NULL);"),
+                entrySource
         );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
@@ -199,25 +202,24 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
                         ".",
                         Map.of()
                 )),
-                new GodotGdextensionTestRunner.TestScriptSpec(typedArrayPropertyExactCrashProbeScript())
+                new GodotGdextensionTestRunner.TestScriptSpec(typedArrayPropertyExactProbeScript())
         ));
 
         var runResult = runner.run(true);
         var combinedOutput = runResult.combinedOutput();
 
-        assertFalse(
+        assertTrue(
                 runResult.stopSignalSeen(),
-                () -> "Exact typed-array property probe currently crashes before the stop signal.\nOutput:\n" + combinedOutput
+                () -> "The exact typed-array property probe should now reach the stop signal.\nOutput:\n" + combinedOutput
         );
         assertContainsAll(
                 combinedOutput,
-                "CrashHandlerException",
-                "signal 11"
+                "frontend typed array property ABI exact before set.",
+                "frontend typed array property ABI exact after set.",
+                GodotGdextensionTestRunner.TEST_STOP_SIGNAL
         );
-        assertFalse(
-                combinedOutput.contains("frontend typed array property ABI exact before set."),
-                () -> "The typed-array property probe currently crashes before the validation script reaches the first property touch marker.\nOutput:\n" + combinedOutput
-        );
+        assertFalse(combinedOutput.contains("CrashHandlerException"), combinedOutput);
+        assertFalse(combinedOutput.contains("signal 11"), combinedOutput);
     }
 
     private static @NotNull FrontendModule parseModule(
@@ -275,7 +277,7 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
                 """;
     }
 
-    private static @NotNull String typedArrayMethodExactCrashProbeScript() {
+    private static @NotNull String typedArrayMethodExactProbeScript() {
         return """
                 extends Node
                 
@@ -296,10 +298,11 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
                     print("frontend typed array method ABI exact before call.")
                     target.call("accept_payloads", exact)
                     print("frontend typed array method ABI exact after call.")
+                    print("Test stop.")
                 """;
     }
 
-    private static @NotNull String typedArrayPropertyExactCrashProbeScript() {
+    private static @NotNull String typedArrayPropertyExactProbeScript() {
         return """
                 extends Node
                 
@@ -320,6 +323,7 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
                     print("frontend typed array property ABI exact before set.")
                     target.payloads = exact
                     print("frontend typed array property ABI exact after set.")
+                    print("Test stop.")
                 """;
     }
 

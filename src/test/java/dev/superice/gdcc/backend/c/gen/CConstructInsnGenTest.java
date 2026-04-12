@@ -110,6 +110,10 @@ class CConstructInsnGenTest {
         var body = generateBody(clazz, func);
         assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING_NAME"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_array_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var arrayCtorCall = extractCall(body, "godot_new_Array_with_Array_int_StringName_Variant");
+        assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
     }
 
     @Test
@@ -124,6 +128,23 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_array type mismatch"));
+    }
+
+    @Test
+    @DisplayName("construct_array should keep generic Array construction on the plain constructor path")
+    void constructArrayShouldKeepGenericCtorOnPlainPath() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_generic_array");
+        func.createAndAddVariable("arr", new GdArrayType(GdVariantType.VARIANT));
+
+        entry(func).appendInstruction(new ConstructArrayInsn("arr", null));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func);
+        assertTrue(body.contains("godot_new_Array()"), body);
+        assertFalse(body.contains("godot_new_Array_with_Array_int_StringName_Variant"), body);
+        assertFalse(body.contains("__gdcc_tmp_array_script_"), body);
+        assertFalse(body.contains("godot_new_Variant_nil();"), body);
     }
 
     @Test
@@ -500,9 +521,12 @@ class CConstructInsnGenTest {
         assertTrue(body.contains("__prepare__: // __prepare__"));
         assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_array_script_"), body);
         assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_key_script_"), body);
         assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_value_script_"), body);
         assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var arrayCtorCall = extractCall(body, "godot_new_Array_with_Array_int_StringName_Variant");
+        assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
         var dictCtorCall = extractCall(body, "godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant");
         assertFalse(dictCtorCall.contains("NULL"), dictCtorCall);
     }
@@ -682,6 +706,28 @@ class CConstructInsnGenTest {
         var codegen = newCodegen(module, List.of(clazz));
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(clazz, func));
         assertTrue(ex.getMessage().contains("construct_dictionary key type mismatch"));
+    }
+
+    @Test
+    @DisplayName("generate should emit typed array constructor with nil script carrier in default field init helpers")
+    void generateShouldEmitTypedArrayCtorInDefaultFieldInitHelper() {
+        var clazz = newTestClass();
+        clazz.addProperty(new LirPropertyDef("payloads", new GdArrayType(GdStringNameType.STRING_NAME)));
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var initFunc = findFunctionByName(clazz, "_field_init_payloads");
+        assertNotNull(initFunc);
+        assertEquals("__prepare__", initFunc.getEntryBlockId());
+        var body = codegen.generateFuncBody(clazz, initFunc);
+
+        assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_array_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var arrayCtorCall = extractCall(body, "godot_new_Array_with_Array_int_StringName_Variant");
+        assertFalse(arrayCtorCall.contains("NULL"), arrayCtorCall);
     }
 
     private LirClassDef newTestClass() {

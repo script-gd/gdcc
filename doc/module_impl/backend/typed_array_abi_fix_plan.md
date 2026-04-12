@@ -180,6 +180,33 @@
 - 切断 exact typed-array positive path 的 crash。
 - 让 typed-array 的本地重建与 Godot 的 constructor 契约对齐。
 
+### 执行状态
+
+- [x] A1. `CBuiltinBuilder.constructArray(...)` 已改为为 typed array 显式 materialize nil `Variant` script carrier，并在调用后销毁 temp。
+- [x] A2. 已补齐 Phase A 单元测试，覆盖显式构造、`__prepare__` 自动注入、property default helper 自动注入，以及 generic array 保持原路径。
+- [x] A3. 已运行 targeted tests，并确认 Phase A 止血目标成立。
+
+### 当前已完成结果
+
+- typed-array constructor 现在与 typed-dictionary constructor 保持同一条 nil-script carrier 契约：
+  - typed `Array[T]` 不再把 script 位传原始 `NULL`
+  - 改为传真实 nil `Variant`
+- 这条修复已经由三条代码路径共同锚定：
+  - 显式 `construct_array`
+  - `__prepare__` 自动注入
+  - property default helper 自动注入
+- generic `Array[Variant]` 保持原 plain constructor 路径：
+  - 不会误生成 typed-array script temp
+  - 不会误走 typed-array constructor
+- 当前 targeted validation 结果：
+  - `CConstructInsnGenTest` 通过
+  - `FrontendLoweringToCTypedArrayAbiInvestigationTest` 通过
+- Phase A 新确认的事实：
+  - exact typed-array method/property 正例已不再因 constructor crash 提前中断
+  - outward metadata 仍然缺失 `PROPERTY_HINT_ARRAY_TYPE`
+  - wrapper typed-array preflight 仍然缺失
+  - 因此 Phase B / Phase C 仍然是必要的，不是可选清理项
+
 ### 实施步骤
 
 1. 修改 `CBuiltinBuilder.constructArray(...)`：

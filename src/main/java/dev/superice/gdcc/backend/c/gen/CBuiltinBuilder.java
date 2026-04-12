@@ -374,11 +374,14 @@ public final class CBuiltinBuilder {
             baseValue = providedBase;
         }
 
+        // Godot's typed Array constructor expects a real nil Variant script carrier here.
+        var scriptTemp = bodyBuilder.newTempVariable("array_script", GdVariantType.VARIANT, "godot_new_Variant_nil()");
+        bodyBuilder.declareTempVar(scriptTemp);
         var ctorArgs = List.of(
                 baseValue,
                 bodyBuilder.valueOfExpr(renderGdExtensionVariantTypeIntLiteral(elementType), GdIntType.INT),
                 bodyBuilder.valueOfStringNamePtrLiteral(resolveTypedContainerClassName(elementType)),
-                bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR)
+                bodyBuilder.valueOfExpr(scriptTemp.name(), GdVariantType.VARIANT)
         );
         bodyBuilder.callAssign(
                 target,
@@ -386,6 +389,7 @@ public final class CBuiltinBuilder {
                 arrayType,
                 ctorArgs
         );
+        bodyBuilder.destroyTempVar(scriptTemp);
         if (baseTemp != null) {
             bodyBuilder.destroyTempVar(baseTemp);
         }
