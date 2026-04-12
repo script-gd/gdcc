@@ -90,6 +90,13 @@ public final class CGenHelper {
     ) {
     }
 
+    private record TypedDictionaryRuntimeLeaf(
+            @NotNull String typeIntLiteral,
+            @NotNull String classNameExpr,
+            boolean objectLeaf
+    ) {
+    }
+
     public @NotNull List<BindingData> getBindingDataList() {
         return List.copyOf(bindingDataSet);
     }
@@ -513,6 +520,31 @@ public final class CGenHelper {
         return renderDestroyFunctionName(type) + "(&" + varName + ");";
     }
 
+    /// Typed Dictionary wrapper preflight only applies to non-generic `Dictionary[K, V]` slots.
+    public boolean needsTypedDictionaryCallGuard(@NotNull GdType type) {
+        return type instanceof GdDictionaryType dictionaryType && !dictionaryType.isGenericDictionary();
+    }
+
+    /// Render the expected builtin type literal for one typed-dictionary guard side.
+    public @NotNull String renderTypedDictionaryGuardBuiltinTypeLiteral(@NotNull GdType type,
+                                                                        @NotNull String sideName) {
+        return renderTypedDictionaryRuntimeLeaf(resolveTypedDictionaryGuardLeaf(type, sideName), sideName + " leaf")
+                .typeIntLiteral();
+    }
+
+    /// Object leaves need extra class/script metadata comparison in the wrapper guard.
+    public boolean isTypedDictionaryGuardObjectLeaf(@NotNull GdType type, @NotNull String sideName) {
+        return renderTypedDictionaryRuntimeLeaf(resolveTypedDictionaryGuardLeaf(type, sideName), sideName + " leaf")
+                .objectLeaf();
+    }
+
+    /// Render the expected class-name literal for one typed-dictionary object leaf.
+    public @NotNull String renderTypedDictionaryGuardClassNameExpr(@NotNull GdType type,
+                                                                   @NotNull String sideName) {
+        return renderTypedDictionaryRuntimeLeaf(resolveTypedDictionaryGuardLeaf(type, sideName), sideName + " leaf")
+                .classNameExpr();
+    }
+
     /// Renders the outward-facing metadata literals for a bound slot.
     ///
     /// Current backend-owned outward ABI rules:
@@ -620,6 +652,71 @@ public final class CGenHelper {
                 "Unsupported typed-dictionary outward hint leaf '" + type.getTypeName() +
                         "' at " + useSite + ": " + reason
         );
+    }
+
+    private @NotNull TypedDictionaryRuntimeLeaf renderTypedDictionaryRuntimeLeaf(@NotNull GdType type,
+                                                                                 @NotNull String useSite) {
+        var typeEnum = requireTypedDictionaryRuntimeLeafType(type, useSite);
+        if (type instanceof GdObjectType objectType) {
+            return new TypedDictionaryRuntimeLeaf(
+                    "(godot_int)GDEXTENSION_VARIANT_TYPE_" + typeEnum.name(),
+                    "GD_STATIC_SN(u8\"" + escapeStringLiteral(objectType.getTypeName()) + "\")",
+                    true
+            );
+        }
+
+        return new TypedDictionaryRuntimeLeaf(
+                "(godot_int)GDEXTENSION_VARIANT_TYPE_" + typeEnum.name(),
+                "GD_STATIC_SN(u8\"\")",
+                false
+        );
+    }
+
+    private @NotNull GdExtensionTypeEnum requireTypedDictionaryRuntimeLeafType(@NotNull GdType type,
+                                                                               @NotNull String useSite) {
+        return switch (type) {
+            case GdArrayType arrayType -> {
+                if (arrayType.isGenericArray()) {
+                    yield GdExtensionTypeEnum.ARRAY;
+                }
+                throw new IllegalArgumentException(
+                        "Unsupported typed-dictionary runtime leaf '" + type.getTypeName() +
+                                "' at " + useSite + ": nested typed Array leaf is not supported"
+                );
+            }
+            case GdDictionaryType dictionaryType -> {
+                if (dictionaryType.isGenericDictionary()) {
+                    yield GdExtensionTypeEnum.DICTIONARY;
+                }
+                throw new IllegalArgumentException(
+                        "Unsupported typed-dictionary runtime leaf '" + type.getTypeName() +
+                                "' at " + useSite + ": nested typed Dictionary leaf is not supported"
+                );
+            }
+            default -> {
+                var extensionType = type.getGdExtensionType();
+                if (extensionType == null) {
+                    throw new IllegalArgumentException(
+                            "Unsupported typed-dictionary runtime leaf '" + type.getTypeName() +
+                                    "' at " + useSite + ": missing runtime GDExtension metadata"
+                    );
+                }
+                yield extensionType;
+            }
+        };
+    }
+
+    private @NotNull GdType resolveTypedDictionaryGuardLeaf(@NotNull GdType type, @NotNull String sideName) {
+        if (!(type instanceof GdDictionaryType dictionaryType) || dictionaryType.isGenericDictionary()) {
+            throw new IllegalArgumentException(
+                    "Typed-dictionary guard metadata requested for non-typed Dictionary slot '" + type.getTypeName() + "'"
+            );
+        }
+        return switch (sideName) {
+            case "key" -> dictionaryType.getKeyType();
+            case "value" -> dictionaryType.getValueType();
+            default -> throw new IllegalArgumentException("Unknown typed-dictionary guard side: " + sideName);
+        };
     }
 
     /// Renders a variable assignment statement in C, handling Godot object return types properly.

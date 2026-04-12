@@ -525,18 +525,23 @@ TypedDictionary ABI 当前只修：
 
 **C1. 保留当前 base type gate，不改变 generic `Dictionary` 行为**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/c/codegen/template_451/entry.h.ftl`
 - 规则：
   - 所有非 `Variant` 参数仍先做现有 `type == <gdExtensionType>` gate
   - `Dictionary[...]` 先保留：
     - `type == GDEXTENSION_VARIANT_TYPE_DICTIONARY`
+- 当前结果：
+  - `call_func` 仍先保留原有 base `DICTIONARY` gate
+  - generic `Dictionary[Variant, Variant]` 继续只做 base gate，不进入 typed-dictionary 二段校验
 - 验收：
   - non-dictionary 参数行为不回归
   - generic `Dictionary` 仍只有 base `DICTIONARY` gate
 
 **C2. 对 typed dictionary 参数增加 typedness 二段 gate**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/c/codegen/template_451/entry.h.ftl`
   - 如需要，少量 helper 可加到 `CGenHelper`
@@ -564,9 +569,62 @@ TypedDictionary ABI 当前只修：
   - getter 比较逻辑允许存在，但必须收口在单一 helper/模板片段，而不是散落成多份局部拼接
   - getter 比较字段应对齐 Godot VM 当前做法，而不是另 invent 一套 widened rule
   - `expectedN + godot_Dictionary_is_same_typed(...)` 保留为 fallback，不是首选默认实现
+- 当前调查结论：
+  - getter 直比路线已经实装并实际跑过一次整类 runtime 集成验证，但会把来自 GDScript 的 exact `Dictionary[StringName, Node]`
+    误判为 mismatch，因此不能作为最终实现
+  - 随后切换到 `expectedN + godot_Dictionary_is_same_typed(...)` fallback，并补上真实 nil script `Variant`
+    实参；该路线在 codegen / 单测层稳定，但在 Godot 4.5.1 的 ordinary `call_func` 入口首次运行时会统一触发
+    crash，而不是返回 mismatch
+  - 当前高价值结论不是“fallback 已可用”，而是：
+    1. exact typed dictionary 的 runtime fidelity 问题真实存在
+    2. `is_same_typed(...)` fallback 在当前 ordinary wrapper 环境里仍需进一步定向探针确认
+    3. 后续验证必须改为 targeted unit test / 临时 probe，避免继续整类重跑
+  - 新增最小 GDScript probe 结论（2026-04-12）：
+    - 命令：
+      - `rtk C:\Application\Godot\4.5.1\Godot_v4.5.1-stable_win64.exe --path E:\Projects\gdcc\tmp\test\typed_dict_metadata_probe --headless --quit-after 10`
+    - 对 exact 与 `Variant` roundtrip 后的 `Dictionary[StringName, Node]`，`get_typed_*_script()` 同时满足：
+      - `== null`
+      - `typeof(...) == 24`
+      - `is Object == false`
+    - 这把根因从“typed metadata 本身退化”进一步收敛为：
+      - script getter 返回的是**语义上为 null 的 OBJECT Variant**
+      - 旧实现里把 script null 错判成“必须 `godot_variant_get_type(...) == NIL`”会误拒 exact typed dictionary
+  - 新增 targeted runtime probe 结论（2026-04-12）：
+    - `Dictionary[StringName, int]` 的 method exact/plain probe 与 `Dictionary[StringName, Node]` 一样，都会在 exact 正例的首个 `target.call(...)`
+      上 crash；因此 crash **不是 object leaf 专有问题**
+    - 新增 no-touch probe：
+      - method 参数仍是 `Dictionary[StringName, int]`
+      - body 完全不读取 `payloads`，只直接返回常量
+      - 该 probe 通过，证明：
+        1. wrapper typed preflight 本身可以放行 exact typed dictionary
+        2. wrapper 参数 materialize / wrapper cleanup 也不是当前 crash 的直接来源
+        3. crash 更靠近“函数体第一次真正读取 typed Dictionary 值”这一段
+    - 查看生成的 crashing `entry.c` 后，函数体在 `payloads.size()` 前会先构造/重绑定一个 typed-dictionary 本地临时：
+      - `godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant(...)`
+      - 当前仍给 key/value script 位置传原始 `NULL`
+    - 这把阻塞点进一步收敛为：
+      - `CBuiltinBuilder` 里的 typed-dictionary 构造路径此前仍沿用 `NULL` script 指针
+      - 而前面的 runtime 调查已经表明，这条构造/typed metadata 路径应改成真实 nil `Variant`
+- 当前实现进展：
+  - `CBuiltinBuilder.constructDictionary(...)` 已改为：
+    - 先声明 key/value script 对应的 wrapper-local nil `Variant` temp
+    - 再把这两个 temp 作为 typed dictionary constructor 的 script 实参传入
+  - 这一步的目标不是改变 outward ABI，而是消除“函数体首次读取 typed Dictionary 前，本地重建 typed dictionary 时仍沿用旧 `NULL` contract”这一实现偏差
+- 最终结果：
+  - `entry.h.ftl` 已在 base `DICTIONARY` gate 之后、参数 local 物化之前插入 typed-dictionary preflight
+  - `CGenHelper.renderTypedDictionaryCallGuard(...)` 已统一生成 getter 路线比较逻辑：
+    - builtin leaf 比较 `get_typed_*_builtin()`
+    - object leaf 继续比较 `get_typed_*_class_name()`
+    - object leaf script 通过 `godot_variant_evaluate(... == nil)` 识别 Godot 返回的 null-object script metadata
+  - `CBuiltinBuilder` 的 nil-`Variant` script 实参修复已打通“函数体首次读取 typed Dictionary 值”路径，不再复现先前 exact 正例 crash
+- 已验证：
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryScalarMethodAbiNoTouchRuntimeProbe" --no-daemon --info --console=plain`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryScalarMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --no-daemon --info --console=plain`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --no-daemon --info --console=plain`
 
 **C3. 保持现有 wrapper cleanup 合同不变**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/c/codegen/template_451/entry.h.ftl`
   - 如需要，更新相关注释文档
@@ -582,12 +640,18 @@ TypedDictionary ABI 当前只修：
     - `probeN`
     - `class_name` / `script` getter 返回值（如果该比较路径创建了本地 wrapper）
   - 不引入统一 cleanup label / fail path
+- 当前结果：
+  - typed-dictionary preflight 仍被固定在 wrapper-owned 参数 local 物化之前
+  - success path 的 `ret -> r -> reverse argN` cleanup 顺序未改
+  - object-leaf 比较中引入的 `class_name` / `script` / `nil` / `result` 临时值都在 preflight block 内自清理，
+    没有把现有 wrapper cleanup 扩展成活跃位状态机
 - 验收：
   - typed-gate negative path 不会新增 wrapper-local 泄漏
   - 现有成功路径 cleanup 顺序相关测试无需因本修复而改写为更复杂结构
 
 **C4. 为 wrapper gate 补齐 codegen 单测**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
 - 建议新增用例：
@@ -600,11 +664,20 @@ TypedDictionary ABI 当前只修：
   - typed-gate negative path does **not** require cleanup label
 - 验收：
   - wrapper 结构被结构感知断言锚定，而不是靠整函数长文本匹配
+- 当前结果：
+  - `CCodegenTest` 已锚定：
+    - typed dictionary 参数 preflight 位于真实 `argN` 物化之前
+    - generic `Dictionary` 不会误生成 typed gate
+    - 当前 getter 路线中的 builtin/class/script 比较片段与 cleanup 片段
+  - 相关既有 typed dictionary ctor codegen 测试保持通过
+- 已验证：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest,CConstructInsnGenTest,CConstructInsnGenEngineTest`
 
 ### Phase D：用独立 runtime 集成测试锚定 ABI 合同
 
 **D1. method parameter positive / negative**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/test/java/dev/superice/gdcc/backend/c/build/FrontendLoweringToCProjectBuilderIntegrationTest.java`
     或新增同目录独立 integration test class
@@ -624,17 +697,40 @@ TypedDictionary ABI 当前只修：
     - `Invalid type in function`
     - 或等价的 invalid-argument 分类提示
     不要把完整 typed-dictionary 专用报错句子写进断言
+- 当前调查结论：
+  - 独立 integration test class 已经建立，并分别覆盖 exact / plain / wrong-typed 三类 method 参数情形
+  - `Dictionary[StringName, Node]` 与 `Dictionary[StringName, int]` 的 exact 正例现在都能抵达 native body
+  - plain `Dictionary` 与 wrong-typed `Dictionary[StringName, RefCounted]` 都会在 guard 处被拒绝，并在 `after bad call`
+    之前截断脚本控制流
+  - 负例断言已收敛为：
+    - 失败点前 marker 存在
+    - 失败点后 marker 不存在
+    - 输出中存在稳定的 Godot 类型拒绝类别信号
+- 已验证：
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --no-daemon --info --console=plain`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiRejectsWrongTypedDictionaryAtRuntime" --no-daemon --info --console=plain`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryScalarMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --no-daemon --info --console=plain`
 
 **D2. method return outward fidelity**
 
+- 状态：已完成（2026-04-12）
 - 建议正例：
   - extension method 返回 `Dictionary[StringName, Node]`
   - GDScript 侧将其接入 typed 变量或用 typedness 可观测接口验证
 - 验收：
   - outward return metadata 足以让 GDScript 侧观察到 typed dictionary，而不是 plain `Dictionary`
+- 当前调查结论：
+  - return metadata codegen 已就位，并在 `entry.h` 结构断言中固定为
+    `PROPERTY_HINT_DICTIONARY_TYPE + "StringName;Node"`
+  - runtime 正例已通过：
+    - 返回值在 GDScript 侧仍保持 `Dictionary[StringName, Node]` 的 typed metadata
+    - direct typed binding 与 runtime class 观测都通过
+- 已验证：
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryReturnAbiBuildNativeLibraryAndRunInGodot" --no-daemon --info --console=plain`
 
 **D3. property get/set outward fidelity**
 
+- 状态：已完成（2026-04-12）
 - 建议正例：
   - typed dictionary property `var payloads: Dictionary[StringName, Node]`
   - direct property get/set 都能保持 typedness
@@ -648,6 +744,46 @@ TypedDictionary ABI 当前只修：
 - 验收：
   - property 正反例都通过
   - writable-route 相关测试不需要再承担 typed-dictionary ABI 的回归职责
+- 当前调查结论：
+  - property metadata codegen 已就位，并在 `entry.c` 结构断言中固定为
+    `PROPERTY_HINT_DICTIONARY_TYPE + "StringName;Node"`
+  - property set 通过 auto-generated setter 进入同一 ordinary method wrapper，因此其 typed gate 仍复用 method 路径
+  - direct property get/set 正例已通过：
+    - typed metadata 保持为 `StringName;Node`
+    - direct get 与 `read_payload_size()` 两条观测都通过
+  - 新增 targeted property plain-set probe 结论（2026-04-12）：
+    - 负例在 `before bad set` 之后、`after bad set` 之前中止，说明 setter 路径的拒绝行为已经生效
+    - 但 Godot 对该路径输出的粗粒度错误类别是
+      `Invalid assignment of property or key`
+      而不是 method call 更常见的
+      `Invalid type in function`
+    - 因此 property 负例测试应锚定“稳定的类型拒绝类别 + 控制流被截断”，而不是强绑 method-call 专用文案
+- 已验证：
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiBuildNativeLibraryAndRunInGodot" --no-daemon --info --console=plain`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsPlainDictionarySetAtRuntime" --no-daemon --info --console=plain`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsWrongTypedDictionarySetAtRuntime" --no-daemon --info --console=plain`
+
+**D4. 当前运行时调查策略**
+
+- 状态：已完成并归档（2026-04-12）
+- 规则：
+  - 不再继续整类重跑 `FrontendLoweringToCTypedDictionaryAbiIntegrationTest`
+  - 后续优先：
+    - 添加最小临时 probe
+    - 或拆成单个 targeted test method
+    来确认 ordinary wrapper crash 的最小触发点
+- 已知失败命令（仅记录一次，避免重复消耗）：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendLoweringToCTypedDictionaryAbiIntegrationTest`
+- 已新增调查事实：
+  - `tmp/test/typed_dict_metadata_probe/test_script.gd` 已确认 `get_typed_*_script()` 的 null 语义不是 `TYPE_NIL`，
+    而是 `TYPE_OBJECT` 的 null object；后续 targeted runtime 验证应围绕这一点，而不是继续扩散到整类 crash 面
+  - no-touch probe 已确认当前 crash 发生在函数体首次真实读取 typed Dictionary 值时，而不是 wrapper preflight 本身
+  - 不要并行启动多个 Gradle `test` 任务来跑这些 probe：
+    - `build/test-results/test/binary/output.bin` 会发生锁冲突
+    - 后续应继续按单个 test method 串行执行
+- 最终结果：
+  - “先文档化调查结论，再跑单个 targeted probe”的策略足以完成本轮 Phase C / D 收口
+  - 不需要再回到整类 integration test 重跑
 
 ### Phase E：文档与回归面归档
 

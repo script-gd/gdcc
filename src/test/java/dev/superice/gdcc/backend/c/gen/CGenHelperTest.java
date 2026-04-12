@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -431,5 +432,33 @@ class CGenHelperTest {
     void renderCallWrapperDestroyStmtShouldSkipObjectAndPrimitiveLocals() {
         assertEquals("", helper.renderCallWrapperDestroyStmt(new GdObjectType("Node"), "value"));
         assertEquals("", helper.renderCallWrapperDestroyStmt(GdIntType.INT, "value"));
+    }
+
+    @Test
+    @DisplayName("typed-dictionary guard helpers should describe object leaf metadata without rendering the whole block")
+    void typedDictionaryGuardHelpersShouldDescribeObjectLeafMetadata() {
+        var type = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
+
+        assertTrue(helper.needsTypedDictionaryCallGuard(type));
+        assertEquals(
+                "(godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME",
+                helper.renderTypedDictionaryGuardBuiltinTypeLiteral(type, "key")
+        );
+        assertEquals(
+                "(godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT",
+                helper.renderTypedDictionaryGuardBuiltinTypeLiteral(type, "value")
+        );
+        assertFalse(helper.isTypedDictionaryGuardObjectLeaf(type, "key"));
+        assertTrue(helper.isTypedDictionaryGuardObjectLeaf(type, "value"));
+        assertEquals(
+                "GD_STATIC_SN(u8\"Node\")",
+                helper.renderTypedDictionaryGuardClassNameExpr(type, "value")
+        );
+    }
+
+    @Test
+    @DisplayName("typed-dictionary guard helpers should skip generic Dictionary slots")
+    void typedDictionaryGuardHelpersShouldSkipGenericDictionary() {
+        assertFalse(helper.needsTypedDictionaryCallGuard(new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)));
     }
 }

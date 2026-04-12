@@ -124,7 +124,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
     void* method_userdata,
     GDExtensionClassInstancePtr p_instance, const GDExtensionConstVariantPtr* p_args, GDExtensionInt p_argument_count,
     GDExtensionVariantPtr r_return, GDExtensionCallError* r_error) {
-    // Check argument count
+<#--     Check argument count-->
     if (p_argument_count < ${bindingData.paramTypes?size}) {
         r_error->error = GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS;
         r_error->expected = ${bindingData.paramTypes?size};
@@ -136,9 +136,9 @@ static void call${helper.renderFuncBindName(bindingData)}(
         return;
     }
 
-    <#-- Check the argument type. -->
-    <#-- Variant outward slots are encoded as NIL metadata, so only non-Variant -->
-    <#-- parameters keep the exact runtime gate here. -->
+<#--Check the argument type. -->
+<#--Variant outward slots are encoded as NIL metadata, so only non-Variant -->
+<#--parameters keep the exact runtime gate here. -->
     <#list bindingData.paramTypes as paramType>
     <#if paramType.typeName != "Variant">
     {
@@ -151,6 +151,50 @@ static void call${helper.renderFuncBindName(bindingData)}(
         }
     }
     </#if>
+    </#list>
+
+<#--Typed Dictionary preflight stays ahead of wrapper-local unpack so mismatches can-->
+<#--return without introducing a second cleanup contract for partially materialized locals.-->
+    <#list bindingData.paramTypes as paramType>
+        <#if helper.needsTypedDictionaryCallGuard(paramType)>
+        <#assign probeVarName = "probe" + paramType_index>
+        {
+            // Typed Dictionary slots need a second-stage typedness check before wrapper locals exist.
+            godot_Dictionary ${probeVarName} = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[${paramType_index}]);
+            godot_bool typed_mismatch = false;
+            <#list ["key", "value"] as typedSide>
+                <#assign expectedBuiltinType = helper.renderTypedDictionaryGuardBuiltinTypeLiteral(paramType, typedSide)>
+            if (!typed_mismatch) {
+                typed_mismatch = godot_Dictionary_get_typed_${typedSide}_builtin(&${probeVarName}) != ${expectedBuiltinType};
+            }
+                <#if helper.isTypedDictionaryGuardObjectLeaf(paramType, typedSide)>
+                    <#assign expectedClassNameExpr = helper.renderTypedDictionaryGuardClassNameExpr(paramType, typedSide)>
+            if (!typed_mismatch) {
+                godot_StringName ${probeVarName}_${typedSide}_class_name = godot_Dictionary_get_typed_${typedSide}_class_name(&${probeVarName});
+                godot_Variant ${probeVarName}_${typedSide}_script = godot_Dictionary_get_typed_${typedSide}_script(&${probeVarName});
+                godot_Variant ${probeVarName}_${typedSide}_script_nil = godot_new_Variant_nil();
+                godot_Variant ${probeVarName}_${typedSide}_script_is_null_result = godot_new_Variant_nil();
+                godot_bool ${probeVarName}_${typedSide}_script_is_null_valid = false;
+                // Godot reports absent script leaf metadata as OBJECT/null; use Variant equality for the null check.
+                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_${typedSide}_script, &${probeVarName}_${typedSide}_script_nil, &${probeVarName}_${typedSide}_script_is_null_result, &${probeVarName}_${typedSide}_script_is_null_valid);
+                const godot_bool ${probeVarName}_${typedSide}_script_is_null = ${probeVarName}_${typedSide}_script_is_null_valid && godot_new_bool_with_Variant(&${probeVarName}_${typedSide}_script_is_null_result);
+                typed_mismatch = !godot_StringName_op_equal_StringName(&${probeVarName}_${typedSide}_class_name, ${expectedClassNameExpr}) || !${probeVarName}_${typedSide}_script_is_null;
+                godot_Variant_destroy(&${probeVarName}_${typedSide}_script_is_null_result);
+                godot_Variant_destroy(&${probeVarName}_${typedSide}_script_nil);
+                godot_Variant_destroy(&${probeVarName}_${typedSide}_script);
+                godot_StringName_destroy(&${probeVarName}_${typedSide}_class_name);
+            }
+                </#if>
+            </#list>
+            godot_Dictionary_destroy(&${probeVarName});
+            if (typed_mismatch) {
+                r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+                r_error->expected = GDEXTENSION_VARIANT_TYPE_DICTIONARY;
+                r_error->argument = ${paramType_index};
+                return;
+            }
+        }
+        </#if>
     </#list>
 
     // Extract the argument. Wrapper-owned non-object locals stay mutable so the

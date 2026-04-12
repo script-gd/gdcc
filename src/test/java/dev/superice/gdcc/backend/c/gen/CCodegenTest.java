@@ -492,6 +492,132 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesTypedDictionaryCallWrapperPreflightAndKeepsGenericDictionaryOnBaseGate() throws Exception {
+        var workerClass = new LirClassDef("TypedDictionaryCallGuardWorker", "Node");
+
+        var acceptTypedPayload = new LirFunctionDef("accept_typed_payload");
+        acceptTypedPayload.setReturnType(GdIntType.INT);
+        acceptTypedPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedDictionaryCallGuardWorker"), null, acceptTypedPayload));
+        acceptTypedPayload.addParameter(new LirParameterDef(
+                "payload",
+                new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node")),
+                null,
+                acceptTypedPayload
+        ));
+        var typedResult = acceptTypedPayload.createAndAddTmpVariable(GdIntType.INT);
+        var typedEntry = new LirBasicBlock("entry");
+        typedEntry.appendInstruction(new LiteralIntInsn(typedResult.id(), 1));
+        typedEntry.setTerminator(new ReturnInsn(typedResult.id()));
+        acceptTypedPayload.addBasicBlock(typedEntry);
+        acceptTypedPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptTypedPayload);
+
+        var acceptMixedPayload = new LirFunctionDef("accept_mixed_payload");
+        acceptMixedPayload.setReturnType(GdBoolType.BOOL);
+        acceptMixedPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedDictionaryCallGuardWorker"), null, acceptMixedPayload));
+        acceptMixedPayload.addParameter(new LirParameterDef(
+                "payload",
+                new GdDictionaryType(GdVariantType.VARIANT, GdPackedNumericArrayType.PACKED_INT32_ARRAY),
+                null,
+                acceptMixedPayload
+        ));
+        var mixedResult = acceptMixedPayload.createAndAddTmpVariable(GdBoolType.BOOL);
+        var mixedEntry = new LirBasicBlock("entry");
+        mixedEntry.appendInstruction(new LiteralBoolInsn(mixedResult.id(), true));
+        mixedEntry.setTerminator(new ReturnInsn(mixedResult.id()));
+        acceptMixedPayload.addBasicBlock(mixedEntry);
+        acceptMixedPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptMixedPayload);
+
+        var acceptGenericPayload = new LirFunctionDef("accept_generic_payload");
+        acceptGenericPayload.setReturnType(GdFloatType.FLOAT);
+        acceptGenericPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedDictionaryCallGuardWorker"), null, acceptGenericPayload));
+        acceptGenericPayload.addParameter(new LirParameterDef(
+                "payload",
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                null,
+                acceptGenericPayload
+        ));
+        var genericResult = acceptGenericPayload.createAndAddTmpVariable(GdFloatType.FLOAT);
+        var genericEntry = new LirBasicBlock("entry");
+        genericEntry.appendInstruction(new LiteralFloatInsn(genericResult.id(), 1.5));
+        genericEntry.setTerminator(new ReturnInsn(genericResult.id()));
+        acceptGenericPayload.addBasicBlock(genericEntry);
+        acceptGenericPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptGenericPayload);
+
+        var module = new LirModule("typed_dictionary_call_guard_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var hCode = new String(files.getLast().contentWriter());
+
+        var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_int");
+        var mixedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_bool");
+        var genericCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_float");
+
+        assertContainsAll(
+                typedCallBody,
+                "if (type != GDEXTENSION_VARIANT_TYPE_DICTIONARY)",
+                "godot_Dictionary probe0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);",
+                "godot_bool typed_mismatch = false;",
+                "typed_mismatch = godot_Dictionary_get_typed_key_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME;",
+                "typed_mismatch = godot_Dictionary_get_typed_value_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
+                "godot_StringName probe0_value_class_name = godot_Dictionary_get_typed_value_class_name(&probe0);",
+                "godot_Variant probe0_value_script = godot_Dictionary_get_typed_value_script(&probe0);",
+                "godot_Variant probe0_value_script_nil = godot_new_Variant_nil();",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_value_script, &probe0_value_script_nil, &probe0_value_script_is_null_result, &probe0_value_script_is_null_valid);",
+                "const godot_bool probe0_value_script_is_null = probe0_value_script_is_null_valid && godot_new_bool_with_Variant(&probe0_value_script_is_null_result);",
+                "typed_mismatch = !godot_StringName_op_equal_StringName(&probe0_value_class_name, GD_STATIC_SN(u8\"Node\")) || !probe0_value_script_is_null;",
+                "godot_Variant_destroy(&probe0_value_script_is_null_result);",
+                "godot_Variant_destroy(&probe0_value_script_nil);",
+                "godot_Variant_destroy(&probe0_value_script);",
+                "godot_StringName_destroy(&probe0_value_class_name);",
+                "godot_Dictionary_destroy(&probe0);",
+                "expected = GDEXTENSION_VARIANT_TYPE_DICTIONARY;",
+                "argument = 0;"
+        );
+        var typedProbeIndex = typedCallBody.indexOf("godot_Dictionary probe0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);");
+        var typedArgIndex = typedCallBody.indexOf("arg0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);");
+        assertTrue(typedProbeIndex >= 0, typedCallBody);
+        assertTrue(typedArgIndex > typedProbeIndex, typedCallBody);
+        assertFalse(typedCallBody.contains("goto "), typedCallBody);
+
+        assertContainsAll(
+                mixedCallBody,
+                "godot_Dictionary probe0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);",
+                "typed_mismatch = godot_Dictionary_get_typed_key_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_NIL;",
+                "typed_mismatch = godot_Dictionary_get_typed_value_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY;",
+                "godot_Dictionary_destroy(&probe0);"
+        );
+        assertFalse(mixedCallBody.contains("probe0_key_class_name"), mixedCallBody);
+        assertFalse(mixedCallBody.contains("probe0_value_class_name"), mixedCallBody);
+        assertFalse(mixedCallBody.contains("probe0_value_script"), mixedCallBody);
+        assertFalse(mixedCallBody.contains("godot_Dictionary_is_same_typed"), mixedCallBody);
+
+        assertContainsAll(
+                genericCallBody,
+                "if (type != GDEXTENSION_VARIANT_TYPE_DICTIONARY)",
+                "godot_Dictionary arg0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertEquals(
+                1,
+                countOccurrences(genericCallBody, "godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0])"),
+                genericCallBody
+        );
+        assertFalse(genericCallBody.contains("typed_mismatch"), genericCallBody);
+        assertFalse(genericCallBody.contains("godot_Dictionary_is_same_typed"), genericCallBody);
+        assertFalse(genericCallBody.contains("expectedBase0"), genericCallBody);
+        assertFalse(genericCallBody.contains("godot_Dictionary probe0 ="), genericCallBody);
+    }
+
+    @Test
     public void generatesCallFuncCleanupForDestroyableWrapperLocals() throws Exception {
         var workerClass = new LirClassDef("CallWrapperCleanupWorker", "Node");
 

@@ -425,14 +425,19 @@ public final class CBuiltinBuilder {
             baseValue = providedBase;
         }
 
+        // Godot's typed Dictionary constructor expects real nil Variant script carriers here.
+        var keyScriptTemp = bodyBuilder.newTempVariable("dict_key_script", GdVariantType.VARIANT, "godot_new_Variant_nil()");
+        var valueScriptTemp = bodyBuilder.newTempVariable("dict_value_script", GdVariantType.VARIANT, "godot_new_Variant_nil()");
+        bodyBuilder.declareTempVar(keyScriptTemp);
+        bodyBuilder.declareTempVar(valueScriptTemp);
         var ctorArgs = List.of(
                 baseValue,
                 bodyBuilder.valueOfExpr(renderGdExtensionVariantTypeIntLiteral(keyType), GdIntType.INT),
                 bodyBuilder.valueOfStringNamePtrLiteral(resolveTypedContainerClassName(keyType)),
-                bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR),
+                bodyBuilder.valueOfExpr(keyScriptTemp.name(), GdVariantType.VARIANT),
                 bodyBuilder.valueOfExpr(renderGdExtensionVariantTypeIntLiteral(valueType), GdIntType.INT),
                 bodyBuilder.valueOfStringNamePtrLiteral(resolveTypedContainerClassName(valueType)),
-                bodyBuilder.valueOfExpr("NULL", GdObjectType.OBJECT, CBodyBuilder.PtrKind.GODOT_PTR)
+                bodyBuilder.valueOfExpr(valueScriptTemp.name(), GdVariantType.VARIANT)
         );
         bodyBuilder.callAssign(
                 target,
@@ -440,6 +445,8 @@ public final class CBuiltinBuilder {
                 dictionaryType,
                 ctorArgs
         );
+        bodyBuilder.destroyTempVar(valueScriptTemp);
+        bodyBuilder.destroyTempVar(keyScriptTemp);
         if (baseTemp != null) {
             bodyBuilder.destroyTempVar(baseTemp);
         }

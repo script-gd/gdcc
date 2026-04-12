@@ -175,6 +175,11 @@ class CConstructInsnGenTest {
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_STRING_NAME"));
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_NIL"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_key_script_"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_value_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var dictCtorCall = extractCall(body, "godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant");
+        assertFalse(dictCtorCall.contains("NULL"), dictCtorCall);
     }
 
     @Test
@@ -495,6 +500,11 @@ class CConstructInsnGenTest {
         assertTrue(body.contains("__prepare__: // __prepare__"));
         assertTrue(body.contains("godot_new_Array_with_Array_int_StringName_Variant"));
         assertTrue(body.contains("godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant"));
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_key_script_"), body);
+        assertTrue(body.contains("godot_Variant __gdcc_tmp_dict_value_script_"), body);
+        assertTrue(body.contains("godot_new_Variant_nil();"), body);
+        var dictCtorCall = extractCall(body, "godot_new_Dictionary_with_Dictionary_int_StringName_Variant_int_StringName_Variant");
+        assertFalse(dictCtorCall.contains("NULL"), dictCtorCall);
     }
 
     @Test
@@ -701,6 +711,14 @@ class CConstructInsnGenTest {
         var module = new LirModule("test_module", List.of(clazz));
         var codegen = newCodegen(module, List.of(clazz), api);
         return codegen.generateFuncBody(clazz, func);
+    }
+
+    private String extractCall(String body, String callName) {
+        var callStart = body.indexOf(callName);
+        assertTrue(callStart >= 0, body);
+        var callEnd = body.indexOf(");", callStart);
+        assertTrue(callEnd >= 0, body);
+        return body.substring(callStart, callEnd + 2);
     }
 
     private void assertPackedArrayClassNameRejected(String className) {
