@@ -90,6 +90,46 @@ func _ready() -> void:
         push_error("Validation failed.")
 ```
 
+### Optional Runner Output Directives
+
+Some end-to-end contracts need to assert that Godot rejects a call or property assignment at the
+ABI boundary. Those cases still belong in `test_suite`, but the success condition is not just
+"print the pass marker at the end" because the validation script intentionally stops at the failing
+operation.
+
+Validation templates may therefore declare runner-side output assertions with header comments:
+
+- `# gdcc-test: output_contains=<substring>`
+- `# gdcc-test: output_not_contains=<substring>`
+- `# gdcc-test: output_contains_any=<substring A> || <substring B> || ...`
+
+Important details:
+
+- These directive lines are stripped before the validation script is copied into the Godot test project.
+- The ordinary `__UNIT_TEST_PASS_MARKER__` contract still applies.
+- For negative boundary tests, print the pass marker immediately before the intentionally failing call or assignment, then let the runner assert the emitted failure signal and the absence of an unreachable marker.
+
+Example:
+
+```gdscript
+# gdcc-test: output_contains=Cannot convert argument 2 from PackedInt32Array to int.
+# gdcc-test: output_not_contains=Reached after bad call.
+extends Node
+
+func _ready() -> void:
+    var target = get_parent().get_node_or_null("__UNIT_TEST_TARGET_NODE_NAME__")
+    if target == null:
+        push_error("Target node missing.")
+        return
+
+    var payload := PackedInt32Array()
+    payload.push_back(7)
+
+    print("__UNIT_TEST_PASS_MARKER__")
+    target.call("accept_int", payload)
+    print("Reached after bad call.")
+```
+
 ## Runtime and Build Prerequisites
 
 This suite depends on the same external tools as the existing end-to-end native integration tests.
@@ -130,6 +170,7 @@ To add a new end-to-end unit case:
 4. Keep the source script within currently supported frontend behavior.
 5. Make the validation script print `__UNIT_TEST_PASS_MARKER__` only on success.
 6. Use `push_error(...)` for failure paths so Godot output remains diagnosable.
+7. If the case intentionally expects a runtime ABI rejection, add `# gdcc-test:` directives and print the pass marker immediately before the guarded bad call or property set.
 
 Why `extends Node` is mandatory:
 

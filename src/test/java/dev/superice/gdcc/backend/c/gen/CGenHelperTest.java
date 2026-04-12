@@ -461,4 +461,30 @@ class CGenHelperTest {
     void typedDictionaryGuardHelpersShouldSkipGenericDictionary() {
         assertFalse(helper.needsTypedDictionaryCallGuard(new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)));
     }
+
+    @Test
+    @DisplayName("typed-dictionary guard helpers should reject rendering metadata for generic Dictionary slots")
+    void typedDictionaryGuardHelpersShouldRejectGenericDictionaryMetadataRequest() {
+        var generic = new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT);
+
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderTypedDictionaryGuardBuiltinTypeLiteral(generic, "key")
+        );
+
+        assertTrue(ex.getMessage().contains("non-typed Dictionary slot"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("typed-dictionary guard helpers should reject unknown side names")
+    void typedDictionaryGuardHelpersShouldRejectUnknownSideName() {
+        var typed = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
+
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderTypedDictionaryGuardClassNameExpr(typed, "item")
+        );
+
+        assertTrue(ex.getMessage().contains("Unknown typed-dictionary guard side"), ex.getMessage());
+    }
 }

@@ -24,6 +24,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -47,6 +48,10 @@ public final class GdScriptUnitTestCompileRunner {
     private static final String TARGET_NODE_NAME = "TargetNode";
     private static final String TARGET_NODE_NAME_PLACEHOLDER = "__UNIT_TEST_TARGET_NODE_NAME__";
     private static final String PASS_MARKER_PLACEHOLDER = "__UNIT_TEST_PASS_MARKER__";
+    private static final String VALIDATION_DIRECTIVE_PREFIX = "# gdcc-test:";
+    private static final String OUTPUT_CONTAINS_DIRECTIVE = "output_contains=";
+    private static final String OUTPUT_NOT_CONTAINS_DIRECTIVE = "output_not_contains=";
+    private static final String OUTPUT_CONTAINS_ANY_DIRECTIVE = "output_contains_any=";
     private static final Path WORK_ROOT = Path.of("tmp/test/test_suite/gdscript_unit");
 
     private final @NotNull ClassLoader loader;
@@ -73,7 +78,7 @@ public final class GdScriptUnitTestCompileRunner {
         Objects.requireNonNull(scriptResourcePath);
 
         var source = readRequiredResourceText(SCRIPT_RESOURCE_ROOT + "/" + scriptResourcePath);
-        var validationScript = renderValidationScript(
+        var validation = prepareValidation(
                 scriptResourcePath,
                 readRequiredResourceText(VALIDATION_RESOURCE_ROOT + "/" + scriptResourcePath)
         );
@@ -102,7 +107,7 @@ public final class GdScriptUnitTestCompileRunner {
                         ".",
                         Map.of()
                 )),
-                new GodotGdextensionTestRunner.TestScriptSpec(validationScript)
+                new GodotGdextensionTestRunner.TestScriptSpec(validation.script())
         ));
 
         var runResult = runner.run(true);
@@ -116,6 +121,7 @@ public final class GdScriptUnitTestCompileRunner {
                 combinedOutput.contains(passMarker),
                 () -> "Validation script for " + scriptResourcePath + " did not report success marker \"" + passMarker + "\".\nOutput:\n" + combinedOutput
         );
+        validation.expectations().assertSatisfied(scriptResourcePath, combinedOutput);
 
         return new CaseResult(scriptResourcePath, runtimeClassName, buildResult.artifacts(), runResult);
     }
@@ -160,7 +166,14 @@ public final class GdScriptUnitTestCompileRunner {
         }
     }
 
-    private static @NotNull String renderValidationScript(@NotNull String scriptResourcePath, @NotNull String validationTemplate) {
+    /// Validation templates may declare runner-side output assertions with `# gdcc-test:` comments.
+    /// The directives are stripped before the script is installed into the Godot project, so only
+    /// the remaining GDScript source is executed at runtime.
+    private static @NotNull PreparedValidation prepareValidation(@NotNull String scriptResourcePath, @NotNull String validationTemplate) {
+        return PreparedValidation.parse(renderValidationTemplate(scriptResourcePath, validationTemplate));
+    }
+
+    private static @NotNull String renderValidationTemplate(@NotNull String scriptResourcePath, @NotNull String validationTemplate) {
         return validationTemplate
                 .replace(TARGET_NODE_NAME_PLACEHOLDER, TARGET_NODE_NAME)
                 .replace(PASS_MARKER_PLACEHOLDER, expectedPassMarker(scriptResourcePath));
@@ -180,6 +193,12 @@ public final class GdScriptUnitTestCompileRunner {
         return caseName.replace('\\', '_').replace('/', '_').replace(':', '_').replace('.', '_');
     }
 
+    private static @NotNull String requireDirectiveValue(@NotNull String directive, @NotNull String prefix) {
+        var value = directive.substring(prefix.length()).trim();
+        assertFalse(value.isEmpty(), () -> "Validation directive `" + directive + "` must provide a non-empty value.");
+        return value;
+    }
+
     public record CaseResult(
             @NotNull String scriptResourcePath,
             @NotNull String runtimeClassName,
@@ -195,5 +214,89 @@ public final class GdScriptUnitTestCompileRunner {
     }
 
     private record LoweredCase(@NotNull LirModule module, @NotNull ClassRegistry classRegistry) {
+    }
+
+    private record PreparedValidation(@NotNull String script, @NotNull OutputExpectations expectations) {
+        private PreparedValidation {
+            Objects.requireNonNull(script);
+            Objects.requireNonNull(expectations);
+        }
+
+        private static @NotNull PreparedValidation parse(@NotNull String renderedTemplate) {
+            var normalizedTemplate = renderedTemplate.replace("\r\n", "\n").replace('\r', '\n');
+            var scriptLines = new ArrayList<String>();
+            var requiredSubstrings = new ArrayList<String>();
+            var forbiddenSubstrings = new ArrayList<String>();
+            var anyOfRequiredSubstrings = new ArrayList<List<String>>();
+
+            for (var line : normalizedTemplate.split("\n", -1)) {
+                var trimmed = line.trim();
+                if (!trimmed.startsWith(VALIDATION_DIRECTIVE_PREFIX)) {
+                    scriptLines.add(line);
+                    continue;
+                }
+
+                var directive = trimmed.substring(VALIDATION_DIRECTIVE_PREFIX.length()).trim();
+                if (directive.startsWith(OUTPUT_CONTAINS_DIRECTIVE)) {
+                    requiredSubstrings.add(requireDirectiveValue(directive, OUTPUT_CONTAINS_DIRECTIVE));
+                    continue;
+                }
+                if (directive.startsWith(OUTPUT_NOT_CONTAINS_DIRECTIVE)) {
+                    forbiddenSubstrings.add(requireDirectiveValue(directive, OUTPUT_NOT_CONTAINS_DIRECTIVE));
+                    continue;
+                }
+                if (directive.startsWith(OUTPUT_CONTAINS_ANY_DIRECTIVE)) {
+                    var options = new ArrayList<String>();
+                    for (var option : requireDirectiveValue(directive, OUTPUT_CONTAINS_ANY_DIRECTIVE).split("\\s*\\|\\|\\s*")) {
+                        if (!option.isBlank()) {
+                            options.add(option);
+                        }
+                    }
+                    assertFalse(options.isEmpty(), () -> "Validation directive `" + directive + "` must provide at least one non-blank alternative.");
+                    anyOfRequiredSubstrings.add(List.copyOf(options));
+                    continue;
+                }
+
+                throw new AssertionError("Unsupported validation directive `" + directive + "`.");
+            }
+
+            return new PreparedValidation(
+                    String.join("\n", scriptLines),
+                    new OutputExpectations(requiredSubstrings, forbiddenSubstrings, anyOfRequiredSubstrings)
+            );
+        }
+    }
+
+    private record OutputExpectations(
+            @NotNull List<String> requiredSubstrings,
+            @NotNull List<String> forbiddenSubstrings,
+            @NotNull List<List<String>> anyOfRequiredSubstrings
+    ) {
+        private OutputExpectations {
+            requiredSubstrings = List.copyOf(requiredSubstrings);
+            forbiddenSubstrings = List.copyOf(forbiddenSubstrings);
+            anyOfRequiredSubstrings = List.copyOf(anyOfRequiredSubstrings);
+        }
+
+        private void assertSatisfied(@NotNull String scriptResourcePath, @NotNull String output) {
+            for (var required : requiredSubstrings) {
+                assertTrue(
+                        output.contains(required),
+                        () -> "Output for " + scriptResourcePath + " did not contain required fragment `" + required + "`.\nOutput:\n" + output
+                );
+            }
+            for (var forbidden : forbiddenSubstrings) {
+                assertFalse(
+                        output.contains(forbidden),
+                        () -> "Output for " + scriptResourcePath + " unexpectedly contained forbidden fragment `" + forbidden + "`.\nOutput:\n" + output
+                );
+            }
+            for (var anyGroup : anyOfRequiredSubstrings) {
+                assertTrue(
+                        anyGroup.stream().anyMatch(output::contains),
+                        () -> "Output for " + scriptResourcePath + " did not contain any acceptable fragment from " + anyGroup + ".\nOutput:\n" + output
+                );
+            }
+        }
     }
 }

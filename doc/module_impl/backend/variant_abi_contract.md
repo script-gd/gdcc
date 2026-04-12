@@ -18,6 +18,7 @@
 - 关联文档：
   - `doc/test_error/frontend_variant_and_typed_dictionary_abi.md`
   - `doc/gdcc_c_backend.md`
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
   - `doc/gdcc_ownership_lifecycle_spec.md`
   - `doc/module_impl/backend/backend_ownership_lifecycle_contract.md`
 
@@ -50,7 +51,8 @@
 - `call_func` 只对非 `Variant` 参数保留精确 runtime type gate
 - `call_func` wrapper 对自己物化出来的 destroyable 非对象局部值负责显式 cleanup
 - `ptrcall` 物理 ABI 形状保持不变
-- typed dictionary ABI fidelity 仍是独立后续工程，不属于当前合同
+- typed dictionary ABI 现已由独立合同维护：
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
 
 ## 长期合同
 
@@ -145,13 +147,9 @@
 
 ### 6. typed dictionary 边界合同
 
-- typed dictionary ABI fidelity 是明确的独立后续工程
-- 它可以复用当前整理好的 helper/template 触点，但必须拥有独立的：
-  - metadata 规则
-  - `hint` / `hint_string` / `class_name` 合同
-  - 回归测试
-  - 风险归因
-- 不能把 typed dictionary 修复混入 ordinary `Variant` ABI 回归面，否则会模糊问题来源：
+- typed dictionary ABI 已经落地，但仍保持为与 ordinary `Variant` ABI 分离的独立合同：
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
+- 不能把 typed dictionary 回归面重新混入 ordinary `Variant` ABI 回归面，否则会模糊问题来源：
   - `Variant` metadata
   - `Variant` runtime gate
   - wrapper cleanup
@@ -239,4 +237,4 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 - 修改 `PackVariantInsn` / `UnpackVariantInsn` 语义
 - 为 frontend / LIR 引入新的 outward metadata 字段
 - 改动 `ptrcall` 物理 ABI 形状
-- 在同一合同中顺手解决 typed dictionary metadata fidelity
+- 在同一合同中顺手承载 typed dictionary metadata fidelity；该部分由独立 typed-dictionary 合同维护

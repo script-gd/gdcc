@@ -789,19 +789,52 @@ TypedDictionary ABI 当前只修：
 
 **E1. 更新长期事实源与 backend 提醒文档**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `doc/gdcc_c_backend.md`
-  - 如实现稳定后，可考虑新增或扩展 typed-dictionary contract 文档
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
+  - `doc/module_impl/backend/variant_abi_contract.md`
 - 目标：
   - 明确 typed dictionary outward ABI 合同已从“后续工程”转入“已实现事实”
   - 说明 `Variant` ABI 与 typed dictionary ABI 的边界
+- 当前结果：
+  - `doc/gdcc_c_backend.md` 已新增 typed-dictionary outward ABI 提醒段，明确：
+    - metadata 合同
+    - runtime preflight 合同
+    - nil `Variant` script carrier 合同
+    - 与 `Variant` ABI 的边界
+  - 新增 `doc/module_impl/backend/typed_dictionary_abi_contract.md` 作为长期事实源，收口：
+    - outward metadata 编码
+    - `call_func` runtime gate
+    - typed-dictionary 本地重建
+    - helper / template 分工
+    - regression 基线与非目标
+  - `doc/module_impl/backend/variant_abi_contract.md` 已改为引用独立 typed-dictionary 合同，避免继续把 typed dictionary 写成“后续工程”
+- 已验证：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest,CConstructInsnGenTest`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiRejectsWrongTypedDictionaryAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryReturnAbiBuildNativeLibraryAndRunInGodot" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiBuildNativeLibraryAndRunInGodot" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsPlainDictionarySetAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsWrongTypedDictionarySetAtRuntime" --no-daemon --info --console=plain`
 
 **E2. 从调查文档回填结论**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `doc/test_error/frontend_variant_and_typed_dictionary_abi.md`
 - 目标：
   - 把 typed dictionary 部分从“待调查问题”更新为“问题链路 + 已落地修复点 + 剩余非目标”
+- 当前结果：
+  - 文档顶部状态已更新为：
+    - ordinary typed-dictionary method / return / property ABI 已修复
+    - writable-route fixture 仍应避免把 typed-dictionary ABI acceptance 混入同一用例
+  - 历史问题段已明确区分：
+    - fix 前 exported shape
+    - fix 后 current backend shape
+    - 为什么 writable-route fixture 仍保持 plain `Dictionary`
+  - 文档已补充当前 dedicated regression 面：
+    - `CConstructInsnGenEngineTest`
+    - `FrontendLoweringToCTypedDictionaryAbiIntegrationTest`
+- 已验证：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest,CConstructInsnGenTest`
+  - `rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiAcceptsExactAndRejectsPlainDictionaryAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryMethodAbiRejectsWrongTypedDictionaryAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryReturnAbiBuildNativeLibraryAndRunInGodot" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiBuildNativeLibraryAndRunInGodot" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsPlainDictionarySetAtRuntime" --tests "dev.superice.gdcc.backend.c.build.FrontendLoweringToCTypedDictionaryAbiIntegrationTest.lowerFrontendTypedDictionaryPropertyAbiRejectsWrongTypedDictionarySetAtRuntime" --no-daemon --info --console=plain`
 
 ---
 

@@ -2,10 +2,10 @@
 
 ## Summary
 
-While stabilizing the Step 8 integration coverage for frontend writable-route semantics, two boundary-shape problems were confirmed:
+While stabilizing the Step 8 integration coverage for frontend writable-route semantics, two boundary-shape problems were originally confirmed:
 
 - a source-level `Variant` parameter exported through the current GDExtension method ABI is treated as a `Nil`-typed slot by the generated call wrapper, so non-null values can be rejected before the native method body even starts running
-- a source-level typed dictionary such as `Dictionary[int, PackedInt32Array]` loses its element-type metadata when it crosses the current GDExtension method/property ABI, so any end-to-end test that passes such a value through the boundary is no longer isolating writable-route semantics alone
+- a source-level typed dictionary such as `Dictionary[int, PackedInt32Array]` used to lose its element-type metadata when it crossed the GDExtension method/property ABI, so any end-to-end test that passed such a value through the boundary was no longer isolating writable-route semantics alone
 
 These are real problems, but they are **orthogonal** to Step 8's main objective:
 
@@ -27,9 +27,24 @@ As of 2026-04-11, the backend `Variant` ABI has been repaired for ordinary metho
   - positive paths for dynamic `call()` + direct return + direct property get/set
   - a negative guard proving non-`Variant` parameters still fail as `PackedInt32Array -> int`, not `PackedInt32Array -> Nil`
 
-The remaining open item from this investigation is:
+As of 2026-04-12, ordinary typed-dictionary method / return / property boundaries have also been repaired:
 
-- typed dictionary boundary fidelity
+- method argument / return / property metadata now publishes:
+  - `DICTIONARY + PROPERTY_HINT_DICTIONARY_TYPE + "<key>;<value>"`
+- generated `call_func` wrappers now keep the base `DICTIONARY` type gate and add a typed-dictionary preflight only for non-generic typed dictionary parameters
+- object-leaf script metadata is now treated as Godot's null-object `OBJECT` variant, not as a required `TYPE_NIL`
+- local typed-dictionary reconstruction now passes real nil `Variant` script carriers instead of raw `NULL`
+- focused runtime coverage now explicitly includes:
+  - exact vs plain dictionary method calls
+  - wrong-typed dictionary method calls
+  - typed dictionary returns
+  - typed dictionary property get/set positive and negative paths
+
+There is no longer an open ordinary-boundary ABI bug for typed dictionaries in the current backend.
+
+The remaining long-lived conclusion from this investigation is architectural:
+
+- writable-route continuation coverage should still avoid mixing typed-dictionary ABI acceptance into the same fixture
 
 The repaired `Variant` contract is now:
 
@@ -195,7 +210,7 @@ This keeps the test focused on:
 
 without depending on the currently broken external `Variant` parameter ABI.
 
-## Issue B: Typed-Dictionary Parameters Lose Element-Type Metadata Across the ABI
+## Issue B: Typed-Dictionary Parameters Used To Lose Element-Type Metadata Across the ABI
 
 ### The tempting source shape
 
@@ -242,7 +257,7 @@ if (p_err.expected == Variant::DICTIONARY && p_argptrs[p_err.argument]->get_type
 
 So in Godot's own world, "typed dictionary" is a `Dictionary` plus typed metadata, not a plain `Dictionary` with no hint.
 
-### What `gdcc` exports today
+### What `gdcc` exported before the fix
 
 The current `gdcc` backend collapses typed dictionaries at the ABI boundary in three different places.
 
@@ -274,9 +289,28 @@ gdcc_make_property_full(arg_type, arg_name,
 #define godot_TypedDictionary(key, value)  godot_Dictionary
 ```
 
-So the generated C signature may *look* typed, but the actual ABI still carries only plain `Dictionary` storage and plain `Dictionary` metadata unless extra hint/usage information is emitted. Today it is not.
+So the generated C signature may *look* typed, but the actual ABI still carried only plain `Dictionary` storage and plain `Dictionary` metadata unless extra hint/usage information was emitted. At that point it was not.
 
-### Why this contaminates integration coverage
+### What `gdcc` exports now
+
+The current backend has repaired the ordinary typed-dictionary ABI through the same backend-owned touchpoints that already stabilized the `Variant` outward ABI:
+
+- `CGenHelper.renderBoundMetadata(...)` and `renderPropertyMetadata(...)` now emit:
+  - `type = DICTIONARY`
+  - `hint = PROPERTY_HINT_DICTIONARY_TYPE`
+  - `hint_string = "<key>;<value>"`
+- `entry.h.ftl` now emits a typed-dictionary preflight before wrapper-local parameter unpack:
+  - generic `Dictionary` still keeps only the base `DICTIONARY` gate
+  - non-generic typed dictionary parameters additionally compare typed key/value metadata
+- object leaves are checked via:
+  - `get_typed_*_builtin()`
+  - `get_typed_*_class_name()`
+  - `get_typed_*_script()` interpreted through `Variant == nil`
+- `CBuiltinBuilder.constructDictionary(...)` now materializes real nil `Variant` script carriers before calling the typed-dictionary constructor, which fixes the previously crashing “first real read inside the native body” path
+
+So the ordinary ABI surface that used to be the defect is now covered by dedicated codegen/runtime regression tests, rather than being left as an open hypothesis.
+
+### Why this contaminated integration coverage before the fix
 
 Once `payloads` stays typed across the external boundary, the test is no longer isolating writable-route semantics. It now depends on all of the following at once:
 
@@ -316,11 +350,15 @@ That is too much ambiguity for a acceptance test.
 
 ### Existing evidence that typed-dictionary support should be tested separately
 
-The repository already has dedicated engine coverage for typed dictionary construction in:
+The repository now has dedicated typed-dictionary coverage in two separate layers:
 
 - `src/test/java/dev/superice/gdcc/backend/c/gen/CConstructInsnGenEngineTest.java`
+- `src/test/java/dev/superice/gdcc/backend/c/build/FrontendLoweringToCTypedDictionaryAbiIntegrationTest.java`
 
-That test checks that typed dictionary construction code is emitted and can be exercised independently of writable-route behavior.
+These tests check that:
+
+- typed-dictionary construction code is emitted and exercised independently of writable-route behavior
+- ordinary method/property/return boundaries preserve typed-dictionary metadata and runtime guard behavior on their own
 
 So typed dictionary support is not ignored. It is simply a separate acceptance dimension and should not be fused into the continuation test fixture.
 
@@ -390,18 +428,24 @@ The stable backend touchpoints are now:
 
 Any future maintenance on ordinary `Variant` ABI should reuse those touchpoints and keep the existing runtime/codegen regression coverage aligned with them.
 
-### Typed dictionary boundary fix
+### Typed dictionary boundary maintenance
 
-To make typed dictionaries semantically survive the ABI boundary, investigate:
+This part is no longer an open backend TODO for ordinary method/property surfaces.
 
-- emitting `PROPERTY_HINT_DICTIONARY_TYPE` and the correct `hint_string` for typed dictionary arguments/properties
-- auditing whether typed array/dictionary metadata is preserved consistently for:
-  - method arguments
-  - return values
-  - exported properties
-- adding focused end-to-end tests specifically for typed dictionary parameter/property boundaries, separate from writable-route continuation coverage
+The stable backend touchpoints are now:
 
-Until those fixes land, integration tests should keep using:
+- `CGenHelper.renderBoundMetadata(...)`
+- `CGenHelper.renderPropertyMetadata(...)`
+- typed-dictionary guard helpers in `CGenHelper`
+- `src/main/c/codegen/template_451/entry.h.ftl`
+- `CBuiltinBuilder.constructDictionary(...)`
+
+The stable regression surfaces are now:
+
+- helper/codegen tests for typed metadata and guard structure
+- dedicated end-to-end tests for method/property/return typed-dictionary boundaries
+
+Writability/continuation-oriented integration tests should still keep using:
 
 - internal `Variant` state for dynamic carriers
 - external plain `Dictionary` for the outer mutable route
@@ -409,4 +453,6 @@ Until those fixes land, integration tests should keep using:
 
 so that failures remain attributable to itself.
 
-The typed dictionary follow-up should reuse the backend helper touchpoints established by the `Variant` ABI repair, but its tests, acceptance criteria, and risk analysis must remain independent from the `Variant` regression surface documented here.
+The key maintenance rule remains the same:
+
+- typed-dictionary ABI coverage and writable-route continuation coverage should stay separate, even now that both surfaces are implemented

@@ -126,15 +126,39 @@
 - `call_func` wrappers must skip the exact `type == NIL` gate only for `Variant` parameters.
 - Non-`Variant` parameters must keep their existing exact runtime type gate.
 - `ptrcall` ABI shape remains unchanged by this contract.
+- Typed dictionary ABI is now maintained as a separate implemented contract:
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
 - Implementation touchpoints should stay centralized in backend helpers/templates:
   - `CGenHelper.renderBoundMetadata(...)`
   - `CGenHelper.renderPropertyMetadata(...)`
   - `gdcc_make_property_full(...)`
   - `gdcc_bind_property_full(...)`
 - Do not push this metadata contract into frontend ordinary lowering or LIR shape just to carry `hint/usage/class_name`.
-- Typed dictionary ABI fidelity is a separate follow-up topic:
-  - it may reuse the touchpoints above
-  - but it requires independent metadata rules, tests, and risk analysis
+- Do not silently fuse typed dictionary fixes back into this `Variant` section:
+  - it reuses some of the same touchpoints
+  - but it has its own metadata rules, runtime gate rules, reconstruction rules, and regression surface
+
+### Typed Dictionary Outward ABI Contract
+
+- Ordinary method / return / property `Dictionary[K, V]` ABI is also owned by backend metadata generation plus generated `call_func` wrappers.
+- For non-generic typed dictionary outward slots:
+  - publish `GDEXTENSION_VARIANT_TYPE_DICTIONARY`
+  - publish `godot_PROPERTY_HINT_DICTIONARY_TYPE`
+  - publish the flat `hint_string = "<key>;<value>"`
+- Generated `call_func` wrappers must:
+  - keep the base `type == DICTIONARY` gate
+  - run a typed-dictionary preflight only for non-generic typed dictionary parameters
+  - keep that preflight before wrapper-owned parameter locals are materialized
+- For object leaves in typed-dictionary preflight:
+  - compare builtin type first
+  - compare class name
+  - treat script metadata as null-object aware by checking `Variant == nil`, not by requiring `TYPE_NIL`
+- When backend reconstructs a typed dictionary locally, it must pass real nil `Variant` script carriers rather than raw `NULL`.
+- Generic `Dictionary[Variant, Variant]` remains plain `Dictionary` outwardly:
+  - no typed `hint_string`
+  - no typed-dictionary preflight
+- Long-term fact source:
+  - `doc/module_impl/backend/typed_dictionary_abi_contract.md`
 
 ### call_func Wrapper Local Cleanup Contract
 
