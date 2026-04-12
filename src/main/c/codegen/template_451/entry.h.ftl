@@ -217,6 +217,8 @@ static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
     GDExtensionClassMethodCall call_func = call${helper.renderFuncBindName(bindingData)};
     GDExtensionClassMethodPtrCall ptrcall_func = ptrcall${helper.renderFuncBindName(bindingData)};
 
+    // Bound-slot outward metadata stays centralized in CGenHelper so Variant and typed Dictionary
+    // keep sharing one backend-owned contract instead of growing template-local special cases.
     GDExtensionPropertyInfo args_info[] = {
     <#list bindingData.paramTypes as paramType>
         <#assign boundMetadata = helper.renderBoundMetadata(paramType, "godot_PROPERTY_USAGE_DEFAULT")>
@@ -242,6 +244,8 @@ static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
         };
     </#if>
     <#if bindingData.returnType.typeName != "void">
+        // Return outward metadata reuses the same helper path as arguments so typed Dictionary
+        // hints stay consistent across both sides of the method boundary.
         <#assign returnMetadata = helper.renderBoundMetadata(bindingData.returnType, "godot_PROPERTY_USAGE_DEFAULT")>
         GDExtensionPropertyInfo return_info = gdcc_make_property_full(${returnMetadata.typeEnumLiteral}, GD_STATIC_SN(u8""), ${returnMetadata.hintEnumLiteral}, ${returnMetadata.hintStringExpr}, ${returnMetadata.classNameExpr}, ${returnMetadata.usageExpr});
     </#if>

@@ -457,11 +457,16 @@ TypedDictionary ABI 当前只修：
 
 **B1. method argument / return metadata 自动吃到 typed-dictionary 新 helper**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/c/codegen/template_451/entry.h.ftl`
 - 说明：
   - `entry.h.ftl` 已经通过 `helper.renderBoundMetadata(...)` 生成 args/return metadata
   - 这里的主要工作是校对生成结果和必要注释，不应再散落新的硬编码逻辑
+- 当前结果：
+  - method argument 与 return metadata 继续统一收口到 `renderBoundMetadata(...)`
+  - `entry.h.ftl` 现在显式注释 typed dictionary outward metadata 也走同一 helper，不再把模板误导成 `Variant`-only 合同
+  - 生成路径保持无新增硬编码分支，typed dictionary 仍通过 helper 发布 `type/hint/hint_string`
 - 验收：
   - typed dictionary method arg / return 都出现：
     - `GDEXTENSION_VARIANT_TYPE_DICTIONARY`
@@ -470,11 +475,16 @@ TypedDictionary ABI 当前只修：
 
 **B2. property registration 自动吃到 typed-dictionary 新 helper**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/main/c/codegen/template_451/entry.c.ftl`
 - 说明：
   - property registration 已经走 `renderPropertyMetadata(...)`
   - 这里主要是确认模板注释和生成结果与新合同一致
+- 当前结果：
+  - property registration 继续统一收口到 `renderPropertyMetadata(...)`
+  - `entry.c.ftl` 注释已更新为 typed dictionary / Variant 共用 metadata helper 合同
+  - property `class_name` 仍保持当前 owner-class 槽位，避免把 typed dictionary leaf 语义误放进顶层 `class_name`
 - 验收：
   - typed dictionary property bind 调用包含：
     - `GDEXTENSION_VARIANT_TYPE_DICTIONARY`
@@ -483,6 +493,7 @@ TypedDictionary ABI 当前只修：
 
 **B3. 为 codegen 输出补齐结构感知测试**
 
+- 状态：已完成（2026-04-12）
 - 修改：
   - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenTest.java`
 - 建议新增覆盖：
@@ -491,6 +502,22 @@ TypedDictionary ABI 当前只修：
   - property metadata
   - generic `Dictionary` 不应误发 `PROPERTY_HINT_DICTIONARY_TYPE`
   - typed dictionary mixed `Variant` side 的 `hint_string` 要正确
+- 当前结果：
+  - `CCodegenTest` 新增 method/property typed dictionary outward metadata 结构感知测试
+  - method 侧分别锚定了：
+    - `entry.c.ftl` bind 调用传入 `GDEXTENSION_VARIANT_TYPE_DICTIONARY`
+    - `entry.h.ftl` helper body 发布 `PROPERTY_HINT_DICTIONARY_TYPE + hint_string`
+    - generic `Dictionary` 继续保持 plain metadata，不误发 typed hint
+  - property 侧分别锚定了：
+    - `Dictionary[StringName, Node]`
+    - `Dictionary[Variant, PackedInt32Array]`
+    - generic `Dictionary[Variant, Variant]`
+  - mixed-`Variant` hint string 已覆盖：
+    - `StringName;Variant`
+    - `Variant;PackedInt32Array`
+- 已验证：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CGenHelperTest,CCodegenTest`
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CConstructInsnGenTest,CConstructInsnGenEngineTest`
 - 验收：
   - 测试应使用已有 `assertContainsAll(...)` / 定位 helper，避免整段长文本脆弱匹配
 
