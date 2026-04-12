@@ -24,6 +24,9 @@
 
 ## 当前最终状态
 
+> 重要限制：当前 typed-dictionary outward ABI **不支持 script leaf**。  
+> 任何需要靠 `get_typed_*_script()` 发布“非 null 脚本身份”的 key/value leaf 都**不在本合同覆盖范围内**，必须 fail-fast，不能静默降级为 plain object leaf 或 class-name-only leaf。
+
 ### 核心实现落点
 
 - outward metadata helper：
@@ -50,6 +53,11 @@
   - `type = GDEXTENSION_VARIANT_TYPE_DICTIONARY`
   - `hint = godot_PROPERTY_HINT_DICTIONARY_TYPE`
   - `hint_string = "<key>;<value>"`
+- 上述 outward metadata 合同只覆盖 backend 当前可稳定表达的 leaf：
+  - primitive / builtin / packed array / `Variant`
+  - engine object / GDCC object
+  - plain `Array` / plain `Dictionary`
+  - **不包含 script leaf**
 - generic `Dictionary[Variant, Variant]` 继续保持 plain `Dictionary` outward surface：
   - 不发布 typed-dictionary hint
   - 不进入 typed-dictionary runtime preflight
@@ -102,7 +110,11 @@
   - engine object / GDCC object
   - plain `Array`
   - plain `Dictionary`
+- `script leaf` 当前不是受支持的 outward leaf：
+  - backend 没有承诺发布非 null script identity
+  - backend 也没有承诺把它静默压平成 class-name object leaf
 - 以下 leaf 必须 fail-fast，不能静默降级：
+  - script leaf
   - nested typed `Array[T]`
   - nested typed `Dictionary[K, V]`
   - `void`
@@ -233,5 +245,6 @@ rtk .\gradlew.bat test --tests "dev.superice.gdcc.backend.c.build.FrontendLoweri
 - 修改 frontend ordinary boundary compatibility 规则
 - 修改 `Dictionary` / `Array` 的物理 C ABI 形状
 - 引入脚本类型专用 outward leaf 模型
+  - 也就是说，当前合同明确**不支持 script leaf**
 - 支持 nested typed container 作为 outward hint leaf
 - 把 typed dictionary 与 writable-route continuation 测试重新混成同一个 acceptance fixture
