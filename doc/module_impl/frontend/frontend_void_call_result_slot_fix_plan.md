@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Planned
+- 状态：Phase A-B Completed / Phase C-D Planned
 - 范围：
   - `src/main/java/dev/superice/gdcc/frontend/lowering/**`
   - `src/main/java/dev/superice/gdcc/backend/c/gen/**`
@@ -27,17 +27,18 @@
 ## 结论摘要
 
 - 当前问题已经不应再理解成“`Array()` constructor 被 lower 成 `void`”。
-- 现有代码库中仍然存在的真实缺陷是：
+- 原始缺陷已经在 Phase A-B 闭环：
   - exact `Array` 上的 void-return method call
   - 当前已确认最小复现为 `Array.push_back(...)`
   - frontend/body lowering 与 backend/codegen 对这类 void call 的 result slot 合同不一致
-- 这条缺陷至少需要两段式修复：
-  - backend 先停止在 `__prepare__` 为 `GdVoidType` 变量自动注入默认初始化
-  - frontend 再把 exact void-return call lowering 成 `resultId = null` 的 call instruction
+  - 这条 emitted-call 合同漂移现已修复，不再阻断 `push_back + size()` / `push_back + dynamic helper` 构建
+- 这条缺陷的 staged 修复状态如下：
+  - Phase A 已完成：backend 已停止在 `__prepare__` 为 `GdVoidType` 变量自动注入默认初始化
+  - Phase B 已完成：frontend 已把 exact instance / utility-global 的 void-return call lowering 成 `resultId = null`
 - 若要从根源上消除这条缺陷，仍需新增一条后续 phase：
   - 让 `CallItem.resultValueId` 可空化
   - 让 statement-position void call 不再发布 CFG value / slot
-  - 这条 phase 会触及 CFG builder、`ValueBuild`、body lowering 与多组测试，因此必须作为单独阶段实施，而不是混进最小止血修复里
+  - 这条 phase 会触及 CFG builder、`ValueBuild`、body lowering 与多组测试，因此必须作为单独阶段实施，而不是混进 Phase A-B 的最小合同修复里
 - `E:/Projects/gdparser` 对这条问题帮助有限。
   - 快速检索仅看到 source-level typed-array 示例
   - 未发现与 backend/LIR/`__prepare__`/call insn 合同直接相关的实现
@@ -55,19 +56,23 @@
   - `Array.push_back(value: Variant) -> void`
   - 参考：https://docs.godotengine.org/en/stable/classes/class_array.html
 
-### 问题链 B：frontend 仍为 void call 发布 temp slot，并把它传给 call insn
+### 问题链 B：Phase B 前，frontend 会为 void call 发布 temp slot，并把它传给 call insn
 
 - `FrontendBodyLoweringSupport.collectCfgValueMaterializations(...)` 当前对 `CallItem` 统一发布：
   - `CfgValueMaterializationKind.TEMP_SLOT`
   - 类型来自 call anchor 的 `expressionTypes()`
 - 对 `Array.push_back` 来说，这个 temp slot 的类型就是 `GdVoidType`
 - `FrontendSequenceItemInsnLoweringProcessors.FrontendCallInsnLoweringProcessor`
-  当前 exact instance call 仍无条件把 `resultSlotId` 传给 `CallMethodInsn`
+  在 Phase B 前会无条件把 `resultSlotId` 传给 exact instance/global call insn
 - 于是 LIR 中形成了非法组合：
   - `CallMethodInsn.resultId() != null`
   - 但其对应变量类型为 `GdVoidType`
+- 这条 emitted-call 合同漂移已在 Phase B 修复：
+  - exact instance void call 现在发出 `CallMethodInsn(null, ...)`
+  - utility/global void call 现在发出 `CallGlobalInsn(null, ...)`
+  - 但 CFG/materialization 侧仍保留 void temp publication，等待 Phase C 收口
 
-### 问题链 C：backend 先在 `__prepare__` 炸，再在 call generator 处炸
+### 问题链 C：Phase A 前 backend 先在 `__prepare__` 炸，再在 call generator 处炸
 
 - `CCodegen.generateFunctionPrepareBlock()` 会为所有非参数、非 ref 变量自动注入默认初始化
 - `GdVoidType` 当前没有 special-case，于是会落入默认分支：
@@ -77,8 +82,12 @@
 - 但即使只修掉 `__prepare__`，backend 仍有第二层 guard rail：
   - `CallMethodInsnGen` 对 void method 明确要求 `resultId == null`
   - `CallGlobalInsnGen` 对 void utility/global call 也有同样约束
+- Phase A-B 完成后，当前状态变为：
+  - `__prepare__` 不再为 `GdVoidType` 变量注入伪构造
+  - frontend 也不再向 exact/global void call 传递 `resultId`
+  - backend 现有 invalid-IR guard rail 继续仅服务于坏 LIR fail-fast
 
-## 当前调查基线
+## 调查基线（Phase A 前）
 
 ### 临时调查测试
 
@@ -201,6 +210,34 @@
 - 切断当前最早、最误导的 `construct_builtin(void)` 炸点
 - 让 backend 对“void temp 变量存在但尚未被 frontend 修正”的中间态保持可诊断，而不是先在构造器校验处偏航
 
+### 执行状态
+
+- [x] A1. `CCodegen.generateFunctionPrepareBlock()` 已跳过 `GdVoidType` 变量，不再为它们注入默认初始化。
+- [x] A2. 已补齐 / 更新 targeted tests：
+  - `CPhaseAControlFlowAndFinallyTest` 新增 `__prepare__` skip-void 断言。
+  - `FrontendArrayConstructorVoidInvestigationTest` 已把中间态失败预期更新为 backend call generator guard rail。
+- [x] A3. 已运行 targeted tests，并确认 Phase A 止血目标与相邻 guard rail 继续成立：
+  - `CPhaseAControlFlowAndFinallyTest`
+  - `CConstructInsnGenTest`
+  - `CallMethodInsnGenTest`
+  - `CallGlobalInsnGenTest`
+  - `FrontendArrayConstructorVoidInvestigationTest`
+
+### 当前已完成结果
+
+- `__prepare__` 不再为 `GdVoidType` 变量生成初始化指令，也不再触发 `construct_builtin(void)`。
+- 临时探针的当前失败点已从 `__prepare__` 后移到 `CallMethodInsnGen`：
+  - `push_back` 仍因 `void + resultId` 合同不一致而失败。
+  - 这说明误导性炸点已被切断，后续 Phase B 需要继续修 frontend 发射合同。
+- 现有 typed container 自动注入与 backend invalid-IR guard rail 继续保持：
+  - `Array` / `Dictionary` / packed array 仍走原有 `__prepare__` 注入路径。
+  - `CallMethodInsnGen` / `CallGlobalInsnGen` 对 `void + resultId` 仍 fail-fast。
+- 当前 targeted validation 结果：
+  - `CPhaseAControlFlowAndFinallyTest` 通过。
+  - `CConstructInsnGenTest` 通过。
+  - `CallMethodInsnGenTest` 与 `CallGlobalInsnGenTest` 通过。
+  - `FrontendArrayConstructorVoidInvestigationTest` 通过，并确认失败点已后移到 call generator guard rail。
+
 ### 实施步骤
 
 1. 修改 `CCodegen.generateFunctionPrepareBlock()`：
@@ -232,6 +269,42 @@
 
 - 让 frontend 发出的 call instruction 与 backend 现有合同重新对齐
 - 修复 exact `Array.push_back(...)` 这类 void-return method call 的核心问题
+
+### 执行状态
+
+- [x] B1. `FrontendSequenceItemInsnLoweringProcessors.FrontendCallInsnLoweringProcessor` 已改为：
+  - exact instance route 遇到 `GdVoidType` 时发出 `CallMethodInsn(null, ...)`
+  - utility/global route 遇到 `GdVoidType` 时发出 `CallGlobalInsn(null, ...)`
+  - `CallStaticMethodInsn` 与 `DYNAMIC_FALLBACK` 合同保持不变
+- [x] B2. 已补齐 / 更新 targeted tests：
+  - `FrontendLoweringBodyInsnPassTest`
+    - exact `Array[int].push_back(...)` direct-slot / nested-call route 现在断言 `resultId == null`
+    - `print(seed)` / `print(box)` 等 void global call 现在断言 `resultId == null`
+    - `PackedInt32Array.push_back(...)` 继续断言保留 non-null result slot，避免误伤非 void route
+  - `FrontendBodyLoweringSupportTest`
+    - 新增说明性测试，明确 Phase B 后 CFG/materialization 仍保留 exact void call 的 `TEMP_SLOT`
+  - `FrontendArrayConstructorVoidInvestigationTest`
+    - 已从 Phase A 中间态失败探针切换为当前成功回归
+- [x] B3. 已运行 targeted tests，并确认 frontend 修复与 backend guard rail 同时成立：
+  - `FrontendBodyLoweringSupportTest`
+  - `FrontendLoweringBodyInsnPassTest`
+  - `CallMethodInsnGenTest`
+  - `CallGlobalInsnGenTest`
+  - `FrontendArrayConstructorVoidInvestigationTest`
+
+### 当前已完成结果
+
+- exact instance void call 的 emitted `CallMethodInsn.resultId()` 现在为 `null`
+- utility/global void call 的 emitted `CallGlobalInsn.resultId()` 现在为 `null`
+- `push_back + size()` 与 `push_back + dynamic helper` 已恢复为成功构建路径
+- non-void exact call 与 dynamic call 的既有结果槽合同保持不变：
+  - `PackedInt32Array.push_back(...)` 继续保留 non-null result slot
+  - `DYNAMIC_FALLBACK` 继续以 `Variant` 结果槽发布
+- 当前仍刻意保留的中间态仅剩一条：
+  - `CallItem.resultValueId`
+  - `collectCfgValueMaterializations(...)`
+  - `declareCfgValueSlots()`
+  这条 CFG-side void temp publication 将在 Phase C 再统一收口
 
 ### 实施步骤
 
@@ -342,8 +415,9 @@
 ### 实施步骤
 
 1. 处理 `FrontendArrayConstructorVoidInvestigationTest`：
+   - Phase B 已先把断言切到成功路径，以免继续锁定中间态失败
    - 若保留该文件：
-     - 改为断言修复后的成功路径
+     - 进一步改名或收敛成正式 regression test
    - 若拆分：
      - 用更明确命名的正式 regression test 替代
 2. 正式锚定三条最小回归形状：

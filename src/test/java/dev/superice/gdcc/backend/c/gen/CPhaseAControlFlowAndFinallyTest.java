@@ -350,13 +350,46 @@ public class CPhaseAControlFlowAndFinallyTest {
         var hasPlainStrInit = prepareBlock.getInstructions().stream()
                 .filter(LiteralStringInsn.class::isInstance)
                 .map(LiteralStringInsn.class::cast)
-                .anyMatch(insn -> insn.resultId().equals("plainStr"));
+                .anyMatch(insn -> "plainStr".equals(insn.resultId()));
         var hasRefStrInit = prepareBlock.getInstructions().stream()
                 .filter(LiteralStringInsn.class::isInstance)
                 .map(LiteralStringInsn.class::cast)
-                .anyMatch(insn -> insn.resultId().equals("refStr"));
+                .anyMatch(insn -> "refStr".equals(insn.resultId()));
         assertTrue(hasPlainStrInit);
         assertFalse(hasRefStrInit);
+    }
+
+    @Test
+    @DisplayName("__prepare__ should skip void variables but keep neighboring non-void initialization")
+    void prepareShouldSkipVoidVariablesButKeepOtherInitializers() {
+        var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("void_slot_func");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("plainStr", GdStringType.STRING);
+        func.createAndAddVariable("voidTmp", GdVoidType.VOID);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(clazz));
+        var codegen = newCodegen(module, List.of(clazz));
+        codegen.generate();
+
+        var prepareBlock = func.getBasicBlock("__prepare__");
+        assertNotNull(prepareBlock);
+        var hasPlainStrInit = prepareBlock.getInstructions().stream()
+                .filter(LiteralStringInsn.class::isInstance)
+                .map(LiteralStringInsn.class::cast)
+                .anyMatch(insn -> "plainStr".equals(insn.resultId()));
+        var hasVoidInit = prepareBlock.getInstructions().stream()
+                .anyMatch(insn -> "voidTmp".equals(insn.resultId()));
+        assertTrue(hasPlainStrInit);
+        assertFalse(hasVoidInit);
+        assertEquals(2, prepareBlock.getInstructionCount());
+        assertInstanceOf(GotoInsn.class, prepareBlock.getInstructions().getLast());
     }
 
     @Test

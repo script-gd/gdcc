@@ -198,6 +198,12 @@ public class CCodegen implements Codegen {
                     if (variable.ref()) {
                         continue;
                     }
+                    // Frontend still publishes transient void temps for exact void-return calls.
+                    // Phase A only removes the misleading __prepare__ constructor so later call
+                    // validation can surface the real result-slot contract mismatch.
+                    if (variable.type() instanceof GdVoidType) {
+                        continue;
+                    }
                     var initInsn = switch (variable.type()) {
                         case GdObjectType _ -> new LiteralNullInsn(variable.id());
                         case GdVariantType _, GdNilType _ -> new LiteralNilInsn(variable.id());

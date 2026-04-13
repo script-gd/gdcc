@@ -13,7 +13,19 @@
   - 当前已确认最小复现为 `Array.push_back(...)`
   - frontend/lowering/backend 交界处仍会发布并消费非法的 void result slot 链路
 
-## 当前复现形状
+## Current Status
+
+截至 2026-04-13，Phase A-B 已完成，这条 build/codegen 缺陷已经闭环：
+
+- `push_back + size()` 当前已恢复成功
+- `push_back + dynamic helper` 当前已恢复成功
+- exact instance / utility-global 的 void-return call 现在都会 emitted 为 `resultId = null`
+- backend 现有 `void + resultId` guard rail 继续保留，用于拦截未来坏 LIR
+- 当前仅剩的后续清理项是 Phase C：
+  - CFG/materialization 仍会为 statement-position void call 保留 temp publication
+  - 详见 `doc/module_impl/frontend/frontend_void_call_result_slot_fix_plan.md`
+
+## 历史复现形状（Phase B 前）
 
 ### 1. 非回归形状：当前已通过
 
@@ -48,18 +60,23 @@ func compute() -> int:
     return dynamic_size(plain)
 ```
 
-## Current Evidence
+## Historical Evidence
 
 - 临时探针 `FrontendArrayConstructorVoidInvestigationTest` 已确认：
   - `ConstructBuiltinInsn` 对应的结果变量仍是 `GdArrayType`
   - 不是 `GdVoidType`
 - 纯 indexed flow 当前 lower + codegen(fake compiler build) 已能通过
+- backend Phase A 已完成：
+  - `__prepare__` 不再为 `GdVoidType` temp 注入 `construct_builtin(void, [])`
 - `push_back` 相关路径仍会失败，而且：
   - 去掉 helper 后仍失败
   - 说明 helper 只是伴随路径，不是根因
 - 当前 exact `Array.push_back(...)` lowering 结果仍会发布：
   - `CallMethodInsn.resultId() != null`
   - 且该 result variable 的类型为 `GdVoidType`
+- 当前失败已后移到 `CallMethodInsnGen` 的 guard rail：
+  - void method `push_back` 仍携带 `resultId`
+  - backend 现在直接报 `has no return value but resultId is provided`
 
 ## Cause Chain
 
@@ -74,17 +91,15 @@ func compute() -> int:
 4. 于是 LIR 中出现：
    - `CallMethodInsn(resultId != null, "push_back", ...)`
    - 但 `resultId` 对应变量类型是 `GdVoidType`
-5. backend 第一处炸点在 `CCodegen.generateFunctionPrepareBlock()`
-   - `__prepare__` 会为所有非参数、非 ref 变量自动注入默认初始化
-   - `GdVoidType` 当前没有 special-case
-   - 因而会落到默认分支并被注入 `ConstructBuiltinInsn(voidTemp, [])`
-6. `ConstructInsnGen` / `CBuiltinBuilder` 随后在 `construct_builtin(void)` 处 fail-fast：
-   - `Builtin constructor validation failed: 'void' with args [] is not defined in ExtensionBuiltinClass`
-7. 但这还不是唯一问题：
-   - `CallMethodInsnGen` 已明确要求：
-     - 若 resolved return type 为 `void`
-     - 则 `instruction.resultId()` 必须为 `null`
-   - 所以即使只修 `__prepare__`，后续仍会在 void method call 本体处继续失败
+5. backend Phase A 已修复 `CCodegen.generateFunctionPrepareBlock()`
+   - `__prepare__` 现在会跳过 `GdVoidType` 变量
+   - 不再提前注入 `ConstructBuiltinInsn(voidTemp, [])`
+6. 当前实际失败点已后移到 `CallMethodInsnGen`
+   - `push_back` 的 resolved return type 是 `void`
+   - 但 frontend 仍传入了 non-null `resultId`
+7. `CallMethodInsnGen` 因此按既有 invalid-IR guard rail 继续 fail-fast：
+   - `void` method 禁止提供 `resultId`
+   - 当前报错为 `has no return value but resultId is provided`
 
 ## Impact
 
@@ -100,19 +115,21 @@ func compute() -> int:
 - indexed store/load 不应继续作为“仍然失败”的问题描述
 - helper flow 只是放大器，不是根因
 
-## Suggested Fix Direction
+## Resolution
 
-最小可靠修复不是重做 `Array()` 构造 lowering，而是两段式修复 void-call 合同：
+最小可靠修复已经按两段式完成：
 
-1. backend 先跳过 `GdVoidType` 变量在 `__prepare__` 中的自动初始化
-   - 避免继续生成 `construct_builtin(void, [])`
-   - 先切断当前最早、最误导的炸点
-2. frontend body lowering 对 exact void-return call 不再发出带 resultId 的 call instruction
-   - 当前已确认至少包括 exact instance route
-   - global/utility void call 也应对齐同一合同
-3. 保留 backend 现有 invalid-IR 防线
-   - `CallMethodInsnGen` / `CallGlobalInsnGen` 对“void call 仍携带 resultId”的拒绝应继续存在
-   - 这类测试属于 backend guard rail，不应因为 frontend 修复而删除
+1. backend Phase A：
+   - `GdVoidType` 变量在 `__prepare__` 中的自动初始化已被跳过
+   - `construct_builtin(void, [])` 这条误导性炸点已被切断
+2. frontend Phase B：
+   - exact instance void call 不再发出带 resultId 的 `CallMethodInsn`
+   - utility/global void call 不再发出带 resultId 的 `CallGlobalInsn`
+3. backend invalid-IR 防线保持不变：
+   - `CallMethodInsnGen` / `CallGlobalInsnGen` 继续拒绝“void call 仍携带 resultId”的坏形态
+4. 当前剩余工作属于 Phase C 清理：
+   - 从 CFG/materialization 源头切断 statement-position void call temp slot
+   - 这不再影响当前 `Array.push_back(...)` 相关 build 成功与 emitted call 合同
 
 ## Regression Anchors After Fix
 

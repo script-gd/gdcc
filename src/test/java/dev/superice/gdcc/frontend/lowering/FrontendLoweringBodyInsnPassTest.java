@@ -958,9 +958,11 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(1, countInstructions(variantInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(variantInstructions, UnpackVariantInsn.class)),
                 () -> assertTrue(packResultIds(variantInstructions).contains(onlyVariableOperandId(callVariantInsn.args()))),
+                () -> assertNull(callVarargInsn.resultId()),
                 () -> assertEquals(1, countInstructions(varargInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(varargInstructions, UnpackVariantInsn.class)),
                 () -> assertTrue(packResultIds(varargInstructions).contains(onlyVariableOperandId(callVarargInsn.args()))),
+                () -> assertNull(callVarargVariantInsn.resultId()),
                 () -> assertEquals(0, countInstructions(varargVariantInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(varargVariantInstructions, UnpackVariantInsn.class)),
                 () -> assertNotNull(onlyVariableOperandId(callVarargVariantInsn.args()))
@@ -975,7 +977,7 @@ class FrontendLoweringBodyInsnPassTest {
                         class_name BodyInsnDirectSlotReceiverPayload
                         extends RefCounted
                         
-                        func ping(values: PackedInt32Array, seed: int) -> void:
+                        func ping(values: Array[int], seed: int) -> void:
                             values.push_back(seed)
                         """,
                 Map.of(
@@ -995,16 +997,19 @@ class FrontendLoweringBodyInsnPassTest {
 
         var instructions = allInstructions(pingContext.targetFunction());
         var callInsn = requireOnlyInstruction(pingContext.targetFunction(), CallMethodInsn.class);
+        var packInsn = requireOnlyInstruction(pingContext.targetFunction(), PackVariantInsn.class);
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals("push_back", callInsn.methodName()),
                 () -> assertEquals("values", callInsn.objectId()),
                 () -> assertFalse(callInsn.objectId().startsWith("cfg_tmp_"), callInsn.objectId()),
-                () -> assertEquals("cfg_tmp_v1", onlyVariableOperandId(callInsn.args())),
+                () -> assertNull(callInsn.resultId()),
+                () -> assertEquals("cfg_tmp_v1", packInsn.valueId()),
+                () -> assertEquals(packInsn.resultId(), onlyVariableOperandId(callInsn.args())),
                 () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
                 () -> assertTrue(assignSourcesByTarget(instructions).values().stream().noneMatch("values"::equals)),
-                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
         );
     }
@@ -1064,7 +1069,7 @@ class FrontendLoweringBodyInsnPassTest {
                         func helper(value: int) -> int:
                             return value + 1
                         
-                        func ping(values: PackedInt32Array, seed: int) -> void:
+                        func ping(values: Array[int], seed: int) -> void:
                             values.push_back(helper(seed))
                         """,
                 Map.of(
@@ -1100,7 +1105,9 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals(2, callMethodInstructions.size()),
+                () -> assertNotNull(helperInsn.resultId()),
                 () -> assertEquals("self", helperInsn.objectId()),
+                () -> assertNull(pushBackInsn.resultId()),
                 () -> assertTrue(pushBackInsn.objectId().startsWith("cfg_tmp_"), pushBackInsn.objectId()),
                 () -> assertEquals("values", receiverSnapshotSource),
                 () -> assertTrue(pingContext.targetFunction().getVariables().containsKey(pushBackInsn.objectId())),
@@ -1186,6 +1193,7 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals("payloads", propertyLoad.propertyName()),
                 () -> assertEquals("push_back", callInsn.methodName()),
                 () -> assertEquals(propertyLoad.resultId(), callInsn.objectId()),
+                () -> assertNotNull(callInsn.resultId()),
                 () -> assertEquals(unpackInsn.resultId(), onlyVariableOperandId(callInsn.args())),
                 () -> assertEquals("payloads", propertyStore.propertyName()),
                 () -> assertEquals("self", propertyStore.objectId()),

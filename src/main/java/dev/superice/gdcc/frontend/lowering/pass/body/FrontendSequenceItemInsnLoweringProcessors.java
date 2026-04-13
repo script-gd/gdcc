@@ -33,6 +33,7 @@ import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -342,12 +343,23 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @Nullable Void context
         ) {
             var resolvedCall = session.requireResolvedCall(node.anchor());
-            var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
             return switch (resolvedCall.callKind()) {
-                case INSTANCE_METHOD -> lowerExactInstanceCall(session, block, node, resolvedCall, resultSlotId);
-                case STATIC_METHOD -> lowerStaticMethodCall(session, block, node, resolvedCall, resultSlotId);
-                case CONSTRUCTOR -> lowerConstructorCall(session, block, node, resolvedCall, resultSlotId);
-                case DYNAMIC_FALLBACK -> lowerDynamicInstanceCall(session, block, node, resolvedCall, resultSlotId);
+                case INSTANCE_METHOD -> lowerExactInstanceCall(session, block, node, resolvedCall);
+                case STATIC_METHOD -> lowerStaticMethodCall(session, block, node, resolvedCall);
+                case CONSTRUCTOR -> lowerConstructorCall(
+                        session,
+                        block,
+                        node,
+                        resolvedCall,
+                        FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
+                );
+                case DYNAMIC_FALLBACK -> lowerDynamicInstanceCall(
+                        session,
+                        block,
+                        node,
+                        resolvedCall,
+                        FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId())
+                );
                 case UNKNOWN -> throw session.unsupportedSequenceItem(
                         node,
                         "call route is not lowering-ready: " + resolvedCall.callKind()
@@ -359,14 +371,13 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull CallItem node,
-                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
-                @NotNull String resultSlotId
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall
         ) {
             var mutatingReceiverRoute = mutatingReceiverRouteOrNull(session, node, resolvedCall);
             var receiverSlotId = session.materializeCallReceiverLeaf(block, node);
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             block.appendNonTerminatorInstruction(new CallMethodInsn(
-                    resultSlotId,
+                    emittedExactVoidAwareResultSlotIdOrNull(node, resolvedCall),
                     resolvedCall.callableName(),
                     receiverSlotId,
                     arguments
@@ -378,20 +389,19 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull CallItem node,
-                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall,
-                @NotNull String resultSlotId
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall
         ) {
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             if (resolvedCall.receiverType() == null) {
                 block.appendNonTerminatorInstruction(new CallGlobalInsn(
-                        resultSlotId,
+                        emittedExactVoidAwareResultSlotIdOrNull(node, resolvedCall),
                         resolvedCall.callableName(),
                         arguments
                 ));
                 return block;
             }
             block.appendNonTerminatorInstruction(new CallStaticMethodInsn(
-                    resultSlotId,
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
                     session.requireStaticReceiverName(resolvedCall.receiverType()),
                     resolvedCall.callableName(),
                     arguments
@@ -447,6 +457,18 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     arguments
             ));
             return continueAfterDynamicReceiverWriteback(session, block, mutatingReceiverRoute, receiverSlotId);
+        }
+
+        /// Phase B keeps CFG-side call temp publication untouched, but emitted exact/global void calls
+        /// must stop forwarding that temp into backend call instructions.
+        private @Nullable String emittedExactVoidAwareResultSlotIdOrNull(
+                @NotNull CallItem node,
+                @NotNull dev.superice.gdcc.frontend.sema.FrontendResolvedCall resolvedCall
+        ) {
+            if (resolvedCall.returnType() instanceof GdVoidType) {
+                return null;
+            }
+            return FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
         }
 
         /// Returns the block that later lowering must keep appending to after post-call receiver

@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendArrayConstructorVoidInvestigationTest {
@@ -65,7 +65,8 @@ class FrontendArrayConstructorVoidInvestigationTest {
     }
 
     @Test
-    void localArrayConstructorKeepsArrayTypeAcrossDynamicHelperFlow(@TempDir Path tempDir) throws Exception {
+    void localArrayConstructorKeepsArrayTypeAcrossDynamicHelperFlowAfterVoidCallResultFix(@TempDir Path tempDir)
+            throws Exception {
         var lowered = lowerModule(
                 tempDir.resolve("local_array_dynamic_helper.gd"),
                 """
@@ -92,18 +93,14 @@ class FrontendArrayConstructorVoidInvestigationTest {
                 COptimizationLevel.DEBUG,
                 TargetPlatform.getNativePlatform()
         );
-        assertVoidTempsArePublishedForPushBackCalls(lowered.function(), 1);
-        assertVoidResultSlotCount(lowered.function(), 1);
-
-        var exception = assertThrows(
-                RuntimeException.class,
-                () -> buildWithFakeCompiler(projectInfo, lowered)
-        );
-        assertPrepareVoidConstructFailure(exception);
+        assertPushBackCallsDiscardResultSlots(lowered.function());
+        assertNoEmittedVoidResultSlots(lowered.function());
+        assertBuildSucceedsWithArrayConstructor(projectInfo, lowered);
     }
 
     @Test
-    void localArrayConstructorFailsEvenWithoutDynamicHelperOnceArrayPushBackIsPresent(@TempDir Path tempDir) throws Exception {
+    void localArrayConstructorKeepsArrayTypeAcrossDirectPushBackFlowAfterVoidCallResultFix(@TempDir Path tempDir)
+            throws Exception {
         var lowered = lowerModule(
                 tempDir.resolve("local_array_push_back_only.gd"),
                 """
@@ -127,14 +124,9 @@ class FrontendArrayConstructorVoidInvestigationTest {
                 COptimizationLevel.DEBUG,
                 TargetPlatform.getNativePlatform()
         );
-        assertVoidTempsArePublishedForPushBackCalls(lowered.function(), 1);
-        assertVoidResultSlotCount(lowered.function(), 1);
-
-        var exception = assertThrows(
-                RuntimeException.class,
-                () -> buildWithFakeCompiler(projectInfo, lowered)
-        );
-        assertPrepareVoidConstructFailure(exception);
+        assertPushBackCallsDiscardResultSlots(lowered.function());
+        assertNoEmittedVoidResultSlots(lowered.function());
+        assertBuildSucceedsWithArrayConstructor(projectInfo, lowered);
     }
 
     private static void assertArrayConstructBuiltinResults(@NotNull LirFunctionDef function) {
@@ -158,44 +150,20 @@ class FrontendArrayConstructorVoidInvestigationTest {
         );
     }
 
-    private static void assertVoidTempsArePublishedForPushBackCalls(
-            @NotNull LirFunctionDef function,
-            int expectedPushBackCallCount
-    ) {
+    private static void assertPushBackCallsDiscardResultSlots(@NotNull LirFunctionDef function) {
         var pushBackCalls = allInstructions(function).stream()
                 .filter(CallMethodInsn.class::isInstance)
                 .map(CallMethodInsn.class::cast)
                 .filter(insn -> insn.methodName().equals("push_back"))
                 .toList();
 
-        assertEquals(expectedPushBackCallCount, pushBackCalls.size());
+        assertEquals(1, pushBackCalls.size());
         for (var callInsn : pushBackCalls) {
-            var resultId = callInsn.resultId();
-            assertNotNull(resultId, () -> "push_back should currently publish a result slot in " + function.getName());
-            var resultVar = function.getVariableById(resultId);
-            assertNotNull(resultVar, () -> "Missing push_back result variable " + resultId);
-            assertInstanceOf(
-                    GdVoidType.class,
-                    resultVar.type(),
-                    () -> "push_back result slot should currently be void, but was " + resultVar.type().getTypeName()
-            );
+            assertNull(callInsn.resultId(), () -> "push_back should discard its void result in " + function.getName());
         }
     }
 
-    private static void assertPrepareVoidConstructFailure(@NotNull RuntimeException exception) {
-        var messages = new ArrayList<String>();
-        for (var current = (Throwable) exception; current != null; current = current.getCause()) {
-            if (current.getMessage() != null && !current.getMessage().isBlank()) {
-                messages.add(current.getMessage());
-            }
-        }
-        var combined = String.join("\n", messages);
-        assertTrue(combined.contains("block '__prepare__'"), combined);
-        assertTrue(combined.contains("construct_builtin"), combined);
-        assertTrue(combined.contains("Builtin constructor validation failed: 'void' with args []"), combined);
-    }
-
-    private static void assertVoidResultSlotCount(@NotNull LirFunctionDef function, int expectedCount) {
+    private static void assertNoEmittedVoidResultSlots(@NotNull LirFunctionDef function) {
         var voidResultIds = allInstructions(function).stream()
                 .map(LirInstruction::resultId)
                 .filter(java.util.Objects::nonNull)
@@ -204,7 +172,7 @@ class FrontendArrayConstructorVoidInvestigationTest {
                     return variable != null && variable.type() instanceof GdVoidType;
                 })
                 .toList();
-        assertEquals(expectedCount, voidResultIds.size(), () -> "Unexpected void result slots: " + voidResultIds);
+        assertEquals(0, voidResultIds.size(), () -> "Unexpected emitted void result slots: " + voidResultIds);
     }
 
     private static void assertBuildSucceedsWithArrayConstructor(

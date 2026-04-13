@@ -17,6 +17,7 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -186,6 +187,51 @@ class FrontendBodyLoweringSupportTest {
                         materialization.kind()
                 ),
                 () -> assertSame(aliasItem.expression(), materialization.aliasSourceAnchorOrNull())
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsKeepsExactVoidCallTempBackedUntilPhaseC() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_exact_void_call_materialization.gd",
+                """
+                        class_name BodyLoweringSupportExactVoidCallMaterialization
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], seed: int) -> void:
+                            values.push_back(seed)
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportExactVoidCallMaterialization",
+                        "RuntimeBodyLoweringSupportExactVoidCallMaterialization"
+                )
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var callItem = collectReachableValueItems(graph).stream()
+                .filter(CallItem.class::isInstance)
+                .map(CallItem.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing CallItem"));
+        var materialization = java.util.Objects.requireNonNull(
+                FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                        graph,
+                        analyzed.analysisData(),
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).get(callItem.resultValueId()),
+                "Missing materialization for exact void call result"
+        );
+
+        assertAll(
+                () -> assertEquals(GdVoidType.VOID, materialization.type()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                        materialization.kind()
+                ),
+                () -> assertNull(materialization.aliasSourceAnchorOrNull())
         );
     }
 
