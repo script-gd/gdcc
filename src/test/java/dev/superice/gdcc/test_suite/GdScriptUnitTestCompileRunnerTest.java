@@ -41,10 +41,16 @@ public class GdScriptUnitTestCompileRunnerTest {
             "initializer/local/variant_boundaries.gd",
             "initializer/property/object_and_scalar.gd",
             "member/builtin_property_access.gd",
+            "member/builtin_property_writeback_color.gd",
+            "member/builtin_property_writeback_vector3.gd",
             "member/compound_assignment.gd",
+            "runtime/array_constructor_size.gd",
+            "runtime/array_void_return_helper_size.gd",
+            "runtime/array_void_return_push_back_size.gd",
             "runtime/dynamic_call.gd",
             "smoke/basic_arithmetic.gd",
-            "subscript/array_roundtrip.gd"
+            "subscript/array_roundtrip.gd",
+            "subscript/packed_array_mutation_roundtrip.gd"
     );
 
     @TestFactory
