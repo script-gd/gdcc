@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Investigated / Planned
+- 状态：Phase A-D Completed / Contract Pending
 - 范围：
   - `src/main/java/dev/superice/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
@@ -287,7 +287,7 @@
       - element type 名称
       - use-site
       - unsupported 原因
-3. 明确 typed-array 首轮支持的 outward leaf：
+1. 明确 typed-array 首轮支持的 outward leaf：
    - primitive / builtin（不含 `Variant`）
    - packed array
    - object leaf
@@ -298,13 +298,13 @@
      - 它按 generic `Array` 处理；
      - 不进入 typed-array hint atom 渲染；
      - 不发布 typed-array hint
-4. 明确首轮 fail-fast 的 leaf：
+2. 明确首轮 fail-fast 的 leaf：
    - nested typed `Array[T]`
    - nested typed `Dictionary[K, V]`
    - `void`
    - 缺失 outward metadata 的未知 leaf
    - `script leaf unsupported` 仍保留在文档合同中，但由 frontend / lowering 保证不进入 backend helper
-5. 复用 `renderPropertyMetadata(...)`，让 method arg / return / property registration 共享同一套 typed-array metadata 合同。
+3. 复用 `renderPropertyMetadata(...)`，让 method arg / return / property registration 共享同一套 typed-array metadata 合同。
 
 ### 验收细则
 
@@ -324,6 +324,30 @@
 
 - 让 non-generic `Array[T]` 参数在 `call_func` wrapper 中拥有与 Godot 对齐的 typedness 校验。
 - 保持 generic `Array[Variant]` 仍只做 base `ARRAY` gate。
+
+### 执行状态
+
+- [x] C1. `CGenHelper` 已补齐 typed-array guard helper，并把 runtime leaf triple 解析收敛为最小共享 private helper，继续保持 typed-array / typed-dictionary 的 outward grammar 与模板块分离。
+- [x] C2. `entry.h.ftl` 已新增 typed-array preflight block，保持 base `ARRAY` gate 在前、typed guard 在 unpack locals 之前，并沿用 `Variant == nil` 的 script-null 判定。
+- [x] C3. 已补齐 helper / codegen 单元测试，覆盖 object leaf metadata、generic `Array[Variant]` skip、unsupported leaf fail-fast、preflight 顺序，以及“不使用 `godot_Array_is_same_typed(...)`”的结构约束。
+- [x] C4. 已运行 targeted build / tests，并确认 Phase C wrapper 合同成立。
+
+### 当前已完成结果
+
+- non-generic `Array[T]` 的 `call_func` wrapper 现在会先做 base `ARRAY` gate，再对 typed slot 直接比较编译期已知的 `typed_builtin / typed_class_name / typed_script` 三元组。
+- object leaf 现在在 wrapper 中显式比较：
+  - `godot_Array_get_typed_builtin(...)`
+  - `godot_Array_get_typed_class_name(...)`
+  - `godot_Array_get_typed_script(...)`
+  且继续用 `Variant == nil` 语义判断空 script metadata。
+- generic `Array[Variant]` 继续只保留原有 plain `ARRAY` base gate：
+  - 不会误生成 typed-array preflight；
+  - 不会误退化成 `godot_Array_is_same_typed(...)`。
+- 当前 targeted validation 结果：
+  - `build_project` 通过
+  - `CGenHelperTest` 通过
+  - `CCodegenTest` 通过
+  - `CConstructInsnGenTest` 通过
 
 ### 实施步骤
 
@@ -373,6 +397,31 @@
 
 - 用稳定、可归因的 regression surface 接管当前临时调查测试。
 - 保证 method / return / property / prepare / default-init 五个触点都有正反向锚点。
+
+### 执行状态
+
+- [x] D1. 已新增正式 regression class `FrontendLoweringToCTypedArrayAbiIntegrationTest`，覆盖 method parameter exact/plain/wrong、return outward fidelity、property exact/plain/wrong。
+- [x] D2. 新的 integration scripts 已用前后 marker + 稳定失败类别双重锚定 ABI guard 行为，而不再只依赖“崩溃前是否打印 marker”。
+- [x] D3. `FrontendLoweringToCTypedArrayAbiInvestigationTest` 已收敛为轻量 post-fix probe，不再承担主回归职责，但断言已更新为与 Phase C/D 后的实现事实一致。
+- [x] D4. 已运行 targeted build / tests，并确认正式 regression surface 稳定。
+
+### 当前已完成结果
+
+- exact `Array[Node]` method/property 正例现在都能稳定穿过 ABI 边界，并保持 Godot 侧可观察的 typed-array metadata：
+  - `typed_builtin = TYPE_OBJECT`
+  - `typed_class_name = &"Node"`
+  - `typed_script = null`
+- plain `Array` 与 wrong-typed `Array[RefCounted]` 现在都会在 method call / property setter 的 ABI 边界被拒绝，而不是落到 native body 内部才暴露问题。
+- return / property outward metadata 现在都有正式的端到端回归锚点：
+  - method return 会发布 `PROPERTY_HINT_ARRAY_TYPE`
+  - property registration 会发布 `PROPERTY_HINT_ARRAY_TYPE`
+  - 运行时 direct get/set 与 direct return 都能观察到一致的 typed metadata
+- 临时调查测试保留后的职责已经收窄为：
+  - 对 metadata / preflight / constructor 修复后的“当前事实”做轻量探针；
+  - 正式 ABI 行为回归则统一由 `FrontendLoweringToCTypedArrayAbiIntegrationTest` 承担。
+- 当前 targeted validation 结果：
+  - `FrontendLoweringToCTypedArrayAbiIntegrationTest` 通过
+  - `FrontendLoweringToCTypedArrayAbiInvestigationTest` 通过
 
 ### 实施步骤
 

@@ -377,6 +377,66 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("typed-array guard helpers should only apply to non-generic array slots")
+    void typedArrayGuardHelpersShouldOnlyApplyToNonGenericArraySlots() {
+        assertTrue(helper.needsTypedArrayCallGuard(new GdArrayType(GdStringNameType.STRING_NAME)));
+        assertFalse(helper.needsTypedArrayCallGuard(new GdArrayType(GdVariantType.VARIANT)));
+        assertFalse(helper.needsTypedArrayCallGuard(new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT)));
+    }
+
+    @Test
+    @DisplayName("typed-array guard helpers should expose object leaf metadata without backend registry revalidation")
+    void typedArrayGuardHelpersShouldExposeObjectLeafMetadata() {
+        var typedObjectArray = new GdArrayType(new GdObjectType("Node"));
+
+        assertEquals(
+                "(godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT",
+                helper.renderTypedArrayGuardBuiltinTypeLiteral(typedObjectArray)
+        );
+        assertTrue(helper.isTypedArrayGuardObjectLeaf(typedObjectArray));
+        assertEquals(
+                "GD_STATIC_SN(u8\"Node\")",
+                helper.renderTypedArrayGuardClassNameExpr(typedObjectArray)
+        );
+    }
+
+    @Test
+    @DisplayName("typed-array guard helpers should reject generic array slots")
+    void typedArrayGuardHelpersShouldRejectGenericArraySlots() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderTypedArrayGuardBuiltinTypeLiteral(new GdArrayType(GdVariantType.VARIANT))
+        );
+
+        assertEquals(
+                "Typed-array guard metadata requested for non-typed Array slot 'Array'",
+                ex.getMessage()
+        );
+    }
+
+    @Test
+    @DisplayName("typed-array guard helpers should reject nested typed leaves and missing runtime metadata")
+    void typedArrayGuardHelpersShouldRejectUnsupportedLeaves() {
+        var nestedArrayEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderTypedArrayGuardBuiltinTypeLiteral(new GdArrayType(new GdArrayType(GdIntType.INT)))
+        );
+        assertEquals(
+                "Unsupported typed-array runtime leaf 'Array[int]' at element leaf: nested typed Array leaf is not supported",
+                nestedArrayEx.getMessage()
+        );
+
+        var missingMetadataEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderTypedArrayGuardBuiltinTypeLiteral(new GdArrayType(GdVoidType.VOID))
+        );
+        assertEquals(
+                "Unsupported typed-array runtime leaf 'void' at element leaf: missing runtime GDExtension metadata",
+                missingMetadataEx.getMessage()
+        );
+    }
+
+    @Test
     @DisplayName("renderBoundMetadata should reject typed nested array leaf in typed array hint")
     void renderBoundMetadataShouldRejectTypedNestedArrayLeafInTypedArrayHint() {
         var ex = assertThrows(
@@ -412,6 +472,7 @@ class CGenHelperTest {
         );
     }
 
+    @Test
     @DisplayName("renderBoundMetadata should reject missing metadata leaf in typed array hint")
     void renderBoundMetadataShouldRejectMissingMetadataLeafInTypedArrayHint() {
         var ex = assertThrows(

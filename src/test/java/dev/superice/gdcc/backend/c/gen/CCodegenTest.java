@@ -658,6 +658,128 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generatesTypedArrayCallWrapperPreflightAndKeepsGenericArrayOnBaseGate() throws Exception {
+        var workerClass = new LirClassDef("TypedArrayCallGuardWorker", "Node");
+
+        var acceptTypedPayload = new LirFunctionDef("accept_typed_payload");
+        acceptTypedPayload.setReturnType(GdIntType.INT);
+        acceptTypedPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedArrayCallGuardWorker"), null, acceptTypedPayload));
+        acceptTypedPayload.addParameter(new LirParameterDef(
+                "payload",
+                new GdArrayType(new GdObjectType("Node")),
+                null,
+                acceptTypedPayload
+        ));
+        var typedResult = acceptTypedPayload.createAndAddTmpVariable(GdIntType.INT);
+        var typedEntry = new LirBasicBlock("entry");
+        typedEntry.appendInstruction(new LiteralIntInsn(typedResult.id(), 1));
+        typedEntry.setTerminator(new ReturnInsn(typedResult.id()));
+        acceptTypedPayload.addBasicBlock(typedEntry);
+        acceptTypedPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptTypedPayload);
+
+        var acceptPackedPayload = new LirFunctionDef("accept_packed_payload");
+        acceptPackedPayload.setReturnType(GdBoolType.BOOL);
+        acceptPackedPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedArrayCallGuardWorker"), null, acceptPackedPayload));
+        acceptPackedPayload.addParameter(new LirParameterDef(
+                "payload",
+                new GdArrayType(GdPackedNumericArrayType.PACKED_INT32_ARRAY),
+                null,
+                acceptPackedPayload
+        ));
+        var packedResult = acceptPackedPayload.createAndAddTmpVariable(GdBoolType.BOOL);
+        var packedEntry = new LirBasicBlock("entry");
+        packedEntry.appendInstruction(new LiteralBoolInsn(packedResult.id(), true));
+        packedEntry.setTerminator(new ReturnInsn(packedResult.id()));
+        acceptPackedPayload.addBasicBlock(packedEntry);
+        acceptPackedPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptPackedPayload);
+
+        var acceptGenericPayload = new LirFunctionDef("accept_generic_payload");
+        acceptGenericPayload.setReturnType(GdFloatType.FLOAT);
+        acceptGenericPayload.addParameter(new LirParameterDef("self", new GdObjectType("TypedArrayCallGuardWorker"), null, acceptGenericPayload));
+        acceptGenericPayload.addParameter(new LirParameterDef(
+                "payload",
+                new GdArrayType(GdVariantType.VARIANT),
+                null,
+                acceptGenericPayload
+        ));
+        var genericResult = acceptGenericPayload.createAndAddTmpVariable(GdFloatType.FLOAT);
+        var genericEntry = new LirBasicBlock("entry");
+        genericEntry.appendInstruction(new LiteralFloatInsn(genericResult.id(), 1.5));
+        genericEntry.setTerminator(new ReturnInsn(genericResult.id()));
+        acceptGenericPayload.addBasicBlock(genericEntry);
+        acceptGenericPayload.setEntryBlockId("entry");
+        workerClass.addFunction(acceptGenericPayload);
+
+        var module = new LirModule("typed_array_call_guard_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var hCode = new String(files.getLast().contentWriter());
+
+        var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_int");
+        var packedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_bool");
+        var genericCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_float");
+
+        assertContainsAll(
+                typedCallBody,
+                "if (type != GDEXTENSION_VARIANT_TYPE_ARRAY)",
+                "godot_Array probe0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);",
+                "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
+                "godot_StringName probe0_class_name = godot_Array_get_typed_class_name(&probe0);",
+                "godot_Variant probe0_script = godot_Array_get_typed_script(&probe0);",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, &probe0_script_is_null_result, &probe0_script_is_null_valid);",
+                "const godot_bool probe0_script_is_null = probe0_script_is_null_valid && godot_new_bool_with_Variant(&probe0_script_is_null_result);",
+                "typed_mismatch = !godot_StringName_op_equal_StringName(&probe0_class_name, GD_STATIC_SN(u8\"Node\")) || !probe0_script_is_null;",
+                "godot_Variant_destroy(&probe0_script_is_null_result);",
+                "godot_Variant_destroy(&probe0_script_nil);",
+                "godot_Variant_destroy(&probe0_script);",
+                "godot_StringName_destroy(&probe0_class_name);",
+                "godot_Array_destroy(&probe0);",
+                "expected = GDEXTENSION_VARIANT_TYPE_ARRAY;",
+                "argument = 0;"
+        );
+        var typedProbeIndex = typedCallBody.indexOf("godot_Array probe0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);");
+        var typedArgIndex = typedCallBody.indexOf("arg0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);");
+        assertTrue(typedProbeIndex >= 0, typedCallBody);
+        assertTrue(typedArgIndex > typedProbeIndex, typedCallBody);
+        assertFalse(typedCallBody.contains("godot_Array_is_same_typed"), typedCallBody);
+
+        assertContainsAll(
+                packedCallBody,
+                "godot_Array probe0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);",
+                "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY;",
+                "godot_Array_destroy(&probe0);",
+                "expected = GDEXTENSION_VARIANT_TYPE_ARRAY;"
+        );
+        assertFalse(packedCallBody.contains("probe0_class_name"), packedCallBody);
+        assertFalse(packedCallBody.contains("probe0_script"), packedCallBody);
+        assertFalse(packedCallBody.contains("godot_Array_is_same_typed"), packedCallBody);
+
+        assertContainsAll(
+                genericCallBody,
+                "if (type != GDEXTENSION_VARIANT_TYPE_ARRAY)",
+                "godot_Array arg0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertEquals(
+                1,
+                countOccurrences(genericCallBody, "godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0])"),
+                genericCallBody
+        );
+        assertFalse(genericCallBody.contains("typed_mismatch"), genericCallBody);
+        assertFalse(genericCallBody.contains("godot_Array_get_typed_"), genericCallBody);
+        assertFalse(genericCallBody.contains("godot_Array_is_same_typed"), genericCallBody);
+        assertFalse(genericCallBody.contains("godot_Array probe0 ="), genericCallBody);
+    }
+
+    @Test
     public void generatesTypedDictionaryCallWrapperPreflightAndKeepsGenericDictionaryOnBaseGate() throws Exception {
         var workerClass = new LirClassDef("TypedDictionaryCallGuardWorker", "Node");
 

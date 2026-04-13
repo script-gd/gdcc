@@ -153,8 +153,46 @@ static void call${helper.renderFuncBindName(bindingData)}(
     </#if>
     </#list>
 
-<#--Typed Dictionary preflight stays ahead of wrapper-local unpack so mismatches can-->
+<#--Typed-container preflight stays ahead of wrapper-local unpack so mismatches can-->
 <#--return without introducing a second cleanup contract for partially materialized locals.-->
+    <#list bindingData.paramTypes as paramType>
+        <#if helper.needsTypedArrayCallGuard(paramType)>
+        <#assign probeVarName = "probe" + paramType_index>
+        <#assign expectedBuiltinType = helper.renderTypedArrayGuardBuiltinTypeLiteral(paramType)>
+        {
+            // Compare compile-time known typed-array metadata directly to avoid extra
+            // is_same_typed(...) overhead on the wrapper hot path.
+            godot_Array ${probeVarName} = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[${paramType_index}]);
+            godot_bool typed_mismatch = godot_Array_get_typed_builtin(&${probeVarName}) != ${expectedBuiltinType};
+            <#if helper.isTypedArrayGuardObjectLeaf(paramType)>
+                <#assign expectedClassNameExpr = helper.renderTypedArrayGuardClassNameExpr(paramType)>
+            if (!typed_mismatch) {
+                godot_StringName ${probeVarName}_class_name = godot_Array_get_typed_class_name(&${probeVarName});
+                godot_Variant ${probeVarName}_script = godot_Array_get_typed_script(&${probeVarName});
+                godot_Variant ${probeVarName}_script_nil = godot_new_Variant_nil();
+                godot_Variant ${probeVarName}_script_is_null_result = godot_new_Variant_nil();
+                godot_bool ${probeVarName}_script_is_null_valid = false;
+                // Godot reports absent script leaf metadata as OBJECT/null; use Variant equality for the null check.
+                godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &${probeVarName}_script, &${probeVarName}_script_nil, &${probeVarName}_script_is_null_result, &${probeVarName}_script_is_null_valid);
+                const godot_bool ${probeVarName}_script_is_null = ${probeVarName}_script_is_null_valid && godot_new_bool_with_Variant(&${probeVarName}_script_is_null_result);
+                typed_mismatch = !godot_StringName_op_equal_StringName(&${probeVarName}_class_name, ${expectedClassNameExpr}) || !${probeVarName}_script_is_null;
+                godot_Variant_destroy(&${probeVarName}_script_is_null_result);
+                godot_Variant_destroy(&${probeVarName}_script_nil);
+                godot_Variant_destroy(&${probeVarName}_script);
+                godot_StringName_destroy(&${probeVarName}_class_name);
+            }
+            </#if>
+            godot_Array_destroy(&${probeVarName});
+            if (typed_mismatch) {
+                r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+                r_error->expected = GDEXTENSION_VARIANT_TYPE_ARRAY;
+                r_error->argument = ${paramType_index};
+                return;
+            }
+        }
+        </#if>
+    </#list>
+
     <#list bindingData.paramTypes as paramType>
         <#if helper.needsTypedDictionaryCallGuard(paramType)>
         <#assign probeVarName = "probe" + paramType_index>

@@ -66,9 +66,10 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         assertTrue(entryHeader.contains("GD_STATIC_S(u8\"StringName\")"), entryHeader);
         assertTrue(entrySource.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entrySource);
         assertTrue(entrySource.contains("GD_STATIC_S(u8\"StringName\")"), entrySource);
-        assertFalse(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
+        assertTrue(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
         assertFalse(entryHeader.contains("godot_Array_get_typed_class_name"), entryHeader);
         assertFalse(entryHeader.contains("godot_Array_get_typed_script"), entryHeader);
+        assertFalse(entryHeader.contains("godot_Array_is_same_typed"), entryHeader);
     }
 
     @Test
@@ -111,7 +112,9 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(entryHeader.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entryHeader);
         assertTrue(entryHeader.contains("GD_STATIC_S(u8\"StringName\")"), entryHeader);
-        assertFalse(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
+        assertTrue(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
+        assertFalse(entryHeader.contains("godot_Array_get_typed_class_name"), entryHeader);
+        assertFalse(entryHeader.contains("godot_Array_get_typed_script"), entryHeader);
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -184,7 +187,9 @@ public class FrontendLoweringToCTypedArrayAbiInvestigationTest {
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(entrySource.contains("godot_PROPERTY_HINT_ARRAY_TYPE"), entrySource);
         assertTrue(entrySource.contains("GD_STATIC_S(u8\"StringName\")"), entrySource);
-        assertFalse(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
+        assertTrue(entryHeader.contains("godot_Array_get_typed_builtin"), entryHeader);
+        assertFalse(entryHeader.contains("godot_Array_get_typed_class_name"), entryHeader);
+        assertFalse(entryHeader.contains("godot_Array_get_typed_script"), entryHeader);
         assertContainsAll(
                 entrySource,
                 "RuntimeTypedArrayPropertyAbiProbe__field_init_payloads",
