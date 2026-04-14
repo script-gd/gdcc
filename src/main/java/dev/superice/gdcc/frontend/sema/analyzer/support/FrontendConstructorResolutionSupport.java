@@ -11,6 +11,7 @@ import dev.superice.gdcc.scope.ScopeOwnerKind;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
+import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -148,6 +149,16 @@ final class FrontendConstructorResolutionSupport {
                     ScopeOwnerKind.BUILTIN,
                     "Builtin type '" + receiverTypeMeta.displayName() + "' has no constructor metadata"
             );
+        }
+        // Unary builtin construction from an already-published `Variant` carrier is a dedicated
+        // route. Generic overload ranking must not compare every concrete constructor against
+        // `ALLOW_WITH_UNPACK`, otherwise calls like `int(variant)` become spuriously ambiguous.
+        //
+        // Downstream lowering materializes this route via the shared Variant-unpack surface, so
+        // the declaration site intentionally stays anchored to the builtin owner instead of
+        // pretending one concrete constructor metadata entry won the overload race.
+        if (argumentTypes.size() == 1 && argumentTypes.getFirst() instanceof GdVariantType) {
+            return resolved(defaultDeclarationSite(receiverTypeMeta, builtinClass), ScopeOwnerKind.BUILTIN);
         }
         return chooseConstructor(
                 classRegistry,

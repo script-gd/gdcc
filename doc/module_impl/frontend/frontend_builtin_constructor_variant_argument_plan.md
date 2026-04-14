@@ -5,7 +5,7 @@
 
 ## 文档状态
 
- - 状态：Phase A 已完成，Phase B-E 待实施
+ - 状态：Phase A-B 已完成，Phase C-E 待实施
  - 更新时间：2026-04-14
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
@@ -281,6 +281,19 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 
 ### Phase B. 在 frontend sema 中拆出 builtin-variant constructor shortcut
 
+当前状态（2026-04-14）：
+
+- 已在 `FrontendConstructorResolutionSupport` 中落地 builtin-only 的单参数 `Variant` shortcut。
+- 命中条件现已收口为：
+  - receiver 是 builtin type-meta
+  - 实参数量恰好为 1
+  - 传入 constructor resolver 的规范化参数类型为 `Variant`
+- 命中后直接发布 resolved constructor route，并把 declaration site 锚定到 builtin owner；不再伪造某个具体 constructor overload 作为赢家。
+- 现有 generic overload ranking 继续保留给 multi-arg builtin constructor 与其它 constructor 路径，synthetic multi-arg ambiguity 的 fail-closed 测试也已补到 resolver 层。
+- 追加了 `FrontendConstructorResolutionSupportTest`，专门锚定：
+  - unary `Variant` builtin shortcut 会先于 generic ranking 命中
+  - multi-arg builtin constructor 仍保持 ambiguous fail-closed
+
 目标：
 
 - 让 builtin constructor 对单参数 stable `Variant` 的处理不再经过通用 overload ranking
@@ -297,7 +310,7 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 2. 该 shortcut 只观察：
    - receiver 是否 builtin
    - 参数是否恰好 1 个
-   - 参数类型是否 stable `Variant`
+   - 参数类型是否为已发布到 resolver 的 `Variant` carrier
 3. 命中后直接返回 resolved constructor route，而不是继续进入 `chooseConstructor(...)`。
 4. declaration site 可指向 builtin owner 本身；不要伪造某个具体 overload declaration，避免误导 downstream。
 5. 其它 constructor 路径继续保持原样：
@@ -425,6 +438,7 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
 - `FrontendExpressionSemanticSupportTest`
 - `FrontendChainReductionHelperTest`
 - `FrontendChainBindingAnalyzerTest`
+- `FrontendConstructorResolutionSupportTest`
 - `FrontendLoweringBodyInsnPassTest`
 - 视最终落点补一个 backend/cgen 或 compile integration test
 
