@@ -45,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendChainBindingAnalyzerTest {
@@ -815,17 +816,134 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
-    void analyzeKeepsBareBuiltinConstructorOverloadAmbiguityFailClosed() throws Exception {
+    void analyzeTargetsSingleArgVariantBuiltinConstructorsWithoutRelaxingBareObjectRoutes() throws Exception {
         var analyzed = analyze(
-                "ambiguous_builtin_constructor_route.gd",
+                "variant_builtin_constructor_route.gd",
                 """
-                        class_name AmbiguousBuiltinConstructorRoute
+                        class_name VariantBuiltinConstructorRoute
                         extends RefCounted
                         
-                        func ping(seed):
-                            String(seed)
+                        func ping(plain: Array, seed: Variant):
+                            int(plain[0])
+                            String(plain[0])
+                            Array(seed)
+                            Dictionary(seed)
+                            Node(seed)
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var intCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("int")
+        );
+        var stringCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("String")
+        );
+        var arrayCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Array")
+        );
+        var dictionaryCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Dictionary")
+        );
+        var nodeCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Node")
+        );
+
+        var intType = analyzed.analysisData().expressionTypes().get(intCall);
+        var stringType = analyzed.analysisData().expressionTypes().get(stringCall);
+        var arrayType = analyzed.analysisData().expressionTypes().get(arrayCall);
+        var dictionaryType = analyzed.analysisData().expressionTypes().get(dictionaryCall);
+        var nodeType = analyzed.analysisData().expressionTypes().get(nodeCall);
+        var resolvedInt = analyzed.analysisData().resolvedCalls().get(intCall);
+        var resolvedString = analyzed.analysisData().resolvedCalls().get(stringCall);
+        var resolvedArray = analyzed.analysisData().resolvedCalls().get(arrayCall);
+        var resolvedDictionary = analyzed.analysisData().resolvedCalls().get(dictionaryCall);
+        var failedNode = analyzed.analysisData().resolvedCalls().get(nodeCall);
+
+        assertAll(
+                () -> {
+                    var publishedIntType = intType;
+                    assertNotNull(publishedIntType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedIntType.status());
+                    var publishedIntCall = resolvedInt;
+                    assertNotNull(publishedIntCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedIntCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedIntCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, publishedIntCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), publishedIntCall.argumentTypes());
+                },
+                () -> {
+                    var publishedStringType = stringType;
+                    assertNotNull(publishedStringType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedStringType.status());
+                    var publishedStringCall = resolvedString;
+                    assertNotNull(publishedStringCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedStringCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedStringCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, publishedStringCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), publishedStringCall.argumentTypes());
+                },
+                () -> {
+                    var publishedArrayType = arrayType;
+                    assertNotNull(publishedArrayType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedArrayType.status());
+                    var publishedArrayCall = resolvedArray;
+                    assertNotNull(publishedArrayCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedArrayCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedArrayCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, publishedArrayCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), publishedArrayCall.argumentTypes());
+                },
+                () -> {
+                    var publishedDictionaryType = dictionaryType;
+                    assertNotNull(publishedDictionaryType);
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, publishedDictionaryType.status());
+                    var publishedDictionaryCall = resolvedDictionary;
+                    assertNotNull(publishedDictionaryCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, publishedDictionaryCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, publishedDictionaryCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, publishedDictionaryCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), publishedDictionaryCall.argumentTypes());
+                },
+                () -> {
+                    var publishedNodeType = nodeType;
+                    assertNotNull(publishedNodeType);
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, publishedNodeType.status());
+                    var detailReason = publishedNodeType.detailReason();
+                    assertNotNull(detailReason);
+                    assertTrue(detailReason.contains("Node.new(...)"));
+                    assertNull(failedNode);
+                }
+        );
+    }
+
+    @Test
+    void analyzeKeepsGenericBuiltinConstructorRankingFailClosedForMultiArgumentVariantAmbiguity() throws Exception {
+        var analyzed = analyze(
+                "ambiguous_multi_arg_builtin_constructor_route.gd",
+                """
+                        class_name AmbiguousMultiArgBuiltinConstructorRoute
+                        extends RefCounted
+                        
+                        func ping(first: Variant, second: Variant):
+                            String(first, second)
                         """,
-                registryWithAmbiguousStringConstructors()
+                registryWithAmbiguousStringPairConstructors()
         );
 
         var pingFunction = findFunction(analyzed.unit().ast(), "ping");
@@ -842,12 +960,20 @@ class FrontendChainBindingAnalyzerTest {
         assertAll(
                 () -> assertNotNull(failedType),
                 () -> assertEquals(FrontendExpressionTypeStatus.FAILED, failedType.status()),
-                () -> assertTrue(failedType.detailReason().contains("Ambiguous constructor overload")),
+                () -> {
+                    var detailReason = failedType.detailReason();
+                    assertNotNull(detailReason);
+                    assertTrue(detailReason.contains("Ambiguous constructor overload"));
+                },
                 () -> assertNotNull(failedCall),
                 () -> assertEquals(FrontendCallResolutionStatus.FAILED, failedCall.status()),
                 () -> assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, failedCall.callKind()),
                 () -> assertEquals(FrontendReceiverKind.TYPE_META, failedCall.receiverKind()),
-                () -> assertTrue(failedCall.detailReason().contains("Ambiguous constructor overload"))
+                () -> {
+                    var detailReason = failedCall.detailReason();
+                    assertNotNull(detailReason);
+                    assertTrue(detailReason.contains("Ambiguous constructor overload"));
+                }
         );
     }
 
@@ -1698,10 +1824,10 @@ class FrontendChainBindingAnalyzerTest {
         ));
     }
 
-    private static @NotNull ClassRegistry registryWithAmbiguousStringConstructors() throws Exception {
+    private static @NotNull ClassRegistry registryWithAmbiguousStringPairConstructors() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedBuiltins = api.builtinClasses().stream()
-                .map(FrontendChainBindingAnalyzerTest::withAmbiguousStringConstructors)
+                .map(FrontendChainBindingAnalyzerTest::withAmbiguousStringPairConstructors)
                 .toList();
         return new ClassRegistry(new ExtensionAPI(
                 api.header(),
@@ -1752,7 +1878,11 @@ class FrontendChainBindingAnalyzerTest {
         ));
     }
 
-    private static @NotNull ExtensionBuiltinClass withAmbiguousStringConstructors(@NotNull ExtensionBuiltinClass builtinClass) {
+    /// Keep one synthetic two-arg ambiguity alive so the future single-arg Variant constructor shortcut
+    /// stays tightly scoped and does not erase generic constructor-ranking failures.
+    private static @NotNull ExtensionBuiltinClass withAmbiguousStringPairConstructors(
+            @NotNull ExtensionBuiltinClass builtinClass
+    ) {
         if (!builtinClass.name().equals("String")) {
             return builtinClass;
         }
@@ -1766,12 +1896,18 @@ class FrontendChainBindingAnalyzerTest {
                         new ExtensionBuiltinClass.ConstructorInfo(
                                 "String",
                                 0,
-                                List.of(new ExtensionFunctionArgument("value", "int", null, null))
+                                List.of(
+                                        new ExtensionFunctionArgument("first", "int", null, null),
+                                        new ExtensionFunctionArgument("second", "String", null, null)
+                                )
                         ),
                         new ExtensionBuiltinClass.ConstructorInfo(
                                 "String",
                                 1,
-                                List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                                List.of(
+                                        new ExtensionFunctionArgument("first", "String", null, null),
+                                        new ExtensionFunctionArgument("second", "int", null, null)
+                                )
                         )
                 ),
                 builtinClass.members(),

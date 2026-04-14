@@ -285,6 +285,139 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveCallExpressionTypeTargetsSingleArgVariantBuiltinConstructorsWithoutHijackingObjectOrCastRoutes()
+            throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_variant_builtin_constructors.gd",
+                """
+                        class_name ExpressionSemanticSupportVariantBuiltinConstructors
+                        extends RefCounted
+                        
+                        func ping(plain: Array, seed: Variant) -> void:
+                            int(plain[0])
+                            String(plain[0])
+                            Array(seed)
+                            Dictionary(seed)
+                            Node(seed)
+                            seed as int
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var intCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("int")
+        );
+        var stringCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("String")
+        );
+        var arrayCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Array")
+        );
+        var dictionaryCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Dictionary")
+        );
+        var nodeCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("Node")
+        );
+        var castExpression = findNode(pingFunction, CastExpression.class, _ -> true);
+
+        var intResult = support.resolveCallExpressionType(intCall, publishedResolver, true, false);
+        var stringResult = support.resolveCallExpressionType(stringCall, publishedResolver, true, false);
+        var arrayResult = support.resolveCallExpressionType(arrayCall, publishedResolver, true, false);
+        var dictionaryResult = support.resolveCallExpressionType(dictionaryCall, publishedResolver, true, false);
+        var nodeResult = support.resolveCallExpressionType(nodeCall, publishedResolver, true, false);
+        var castType = analyzed.analysisData().expressionTypes().get(castExpression);
+
+        assertAll(
+                () -> {
+                    assertTrue(intResult.rootOwnsOutcome());
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, intResult.expressionType().status());
+                    var publishedIntType = intResult.expressionType().publishedType();
+                    assertNotNull(publishedIntType);
+                    assertEquals("int", publishedIntType.getTypeName());
+                    var resolvedIntCall = intResult.publishedCallOrNull();
+                    assertNotNull(resolvedIntCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedIntCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedIntCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedIntCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedIntCall.argumentTypes());
+                },
+                () -> {
+                    assertTrue(stringResult.rootOwnsOutcome());
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, stringResult.expressionType().status());
+                    var publishedStringType = stringResult.expressionType().publishedType();
+                    assertNotNull(publishedStringType);
+                    assertEquals("String", publishedStringType.getTypeName());
+                    var resolvedStringCall = stringResult.publishedCallOrNull();
+                    assertNotNull(resolvedStringCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedStringCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedStringCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedStringCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedStringCall.argumentTypes());
+                },
+                () -> {
+                    assertTrue(arrayResult.rootOwnsOutcome());
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayResult.expressionType().status());
+                    var publishedArrayType = arrayResult.expressionType().publishedType();
+                    assertNotNull(publishedArrayType);
+                    assertEquals("Array", publishedArrayType.getTypeName());
+                    var resolvedArrayCall = arrayResult.publishedCallOrNull();
+                    assertNotNull(resolvedArrayCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedArrayCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedArrayCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedArrayCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedArrayCall.argumentTypes());
+                },
+                () -> {
+                    assertTrue(dictionaryResult.rootOwnsOutcome());
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryResult.expressionType().status());
+                    var publishedDictionaryType = dictionaryResult.expressionType().publishedType();
+                    assertNotNull(publishedDictionaryType);
+                    assertEquals("Dictionary", publishedDictionaryType.getTypeName());
+                    var resolvedDictionaryCall = dictionaryResult.publishedCallOrNull();
+                    assertNotNull(resolvedDictionaryCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedDictionaryCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedDictionaryCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedDictionaryCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedDictionaryCall.argumentTypes());
+                },
+                () -> {
+                    assertTrue(nodeResult.rootOwnsOutcome());
+                    assertEquals(FrontendExpressionTypeStatus.FAILED, nodeResult.expressionType().status());
+                    var detailReason = nodeResult.expressionType().detailReason();
+                    assertNotNull(detailReason);
+                    assertTrue(detailReason.contains("Node.new(...)"));
+                    assertNull(nodeResult.publishedCallOrNull());
+                },
+                () -> {
+                    var publishedCastType = castType;
+                    assertNotNull(publishedCastType);
+                    assertEquals(FrontendExpressionTypeStatus.DEFERRED, publishedCastType.status());
+                    var detailReason = publishedCastType.detailReason();
+                    assertNotNull(detailReason);
+                    assertTrue(detailReason.contains("Cast expression typing is deferred"));
+                }
+        );
+    }
+
+    @Test
     void resolveCallExpressionTypeAcceptsStableVariantSourcesAtFixedParameterBoundaries() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_variant_calls.gd",

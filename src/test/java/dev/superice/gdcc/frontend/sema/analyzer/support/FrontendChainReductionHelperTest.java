@@ -618,7 +618,7 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
-    void reduceKeepsVariantDrivenConstructorOverloadSelectionFailClosedWhenAmbiguous() {
+    void reduceTargetsSingleArgVariantDrivenBuiltinConstructorsBeforeGenericOverloadRanking() {
         var registry = newRegistry(List.of(stringBuiltinWithAmbiguousConstructors()), List.of());
         var chain = chain(identifier("String"), call("new", identifier("seed")));
         var constructorStep = assertInstanceOf(AttributeCallStep.class, chain.steps().getFirst());
@@ -635,8 +635,39 @@ class FrontendChainReductionHelperTest {
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
 
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        var resolvedCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(resolvedCall);
+        assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedCall.callKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, resolvedCall.receiverKind());
+        assertEquals(List.of(GdVariantType.VARIANT), resolvedCall.argumentTypes());
+        var constructorReturnType = resolvedCall.returnType();
+        assertNotNull(constructorReturnType);
+        assertEquals("String", constructorReturnType.getTypeName());
+    }
+
+    @Test
+    void reduceKeepsGenericBuiltinConstructorRankingFailClosedForMultiArgumentVariantAmbiguity() {
+        var registry = newRegistry(List.of(stringBuiltinWithAmbiguousPairConstructors()), List.of());
+        var first = identifier("first");
+        var second = identifier("second");
+        var chain = chain(identifier("String"), call("new", first, second));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
+                ),
+                registry,
+                (expression, finalizeWindow) -> expression == first || expression == second
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
         assertEquals(FrontendChainReductionHelper.Status.FAILED, result.stepTraces().getFirst().status());
-        assertTrue(result.stepTraces().getFirst().detailReason().contains("Ambiguous constructor overload"));
+        var detailReason = result.stepTraces().getFirst().detailReason();
+        assertNotNull(detailReason);
+        assertTrue(detailReason.contains("Ambiguous constructor overload"));
     }
 
     @Test
@@ -963,6 +994,38 @@ class FrontendChainReductionHelperTest {
                                 "String",
                                 1,
                                 List.of(new ExtensionFunctionArgument("value", "String", null, null))
+                        )
+                ),
+                List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
+                List.of()
+        );
+    }
+
+    /// Keep one synthetic multi-arg ambiguity in tests so the future single-arg Variant shortcut does
+    /// not accidentally erase the ordinary constructor ranking fail-closed boundary.
+    private static @NotNull ExtensionBuiltinClass stringBuiltinWithAmbiguousPairConstructors() {
+        return new ExtensionBuiltinClass(
+                "String",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                0,
+                                List.of(
+                                        new ExtensionFunctionArgument("first", "int", null, null),
+                                        new ExtensionFunctionArgument("second", "String", null, null)
+                                )
+                        ),
+                        new ExtensionBuiltinClass.ConstructorInfo(
+                                "String",
+                                1,
+                                List.of(
+                                        new ExtensionFunctionArgument("first", "String", null, null),
+                                        new ExtensionFunctionArgument("second", "int", null, null)
+                                )
                         )
                 ),
                 List.of(new ExtensionBuiltinClass.MemberInfo("length", "int")),
