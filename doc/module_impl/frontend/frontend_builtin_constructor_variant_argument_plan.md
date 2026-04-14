@@ -392,6 +392,11 @@ GDCC 当前若要实现这层 parity，需要补一条“resolved but unsafe” 
   - 同文件继续覆盖 `godot_new_String_with_Variant`
   - 新增 typed `Array` 的 `godot_new_Array_with_Variant`
   - 既有 typed `Dictionary` 的 `godot_new_Dictionary_with_Variant` 继续保留
+- 已补齐 resource-driven e2e compile/link/run 锚点：
+  - `src/test/test_suite/unit_test/script/constructor/builtin_variant_scalar_roundtrip.gd`
+  - `src/test/test_suite/unit_test/script/constructor/builtin_variant_container_roundtrip.gd`
+  - 两个 case 都由 `GdScriptUnitTestCompileRunner` 走完整的 frontend lowering -> C codegen -> native build -> Godot runtime 验证
+  - 并新增 `GdScriptBuiltinConstructorVariantCompileRunnerTest` 作为 targeted 入口，避免日常迭代时重跑整个 resource suite
 - 已补齐 backend negative coverage：
   - `CConstructInsnGenTest` 新增 `ConstructBuiltinInsn(result=int, args=[Variant])` 仍必须 fail-closed
   - 这条测试直接锚定 backend `construct_builtin` 继续保持 exact constructor metadata contract，不接受伪造的 `[Variant]` constructor

@@ -3,6 +3,7 @@ package dev.superice.gdcc.test_suite;
 import dev.superice.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
 import java.util.List;
@@ -33,6 +34,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "abi/variant/method_roundtrip.gd",
             "abi/variant/non_variant_guard.gd",
             "abi/variant/property_roundtrip.gd",
+            "constructor/builtin_variant_container_roundtrip.gd",
+            "constructor/builtin_variant_scalar_roundtrip.gd",
             "control_flow/if_elif_truthiness.gd",
             "control_flow/recursive_factorial.gd",
             "initializer/local/arithmetic_chain.gd",
@@ -53,10 +56,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "subscript/packed_array_mutation_roundtrip.gd"
     );
 
-    @TestFactory
-    Stream<DynamicTest> compilesAndValidatesBundledUnitScripts() throws Exception {
-        Assumptions.assumeTrue(ZigUtil.findZig() != null, "Zig not found; skipping GDScript unit compile runner test");
-
+    @Test
+    void listsExpectedBundledUnitScripts() throws Exception {
         var runner = new GdScriptUnitTestCompileRunner();
         var scriptPaths = runner.listScriptResourcePaths();
         assertFalse(scriptPaths.isEmpty(), "Expected at least one bundled unit-test case");
@@ -65,6 +66,16 @@ public class GdScriptUnitTestCompileRunnerTest {
                 scriptPaths,
                 () -> "Unexpected bundled unit-test script set: " + scriptPaths
         );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesBundledUnitScripts() throws Exception {
+        Assumptions.assumeTrue(ZigUtil.findZig() != null, "Zig not found; skipping GDScript unit compile runner test");
+
+        var runner = new GdScriptUnitTestCompileRunner();
+        var scriptPaths = runner.listScriptResourcePaths();
+        assertFalse(scriptPaths.isEmpty(), "Expected at least one bundled unit-test case");
+        assertEquals(EXPECTED_SCRIPT_PATHS, scriptPaths, () -> "Unexpected bundled unit-test script set: " + scriptPaths);
 
         return scriptPaths.stream()
                 .map(scriptResourcePath -> DynamicTest.dynamicTest(
