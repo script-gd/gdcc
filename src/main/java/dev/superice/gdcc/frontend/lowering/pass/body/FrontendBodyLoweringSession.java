@@ -691,10 +691,12 @@ public final class FrontendBodyLoweringSession {
     /// Materializes call operands against the already-published route contract.
     ///
     /// Exact member-call routes prefer the already-published normalized callable boundary so lowering
-    /// does not rebuild parameter types from raw metadata. Legacy routes that still do not publish an
-    /// exact boundary, such as bare-call fallback and constructor-specific paths, keep using the old
-    /// callable-signature helper until they are migrated. `DYNAMIC` calls intentionally bypass any
-    /// exact signature lookup and forward their already-evaluated operand slots unchanged.
+    /// does not rebuild parameter types from raw metadata. This keeps the selected callable on a
+    /// single publication/single consumption path across sema and body lowering. Legacy routes that
+    /// still do not publish an exact boundary, such as bare-call fallback and constructor-specific
+    /// paths, keep using the old callable-signature helper until they are migrated. `DYNAMIC` calls
+    /// intentionally bypass any exact signature lookup and forward their already-evaluated operand
+    /// slots unchanged.
     @NotNull List<LirInstruction.Operand> materializeCallArguments(
             @NotNull LirBasicBlock block,
             @NotNull CallItem item,

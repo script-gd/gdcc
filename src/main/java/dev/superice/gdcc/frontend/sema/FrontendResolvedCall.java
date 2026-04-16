@@ -19,6 +19,9 @@ import java.util.Objects;
 /// constructor/static/dynamic paths without flattening everything into one generic "call hit".
 /// `argumentTypes()` stays the call-site argument snapshot; any exact callable signature published
 /// from shared resolver metadata must live in `exactCallableBoundary()` instead of reusing that list.
+/// The contract is single publication plus downstream reuse: once the shared resolver has emitted an
+/// exact boundary for one selected callable, later frontend stages must consume that fact rather than
+/// reconstructing another signature projection from raw metadata.
 public record FrontendResolvedCall(
         @NotNull String callableName,
         @NotNull FrontendCallResolutionKind callKind,

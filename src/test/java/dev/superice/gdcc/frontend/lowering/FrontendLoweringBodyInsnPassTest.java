@@ -2500,6 +2500,131 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runUsesPublishedExactBoundaryAcrossExtensionMetadataFamiliesWithoutReReadingRawMetadata() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_exact_engine_metadata_families.gd",
+                """
+                        class_name BodyInsnExactEngineMetadataFamilies
+                        extends RefCounted
+                        
+                        func enum_case(holder: Node, child: Node):
+                            holder.add_child(child)
+                        
+                        func bitfield_case(holder: Node):
+                            holder.set_process_thread_messages(0)
+                        
+                        func typedarray_case(mesh: ArrayMesh, arrays: Array):
+                            mesh.add_surface_from_arrays(0, arrays)
+                        """,
+                Map.of("BodyInsnExactEngineMetadataFamilies", "RuntimeBodyInsnExactEngineMetadataFamilies"),
+                true
+        );
+        var enumContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnExactEngineMetadataFamilies",
+                "enum_case"
+        );
+        var bitfieldContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnExactEngineMetadataFamilies",
+                "bitfield_case"
+        );
+        var typedarrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnExactEngineMetadataFamilies",
+                "typedarray_case"
+        );
+        var enumAnchor = requireSingleCallAnchor(enumContext.requireFrontendCfgGraph());
+        var bitfieldAnchor = requireSingleCallAnchor(bitfieldContext.requireFrontendCfgGraph());
+        var typedarrayAnchor = requireSingleCallAnchor(typedarrayContext.requireFrontendCfgGraph());
+        var enumCall = java.util.Objects.requireNonNull(
+                prepared.context().requireAnalysisData().resolvedCalls().get(enumAnchor),
+                "Missing resolved call for enum metadata anchor"
+        );
+        var bitfieldCall = java.util.Objects.requireNonNull(
+                prepared.context().requireAnalysisData().resolvedCalls().get(bitfieldAnchor),
+                "Missing resolved call for bitfield metadata anchor"
+        );
+        var typedarrayCall = java.util.Objects.requireNonNull(
+                prepared.context().requireAnalysisData().resolvedCalls().get(typedarrayAnchor),
+                "Missing resolved call for typedarray metadata anchor"
+        );
+
+        // Replace raw declaration metadata with opaque markers. Successful lowering after this point
+        // proves the exact routes are consuming the published boundary instead of reparsing metadata.
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                enumAnchor,
+                FrontendResolvedCall.resolved(
+                        enumCall.callableName(),
+                        enumCall.callKind(),
+                        enumCall.receiverKind(),
+                        enumCall.ownerKind(),
+                        enumCall.receiverType(),
+                        java.util.Objects.requireNonNull(enumCall.returnType()),
+                        enumCall.argumentTypes(),
+                        new Object(),
+                        java.util.Objects.requireNonNull(enumCall.exactCallableBoundary())
+                )
+        );
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                bitfieldAnchor,
+                FrontendResolvedCall.resolved(
+                        bitfieldCall.callableName(),
+                        bitfieldCall.callKind(),
+                        bitfieldCall.receiverKind(),
+                        bitfieldCall.ownerKind(),
+                        bitfieldCall.receiverType(),
+                        java.util.Objects.requireNonNull(bitfieldCall.returnType()),
+                        bitfieldCall.argumentTypes(),
+                        new Object(),
+                        java.util.Objects.requireNonNull(bitfieldCall.exactCallableBoundary())
+                )
+        );
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                typedarrayAnchor,
+                FrontendResolvedCall.resolved(
+                        typedarrayCall.callableName(),
+                        typedarrayCall.callKind(),
+                        typedarrayCall.receiverKind(),
+                        typedarrayCall.ownerKind(),
+                        typedarrayCall.receiverType(),
+                        java.util.Objects.requireNonNull(typedarrayCall.returnType()),
+                        typedarrayCall.argumentTypes(),
+                        new Object(),
+                        java.util.Objects.requireNonNull(typedarrayCall.exactCallableBoundary())
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var enumCallInsn = requireOnlyInstruction(enumContext.targetFunction(), CallMethodInsn.class);
+        var bitfieldCallInsn = requireOnlyInstruction(bitfieldContext.targetFunction(), CallMethodInsn.class);
+        var typedarrayCallInsn = requireOnlyInstruction(typedarrayContext.targetFunction(), CallMethodInsn.class);
+        var enumInstructions = allInstructions(enumContext.targetFunction());
+        var bitfieldInstructions = allInstructions(bitfieldContext.targetFunction());
+        var typedarrayInstructions = allInstructions(typedarrayContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("add_child", enumCallInsn.methodName()),
+                () -> assertEquals(1, enumCallInsn.args().size()),
+                () -> assertEquals(0, countInstructions(enumInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(enumInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals("set_process_thread_messages", bitfieldCallInsn.methodName()),
+                () -> assertEquals(1, bitfieldCallInsn.args().size()),
+                () -> assertEquals(0, countInstructions(bitfieldInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(bitfieldInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals("add_surface_from_arrays", typedarrayCallInsn.methodName()),
+                () -> assertEquals(2, typedarrayCallInsn.args().size()),
+                () -> assertEquals(0, countInstructions(typedarrayInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(typedarrayInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runFailsFastWhenSyntheticDynamicFallbackDoesNotUseInstanceReceiverRoute() throws Exception {
         var prepared = prepareContext(
                 "body_insn_dynamic_call_invalid_route.gd",

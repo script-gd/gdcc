@@ -388,6 +388,22 @@ default-parameter 切分不属于这次 bug 的必要面，不应顺手并入。
 
 ### Phase D. 扩充 focused regression，并补充窄文档说明
 
+当前状态（2026-04-16）：已完成
+
+本阶段任务与状态：
+
+- [x] 新增 focused sema regression，覆盖 `enum::...`、`bitfield::...`、`typedarray::...` 三类 extension metadata spelling 在 exact route 上的 published boundary 结果，而不是继续只用 `Node.add_child(...)` 单点锚定。
+- [x] 新增 focused lowering regression，在 exact call 的 `declarationSite` 被替换为 opaque marker 后仍能正常消费已发布 boundary，锁定 lowering 不再回读 raw metadata。
+- [x] narrow propagation / negative coverage 继续由既有锚点守住并已补跑确认未漂移：
+  - plain `var` receiver 仍保持 `DYNAMIC_FALLBACK`
+  - blocked suggested-call copy 仍保留 published exact boundary
+  - synthetic exact route 缺失 boundary 仍会 fail-fast
+- [x] 关键注释与本计划文档已同步写明：exact boundary 是 `FrontendResolvedCall` 上的 single-publication fact，目标是让同一个 selected extension callable 在 exact 主链上不再重复解析。
+- [x] 受影响回归面已补跑并通过：
+  - `FrontendSemanticAnalyzerFrameworkTest`
+  - `FrontendLoweringBodyInsnPassTest`
+  - `FrontendChainReductionHelperTest`
+
 目标：
 
 - 用 focused tests 把真实风险面钉死，而不是只靠 `Node.add_child(...)` 一个例子
