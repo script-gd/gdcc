@@ -53,6 +53,9 @@ import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdIntType;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -2379,6 +2382,50 @@ class FrontendLoweringBodyInsnPassTest {
                         exception.getMessage()
                 ),
                 () -> assertFalse(exception.getMessage().contains("call route is not lowering-ready"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runStillHitsExactEngineMetadataRegressionBeforePhaseCConsumerSwitch() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_exact_engine_metadata_regression.gd",
+                """
+                        class_name BodyInsnExactEngineMetadataRegression
+                        extends Node
+                        
+                        func attach(child: Node):
+                            self.add_child(child)
+                        """,
+                Map.of("BodyInsnExactEngineMetadataRegression", "RuntimeBodyInsnExactEngineMetadataRegression"),
+                true
+        );
+        var attachContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnExactEngineMetadataRegression",
+                "attach"
+        );
+        var callAnchor = requireSingleCallAnchor(attachContext.requireFrontendCfgGraph());
+        var publishedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
+        var exactBoundary = publishedCall == null ? null : publishedCall.exactCallableBoundary();
+        assertNotNull(publishedCall);
+
+        assertAll(
+                () -> assertEquals(dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus.RESOLVED, publishedCall.status()),
+                () -> assertEquals(dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind.INSTANCE_METHOD, publishedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, publishedCall.receiverKind()),
+                () -> assertNotNull(exactBoundary),
+                () -> assertEquals(
+                        List.of(new GdObjectType("Node"), GdBoolType.BOOL, GdIntType.INT),
+                        exactBoundary.fixedParameterTypes()
+                )
+        );
+
+        // Phase A keeps this regression explicit so later work can replace it with a positive lowering test
+        // instead of accidentally hiding it behind the dynamic fallback route.
+        assertThrows(
+                NullPointerException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
         );
     }
 

@@ -1,12 +1,15 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.scope.resolver.ScopeMethodParameter;
+import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -14,6 +17,8 @@ import java.util.Objects;
 ///
 /// The model keeps route kind and result status separate so downstream consumers can distinguish
 /// constructor/static/dynamic paths without flattening everything into one generic "call hit".
+/// `argumentTypes()` stays the call-site argument snapshot; any exact callable signature published
+/// from shared resolver metadata must live in `exactCallableBoundary()` instead of reusing that list.
 public record FrontendResolvedCall(
         @NotNull String callableName,
         @NotNull FrontendCallResolutionKind callKind,
@@ -23,6 +28,7 @@ public record FrontendResolvedCall(
         @Nullable GdType receiverType,
         @Nullable GdType returnType,
         @NotNull List<GdType> argumentTypes,
+        @Nullable ExactCallableBoundary exactCallableBoundary,
         @Nullable Object declarationSite,
         @Nullable String detailReason
 ) {
@@ -31,8 +37,9 @@ public record FrontendResolvedCall(
         Objects.requireNonNull(callKind, "callKind must not be null");
         Objects.requireNonNull(status, "status must not be null");
         Objects.requireNonNull(receiverKind, "receiverKind must not be null");
-        argumentTypes = copyArgumentTypes(argumentTypes);
-        validateState(callKind, status, receiverKind, receiverType, returnType, detailReason);
+        argumentTypes = copyTypeList(argumentTypes, "argumentTypes");
+        exactCallableBoundary = copyExactCallableBoundary(exactCallableBoundary);
+        validateState(callKind, status, receiverKind, receiverType, returnType, detailReason, exactCallableBoundary);
     }
 
     public static @NotNull FrontendResolvedCall resolved(
@@ -45,6 +52,30 @@ public record FrontendResolvedCall(
             @NotNull List<GdType> argumentTypes,
             @Nullable Object declarationSite
     ) {
+        return resolved(
+                callableName,
+                callKind,
+                receiverKind,
+                ownerKind,
+                receiverType,
+                returnType,
+                argumentTypes,
+                declarationSite,
+                null
+        );
+    }
+
+    public static @NotNull FrontendResolvedCall resolved(
+            @NotNull String callableName,
+            @NotNull FrontendCallResolutionKind callKind,
+            @NotNull FrontendReceiverKind receiverKind,
+            @Nullable ScopeOwnerKind ownerKind,
+            @Nullable GdType receiverType,
+            @NotNull GdType returnType,
+            @NotNull List<GdType> argumentTypes,
+            @Nullable Object declarationSite,
+            @Nullable ExactCallableBoundary exactCallableBoundary
+    ) {
         return new FrontendResolvedCall(
                 callableName,
                 callKind,
@@ -54,6 +85,7 @@ public record FrontendResolvedCall(
                 receiverType,
                 Objects.requireNonNull(returnType, "returnType must not be null"),
                 argumentTypes,
+                exactCallableBoundary,
                 declarationSite,
                 null
         );
@@ -70,6 +102,32 @@ public record FrontendResolvedCall(
             @Nullable Object declarationSite,
             @NotNull String detailReason
     ) {
+        return blocked(
+                callableName,
+                callKind,
+                receiverKind,
+                ownerKind,
+                receiverType,
+                returnType,
+                argumentTypes,
+                declarationSite,
+                detailReason,
+                null
+        );
+    }
+
+    public static @NotNull FrontendResolvedCall blocked(
+            @NotNull String callableName,
+            @NotNull FrontendCallResolutionKind callKind,
+            @NotNull FrontendReceiverKind receiverKind,
+            @Nullable ScopeOwnerKind ownerKind,
+            @Nullable GdType receiverType,
+            @NotNull GdType returnType,
+            @NotNull List<GdType> argumentTypes,
+            @Nullable Object declarationSite,
+            @NotNull String detailReason,
+            @Nullable ExactCallableBoundary exactCallableBoundary
+    ) {
         return new FrontendResolvedCall(
                 callableName,
                 callKind,
@@ -79,6 +137,7 @@ public record FrontendResolvedCall(
                 receiverType,
                 Objects.requireNonNull(returnType, "returnType must not be null"),
                 argumentTypes,
+                exactCallableBoundary,
                 declarationSite,
                 detailReason
         );
@@ -103,6 +162,7 @@ public record FrontendResolvedCall(
                 receiverType,
                 null,
                 argumentTypes,
+                null,
                 declarationSite,
                 detailReason
         );
@@ -126,6 +186,7 @@ public record FrontendResolvedCall(
                 receiverType,
                 null,
                 argumentTypes,
+                null,
                 declarationSite,
                 detailReason
         );
@@ -150,6 +211,7 @@ public record FrontendResolvedCall(
                 receiverType,
                 null,
                 argumentTypes,
+                null,
                 declarationSite,
                 detailReason
         );
@@ -174,6 +236,7 @@ public record FrontendResolvedCall(
                 receiverType,
                 null,
                 argumentTypes,
+                null,
                 declarationSite,
                 detailReason
         );
@@ -185,8 +248,23 @@ public record FrontendResolvedCall(
             @NotNull FrontendReceiverKind receiverKind,
             @Nullable GdType receiverType,
             @Nullable GdType returnType,
-            @Nullable String detailReason
+            @Nullable String detailReason,
+            @Nullable ExactCallableBoundary exactCallableBoundary
     ) {
+        if (exactCallableBoundary != null) {
+            if (status != FrontendCallResolutionStatus.RESOLVED
+                    && status != FrontendCallResolutionStatus.BLOCKED) {
+                throw new IllegalArgumentException(
+                        "exactCallableBoundary is only valid for RESOLVED or BLOCKED call results"
+                );
+            }
+            if (callKind != FrontendCallResolutionKind.INSTANCE_METHOD
+                    && callKind != FrontendCallResolutionKind.STATIC_METHOD) {
+                throw new IllegalArgumentException(
+                        "exactCallableBoundary is only valid for exact instance/static method routes"
+                );
+            }
+        }
         if (status == FrontendCallResolutionStatus.RESOLVED
                 || status == FrontendCallResolutionStatus.BLOCKED) {
             if (callKind == FrontendCallResolutionKind.UNKNOWN
@@ -235,14 +313,47 @@ public record FrontendResolvedCall(
         }
     }
 
-    private static @NotNull List<GdType> copyArgumentTypes(@Nullable List<GdType> argumentTypes) {
-        var source = Objects.requireNonNull(argumentTypes, "argumentTypes must not be null");
-        var copied = new java.util.ArrayList<GdType>(source.size());
-        for (var argumentType : source) {
-            if (argumentType == null) {
-                throw new IllegalArgumentException("argumentTypes must not contain null elements");
+    /// Exact callable-boundary fact published from one already-selected shared resolver result.
+    ///
+    /// This carries the normalized fixed-parameter signature once so later phases no longer need to
+    /// rebuild it from raw extension metadata. It is intentionally separate from `argumentTypes()`,
+    /// which still reports the call-site argument snapshot.
+    public record ExactCallableBoundary(
+            @NotNull List<GdType> fixedParameterTypes,
+            boolean isVararg
+    ) {
+        public ExactCallableBoundary {
+            fixedParameterTypes = copyTypeList(fixedParameterTypes, "fixedParameterTypes");
+        }
+
+        public static @NotNull ExactCallableBoundary fromResolvedMethod(@NotNull ScopeResolvedMethod resolvedMethod) {
+            var fixedParameterTypes = Objects.requireNonNull(resolvedMethod, "resolvedMethod must not be null")
+                    .parameters()
+                    .stream()
+                    .map(ScopeMethodParameter::type)
+                    .toList();
+            return new ExactCallableBoundary(fixedParameterTypes, resolvedMethod.isVararg());
+        }
+    }
+
+    private static @Nullable ExactCallableBoundary copyExactCallableBoundary(@Nullable ExactCallableBoundary exactCallableBoundary) {
+        if (exactCallableBoundary == null) {
+            return null;
+        }
+        return new ExactCallableBoundary(
+                exactCallableBoundary.fixedParameterTypes(),
+                exactCallableBoundary.isVararg()
+        );
+    }
+
+    private static @NotNull List<GdType> copyTypeList(@Nullable List<GdType> types, @NotNull String fieldName) {
+        var source = Objects.requireNonNull(types, fieldName + " must not be null");
+        var copied = new ArrayList<GdType>(source.size());
+        for (var type : source) {
+            if (type == null) {
+                throw new IllegalArgumentException(fieldName + " must not contain null elements");
             }
-            copied.add(argumentType);
+            copied.add(type);
         }
         return List.copyOf(copied);
     }

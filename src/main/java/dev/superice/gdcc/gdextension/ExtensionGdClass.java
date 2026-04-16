@@ -3,6 +3,7 @@ package dev.superice.gdcc.gdextension;
 import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
 import dev.superice.gdcc.scope.*;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -11,7 +12,6 @@ import org.jetbrains.annotations.UnmodifiableView;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 public record ExtensionGdClass(
         @SerializedName("name") String name,
@@ -174,7 +174,10 @@ public record ExtensionGdClass(
 
         @Override
         public @NotNull GdType getReturnType() {
-            return Objects.requireNonNull(ClassRegistry.tryParseTextType(returnValue.type));
+            return ScopeTypeParsers.parseExtensionTypeMetadata(
+                    returnValue.type,
+                    "return type of engine method '" + name + "'"
+            );
         }
 
         public record ClassMethodReturn(String type) {
@@ -228,7 +231,11 @@ public record ExtensionGdClass(
 
             @Override
             public @NotNull GdType getType() {
-                return Objects.requireNonNull(ClassRegistry.tryParseTextType(type));
+                var parameterName = name == null || name.isBlank() ? "<unnamed>" : name;
+                return ScopeTypeParsers.parseExtensionTypeMetadata(
+                        type,
+                        "type of engine signal parameter '" + parameterName + "' in '" + definedIn.getName() + "'"
+                );
             }
 
             @Override
@@ -252,7 +259,10 @@ public record ExtensionGdClass(
 
         @Override
         public @NotNull GdType getType() {
-            return Objects.requireNonNull(ClassRegistry.tryParseTextType(type));
+            return ScopeTypeParsers.parseExtensionTypeMetadata(
+                    type,
+                    "type of engine property '" + name + "'"
+            );
         }
 
         @Override

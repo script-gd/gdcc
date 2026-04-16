@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdType;
@@ -11,6 +12,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -87,6 +90,7 @@ class FrontendResolvedCallTest {
                 new GdObjectType("Player"),
                 null,
                 List.of(GdIntType.INT),
+                null,
                 "Player.move",
                 null
         ));
@@ -103,6 +107,7 @@ class FrontendResolvedCallTest {
                 new GdObjectType("Player"),
                 null,
                 List.of(GdIntType.INT),
+                null,
                 "Player.move",
                 "dynamic route"
         ));
@@ -121,6 +126,7 @@ class FrontendResolvedCallTest {
                 new GdObjectType("Player"),
                 null,
                 List.of(GdIntType.INT),
+                null,
                 "Player.move",
                 "failure"
         ));
@@ -166,6 +172,40 @@ class FrontendResolvedCallTest {
     }
 
     @Test
+    void resolvedFactoryKeepsExactCallableBoundarySeparateFromCallSiteArgumentTypes() {
+        var fixedParameterTypes = new ArrayList<GdType>();
+        fixedParameterTypes.add(new GdObjectType("Node"));
+        fixedParameterTypes.add(GdBoolType.BOOL);
+        fixedParameterTypes.add(GdIntType.INT);
+        var boundary = new FrontendResolvedCall.ExactCallableBoundary(fixedParameterTypes, false);
+
+        var result = FrontendResolvedCall.resolved(
+                "add_child",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.ENGINE,
+                new GdObjectType("Node"),
+                GdIntType.INT,
+                List.of(new GdObjectType("Node")),
+                "Node.add_child",
+                boundary
+        );
+        fixedParameterTypes.clear();
+
+        assertEquals(List.of(new GdObjectType("Node")), result.argumentTypes());
+        assertNotNull(result.exactCallableBoundary());
+        assertEquals(
+                List.of(new GdObjectType("Node"), GdBoolType.BOOL, GdIntType.INT),
+                result.exactCallableBoundary().fixedParameterTypes()
+        );
+        assertFalse(result.exactCallableBoundary().isVararg());
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> result.exactCallableBoundary().fixedParameterTypes().add(GdVariantType.VARIANT)
+        );
+    }
+
+    @Test
     void constructorRejectsNullArgumentTypeElements() {
         var argumentTypes = new ArrayList<GdType>();
         argumentTypes.add(GdIntType.INT);
@@ -180,11 +220,50 @@ class FrontendResolvedCallTest {
                 new GdObjectType("Player"),
                 null,
                 argumentTypes,
+                null,
                 "Player.move",
                 "argument typing not ready"
         ));
 
         assertEquals("argumentTypes must not contain null elements", ex.getMessage());
+    }
+
+    @Test
+    void constructorRejectsExactCallableBoundaryOutsideResolvedOrBlockedStatuses() {
+        var ex = assertThrows(IllegalArgumentException.class, () -> new FrontendResolvedCall(
+                "move",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendCallResolutionStatus.FAILED,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Player"),
+                null,
+                List.of(GdIntType.INT),
+                new FrontendResolvedCall.ExactCallableBoundary(List.of(GdIntType.INT), false),
+                "Player.move",
+                "failure"
+        ));
+
+        assertEquals("exactCallableBoundary is only valid for RESOLVED or BLOCKED call results", ex.getMessage());
+    }
+
+    @Test
+    void constructorRejectsExactCallableBoundaryForConstructorRoutes() {
+        var ex = assertThrows(IllegalArgumentException.class, () -> new FrontendResolvedCall(
+                "new",
+                FrontendCallResolutionKind.CONSTRUCTOR,
+                FrontendCallResolutionStatus.RESOLVED,
+                FrontendReceiverKind.TYPE_META,
+                ScopeOwnerKind.ENGINE,
+                new GdObjectType("Node"),
+                new GdObjectType("Node"),
+                List.of(),
+                new FrontendResolvedCall.ExactCallableBoundary(List.of(new GdObjectType("Node")), false),
+                "Node.new",
+                null
+        ));
+
+        assertEquals("exactCallableBoundary is only valid for exact instance/static method routes", ex.getMessage());
     }
 
     @Test
@@ -198,6 +277,7 @@ class FrontendResolvedCallTest {
                 new GdObjectType("Player"),
                 null,
                 List.of(GdIntType.INT),
+                null,
                 "Player.move",
                 "  "
         ));

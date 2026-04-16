@@ -4,6 +4,7 @@ import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.scope.*;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -185,7 +186,10 @@ public record ExtensionBuiltinClass(
 
         @Override
         public @NotNull GdType getReturnType() {
-            return Objects.requireNonNull(ClassRegistry.tryParseTextType(returnType));
+            return ScopeTypeParsers.parseExtensionTypeMetadata(
+                    returnType,
+                    "return type of builtin method '" + name + "'"
+            );
         }
 
         public record ReturnValue(String type) {
@@ -297,7 +301,10 @@ public record ExtensionBuiltinClass(
 
         @Override
         public @NotNull GdType getType() {
-            return Objects.requireNonNull(ClassRegistry.tryParseTextType(type));
+            return ScopeTypeParsers.parseExtensionTypeMetadata(
+                    type,
+                    "type of builtin property '" + name + "'"
+            );
         }
 
         @Override

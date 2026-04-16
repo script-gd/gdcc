@@ -39,7 +39,7 @@ holder.add_child(Node.new())
 - call route 会先发布为 `RESOLVED + INSTANCE_METHOD`
 - 随后 body lowering 在参数边界物化阶段重新读取 extension metadata
 - 调用链落到 `FrontendBodyLoweringSession.callBoundaryParameterTypes(...)`
-- 最终在 `ExtensionFunctionArgument.getType()` 命中旧 parser 路径并 fail-fast
+- 当时最终会在 `ExtensionFunctionArgument.getType()` 命中旧 parser 路径并 fail-fast
 
 因此，这次问题的真实定义是：
 
@@ -60,7 +60,7 @@ holder.add_child(Node.new())
 - exact call publication 当前仍主要保留 `resolvedMethod.function()` / `FunctionDef` 作为 declaration metadata，而没有把这份 normalized parameter boundary 一起发布出去
 - `FrontendBodyLoweringSession.materializeCallArguments(...)` 对 exact route 仍调用 `callBoundaryParameterTypes(...)`
 - `callBoundaryParameterTypes(...)` 当前通过 `FunctionDef.getParameters().map(ParameterDef::getType)` 重新读取参数类型
-- `ExtensionFunctionArgument.getType()` 仍走 `ClassRegistry.tryParseTextType(type)`
+- 当时的 `ExtensionFunctionArgument.getType()` 仍走 `ClassRegistry.tryParseTextType(type)`；现已收口到 shared `ScopeTypeParsers.parseExtensionTypeMetadata(...)`
 
 这就形成了两套事实源：
 
@@ -104,9 +104,9 @@ holder.add_child(Node.new())
 - `core/extension/extension_api_dump.cpp`
   - `enum::...` / `bitfield::...` / `typedarray::...` 这些 spelling 是在导出 extension API JSON 时由 `get_property_info_type_name(...)` 生成的
   - `typeddictionary::K;V` 也属于 Godot 的 exported spelling，但它不是当前 exact-call regression 的命中面
-    - 当前 `extension_api_451.json` 中它只出现在 property metadata，例如 `GradientTexture1D.color_map`、`GraphEdit.type_names`
-    - shared `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 目前也不支持它
-    - 它应继续视为 backend typed-dictionary ABI 的独立合同，而不是本计划的 callable-boundary spelling 集合
+    - 当前 `extension_api_451.json` 中它出现在 property metadata，例如 `DPITexture.color_map`、`GraphEdit.type_names`
+    - shared `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 现已支持它的 flat-leaf normalization
+    - 它仍应继续视为 backend typed-dictionary ABI 的独立合同，但这个“独立”现在指向 outward metadata / runtime gate，而不是 exported spelling 解析本身
   - 上述 spelling 都属于“导出表示”，不是引擎内部调用/分析的主表示
 - `modules/gdscript/gdscript_analyzer.cpp`
   - `function_signature_from_info(...)` 与 `validate_call_arg(...)` 直接基于 `MethodInfo` / `PropertyInfo` 构造 `DataType`
@@ -222,7 +222,7 @@ default-parameter 切分不属于这次 bug 的必要面，不应顺手并入。
 - lowering 再回头读一套
 
 这会继续让 callable signature 真源分裂，也会让后续 exact route 工程继续围绕 `FunctionDef` / raw metadata 打转。  
-因此，“把 lowering 接到 shared-normalized signature”必须是主修复；`ExtensionFunctionArgument.getType()` 的收口只能作为未来独立清理项，而不是主方案替代品。
+因此，“把 lowering 接到 shared-normalized signature”必须是主修复；`ExtensionFunctionArgument.getType()` 的 shared-parser 收口现在已经是已落地 hygiene 修复，但它仍不能替代主方案。
 
 ---
 
@@ -231,6 +231,14 @@ default-parameter 切分不属于这次 bug 的必要面，不应顺手并入。
 推荐把修复拆成四个阶段推进。
 
 ### Phase A. 建立文档与回归锚点，锁住 route split
+
+当前状态（2026-04-16）：已完成
+
+本阶段任务与状态：
+
+- [x] 重新核对 `doc/test_error/test_suite_engine_integration_known_limits.md` 中的 route split 描述与当前 `extension_api_451.json` / resolver / lowering 实现一致，无需再把问题退化回“所有带参 `Node` 方法都会同样崩溃”的笼统说法。
+- [x] 新增 focused sema 回归，固定 `var holder = Node.new()` 继续走 `DYNAMIC_FALLBACK`，而 `var holder: Node = Node.new()` 继续走 `RESOLVED + INSTANCE_METHOD`。
+- [x] 新增 focused lowering 回归，固定 typed exact route 目前仍会在 body lowering 命中 raw metadata regression，避免后续实现把它误“修复”为 dynamic fallback 漂移。
 
 目标：
 
@@ -264,6 +272,27 @@ default-parameter 切分不属于这次 bug 的必要面，不应顺手并入。
 ---
 
 ### Phase B. 在 `FrontendResolvedCall` 上发布 exact-only boundary，并保证单次发布
+
+当前状态（2026-04-16）：已完成
+
+本阶段任务与状态：
+
+- [x] 在 `FrontendResolvedCall` 上新增 exact-only callable boundary published fact，并明确 `argumentTypes()` 继续只表示调用点实参快照。
+- [x] 由 `ScopeResolvedMethod.parameters()` 发布 fixed-parameter boundary，并在 blocked suggested-call 复制路径中保留该 fact。
+- [x] 以 focused unit tests 锁定 boundary 的字段语义、发布来源与传播行为：
+  - `FrontendResolvedCallTest`
+  - `FrontendChainReductionHelperTest`
+  - `FrontendSemanticAnalyzerFrameworkTest`
+  - `FrontendLoweringBodyInsnPassTest`
+- [x] 受影响回归面已补跑并通过：
+  - `FrontendResolvedCallTest`
+  - `FrontendChainReductionHelperTest`
+  - `FrontendSemanticAnalyzerFrameworkTest`
+  - `FrontendLoweringBodyInsnPassTest`
+  - `FrontendCallMutabilitySupportTest`
+  - `FrontendChainBindingAnalyzerTest`
+  - `FrontendCompileCheckAnalyzerTest`
+  - `FrontendAnalysisDataTest`
 
 目标：
 
@@ -468,8 +497,8 @@ negative coverage：
 
 ### 8.3 typed-dictionary 仍是独立合同，不应被顺手并入 callable parser
 
-`typeddictionary::K;V` 不属于本计划的 callable-boundary spelling 集合。  
-后续若进入 property / signal / outward metadata 工程，必须继续把它视为独立合同问题，而不是“再补一个 parser 分支”：
+`typeddictionary::K;V` 不是本计划的 exact-call regression 主命中面，但 shared parser 现在已经需要理解它。  
+后续若进入 property / signal / outward metadata 工程，仍必须把它视为独立合同问题，而不是把“parser 已能读懂 exported spelling”误当成整个 typed-dictionary 工程已经完成：
 
 - 先定义它进入 shared typed contract 的允许子集
 - 再决定是否保留 origin / hint / usage 级信息

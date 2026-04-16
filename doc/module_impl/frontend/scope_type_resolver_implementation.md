@@ -164,13 +164,18 @@
 - compatibility fallback 必须显式出现
 - fallback 只能恢复 unresolved leaf type，不能吞掉 malformed structured text
 - frontend strict 位置不得默认走这些兼容入口
-- `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 当前只覆盖：
+- `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 当前覆盖：
   - blank metadata
   - ordinary type names
   - `enum::...`
   - `bitfield::...`
   - `typedarray::...`
-- `typeddictionary::K;V` 这种 composite exported spelling 目前不在 shared parser 合同内；它仍由 backend typed-dictionary ABI 独立处理
+  - `typeddictionary::K;V`
+- `typeddictionary::K;V` 只接受 flat leaf atom：
+  - 允许 primitive / builtin / packed array / object / plain `Array` / plain `Dictionary`
+  - 拒绝 nested structured container text，例如 `Array[int]`、`Dictionary[String, int]`
+  - 拒绝 nested typed metadata spellings，例如 `typedarray::T`
+- backend typed-dictionary ABI 仍是独立合同，但它现在独立的是 outward hint / runtime guard / C wrapper 行为，不是 exported spelling 的 shared 解析
 
 ---
 

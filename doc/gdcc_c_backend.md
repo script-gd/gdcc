@@ -358,16 +358,16 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 ### Extension Type Metadata Parsing Ownership
 
 - `parseExtensionType` is now a thin backend wrapper over the shared scope-layer parser.
-- Resolver/generator code that only needs current shared-normalized single-atom metadata must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
+- Resolver/generator code that only needs current shared-normalized extension metadata must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
 - Required normalization behavior remains:
   - `enum::...` / `bitfield::...` -> `int`
   - `typedarray::Packed*Array` -> `GdPacked*ArrayType`
   - non-packed `typedarray::T` -> `GdArrayType(T)`
+  - `typeddictionary::K;V` -> `GdDictionaryType(K, V)` when both leaves stay flat
   - malformed or unsupported text -> fail fast
-- `typeddictionary::K;V` is intentionally outside this helper's ownership:
-  - it is a composite exported spelling, not a single leaf atom
-  - current shared parser does not normalize it
-  - it remains governed by the dedicated backend typed-dictionary ABI contract
+- shared parsing `typeddictionary::K;V` does not collapse the dedicated backend contract:
+  - nested typed leaves still fail fast
+  - outward `hint / hint_string / runtime gate` rules still belong to the typed-dictionary ABI contract
 
 ### Validation Logic
 

@@ -1585,6 +1585,8 @@ public final class FrontendChainReductionHelper {
             @NotNull List<GdType> argumentTypes,
             boolean finalizeRetryUsed
     ) {
+        // Publish the shared resolver's normalized callable boundary once so downstream exact-call
+        // consumers can reuse it without touching raw `FunctionDef` parameter metadata again.
         var call = FrontendResolvedCall.resolved(
                 step.name(),
                 callKind,
@@ -1593,7 +1595,8 @@ public final class FrontendChainReductionHelper {
                 incomingReceiver.receiverType(),
                 resolvedMethod.returnType(),
                 argumentTypes,
-                resolvedMethod.function()
+                resolvedMethod.function(),
+                FrontendResolvedCall.ExactCallableBoundary.fromResolvedMethod(resolvedMethod)
         );
         return new StepTrace(
                 stepIndex,
@@ -1864,6 +1867,8 @@ public final class FrontendChainReductionHelper {
         if (resolvedCall == null) {
             return null;
         }
+        // Once an exact callable boundary has been published, blocked propagation must keep that same
+        // normalized fact instead of dropping it and forcing later consumers back to raw metadata.
         return FrontendResolvedCall.blocked(
                 resolvedCall.callableName(),
                 resolvedCall.callKind(),
@@ -1873,7 +1878,8 @@ public final class FrontendChainReductionHelper {
                 Objects.requireNonNull(resolvedCall.returnType(), "returnType must not be null"),
                 resolvedCall.argumentTypes(),
                 resolvedCall.declarationSite(),
-                detailReason
+                detailReason,
+                resolvedCall.exactCallableBoundary()
         );
     }
 

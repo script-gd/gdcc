@@ -47,7 +47,10 @@ import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.ClassDef;
 import dev.superice.gdcc.scope.PropertyDef;
 import dev.superice.gdcc.scope.ScopeValueKind;
+import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
+import dev.superice.gdcc.type.GdBoolType;
+import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
@@ -59,6 +62,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -236,6 +240,54 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertEquals(diagnostics.snapshot(), result.diagnostics());
         assertEquals(List.of("warning_ignore"), annotationNames(result.annotationsByAst().get(innerVariable)));
         assertNull(result.annotationsByAst().get(regionIgnoredVariable));
+    }
+
+    @Test
+    void analyzeKeepsPlainVarDynamicFallbackSeparateFromTypedNodeExactRoute() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "exact_call_route_split.gd"), """
+                class_name ExactCallRouteSplit
+                extends Node
+                
+                func dynamic_route():
+                    var holder = Node.new()
+                    holder.add_child(Node.new())
+                
+                func exact_route():
+                    var holder: Node = Node.new()
+                    holder.add_child(Node.new())
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
+        var dynamicFunction = findFunction(unit.ast().statements(), "dynamic_route");
+        var exactFunction = findFunction(unit.ast().statements(), "exact_route");
+        var dynamicStep = findNode(dynamicFunction, AttributeCallStep.class, step -> step.name().equals("add_child"));
+        var exactStep = findNode(exactFunction, AttributeCallStep.class, step -> step.name().equals("add_child"));
+        var dynamicCall = Objects.requireNonNull(result.resolvedCalls().get(dynamicStep));
+        var exactCall = Objects.requireNonNull(result.resolvedCalls().get(exactStep));
+        var exactBoundary = exactCall.exactCallableBoundary();
+
+        assertAll(
+                () -> assertEquals(FrontendCallResolutionStatus.DYNAMIC, dynamicCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.DYNAMIC_FALLBACK, dynamicCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, dynamicCall.receiverKind()),
+                () -> assertNull(dynamicCall.exactCallableBoundary()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, exactCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, exactCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, exactCall.receiverKind()),
+                () -> assertEquals(new GdObjectType("Node"), exactCall.receiverType()),
+                // `argumentTypes()` stays a call-site snapshot, not the selected callable signature.
+                () -> assertEquals(List.of(new GdObjectType("Node")), exactCall.argumentTypes()),
+                () -> assertNotNull(exactBoundary),
+                () -> assertEquals(
+                        List.of(new GdObjectType("Node"), GdBoolType.BOOL, GdIntType.INT),
+                        exactBoundary.fixedParameterTypes()
+                ),
+                () -> assertFalse(exactBoundary.isVararg()),
+                () -> assertFalse(exactCall.declarationSite() instanceof ScopeResolvedMethod),
+                () -> assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.call_resolution").isEmpty())
+        );
     }
 
     @Test

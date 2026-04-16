@@ -2,6 +2,7 @@ package dev.superice.gdcc.scope.resolver;
 
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
+import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdPackedArrayType;
 import dev.superice.gdcc.type.GdType;
@@ -16,10 +17,12 @@ import org.jetbrains.annotations.Nullable;
 /// - `enum::Variant.Type`
 /// - `bitfield::MethodFlags`
 /// - `typedarray::PackedByteArray`
+/// - `typeddictionary::String;int`
 ///
-/// Current scope-layer support is intentionally limited to single-atom metadata spellings plus the
-/// array wrapper form above. Composite exported spellings such as `typeddictionary::K;V` are not
-/// parsed here today; they remain covered by the dedicated backend typed-dictionary ABI contract.
+/// `typeddictionary::K;V` is a real exported spelling family in Godot's extension API dump. The
+/// shared parser normalizes it into `GdDictionaryType`, but it only accepts flat leaf atoms on each
+/// side. Nested typed containers remain rejected because Godot does not support nested generic
+/// container declarations in this metadata surface.
 ///
 /// Backend code used to normalize those spellings through `CGenHelper.parseExtensionType(...)`.
 /// The normalization now lives in the neutral `scope` layer so shared member resolvers can reuse the
@@ -34,7 +37,7 @@ public final class ScopeTypeParsers {
     /// - blank metadata means `void`
     /// - `enum::...` / `bitfield::...` collapse to `int`
     /// - `typedarray::T` becomes `Packed*Array` when `T` is packed, otherwise `Array[T]`
-    /// - composite metadata such as `typeddictionary::K;V` is not supported here
+    /// - `typeddictionary::K;V` becomes `Dictionary[K, V]` when both leaves are flat atoms
     /// - all other names fall back to the existing compatibility parser in `ClassRegistry`
     public static @NotNull GdType parseExtensionTypeMetadata(@Nullable String rawTypeName,
                                                              @NotNull String typeUseSite) {
@@ -76,6 +79,9 @@ public final class ScopeTypeParsers {
             }
             return new GdArrayType(elementType);
         }
+        if (normalized.startsWith("typeddictionary::")) {
+            return parseTypedDictionaryMetadata(normalized, rawTypeName, typeUseSite, registry);
+        }
         var parsed = registry != null
                 ? registry.tryResolveDeclaredType(normalized)
                 : ClassRegistry.tryParseTextType(normalized);
@@ -85,5 +91,49 @@ public final class ScopeTypeParsers {
             );
         }
         return parsed;
+    }
+
+    private static @NotNull GdType parseTypedDictionaryMetadata(@NotNull String normalized,
+                                                                @NotNull String rawTypeName,
+                                                                @NotNull String typeUseSite,
+                                                                @Nullable ClassRegistry registry) {
+        var leafText = normalized.substring("typeddictionary::".length()).trim();
+        var separatorIndex = leafText.indexOf(';');
+        if (separatorIndex < 0 || separatorIndex != leafText.lastIndexOf(';')) {
+            throw new IllegalArgumentException(
+                    typeUseSite + " has malformed typeddictionary metadata: '" + rawTypeName + "'"
+            );
+        }
+        var keyTypeText = leafText.substring(0, separatorIndex).trim();
+        var valueTypeText = leafText.substring(separatorIndex + 1).trim();
+        if (keyTypeText.isEmpty() || valueTypeText.isEmpty()) {
+            throw new IllegalArgumentException(
+                    typeUseSite + " has malformed typeddictionary metadata: '" + rawTypeName + "'"
+            );
+        }
+        return new GdDictionaryType(
+                parseTypedDictionaryLeafMetadata(keyTypeText, typeUseSite + " key leaf", registry),
+                parseTypedDictionaryLeafMetadata(valueTypeText, typeUseSite + " value leaf", registry)
+        );
+    }
+
+    private static @NotNull GdType parseTypedDictionaryLeafMetadata(@NotNull String rawLeafTypeName,
+                                                                    @NotNull String typeUseSite,
+                                                                    @Nullable ClassRegistry registry) {
+        var normalizedLeaf = rawLeafTypeName.trim();
+        if (normalizedLeaf.startsWith("typedarray::")
+                || normalizedLeaf.startsWith("typeddictionary::")
+                || ScopeTypeTextSupport.looksStructuredTypeText(normalizedLeaf)) {
+            throw new IllegalArgumentException(
+                    typeUseSite + " has unsupported type metadata: '" + rawLeafTypeName + "'"
+            );
+        }
+        var parsedLeaf = parseExtensionTypeMetadata(normalizedLeaf, typeUseSite, registry);
+        if (parsedLeaf == GdVoidType.VOID) {
+            throw new IllegalArgumentException(
+                    typeUseSite + " has unsupported type metadata: '" + rawLeafTypeName + "'"
+            );
+        }
+        return parsedLeaf;
     }
 }

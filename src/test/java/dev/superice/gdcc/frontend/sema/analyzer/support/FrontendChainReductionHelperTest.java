@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend.sema.analyzer.support;
 import dev.superice.gdcc.frontend.sema.FrontendAnalysisData;
 import dev.superice.gdcc.frontend.sema.FrontendBindingKind;
 import dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind;
+import dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import dev.superice.gdcc.frontend.sema.FrontendReceiverKind;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
@@ -44,6 +45,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -130,6 +132,41 @@ class FrontendChainReductionHelperTest {
         assertTrue(secondUpstreamCause.sourceStepIndex().isPresent());
         assertEquals(0, secondUpstreamCause.sourceStepIndex().getAsInt());
         assertSame(chain.base(), result.recoveryRoot());
+    }
+
+    @Test
+    void reduceKeepsExactCallableBoundaryWhenBlockedSuggestionWrapsResolvedCall() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdIntType.INT));
+        var seed = identifier("seed");
+        var chain = chain(identifier("worker"), call("consume", seed), property("length"));
+        var blockedHead = FrontendChainReductionHelper.ReceiverState.blockedFrom(
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
+                "worker value is blocked upstream"
+        );
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                blockedHead,
+                newRegistry(List.of(stringBuiltinWithLength()), List.of(worker)),
+                (expression, finalizeWindow) -> expression == seed
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
+        ));
+
+        var blockedCall = result.stepTraces().getFirst().suggestedCall();
+        var exactBoundary = blockedCall == null ? null : blockedCall.exactCallableBoundary();
+        assertNotNull(blockedCall);
+        assertAll(
+                () -> assertEquals(FrontendChainReductionHelper.Status.BLOCKED, result.stepTraces().getFirst().status()),
+                () -> assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_METHOD, result.stepTraces().getFirst().routeKind()),
+                () -> assertEquals(FrontendCallResolutionStatus.BLOCKED, blockedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, blockedCall.callKind()),
+                () -> assertEquals(List.of(GdIntType.INT), blockedCall.argumentTypes()),
+                () -> assertNotNull(exactBoundary),
+                () -> assertEquals(List.of(GdIntType.INT), exactBoundary.fixedParameterTypes()),
+                () -> assertFalse(exactBoundary.isVararg())
+        );
     }
 
     @Test

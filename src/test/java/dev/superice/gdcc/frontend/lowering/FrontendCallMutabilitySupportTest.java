@@ -130,6 +130,7 @@ class FrontendCallMutabilitySupportTest {
                 receiverType,
                 GdIntType.INT,
                 List.of(),
+                null,
                 declarationSite,
                 null
         );

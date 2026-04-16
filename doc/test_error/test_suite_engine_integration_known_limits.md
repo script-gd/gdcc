@@ -162,7 +162,7 @@
 - `ParameterDef::getType`
 - `ExtensionFunctionArgument.getType(...)`
 
-而 `ExtensionFunctionArgument.getType()` 仍走旧路径：
+当时的 `ExtensionFunctionArgument.getType()` 仍走旧路径：
 
 - `ClassRegistry.tryParseTextType(type)`
 
@@ -173,6 +173,12 @@
 - `typedarray::Array`
 
 于是最终表现为 lowering 阶段 fail-fast / 空指针，而不是一条稳定的 compile-time diagnostic。
+
+这条 raw metadata spelling 缺口已在 2026-04-16 修复：
+
+- `ExtensionFunctionArgument.getType()` 现统一走 shared `ScopeTypeParsers.parseExtensionTypeMetadata(...)`
+- shared parser 已覆盖 `enum::...` / `bitfield::...` / `typedarray::...` / flat-leaf `typeddictionary::K;V`
+- nested structured container leaf 仍保持 fail-fast，不会被静默放宽
 
 ### 8.3 当前真实根因与影响面
 

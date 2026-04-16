@@ -1,10 +1,10 @@
 package dev.superice.gdcc.gdextension;
 
 import com.google.gson.annotations.Expose;
-import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.ParameterEntityDef;
+import dev.superice.gdcc.scope.resolver.ScopeTypeParsers;
 import dev.superice.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -24,7 +24,12 @@ public record ExtensionFunctionArgument(
 
     @Override
     public @NotNull GdType getType() {
-        return Objects.requireNonNull(ClassRegistry.tryParseTextType(type));
+        var parameterName = name == null || name.isBlank() ? "<unnamed>" : name;
+        var callableName = definedIn != null ? definedIn.getName() : "<unknown>";
+        return ScopeTypeParsers.parseExtensionTypeMetadata(
+                type,
+                "type of extension parameter '" + parameterName + "' in '" + callableName + "'"
+        );
     }
 
     @Override

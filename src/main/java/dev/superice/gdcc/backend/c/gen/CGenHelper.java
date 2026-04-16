@@ -417,10 +417,10 @@ public final class CGenHelper {
         };
     }
 
-    /// Thin wrapper around the shared scope-layer parser for single-atom extension metadata.
+    /// Thin wrapper around the shared scope-layer parser for extension metadata normalization.
     ///
-    /// This helper intentionally does not claim ownership of composite exported spellings such as
-    /// `typeddictionary::K;V`; typed-dictionary outward ABI keeps its dedicated backend contract.
+    /// The shared parser now understands exported families such as `typeddictionary::K;V`, but the
+    /// backend still owns typed-dictionary outward ABI concerns like hint emission and runtime guards.
     public @NotNull GdType parseExtensionType(@Nullable String rawTypeName,
                                               @NotNull String typeUseSite) {
         return ScopeTypeParsers.parseExtensionTypeMetadata(rawTypeName, typeUseSite, context.classRegistry());
