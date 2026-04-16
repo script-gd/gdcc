@@ -53,13 +53,13 @@ holder.add_child(Node.new())
 
 ### 2.1 gdcc 当前成因链路
 
-当前代码里的关键事实如下：
+问题出现时的关键事实如下：
 
 - `ScopeMethodResolver` 已通过 `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 解析 extension metadata
 - `ScopeResolvedMethod.parameters()` 保存的是规范化后的参数类型，而不是 raw metadata text
-- exact call publication 当前仍主要保留 `resolvedMethod.function()` / `FunctionDef` 作为 declaration metadata，而没有把这份 normalized parameter boundary 一起发布出去
-- `FrontendBodyLoweringSession.materializeCallArguments(...)` 对 exact route 仍调用 `callBoundaryParameterTypes(...)`
-- `callBoundaryParameterTypes(...)` 当前通过 `FunctionDef.getParameters().map(ParameterDef::getType)` 重新读取参数类型
+- exact call publication 当时仍主要保留 `resolvedMethod.function()` / `FunctionDef` 作为 declaration metadata，而没有把这份 normalized parameter boundary 一起发布出去
+- `FrontendBodyLoweringSession.materializeCallArguments(...)` 当时对 exact route 仍调用 `callBoundaryParameterTypes(...)`
+- `callBoundaryParameterTypes(...)` 当时通过 `FunctionDef.getParameters().map(ParameterDef::getType)` 重新读取参数类型
 - 当时的 `ExtensionFunctionArgument.getType()` 仍走 `ClassRegistry.tryParseTextType(type)`；现已收口到 shared `ScopeTypeParsers.parseExtensionTypeMetadata(...)`
 
 这就形成了两套事实源：
@@ -335,6 +335,25 @@ default-parameter 切分不属于这次 bug 的必要面，不应顺手并入。
 ---
 
 ### Phase C. 让 lowering 优先消费 published boundary，并把旧 helper 缩成窄 fallback
+
+当前状态（2026-04-16）：已完成
+
+本阶段任务与状态：
+
+- [x] `FrontendBodyLoweringSession.materializeCallArguments(...)` 在 exact instance route 上优先消费 `FrontendResolvedCall.exactCallableBoundary()`，不再把已发布的 shared-normalized boundary 又投影回 raw callable metadata。
+- [x] exact instance route 若丢失已发布 boundary，改为抛出明确 invariant violation；这类 route 不再静默回退到 `FunctionDef` 参数解析。
+- [x] constructor / bare-call 等尚未迁移 route 继续保留 `requireBoundaryCallableSignature(...)` + `callBoundaryParameterTypes(...)` 窄 fallback，未被本阶段误伤。
+- [x] focused tests 已补齐并通过：
+  - `FrontendLoweringBodyInsnPassTest`
+  - `FrontendSemanticAnalyzerFrameworkTest`
+  - `FrontendResolvedCallTest`
+  - `FrontendChainReductionHelperTest`
+  - `FrontendCallMutabilitySupportTest`
+  - `FrontendAnalysisDataTest`
+  - `ScopeTypeParsersTest`
+  - `ExtensionMetadataTypeParsingTest`
+  - `ClassRegistryTest`
+  - `ScopeMethodResolverTest`
 
 目标：
 

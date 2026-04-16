@@ -53,9 +53,6 @@ import dev.superice.gdcc.lir.insn.VariantSetIndexedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetKeyedInsn;
 import dev.superice.gdcc.lir.insn.VariantSetNamedInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
-import dev.superice.gdcc.type.GdBoolType;
-import dev.superice.gdcc.type.GdIntType;
-import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -2355,6 +2352,7 @@ class FrontendLoweringBodyInsnPassTest {
         var callAnchor = requireSingleCallAnchor(buildVectorContext.requireFrontendCfgGraph());
         var originalResolvedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
         assertNotNull(originalResolvedCall);
+        var originalReturnType = java.util.Objects.requireNonNull(originalResolvedCall.returnType());
 
         prepared.context().requireAnalysisData().resolvedCalls().put(
                 callAnchor,
@@ -2364,7 +2362,7 @@ class FrontendLoweringBodyInsnPassTest {
                         originalResolvedCall.receiverKind(),
                         originalResolvedCall.ownerKind(),
                         originalResolvedCall.receiverType(),
-                        originalResolvedCall.returnType(),
+                        originalReturnType,
                         originalResolvedCall.argumentTypes(),
                         new Object()
                 )
@@ -2386,7 +2384,7 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runStillHitsExactEngineMetadataRegressionBeforePhaseCConsumerSwitch() throws Exception {
+    void runUsesPublishedExactBoundaryForExactEngineMethodWithoutReReadingCallableMetadata() throws Exception {
         var prepared = prepareContext(
                 "body_insn_exact_engine_metadata_regression.gd",
                 """
@@ -2407,25 +2405,97 @@ class FrontendLoweringBodyInsnPassTest {
         );
         var callAnchor = requireSingleCallAnchor(attachContext.requireFrontendCfgGraph());
         var publishedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
-        var exactBoundary = publishedCall == null ? null : publishedCall.exactCallableBoundary();
         assertNotNull(publishedCall);
+        var publishedReturnType = java.util.Objects.requireNonNull(publishedCall.returnType());
+        var exactBoundary = java.util.Objects.requireNonNull(publishedCall.exactCallableBoundary());
 
-        assertAll(
-                () -> assertEquals(dev.superice.gdcc.frontend.sema.FrontendCallResolutionStatus.RESOLVED, publishedCall.status()),
-                () -> assertEquals(dev.superice.gdcc.frontend.sema.FrontendCallResolutionKind.INSTANCE_METHOD, publishedCall.callKind()),
-                () -> assertEquals(FrontendReceiverKind.INSTANCE, publishedCall.receiverKind()),
-                () -> assertNotNull(exactBoundary),
-                () -> assertEquals(
-                        List.of(new GdObjectType("Node"), GdBoolType.BOOL, GdIntType.INT),
-                        exactBoundary.fixedParameterTypes()
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                callAnchor,
+                FrontendResolvedCall.resolved(
+                        publishedCall.callableName(),
+                        publishedCall.callKind(),
+                        publishedCall.receiverKind(),
+                        publishedCall.ownerKind(),
+                        publishedCall.receiverType(),
+                        publishedReturnType,
+                        publishedCall.argumentTypes(),
+                        new Object(),
+                        exactBoundary
                 )
         );
 
-        // Phase A keeps this regression explicit so later work can replace it with a positive lowering test
-        // instead of accidentally hiding it behind the dynamic fallback route.
-        assertThrows(
-                NullPointerException.class,
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var callInsn = requireOnlyInstruction(attachContext.targetFunction(), CallMethodInsn.class);
+        var instructions = allInstructions(attachContext.targetFunction());
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("add_child", callInsn.methodName()),
+                () -> assertEquals("self", callInsn.objectId()),
+                () -> assertEquals(1, callInsn.args().size()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenExactInstanceCallLosesPublishedCallableBoundary() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_exact_engine_metadata_missing_boundary.gd",
+                """
+                        class_name BodyInsnExactEngineMetadataMissingBoundary
+                        extends Node
+                        
+                        func attach(child: Node):
+                            self.add_child(child)
+                        """,
+                Map.of("BodyInsnExactEngineMetadataMissingBoundary", "RuntimeBodyInsnExactEngineMetadataMissingBoundary"),
+                true
+        );
+        var attachContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnExactEngineMetadataMissingBoundary",
+                "attach"
+        );
+        var callAnchor = requireSingleCallAnchor(attachContext.requireFrontendCfgGraph());
+        var publishedCall = prepared.context().requireAnalysisData().resolvedCalls().get(callAnchor);
+        assertNotNull(publishedCall);
+        assertNotNull(publishedCall.exactCallableBoundary());
+        var publishedReturnType = java.util.Objects.requireNonNull(publishedCall.returnType());
+
+        prepared.context().requireAnalysisData().resolvedCalls().put(
+                callAnchor,
+                FrontendResolvedCall.resolved(
+                        publishedCall.callableName(),
+                        publishedCall.callKind(),
+                        publishedCall.receiverKind(),
+                        publishedCall.ownerKind(),
+                        publishedCall.receiverType(),
+                        publishedReturnType,
+                        publishedCall.argumentTypes(),
+                        publishedCall.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
                 () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(
+                        exception.getMessage().contains("missing published callable boundary metadata"),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(
+                        exception.getMessage().contains("required for argument materialization"),
+                        exception.getMessage()
+                ),
+                () -> assertFalse(
+                        exception.getMessage().contains("callable signature metadata"),
+                        exception.getMessage()
+                )
         );
     }
 
@@ -2950,10 +3020,9 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull Map<Node, FrontendBinding> bindings,
             @NotNull IdentifierExpression identifierExpression
     ) {
-        var originalBinding = bindings.get(identifierExpression);
-        bindings.put(
+        bindings.compute(
                 identifierExpression,
-                new FrontendBinding(
+                (k, originalBinding) -> new FrontendBinding(
                         "self",
                         FrontendBindingKind.SELF,
                         originalBinding == null ? identifierExpression : originalBinding.declarationSite()

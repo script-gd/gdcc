@@ -690,11 +690,11 @@ public final class FrontendBodyLoweringSession {
 
     /// Materializes call operands against the already-published route contract.
     ///
-    /// Exact `RESOLVED` calls still consume their final callable signature here so fixed parameters
-    /// can materialize the minimal ordinary `Variant` boundaries and vararg tails can be packed.
-    /// `DYNAMIC` calls intentionally bypass signature lookup and forward their already-evaluated
-    /// operand slots unchanged. Runtime dispatch stays on the backend route, while any later typed
-    /// consumer of the published `Variant` result still goes through the ordinary boundary helper.
+    /// Exact member-call routes prefer the already-published normalized callable boundary so lowering
+    /// does not rebuild parameter types from raw metadata. Legacy routes that still do not publish an
+    /// exact boundary, such as bare-call fallback and constructor-specific paths, keep using the old
+    /// callable-signature helper until they are migrated. `DYNAMIC` calls intentionally bypass any
+    /// exact signature lookup and forward their already-evaluated operand slots unchanged.
     @NotNull List<LirInstruction.Operand> materializeCallArguments(
             @NotNull LirBasicBlock block,
             @NotNull CallItem item,
@@ -712,27 +712,26 @@ public final class FrontendBodyLoweringSession {
                     .<LirInstruction.Operand>map(LirInstruction.VariableOperand::new)
                     .toList();
         }
-        var callable = requireBoundaryCallableSignature(resolvedCall);
-        var parameterTypes = callBoundaryParameterTypes(callable, resolvedCall.callKind());
-        if (!callable.isVararg() && argumentValueIds.size() > parameterTypes.size()) {
+        var boundaryPlan = requireCallArgumentBoundaryPlan(item, resolvedCall);
+        if (!boundaryPlan.isVararg() && argumentValueIds.size() > boundaryPlan.fixedParameterTypes().size()) {
             throw new IllegalStateException(
                     "Resolved call '" + resolvedCall.callableName() + "' provides "
                             + argumentValueIds.size()
                             + " arguments for a non-vararg signature with "
-                            + parameterTypes.size()
+                            + boundaryPlan.fixedParameterTypes().size()
                             + " fixed parameters"
             );
         }
 
         var operands = new ArrayList<LirInstruction.Operand>(argumentValueIds.size());
-        var fixedPrefixCount = Math.min(argumentValueIds.size(), parameterTypes.size());
+        var fixedPrefixCount = Math.min(argumentValueIds.size(), boundaryPlan.fixedParameterTypes().size());
         for (var index = 0; index < fixedPrefixCount; index++) {
             var argumentValueId = argumentValueIds.get(index);
             var materializedSlotId = materializeFrontendBoundaryValue(
                     block,
                     slotIdForValue(argumentValueId),
                     requireValueType(argumentValueId),
-                    parameterTypes.get(index),
+                    boundaryPlan.fixedParameterTypes().get(index),
                     "call_fixed_" + index
             );
             operands.add(new LirInstruction.VariableOperand(materializedSlotId));
@@ -914,10 +913,12 @@ public final class FrontendBodyLoweringSession {
                 + boundaryMaterializationCounter++;
     }
 
+    /// Legacy fallback for routes that still lower through raw callable metadata.
+    ///
     /// Constructor routes such as `Node.new()` or unary builtin-from-`Variant` special cases may
-    /// intentionally publish owner metadata instead of a synthetic callable. We therefore demand a
-    /// callable signature only when some actual argument values still need fixed-parameter ordinary
-    /// boundary materialization after route-specific lowering chooses the final execution surface.
+    /// intentionally publish owner metadata instead of a synthetic callable. Bare-call exact routes
+    /// also have not migrated to the Phase B exact-boundary publication yet, so they still rely on
+    /// this helper until their own publication contract is tightened.
     private @NotNull FunctionDef requireBoundaryCallableSignature(@NotNull FrontendResolvedCall resolvedCall) {
         var declarationSite = Objects.requireNonNull(
                 Objects.requireNonNull(resolvedCall, "resolvedCall must not be null").declarationSite(),
@@ -932,8 +933,44 @@ public final class FrontendBodyLoweringSession {
         };
     }
 
-    /// Call instructions materialize the receiver separately, so any frontend-facing signature
-    /// metadata that still exposes an implicit `self` parameter must be normalized away here.
+    private @NotNull CallArgumentBoundaryPlan requireCallArgumentBoundaryPlan(
+            @NotNull CallItem item,
+            @NotNull FrontendResolvedCall resolvedCall
+    ) {
+        var publishedBoundary = resolvedCall.exactCallableBoundary();
+        if (publishedBoundary != null) {
+            return new CallArgumentBoundaryPlan(
+                    publishedBoundary.fixedParameterTypes(),
+                    publishedBoundary.isVararg()
+            );
+        }
+        if (requiresPublishedExactCallableBoundary(item, resolvedCall)) {
+            throw new IllegalStateException(
+                    "Exact call '" + resolvedCall.callableName()
+                            + "' is missing published callable boundary metadata required for argument materialization"
+            );
+        }
+        var callable = requireBoundaryCallableSignature(resolvedCall);
+        return new CallArgumentBoundaryPlan(
+                callBoundaryParameterTypes(callable, resolvedCall.callKind()),
+                callable.isVararg()
+        );
+    }
+
+    /// Exact instance-call CFG items already publish a concrete receiver value and therefore should
+    /// also carry the shared resolver's fixed-parameter boundary. Losing that boundary is a frontend
+    /// invariant violation, not a reason to fall back to raw `FunctionDef` metadata.
+    private boolean requiresPublishedExactCallableBoundary(
+            @NotNull CallItem item,
+            @NotNull FrontendResolvedCall resolvedCall
+    ) {
+        return resolvedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                && resolvedCall.callKind() == FrontendCallResolutionKind.INSTANCE_METHOD
+                && item.receiverValueIdOrNull() != null;
+    }
+
+    /// Call instructions materialize the receiver separately, so any legacy frontend-facing
+    /// signature metadata that still exposes an implicit `self` parameter must be normalized away.
     private @NotNull List<GdType> callBoundaryParameterTypes(
             @NotNull FunctionDef callable,
             @NotNull FrontendCallResolutionKind callKind
@@ -951,6 +988,18 @@ public final class FrontendBodyLoweringSession {
         return parameters.stream()
                 .map(ParameterDef::getType)
                 .toList();
+    }
+
+    private record CallArgumentBoundaryPlan(
+            @NotNull List<GdType> fixedParameterTypes,
+            boolean isVararg
+    ) {
+        private CallArgumentBoundaryPlan {
+            fixedParameterTypes = List.copyOf(Objects.requireNonNull(
+                    fixedParameterTypes,
+                    "fixedParameterTypes must not be null"
+            ));
+        }
     }
 
     private @NotNull FrontendBodyLoweringSupport.CfgValueMaterialization requireValueMaterialization(@NotNull String valueId) {
