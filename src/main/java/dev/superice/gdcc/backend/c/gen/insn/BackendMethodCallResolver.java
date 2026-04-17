@@ -21,7 +21,6 @@ import java.util.Objects;
 
 /// Backend adapter for the shared method resolver.
 ///
-/// Responsibilities kept here after Phase 6:
 /// - validate backend-only receiver/argument variable shape constraints
 /// - translate shared results into legacy `ResolvedMethodCall` records consumed by codegen
 /// - preserve the existing `DispatchMode` contract used by `CallMethodInsnGen`

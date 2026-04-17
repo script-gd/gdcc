@@ -204,7 +204,7 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 
 当前处理结论已更新为：
 
-- `doc/module_impl/frontend/frontend_exact_call_extension_metadata_plan.md` 中记录的修复已经落地，`test_suite` 不再需要只退回零参数 engine method 来绕开这条链路
+- `doc/module_impl/frontend/frontend_exact_call_extension_metadata_contract.md` 中记录的 exact-call metadata 合同已经落地，`test_suite` 不再需要只退回零参数 engine method 来绕开这条链路
 - method-call backend 现也补齐了与这组修复直接相关的一段 ABI 适配：
   - shared resolver 继续把 `bitfield::...` 规约成 `int` 供语义层统一判断
   - 但 wrapper 调用前会保留 raw bitfield leaf 的 C 类型名，并把 addressable temp cast 成 `const godot_<Owner>_<Flag> *`
@@ -233,6 +233,41 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 - 典型表现就是：
   - `godot_Node_get_child_count(bool)` 这类无对象参数的 wrapper 可以正常工作
   - `godot_Node_add_child(Node, bool, enum)` 这类带对象参数的 wrapper 会在真引擎运行时崩溃
+
+这条问题的完整成因链需要单独写清，否则它很容易继续被误读成“frontend 计划还没修干净”：
+
+1. `frontend_exact_call_extension_metadata_contract.md` 约束并记录的是 exact route 对 extension exported metadata 的二次 raw parse 修复：
+   - shared resolver 先把 `enum::...` / `bitfield::...` / `typedarray::...` 规范化
+   - lowering 改为复用 published callable boundary
+   - backend 再基于这份已规范化边界去物化默认参数并生成 C 调用
+2. 因此 `Node.add_child(...)` 在本轮修复后，frontend / lowering 已经不再因为 `enum::Node.InternalMode` 这类 metadata spelling 失败：
+   - 剩下的失败点发生在生成后的 runtime C surface，而不是 exact metadata route 本身
+3. gdcc backend 当前对 `godot_*` 调用走的是“先把 GDCC object ptr 转成 Godot raw object ptr，再调用已发布的 gdextension-lite wrapper”：
+   - 也就是说，gdcc 此处消费的是 wrapper public ABI，而不是自己直接拼 `godot_object_method_bind_ptrcall(...)`
+4. `godot_Node_add_child(...)` 的 public wrapper 签名是：
+   - `void godot_Node_add_child(godot_Node *self, const godot_Node *node, godot_bool force_readable_name, godot_Node_InternalMode internal);`
+   - 这里第二个参数 `node` 表面上是“对象指针值”
+5. 但 gdextension-lite 在 wrapper 内部桥接到 `ptrcall` 时，当前生成的是：
+   - `_args[] = { node, &force_readable_name, &internal }`
+   - 也就是 object 参数直接放 `node`，而 primitive / enum 参数放各自局部槽位地址
+6. Godot 上游的 `MethodBind::ptrcall(...)` / `call_with_ptr_args(...)` 契约并不是“`p_args[i]` 直接等于参数值”：
+   - 每个 `p_args[i]` 都是“指向参数值存储槽的地址”
+   - 对 `bool` / `int` / `enum` 来说，这正是 `&local_value`
+   - 对 `Node *` 这类 object 参数来说，slot 里保存的值本身是一个对象指针，所以传给 `ptrcall` 的应当是 `&node`
+7. Godot 上游 `PtrToArg<T *>` 的解包方式会把 `p_args[i]` 当成 `T **` 槽位来再解引用一次：
+   - 正确形状：`p_args[i] == &node`，引擎读出 `*reinterpret_cast<T *const *>(p_args[i])` 后得到真实 `node`
+   - 当前错误形状：`p_args[i] == node`，引擎会把对象实例内存起始地址误当成“保存了 `Node *` 的槽位”来读
+8. 于是 `godot_Node_add_child(...)` 崩溃的根因并不是 `Node.add_child(...)` 这个 API 本身，而是 wrapper 把：
+   - public C ABI 中的 object pointer argument
+   - 和 Godot `ptrcall` 需要的 object-pointer slot address
+   - 错误地当成了同一层
+9. 这也解释了为什么：
+   - `godot_Node_get_child_count(bool)` 没有 object 参数，所以 `_args[] = { &include_internal }` 形状正确，调用正常
+   - `godot_Node_add_child(Node, bool, enum)` 一旦出现 object 参数，就会在 `_args[0]` 这一位把错误形状送进 `ptrcall`
+10. 因而它也不是 `Node.add_child(...)` 单点特例：
+   - `remove_child(Node)`、`reparent(Node, bool)`、`TreeItem.add_child(TreeItem)` 这类 class-method object-parameter wrapper 理论上都共享同一风险面
+
+换句话说，本轮 frontend exact metadata 修复把 `Node.add_child(...)` 从“前端先失败”推进到了“runtime 暴露真实 ABI 缺口”的阶段；它没有解决这条问题，不是因为方案遗漏，而是因为这本来就是另一条位于 gdextension-lite wrapper 层的独立缺陷。
 
 因此当前处理结论是：
 

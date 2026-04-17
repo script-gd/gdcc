@@ -915,12 +915,12 @@ public final class FrontendBodyLoweringSession {
                 + boundaryMaterializationCounter++;
     }
 
-    /// Legacy fallback for routes that still lower through raw callable metadata.
+    /// Legacy fallback for routes that still lower through callable declaration metadata.
     ///
     /// Constructor routes such as `Node.new()` or unary builtin-from-`Variant` special cases may
-    /// intentionally publish owner metadata instead of a synthetic callable. Bare-call exact routes
-    /// also have not migrated to the Phase B exact-boundary publication yet, so they still rely on
-    /// this helper until their own publication contract is tightened.
+    /// intentionally publish owner metadata instead of a synthetic callable. Some bare-call exact
+    /// routes also still rely on declaration metadata rather than `FrontendResolvedCall`'s published
+    /// `ExactCallableBoundary`, so this helper remains the narrow fallback for those routes.
     private @NotNull FunctionDef requireBoundaryCallableSignature(@NotNull FrontendResolvedCall resolvedCall) {
         var declarationSite = Objects.requireNonNull(
                 Objects.requireNonNull(resolvedCall, "resolvedCall must not be null").declarationSite(),
