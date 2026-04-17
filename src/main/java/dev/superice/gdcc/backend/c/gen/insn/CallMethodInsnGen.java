@@ -225,20 +225,20 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                         "' has no return value but resultId is provided");
             }
             bodyBuilder.callVoid(resolved.cFunctionName(), fixedArgs, varargs);
-            destroyDefaultTemps(bodyBuilder, callArgs.defaultTemps());
+            destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
             return;
         }
 
         var target = resolveResultTarget(bodyBuilder, instruction, resolved);
         bodyBuilder.callAssign(target, resolved.cFunctionName(), returnType, fixedArgs, varargs);
-        destroyDefaultTemps(bodyBuilder, callArgs.defaultTemps());
+        destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
     }
 
     private record CompletedCallArgs(@NotNull List<CBodyBuilder.ValueRef> fixedArgs,
-                                     @NotNull List<CBodyBuilder.TempVar> defaultTemps) {
+                                     @NotNull List<CBodyBuilder.TempVar> temporaryArgs) {
         private CompletedCallArgs {
             fixedArgs = List.copyOf(fixedArgs);
-            defaultTemps = List.copyOf(defaultTemps);
+            temporaryArgs = List.copyOf(temporaryArgs);
         }
     }
 
@@ -279,7 +279,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                     ""
             ));
         }
-        var defaultTemps = new ArrayList<CBodyBuilder.TempVar>(Math.max(0, fixedCount - providedCount));
+        var temporaryArgs = new ArrayList<CBodyBuilder.TempVar>(Math.max(0, fixedCount - providedCount));
 
         var providedFixedCount = Math.min(providedCount, fixedCount);
         for (var i = 0; i < providedFixedCount; i++) {
@@ -290,7 +290,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                         "' to method parameter #" + (i + 1) + " ('" + param.name() +
                         "') of type '" + param.type().getTypeName() + "'");
             }
-            fixedArgs.add(bodyBuilder.valueOfVar(argVar));
+            fixedArgs.add(renderProvidedFixedArg(bodyBuilder, argVar, param, temporaryArgs, i + 1));
         }
 
         for (var i = providedFixedCount; i < fixedCount; i++) {
@@ -310,11 +310,51 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                         resolved.methodName() + "' parameter #" + (i + 1) +
                         " has no default value metadata");
             }
-            fixedArgs.add(temp);
-            defaultTemps.add(temp);
+            fixedArgs.add(renderFixedTempArg(bodyBuilder, temp, param));
+            temporaryArgs.add(temp);
         }
 
-        return new CompletedCallArgs(fixedArgs, defaultTemps);
+        return new CompletedCallArgs(fixedArgs, temporaryArgs);
+    }
+
+    private @NotNull CBodyBuilder.ValueRef renderProvidedFixedArg(@NotNull CBodyBuilder bodyBuilder,
+                                                                  @NotNull LirVariable argVar,
+                                                                  @NotNull BackendMethodCallResolver.MethodParamSpec param,
+                                                                  @NotNull List<CBodyBuilder.TempVar> temporaryArgs,
+                                                                  int parameterIndexBaseOne) {
+        if (!param.requiresBitfieldPassByRef()) {
+            return bodyBuilder.valueOfVar(argVar);
+        }
+        var bridgeTemp = bodyBuilder.newTempVariable(
+                "bitfield_arg_" + parameterIndexBaseOne,
+                param.type(),
+                bodyBuilder.valueOfVar(argVar).generateCode()
+        );
+        bodyBuilder.declareTempVar(bridgeTemp);
+        temporaryArgs.add(bridgeTemp);
+        return renderBitfieldPassByRefArg(bodyBuilder, bridgeTemp.name(), param);
+    }
+
+    private @NotNull CBodyBuilder.ValueRef renderFixedTempArg(@NotNull CBodyBuilder bodyBuilder,
+                                                              @NotNull CBodyBuilder.TempVar temp,
+                                                              @NotNull BackendMethodCallResolver.MethodParamSpec param) {
+        if (!param.requiresBitfieldPassByRef()) {
+            return temp;
+        }
+        return renderBitfieldPassByRefArg(bodyBuilder, temp.name(), param);
+    }
+
+    /// Shared semantic resolution keeps bitfields normalized as `int`.
+    /// gdextension-lite wrappers still want `const godot_<Owner>_<Flag> *`, so call sites
+    /// hand them an addressable temp cast at the final wrapper boundary.
+    private @NotNull CBodyBuilder.ValueRef renderBitfieldPassByRefArg(@NotNull CBodyBuilder bodyBuilder,
+                                                                      @NotNull String storageName,
+                                                                      @NotNull BackendMethodCallResolver.MethodParamSpec param) {
+        var bitfieldExtraData = param.bitfieldPassByRefExtraParamSpecData();
+        if (bitfieldExtraData == null) {
+            throw new IllegalArgumentException("Missing bitfield ABI metadata for parameter '" + param.name() + "'");
+        }
+        return bodyBuilder.valueOfExpr("(const " + bitfieldExtraData.cType() + " *)&" + storageName, param.type());
     }
 
     private void materializeLiteralDefault(@NotNull CBodyBuilder bodyBuilder,
@@ -430,11 +470,16 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         }
     }
 
-    private void destroyDefaultTemps(@NotNull CBodyBuilder bodyBuilder,
-                                     @NotNull List<CBodyBuilder.TempVar> defaultTemps) {
-        for (var i = defaultTemps.size() - 1; i >= 0; i--) {
-            bodyBuilder.destroyTempVar(defaultTemps.get(i));
+    private void destroyTemporaryArgs(@NotNull CBodyBuilder bodyBuilder,
+                                      @NotNull List<CBodyBuilder.TempVar> temporaryArgs) {
+        for (var i = temporaryArgs.size() - 1; i >= 0; i--) {
+            bodyBuilder.destroyTempVar(temporaryArgs.get(i));
         }
+    }
+
+    private void destroyDefaultTemps(@NotNull CBodyBuilder bodyBuilder,
+                                     @NotNull List<CBodyBuilder.TempVar> temps) {
+        destroyTemporaryArgs(bodyBuilder, temps);
     }
 
     private void validateVarargs(@NotNull CBodyBuilder bodyBuilder,

@@ -127,9 +127,9 @@
 - 正向 suite 改为补 `runtime/engine_node_refcounted_workflow.gd`，先锚定真实 engine `Node.new()` / `RefCounted.new()` runtime 行为
 - inner GDCC subclass scene interop 后续需要单独修复后再补回 compile-run regression
 
-## 8. exact engine method call 在 lowering 重读 extension metadata 时仍可能 fail-fast
+## 8. exact engine method default route 已从“已知缺口”转为正向 resource 回归锚点
 
-这条问题需要先区分两条不同链路，不能再笼统写成“带参数的 engine `Node` method call 都会在 lowering 中空指针”。
+这条问题最初需要先区分两条不同链路，不能再笼统写成“带参数的 engine `Node` method call 都会在 lowering 中空指针”。
 
 ### 8.1 plain `var` receiver 不会直接命中这条 lowering 崩溃链
 
@@ -145,7 +145,7 @@
 
 也就是说，这条写法当前暴露的是 dynamic fallback / runtime-open surface，不是本条记录里的 lowering 空指针根因。
 
-### 8.2 显式 typed receiver 才会进入当前的 exact-lowering 崩溃链
+### 8.2 显式 typed receiver 才会进入当时的 exact-lowering 崩溃链
 
 真正稳定复现当前问题的形状是：
 
@@ -172,7 +172,7 @@
 - `bitfield::Node.ProcessThreadMessages`
 - `typedarray::Array`
 
-于是最终表现为 lowering 阶段 fail-fast / 空指针，而不是一条稳定的 compile-time diagnostic。
+因此当时最终表现为 lowering 阶段 fail-fast / 空指针，而不是一条稳定的 compile-time diagnostic。
 
 这条 raw metadata spelling 缺口已在 2026-04-16 修复：
 
@@ -202,11 +202,76 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 
 `Node.add_child(...)` 只是最容易撞到的入口，因为它的第三个默认参数就是 `enum::Node.InternalMode`。
 
+当前处理结论已更新为：
+
+- `doc/module_impl/frontend/frontend_exact_call_extension_metadata_plan.md` 中记录的修复已经落地，`test_suite` 不再需要只退回零参数 engine method 来绕开这条链路
+- method-call backend 现也补齐了与这组修复直接相关的一段 ABI 适配：
+  - shared resolver 继续把 `bitfield::...` 规约成 `int` 供语义层统一判断
+  - 但 wrapper 调用前会保留 raw bitfield leaf 的 C 类型名，并把 addressable temp cast 成 `const godot_<Owner>_<Flag> *`
+  - 这样既不把 frontend/shared resolver 拉回二次解析，也避免 `ArrayMesh.add_surface_from_arrays(...)` 这类 stock wrapper 在 compile surface 因 `godot_int` / enum-pointer 形状不匹配而失败
+- 新增 `runtime/engine_array_mesh_exact_default_args.gd`
+  - 用 `ArrayMesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)` 直接锚定 exact instance route
+  - 这条签名会真实触及：
+    - `enum::Mesh.PrimitiveType`
+    - `typedarray::Array`
+    - `bitfield::Mesh.ArrayFormat`
+  - 因此它比只看 `Node.add_child(...)` 更适合作为当前 `test_suite` 的真引擎正向锚点：既命中本计划修复的 metadata family，又避开了无关的对象参数 ABI 噪音
+  - 当前这条 case 应保持为可通过的 compile/link/run regression，不再属于单独 known limit
+  - 由于 compile surface 目前还不能稳定解析 `Mesh.PRIMITIVE_TRIANGLES` / `Mesh.ARRAY_VERTEX` / `Mesh.ARRAY_MAX` 这组 engine class constants，resource case 现阶段使用与 stock API 对应的稳定数值字面量 `3` / `0` / `13`；这条限制与 exact metadata 修复本身无关
+- 新增 `runtime/engine_option_button_default_args.gd`
+  - 用 `OptionButton.add_separator()` 省略 `text: String = ""` 默认参数
+  - 这条 case 补上另一种常见 gdextension 默认值物化路径，确保 `test_suite` 不只覆盖复杂 metadata family，也覆盖 stock string-default instance route
+- `runtime/engine_node_refcounted_workflow.gd` 继续保留
+  - 它现在是零参数 smoke anchor
+  - 不再承担“代替 exact engine method default route”的职责
+
+### 8.4 `Node.add_child(...)` 仍不适合作为当前 `test_suite` 的真引擎正向锚点
+
+这次在把 `Node.add_child(...)` 写成 resource case 后，又额外暴露出一条**独立于 frontend exact metadata 修复**的旧问题：
+
+- gdextension-lite 当前的 class-method object-parameter ptrcall wrapper 仍有 ABI 缺口
+- 典型表现就是：
+  - `godot_Node_get_child_count(bool)` 这类无对象参数的 wrapper 可以正常工作
+  - `godot_Node_add_child(Node, bool, enum)` 这类带对象参数的 wrapper 会在真引擎运行时崩溃
+
+因此当前处理结论是：
+
+- `Node.add_child(...)` 仍然保留为 frontend sema / lowering focused regression anchor
+- 真引擎 `test_suite` 则改用 `ArrayMesh.add_surface_from_arrays(...)` 作为 exact metadata default 的 runtime anchor
+- 等 gdextension-lite 的 object-parameter ptrcall 包装修复后，再把 `Node.add_child(...)` 补回 resource suite 会更干净
+
+### 8.5 builtin static gdextension method 暂时也不适合用来补这轮 resource 回归
+
+本轮还尝试过用 `Color.from_rgba8(...)` 这类 stock builtin static method 补另一条默认值正向 case。  
+实测暴露出另一条独立边界：
+
+- backend 当前仍未闭环 `CALL_STATIC_METHOD` 的 C codegen
+
+因此当前处理结论是：
+
+- 这轮 `test_suite` 不使用 builtin static gdextension method 作为默认值锚点
+- 后续若 backend static-call codegen 闭环，再补这类 compile/link/run case
+
+### 8.6 bare utility default 在当前 stock test_suite 中仍无真实 Godot 锚点
+
+这里需要把“没有补资源用例”与“没有修功能”明确区分开。
+
+事实来源：
+
+- `src/main/resources/extension_api_451.json`
+  - 当前 stock `utility_functions` surface 中没有带 `default_value` 的条目
+
+这意味着：
+
+- `doc/test_suite.md` 这条 resource-driven harness 无法在不伪造元数据的前提下，写出一个“真实 Godot stock bare utility call + omitted default args”的 case
+- 如果硬造一个 custom utility 名称，只会把测试锚点从“真实引擎行为”退化成“测试自造 API 行为”
+
 当前处理结论：
 
-- `runtime/engine_node_refcounted_workflow.gd` 继续退回零参数 engine method 覆盖，避免把当前已知缺口误写成正向 compile-run 锚点
-- 此问题的后续修复计划单列为：
-  - `doc/module_impl/frontend/frontend_exact_call_extension_metadata_plan.md`
+- `test_suite` 本轮先补真实可表达的 method-default compile/link/run 回归
+- bare utility default 继续由 compiler-side focused tests 锚定，例如：
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+- 若后续 Godot stock API 新增带默认值的 utility function，或 `test_suite` 支持挂入额外测试 extension，再补对应的真引擎 resource case
 
 ## 2. `test_suite` 当前只能把 `Node` 根脚本挂进场景树
 

@@ -519,6 +519,54 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should pass provided bitfield arguments through wrapper-compatible pointer casts")
+    void callMethodShouldPassProvidedBitfieldArgByPointerCast() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_set_process_thread_messages");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("flags", GdIntType.INT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "set_process_thread_messages",
+                "node",
+                List.of(new LirInstruction.VariableOperand("flags"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
+        assertTrue(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
+        assertTrue(body.contains("= $flags;"), body);
+        assertTrue(
+                body.contains("godot_Node_set_process_thread_messages($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_bitfield_arg_1_"),
+                body
+        );
+        assertFalse(body.contains("godot_Node_set_process_thread_messages($node, $flags)"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should materialize bitfield defaults through wrapper-compatible pointer casts")
+    void callMethodShouldMaterializeBitfieldDefaultByPointerCast() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_set_process_thread_messages_default");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "set_process_thread_messages",
+                "node",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
+        assertTrue(body.contains("godot_int __gdcc_tmp_default_arg_1_"), body);
+        assertTrue(
+                body.contains("godot_Node_set_process_thread_messages($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_default_arg_1_"),
+                body
+        );
+        assertFalse(body.contains("godot_Node_set_process_thread_messages($node, __gdcc_tmp_default_arg_1_"), body);
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should materialize GDCC instance default_value_func")
     void callMethodShouldMaterializeGdccInstanceDefaultFunction() {
         var workerClass = newClass("Worker");
@@ -896,6 +944,32 @@ class CallMethodInsnGenTest {
                 "core",
                 List.of(),
                 List.of(queueFree),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithBitfieldDefaultParam() {
+        var setProcessThreadMessages = new ExtensionGdClass.ClassMethod(
+                "set_process_thread_messages",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("flags", "bitfield::Node.ProcessThreadMessages", "0", null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(setProcessThreadMessages),
                 List.of(),
                 List.of(),
                 List.of()

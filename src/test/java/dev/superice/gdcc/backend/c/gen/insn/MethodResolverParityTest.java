@@ -122,6 +122,22 @@ class MethodResolverParityTest {
     }
 
     @Test
+    @DisplayName("backend method adapter should publish bitfield ABI data as extra parameter metadata")
+    void backendMethodAdapterShouldPublishBitfieldAbiDataAsExtraParameterMetadata() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithBitfieldParam())), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+        var argVar = new LirVariable("flags", GdIntType.INT, bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "set_process_thread_messages", List.of(argVar));
+        assertEquals(1, backendResolved.parameters().size());
+        var extraData = assertInstanceOf(
+                BackendMethodCallResolver.BitfieldPassByRefExtraParamSpecData.class,
+                backendResolved.parameters().getFirst().extraParamSpecData()
+        );
+        assertEquals("godot_Node_ProcessThreadMessages", extraData.cType());
+    }
+
+    @Test
     @DisplayName("backend method adapter should preserve hard failure for incompatible arguments")
     void backendMethodAdapterShouldPreserveHardFailureForIncompatibleArguments() {
         var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithAcceptCount())), List.of());
@@ -315,6 +331,32 @@ class MethodResolverParityTest {
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("count", "int", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithBitfieldParam() {
+        var method = new ExtensionGdClass.ClassMethod(
+                "set_process_thread_messages",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("flags", "bitfield::Node.ProcessThreadMessages", null, null))
         );
         return new ExtensionGdClass(
                 "Node",

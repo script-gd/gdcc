@@ -1,8 +1,10 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
+import dev.superice.gdcc.scope.ParameterDef;
 import dev.superice.gdcc.scope.resolver.ScopeDefaultArgKind;
 import dev.superice.gdcc.scope.resolver.ScopeMethodParameter;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
@@ -41,11 +43,29 @@ public final class BackendMethodCallResolver {
         FUNCTION
     }
 
+    /// Backend-only per-parameter ABI facts that do not belong in the shared semantic signature.
+    public sealed interface ExtraParamSpecData permits BitfieldPassByRefExtraParamSpecData {
+    }
+
+    /// Shared semantic resolution intentionally normalizes `bitfield::...` to `int`.
+    /// gdextension-lite class-method wrappers still expose the wrapper surface as
+    /// `const godot_<Owner>_<Flag> *`, so backend codegen keeps the rendered wrapper CType
+    /// as an extra ABI fact on the selected parameter.
+    public record BitfieldPassByRefExtraParamSpecData(@NotNull String cType) implements ExtraParamSpecData {
+        public BitfieldPassByRefExtraParamSpecData {
+            Objects.requireNonNull(cType);
+            if (cType.isBlank()) {
+                throw new IllegalArgumentException("bitfield pass-by-ref CType must not be blank");
+            }
+        }
+    }
+
     public record MethodParamSpec(@NotNull String name,
                                   @NotNull GdType type,
                                   @NotNull DefaultArgKind defaultKind,
                                   @Nullable String defaultLiteral,
-                                  @Nullable String defaultFunctionName) {
+                                  @Nullable String defaultFunctionName,
+                                  @Nullable ExtraParamSpecData extraParamSpecData) {
         public MethodParamSpec {
             Objects.requireNonNull(name);
             Objects.requireNonNull(type);
@@ -61,6 +81,16 @@ public final class BackendMethodCallResolver {
 
         public boolean hasDefaultValue() {
             return defaultKind != DefaultArgKind.NONE;
+        }
+
+        public boolean requiresBitfieldPassByRef() {
+            return bitfieldPassByRefExtraParamSpecData() != null;
+        }
+
+        public @Nullable BitfieldPassByRefExtraParamSpecData bitfieldPassByRefExtraParamSpecData() {
+            return extraParamSpecData instanceof BitfieldPassByRefExtraParamSpecData bitfieldData
+                    ? bitfieldData
+                    : null;
         }
     }
 
@@ -143,9 +173,14 @@ public final class BackendMethodCallResolver {
     private static @NotNull ResolvedMethodCall toResolvedMethodCall(@NotNull ScopeResolvedMethod resolved) {
         var mode = toDispatchMode(resolved.ownerKind());
         var ownerClassName = resolved.ownerClass().getName();
-        var parameters = resolved.parameters().stream()
-                .map(BackendMethodCallResolver::toMethodParamSpec)
-                .toList();
+        var sourceParameters = resolved.function().getParameters();
+        var parameters = new java.util.ArrayList<MethodParamSpec>(resolved.parameters().size());
+        for (var i = 0; i < resolved.parameters().size(); i++) {
+            var sourceParameter = isExtensionMethodMetadata(resolved)
+                    ? sourceParameters.get(i)
+                    : null;
+            parameters.add(toMethodParamSpec(resolved.parameters().get(i), sourceParameter));
+        }
         return new ResolvedMethodCall(
                 mode,
                 resolved.methodName(),
@@ -159,14 +194,39 @@ public final class BackendMethodCallResolver {
         );
     }
 
-    private static @NotNull MethodParamSpec toMethodParamSpec(@NotNull ScopeMethodParameter parameter) {
+    private static boolean isExtensionMethodMetadata(@NotNull ScopeResolvedMethod resolved) {
+        return resolved.function() instanceof dev.superice.gdcc.gdextension.ExtensionBuiltinClass.ClassMethod
+                || resolved.function() instanceof dev.superice.gdcc.gdextension.ExtensionGdClass.ClassMethod;
+    }
+
+    private static @NotNull MethodParamSpec toMethodParamSpec(@NotNull ScopeMethodParameter parameter,
+                                                              @Nullable ParameterDef sourceParameter) {
         return new MethodParamSpec(
                 parameter.name(),
                 parameter.type(),
                 toDefaultArgKind(parameter.defaultArgKind()),
                 parameter.defaultLiteral(),
-                parameter.defaultFunctionName()
+                parameter.defaultFunctionName(),
+                resolveExtraParamSpecData(sourceParameter)
         );
+    }
+
+    /// Shared semantic resolution keeps the published parameter type normalized.
+    /// Backend-only ABI quirks stay here so the shared resolver does not need to care about
+    /// wrapper-surface details from gdextension-lite.
+    private static @Nullable ExtraParamSpecData resolveExtraParamSpecData(@Nullable ParameterDef sourceParameter) {
+        if (!(sourceParameter instanceof ExtensionFunctionArgument extensionArgument)) {
+            return null;
+        }
+        var rawType = extensionArgument.type();
+        if (rawType == null || !rawType.startsWith("bitfield::")) {
+            return null;
+        }
+        var leafName = rawType.substring("bitfield::".length()).trim();
+        if (leafName.isBlank()) {
+            throw new IllegalArgumentException("Malformed bitfield metadata type: " + rawType);
+        }
+        return new BitfieldPassByRefExtraParamSpecData("godot_" + leafName.replace('.', '_'));
     }
 
     private static @NotNull DefaultArgKind toDefaultArgKind(@NotNull ScopeDefaultArgKind defaultArgKind) {
