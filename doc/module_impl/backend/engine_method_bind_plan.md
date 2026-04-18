@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 1-5 已完成，阶段 6+ 未开始）
+- 状态：In Progress（阶段 1-6 已完成，阶段 7+ 未开始）
 - 最近同步：2026-04-18
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
 - 本文包含两部分目标：
@@ -727,6 +727,25 @@
 - 明确约束：
   - 兼容性来源只能是“参数 family + normalized type + leaf raw metadata”
   - 不允许按类名、方法名、单个 API 写额外兼容分支
+
+### 当前进度
+
+- [x] `BackendMethodCallResolver` 已把旧 `BitfieldPassByRefExtraParamSpecData` 升级为统一 engine helper slot metadata
+  - enum / bitfield 现发布 `LOCAL_VALUE_SLOT_ADDRESS + raw slot CType`
+  - primitive / object / wrapper 的 helper slot mode 则通过 normalized type 统一推导
+- [x] `CGenHelper` / `engine_method_binds.h.ftl` 已切到统一 helper surface
+  - helper 形参不再暴露 wrapper-compatible bitfield pointer surface
+  - enum / bitfield raw slot 现改为 helper 内部本地物化后再参与 `ptrcall`
+  - object / value-semantic wrapper / primitive 继续按统一 slot mode 下沉到模板
+- [x] `CallMethodInsnGen` caller-side 已完成第 6 阶段收口
+  - ENGINE non-vararg helper route 停止 Java 侧 `(const godot_<...> *)&temp` 末跳改写
+  - fixed 参数重新完全对齐 shared-normalized / backend-normalized helper surface
+  - static path 的 warning / 无 receiver 合同保持不变
+- [x] phase-6 focused/runtime regression 已补齐并通过
+  - `MethodResolverParityTest` 已覆盖 enum / bitfield helper slot metadata 发布
+  - `CallMethodInsnGenTest` 已锁定 caller-side helper route 不再发旧 bitfield cast
+  - `CCodegenEngineMethodBindHeaderTest` 已锁定 helper 内部 enum / bitfield local slot materialization
+  - `CallMethodInsnGenEngineTest` 已继续验证 `ArrayMesh.add_surface_from_arrays(...)` 在无旧 cast 的前提下保持通过
 
 ### 验收
 

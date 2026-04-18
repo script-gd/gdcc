@@ -130,11 +130,11 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAddChild())), List.of(clazz));
-        assertTrue(
-                body.contains("gdcc_engine_call_node_add_child_79($holder, $child, __gdcc_tmp_default_arg_2_"),
-                body
-        );
+        assertTrue(body.contains("gdcc_engine_call_node_add_child_79($holder, $child,"), body);
+        assertTrue(body.contains("__gdcc_tmp_default_arg_2_"), body);
+        assertTrue(body.contains("__gdcc_tmp_default_arg_3_"), body);
         assertFalse(body.contains("godot_Node_add_child("), body);
+        assertFalse(body.contains("(const godot_Node_InternalMode *)&"), body);
     }
 
     @Test
@@ -548,8 +548,8 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should pass provided bitfield arguments through wrapper-compatible pointer casts")
-    void callMethodShouldPassProvidedBitfieldArgByPointerCast() {
+    @DisplayName("CALL_METHOD should pass provided bitfield arguments through normalized engine helper surface")
+    void callMethodShouldPassProvidedBitfieldArgThroughNormalizedHelperSurface() {
         var clazz = newClass("Worker");
         var func = newFunction("call_set_process_thread_messages");
         func.createAndAddVariable("node", new GdObjectType("Node"));
@@ -563,18 +563,14 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
-        assertTrue(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
-        assertTrue(body.contains("= $flags;"), body);
-        assertTrue(
-                body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_bitfield_arg_1_"),
-                body
-        );
-        assertFalse(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, $flags)"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, $flags);"), body);
+        assertFalse(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
+        assertFalse(body.contains("(const godot_Node_ProcessThreadMessages *)&"), body);
     }
 
     @Test
-    @DisplayName("CALL_METHOD should materialize bitfield defaults through wrapper-compatible pointer casts")
-    void callMethodShouldMaterializeBitfieldDefaultByPointerCast() {
+    @DisplayName("CALL_METHOD should materialize bitfield defaults through normalized engine helper surface")
+    void callMethodShouldMaterializeBitfieldDefaultThroughNormalizedHelperSurface() {
         var clazz = newClass("Worker");
         var func = newFunction("call_set_process_thread_messages_default");
         func.createAndAddVariable("node", new GdObjectType("Node"));
@@ -588,11 +584,8 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
         assertTrue(body.contains("godot_int __gdcc_tmp_default_arg_1_"), body);
-        assertTrue(
-                body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_default_arg_1_"),
-                body
-        );
-        assertFalse(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, __gdcc_tmp_default_arg_1_"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, __gdcc_tmp_default_arg_1_"), body);
+        assertFalse(body.contains("(const godot_Node_ProcessThreadMessages *)&"), body);
     }
 
     @Test

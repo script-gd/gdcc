@@ -287,6 +287,63 @@ class CCodegenEngineMethodBindHeaderTest {
     }
 
     @Test
+    @DisplayName("generate should materialize enum and bitfield ptrcall slots inside helper bodies")
+    void generateShouldMaterializeEnumAndBitfieldPtrcallSlotsInsideHelperBodies() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var callConfigure = newVoidFunction("call_configure");
+        callConfigure.createAndAddVariable("probe", new GdObjectType("Probe"));
+        callConfigure.createAndAddVariable("mode", GdIntType.INT);
+        callConfigure.createAndAddVariable("flags", GdIntType.INT);
+        callConfigure.createAndAddVariable("label", GdStringType.STRING);
+        entry(callConfigure).appendInstruction(new CallMethodInsn(
+                null,
+                "configure",
+                "probe",
+                List.of(varOperand("mode"), varOperand("flags"), varOperand("label"))
+        ));
+        entry(callConfigure).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(callConfigure);
+
+        var module = new LirModule("engine_bind_slot_helper_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(probeClassWithSlotNormalizedHelpers())),
+                List.of(hostClass)
+        );
+        var bindHeader = renderFiles(codegen.generate()).get("engine_method_binds.h");
+
+        var configureSignature = resolveFunctionSignatureByPrefix(
+                bindHeader,
+                "static inline void gdcc_engine_call_probe_configure_95"
+        );
+        assertContainsAll(
+                configureSignature,
+                "GDExtensionObjectPtr self",
+                "godot_int arg0",
+                "godot_int arg1",
+                "godot_String* arg2"
+        );
+        assertFalse(configureSignature.contains("godot_Probe_Mode*"), configureSignature);
+        assertFalse(configureSignature.contains("godot_Probe_Flags*"), configureSignature);
+
+        var configureBody = resolveFunctionBodyByPrefix(bindHeader, "static inline void gdcc_engine_call_probe_configure_95");
+        assertContainsAll(
+                configureBody,
+                "const godot_Probe_Mode arg0_slot = (godot_Probe_Mode)arg0;",
+                "const godot_Probe_Flags arg1_slot = (godot_Probe_Flags)arg1;",
+                "const GDExtensionConstTypePtr args[] = {",
+                "&arg0_slot,",
+                "&arg1_slot,",
+                "arg2",
+                "godot_object_method_bind_ptrcall(",
+                "self,"
+        );
+        assertFalse(configureBody.contains("(const godot_Probe_Flags *)&"), configureBody);
+        assertFalse(configureBody.contains("(const godot_Probe_Mode *)&"), configureBody);
+    }
+
+    @Test
     @DisplayName("generate should emit vararg helpers with guarded unpack and helper-owned cleanup only")
     void generateShouldEmitVarargHelpersWithGuardedUnpackAndHelperOwnedCleanupOnly() {
         var hostClass = newClass("Worker", "RefCounted");
@@ -668,6 +725,36 @@ class CCodegenEngineMethodBindHeaderTest {
                 "core",
                 List.of(),
                 List.of(mix, broadcast),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass probeClassWithSlotNormalizedHelpers() {
+        var configure = new ExtensionGdClass.ClassMethod(
+                "configure",
+                false,
+                false,
+                false,
+                false,
+                95L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(
+                        new ExtensionFunctionArgument("mode", "enum::Probe.Mode", null, null),
+                        new ExtensionFunctionArgument("flags", "bitfield::Probe.Flags", null, null),
+                        new ExtensionFunctionArgument("label", "String", null, null)
+                )
+        );
+        return new ExtensionGdClass(
+                "Probe",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(configure),
                 List.of(),
                 List.of(),
                 List.of()

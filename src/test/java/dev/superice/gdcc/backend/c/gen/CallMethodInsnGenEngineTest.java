@@ -314,6 +314,7 @@ class CallMethodInsnGenEngineTest {
         assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        var bindHeader = Files.readString(tempDir.resolve("engine_method_binds.h"));
         assertTrue(entrySource.contains("godot_String_substr"), "Builtin dispatch should be generated.");
         assertTrue(entrySource.contains("gdcc_engine_call_node_get_child_count_"), "Exact engine getter dispatch should use helper route.");
         assertTrue(entrySource.contains("gdcc_engine_call_node_add_child_"), "Exact engine object-parameter dispatch should use helper route.");
@@ -321,6 +322,16 @@ class CallMethodInsnGenEngineTest {
                 entrySource.contains("gdcc_engine_call_arraymesh_add_surface_from_arrays_"),
                 "Bitfield-compatible exact engine helper route should be generated."
         );
+        assertFalse(entrySource.contains("(const godot_Mesh_ArrayFormat *)&"), "Caller-side helper route should no longer emit wrapper-compatible bitfield casts.");
+        assertTrue(
+                bindHeader.contains("godot_Mesh_PrimitiveType arg0_slot = (godot_Mesh_PrimitiveType)arg0;"),
+                "ArrayMesh helper should materialize the enum slot inside the helper body."
+        );
+        assertTrue(
+                bindHeader.contains("_slot = (godot_Mesh_ArrayFormat)arg"),
+                "ArrayMesh helper should materialize the bitfield slot inside the helper body."
+        );
+        assertFalse(bindHeader.contains("(const godot_Mesh_ArrayFormat *)&"), "Helper body should no longer rely on wrapper-compatible bitfield casts.");
         assertTrue(entrySource.contains("godot_Object_call("), "OBJECT_DYNAMIC dispatch should be generated.");
         assertTrue(entrySource.contains("godot_Variant_call("), "VARIANT_DYNAMIC dispatch should be generated.");
         assertTrue(entrySource.contains("\"call_method_engine.gd(assemble)\""), "VARIANT_DYNAMIC fallback source location should be generated.");

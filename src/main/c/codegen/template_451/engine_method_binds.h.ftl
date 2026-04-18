@@ -119,6 +119,11 @@ cleanup:
     return result;
 </#if>
 <#else>
+<#list helperParams as param>
+<#if helper.checkEngineMethodHelperRequiresLocalValueSlot(param)>
+    ${helper.renderEngineMethodHelperLocalSlotDecl(param)}
+</#if>
+</#list>
 <#if helperParams?size gt 0>
     const GDExtensionConstTypePtr args[] = {
 <#list helperParams as param>

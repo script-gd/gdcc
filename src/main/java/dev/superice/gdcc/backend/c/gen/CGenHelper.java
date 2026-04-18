@@ -423,42 +423,56 @@ public final class CGenHelper {
     /// Helper parameters intentionally mirror the current callable surface:
     /// - primitive/object slots stay value-shaped
     /// - value-semantic wrappers stay storage-pointer shaped
-    /// - phase-5 bitfield compatibility keeps the temporary pointer surface explicit
+    /// - enum/bitfield keep normalized helper params and let the helper materialize raw slots locally
     public @NotNull List<EngineMethodHelperParam> collectEngineMethodHelperParameters(
             @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
     ) {
         var params = new ArrayList<EngineMethodHelperParam>(resolved.parameters().size());
         for (var i = 0; i < resolved.parameters().size(); i++) {
             var parameter = resolved.parameters().get(i);
-            var bitfieldPassByRef = parameter.requiresBitfieldPassByRef();
-            var cType = bitfieldPassByRef
-                    ? "const " + requireBitfieldPassByRefCType(parameter) + " *"
-                    : renderGdTypeRefInC(parameter.type());
-            var pointerSurface = bitfieldPassByRef
-                    || (!(parameter.type() instanceof GdPrimitiveType) && !(parameter.type() instanceof GdObjectType));
+            var slotMode = parameter.engineHelperSlotMode();
+            var cType = switch (slotMode) {
+                case STORAGE_POINTER -> renderGdTypeRefInC(parameter.type());
+                case VALUE_ADDRESS, LOCAL_VALUE_SLOT_ADDRESS -> renderGdTypeInC(parameter.type());
+            };
             params.add(new EngineMethodHelperParam(
                     "arg" + i,
                     parameter.type(),
                     cType,
-                    pointerSurface,
-                    bitfieldPassByRef
+                    slotMode,
+                    parameter.engineHelperLocalSlotCType()
             ));
         }
         return List.copyOf(params);
     }
 
     /// Ptrcall consumes addresses of argument storage slots.
-    /// Value-shaped params therefore contribute `&arg`, while wrapper/compat pointer surfaces can
-    /// pass the helper parameter expression directly.
+    /// - value-shaped params pass `&arg`
+    /// - storage-pointer params pass the helper argument directly
+    /// - enum/bitfield params first point at a helper-local raw slot
     public @NotNull String renderEngineMethodPtrcallSlotExpr(@NotNull EngineMethodHelperParam param) {
-        return param.pointerSurface() ? param.name() : "&" + param.name();
+        return switch (param.slotMode()) {
+            case VALUE_ADDRESS -> "&" + param.name();
+            case STORAGE_POINTER -> param.name();
+            case LOCAL_VALUE_SLOT_ADDRESS -> "&" + renderEngineMethodHelperLocalSlotName(param);
+        };
     }
 
-    /// Helper-local pack sites need the typed value, not always the raw parameter token.
-    /// Wrapper pointer surfaces already match pack helpers, while phase-5 bitfield compatibility
-    /// still needs one dereference to get back to the normalized int value.
+    /// Helper-local pack sites always consume the normalized helper surface.
     public @NotNull String renderEngineMethodHelperValueExpr(@NotNull EngineMethodHelperParam param) {
-        return param.bitfieldPassByRef() ? "*" + param.name() : param.name();
+        return param.name();
+    }
+
+    public boolean checkEngineMethodHelperRequiresLocalValueSlot(@NotNull EngineMethodHelperParam param) {
+        return param.requiresLocalValueSlot();
+    }
+
+    public @NotNull String renderEngineMethodHelperLocalSlotDecl(@NotNull EngineMethodHelperParam param) {
+        if (!param.requiresLocalValueSlot() || param.slotCType() == null || param.slotCType().isBlank()) {
+            throw new IllegalArgumentException("Engine helper parameter does not require a local slot: " + param.name());
+        }
+        return "const " + param.slotCType() + " " + renderEngineMethodHelperLocalSlotName(param) +
+                " = (" + param.slotCType() + ")" + param.name() + ";";
     }
 
     public @NotNull String renderEngineMethodBindLookupErrorDescription(
@@ -496,14 +510,8 @@ public final class CGenHelper {
         );
     }
 
-    private @NotNull String requireBitfieldPassByRefCType(
-            @NotNull BackendMethodCallResolver.MethodParamSpec parameter
-    ) {
-        var extraData = parameter.bitfieldPassByRefExtraParamSpecData();
-        if (extraData == null) {
-            throw new IllegalArgumentException("Missing bitfield ABI metadata for parameter '" + parameter.name() + "'");
-        }
-        return extraData.cType();
+    private @NotNull String renderEngineMethodHelperLocalSlotName(@NotNull EngineMethodHelperParam param) {
+        return param.name() + "_slot";
     }
 
     private @NotNull String sanitizeCIdentifierFragment(@NotNull String raw) {

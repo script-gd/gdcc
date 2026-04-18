@@ -283,6 +283,8 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         }
         var temporaryArgs = new ArrayList<CBodyBuilder.TempVar>(Math.max(0, fixedCount - providedCount));
 
+        // Exact engine helpers now own raw ptrcall slot materialization internally, so caller-side
+        // fixed args stay on the same normalized surface used by semantic resolution/default filling.
         var providedFixedCount = Math.min(providedCount, fixedCount);
         for (var i = 0; i < providedFixedCount; i++) {
             var argVar = argVars.get(i);
@@ -292,7 +294,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                         "' to method parameter #" + (i + 1) + " ('" + param.name() +
                         "') of type '" + param.type().getTypeName() + "'");
             }
-            fixedArgs.add(renderProvidedFixedArg(bodyBuilder, argVar, param, temporaryArgs, i + 1));
+            fixedArgs.add(bodyBuilder.valueOfVar(argVar));
         }
 
         for (var i = providedFixedCount; i < fixedCount; i++) {
@@ -312,51 +314,11 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
                         resolved.methodName() + "' parameter #" + (i + 1) +
                         " has no default value metadata");
             }
-            fixedArgs.add(renderFixedTempArg(bodyBuilder, temp, param));
+            fixedArgs.add(temp);
             temporaryArgs.add(temp);
         }
 
         return new CompletedCallArgs(fixedArgs, temporaryArgs);
-    }
-
-    private @NotNull CBodyBuilder.ValueRef renderProvidedFixedArg(@NotNull CBodyBuilder bodyBuilder,
-                                                                  @NotNull LirVariable argVar,
-                                                                  @NotNull BackendMethodCallResolver.MethodParamSpec param,
-                                                                  @NotNull List<CBodyBuilder.TempVar> temporaryArgs,
-                                                                  int parameterIndexBaseOne) {
-        if (!param.requiresBitfieldPassByRef()) {
-            return bodyBuilder.valueOfVar(argVar);
-        }
-        var bridgeTemp = bodyBuilder.newTempVariable(
-                "bitfield_arg_" + parameterIndexBaseOne,
-                param.type(),
-                bodyBuilder.valueOfVar(argVar).generateCode()
-        );
-        bodyBuilder.declareTempVar(bridgeTemp);
-        temporaryArgs.add(bridgeTemp);
-        return renderBitfieldPassByRefArg(bodyBuilder, bridgeTemp.name(), param);
-    }
-
-    private @NotNull CBodyBuilder.ValueRef renderFixedTempArg(@NotNull CBodyBuilder bodyBuilder,
-                                                              @NotNull CBodyBuilder.TempVar temp,
-                                                              @NotNull BackendMethodCallResolver.MethodParamSpec param) {
-        if (!param.requiresBitfieldPassByRef()) {
-            return temp;
-        }
-        return renderBitfieldPassByRefArg(bodyBuilder, temp.name(), param);
-    }
-
-    /// Shared semantic resolution keeps bitfields normalized as `int`.
-    /// gdextension-lite wrappers still want `const godot_<Owner>_<Flag> *`, so call sites
-    /// hand them an addressable temp cast at the final wrapper boundary.
-    private @NotNull CBodyBuilder.ValueRef renderBitfieldPassByRefArg(@NotNull CBodyBuilder bodyBuilder,
-                                                                      @NotNull String storageName,
-                                                                      @NotNull BackendMethodCallResolver.MethodParamSpec param) {
-        var bitfieldExtraData = param.bitfieldPassByRefExtraParamSpecData();
-        if (bitfieldExtraData == null) {
-            throw new IllegalArgumentException("Missing bitfield ABI metadata for parameter '" + param.name() + "'");
-        }
-        return bodyBuilder.valueOfExpr("(const " + bitfieldExtraData.cType() + " *)&" + storageName, param.type());
     }
 
     private void materializeLiteralDefault(@NotNull CBodyBuilder bodyBuilder,

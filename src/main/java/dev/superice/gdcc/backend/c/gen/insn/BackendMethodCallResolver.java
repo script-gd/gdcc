@@ -10,6 +10,8 @@ import dev.superice.gdcc.scope.resolver.ScopeMethodParameter;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
 import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPrimitiveType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
@@ -43,19 +45,31 @@ public final class BackendMethodCallResolver {
         FUNCTION
     }
 
-    /// Backend-only per-parameter ABI facts that do not belong in the shared semantic signature.
-    public sealed interface ExtraParamSpecData permits BitfieldPassByRefExtraParamSpecData {
+    /// Exact-engine helpers use one normalized callable surface and let the generated helper decide
+    /// how ptrcall should see each fixed argument.
+    public enum EngineHelperSlotMode {
+        /// The helper parameter is the normalized value itself, and ptrcall receives `&arg`.
+        VALUE_ADDRESS,
+        /// The helper parameter already points at stable storage, so ptrcall receives `arg` directly.
+        STORAGE_POINTER,
+        /// The helper parameter stays normalized, but the helper must first materialize a raw leaf slot.
+        LOCAL_VALUE_SLOT_ADDRESS
     }
 
-    /// Shared semantic resolution intentionally normalizes `bitfield::...` to `int`.
-    /// gdextension-lite class-method wrappers still expose the wrapper surface as
-    /// `const godot_<Owner>_<Flag> *`, so backend codegen keeps the rendered wrapper CType
-    /// as an extra ABI fact on the selected parameter.
-    public record BitfieldPassByRefExtraParamSpecData(@NotNull String cType) implements ExtraParamSpecData {
-        public BitfieldPassByRefExtraParamSpecData {
-            Objects.requireNonNull(cType);
-            if (cType.isBlank()) {
-                throw new IllegalArgumentException("bitfield pass-by-ref CType must not be blank");
+    /// Backend-only per-parameter ABI facts that do not belong in the shared semantic signature.
+    public sealed interface ExtraParamSpecData permits EngineHelperSlotExtraParamSpecData {
+    }
+
+    /// Shared semantic resolution keeps enum/bitfield parameters normalized as `int`.
+    /// Exact-engine helpers still need the raw exported leaf CType so they can materialize the
+    /// ptrcall slot locally without pushing wrapper-compatible casts back into Java callers.
+    public record EngineHelperSlotExtraParamSpecData(@NotNull EngineHelperSlotMode slotMode,
+                                                     @Nullable String slotCType) implements ExtraParamSpecData {
+        public EngineHelperSlotExtraParamSpecData {
+            Objects.requireNonNull(slotMode);
+            if (slotMode == EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS &&
+                    (slotCType == null || slotCType.isBlank())) {
+                throw new IllegalArgumentException("slotCType must be present for LOCAL_VALUE_SLOT_ADDRESS");
             }
         }
     }
@@ -83,13 +97,28 @@ public final class BackendMethodCallResolver {
             return defaultKind != DefaultArgKind.NONE;
         }
 
-        public boolean requiresBitfieldPassByRef() {
-            return bitfieldPassByRefExtraParamSpecData() != null;
+        public @NotNull EngineHelperSlotMode engineHelperSlotMode() {
+            var slotExtraData = engineHelperSlotExtraParamSpecData();
+            if (slotExtraData != null) {
+                return slotExtraData.slotMode();
+            }
+            return type instanceof GdPrimitiveType || type instanceof GdObjectType
+                    ? EngineHelperSlotMode.VALUE_ADDRESS
+                    : EngineHelperSlotMode.STORAGE_POINTER;
         }
 
-        public @Nullable BitfieldPassByRefExtraParamSpecData bitfieldPassByRefExtraParamSpecData() {
-            return extraParamSpecData instanceof BitfieldPassByRefExtraParamSpecData bitfieldData
-                    ? bitfieldData
+        public boolean requiresEngineHelperLocalValueSlot() {
+            return engineHelperSlotMode() == EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS;
+        }
+
+        public @Nullable String engineHelperLocalSlotCType() {
+            var slotExtraData = engineHelperSlotExtraParamSpecData();
+            return slotExtraData == null ? null : slotExtraData.slotCType();
+        }
+
+        public @Nullable EngineHelperSlotExtraParamSpecData engineHelperSlotExtraParamSpecData() {
+            return extraParamSpecData instanceof EngineHelperSlotExtraParamSpecData slotExtraData
+                    ? slotExtraData
                     : null;
         }
     }
@@ -252,21 +281,55 @@ public final class BackendMethodCallResolver {
     }
 
     /// Shared semantic resolution keeps the published parameter type normalized.
-    /// Backend-only ABI quirks stay here so the shared resolver does not need to care about
-    /// wrapper-surface details from gdextension-lite.
+    /// Backend-only helper slot facts stay here so the shared resolver does not need to care about
+    /// raw ptrcall slot spellings exported by extension metadata.
     private static @Nullable ExtraParamSpecData resolveExtraParamSpecData(@Nullable ParameterDef sourceParameter) {
         if (!(sourceParameter instanceof ExtensionFunctionArgument extensionArgument)) {
             return null;
         }
         var rawType = extensionArgument.type();
-        if (rawType == null || !rawType.startsWith("bitfield::")) {
+        if (rawType == null || rawType.isBlank()) {
             return null;
         }
-        var leafName = rawType.substring("bitfield::".length()).trim();
-        if (leafName.isBlank()) {
-            throw new IllegalArgumentException("Malformed bitfield metadata type: " + rawType);
+        return switch (detectEngineHelperLocalSlotMetadataFamily(rawType)) {
+            case NONE -> null;
+            case ENUM, BITFIELD -> new EngineHelperSlotExtraParamSpecData(
+                    EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS,
+                    renderEngineHelperLocalSlotCType(rawType)
+            );
+        };
+    }
+
+    private static @NotNull EngineHelperLocalSlotMetadataFamily detectEngineHelperLocalSlotMetadataFamily(
+            @NotNull String rawType
+    ) {
+        var normalized = rawType.trim();
+        if (normalized.startsWith("enum::")) {
+            return EngineHelperLocalSlotMetadataFamily.ENUM;
         }
-        return new BitfieldPassByRefExtraParamSpecData("godot_" + leafName.replace('.', '_'));
+        if (normalized.startsWith("bitfield::")) {
+            return EngineHelperLocalSlotMetadataFamily.BITFIELD;
+        }
+        return EngineHelperLocalSlotMetadataFamily.NONE;
+    }
+
+    private static @NotNull String renderEngineHelperLocalSlotCType(@NotNull String rawType) {
+        var normalized = rawType.trim();
+        var family = detectEngineHelperLocalSlotMetadataFamily(normalized);
+        if (family == EngineHelperLocalSlotMetadataFamily.NONE) {
+            throw new IllegalArgumentException("Unsupported engine helper local-slot metadata: " + rawType);
+        }
+        var leafName = normalized.substring(normalized.indexOf("::") + 2).trim();
+        if (leafName.isBlank()) {
+            throw new IllegalArgumentException("Malformed engine helper local-slot metadata type: " + rawType);
+        }
+        return "godot_" + leafName.replace('.', '_');
+    }
+
+    private enum EngineHelperLocalSlotMetadataFamily {
+        NONE,
+        ENUM,
+        BITFIELD
     }
 
     private static @NotNull DefaultArgKind toDefaultArgKind(@NotNull ScopeDefaultArgKind defaultArgKind) {

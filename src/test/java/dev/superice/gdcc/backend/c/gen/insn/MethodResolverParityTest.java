@@ -212,8 +212,8 @@ class MethodResolverParityTest {
     }
 
     @Test
-    @DisplayName("backend method adapter should publish bitfield ABI data as extra parameter metadata")
-    void backendMethodAdapterShouldPublishBitfieldAbiDataAsExtraParameterMetadata() {
+    @DisplayName("backend method adapter should publish bitfield helper slot metadata as extra parameter data")
+    void backendMethodAdapterShouldPublishBitfieldHelperSlotMetadataAsExtraParameterData() {
         var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithBitfieldParam())), List.of());
         var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
         var argVar = new LirVariable("flags", GdIntType.INT, bodyBuilder.func());
@@ -222,10 +222,35 @@ class MethodResolverParityTest {
         assertEquals(1, backendResolved.parameters().size());
         assertNull(backendResolved.engineMethodBindSpec());
         var extraData = assertInstanceOf(
-                BackendMethodCallResolver.BitfieldPassByRefExtraParamSpecData.class,
+                BackendMethodCallResolver.EngineHelperSlotExtraParamSpecData.class,
                 backendResolved.parameters().getFirst().extraParamSpecData()
         );
-        assertEquals("godot_Node_ProcessThreadMessages", extraData.cType());
+        assertEquals(
+                BackendMethodCallResolver.EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS,
+                backendResolved.parameters().getFirst().engineHelperSlotMode()
+        );
+        assertEquals("godot_Node_ProcessThreadMessages", extraData.slotCType());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should publish enum helper slot metadata as extra parameter data")
+    void backendMethodAdapterShouldPublishEnumHelperSlotMetadataAsExtraParameterData() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithEnumParam())), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+        var argVar = new LirVariable("mode", GdIntType.INT, bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "set_internal_mode", List.of(argVar));
+        assertEquals(1, backendResolved.parameters().size());
+        var extraData = assertInstanceOf(
+                BackendMethodCallResolver.EngineHelperSlotExtraParamSpecData.class,
+                backendResolved.parameters().getFirst().extraParamSpecData()
+        );
+
+        assertEquals(
+                BackendMethodCallResolver.EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS,
+                backendResolved.parameters().getFirst().engineHelperSlotMode()
+        );
+        assertEquals("godot_Node_InternalMode", extraData.slotCType());
     }
 
     @Test
@@ -487,6 +512,32 @@ class MethodResolverParityTest {
                 hashCompatibility,
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("Node"),
                 List.of()
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithEnumParam() {
+        var method = new ExtensionGdClass.ClassMethod(
+                "set_internal_mode",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("mode", "enum::Node.InternalMode", null, null))
         );
         return new ExtensionGdClass(
                 "Node",
