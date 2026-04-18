@@ -830,6 +830,29 @@
   - fixed prefix 由 helper pack 并销毁
   - extra `Variant` tail 由 caller 提供并保留 caller ownership
 
+### 当前进度
+
+- [x] `BackendMethodCallResolver` 已将 exact engine vararg route 切到 backend-owned helper 名称
+  - 有 hash 的实例 vararg 现解析到 `gdcc_engine_callv_<...>`
+  - 有 hash 的静态 vararg 现解析到 `gdcc_engine_callv_static_<...>`
+  - 无 hash route 继续保留 `godot_<Owner>_<method>` 旧 wrapper surface
+- [x] `CallMethodInsnGen` 已复用现有 fixed/default/vararg split 合同，无需回退到 Java 侧 fixed prefix pack
+  - caller 仍只负责 fixed 参数校验、default 补齐与 extra vararg `Variant` tail 传递
+  - static path 继续保持 warning 与“无 receiver 实参”合同
+- [x] `CBodyBuilder` 已把 `gdcc_engine_callv_<...>` / `gdcc_engine_callv_static_<...>` 纳入 helper 前缀合同
+  - object receiver / object fixed arg 继续沿用既有 raw Godot ptr 渲染
+  - object return 继续沿用既有 from-godot-object 回填语义
+- [x] `engine_method_binds.h.ftl` 已收口到 phase-7 helper cleanup 合同
+  - vararg helper 继续只 pack / destroy helper-owned fixed prefix
+  - local `ret` 现显式初始化为 `godot_new_Variant_nil()`，避免 error path cleanup 触碰未初始化 `Variant`
+  - typed unpack 继续严格放在 `GDEXTENSION_CALL_OK` 之后
+- [x] phase-7 focused/runtime regression 已补齐并通过
+  - `MethodResolverParityTest` 已锁定 exact vararg / static exact vararg 路由名切换到 `gdcc_engine_callv_*`
+  - `CallMethodInsnGenTest` 已锁定 call-site 文本切到 helper route，且 caller 仍只保留 extra tail `argv/argc`
+  - `CBodyBuilderPhaseCTest` 已锁定 `gdcc_engine_callv_*` 前缀继续复用对象参数与对象返回的 raw-ptr 合同
+  - `CCodegenEngineMethodBindHeaderTest` 已锁定 vararg helper 的 nil-initialized local `ret`、guarded unpack 与 helper-owned cleanup
+  - `CallMethodInsnGenEngineTest` 已继续验证真实 `Object.call(...)` 锚点改走 generated callv helper 后保持通过
+
 ### 验收
 
 - exact engine vararg route 已不再走 `gdextension-lite` variadic wrapper

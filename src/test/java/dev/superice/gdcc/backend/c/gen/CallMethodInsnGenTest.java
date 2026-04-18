@@ -346,6 +346,70 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should emit exact engine callv helper route and keep extra tail on caller side")
+    void callMethodExactEngineVarargShouldEmitHelperRouteAndKeepExtraTailOnCallerSide() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_vararg_exact");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("label", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("tail", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "spread",
+                "node",
+                List.of(
+                        new LirInstruction.VariableOperand("label"),
+                        new LirInstruction.VariableOperand("tail")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithVarargSpread(93L))), List.of(clazz));
+        assertTrue(body.contains("gdcc_engine_callv_node_spread_93($node, &$label, __gdcc_tmp_argv_"), body);
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+        assertFalse(body.contains("godot_Node_spread("), body);
+        assertFalse(body.contains("godot_new_Variant_with_StringName($label)"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit exact static engine callv helper route without receiver argument")
+    void callMethodExactStaticEngineVarargShouldEmitStaticHelperRouteWithoutReceiverArgument() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_static_vararg");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("prefix", GdIntType.INT);
+        func.createAndAddVariable("tail", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "broadcast",
+                "node",
+                List.of(
+                        new LirInstruction.VariableOperand("prefix"),
+                        new LirInstruction.VariableOperand("tail")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
+        var originalOut = System.out;
+        String body;
+        try {
+            System.setOut(capture);
+            body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithStaticVarargBroadcast(94L))), List.of(clazz));
+        } finally {
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        var output = outputBuffer.toString(StandardCharsets.UTF_8);
+        assertTrue(body.contains("gdcc_engine_callv_static_node_broadcast_94($prefix, __gdcc_tmp_argv_"), body);
+        assertFalse(body.contains("gdcc_engine_callv_static_node_broadcast_94($node"), body);
+        assertFalse(body.contains("godot_Node_broadcast("), body);
+        assertTrue(output.contains("resolved static method 'Node.broadcast'"), output);
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should pick nearest owner overload on inheritance chain")
     void callMethodShouldPickNearestOwnerOverload() {
         var baseClass = newClass("Base", "RefCounted");
@@ -1157,13 +1221,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithVarargSpread() {
+        return nodeClassWithVarargSpread(0L);
+    }
+
+    private ExtensionGdClass nodeClassWithVarargSpread(long hash) {
         var spread = new ExtensionGdClass.ClassMethod(
                 "spread",
                 false,
                 true,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("name", "StringName", null, null))
@@ -1176,6 +1244,32 @@ class CallMethodInsnGenTest {
                 "core",
                 List.of(),
                 List.of(spread),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithStaticVarargBroadcast(long hash) {
+        var broadcast = new ExtensionGdClass.ClassMethod(
+                "broadcast",
+                false,
+                true,
+                true,
+                false,
+                hash,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("prefix", "int", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(broadcast),
                 List.of(),
                 List.of(),
                 List.of()

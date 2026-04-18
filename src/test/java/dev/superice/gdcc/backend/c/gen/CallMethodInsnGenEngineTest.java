@@ -78,9 +78,11 @@ class CallMethodInsnGenEngineTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Object_call((godot_Object*)$node, &$dispatchMethod, __gdcc_tmp_argv_"),
-                "Engine vararg dispatch should be generated via argv/argc emission."
+                entrySource.contains("gdcc_engine_callv_object_call_"),
+                "Engine vararg dispatch should route through generated callv helper."
         );
+        assertTrue(entrySource.contains("__gdcc_tmp_argv_"), "Engine vararg dispatch should still emit caller-owned argv/argc.");
+        assertFalse(entrySource.contains("godot_Object_call((godot_Object*)$node, &$dispatchMethod, __gdcc_tmp_argv_"), entrySource);
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(

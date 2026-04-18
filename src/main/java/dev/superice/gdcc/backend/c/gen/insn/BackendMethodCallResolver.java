@@ -360,17 +360,17 @@ public final class BackendMethodCallResolver {
         };
     }
 
-    /// Phase 5 only switches exact non-vararg engine calls that already have bind lookup identity.
-    /// Vararg or hash-less routes stay on the legacy wrapper surface until later phases complete.
+    /// Exact engine helpers stay on the generated helper surface whenever bind lookup identity exists.
+    /// Hash-less routes still fall back to the public gdextension-lite wrapper names.
     private static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
                                                                    @NotNull String methodName,
                                                                    @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                                                    boolean isVararg,
                                                                    boolean isStatic) {
-        if (engineMethodBindSpec == null || isVararg) {
+        if (engineMethodBindSpec == null) {
             return "godot_" + ownerClassName + "_" + methodName;
         }
-        var name = new StringBuilder("gdcc_engine_call_");
+        var name = new StringBuilder(isVararg ? "gdcc_engine_callv_" : "gdcc_engine_call_");
         if (isStatic) {
             name.append("static_");
         }

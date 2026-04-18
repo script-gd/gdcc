@@ -212,6 +212,59 @@ class MethodResolverParityTest {
     }
 
     @Test
+    @DisplayName("backend method adapter should route exact engine vararg methods to callv helpers")
+    void backendMethodAdapterShouldRouteExactEngineVarargMethodsToCallvHelpers() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithVarargSpread(93L, List.of(931L)))), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+        var labelVar = new LirVariable("label", GdStringType.STRING, bodyBuilder.func());
+        var tailVar = new LirVariable("tail", GdVariantType.VARIANT, bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(
+                bodyBuilder,
+                receiverVar,
+                "spread",
+                List.of(labelVar, tailVar)
+        );
+        var bindSpec = assertInstanceOf(
+                BackendMethodCallResolver.EngineMethodBindSpec.class,
+                backendResolved.engineMethodBindSpec()
+        );
+
+        assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
+        assertTrue(backendResolved.isVararg());
+        assertEquals("gdcc_engine_callv_node_spread_93", backendResolved.cFunctionName());
+        assertEquals(93L, bindSpec.hash());
+        assertIterableEquals(List.of(931L), bindSpec.hashCompatibility());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should route exact static engine vararg methods to static callv helpers")
+    void backendMethodAdapterShouldRouteExactStaticEngineVarargMethodsToStaticCallvHelpers() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithStaticVarargBroadcast(94L, List.of(941L)))), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+        var prefixVar = new LirVariable("prefix", GdIntType.INT, bodyBuilder.func());
+        var tailVar = new LirVariable("tail", GdVariantType.VARIANT, bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(
+                bodyBuilder,
+                receiverVar,
+                "broadcast",
+                List.of(prefixVar, tailVar)
+        );
+        var bindSpec = assertInstanceOf(
+                BackendMethodCallResolver.EngineMethodBindSpec.class,
+                backendResolved.engineMethodBindSpec()
+        );
+
+        assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
+        assertTrue(backendResolved.isVararg());
+        assertTrue(backendResolved.isStatic());
+        assertEquals("gdcc_engine_callv_static_node_broadcast_94", backendResolved.cFunctionName());
+        assertEquals(94L, bindSpec.hash());
+        assertIterableEquals(List.of(941L), bindSpec.hashCompatibility());
+    }
+
+    @Test
     @DisplayName("backend method adapter should publish bitfield helper slot metadata as extra parameter data")
     void backendMethodAdapterShouldPublishBitfieldHelperSlotMetadataAsExtraParameterData() {
         var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithBitfieldParam())), List.of());
@@ -538,6 +591,58 @@ class MethodResolverParityTest {
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("mode", "enum::Node.InternalMode", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithVarargSpread(long hash, List<Long> hashCompatibility) {
+        var method = new ExtensionGdClass.ClassMethod(
+                "spread",
+                false,
+                true,
+                false,
+                false,
+                hash,
+                hashCompatibility,
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("label", "String", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithStaticVarargBroadcast(long hash, List<Long> hashCompatibility) {
+        var method = new ExtensionGdClass.ClassMethod(
+                "broadcast",
+                false,
+                true,
+                true,
+                false,
+                hash,
+                hashCompatibility,
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("prefix", "int", null, null))
         );
         return new ExtensionGdClass(
                 "Node",

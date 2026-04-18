@@ -148,10 +148,11 @@ class CCodegenEngineMethodBindHeaderTest {
                 entrySource,
                 "gdcc_engine_call_probe_touch_55(",
                 "gdcc_engine_call_static_probe_touch_55(",
-                "gdcc_engine_call_probe_count_72(",
-                "godot_Probe_touch("
+                "gdcc_engine_callv_probe_touch_55(",
+                "gdcc_engine_call_probe_count_72("
         );
         assertFalse(entrySource.contains("gdcc_engine_method_bind_probe_touch_55("), entrySource);
+        assertFalse(entrySource.contains("godot_Probe_touch("), entrySource);
     }
 
     @Test
@@ -404,6 +405,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "const godot_int fixed_argc = (godot_int)2;",
                 "GDExtensionConstVariantPtr final_args[2 + argc];",
                 "final_args[fixed_argc + i] = argv[i];",
+                "godot_Variant ret = godot_new_Variant_nil();",
                 "godot_object_method_bind_call(",
                 "self,",
                 "&ret,",
@@ -425,6 +427,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "godot_Variant_destroy(&fixed_arg_0);"
         );
         assertFalse(mixBody.contains("godot_Variant_destroy(argv["), mixBody);
+        assertFalse(mixBody.contains("godot_Variant ret;"), mixBody);
         assertFalse(mixBody.contains(", NULL,\n        &error"), mixBody);
 
         var broadcastSignature = resolveFunctionSignatureByPrefix(
@@ -445,6 +448,7 @@ class CCodegenEngineMethodBindHeaderTest {
         assertContainsAll(
                 broadcastBody,
                 "godot_Variant fixed_arg_0 = godot_new_Variant_with_int(arg0);",
+                "godot_Variant ret = godot_new_Variant_nil();",
                 "godot_object_method_bind_call(",
                 "NULL,",
                 "&ret,",

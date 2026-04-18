@@ -80,7 +80,7 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
     const GDExtensionConstVariantPtr *call_args = argc > 0 ? (const GDExtensionConstVariantPtr *)argv : NULL;
 </#if>
     GDExtensionCallError error = { 0 };
-    godot_Variant ret;
+    godot_Variant ret = godot_new_Variant_nil();
 <#if resolved.returnType.typeName != "void">
     godot_bool call_ok = false;
     ${helper.renderGdTypeInC(resolved.returnType)} result;

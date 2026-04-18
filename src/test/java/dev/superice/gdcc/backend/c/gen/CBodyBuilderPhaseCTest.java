@@ -1062,6 +1062,17 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("GDCC object arg should be converted via helper when calling gdcc_engine_callv_ function")
+        void testGdccObjectArgConvertedForEngineVarargHelperFunc() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+
+            builder.callVoid("gdcc_engine_callv_MyGdccClass_attach_77", List.of(value));
+
+            assertEquals("gdcc_engine_callv_MyGdccClass_attach_77(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+        }
+
+        @Test
         @DisplayName("Engine object arg should NOT be converted when calling godot_ function")
         void testEngineObjectArgNotConvertedForGodotFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
@@ -1081,6 +1092,17 @@ public class CBodyBuilderPhaseCTest {
             builder.callVoid("gdcc_engine_call_Node_do_thing_77", List.of(value));
 
             assertEquals("gdcc_engine_call_Node_do_thing_77($node);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("Engine object arg should NOT be converted when calling gdcc_engine_callv_ function")
+        void testEngineObjectArgNotConvertedForEngineVarargHelperFunc() {
+            var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var value = builder.valueOfVar(nodeVar);
+
+            builder.callVoid("gdcc_engine_callv_Node_do_thing_77", List.of(value));
+
+            assertEquals("gdcc_engine_callv_Node_do_thing_77($node);\n", builder.build());
         }
 
         @Test
@@ -1257,6 +1279,19 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("callAssign should wrap gdcc_engine_callv_ return with fromGodotObjectPtr for GDCC target")
+        void testCallAssignGdccTargetFromEngineVarargHelperFunc() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_77", new GdObjectType("MyGdccClass"), List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_callv_Node_spawn_77())"),
+                    "Should wrap vararg engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+        }
+
+        @Test
         @DisplayName("callAssign should NOT wrap for engine target from godot_ function")
         void testCallAssignEngineTargetFromGodotFuncNoWrap() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
@@ -1284,6 +1319,21 @@ public class CBodyBuilderPhaseCTest {
                     "Engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
             assertTrue(result.contains("$node = gdcc_engine_call_Node_spawn_77()"),
                     "Should assign helper return directly. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign should NOT wrap for engine target from gdcc_engine_callv_ function")
+        void testCallAssignEngineTargetFromEngineVarargHelperFuncNoWrap() {
+            var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_77", new GdObjectType("Node"), List.of());
+
+            var result = builder.build();
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Vararg engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
+            assertTrue(result.contains("$node = gdcc_engine_callv_Node_spawn_77()"),
+                    "Should assign vararg helper return directly. Actual:\n" + result);
         }
 
         @Test
