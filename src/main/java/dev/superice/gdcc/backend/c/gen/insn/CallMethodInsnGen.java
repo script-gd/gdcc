@@ -226,12 +226,14 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
             }
             bodyBuilder.callVoid(resolved.cFunctionName(), fixedArgs, varargs);
             destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
+            bodyBuilder.recordUsedEngineMethodCall(resolved);
             return;
         }
 
         var target = resolveResultTarget(bodyBuilder, instruction, resolved);
         bodyBuilder.callAssign(target, resolved.cFunctionName(), returnType, fixedArgs, varargs);
         destroyTemporaryArgs(bodyBuilder, callArgs.temporaryArgs());
+        bodyBuilder.recordUsedEngineMethodCall(resolved);
     }
 
     private record CompletedCallArgs(@NotNull List<CBodyBuilder.ValueRef> fixedArgs,

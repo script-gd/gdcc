@@ -4,6 +4,9 @@ import dev.superice.gdcc.backend.Codegen;
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.GeneratedFile;
 import dev.superice.gdcc.backend.TemplateLoader;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
+import dev.superice.gdcc.backend.c.gen.binding.GenerateRenderFacade;
 import dev.superice.gdcc.backend.c.gen.insn.*;
 import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.enums.LifecycleProvenance;
@@ -427,9 +430,15 @@ public class CCodegen implements Codegen {
         return true;
     }
 
-    @SuppressWarnings("unchecked")
     public @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                             @NotNull LirFunctionDef func) {
+        return generateFuncBody(clazz, func, EngineMethodUsageBuffer.noOp());
+    }
+
+    @SuppressWarnings("unchecked")
+    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                     @NotNull LirFunctionDef func,
+                                     @NotNull EngineMethodUsageBuffer usageBuffer) {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
@@ -439,7 +448,7 @@ public class CCodegen implements Codegen {
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
-        var bodyBuilder = new CBodyBuilder(helper, clazz, func);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer);
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
@@ -455,6 +464,15 @@ public class CCodegen implements Codegen {
             }
         }
         return bodyBuilder.build();
+    }
+
+    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                     @NotNull LirFunctionDef func,
+                                     @NotNull EngineMethodUsageSession usageSession) {
+        var usageBuffer = usageSession.newFunctionBuffer();
+        var body = generateFuncBody(clazz, func, usageBuffer);
+        usageSession.commit(usageBuffer);
+        return body;
     }
 
     /// Renders the constructor-time property initializer apply body.
@@ -499,10 +517,15 @@ public class CCodegen implements Codegen {
             }
         }
         try {
+            var usageSession = new EngineMethodUsageSession();
+            var renderFacade = new GenerateRenderFacade(
+                    (classDef, func) -> generateFuncBody(classDef, func, usageSession),
+                    this::generatePropertyInitApplyBody
+            );
             var tplCtx = Map.of(
                     "module", module,
                     "helper", helper,
-                    "gen", this
+                    "gen", renderFacade
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", tplCtx);
             var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", tplCtx);

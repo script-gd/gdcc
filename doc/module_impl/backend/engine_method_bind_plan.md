@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 1 已完成，阶段 2+ 未开始）
+- 状态：In Progress（阶段 1-2 已完成，阶段 3+ 未开始）
 - 最近同步：2026-04-18
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
 - 本文包含两部分目标：
@@ -245,34 +245,34 @@
 1. 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
 - 在 backend 内部显式引入两层作用域：
   - module-scope `EngineMethodUsageSession`
-  - function-scope `EngineMethodUsageSink`
+  - function-scope `EngineMethodUsageBuffer`
 - 二者都必须是 backend-private 实现细节：
   - 不新增 public 框架式抽象
-  - 可以用 `CCodegen` 内部嵌套类型，或同包 package-private 小类型
+  - 推荐落在 `src/main/java/dev/superice/gdcc/backend/c/gen/binding/` 下的独立小类型
 - `EngineMethodUsageSession` 职责：
   - 持有 module 级 `LinkedHashMap<EngineMethodBindKey, ResolvedMethodCall>`
   - 提供稳定顺序去重后的 snapshot
-- `EngineMethodUsageSink` 职责：
+- `EngineMethodUsageBuffer` 职责：
   - 只持有单次 `generateFuncBody(...)` render 的 local buffer
   - 不直接暴露给模板层跨函数复用
   - 只允许在成功 render 后一次性 commit 到 session
 
 1. 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/CCodegen.java`
 - 新增 internal overload，例如：
-  - `generateFuncBody(clazz, func, usageSink)`
+  - `generateFuncBody(clazz, func, usageBuffer)`
 - 现有 public `generateFuncBody(clazz, func)` 保持兼容，但固定走：
-  - no-op sink
-  - 或 fresh local sink 且不外泄、不 commit
+  - no-op buffer
+  - 或 fresh local buffer 且不外泄、不 commit
 - 这样 focused tests 继续直接调用 public API 时：
   - 不会改写任何 module 级 used-engine-method 状态
   - 也不需要手动 reset collector
 
 1. 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
 - 为 instruction gen 提供显式 sink 入口，建议二选一：
-  - constructor 接收 `EngineMethodUsageSink`
+  - constructor 接收 `EngineMethodUsageBuffer`
   - 或新增窄接口 `recordUsedEngineMethodCall(...)`
 - 关键约束：
-  - `CBodyBuilder` 只持有“本次函数 render 的 sink”
+  - `CBodyBuilder` 只持有“本次函数 render 的 buffer”
   - 不回头引用 `helper` 或 `codegen` 上的共享 collector 状态
 
 1. key 建议最小化为：
@@ -294,10 +294,33 @@
   - 推荐记录点放在 exact-call 分支末尾：
     - `callVoid(...)` / `callAssign(...)` 已成功返回
     - 临时参数销毁文本已发射完成
-    - 随后才写入本函数的 local sink
-- `CallMethodInsnGen` 只负责向当前函数 sink 追加 candidate：
+    - 随后才写入本函数的 local buffer
+- `CallMethodInsnGen` 只负责向当前函数 buffer 追加 candidate：
   - 不直接操作 module session
   - 不承担 commit 事务边界
+
+### 进度同步（2026-04-18）
+
+- [x] `CCodegen` 已引入 module-scope `EngineMethodUsageSession` 与 function-scope `EngineMethodUsageBuffer`
+  - session 以 `LinkedHashMap<EngineMethodBindKey, ResolvedMethodCall>` 保持 first-hit 顺序去重
+  - key 已按方案收窄为 `ownerClassName + methodName + hash + isStatic + isVararg`
+  - 相关类型已迁移到 `src/main/java/dev/superice/gdcc/backend/c/gen/binding/` 下作为独立类
+- [x] `CCodegen` 已补内部 render 路径：
+  - public `generateFuncBody(clazz, func)` 固定走 no-op buffer
+  - session-bound render 会为单次函数 render 创建 fresh buffer，并仅在成功返回后 commit
+  - `generate()` 已改为通过 session-bound render facade 进入模板，不再依赖 public `generateFuncBody(...)` 的隐式副作用
+- [x] `CBodyBuilder` 现只持有当前函数的 buffer，并通过窄入口 `recordUsedEngineMethodCall(...)` 暴露给 instruction gen
+  - builder 不再回头读取 `helper` / `codegen` 上的共享 collector 状态
+- [x] `CallMethodInsnGen.emitKnownSignatureCall(...)` 已切到 success-only 记账
+  - `callVoid(...)` / `callAssign(...)` 成功返回且临时参数销毁文本已发射后才向当前函数 buffer 追加 exact engine candidate
+  - static warning 仍保持提前输出，不影响后续成功记账
+- [x] 已新增 `CCodegenEngineMethodUsageSessionTest`
+  - 锁定 module-scope 去重与 first-hit 顺序
+  - 锁定 builtin / dynamic / GDCC 不记账
+  - 锁定 failed render 不污染后续 session render
+  - 锁定 public `generateFuncBody(...)` 的 deterministic / side-effect-free 合同
+- [x] 已继续运行既有 `CCodegenTest`、`CallMethodInsnGenTest`、`CallMethodInsnGenEngineTest`
+  - 确认模板渲染、现有 C body 发射和真引擎回归未因阶段 2 collector 方案发生回退
 
 ### 验收
 
@@ -347,9 +370,9 @@
 - `generate()` 不允许直接依赖 public `generateFuncBody(...)` 收集 usage
 - `generate()` 必须通过“绑定 session 的 body renderer”驱动 `entry.c` 渲染：
   - body renderer 每次处理一个函数时：
-    - 创建 fresh local sink
-    - 调 internal `generateFuncBody(clazz, func, sink)`
-    - 只有当该调用成功返回时，才把 sink commit 到 module session
+    - 创建 fresh local buffer
+    - 调 internal `generateFuncBody(clazz, func, buffer)`
+    - 只有当该调用成功返回时，才把 buffer commit 到 module session
 - `entry.c` 完成渲染后，`generate()` 再从 session snapshot 渲染：
   - `engine_method_binds.h`
   - `entry.h`
