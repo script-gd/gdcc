@@ -93,6 +93,17 @@ public final class BackendMethodCallResolver {
         }
     }
 
+    /// Backend-only bind lookup identity for exact engine methods.
+    /// Shared semantic resolution stays normalized and does not carry these direct-bind facts.
+    public record EngineMethodBindSpec(long hash, @NotNull List<Long> hashCompatibility) {
+        public EngineMethodBindSpec {
+            if (hash == 0L) {
+                throw new IllegalArgumentException("engine method bind hash must not be zero");
+            }
+            hashCompatibility = List.copyOf(hashCompatibility);
+        }
+    }
+
     public record ResolvedMethodCall(@NotNull DispatchMode mode,
                                      @NotNull String methodName,
                                      @NotNull String ownerClassName,
@@ -100,6 +111,7 @@ public final class BackendMethodCallResolver {
                                      @NotNull String cFunctionName,
                                      @NotNull GdType returnType,
                                      @NotNull List<MethodParamSpec> parameters,
+                                     @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                      boolean isVararg,
                                      boolean isStatic) {
         public ResolvedMethodCall {
@@ -164,6 +176,7 @@ public final class BackendMethodCallResolver {
                 "",
                 GdVariantType.VARIANT,
                 List.of(),
+                null,
                 true,
                 false
         );
@@ -188,9 +201,28 @@ public final class BackendMethodCallResolver {
                 renderMethodCFunctionName(mode, ownerClassName, resolved.methodName()),
                 resolved.returnType(),
                 parameters,
+                resolveEngineMethodBindSpec(resolved, mode),
                 resolved.isVararg(),
                 resolved.isStatic()
         );
+    }
+
+    /// Only exact engine class metadata contributes method-bind identity.
+    /// Other routes keep using the existing wrapper-facing shape in phase 1.
+    private static @Nullable EngineMethodBindSpec resolveEngineMethodBindSpec(@NotNull ScopeResolvedMethod resolved,
+                                                                              @NotNull DispatchMode mode) {
+        if (mode != DispatchMode.ENGINE) {
+            return null;
+        }
+        return switch (resolved.function()) {
+            case dev.superice.gdcc.gdextension.ExtensionGdClass.ClassMethod method when method.hash() != 0L ->
+                    new EngineMethodBindSpec(method.hash(), normalizeHashCompatibility(method.hashCompatibility()));
+            default -> null;
+        };
+    }
+
+    private static @NotNull List<Long> normalizeHashCompatibility(@Nullable List<Long> hashCompatibility) {
+        return hashCompatibility == null ? List.of() : hashCompatibility;
     }
 
     private static boolean isExtensionMethodMetadata(@NotNull ScopeResolvedMethod resolved) {

@@ -2,7 +2,8 @@
 
 ## 文档状态
 
-- 状态：Planned
+- 状态：In Progress（阶段 1 已完成，阶段 2+ 未开始）
+- 最近同步：2026-04-18
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
 - 本文包含两部分目标：
   - 第一阶段基础设施：记录已使用的 exact engine method，并生成专用 method bind 头文件
@@ -171,6 +172,18 @@
 1. 保持 `ResolvedMethodCall` 的参数 / 返回类型继续使用 shared-normalized 语义
 - 不为 phase 1 再加第二套 raw type 解析
 - `bitfield`、`typedarray`、`typeddictionary` 继续沿用当前 normalized 结果
+
+### 进度同步（2026-04-18）
+
+- [x] 已新增 backend-only `EngineMethodBindSpec(long hash, List<Long> hashCompatibility)`，并挂到 `ResolvedMethodCall.engineMethodBindSpec`
+- [x] 当前仅在 `DispatchMode == ENGINE` 且 `FunctionDef` 来自 engine extension class method metadata、主 `hash != 0` 时发布 bind spec
+- [x] 缺失的 `hashCompatibility` 已在 backend adapter 侧规范化为空列表，避免从 extension metadata 进入后续阶段时发生数据丢失
+- [x] `ResolvedMethodCall` 的参数 / 返回类型仍保持 shared-normalized 语义；现有 bitfield extra ABI metadata 未回退成第二套 raw 解析
+- [x] 已补 `MethodResolverParityTest` 覆盖：
+  - engine bind spec 正向保留
+  - missing `hashCompatibility` 归一化
+  - builtin / dynamic / GDCC / missing-hash 负向不发布
+  - 并继续运行既有 `CallMethodInsnGen*` 回归以确认 C body 文本不变
 
 ### 验收
 

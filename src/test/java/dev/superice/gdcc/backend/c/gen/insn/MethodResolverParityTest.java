@@ -28,11 +28,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,6 +64,7 @@ class MethodResolverParityTest {
         assertEquals(sharedResolved.method().ownerClass().getName(), backendResolved.ownerClassName());
         assertEquals(sharedResolved.method().methodName(), backendResolved.methodName());
         assertEquals(BackendMethodCallResolver.DispatchMode.GDCC, backendResolved.mode());
+        assertNull(backendResolved.engineMethodBindSpec());
     }
 
     @Test
@@ -81,6 +85,7 @@ class MethodResolverParityTest {
 
         var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "missing_method", List.of());
         assertEquals(BackendMethodCallResolver.DispatchMode.OBJECT_DYNAMIC, backendResolved.mode());
+        assertNull(backendResolved.engineMethodBindSpec());
     }
 
     @Test
@@ -100,6 +105,7 @@ class MethodResolverParityTest {
 
         var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "callv", List.of());
         assertEquals(BackendMethodCallResolver.DispatchMode.VARIANT_DYNAMIC, backendResolved.mode());
+        assertNull(backendResolved.engineMethodBindSpec());
     }
 
     @Test
@@ -119,6 +125,74 @@ class MethodResolverParityTest {
         var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "size", List.of());
         assertEquals(sharedResolved.method().ownerClass().getName(), backendResolved.ownerClassName());
         assertEquals(BackendMethodCallResolver.DispatchMode.BUILTIN, backendResolved.mode());
+        assertNull(backendResolved.engineMethodBindSpec());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should preserve engine bind identity without changing normalized signature")
+    void backendMethodAdapterShouldPreserveEngineBindIdentityWithoutChangingNormalizedSignature() {
+        var hashCompatibility = new ArrayList<>(List.of(17L, 19L));
+        var bodyBuilder = newBodyBuilder(
+                apiWith(List.of(), List.of(nodeClassWithBitfieldParam(0x1234L, hashCompatibility))),
+                List.of()
+        );
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+        var argVar = new LirVariable("flags", GdIntType.INT, bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(
+                bodyBuilder,
+                receiverVar,
+                "set_process_thread_messages",
+                List.of(argVar)
+        );
+        var bindSpec = assertInstanceOf(
+                BackendMethodCallResolver.EngineMethodBindSpec.class,
+                backendResolved.engineMethodBindSpec()
+        );
+
+        assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
+        assertEquals(GdIntType.INT, backendResolved.parameters().getFirst().type());
+        assertEquals(0x1234L, bindSpec.hash());
+        assertIterableEquals(List.of(17L, 19L), bindSpec.hashCompatibility());
+
+        hashCompatibility.add(23L);
+        assertIterableEquals(List.of(17L, 19L), bindSpec.hashCompatibility());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should normalize missing engine hash compatibility to empty list")
+    void backendMethodAdapterShouldNormalizeMissingEngineHashCompatibilityToEmptyList() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithQueueFree(77L, null))), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "queue_free", List.of());
+        var bindSpec = assertInstanceOf(
+                BackendMethodCallResolver.EngineMethodBindSpec.class,
+                backendResolved.engineMethodBindSpec()
+        );
+
+        assertEquals(77L, bindSpec.hash());
+        assertTrue(bindSpec.hashCompatibility().isEmpty());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should not publish engine bind identity for builtin metadata")
+    void backendMethodAdapterShouldNotPublishEngineBindIdentityForBuiltinMetadata() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(arrayBuiltinWithSize(91L, List.of(92L))), List.of()), List.of());
+        var receiverVar = new LirVariable("array", new GdArrayType(GdStringType.STRING), bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "size", List.of());
+        assertNull(backendResolved.engineMethodBindSpec());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should not publish engine bind identity when primary hash is missing")
+    void backendMethodAdapterShouldNotPublishEngineBindIdentityWhenPrimaryHashIsMissing() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithQueueFree(0L, List.of(99L)))), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "queue_free", List.of());
+        assertNull(backendResolved.engineMethodBindSpec());
     }
 
     @Test
@@ -130,6 +204,7 @@ class MethodResolverParityTest {
 
         var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "set_process_thread_messages", List.of(argVar));
         assertEquals(1, backendResolved.parameters().size());
+        assertNull(backendResolved.engineMethodBindSpec());
         var extraData = assertInstanceOf(
                 BackendMethodCallResolver.BitfieldPassByRefExtraParamSpecData.class,
                 backendResolved.parameters().getFirst().extraParamSpecData()
@@ -192,6 +267,7 @@ class MethodResolverParityTest {
         assertEquals("RuntimeOuter$Shared", sharedResolved.method().ownerClass().getName());
         assertEquals(sharedResolved.method().ownerClass().getName(), backendResolved.ownerClassName());
         assertEquals(BackendMethodCallResolver.DispatchMode.GDCC, backendResolved.mode());
+        assertNull(backendResolved.engineMethodBindSpec());
     }
 
     @Test
@@ -270,6 +346,10 @@ class MethodResolverParityTest {
     }
 
     private static ExtensionBuiltinClass arrayBuiltinWithSize() {
+        return arrayBuiltinWithSize(0L, List.of());
+    }
+
+    private static ExtensionBuiltinClass arrayBuiltinWithSize(long hash, List<Long> hashCompatibility) {
         var size = new ExtensionBuiltinClass.ClassMethod(
                 "size",
                 "int",
@@ -277,9 +357,9 @@ class MethodResolverParityTest {
                 true,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
-                List.of(),
+                hashCompatibility,
                 new ExtensionBuiltinClass.ClassMethod.ReturnValue("int")
         );
         return new ExtensionBuiltinClass(
@@ -295,14 +375,18 @@ class MethodResolverParityTest {
     }
 
     private static ExtensionGdClass nodeClassWithQueueFree() {
+        return nodeClassWithQueueFree(0L, List.of());
+    }
+
+    private static ExtensionGdClass nodeClassWithQueueFree(long hash, List<Long> hashCompatibility) {
         var queueFree = new ExtensionGdClass.ClassMethod(
                 "queue_free",
                 false,
                 false,
                 false,
                 false,
-                0L,
-                List.of(),
+                hash,
+                hashCompatibility,
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of()
         );
@@ -347,14 +431,18 @@ class MethodResolverParityTest {
     }
 
     private static ExtensionGdClass nodeClassWithBitfieldParam() {
+        return nodeClassWithBitfieldParam(0L, List.of());
+    }
+
+    private static ExtensionGdClass nodeClassWithBitfieldParam(long hash, List<Long> hashCompatibility) {
         var method = new ExtensionGdClass.ClassMethod(
                 "set_process_thread_messages",
                 false,
                 false,
                 false,
                 false,
-                0L,
-                List.of(),
+                hash,
+                hashCompatibility,
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("flags", "bitfield::Node.ProcessThreadMessages", null, null))
         );
