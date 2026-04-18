@@ -527,9 +527,40 @@
 - 若模板里需要统一渲染“某个 helper 形参在 ptrcall 中应该提交什么槽位表达式”，可以在 `CGenHelper` 新增一个窄 helper，例如：
   - `renderPtrcallSlotExpr(...)`
 - 不要把 object / primitive / wrapper 三套规则散落到多个 FTL 片段
+- binding 共用的数据类不要继续内嵌在 `CGenHelper` 中
+  - 统一放在 `src/main/java/dev/superice/gdcc/backend/c/gen/binding/`
+  - `CGenHelper` 只保留渲染 / 推导逻辑，不再同时承担 binding surface 数据结构宿主
 - `warnStaticMethodCall(...)` 保持在 Java 侧：
   - generated helper 只承接 ABI 责任
   - 不承接“实例语法命中 static method”的诊断责任
+
+### 进度同步（2026-04-18）
+
+- [x] `engine_method_binds.h.ftl` 已从 bind accessor 扩展为 accessor + internal helper 双 surface
+  - non-vararg route 生成 `gdcc_engine_call_<...>` / `gdcc_engine_call_static_<...>`
+  - vararg route 生成 `gdcc_engine_callv_<...>` / `gdcc_engine_callv_static_<...>`
+  - helper 继续保持 backend-owned 命名空间，不与 `gdextension-lite` public wrapper 重名
+- [x] `CGenHelper` 已集中收口 helper naming / 参数 surface / slot 表达式
+  - helper 参数继续复用当前 callable surface：primitive/object 保持 value-shaped，value wrapper 保持 storage-pointer shaped
+  - ptrcall slot-address 规则由共享 helper 统一发射，避免 object / primitive / wrapper 规则散落到模板局部
+  - 为后续阶段 5 保留了 bitfield pointer-shaped helper surface 的显式入口，但尚未切换 call site
+- [x] runtime failure guard 已进入 generated helper 模板
+  - bind lookup failure 统一打印 `GDCC_PRINT_RUNTIME_ERROR(...)`
+  - non-vararg helper 对 non-void 返回稳定回退到 backend 默认值表达式
+  - vararg helper 统一使用本地 `godot_Variant ret` + cleanup label，typed unpack 只在 `GDEXTENSION_CALL_OK` 后发生
+  - helper 只销毁 helper-owned fixed prefix / local return temp，不触碰 caller `argv`
+- [x] focused test / targeted regression 已补齐并通过
+  - `CCodegenEngineMethodBindHeaderTest` 新增 phase 4 coverage：
+    - non-vararg helper 的 instance/static 签名分离
+    - object / wrapper / primitive 在 ptrcall args 中的 slot-address 形状
+    - vararg helper 的 fixed-prefix pack、`_error.error` 先于 typed unpack、以及 cleanup 顺序
+    - vararg helper 不把 `NULL` 传给 `r_ret`，且不销毁 caller `argv`
+  - 本轮定向验证已运行：
+    - `CCodegenEngineMethodBindHeaderTest`
+    - `CCodegenEngineMethodUsageSessionTest`
+    - `CCodegenTest`
+    - `CallMethodInsnGenTest`
+    - `CallMethodInsnGenEngineTest`
 
 ### 验收
 

@@ -1,6 +1,9 @@
 package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.backend.c.gen.binding.BindingData;
+import dev.superice.gdcc.backend.c.gen.binding.BoundMetadata;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
 import dev.superice.gdcc.backend.c.gen.insn.OperatorResolver;
 import dev.superice.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import dev.superice.gdcc.exception.InvalidInsnException;
@@ -45,14 +48,6 @@ public final class CGenHelper {
         this.collectBindingData(classDefs);
     }
 
-    public record BindingData(
-            @NotNull List<GdType> paramTypes,
-            @NotNull GdType returnType,
-            @NotNull List<GdType> defaultVariables,
-            boolean staticMethod
-    ) {
-    }
-
     public record OperatorEvaluatorHelperSpec(
             @NotNull String functionName,
             boolean unary,
@@ -82,15 +77,6 @@ public final class CGenHelper {
                 throw new IllegalArgumentException("Binary evaluator helper must have rightVariantTypeEnumLiteral");
             }
         }
-    }
-
-    public record BoundMetadata(
-            @NotNull String typeEnumLiteral,
-            @NotNull String hintEnumLiteral,
-            @NotNull String hintStringExpr,
-            @NotNull String classNameExpr,
-            @NotNull String usageExpr
-    ) {
     }
 
     private record TypedContainerRuntimeLeaf(
@@ -413,6 +399,82 @@ public final class CGenHelper {
         return List.copyOf(hashes);
     }
 
+    /// Direct exact-engine helpers must stay in a backend-owned namespace so later route switches
+    /// never collide with gdextension-lite public wrappers.
+    public @NotNull String renderEngineMethodCallHelperName(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        var bindSpec = Objects.requireNonNull(
+                resolved.engineMethodBindSpec(),
+                "Exact engine method bind metadata is required to render helper names"
+        );
+        var name = new StringBuilder(resolved.isVararg() ? "gdcc_engine_callv_" : "gdcc_engine_call_");
+        if (resolved.isStatic()) {
+            name.append("static_");
+        }
+        name.append(sanitizeCIdentifierFragment(resolved.ownerClassName()))
+                .append("_")
+                .append(sanitizeCIdentifierFragment(resolved.methodName()))
+                .append("_")
+                .append(bindSpec.hash());
+        return name.toString();
+    }
+
+    /// Helper parameters intentionally mirror the current callable surface:
+    /// - primitive/object slots stay value-shaped
+    /// - value-semantic wrappers stay storage-pointer shaped
+    /// - phase-5 bitfield compatibility keeps the temporary pointer surface explicit
+    public @NotNull List<EngineMethodHelperParam> collectEngineMethodHelperParameters(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        var params = new ArrayList<EngineMethodHelperParam>(resolved.parameters().size());
+        for (var i = 0; i < resolved.parameters().size(); i++) {
+            var parameter = resolved.parameters().get(i);
+            var bitfieldPassByRef = parameter.requiresBitfieldPassByRef();
+            var cType = bitfieldPassByRef
+                    ? "const " + requireBitfieldPassByRefCType(parameter) + " *"
+                    : renderGdTypeRefInC(parameter.type());
+            var pointerSurface = bitfieldPassByRef
+                    || (!(parameter.type() instanceof GdPrimitiveType) && !(parameter.type() instanceof GdObjectType));
+            params.add(new EngineMethodHelperParam(
+                    "arg" + i,
+                    parameter.type(),
+                    cType,
+                    pointerSurface,
+                    bitfieldPassByRef
+            ));
+        }
+        return List.copyOf(params);
+    }
+
+    /// Ptrcall consumes addresses of argument storage slots.
+    /// Value-shaped params therefore contribute `&arg`, while wrapper/compat pointer surfaces can
+    /// pass the helper parameter expression directly.
+    public @NotNull String renderEngineMethodPtrcallSlotExpr(@NotNull EngineMethodHelperParam param) {
+        return param.pointerSurface() ? param.name() : "&" + param.name();
+    }
+
+    /// Helper-local pack sites need the typed value, not always the raw parameter token.
+    /// Wrapper pointer surfaces already match pack helpers, while phase-5 bitfield compatibility
+    /// still needs one dereference to get back to the normalized int value.
+    public @NotNull String renderEngineMethodHelperValueExpr(@NotNull EngineMethodHelperParam param) {
+        return param.bitfieldPassByRef() ? "*" + param.name() : param.name();
+    }
+
+    public @NotNull String renderEngineMethodBindLookupErrorDescription(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return "engine method bind lookup failed: " +
+                escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
+    }
+
+    public @NotNull String renderEngineMethodCallErrorDescription(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return "engine method call failed: " +
+                escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
+    }
+
     public @NotNull String renderVarRef(@NotNull LirFunctionDef func, @NotNull String varName) {
         var varDef = func.getVariableById(varName);
         if (varDef == null) {
@@ -426,7 +488,22 @@ public final class CGenHelper {
     }
 
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
-        return renderFuncBindName(bindingData.returnType, bindingData.paramTypes, bindingData.defaultVariables, bindingData.staticMethod);
+        return renderFuncBindName(
+                bindingData.returnType(),
+                bindingData.paramTypes(),
+                bindingData.defaultVariables(),
+                bindingData.staticMethod()
+        );
+    }
+
+    private @NotNull String requireBitfieldPassByRefCType(
+            @NotNull BackendMethodCallResolver.MethodParamSpec parameter
+    ) {
+        var extraData = parameter.bitfieldPassByRefExtraParamSpecData();
+        if (extraData == null) {
+            throw new IllegalArgumentException("Missing bitfield ABI metadata for parameter '" + parameter.name() + "'");
+        }
+        return extraData.cType();
     }
 
     private @NotNull String sanitizeCIdentifierFragment(@NotNull String raw) {
