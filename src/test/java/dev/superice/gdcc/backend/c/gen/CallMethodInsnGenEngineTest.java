@@ -22,6 +22,7 @@ import dev.superice.gdcc.lir.insn.PackVariantInsn;
 import dev.superice.gdcc.lir.insn.ReturnInsn;
 import dev.superice.gdcc.lir.insn.UnpackVariantInsn;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdBoolType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
@@ -254,14 +255,12 @@ class CallMethodInsnGenEngineTest {
         assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
+        assertTrue(entrySource.contains("gdcc_engine_call_node_get_child_count_"), "Engine dispatch should use the phase-5 helper route.");
         assertTrue(
-                entrySource.contains("godot_Node_get_child_count((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDGdccEngineOwnerBridgeNode_object_ptr)"),
-                "Engine dispatch on GDCC receiver should cast after helper conversion."
+                entrySource.contains("gdcc_object_to_godot_object_ptr($self, GDGdccEngineOwnerBridgeNode_object_ptr)"),
+                "Engine dispatch on GDCC receiver should still cast after helper conversion."
         );
-        assertFalse(
-                entrySource.contains("godot_Node_get_child_count((godot_Node*)$self"),
-                "Engine dispatch must not cast GDCC wrapper pointer directly."
-        );
+        assertFalse(entrySource.contains("godot_Node_get_child_count("), "Phase-5 route should stop calling the legacy wrapper.");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -284,7 +283,7 @@ class CallMethodInsnGenEngineTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should run builtin/engine/object_dynamic/variant_dynamic paths in real engine")
+    @DisplayName("CALL_METHOD should run builtin/exact-engine/object-dynamic/variant-dynamic routes in real engine")
     void callMethodPathsShouldRunInRealGodot() throws IOException, InterruptedException {
         if (!hasZig()) {
             Assumptions.abort("Zig not found; skipping integration test");
@@ -316,7 +315,12 @@ class CallMethodInsnGenEngineTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(entrySource.contains("godot_String_substr"), "Builtin dispatch should be generated.");
-        assertTrue(entrySource.contains("godot_Node_get_child_count"), "Engine dispatch should be generated.");
+        assertTrue(entrySource.contains("gdcc_engine_call_node_get_child_count_"), "Exact engine getter dispatch should use helper route.");
+        assertTrue(entrySource.contains("gdcc_engine_call_node_add_child_"), "Exact engine object-parameter dispatch should use helper route.");
+        assertTrue(
+                entrySource.contains("gdcc_engine_call_arraymesh_add_surface_from_arrays_"),
+                "Bitfield-compatible exact engine helper route should be generated."
+        );
         assertTrue(entrySource.contains("godot_Object_call("), "OBJECT_DYNAMIC dispatch should be generated.");
         assertTrue(entrySource.contains("godot_Variant_call("), "VARIANT_DYNAMIC dispatch should be generated.");
         assertTrue(entrySource.contains("\"call_method_engine.gd(assemble)\""), "VARIANT_DYNAMIC fallback source location should be generated.");
@@ -339,6 +343,14 @@ class CallMethodInsnGenEngineTest {
         assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("builtin call_method check passed."), "Builtin path should pass.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("engine call_method check passed."), "Engine path should pass.\nOutput:\n" + combinedOutput);
+        assertTrue(
+                combinedOutput.contains("engine exact object-parameter call_method check passed."),
+                "Exact object-parameter helper path should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("engine bitfield helper call_method check passed."),
+                "Bitfield-compatible helper path should pass.\nOutput:\n" + combinedOutput
+        );
         assertTrue(combinedOutput.contains("variant dynamic call_method check passed."), "VARIANT_DYNAMIC path should pass.\nOutput:\n" + combinedOutput);
         assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
     }
@@ -354,6 +366,8 @@ class CallMethodInsnGenEngineTest {
         var selfType = new GdObjectType(clazz.getName());
         clazz.addFunction(newBuiltinSubstrFunction(selfType));
         clazz.addFunction(newEngineGetChildCountFunction(selfType));
+        clazz.addFunction(newEngineAddChildExactFunction(selfType));
+        clazz.addFunction(newEngineAddSurfaceFromArraysFunction(selfType));
         clazz.addFunction(newObjectDynamicGetInstanceIdFunction(selfType));
         clazz.addFunction(newVariantDynamicToIntFunction(selfType));
         return clazz;
@@ -448,6 +462,51 @@ class CallMethodInsnGenEngineTest {
                 "result",
                 "get_child_count",
                 "node",
+                List.of()
+        ));
+        entry(func).appendInstruction(new ReturnInsn("result"));
+        return func;
+    }
+
+    private static LirFunctionDef newEngineAddChildExactFunction(GdObjectType selfType) {
+        var func = newMethod("call_engine_add_child_exact", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("holder", new GdObjectType("Node"), null, func));
+        func.addParameter(new LirParameterDef("child", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "add_child",
+                "holder",
+                List.of(varRef("child"))
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "result",
+                "get_child_count",
+                "holder",
+                List.of()
+        ));
+        entry(func).appendInstruction(new ReturnInsn("result"));
+        return func;
+    }
+
+    private static LirFunctionDef newEngineAddSurfaceFromArraysFunction(GdObjectType selfType) {
+        var func = newMethod("call_array_mesh_add_surface", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("mesh", new GdObjectType("ArrayMesh"), null, func));
+        func.addParameter(new LirParameterDef("primitive", GdIntType.INT, null, func));
+        func.addParameter(new LirParameterDef("arrays", new GdArrayType(GdVariantType.VARIANT), null, func));
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "add_surface_from_arrays",
+                "mesh",
+                List.of(varRef("primitive"), varRef("arrays"))
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "result",
+                "get_surface_count",
+                "mesh",
                 List.of()
         ));
         entry(func).appendInstruction(new ReturnInsn("result"));
@@ -620,6 +679,28 @@ class CallMethodInsnGenEngineTest {
                         print("engine call_method check passed.")
                     else:
                         push_error("engine call_method check failed.")
+                
+                    var holder: Node = Node.new()
+                    var child: Node = Node.new()
+                    var exact_count = int(target.call("call_engine_add_child_exact", holder, child))
+                    if exact_count == 1:
+                        print("engine exact object-parameter call_method check passed.")
+                    else:
+                        push_error("engine exact object-parameter call_method check failed.")
+                
+                    var mesh: ArrayMesh = ArrayMesh.new()
+                    var arrays := []
+                    arrays.resize(Mesh.ARRAY_MAX)
+                    arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
+                        Vector3(0, 0, 0),
+                        Vector3(1, 0, 0),
+                        Vector3(0, 1, 0),
+                    ])
+                    var surface_count = int(target.call("call_array_mesh_add_surface", mesh, Mesh.PRIMITIVE_TRIANGLES, arrays))
+                    if surface_count == 1:
+                        print("engine bitfield helper call_method check passed.")
+                    else:
+                        push_error("engine bitfield helper call_method check failed.")
                 
                     var variant_int = int(target.call("call_variant_to_int"))
                     if variant_int == 42:

@@ -17,6 +17,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /// Backend adapter for the shared method resolver.
@@ -193,15 +194,23 @@ public final class BackendMethodCallResolver {
                     : null;
             parameters.add(toMethodParamSpec(resolved.parameters().get(i), sourceParameter));
         }
+        var engineMethodBindSpec = resolveEngineMethodBindSpec(resolved, mode);
         return new ResolvedMethodCall(
                 mode,
                 resolved.methodName(),
                 ownerClassName,
                 resolved.ownerType(),
-                renderMethodCFunctionName(mode, ownerClassName, resolved.methodName()),
+                renderMethodCFunctionName(
+                        mode,
+                        ownerClassName,
+                        resolved.methodName(),
+                        engineMethodBindSpec,
+                        resolved.isVararg(),
+                        resolved.isStatic()
+                ),
                 resolved.returnType(),
                 parameters,
-                resolveEngineMethodBindSpec(resolved, mode),
+                engineMethodBindSpec,
                 resolved.isVararg(),
                 resolved.isStatic()
         );
@@ -270,11 +279,58 @@ public final class BackendMethodCallResolver {
 
     private static @NotNull String renderMethodCFunctionName(@NotNull DispatchMode mode,
                                                              @NotNull String ownerClassName,
-                                                             @NotNull String methodName) {
+                                                             @NotNull String methodName,
+                                                             @Nullable EngineMethodBindSpec engineMethodBindSpec,
+                                                             boolean isVararg,
+                                                             boolean isStatic) {
         return switch (mode) {
             case GDCC -> ownerClassName + "_" + methodName;
-            case ENGINE, BUILTIN -> "godot_" + ownerClassName + "_" + methodName;
+            case ENGINE -> renderEngineMethodCFunctionName(
+                    ownerClassName,
+                    methodName,
+                    engineMethodBindSpec,
+                    isVararg,
+                    isStatic
+            );
+            case BUILTIN -> "godot_" + ownerClassName + "_" + methodName;
             default -> "";
         };
+    }
+
+    /// Phase 5 only switches exact non-vararg engine calls that already have bind lookup identity.
+    /// Vararg or hash-less routes stay on the legacy wrapper surface until later phases complete.
+    private static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
+                                                                   @NotNull String methodName,
+                                                                   @Nullable EngineMethodBindSpec engineMethodBindSpec,
+                                                                   boolean isVararg,
+                                                                   boolean isStatic) {
+        if (engineMethodBindSpec == null || isVararg) {
+            return "godot_" + ownerClassName + "_" + methodName;
+        }
+        var name = new StringBuilder("gdcc_engine_call_");
+        if (isStatic) {
+            name.append("static_");
+        }
+        name.append(sanitizeHelperNameFragment(ownerClassName))
+                .append("_")
+                .append(sanitizeHelperNameFragment(methodName))
+                .append("_")
+                .append(engineMethodBindSpec.hash());
+        return name.toString();
+    }
+
+    private static @NotNull String sanitizeHelperNameFragment(@NotNull String raw) {
+        var normalized = raw.toLowerCase(Locale.ROOT);
+        var sanitized = normalized.replaceAll("[^a-z0-9_]+", "_").replaceAll("_+", "_");
+        if (sanitized.startsWith("_")) {
+            sanitized = sanitized.substring(1);
+        }
+        if (sanitized.endsWith("_")) {
+            sanitized = sanitized.substring(0, sanitized.length() - 1);
+        }
+        if (sanitized.isBlank()) {
+            throw new IllegalArgumentException("Identifier fragment becomes empty after sanitization: " + raw);
+        }
+        return sanitized;
     }
 }

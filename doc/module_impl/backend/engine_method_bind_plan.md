@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 1-3 已完成，阶段 4+ 未开始）
+- 状态：In Progress（阶段 1-5 已完成，阶段 6+ 未开始）
 - 最近同步：2026-04-18
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
 - 本文包含两部分目标：
@@ -650,6 +650,27 @@
   - 调用路径已经切走 `gdextension-lite`
   - 但 bitfield surface 还处于兼容态
   - `isStatic() == true` 时仍无 receiver 形参，helper 内部固定传 `NULL`
+
+### 当前进度
+
+- [x] `BackendMethodCallResolver` 已切换 `DispatchMode == ENGINE && !isVararg && bind hash 可用` 的 `cFunctionName`
+  - 实例 exact route 现在发布 `gdcc_engine_call_<Owner>_<method>_<hash>`
+  - static exact route 现在发布 `gdcc_engine_call_static_<Owner>_<method>_<hash>`
+  - vararg / 缺失 bind hash 的 engine route 仍暂时保留 `godot_<Owner>_<method>` 旧 surface
+- [x] `CBodyBuilder` 已将 `gdcc_engine_call_` 纳入 raw Godot ptr helper 判定
+  - object 参数继续复用 `checkGlobalFuncRequireGodotRawPtr(...)` 现有中央转换
+  - object 返回值继续复用 `checkGlobalFuncReturnGodotRawPtr(...)` 现有中央转换
+- [x] `CallMethodInsnGen` 已完成第 5 阶段联调
+  - exact non-vararg engine route 继续走现有 `callVoid(...)` / `callAssign(...)`
+  - `warnStaticMethodCall(...)`、static path 不传 receiver、默认参数补全合同均保持不变
+  - bitfield 参数仍保留 `(const godot_<...> *)&temp` 过渡 surface，未扩散出新的按方法名特例
+- [x] 第 5 阶段 focused / runtime regression 已补齐并通过
+  - 文本/单测：`MethodResolverParityTest`、`CBodyBuilderPhaseCTest`、`CallMethodInsnGenTest`、`CCodegenEngineMethodBindHeaderTest`
+  - 真实引擎回归：`CallMethodInsnGenEngineTest`
+  - 新锚点已覆盖：
+    - typed `Node.add_child(...)` exact object-parameter route
+    - `ArrayMesh.add_surface_from_arrays(...)` bitfield-compatible helper route
+    - GDCC receiver -> engine owner helper route 仍保持安全 raw ptr 转换
 
 ### 验收
 

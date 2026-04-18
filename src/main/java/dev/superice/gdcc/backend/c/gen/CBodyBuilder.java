@@ -1284,6 +1284,9 @@ public final class CBodyBuilder {
         if (funcName.startsWith("gdcc_eval_")) {
             return true;
         }
+        if (funcName.startsWith("gdcc_engine_call_")) {
+            return true;
+        }
         if (funcName.startsWith("godot_")) {
             return true;
         }
@@ -1294,7 +1297,9 @@ public final class CBodyBuilder {
     }
 
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
-        return funcName.startsWith("godot_") || funcName.startsWith("gdcc_eval_");
+        return funcName.startsWith("godot_")
+                || funcName.startsWith("gdcc_eval_")
+                || funcName.startsWith("gdcc_engine_call_");
     }
 
     private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,

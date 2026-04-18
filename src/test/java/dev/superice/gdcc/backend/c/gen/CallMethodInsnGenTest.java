@@ -71,7 +71,7 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should emit engine static dispatch for Node.queue_free")
+    @DisplayName("CALL_METHOD should emit exact engine helper dispatch for Node.queue_free")
     void callMethodEngineShouldEmitStaticDispatch() {
         var clazz = newClass("Worker");
         var func = newFunction("call_queue_free");
@@ -86,7 +86,8 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("godot_Node_queue_free($node);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_queue_free_77($node);"), body);
+        assertFalse(body.contains("godot_Node_queue_free("), body);
     }
 
     @Test
@@ -105,8 +106,35 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("godot_Node_queue_free((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"), body);
-        assertFalse(body.contains("godot_Node_queue_free((godot_Node*)$self);"), body);
+        assertTrue(
+                body.contains("gdcc_engine_call_node_queue_free_77((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"),
+                body
+        );
+        assertFalse(body.contains("gdcc_engine_call_node_queue_free_77((godot_Node*)$self);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit exact engine helper dispatch for object-parameter methods")
+    void callMethodEngineObjectParamShouldEmitHelperRoute() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_add_child");
+        func.createAndAddVariable("holder", new GdObjectType("Node"));
+        func.createAndAddVariable("child", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "add_child",
+                "holder",
+                List.of(new LirInstruction.VariableOperand("child"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAddChild())), List.of(clazz));
+        assertTrue(
+                body.contains("gdcc_engine_call_node_add_child_79($holder, $child, __gdcc_tmp_default_arg_2_"),
+                body
+        );
+        assertFalse(body.contains("godot_Node_add_child("), body);
     }
 
     @Test
@@ -311,7 +339,8 @@ class CallMethodInsnGenTest {
         }
 
         var output = outputBuffer.toString(StandardCharsets.UTF_8);
-        assertTrue(body.contains("godot_Node_make()"), body);
+        assertTrue(body.contains("gdcc_engine_call_static_node_make_88()"), body);
+        assertFalse(body.contains("godot_Node_make()"), body);
         assertTrue(output.contains("call_method on receiver"), output);
         assertTrue(output.contains("resolved static method 'Node.make'"), output);
     }
@@ -537,10 +566,10 @@ class CallMethodInsnGenTest {
         assertTrue(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
         assertTrue(body.contains("= $flags;"), body);
         assertTrue(
-                body.contains("godot_Node_set_process_thread_messages($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_bitfield_arg_1_"),
+                body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_bitfield_arg_1_"),
                 body
         );
-        assertFalse(body.contains("godot_Node_set_process_thread_messages($node, $flags)"), body);
+        assertFalse(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, $flags)"), body);
     }
 
     @Test
@@ -560,10 +589,10 @@ class CallMethodInsnGenTest {
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
         assertTrue(body.contains("godot_int __gdcc_tmp_default_arg_1_"), body);
         assertTrue(
-                body.contains("godot_Node_set_process_thread_messages($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_default_arg_1_"),
+                body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_default_arg_1_"),
                 body
         );
-        assertFalse(body.contains("godot_Node_set_process_thread_messages($node, __gdcc_tmp_default_arg_1_"), body);
+        assertFalse(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, __gdcc_tmp_default_arg_1_"), body);
     }
 
     @Test
@@ -925,13 +954,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithQueueFree() {
+        return nodeClassWithQueueFree(77L);
+    }
+
+    private ExtensionGdClass nodeClassWithQueueFree(long hash) {
         var queueFree = new ExtensionGdClass.ClassMethod(
                 "queue_free",
                 false,
                 false,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of()
@@ -951,13 +984,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithBitfieldDefaultParam() {
+        return nodeClassWithBitfieldDefaultParam(67L);
+    }
+
+    private ExtensionGdClass nodeClassWithBitfieldDefaultParam(long hash) {
         var setProcessThreadMessages = new ExtensionGdClass.ClassMethod(
                 "set_process_thread_messages",
                 false,
                 false,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("flags", "bitfield::Node.ProcessThreadMessages", "0", null))
@@ -977,13 +1014,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithStaticFactory() {
+        return nodeClassWithStaticFactory(88L);
+    }
+
+    private ExtensionGdClass nodeClassWithStaticFactory(long hash) {
         var make = new ExtensionGdClass.ClassMethod(
                 "make",
                 false,
                 false,
                 true,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("Node"),
                 List.of()
@@ -996,6 +1037,36 @@ class CallMethodInsnGenTest {
                 "core",
                 List.of(),
                 List.of(make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithAddChild() {
+        var addChild = new ExtensionGdClass.ClassMethod(
+                "add_child",
+                false,
+                false,
+                false,
+                false,
+                79L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(
+                        new ExtensionFunctionArgument("node", "Node", null, null),
+                        new ExtensionFunctionArgument("legible_unique_name", "bool", "false", null),
+                        new ExtensionFunctionArgument("internal", "int", "0", null)
+                )
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(addChild),
                 List.of(),
                 List.of(),
                 List.of()

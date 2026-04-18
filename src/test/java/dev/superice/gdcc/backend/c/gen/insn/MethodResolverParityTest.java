@@ -152,6 +152,7 @@ class MethodResolverParityTest {
 
         assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
         assertEquals(GdIntType.INT, backendResolved.parameters().getFirst().type());
+        assertEquals("gdcc_engine_call_node_set_process_thread_messages_4660", backendResolved.cFunctionName());
         assertEquals(0x1234L, bindSpec.hash());
         assertIterableEquals(List.of(17L, 19L), bindSpec.hashCompatibility());
 
@@ -173,6 +174,7 @@ class MethodResolverParityTest {
 
         assertEquals(77L, bindSpec.hash());
         assertTrue(bindSpec.hashCompatibility().isEmpty());
+        assertEquals("gdcc_engine_call_node_queue_free_77", backendResolved.cFunctionName());
     }
 
     @Test
@@ -193,6 +195,20 @@ class MethodResolverParityTest {
 
         var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "queue_free", List.of());
         assertNull(backendResolved.engineMethodBindSpec());
+        assertEquals("godot_Node_queue_free", backendResolved.cFunctionName());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should route exact static engine methods to static helpers without receiver slots")
+    void backendMethodAdapterShouldRouteExactStaticEngineMethodsToStaticHelpersWithoutReceiverSlots() {
+        var bodyBuilder = newBodyBuilder(apiWith(List.of(), List.of(nodeClassWithStaticFactory(88L, List.of(881L)))), List.of());
+        var receiverVar = new LirVariable("node", new GdObjectType("Node"), bodyBuilder.func());
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "make", List.of());
+
+        assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
+        assertTrue(backendResolved.isStatic());
+        assertEquals("gdcc_engine_call_static_node_make_88", backendResolved.cFunctionName());
     }
 
     @Test
@@ -445,6 +461,32 @@ class MethodResolverParityTest {
                 hashCompatibility,
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("flags", "bitfield::Node.ProcessThreadMessages", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(method),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithStaticFactory(long hash, List<Long> hashCompatibility) {
+        var method = new ExtensionGdClass.ClassMethod(
+                "make",
+                false,
+                false,
+                true,
+                false,
+                hash,
+                hashCompatibility,
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("Node"),
+                List.of()
         );
         return new ExtensionGdClass(
                 "Node",

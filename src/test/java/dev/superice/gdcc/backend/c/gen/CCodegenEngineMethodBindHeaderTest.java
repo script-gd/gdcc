@@ -37,8 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CCodegenEngineMethodBindHeaderTest {
     @Test
-    @DisplayName("generate should emit bind header for exact engine methods only and keep entry call path unchanged")
-    void generateShouldEmitBindHeaderForExactEngineMethodsOnlyAndKeepEntryCallPathUnchanged() {
+    @DisplayName("generate should emit bind header for exact engine methods only and switch non-vararg entry calls to helpers")
+    void generateShouldEmitBindHeaderForExactEngineMethodsOnlyAndSwitchNonVarargEntryCallsToHelpers() {
         var hostClass = newClass("Worker", "RefCounted");
 
         var gdccPing = newVoidFunction("ping");
@@ -144,7 +144,13 @@ class CCodegenEngineMethodBindHeaderTest {
         assertFalse(bindHeader.contains("gdcc_engine_method_bind_variant_callv_"), bindHeader);
         assertFalse(bindHeader.contains("static inline void godot_Probe_touch("), bindHeader);
 
-        assertContainsAll(entrySource, "godot_Probe_touch(");
+        assertContainsAll(
+                entrySource,
+                "gdcc_engine_call_probe_touch_55(",
+                "gdcc_engine_call_static_probe_touch_55(",
+                "gdcc_engine_call_probe_count_72(",
+                "godot_Probe_touch("
+        );
         assertFalse(entrySource.contains("gdcc_engine_method_bind_probe_touch_55("), entrySource);
     }
 
