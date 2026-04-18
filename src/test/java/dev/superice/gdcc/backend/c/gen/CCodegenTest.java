@@ -182,16 +182,18 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         List<GeneratedFile> files = codegen.generate();
 
-        assertEquals(2, files.size(), "Should produce two files");
+        assertEquals(3, files.size(), "Should produce three files");
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
 
-        var cFile = files.get(0);
-        var hFile = files.get(1);
-        var cCode = new String(cFile.contentWriter());
-        var hCode = new String(hFile.contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+        var hCode = generatedFileText(files, "entry.h");
         System.out.println(hCode);
         System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
+        assertTrue(bindHeaderCode.contains("GDEXTENSION_MY_MODULE_ENGINE_METHOD_BINDS_H"));
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
+        assertTrue(hCode.contains("#include \"engine_method_binds.h\""));
     }
 
     @Test
@@ -240,7 +242,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var hCode = new String(files.getLast().contentWriter());
+        var hCode = generatedFileText(files, "entry.h");
 
         var acceptVariantBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Variant_ret_int");
         var echoVariantBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Variant_ret_Variant");
@@ -374,8 +376,8 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         // Method registration splits the outward contract across entry.c and entry.h:
         // entry.c passes the base variant type, while entry.h fixes hint/hint_string/class_name/usage.
@@ -542,8 +544,8 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         var typedBindCall = resolveMethodBindCall(cCode, "accept_typed_payload");
         var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_int");
@@ -722,7 +724,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var hCode = new String(files.getLast().contentWriter());
+        var hCode = generatedFileText(files, "entry.h");
 
         var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_int");
         var packedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_bool");
@@ -844,7 +846,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var hCode = new String(files.getLast().contentWriter());
+        var hCode = generatedFileText(files, "entry.h");
 
         var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_int");
         var mixedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_bool");
@@ -1330,8 +1332,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
 
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         assertTrue(hCode.contains("struct RuntimeOuter {"), hCode);
         assertTrue(hCode.contains("RuntimeOuter_class_create_instance"), hCode);
@@ -1369,8 +1371,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
 
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_binary_in_int_int_to_bool("), hCode);
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_unary_not_bool_to_bool("), hCode);
@@ -1434,8 +1436,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         List<GeneratedFile> files = codegen.generate();
 
-        var cCode = new String(files.get(0).contentWriter());
-        var hCode = new String(files.get(1).contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
         var childObjectPtrHelperBody = resolveFunctionBodyByPrefix(
                 cCode,
                 "static inline GDExtensionObjectPtr GDChildNode_object_ptr"
@@ -1662,6 +1664,15 @@ public class CCodegenTest {
         }
     }
 
+    private static String generatedFileText(List<GeneratedFile> files, String filePath) {
+        for (var file : files) {
+            if (file.filePath().equals(filePath)) {
+                return new String(file.contentWriter());
+            }
+        }
+        throw new AssertionError("Missing generated file: " + filePath);
+    }
+
     private static String generateHeader(LirModule module) throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var classRegistry = new ClassRegistry(api);
@@ -1671,7 +1682,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        return new String(files.getLast().contentWriter());
+        return generatedFileText(files, "entry.h");
     }
 
     private static int countOccurrences(String text, String needle) {

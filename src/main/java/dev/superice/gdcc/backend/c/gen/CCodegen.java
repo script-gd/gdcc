@@ -518,26 +518,43 @@ public class CCodegen implements Codegen {
         }
         try {
             var usageSession = new EngineMethodUsageSession();
-            var renderFacade = new GenerateRenderFacade(
+            var bodyRender = new GenerateRenderFacade(
                     (classDef, func) -> generateFuncBody(classDef, func, usageSession),
                     this::generatePropertyInitApplyBody
             );
-            var tplCtx = Map.of(
+            var cTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
-                    "gen", renderFacade
+                    "bodyRender", bodyRender
             );
-            var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", tplCtx);
-            var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", tplCtx);
+            var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
+            var usedEngineMethods = usageSession.snapshot();
+            var bindTplCtx = Map.of(
+                    "module", module,
+                    "helper", helper,
+                    "usedEngineMethods", usedEngineMethods
+            );
+            var engineMethodBindsSrc = TemplateLoader.renderFromClasspath(
+                    "template_451/engine_method_binds.h.ftl",
+                    bindTplCtx
+            );
+            var hTplCtx = Map.of(
+                    "module", module,
+                    "helper", helper
+            );
+            var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", hTplCtx);
             cSrc = CCodeFormatter.format(cSrc);
+            engineMethodBindsSrc = CCodeFormatter.format(engineMethodBindsSrc);
             hSrc = CCodeFormatter.format(hSrc);
 
             var cBytes = cSrc.getBytes(StandardCharsets.UTF_8);
+            var engineMethodBindsBytes = engineMethodBindsSrc.getBytes(StandardCharsets.UTF_8);
             var hBytes = hSrc.getBytes(StandardCharsets.UTF_8);
 
             var cFile = new GeneratedFile(cBytes, "entry.c");
+            var engineMethodBindsFile = new GeneratedFile(engineMethodBindsBytes, "engine_method_binds.h");
             var hFile = new GeneratedFile(hBytes, "entry.h");
-            return List.of(cFile, hFile);
+            return List.of(cFile, engineMethodBindsFile, hFile);
         } catch (IOException | TemplateException e) {
             throw new RuntimeException("Failed to generate C code: " + e.getMessage(), e);
         }

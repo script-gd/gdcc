@@ -1,6 +1,6 @@
 <#-- @ftlvariable name="module" type="dev.superice.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="dev.superice.gdcc.backend.c.gen.CGenHelper" -->
-<#-- @ftlvariable name="gen" type="dev.superice.gdcc.backend.c.gen.CCodegen" -->
+<#-- @ftlvariable name="bodyRender" type="dev.superice.gdcc.backend.c.gen.binding.GenerateRenderFacade" -->
 <#include "func.ftl">
 <#include "trim.ftl">
 
@@ -125,7 +125,7 @@ static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExt
 <#list module.classDefs as classDef>
 <#list classDef.properties as property>
 static inline void ${helper.renderPropertyInitApplyHelperName(classDef, property)}(${classDef.name}* self) {
-    ${gen.generatePropertyInitApplyBody(classDef, property)}
+    ${bodyRender.generatePropertyInitApplyBody(classDef, property)}
 }
 </#list>
 
@@ -235,7 +235,7 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
             ${helper.renderGdTypeInC(var.type)} $${var.id};
         </#if>
     </#list>
-    ${gen.generateFuncBody(classDef, func)}
+    ${bodyRender.generateFuncBody(classDef, func)}
 }
 </#list>
 

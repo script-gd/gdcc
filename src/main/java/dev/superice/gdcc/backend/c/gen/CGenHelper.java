@@ -2,6 +2,7 @@ package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.c.gen.insn.OperatorResolver;
+import dev.superice.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -18,12 +19,14 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
 public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
     private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
+    private static final Pattern NON_C_IDENTIFIER_PATTERN = Pattern.compile("[^a-z0-9_]");
     private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
             VARIANT_WRITEBACK_HELPER_NAME,
             List.of(new FunctionSignature.Parameter("value", GdVariantType.VARIANT, null)),
@@ -366,6 +369,50 @@ public final class CGenHelper {
         };
     }
 
+    /// Engine bind accessor symbols must stay backend-owned and collision-free relative to gdextension-lite.
+    /// Static and vararg markers remain explicit because later helper surfaces diverge even when bind lookup
+    /// still uses the same owner/method/hash triple.
+    public @NotNull String renderEngineMethodBindAccessorName(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        var bindSpec = Objects.requireNonNull(
+                resolved.engineMethodBindSpec(),
+                "Exact engine method bind metadata is required to render accessor names"
+        );
+        var name = new StringBuilder("gdcc_engine_method_bind_");
+        if (resolved.isStatic()) {
+            name.append("static_");
+        }
+        if (resolved.isVararg()) {
+            name.append("vararg_");
+        }
+        name.append(sanitizeCIdentifierFragment(resolved.ownerClassName()))
+                .append("_")
+                .append(sanitizeCIdentifierFragment(resolved.methodName()))
+                .append("_")
+                .append(bindSpec.hash());
+        return name.toString();
+    }
+
+    /// The accessor tries the primary hash first, then compatibility hashes in declared order.
+    /// Duplicate or zero hashes are skipped so the generated skeleton stays stable and reviewable.
+    public @NotNull List<Long> collectEngineMethodBindLookupHashes(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        var bindSpec = Objects.requireNonNull(
+                resolved.engineMethodBindSpec(),
+                "Exact engine method bind metadata is required to render lookup hashes"
+        );
+        var hashes = new LinkedHashSet<Long>();
+        hashes.add(bindSpec.hash());
+        for (var hashCompatibility : bindSpec.hashCompatibility()) {
+            if (hashCompatibility != 0L) {
+                hashes.add(hashCompatibility);
+            }
+        }
+        return List.copyOf(hashes);
+    }
+
     public @NotNull String renderVarRef(@NotNull LirFunctionDef func, @NotNull String varName) {
         var varDef = func.getVariableById(varName);
         if (varDef == null) {
@@ -380,6 +427,22 @@ public final class CGenHelper {
 
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
         return renderFuncBindName(bindingData.returnType, bindingData.paramTypes, bindingData.defaultVariables, bindingData.staticMethod);
+    }
+
+    private @NotNull String sanitizeCIdentifierFragment(@NotNull String raw) {
+        var normalized = raw.toLowerCase(Locale.ROOT);
+        var sanitized = NON_C_IDENTIFIER_PATTERN.matcher(normalized).replaceAll("_");
+        sanitized = sanitized.replaceAll("_+", "_");
+        if (sanitized.startsWith("_")) {
+            sanitized = sanitized.substring(1);
+        }
+        if (sanitized.endsWith("_")) {
+            sanitized = sanitized.substring(0, sanitized.length() - 1);
+        }
+        if (sanitized.isBlank()) {
+            throw new IllegalArgumentException("Identifier fragment becomes empty after sanitization: " + raw);
+        }
+        return sanitized;
     }
 
     public @NotNull String renderFuncBindName(@NotNull FunctionDef functionDef) {

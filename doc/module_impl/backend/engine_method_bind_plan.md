@@ -2,7 +2,7 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 1-2 已完成，阶段 3+ 未开始）
+- 状态：In Progress（阶段 1-3 已完成，阶段 4+ 未开始）
 - 最近同步：2026-04-18
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
 - 本文包含两部分目标：
@@ -356,6 +356,9 @@
 - 对 `isStatic() == true` 的 exact engine method，建议 accessor 符号也带显式 static 标记，例如：
   - `gdcc_engine_method_bind_static_<Owner>_<method>_<hash>()`
 - 即便 bind lookup 最终仍使用同一组 class/method/hash 输入，生成符号也应让 review 时能直接区分“无 receiver 的 static helper route”
+- 若同一 `owner/method/hash` 同时存在 vararg / non-vararg route，accessor 符号也必须显式带 vararg 标记：
+  - 例如 `gdcc_engine_method_bind_vararg_<Owner>_<method>_<hash>()`
+  - 目的不是改变 bind lookup 身份，而是避免 skeleton/accessor 名冲突，并为后续 phase 4 helper surface 保持一一对应关系
 
 1. phase 3 不生成 `godot_<Owner>_<method>` 风格 public wrapper
 - 也不立刻切换 `resolved.cFunctionName()`
@@ -392,6 +395,43 @@
 1. 文件：`src/main/c/codegen/template_451/entry.h.ftl`
 - 加入：
   - `#include "engine_method_binds.h"`
+
+### 进度同步（2026-04-18）
+
+- [x] 已新增模板 `src/main/c/codegen/template_451/engine_method_binds.h.ftl`
+  - 对 session 收集到的 exact engine method 逐个生成 `static inline` bind accessor 骨架
+  - accessor 内部缓存 `static GDExtensionMethodBindPtr bind = NULL;`
+  - lookup 固定先试主 `hash`，再按 `hashCompatibility` 顺序回退
+  - 无 exact engine call 时仍生成合法空壳头文件
+- [x] accessor 命名已落地到 backend-owned `gdcc_engine_*` 名称空间
+  - `isStatic()` route 显式带 `static_` 标记
+  - `isVararg()` route 额外带 `vararg_` 标记，避免与 non-vararg route 在同一 `owner/method/hash` 下发生符号冲突
+- [x] `CCodegen.generate()` 已切换为：
+  1. `entry.c.ftl`
+  2. `engine_method_binds.h.ftl`
+  3. `entry.h.ftl`
+  - `entry.c` 通过绑定 module session 的 body renderer 渲染
+  - `engine_method_binds.h` / `entry.h` 均使用 `entry.c` 成功 render 后得到的 session snapshot
+  - 返回文件已更新为 `entry.c`、`engine_method_binds.h`、`entry.h`
+- [x] `entry.c.ftl` 已显式改为使用 session-bound renderer
+  - 模板入口从原先直接调用 public `generateFuncBody(...)` 改为 `bodyRender.generateFuncBody(...)`
+  - property init apply helper 也统一改走 `bodyRender.generatePropertyInitApplyBody(...)`
+- [x] `entry.h.ftl` 已稳定 include 新头文件
+  - `#include "engine_method_binds.h"` 位于 `gdextension-lite` / `gdcc_helper` 之后，确保 bind accessor 可以直接复用现有 GDExtension surface 与 `class_library` 上下文
+- [x] 已新增 focused test：`CCodegenEngineMethodBindHeaderTest`
+  - 锁定生成文件名与顺序
+  - 锁定 `entry.h` include 新头文件
+  - 锁定 exact engine method 才会进入 `engine_method_binds.h`
+  - 锁定 `hashCompatibility` fallback 的发射顺序
+  - 锁定 phase 3 不改变当前 `entry.c` 的实际调用路径
+- [x] 已修正 `CCodegenTest` 对 `generate()` 输出数量/顺序的旧假设
+  - 现统一按文件名读取 `entry.c` / `engine_method_binds.h` / `entry.h`
+- [x] 已运行定向回归：
+  - `CCodegenEngineMethodBindHeaderTest`
+  - `CCodegenEngineMethodUsageSessionTest`
+  - `CCodegenTest`
+  - `CallMethodInsnGenTest`
+  - `CallMethodInsnGenEngineTest`
 
 ### 验收
 
