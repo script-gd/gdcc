@@ -202,6 +202,7 @@ Godot extension API JSON 中的 `enum::...`、`bitfield::...`、`typedarray::...
 ### 5.2 constructor / bare-call exact route 的当前事实
 
 当前代码库里，constructor route 与部分 bare-call exact route 仍可能依赖 declaration metadata fallback，而不是统一发布 `ExactCallableBoundary`。  
+但 extension API 对 void engine method 缺失 `return_value` 的 metadata 形状已经在 declaration layer 归一化为 `void`，因此 inherited bare void call（例如 `add_to_group(...)`）不再属于剩余 gap。  
 这属于尚未并入本文档主合同的相邻工作面。
 
 后续若要扩大 exact boundary publication 的覆盖面，必须单独设计：

@@ -174,8 +174,9 @@ public record ExtensionGdClass(
 
         @Override
         public @NotNull GdType getReturnType() {
+            var rawReturnType = returnValue == null || returnValue.type() == null ? "void" : returnValue.type();
             return ScopeTypeParsers.parseExtensionTypeMetadata(
-                    returnValue.type,
+                    rawReturnType,
                     "return type of engine method '" + name + "'"
             );
         }
