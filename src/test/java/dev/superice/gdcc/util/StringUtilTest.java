@@ -69,4 +69,21 @@ public class StringUtilTest {
         assertEquals("alpha\n      beta", normalized);
         assertEquals(List.of("alpha", "      beta"), StringUtil.splitLines(normalized));
     }
+
+    @Test
+    public void unescapeQuotedHandlesEscapesAndUnicode() {
+        assertEquals("line\nbreak", StringUtil.unescapeQuoted("line\\nbreak"));
+        assertEquals("tab\tquote\"", StringUtil.unescapeQuoted("tab\\tquote\\\""));
+        assertEquals("A", StringUtil.unescapeQuoted("\\u0041"));
+        assertEquals("\uD83D\uDE00", StringUtil.unescapeQuoted("\\U0001F600"));
+    }
+
+    @Test
+    public void unescapeQuotedRejectsMalformedUnicodeEscape() {
+        var shortUnicode = assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\u123"));
+        assertEquals("Invalid unicode escape in literal: \\u", shortUnicode.getMessage());
+
+        var shortCodePoint = assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\U1234567"));
+        assertEquals("Invalid unicode escape in literal: \\U", shortCodePoint.getMessage());
+    }
 }

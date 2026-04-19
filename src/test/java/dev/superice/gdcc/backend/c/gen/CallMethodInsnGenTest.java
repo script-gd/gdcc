@@ -565,6 +565,23 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should reject exact engine route when metadata hash is missing")
+    void callMethodShouldRejectExactEngineRouteWhenMetadataHashIsMissing() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_queue_free_missing_hash");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(func).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree(0L))), List.of(clazz))
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Exact engine method 'Node.queue_free' is missing method-bind hash"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should reject missing argument variable")
     void callMethodShouldRejectMissingArgumentVariable() {
         var clazz = newClass("Worker");
@@ -1221,7 +1238,7 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithVarargSpread() {
-        return nodeClassWithVarargSpread(0L);
+        return nodeClassWithVarargSpread(93L);
     }
 
     private ExtensionGdClass nodeClassWithVarargSpread(long hash) {

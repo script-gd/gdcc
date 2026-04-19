@@ -173,7 +173,7 @@ public final class BackendMethodCallResolver {
                 argTypes
         );
         return switch (result) {
-            case ScopeMethodResolver.Resolved resolved -> toResolvedMethodCall(resolved.method());
+            case ScopeMethodResolver.Resolved resolved -> toResolvedMethodCall(bodyBuilder, resolved.method());
             case ScopeMethodResolver.DynamicFallback dynamicFallback ->
                     dynamicPlaceholder(toDispatchMode(dynamicFallback.dynamicKind()), receiverType, methodName);
             case ScopeMethodResolver.Failed failed -> throw bodyBuilder.invalidInsn(failed.message());
@@ -212,7 +212,8 @@ public final class BackendMethodCallResolver {
         );
     }
 
-    private static @NotNull ResolvedMethodCall toResolvedMethodCall(@NotNull ScopeResolvedMethod resolved) {
+    private static @NotNull ResolvedMethodCall toResolvedMethodCall(@NotNull CBodyBuilder bodyBuilder,
+                                                                    @NotNull ScopeResolvedMethod resolved) {
         var mode = toDispatchMode(resolved.ownerKind());
         var ownerClassName = resolved.ownerClass().getName();
         var sourceParameters = resolved.function().getParameters();
@@ -223,7 +224,7 @@ public final class BackendMethodCallResolver {
                     : null;
             parameters.add(toMethodParamSpec(resolved.parameters().get(i), sourceParameter));
         }
-        var engineMethodBindSpec = resolveEngineMethodBindSpec(resolved, mode);
+        var engineMethodBindSpec = resolveEngineMethodBindSpec(bodyBuilder, resolved, mode);
         return new ResolvedMethodCall(
                 mode,
                 resolved.methodName(),
@@ -246,8 +247,9 @@ public final class BackendMethodCallResolver {
     }
 
     /// Only exact engine class metadata contributes method-bind identity.
-    /// Other routes keep using the existing wrapper-facing shape in phase 1.
-    private static @Nullable EngineMethodBindSpec resolveEngineMethodBindSpec(@NotNull ScopeResolvedMethod resolved,
+    /// A non-zero primary hash is required for every exact engine route.
+    private static @Nullable EngineMethodBindSpec resolveEngineMethodBindSpec(@NotNull CBodyBuilder bodyBuilder,
+                                                                              @NotNull ScopeResolvedMethod resolved,
                                                                               @NotNull DispatchMode mode) {
         if (mode != DispatchMode.ENGINE) {
             return null;
@@ -255,6 +257,10 @@ public final class BackendMethodCallResolver {
         return switch (resolved.function()) {
             case dev.superice.gdcc.gdextension.ExtensionGdClass.ClassMethod method when method.hash() != 0L ->
                     new EngineMethodBindSpec(method.hash(), normalizeHashCompatibility(method.hashCompatibility()));
+            case dev.superice.gdcc.gdextension.ExtensionGdClass.ClassMethod _ -> throw bodyBuilder.invalidInsn(
+                    "Exact engine method '" + resolved.ownerClass().getName() + "." + resolved.methodName() +
+                            "' is missing method-bind hash in extension metadata"
+            );
             default -> null;
         };
     }
@@ -360,16 +366,13 @@ public final class BackendMethodCallResolver {
         };
     }
 
-    /// Exact engine helpers stay on the generated helper surface whenever bind lookup identity exists.
-    /// Hash-less routes still fall back to the public gdextension-lite wrapper names.
+    /// Exact engine helper naming assumes bind lookup identity has already been validated.
     private static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
                                                                    @NotNull String methodName,
                                                                    @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                                                    boolean isVararg,
                                                                    boolean isStatic) {
-        if (engineMethodBindSpec == null) {
-            return "godot_" + ownerClassName + "_" + methodName;
-        }
+        var bindSpec = Objects.requireNonNull(engineMethodBindSpec, "Exact engine route requires method bind spec");
         var name = new StringBuilder(isVararg ? "gdcc_engine_callv_" : "gdcc_engine_call_");
         if (isStatic) {
             name.append("static_");
@@ -378,7 +381,7 @@ public final class BackendMethodCallResolver {
                 .append("_")
                 .append(sanitizeHelperNameFragment(methodName))
                 .append("_")
-                .append(engineMethodBindSpec.hash());
+                .append(bindSpec.hash());
         return name.toString();
     }
 

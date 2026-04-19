@@ -2,8 +2,8 @@
 
 ## 文档状态
 
-- 状态：In Progress（阶段 1-6 已完成，阶段 7+ 未开始）
-- 最近同步：2026-04-18
+- 状态：Completed（按当前代码库事实核对，阶段 1-8 已完成）
+- 最近同步：2026-04-19
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
 - 本文包含两部分目标：
   - 第一阶段基础设施：记录已使用的 exact engine method，并生成专用 method bind 头文件
@@ -656,7 +656,7 @@
 - [x] `BackendMethodCallResolver` 已切换 `DispatchMode == ENGINE && !isVararg && bind hash 可用` 的 `cFunctionName`
   - 实例 exact route 现在发布 `gdcc_engine_call_<Owner>_<method>_<hash>`
   - static exact route 现在发布 `gdcc_engine_call_static_<Owner>_<method>_<hash>`
-  - vararg / 缺失 bind hash 的 engine route 仍暂时保留 `godot_<Owner>_<method>` 旧 surface
+  - 缺失 bind hash 的 exact engine route 现显式报错，不再静默回退到 `godot_<Owner>_<method>`
 - [x] `CBodyBuilder` 已将 `gdcc_engine_call_` 纳入 raw Godot ptr helper 判定
   - object 参数继续复用 `checkGlobalFuncRequireGodotRawPtr(...)` 现有中央转换
   - object 返回值继续复用 `checkGlobalFuncReturnGodotRawPtr(...)` 现有中央转换
@@ -835,7 +835,7 @@
 - [x] `BackendMethodCallResolver` 已将 exact engine vararg route 切到 backend-owned helper 名称
   - 有 hash 的实例 vararg 现解析到 `gdcc_engine_callv_<...>`
   - 有 hash 的静态 vararg 现解析到 `gdcc_engine_callv_static_<...>`
-  - 无 hash route 继续保留 `godot_<Owner>_<method>` 旧 wrapper surface
+  - 缺失 bind hash 的 exact vararg route 现显式报错，不再保留 `godot_<Owner>_<method>` 旧 wrapper surface
 - [x] `CallMethodInsnGen` 已复用现有 fixed/default/vararg split 合同，无需回退到 Java 侧 fixed prefix pack
   - caller 仍只负责 fixed 参数校验、default 补齐与 extra vararg `Variant` tail 传递
   - static path 继续保持 warning 与“无 receiver 实参”合同
