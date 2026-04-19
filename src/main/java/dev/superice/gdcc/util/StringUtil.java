@@ -98,4 +98,29 @@ public final class StringUtil {
         }
         return sb.toString();
     }
+
+    public static @NotNull String unescapeQuoted(@NotNull String content) {
+        var out = new StringBuilder();
+        for (var i = 0; i < content.length(); i++) {
+            var ch = content.charAt(i);
+            if (ch != '\\') {
+                out.append(ch);
+                continue;
+            }
+            if (i + 1 >= content.length()) {
+                out.append('\\');
+                break;
+            }
+            var next = content.charAt(++i);
+            out.append(switch (next) {
+                case 'n' -> '\n';
+                case 'r' -> '\r';
+                case 't' -> '\t';
+                case '\\' -> '\\';
+                case '"' -> '"';
+                default -> next;
+            });
+        }
+        return out.toString();
+    }
 }

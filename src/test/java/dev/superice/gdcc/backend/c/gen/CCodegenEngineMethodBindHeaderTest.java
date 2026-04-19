@@ -410,6 +410,11 @@ class CCodegenEngineMethodBindHeaderTest {
                 "self,",
                 "&ret,",
                 "&error",
+                "char call_error_desc[512];",
+                "gdcc_variant_type_to_utf8(error.expected, expected_type_name, sizeof(expected_type_name));",
+                "engine method call failed: Probe.mix: invalid argument #%lld, expected '%s', got '%s'",
+                "engine method call failed: Probe.mix: unknown call error %d",
+                "GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);",
                 "result = godot_new_String_with_Variant(",
                 "if (!call_ok) {",
                 "return godot_new_String();"
@@ -453,6 +458,9 @@ class CCodegenEngineMethodBindHeaderTest {
                 "NULL,",
                 "&ret,",
                 "&error",
+                "char call_error_desc[512];",
+                "engine method call failed: Probe.broadcast: too many arguments, expected %lld, got %lld",
+                "GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);",
                 "godot_Variant_destroy(&ret);",
                 "godot_Variant_destroy(&fixed_arg_0);"
         );

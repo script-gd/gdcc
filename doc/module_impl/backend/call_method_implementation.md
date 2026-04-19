@@ -19,9 +19,10 @@
 ### 覆盖范围
 
 - 指令生成入口：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
-- 分派与签名解析：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/MethodCallResolver.java`
+- 分派与签名解析：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
 - 调用发射与生命周期托管：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
 - 模板/运行时辅助：
+  - `src/main/c/codegen/template_451/engine_method_binds.h.ftl`
   - `src/main/c/codegen/template_451/entry.c.ftl`
   - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
 
@@ -61,6 +62,29 @@
   - 目标为 `Variant`：直接赋值
   - 目标为非 `Variant`：调用 helper unpack 后写入目标
 - pack default temp / dynamic temp 均采用逆序 destroy
+
+### 已实现 exact engine helper route
+
+- exact engine route 的事实来源已切到 backend-owned generated helper：
+  - non-vararg：`gdcc_engine_call_<...>`
+  - vararg：`gdcc_engine_callv_<...>`
+- non-vararg exact engine helper 直接执行 method-bind lookup，并用：
+  - `godot_object_method_bind_ptrcall(...)`
+- vararg exact engine helper 直接执行 method-bind lookup，并用：
+  - `godot_object_method_bind_call(...)`
+- object / enum / bitfield / wrapper 参数的 ABI 适配都下沉在 generated helper 内部：
+  - caller 保持 shared-normalized callable surface
+  - helper 自己物化 `ptrcall` slot 或 fixed-prefix `Variant`
+- vararg route 的 ownership split 已冻结：
+  - helper 只拥有 fixed prefix packed `Variant` 与本地 return `Variant`
+  - caller 继续拥有 extra vararg tail、default temp 与 call-site temp
+- static exact engine helper 继续保持 receiver-free contract：
+  - call site 不传 receiver
+  - helper 签名不接收 receiver
+  - bind 调用固定传 `NULL`
+- 结论：
+  - `gdextension-lite` public wrapper 不再是 exact engine route 的事实来源
+  - 它仍只属于 wrapper-based / dynamic / 其他未迁移 surface 的事实来源
 
 ## 长期约定（必须保持）
 

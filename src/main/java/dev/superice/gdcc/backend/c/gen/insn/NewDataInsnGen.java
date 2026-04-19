@@ -20,6 +20,7 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
@@ -80,7 +81,11 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
     }
 
     private void emitStringNameLiteral(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable resultVar, @NotNull String value) {
-        var utf8Literal = utf8Literal(value);
+        var normalizedValue = value;
+        if (value.length() >= 3 && value.startsWith("&\"") && value.endsWith("\"")) {
+            normalizedValue = StringUtil.unescapeQuoted(value.substring(2, value.length() - 1));
+        }
+        var utf8Literal = utf8Literal(normalizedValue);
         if (resultVar.ref()) {
             bodyBuilder.callVoid(
                     "godot_string_name_new_with_utf8_chars",

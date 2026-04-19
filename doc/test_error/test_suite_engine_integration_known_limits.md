@@ -205,10 +205,11 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 当前处理结论已更新为：
 
 - `doc/module_impl/frontend/frontend_exact_call_extension_metadata_contract.md` 中记录的 exact-call metadata 合同已经落地，`test_suite` 不再需要只退回零参数 engine method 来绕开这条链路
-- method-call backend 现也补齐了与这组修复直接相关的一段 ABI 适配：
+- method-call backend 现也补齐了与这组修复直接相关的 exact-route ABI 收敛：
   - shared resolver 继续把 `bitfield::...` 规约成 `int` 供语义层统一判断
-  - 但 wrapper 调用前会保留 raw bitfield leaf 的 C 类型名，并把 addressable temp cast 成 `const godot_<Owner>_<Flag> *`
-  - 这样既不把 frontend/shared resolver 拉回二次解析，也避免 `ArrayMesh.add_surface_from_arrays(...)` 这类 stock wrapper 在 compile surface 因 `godot_int` / enum-pointer 形状不匹配而失败
+  - generated `gdcc_engine_call_<...>` helper 继续保留 raw bitfield / enum leaf 的 C 类型名
+  - local slot materialization 已下沉到 helper 内部，而不是回退到 caller-side wrapper-compatible cast
+  - exact engine route 现直接走 method bind helper + bind call，不再依赖 `gdextension-lite` public wrapper ABI
 - 新增 `runtime/engine_array_mesh_exact_default_args.gd`
   - 用 `ArrayMesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)` 直接锚定 exact instance route
   - 这条签名会真实触及：
@@ -221,59 +222,52 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 - 新增 `runtime/engine_option_button_default_args.gd`
   - 用 `OptionButton.add_separator()` 省略 `text: String = ""` 默认参数
   - 这条 case 补上另一种常见 gdextension 默认值物化路径，确保 `test_suite` 不只覆盖复杂 metadata family，也覆盖 stock string-default instance route
+- 新增 `runtime/engine_node_add_child_exact_typed_receiver.gd`
+  - 用 `var holder: Node = Node.new(); holder.add_child(Node.new())` 重新把 object-parameter exact route 锚定到 `test_suite`
+  - 这条 resource 明确只认 typed receiver 形状，不把 plain `var holder = Node.new()` 的 dynamic fallback 混进 exact route 验收
+- 新增三条 `Node.call(...)` exact vararg resource：
+  - `runtime/engine_node_call_exact_vararg_success.gd`
+  - `runtime/engine_node_call_exact_vararg_discard_return.gd`
+  - `runtime/engine_node_call_exact_vararg_error_path.gd`
+  - 它们分别锚定：
+    - fixed prefix + tail-bearing `StringName` 参数经 helper pack 后仍能稳定成功返回
+    - discard-return 场景在成功的 tail-bearing exact vararg call 后仍完成统一 cleanup
+    - error-path 输出稳定诊断后仍可继续执行后续 exact engine method
+  - `success` / `discard_return` 对应的 validation 额外要求：
+    - 输出中不得出现 `engine method call failed: Object.call`
+    - 避免把“中途已经触发 runtime error，但最终返回值碰巧满足断言”的假阳性记成通过
 - `runtime/engine_node_refcounted_workflow.gd` 继续保留
   - 它现在是零参数 smoke anchor
   - 不再承担“代替 exact engine method default route”的职责
 
-### 8.4 `Node.add_child(...)` 仍不适合作为当前 `test_suite` 的真引擎正向锚点
+### 8.4 `gdextension-lite` object-parameter ptrcall wrapper debt 仍存在，但不再覆盖 gdcc 的 migrated exact engine route
 
-这次在把 `Node.add_child(...)` 写成 resource case 后，又额外暴露出一条**独立于 frontend exact metadata 修复**的旧问题：
+需要保留的事实源不是“`Node.add_child(...)` 仍然阻断 gdcc exact engine `CALL_METHOD`”，而是：
 
-- gdextension-lite 当前的 class-method object-parameter ptrcall wrapper 仍有 ABI 缺口
-- 典型表现就是：
-  - `godot_Node_get_child_count(bool)` 这类无对象参数的 wrapper 可以正常工作
-  - `godot_Node_add_child(Node, bool, enum)` 这类带对象参数的 wrapper 会在真引擎运行时崩溃
+- `gdextension-lite` 当前的 class-method object-parameter ptrcall wrapper debt 仍然存在
+- 但 gdcc backend 的 exact engine `CALL_METHOD` route 已不再消费这组 public wrapper ABI
+- 因此这条 known limit 的剩余适用面必须缩窄为：
+  - 仍直接消费 `gdextension-lite` stock wrapper 的调用面
+  - 或任何仍复用这组 shared generator 产物的 surface
 
-这条问题的完整成因链需要单独写清，否则它很容易继续被误读成“frontend 计划还没修干净”：
+当前已经失效的旧前提是：
 
-1. `frontend_exact_call_extension_metadata_contract.md` 约束并记录的是 exact route 对 extension exported metadata 的二次 raw parse 修复：
-   - shared resolver 先把 `enum::...` / `bitfield::...` / `typedarray::...` 规范化
-   - lowering 改为复用 published callable boundary
-   - backend 再基于这份已规范化边界去物化默认参数并生成 C 调用
-2. 因此 `Node.add_child(...)` 在本轮修复后，frontend / lowering 已经不再因为 `enum::Node.InternalMode` 这类 metadata spelling 失败：
-   - 剩下的失败点发生在生成后的 runtime C surface，而不是 exact metadata route 本身
-3. gdcc backend 当前对 `godot_*` 调用走的是“先把 GDCC object ptr 转成 Godot raw object ptr，再调用已发布的 gdextension-lite wrapper”：
-   - 也就是说，gdcc 此处消费的是 wrapper public ABI，而不是自己直接拼 `godot_object_method_bind_ptrcall(...)`
-4. `godot_Node_add_child(...)` 的 public wrapper 签名是：
-   - `void godot_Node_add_child(godot_Node *self, const godot_Node *node, godot_bool force_readable_name, godot_Node_InternalMode internal);`
-   - 这里第二个参数 `node` 表面上是“对象指针值”
-5. 但 gdextension-lite 在 wrapper 内部桥接到 `ptrcall` 时，当前生成的是：
-   - `_args[] = { node, &force_readable_name, &internal }`
-   - 也就是 object 参数直接放 `node`，而 primitive / enum 参数放各自局部槽位地址
-6. Godot 上游的 `MethodBind::ptrcall(...)` / `call_with_ptr_args(...)` 契约并不是“`p_args[i]` 直接等于参数值”：
-   - 每个 `p_args[i]` 都是“指向参数值存储槽的地址”
-   - 对 `bool` / `int` / `enum` 来说，这正是 `&local_value`
-   - 对 `Node *` 这类 object 参数来说，slot 里保存的值本身是一个对象指针，所以传给 `ptrcall` 的应当是 `&node`
-7. Godot 上游 `PtrToArg<T *>` 的解包方式会把 `p_args[i]` 当成 `T **` 槽位来再解引用一次：
-   - 正确形状：`p_args[i] == &node`，引擎读出 `*reinterpret_cast<T *const *>(p_args[i])` 后得到真实 `node`
-   - 当前错误形状：`p_args[i] == node`，引擎会把对象实例内存起始地址误当成“保存了 `Node *` 的槽位”来读
-8. 于是 `godot_Node_add_child(...)` 崩溃的根因并不是 `Node.add_child(...)` 这个 API 本身，而是 wrapper 把：
-   - public C ABI 中的 object pointer argument
-   - 和 Godot `ptrcall` 需要的 object-pointer slot address
-   - 错误地当成了同一层
-9. 这也解释了为什么：
-   - `godot_Node_get_child_count(bool)` 没有 object 参数，所以 `_args[] = { &include_internal }` 形状正确，调用正常
-   - `godot_Node_add_child(Node, bool, enum)` 一旦出现 object 参数，就会在 `_args[0]` 这一位把错误形状送进 `ptrcall`
-10. 因而它也不是 `Node.add_child(...)` 单点特例：
-   - `remove_child(Node)`、`reparent(Node, bool)`、`TreeItem.add_child(TreeItem)` 这类 class-method object-parameter wrapper 理论上都共享同一风险面
+- 先前 `Node.add_child(...)` 被挂在这里，是因为 gdcc exact engine route 当时仍经过 wrapper-facing surface
+- 现在 backend 已迁移到 generated helper：
+  - non-vararg exact route 走 `gdcc_engine_call_<...>` + direct `godot_object_method_bind_ptrcall(...)`
+  - vararg exact route 走 `gdcc_engine_callv_<...>` + direct `godot_object_method_bind_call(...)`
+- 因而对 typed receiver exact route：
+  - `var holder: Node = Node.new()`
+  - `holder.add_child(Node.new())`
+  - 这条形状现在应视为 gdcc backend-focused 正向 runtime regression anchor，而不是 known limit 示例
+- plain `var holder = Node.new()` 仍只代表 dynamic fallback / runtime-open surface，不能拿来推导 exact route 结论
 
-换句话说，本轮 frontend exact metadata 修复把 `Node.add_child(...)` 从“前端先失败”推进到了“runtime 暴露真实 ABI 缺口”的阶段；它没有解决这条问题，不是因为方案遗漏，而是因为这本来就是另一条位于 gdextension-lite wrapper 层的独立缺陷。
+剩余的 known-limit 结论应改写为：
 
-因此当前处理结论是：
-
-- `Node.add_child(...)` 仍然保留为 frontend sema / lowering focused regression anchor
-- 真引擎 `test_suite` 则改用 `ArrayMesh.add_surface_from_arrays(...)` 作为 exact metadata default 的 runtime anchor
-- 等 gdextension-lite 的 object-parameter ptrcall 包装修复后，再把 `Node.add_child(...)` 补回 resource suite 会更干净
+- `Node.add_child(...)` 必须从“gdcc 当前 exact engine `CALL_METHOD` 仍受 wrapper ABI 缺口阻断”的示例中移出
+- `ArrayMesh.add_surface_from_arrays(...)` 仍可继续作为 resource suite 中覆盖 metadata family / default route 的正向锚点
+- 但这条 resource 选择不再意味着 `Node.add_child(...)` 对 migrated gdcc exact route 仍不可用
+- 本文档保留的只是 `gdextension-lite` stock wrapper debt 本身，而不是把它泛化到已经迁移后的 gdcc exact engine helper route
 
 ### 8.5 builtin static gdextension method 暂时也不适合用来补这轮 resource 回归
 
@@ -307,6 +301,75 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 - bare utility default 继续由 compiler-side focused tests 锚定，例如：
   - `src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
 - 若后续 Godot stock API 新增带默认值的 utility function，或 `test_suite` 支持挂入额外测试 extension，再补对应的真引擎 resource case
+
+### 8.7 `test_suite` 目前仍缺少 stock exact engine static route 的资源锚点
+
+本轮在补 `engine_method_bind_plan.md` 的 resource 回归时，还暴露出另一条剩余不足：
+
+- `test_suite` 这条 stock compile/link/run harness 目前没有一个稳定、真实、可长期维护的 Godot API 样本，能在“不伪造 metadata”的前提下锚定：
+  - 实例语法命中 static engine method
+  - 同时还能证明这条 route 继续保持“warning + 无 receiver helper 调用 + NULL bind receiver”合同
+
+这不是说 backend 的 static exact route 没有覆盖，而是：
+
+- 当前可稳定表达的 stock resource 更适合锚定：
+  - non-vararg exact instance route
+  - object-parameter exact instance route
+  - vararg exact route的 success / discard / error-path
+- static exact route 仍主要依赖 focused integration / codegen tests：
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
+  - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
+
+当前处理结论：
+
+- `test_suite` 不为覆盖 static exact route 去引入自造 engine metadata 或偏门 API 样本
+- 后续若 Godot stock API 出现更稳定的实例语法 static-anchor，或 harness 支持同时观察 warning / generated helper 信号，再补对应 resource case
+
+### 8.8 本轮 compile-run 资源测试额外暴露并修复了 quoted `StringName` literal codegen 泄漏
+
+这条记录不再是 remaining known limit，但需要保留测试事实链，避免后续误判。
+
+本轮最初把以下 stock GDScript 形状加入 `test_suite`：
+
+- `var probe: Node = Node.new()`
+- `var has_method: bool = probe.call(&"has_method", &"queue_free")`
+- `probe.call(&"has_method", &"queue_free")`
+- 再读取 `probe.get_child_count()`
+
+第一次定向执行 `GdScriptUnitTestCompileRunnerTest` 时暴露出：
+
+- `runtime/engine_node_call_exact_vararg_success.gd`
+- `runtime/engine_node_call_exact_vararg_discard_return.gd`
+
+都会在输出里混入：
+
+- `engine method call failed: Object.call`
+
+进一步检查 generated `entry.c` 后确认，真实根因不是 `Object.call` helper 本身，而是：
+
+- frontend source surface 产出的 `LiteralStringNameInsn` 会把 quoted spelling 原样带到 backend
+- 例如 `&"get_child_count"` 被落成：
+  - `godot_new_StringName_with_utf8_chars(u8"&\\\"get_child_count\\\"")`
+- 这会把 GDScript 语法前缀一起写进真实 `StringName` 值中
+- 因而 method bind lookup / `Object.call` 正向路径也会被误打成 runtime error
+
+本轮已修复：
+
+- `src/main/java/dev/superice/gdcc/backend/c/gen/insn/NewDataInsnGen.java`
+  - 在发射 `LiteralStringNameInsn` 时归一化 frontend 传入的 quoted spelling
+  - 并保留转义字符语义
+- `src/test/java/dev/superice/gdcc/backend/c/gen/CNewDataInsnGenTest.java`
+  - 新增 focused regression，锚定 `&"hero"` 必须生成 `u8"hero"`
+- `runtime/engine_node_call_exact_vararg_success.gd`
+- `runtime/engine_node_call_exact_vararg_discard_return.gd`
+  - 继续保留 tail-bearing positive anchors
+  - validation 同时保留 `output_not_contains=engine method call failed: Object.call`，防止将来再出现“返回值正确但中途已报错”的假阳性
+
+当前结论：
+
+- “带尾参 exact vararg 正向 resource case” 现已恢复为稳定正向锚点
+- 这条问题不应继续记录为 `test_suite` 的 remaining limitation
+- 但 compile-run resource validation 中的 `output_not_contains` guard rail 应继续保留
 
 ## 2. `test_suite` 当前只能把 `Node` 根脚本挂进场景树
 

@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CallMethodInsnGenEngineTest {
 
     @Test
-    @DisplayName("CALL_METHOD should call engine vararg method correctly in real engine")
+    @DisplayName("CALL_METHOD should keep exact engine vararg success, discard and error paths stable in real engine")
     void callMethodEngineVarargShouldRunInRealGodot() throws IOException, InterruptedException {
         if (!hasZig()) {
             Assumptions.abort("Zig not found; skipping integration test");
@@ -101,6 +101,12 @@ class CallMethodInsnGenEngineTest {
 
         assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("engine vararg call_method check passed."), "Vararg path should pass.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("engine vararg discard call_method check passed."), "Discard path should pass.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("engine vararg error-path check passed."), "Error path should continue after helper cleanup.\nOutput:\n" + combinedOutput);
+        assertTrue(
+                combinedOutput.contains("engine method call failed: Object.call: invalid target method 'missing_method'"),
+                "Helper should emit a stable runtime error with concrete call details for call-error paths.\nOutput:\n" + combinedOutput
+        );
         assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
     }
 
@@ -392,6 +398,8 @@ class CallMethodInsnGenEngineTest {
 
         var selfType = new GdObjectType(clazz.getName());
         clazz.addFunction(newEngineVarargCallFunction(selfType));
+        clazz.addFunction(newEngineVarargDiscardCallFunction(selfType));
+        clazz.addFunction(newEngineVarargMissingMethodFunction(selfType));
         return clazz;
     }
 
@@ -583,6 +591,57 @@ class CallMethodInsnGenEngineTest {
         return func;
     }
 
+    private static LirFunctionDef newEngineVarargDiscardCallFunction(GdObjectType selfType) {
+        var func = newMethod("call_engine_vararg_discard_has_method", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("dispatchMethod", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("argMethodName", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("argMethodNameVariant", GdVariantType.VARIANT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new LiteralStringNameInsn("dispatchMethod", "has_method"));
+        entry(func).appendInstruction(new LiteralStringNameInsn("argMethodName", "queue_free"));
+        entry(func).appendInstruction(new PackVariantInsn("argMethodNameVariant", "argMethodName"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "call",
+                "node",
+                List.of(varRef("dispatchMethod"), varRef("argMethodNameVariant"))
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "result",
+                "get_child_count",
+                "node",
+                List.of()
+        ));
+        entry(func).appendInstruction(new ReturnInsn("result"));
+        return func;
+    }
+
+    private static LirFunctionDef newEngineVarargMissingMethodFunction(GdObjectType selfType) {
+        var func = newMethod("call_engine_vararg_missing_method_and_continue", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("dispatchMethod", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("ignoredResult", GdVariantType.VARIANT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new LiteralStringNameInsn("dispatchMethod", "missing_method"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "ignoredResult",
+                "call",
+                "node",
+                List.of(varRef("dispatchMethod"))
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "result",
+                "get_child_count",
+                "node",
+                List.of()
+        ));
+        entry(func).appendInstruction(new ReturnInsn("result"));
+        return func;
+    }
+
     private static LirFunctionDef newGdccCrossCallFunction(GdObjectType selfType) {
         var func = newMethod("call_peer_echo", GdIntType.INT, selfType);
         func.addParameter(new LirParameterDef("peer", new GdObjectType("GDPeerWorker"), null, func));
@@ -741,6 +800,18 @@ class CallMethodInsnGenEngineTest {
                         print("engine vararg call_method check passed.")
                     else:
                         push_error("engine vararg call_method check failed.")
+                
+                    var discard_count = int(target.call("call_engine_vararg_discard_has_method", probe))
+                    if discard_count == 0:
+                        print("engine vararg discard call_method check passed.")
+                    else:
+                        push_error("engine vararg discard call_method check failed.")
+                
+                    var error_count = int(target.call("call_engine_vararg_missing_method_and_continue", probe))
+                    if error_count == 0:
+                        print("engine vararg error-path check passed.")
+                    else:
+                        push_error("engine vararg error-path check failed.")
                 """;
     }
 

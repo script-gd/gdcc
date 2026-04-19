@@ -98,7 +98,95 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
         &error
     );
     if (error.error != GDEXTENSION_CALL_OK) {
-        GDCC_PRINT_RUNTIME_ERROR("${helper.renderEngineMethodCallErrorDescription(resolved)}", __func__, __FILE__, __LINE__);
+        char call_error_desc[512];
+        switch (error.error) {
+            case GDEXTENSION_CALL_ERROR_INVALID_METHOD:
+<#if resolved.ownerClassName == "Object" && resolved.methodName == "call" && helperParams?size gt 0>
+            {
+                char target_method_name[256];
+                gdcc_string_name_to_utf8(${helperParams[0].name}, target_method_name, sizeof(target_method_name));
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: invalid target method '%s'",
+                    target_method_name
+                );
+                break;
+            }
+<#else>
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: invalid method"
+                );
+                break;
+</#if>
+            case GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT:
+            {
+                char expected_type_name[64];
+                char actual_type_name[64];
+                gdcc_variant_type_to_utf8(error.expected, expected_type_name, sizeof(expected_type_name));
+                if (call_args != NULL && error.argument >= 0 && error.argument < final_argc && call_args[error.argument] != NULL) {
+                    gdcc_variant_type_to_utf8(
+                        godot_variant_get_type((const godot_Variant *)call_args[error.argument]),
+                        actual_type_name,
+                        sizeof(actual_type_name)
+                    );
+                } else {
+                    snprintf(actual_type_name, sizeof(actual_type_name), "<unknown>");
+                }
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: invalid argument #%lld, expected '%s', got '%s'",
+                    (long long)error.argument,
+                    expected_type_name,
+                    actual_type_name
+                );
+                break;
+            }
+            case GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS:
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: too many arguments, expected %lld, got %lld",
+                    (long long)error.expected,
+                    (long long)final_argc
+                );
+                break;
+            case GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS:
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: too few arguments, expected %lld, got %lld",
+                    (long long)error.expected,
+                    (long long)final_argc
+                );
+                break;
+            case GDEXTENSION_CALL_ERROR_INSTANCE_IS_NULL:
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: instance is null"
+                );
+                break;
+            case GDEXTENSION_CALL_ERROR_METHOD_NOT_CONST:
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: method is not const"
+                );
+                break;
+            default:
+                snprintf(
+                    call_error_desc,
+                    sizeof(call_error_desc),
+                    "engine method call failed: ${resolved.ownerClassName}.${resolved.methodName}: unknown call error %d",
+                    (int)error.error
+                );
+                break;
+        }
+        GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);
         goto cleanup;
     }
 <#if resolved.returnType.typeName != "void">

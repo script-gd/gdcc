@@ -969,6 +969,26 @@
     - 仍消费 `gdextension-lite` stock wrapper 的路径
     - 或任何仍依赖这组 shared generator 积木的调用面
 
+### 当前进度
+
+- [x] `CCodegenTest` 已补齐 phase-8 代码生成层回归矩阵
+  - 继续按 `GeneratedFile.filePath()` 定位 `entry.c` / `engine_method_binds.h` / `entry.h`
+  - 锁定 `engine_method_binds.h` 恒存在、`entry.h` 恒包含 include
+  - 锁定 accessor / non-vararg helper / vararg helper 只对 exact engine route 生成
+  - 锁定同一 exact method 在单次 `generate()` session 中只生成一次 helper
+  - 锁定 public `generateFuncBody(...)` 仍保持 no-op usage，不会隐式污染 module session
+  - 锁定 `generate()` 走 session-bound body renderer，而不是 public `generateFuncBody(...)`
+  - 锁定失败的单函数 render 不会向 module session 泄漏脏 usage
+  - phase-8 最小 API fixture 已避免把同名 engine class 元数据拆成多个 `ExtensionGdClass`
+  - 原因是 `ClassRegistry` 会按类名最后写入覆盖；测试夹具若把同一 owner 的方法拆散，会伪造出不存在于真实 API 的 dynamic fallback
+- [x] build / integration 回归已扩展
+  - `FrontendLoweringToCProjectBuilderIntegrationTest` 现锁定生成工程稳定包含 `engine_method_binds.h`
+  - `CallMethodInsnGenEngineTest` 现把 exact vararg runtime 锚点扩展到 success / discard-return / call-error 三条路径
+- [x] 文档事实源已对齐到 generated helper / direct bind route
+  - `doc/module_impl/backend/call_method_implementation.md` 已明确 exact engine route 以 generated helper + direct bind 为事实来源
+  - `doc/gdcc_c_backend.md` 已补齐 non-vararg `ptrcall` / vararg `call` 与 object-slot ABI 规则
+  - `doc/test_error/test_suite_engine_integration_known_limits.md` 已把 `gdextension-lite` ABI debt 缩窄为 wrapper consumer 的剩余适用面
+
 ## 完成定义（DoD）
 
 - `ResolvedMethodCall` 已稳定保留 exact engine method bind 身份信息
