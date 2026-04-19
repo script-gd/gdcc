@@ -214,6 +214,13 @@
 
 ### 步骤 3：修复 frontend body lowering producer
 
+- 状态：Implemented（2026-04-19）
+- 当前落实：
+  - `FrontendOpaqueExprInsnLoweringProcessors` 的 `string` / `string_name` 分支已改为通过 `StringUtil.decodeGdStringLexeme(...)` 发布 normalized runtime payload
+  - `FrontendLoweringBodyInsnPassTest` 已新增 property-init `String` 与 executable-body `StringName` 两组回归，直接对照 AST `sourceText()` 与 lowered LIR `value()`
+  - `FrontendLoweringBodyInsnPassTest` 也补充了 compile-gate bypass 场景下 malformed string lexeme 的 fail-fast 回归，确保坏 lexeme 会在 frontend lowering 边界暴露
+  - `FrontendAnnotationParseBehaviorTest` 继续作为 parser-side raw lexeme 语义的回归锚点，证明本步骤没有反向篡改 AST surface
+
 #### 目标
 
 让 frontend 在发布 `LiteralStringInsn` / `LiteralStringNameInsn` 时就输出正确 payload。
@@ -243,6 +250,22 @@
 
 ### 步骤 4：收紧 backend 消费合同，移除静默补救
 
+- 状态：Implemented（2026-04-19）
+- 当前落实：
+  - `NewDataInsnGen` 已删除 `StringName` 路径对 raw `&"..."` lexeme 的静默解码补救，backend 现在只把 `LiteralStringNameInsn.value()` 当作 normalized runtime payload 消费
+  - backend 对可明确识别的坏合同增加了 fail-fast：若 `LiteralStringNameInsn.value()` 仍长成 `&"..."`，则直接抛出 `InvalidInsnException`
+  - 普通 `String` 路径继续保持 payload-only 消费，不再尝试根据前后引号猜测 producer 是否误传 raw lexeme
+  - `CNewDataInsnGenTest` 已补充 quoted payload 正向锚点，以及 `StringName` raw lexeme 显式失败断言
+
+#### 现实边界
+
+- `StringName` raw lexeme 有显式 `&` 前缀，因此 backend 能稳定识别 `&"..."` 这种明显漂移形态
+- 普通 `String` 不具备同样的可判定性：`"hero"` 既可能是坏 producer 误传的 raw lexeme，也可能是合法的 normalized payload，其运行时内容本来就包含前后引号
+- 因此本步骤不能安全地把“所有带前后引号的 `LiteralStringInsn.value()`”一律视为错误，否则会错误拒绝合法 payload
+- 当前实现选择的合同是：
+  - 对 `StringName`：发现可判定的 raw lexeme 就显式失败
+  - 对 `String`：只消费 payload，不做不可靠的形态猜测
+
 #### 目标
 
 让 backend 明确只消费归一化后的 LIR；如果 future producer 再次漂移，应直接 fail-fast，而不是静默“看起来还能跑”。
@@ -252,24 +275,28 @@
 - 调整 `NewDataInsnGen`
 - 普通 `String` 路径继续直接消费 normalized payload
 - `StringName` 路径删除当前仅针对 `&"..."` 的静默兼容归一化分支
-- 如需保留 guard rail，建议统一做成“检测到明显 raw lexeme 形态时显式报合同错误”，而不是再次偷偷解码
+- guard rail 仅能用于“可明确识别的 raw lexeme 形态”，不能把所有带引号的 payload 都当成坏输入
 
 #### 为什么要显式失败
 
 - backend 一旦继续容忍 raw lexeme，future 新 producer 漂移时测试又会被掩盖
 - 与其让错误继续表现成 runtime 拼接/切片异常，不如在 codegen 阶段报出“坏 IR 合同”
+- 但显式失败也必须建立在“不会误伤合法 payload”的前提上，因此普通 `String` 只能继续依赖前面步骤建立的 producer 合同与测试锚点
 
 #### 需要补的测试
 
 - `CNewDataInsnGenTest`
   - 保留现有 normalized payload 正向断言
-  - 新增 raw quoted `LiteralStringInsn` / `LiteralStringNameInsn` 的负向断言
+  - Java 断言文本必须直接锚定生成出的 C 代码形态，例如 `u8"hello"` / `u8"\"hero\""`，不要误把日志或工具输出中的二次转义层写进期望值
+  - 新增普通 `String` / `StringName` 对 quoted payload 的正向断言，证明 backend 不会把合法 payload 误判为 raw lexeme
+  - 新增 raw `&"..."` `LiteralStringNameInsn` 的负向断言，证明明显坏合同会被显式拒绝
 - 如有必要，可在更贴近 body generation 的测试里增加“坏 IR 必须 fail-fast”的覆盖
 
 #### 验收细则
 
 - 所有 normalized payload 正向 case 继续生成与现状等价的 C 文本
-- raw lexeme 输入不再被 backend 静默接纳
+- 明显可检测的 raw `StringName` lexeme 输入不再被 backend 静默接纳
+- 合法的 quoted payload 仍能被稳定 materialize，尤其是内容本身带前后引号的 `String` / `StringName`
 - `NewDataInsnGen` 中不再残留只服务某一类 producer 漂移的隐式兼容分支
 
 ### 步骤 5：补齐真引擎 compile-run 锚点

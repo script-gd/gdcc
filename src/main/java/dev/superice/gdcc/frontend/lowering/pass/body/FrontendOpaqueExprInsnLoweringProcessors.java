@@ -13,6 +13,7 @@ import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
 import dev.superice.gdcc.lir.insn.UnaryOpInsn;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -92,7 +93,8 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         }
     }
 
-    /// Emits literal materialization instructions directly from the parser literal kind/source text.
+    /// Emits literal materialization instructions from the parser literal kind while preserving the
+    /// LIR contract that string-like payloads are already runtime-normalized.
     ///
     /// The processor stays intentionally dumb: all type acceptance already happened upstream, so it
     /// only translates the published literal surface into the matching concrete LIR instruction.
@@ -112,35 +114,36 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
         ) {
             var item = requireContext(context);
             var resultSlotId = session.resultSlotId(item);
+            var sourceText = node.sourceText();
             switch (node.kind()) {
                 case "integer" -> block.appendNonTerminatorInstruction(new LiteralIntInsn(
                         resultSlotId,
-                        Integer.parseInt(node.sourceText())
+                        Integer.parseInt(sourceText)
                 ));
                 case "number" -> {
-                    if (node.sourceText().contains(".")) {
+                    if (sourceText.contains(".")) {
                         block.appendNonTerminatorInstruction(new LiteralFloatInsn(
                                 resultSlotId,
-                                Double.parseDouble(node.sourceText())
+                                Double.parseDouble(sourceText)
                         ));
                         return block;
                     }
                     block.appendNonTerminatorInstruction(new LiteralIntInsn(
                             resultSlotId,
-                            Integer.parseInt(node.sourceText())
+                            Integer.parseInt(sourceText)
                     ));
                 }
                 case "float" -> block.appendNonTerminatorInstruction(new LiteralFloatInsn(
                         resultSlotId,
-                        Double.parseDouble(node.sourceText())
+                        Double.parseDouble(sourceText)
                 ));
                 case "string" -> block.appendNonTerminatorInstruction(new LiteralStringInsn(
                         resultSlotId,
-                        node.sourceText()
+                        StringUtil.decodeGdStringLexeme(sourceText)
                 ));
                 case "string_name" -> block.appendNonTerminatorInstruction(new LiteralStringNameInsn(
                         resultSlotId,
-                        node.sourceText()
+                        StringUtil.decodeGdStringLexeme(sourceText)
                 ));
                 case "true" -> block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, true));
                 case "false" -> block.appendNonTerminatorInstruction(new LiteralBoolInsn(resultSlotId, false));

@@ -20,7 +20,6 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
-import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
@@ -64,6 +63,9 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
     }
 
     private void emitStringLiteral(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable resultVar, @NotNull String value) {
+        // Ordinary String payloads may legitimately contain leading/trailing quotes, so backend keeps
+        // this path payload-only instead of guessing whether the producer accidentally passed a raw
+        // source lexeme.
         var utf8Literal = utf8Literal(value);
         if (resultVar.ref()) {
             bodyBuilder.callVoid(
@@ -81,11 +83,12 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
     }
 
     private void emitStringNameLiteral(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable resultVar, @NotNull String value) {
-        var normalizedValue = value;
-        if (value.length() >= 3 && value.startsWith("&\"") && value.endsWith("\"")) {
-            normalizedValue = StringUtil.unescapeQuoted(value.substring(2, value.length() - 1));
+        if (looksLikeRawStringNameLexeme(value)) {
+            throw bodyBuilder.invalidInsn(
+                    "LiteralStringNameInsn must carry normalized runtime payload, not raw lexeme: " + value
+            );
         }
-        var utf8Literal = utf8Literal(normalizedValue);
+        var utf8Literal = utf8Literal(value);
         if (resultVar.ref()) {
             bodyBuilder.callVoid(
                     "godot_string_name_new_with_utf8_chars",
@@ -174,11 +177,16 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
                     throw bodyBuilder.invalidInsn("Result variable ID " + resultVariable.id() + " is not of variant/nil type");
                 }
             }
-            default -> throw bodyBuilder.invalidInsn("Unsupported new-data instruction: " + instruction.opcode().opcode());
+            default ->
+                    throw bodyBuilder.invalidInsn("Unsupported new-data instruction: " + instruction.opcode().opcode());
         }
     }
 
     private @NotNull String utf8Literal(@NotNull String value) {
         return "u8\"" + escapeStringLiteral(value) + "\"";
+    }
+
+    private boolean looksLikeRawStringNameLexeme(@NotNull String value) {
+        return value.length() >= 3 && value.startsWith("&\"") && value.endsWith("\"");
     }
 }
