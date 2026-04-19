@@ -201,6 +201,27 @@ static GDExtensionInt gdcc_string_name_to_utf8(const godot_StringName *sn, char 
     return len;
 }
 
+/// Helper: convert a Variant type enum name to a UTF-8 C string into a provided buffer.
+/// Returns the number of characters written (excluding null terminator).
+static GDExtensionInt gdcc_variant_type_to_utf8(GDExtensionVariantType type, char *buf, GDExtensionInt buf_size) {
+    godot_String str;
+    godot_variant_get_type_name(type, &str);
+    if (buf == NULL || buf_size <= 0) {
+        godot_String_destroy(&str);
+        return 0;
+    }
+    GDExtensionInt len = godot_string_to_utf8_chars(&str, buf, buf_size - 1);
+    if (len < 0) {
+        len = 0;
+    }
+    if (len >= buf_size) {
+        len = buf_size - 1;
+    }
+    buf[len] = '\0';
+    godot_String_destroy(&str);
+    return len;
+}
+
 /// Runtime type guard for Variant -> builtin unpack.
 /// Requires exact GDExtensionVariantType match.
 static godot_bool gdcc_check_variant_type_builtin(const godot_Variant *value,

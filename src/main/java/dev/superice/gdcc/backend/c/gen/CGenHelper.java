@@ -1,6 +1,11 @@
 package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.backend.c.gen.binding.BindingData;
+import dev.superice.gdcc.backend.c.gen.binding.BoundMetadata;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
+import dev.superice.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import dev.superice.gdcc.backend.c.gen.insn.OperatorResolver;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.exception.NotImplementedException;
@@ -42,14 +47,6 @@ public final class CGenHelper {
         this.collectBindingData(classDefs);
     }
 
-    public record BindingData(
-            @NotNull List<GdType> paramTypes,
-            @NotNull GdType returnType,
-            @NotNull List<GdType> defaultVariables,
-            boolean staticMethod
-    ) {
-    }
-
     public record OperatorEvaluatorHelperSpec(
             @NotNull String functionName,
             boolean unary,
@@ -79,15 +76,6 @@ public final class CGenHelper {
                 throw new IllegalArgumentException("Binary evaluator helper must have rightVariantTypeEnumLiteral");
             }
         }
-    }
-
-    public record BoundMetadata(
-            @NotNull String typeEnumLiteral,
-            @NotNull String hintEnumLiteral,
-            @NotNull String hintStringExpr,
-            @NotNull String classNameExpr,
-            @NotNull String usageExpr
-    ) {
     }
 
     private record TypedContainerRuntimeLeaf(
@@ -366,6 +354,111 @@ public final class CGenHelper {
         };
     }
 
+    /// Engine bind accessor symbols must stay backend-owned and collision-free relative to gdextension-lite.
+    /// Static and vararg markers remain explicit because later helper surfaces diverge even when bind lookup
+    /// still uses the same owner/method/hash triple.
+    public @NotNull String renderEngineMethodBindAccessorName(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return requireEngineMethodSymbolKey(resolved).renderBindAccessorName();
+    }
+
+    /// The accessor tries the primary hash first, then compatibility hashes in declared order.
+    /// Duplicate or zero hashes are skipped so the generated skeleton stays stable and reviewable.
+    public @NotNull List<Long> collectEngineMethodBindLookupHashes(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        var bindSpec = Objects.requireNonNull(
+                resolved.engineMethodBindSpec(),
+                "Exact engine method bind metadata is required to render lookup hashes"
+        );
+        var hashes = new LinkedHashSet<Long>();
+        hashes.add(bindSpec.hash());
+        for (var hashCompatibility : bindSpec.hashCompatibility()) {
+            if (hashCompatibility != 0L) {
+                hashes.add(hashCompatibility);
+            }
+        }
+        return List.copyOf(hashes);
+    }
+
+    /// Direct exact-engine helpers must stay in a backend-owned namespace so later route switches
+    /// never collide with gdextension-lite public wrappers.
+    public @NotNull String renderEngineMethodCallHelperName(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return requireEngineMethodSymbolKey(resolved).renderCallHelperName();
+    }
+
+    /// Helper parameters intentionally mirror the current callable surface:
+    /// - primitive/object slots stay value-shaped
+    /// - value-semantic wrappers stay storage-pointer shaped
+    /// - enum/bitfield keep normalized helper params and let the helper materialize raw slots locally
+    public @NotNull List<EngineMethodHelperParam> collectEngineMethodHelperParameters(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        var params = new ArrayList<EngineMethodHelperParam>(resolved.parameters().size());
+        for (var i = 0; i < resolved.parameters().size(); i++) {
+            var parameter = resolved.parameters().get(i);
+            var slotMode = parameter.engineHelperSlotMode();
+            var cType = switch (slotMode) {
+                case STORAGE_POINTER -> renderGdTypeRefInC(parameter.type());
+                case VALUE_ADDRESS, LOCAL_VALUE_SLOT_ADDRESS -> renderGdTypeInC(parameter.type());
+            };
+            params.add(new EngineMethodHelperParam(
+                    "arg" + i,
+                    parameter.type(),
+                    cType,
+                    slotMode,
+                    parameter.engineHelperLocalSlotCType()
+            ));
+        }
+        return List.copyOf(params);
+    }
+
+    /// Ptrcall consumes addresses of argument storage slots.
+    /// - value-shaped params pass `&arg`
+    /// - storage-pointer params pass the helper argument directly
+    /// - enum/bitfield params first point at a helper-local raw slot
+    public @NotNull String renderEngineMethodPtrcallSlotExpr(@NotNull EngineMethodHelperParam param) {
+        return switch (param.slotMode()) {
+            case VALUE_ADDRESS -> "&" + param.name();
+            case STORAGE_POINTER -> param.name();
+            case LOCAL_VALUE_SLOT_ADDRESS -> "&" + renderEngineMethodHelperLocalSlotName(param);
+        };
+    }
+
+    /// Helper-local pack sites always consume the normalized helper surface.
+    public @NotNull String renderEngineMethodHelperValueExpr(@NotNull EngineMethodHelperParam param) {
+        return param.name();
+    }
+
+    public boolean checkEngineMethodHelperRequiresLocalValueSlot(@NotNull EngineMethodHelperParam param) {
+        return param.requiresLocalValueSlot();
+    }
+
+    public @NotNull String renderEngineMethodHelperLocalSlotDecl(@NotNull EngineMethodHelperParam param) {
+        if (!param.requiresLocalValueSlot() || param.slotCType() == null || param.slotCType().isBlank()) {
+            throw new IllegalArgumentException("Engine helper parameter does not require a local slot: " + param.name());
+        }
+        return "const " + param.slotCType() + " " + renderEngineMethodHelperLocalSlotName(param) +
+                " = (" + param.slotCType() + ")" + param.name() + ";";
+    }
+
+    public @NotNull String renderEngineMethodBindLookupErrorDescription(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return "engine method bind lookup failed: " +
+                escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
+    }
+
+    public @NotNull String renderEngineMethodCallErrorDescription(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return "engine method call failed: " +
+                escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
+    }
+
     public @NotNull String renderVarRef(@NotNull LirFunctionDef func, @NotNull String varName) {
         var varDef = func.getVariableById(varName);
         if (varDef == null) {
@@ -379,7 +472,25 @@ public final class CGenHelper {
     }
 
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {
-        return renderFuncBindName(bindingData.returnType, bindingData.paramTypes, bindingData.defaultVariables, bindingData.staticMethod);
+        return renderFuncBindName(
+                bindingData.returnType(),
+                bindingData.paramTypes(),
+                bindingData.defaultVariables(),
+                bindingData.staticMethod()
+        );
+    }
+
+    private @NotNull EngineMethodSymbolKey requireEngineMethodSymbolKey(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return Objects.requireNonNull(
+                EngineMethodSymbolKey.from(resolved),
+                "Exact engine helper symbol key requires resolved exact engine metadata"
+        );
+    }
+
+    private @NotNull String renderEngineMethodHelperLocalSlotName(@NotNull EngineMethodHelperParam param) {
+        return param.name() + "_slot";
     }
 
     public @NotNull String renderFuncBindName(@NotNull FunctionDef functionDef) {

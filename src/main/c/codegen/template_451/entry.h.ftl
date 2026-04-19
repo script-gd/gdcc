@@ -10,6 +10,7 @@
 static GDExtensionClassLibraryPtr class_library = NULL;
 #include <gdextension-lite.h>
 #include <gdcc_helper.h>
+#include "engine_method_binds.h"
 
 struct GDExtensionInitializationStatus {
     godot_bool initialized;

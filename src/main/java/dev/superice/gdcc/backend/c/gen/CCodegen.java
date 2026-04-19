@@ -4,6 +4,9 @@ import dev.superice.gdcc.backend.Codegen;
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.GeneratedFile;
 import dev.superice.gdcc.backend.TemplateLoader;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
+import dev.superice.gdcc.backend.c.gen.binding.GenerateRenderFacade;
 import dev.superice.gdcc.backend.c.gen.insn.*;
 import dev.superice.gdcc.enums.GdInstruction;
 import dev.superice.gdcc.enums.LifecycleProvenance;
@@ -427,9 +430,15 @@ public class CCodegen implements Codegen {
         return true;
     }
 
-    @SuppressWarnings("unchecked")
     public @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                             @NotNull LirFunctionDef func) {
+        return generateFuncBody(clazz, func, EngineMethodUsageBuffer.noOp());
+    }
+
+    @SuppressWarnings("unchecked")
+    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                     @NotNull LirFunctionDef func,
+                                     @NotNull EngineMethodUsageBuffer usageBuffer) {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
@@ -439,7 +448,7 @@ public class CCodegen implements Codegen {
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
-        var bodyBuilder = new CBodyBuilder(helper, clazz, func);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer);
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
@@ -455,6 +464,15 @@ public class CCodegen implements Codegen {
             }
         }
         return bodyBuilder.build();
+    }
+
+    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                     @NotNull LirFunctionDef func,
+                                     @NotNull EngineMethodUsageSession usageSession) {
+        var usageBuffer = usageSession.newFunctionBuffer();
+        var body = generateFuncBody(clazz, func, usageBuffer);
+        usageSession.commit(usageBuffer);
+        return body;
     }
 
     /// Renders the constructor-time property initializer apply body.
@@ -499,22 +517,44 @@ public class CCodegen implements Codegen {
             }
         }
         try {
-            var tplCtx = Map.of(
+            var usageSession = new EngineMethodUsageSession();
+            var bodyRender = new GenerateRenderFacade(
+                    (classDef, func) -> generateFuncBody(classDef, func, usageSession),
+                    this::generatePropertyInitApplyBody
+            );
+            var cTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
-                    "gen", this
+                    "bodyRender", bodyRender
             );
-            var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", tplCtx);
-            var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", tplCtx);
+            var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
+            var usedEngineMethods = usageSession.snapshot();
+            var bindTplCtx = Map.of(
+                    "module", module,
+                    "helper", helper,
+                    "usedEngineMethods", usedEngineMethods
+            );
+            var engineMethodBindsSrc = TemplateLoader.renderFromClasspath(
+                    "template_451/engine_method_binds.h.ftl",
+                    bindTplCtx
+            );
+            var hTplCtx = Map.of(
+                    "module", module,
+                    "helper", helper
+            );
+            var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", hTplCtx);
             cSrc = CCodeFormatter.format(cSrc);
+            engineMethodBindsSrc = CCodeFormatter.format(engineMethodBindsSrc);
             hSrc = CCodeFormatter.format(hSrc);
 
             var cBytes = cSrc.getBytes(StandardCharsets.UTF_8);
+            var engineMethodBindsBytes = engineMethodBindsSrc.getBytes(StandardCharsets.UTF_8);
             var hBytes = hSrc.getBytes(StandardCharsets.UTF_8);
 
             var cFile = new GeneratedFile(cBytes, "entry.c");
+            var engineMethodBindsFile = new GeneratedFile(engineMethodBindsBytes, "engine_method_binds.h");
             var hFile = new GeneratedFile(hBytes, "entry.h");
-            return List.of(cFile, hFile);
+            return List.of(cFile, engineMethodBindsFile, hFile);
         } catch (IOException | TemplateException e) {
             throw new RuntimeException("Failed to generate C code: " + e.getMessage(), e);
         }

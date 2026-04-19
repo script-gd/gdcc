@@ -74,13 +74,16 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
 
         var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
         var entrySource = Files.readString(projectDir.resolve("entry.c"));
+        var entryHeader = Files.readString(projectDir.resolve("entry.h"));
         var librarySuffix = projectInfo.getTargetPlatform().sharedLibraryFileName("artifact").replace("artifact", "");
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(Files.exists(projectDir.resolve("entry.c")));
+        assertTrue(Files.exists(projectDir.resolve("engine_method_binds.h")));
         assertTrue(Files.exists(projectDir.resolve("entry.h")));
         assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeFrontendBuildSmoke\")"), entrySource);
         assertFalse(entrySource.contains("GD_STATIC_SN(u8\"FrontendBuildSmoke\")"), entrySource);
+        assertTrue(entryHeader.contains("#include \"engine_method_binds.h\""), entryHeader);
         assertTrue(
                 buildResult.artifacts().stream()
                         .anyMatch(artifact -> artifact.getFileName().toString().endsWith(librarySuffix)),

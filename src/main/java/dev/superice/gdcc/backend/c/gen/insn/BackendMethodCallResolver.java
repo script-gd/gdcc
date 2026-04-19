@@ -1,6 +1,8 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodAbiSignature;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
@@ -10,6 +12,8 @@ import dev.superice.gdcc.scope.resolver.ScopeMethodParameter;
 import dev.superice.gdcc.scope.resolver.ScopeMethodResolver;
 import dev.superice.gdcc.scope.resolver.ScopeResolvedMethod;
 import dev.superice.gdcc.type.GdNilType;
+import dev.superice.gdcc.type.GdObjectType;
+import dev.superice.gdcc.type.GdPrimitiveType;
 import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
@@ -42,19 +46,31 @@ public final class BackendMethodCallResolver {
         FUNCTION
     }
 
-    /// Backend-only per-parameter ABI facts that do not belong in the shared semantic signature.
-    public sealed interface ExtraParamSpecData permits BitfieldPassByRefExtraParamSpecData {
+    /// Exact-engine helpers use one normalized callable surface and let the generated helper decide
+    /// how ptrcall should see each fixed argument.
+    public enum EngineHelperSlotMode {
+        /// The helper parameter is the normalized value itself, and ptrcall receives `&arg`.
+        VALUE_ADDRESS,
+        /// The helper parameter already points at stable storage, so ptrcall receives `arg` directly.
+        STORAGE_POINTER,
+        /// The helper parameter stays normalized, but the helper must first materialize a raw leaf slot.
+        LOCAL_VALUE_SLOT_ADDRESS
     }
 
-    /// Shared semantic resolution intentionally normalizes `bitfield::...` to `int`.
-    /// gdextension-lite class-method wrappers still expose the wrapper surface as
-    /// `const godot_<Owner>_<Flag> *`, so backend codegen keeps the rendered wrapper CType
-    /// as an extra ABI fact on the selected parameter.
-    public record BitfieldPassByRefExtraParamSpecData(@NotNull String cType) implements ExtraParamSpecData {
-        public BitfieldPassByRefExtraParamSpecData {
-            Objects.requireNonNull(cType);
-            if (cType.isBlank()) {
-                throw new IllegalArgumentException("bitfield pass-by-ref CType must not be blank");
+    /// Backend-only per-parameter ABI facts that do not belong in the shared semantic signature.
+    public sealed interface ExtraParamSpecData permits EngineHelperSlotExtraParamSpecData {
+    }
+
+    /// Shared semantic resolution keeps enum/bitfield parameters normalized as `int`.
+    /// Exact-engine helpers still need the raw exported leaf CType so they can materialize the
+    /// ptrcall slot locally without pushing wrapper-compatible casts back into Java callers.
+    public record EngineHelperSlotExtraParamSpecData(@NotNull EngineHelperSlotMode slotMode,
+                                                     @Nullable String slotCType) implements ExtraParamSpecData {
+        public EngineHelperSlotExtraParamSpecData {
+            Objects.requireNonNull(slotMode);
+            if (slotMode == EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS &&
+                    (slotCType == null || slotCType.isBlank())) {
+                throw new IllegalArgumentException("slotCType must be present for LOCAL_VALUE_SLOT_ADDRESS");
             }
         }
     }
@@ -82,14 +98,40 @@ public final class BackendMethodCallResolver {
             return defaultKind != DefaultArgKind.NONE;
         }
 
-        public boolean requiresBitfieldPassByRef() {
-            return bitfieldPassByRefExtraParamSpecData() != null;
+        public @NotNull EngineHelperSlotMode engineHelperSlotMode() {
+            var slotExtraData = engineHelperSlotExtraParamSpecData();
+            if (slotExtraData != null) {
+                return slotExtraData.slotMode();
+            }
+            return type instanceof GdPrimitiveType || type instanceof GdObjectType
+                    ? EngineHelperSlotMode.VALUE_ADDRESS
+                    : EngineHelperSlotMode.STORAGE_POINTER;
         }
 
-        public @Nullable BitfieldPassByRefExtraParamSpecData bitfieldPassByRefExtraParamSpecData() {
-            return extraParamSpecData instanceof BitfieldPassByRefExtraParamSpecData bitfieldData
-                    ? bitfieldData
+        public boolean requiresEngineHelperLocalValueSlot() {
+            return engineHelperSlotMode() == EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS;
+        }
+
+        public @Nullable String engineHelperLocalSlotCType() {
+            var slotExtraData = engineHelperSlotExtraParamSpecData();
+            return slotExtraData == null ? null : slotExtraData.slotCType();
+        }
+
+        public @Nullable EngineHelperSlotExtraParamSpecData engineHelperSlotExtraParamSpecData() {
+            return extraParamSpecData instanceof EngineHelperSlotExtraParamSpecData slotExtraData
+                    ? slotExtraData
                     : null;
+        }
+    }
+
+    /// Backend-only bind lookup identity for exact engine methods.
+    /// Shared semantic resolution stays normalized and does not carry these direct-bind facts.
+    public record EngineMethodBindSpec(long hash, @NotNull List<Long> hashCompatibility) {
+        public EngineMethodBindSpec {
+            if (hash == 0L) {
+                throw new IllegalArgumentException("engine method bind hash must not be zero");
+            }
+            hashCompatibility = List.copyOf(hashCompatibility);
         }
     }
 
@@ -100,6 +142,7 @@ public final class BackendMethodCallResolver {
                                      @NotNull String cFunctionName,
                                      @NotNull GdType returnType,
                                      @NotNull List<MethodParamSpec> parameters,
+                                     @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                      boolean isVararg,
                                      boolean isStatic) {
         public ResolvedMethodCall {
@@ -131,7 +174,7 @@ public final class BackendMethodCallResolver {
                 argTypes
         );
         return switch (result) {
-            case ScopeMethodResolver.Resolved resolved -> toResolvedMethodCall(resolved.method());
+            case ScopeMethodResolver.Resolved resolved -> toResolvedMethodCall(bodyBuilder, resolved.method());
             case ScopeMethodResolver.DynamicFallback dynamicFallback ->
                     dynamicPlaceholder(toDispatchMode(dynamicFallback.dynamicKind()), receiverType, methodName);
             case ScopeMethodResolver.Failed failed -> throw bodyBuilder.invalidInsn(failed.message());
@@ -164,12 +207,14 @@ public final class BackendMethodCallResolver {
                 "",
                 GdVariantType.VARIANT,
                 List.of(),
+                null,
                 true,
                 false
         );
     }
 
-    private static @NotNull ResolvedMethodCall toResolvedMethodCall(@NotNull ScopeResolvedMethod resolved) {
+    private static @NotNull ResolvedMethodCall toResolvedMethodCall(@NotNull CBodyBuilder bodyBuilder,
+                                                                    @NotNull ScopeResolvedMethod resolved) {
         var mode = toDispatchMode(resolved.ownerKind());
         var ownerClassName = resolved.ownerClass().getName();
         var sourceParameters = resolved.function().getParameters();
@@ -180,17 +225,51 @@ public final class BackendMethodCallResolver {
                     : null;
             parameters.add(toMethodParamSpec(resolved.parameters().get(i), sourceParameter));
         }
+        var engineMethodBindSpec = resolveEngineMethodBindSpec(bodyBuilder, resolved, mode);
         return new ResolvedMethodCall(
                 mode,
                 resolved.methodName(),
                 ownerClassName,
                 resolved.ownerType(),
-                renderMethodCFunctionName(mode, ownerClassName, resolved.methodName()),
+                renderMethodCFunctionName(
+                        mode,
+                        ownerClassName,
+                        resolved.methodName(),
+                        parameters,
+                        resolved.returnType(),
+                        engineMethodBindSpec,
+                        resolved.isVararg(),
+                        resolved.isStatic()
+                ),
                 resolved.returnType(),
                 parameters,
+                engineMethodBindSpec,
                 resolved.isVararg(),
                 resolved.isStatic()
         );
+    }
+
+    /// Only exact engine class metadata contributes method-bind identity.
+    /// A non-zero primary hash is required for every exact engine route.
+    private static @Nullable EngineMethodBindSpec resolveEngineMethodBindSpec(@NotNull CBodyBuilder bodyBuilder,
+                                                                              @NotNull ScopeResolvedMethod resolved,
+                                                                              @NotNull DispatchMode mode) {
+        if (mode != DispatchMode.ENGINE) {
+            return null;
+        }
+        return switch (resolved.function()) {
+            case dev.superice.gdcc.gdextension.ExtensionGdClass.ClassMethod method when method.hash() != 0L ->
+                    new EngineMethodBindSpec(method.hash(), normalizeHashCompatibility(method.hashCompatibility()));
+            case dev.superice.gdcc.gdextension.ExtensionGdClass.ClassMethod _ -> throw bodyBuilder.invalidInsn(
+                    "Exact engine method '" + resolved.ownerClass().getName() + "." + resolved.methodName() +
+                            "' is missing method-bind hash in extension metadata"
+            );
+            default -> null;
+        };
+    }
+
+    private static @NotNull List<Long> normalizeHashCompatibility(@Nullable List<Long> hashCompatibility) {
+        return hashCompatibility == null ? List.of() : hashCompatibility;
     }
 
     private static boolean isExtensionMethodMetadata(@NotNull ScopeResolvedMethod resolved) {
@@ -211,21 +290,55 @@ public final class BackendMethodCallResolver {
     }
 
     /// Shared semantic resolution keeps the published parameter type normalized.
-    /// Backend-only ABI quirks stay here so the shared resolver does not need to care about
-    /// wrapper-surface details from gdextension-lite.
+    /// Backend-only helper slot facts stay here so the shared resolver does not need to care about
+    /// raw ptrcall slot spellings exported by extension metadata.
     private static @Nullable ExtraParamSpecData resolveExtraParamSpecData(@Nullable ParameterDef sourceParameter) {
         if (!(sourceParameter instanceof ExtensionFunctionArgument extensionArgument)) {
             return null;
         }
         var rawType = extensionArgument.type();
-        if (rawType == null || !rawType.startsWith("bitfield::")) {
+        if (rawType == null || rawType.isBlank()) {
             return null;
         }
-        var leafName = rawType.substring("bitfield::".length()).trim();
-        if (leafName.isBlank()) {
-            throw new IllegalArgumentException("Malformed bitfield metadata type: " + rawType);
+        return switch (detectEngineHelperLocalSlotMetadataFamily(rawType)) {
+            case NONE -> null;
+            case ENUM, BITFIELD -> new EngineHelperSlotExtraParamSpecData(
+                    EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS,
+                    renderEngineHelperLocalSlotCType(rawType)
+            );
+        };
+    }
+
+    private static @NotNull EngineHelperLocalSlotMetadataFamily detectEngineHelperLocalSlotMetadataFamily(
+            @NotNull String rawType
+    ) {
+        var normalized = rawType.trim();
+        if (normalized.startsWith("enum::")) {
+            return EngineHelperLocalSlotMetadataFamily.ENUM;
         }
-        return new BitfieldPassByRefExtraParamSpecData("godot_" + leafName.replace('.', '_'));
+        if (normalized.startsWith("bitfield::")) {
+            return EngineHelperLocalSlotMetadataFamily.BITFIELD;
+        }
+        return EngineHelperLocalSlotMetadataFamily.NONE;
+    }
+
+    private static @NotNull String renderEngineHelperLocalSlotCType(@NotNull String rawType) {
+        var normalized = rawType.trim();
+        var family = detectEngineHelperLocalSlotMetadataFamily(normalized);
+        if (family == EngineHelperLocalSlotMetadataFamily.NONE) {
+            throw new IllegalArgumentException("Unsupported engine helper local-slot metadata: " + rawType);
+        }
+        var leafName = normalized.substring(normalized.indexOf("::") + 2).trim();
+        if (leafName.isBlank()) {
+            throw new IllegalArgumentException("Malformed engine helper local-slot metadata type: " + rawType);
+        }
+        return "godot_" + leafName.replace('.', '_');
+    }
+
+    private enum EngineHelperLocalSlotMetadataFamily {
+        NONE,
+        ENUM,
+        BITFIELD
     }
 
     private static @NotNull DefaultArgKind toDefaultArgKind(@NotNull ScopeDefaultArgKind defaultArgKind) {
@@ -238,11 +351,46 @@ public final class BackendMethodCallResolver {
 
     private static @NotNull String renderMethodCFunctionName(@NotNull DispatchMode mode,
                                                              @NotNull String ownerClassName,
-                                                             @NotNull String methodName) {
+                                                             @NotNull String methodName,
+                                                             @NotNull List<MethodParamSpec> parameters,
+                                                             @NotNull GdType returnType,
+                                                             @Nullable EngineMethodBindSpec engineMethodBindSpec,
+                                                             boolean isVararg,
+                                                             boolean isStatic) {
         return switch (mode) {
             case GDCC -> ownerClassName + "_" + methodName;
-            case ENGINE, BUILTIN -> "godot_" + ownerClassName + "_" + methodName;
+            case ENGINE -> renderEngineMethodCFunctionName(
+                    ownerClassName,
+                    methodName,
+                    parameters,
+                    returnType,
+                    engineMethodBindSpec,
+                    isVararg,
+                    isStatic
+            );
+            case BUILTIN -> "godot_" + ownerClassName + "_" + methodName;
             default -> "";
         };
+    }
+
+    /// Exact engine helper naming assumes bind lookup identity has already been validated.
+    private static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
+                                                                   @NotNull String methodName,
+                                                                   @NotNull List<MethodParamSpec> parameters,
+                                                                   @NotNull GdType returnType,
+                                                                   @Nullable EngineMethodBindSpec engineMethodBindSpec,
+                                                                   boolean isVararg,
+                                                                   boolean isStatic) {
+        Objects.requireNonNull(engineMethodBindSpec, "Exact engine route requires method bind spec");
+        return new EngineMethodSymbolKey(
+                ownerClassName,
+                methodName,
+                isStatic,
+                new EngineMethodAbiSignature(
+                        parameters.stream().map(MethodParamSpec::type).toList(),
+                        returnType,
+                        isVararg
+                )
+        ).renderCallHelperName();
     }
 }

@@ -20,6 +20,7 @@ import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AwaitExpression;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
@@ -494,6 +495,43 @@ class FrontendExpressionSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, scalarCall.expressionType().status());
         assertTrue(scalarCall.expressionType().detailReason().contains("Nil"));
         assertTrue(scalarCall.expressionType().detailReason().contains("int"));
+    }
+
+    @Test
+    void resolveCallExpressionTypeAcceptsInheritedBareVoidEngineCallsWithoutReturnValueMetadata() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_inherited_void_engine_calls.gd",
+                """
+                        class_name ExpressionSemanticSupportInheritedVoidEngineCalls
+                        extends Node
+                        
+                        func ping() -> void:
+                            add_to_group(&"alpha")
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var bareCallExpression = assertInstanceOf(
+                CallExpression.class,
+                assertInstanceOf(ExpressionStatement.class, findFunction(analyzed.ast(), "ping").body().statements().getFirst())
+                        .expression()
+        );
+
+        var bareResult = support.resolveCallExpressionType(bareCallExpression, publishedResolver, true, false);
+        var bareCall = bareResult.publishedCallOrNull();
+
+        assertAll(
+                () -> assertTrue(bareResult.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareResult.expressionType().status()),
+                () -> assertEquals(GdVoidType.VOID, bareResult.expressionType().publishedType()),
+                () -> assertNotNull(bareCall),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, bareCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, bareCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, bareCall.receiverKind()),
+                () -> assertEquals(GdVoidType.VOID, bareCall.returnType()),
+                () -> assertNotNull(bareCall.declarationSite())
+        );
     }
 
     @Test

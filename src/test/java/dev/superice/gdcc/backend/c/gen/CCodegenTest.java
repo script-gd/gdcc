@@ -3,19 +3,25 @@ package dev.superice.gdcc.backend.c.gen;
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.GeneratedFile;
 import dev.superice.gdcc.backend.ProjectInfo;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionAPI;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.gdextension.ExtensionBuiltinClass;
+import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
+import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.lir.LirBasicBlock;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.lir.insn.BinaryOpInsn;
+import dev.superice.gdcc.lir.insn.CallMethodInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LiteralFloatInsn;
 import dev.superice.gdcc.lir.insn.LiteralIntInsn;
@@ -33,8 +39,10 @@ import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdStringNameType;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -182,16 +190,216 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         List<GeneratedFile> files = codegen.generate();
 
-        assertEquals(2, files.size(), "Should produce two files");
+        assertEquals(3, files.size(), "Should produce three files");
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
 
-        var cFile = files.get(0);
-        var hFile = files.get(1);
-        var cCode = new String(cFile.contentWriter());
-        var hCode = new String(hFile.contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+        var hCode = generatedFileText(files, "entry.h");
         System.out.println(hCode);
         System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
+        assertTrue(bindHeaderCode.contains("GDEXTENSION_MY_MODULE_ENGINE_METHOD_BINDS_H"));
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
+        assertTrue(hCode.contains("#include \"engine_method_binds.h\""));
+    }
+
+    @Test
+    public void generateShouldUseGeneratedFilePathsAndCollectExactEngineHelpersOncePerSession() {
+        var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
+        var peerClass = new LirClassDef("EngineUsagePeer", "RefCounted");
+
+        var ping = newFunction("ping", GdVoidType.VOID);
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("EngineUsagePeer"), null, ping));
+        entry(ping).setTerminator(new ReturnInsn(null));
+        peerClass.addFunction(ping);
+
+        var queueFreeA = newFunction("call_queue_free_a", GdVoidType.VOID);
+        queueFreeA.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, queueFreeA));
+        entry(queueFreeA).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        entry(queueFreeA).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(queueFreeA);
+
+        var queueFreeB = newFunction("call_queue_free_b", GdVoidType.VOID);
+        queueFreeB.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, queueFreeB));
+        entry(queueFreeB).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        entry(queueFreeB).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(queueFreeB);
+
+        var staticMake = newFunction("call_static_make", GdVoidType.VOID);
+        staticMake.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, staticMake));
+        staticMake.createAndAddVariable("made", new GdObjectType("Node"));
+        entry(staticMake).appendInstruction(new CallMethodInsn("made", "make", "node", List.of()));
+        entry(staticMake).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(staticMake);
+
+        var varargCall = newFunction("call_vararg", GdVoidType.VOID);
+        varargCall.addParameter(new LirParameterDef("obj", new GdObjectType("Object"), null, varargCall));
+        varargCall.createAndAddVariable("dispatch", GdStringNameType.STRING_NAME);
+        varargCall.createAndAddVariable("tail", GdVariantType.VARIANT);
+        varargCall.createAndAddVariable("result", GdVariantType.VARIANT);
+        entry(varargCall).appendInstruction(new CallMethodInsn(
+                "result",
+                "call",
+                "obj",
+                List.of(varOperand("dispatch"), varOperand("tail"))
+        ));
+        entry(varargCall).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(varargCall);
+
+        var builtinCall = newFunction("call_builtin", GdVoidType.VOID);
+        builtinCall.createAndAddVariable("array", new GdArrayType(GdVariantType.VARIANT));
+        builtinCall.createAndAddVariable("size", GdIntType.INT);
+        entry(builtinCall).appendInstruction(new CallMethodInsn("size", "size", "array", List.of()));
+        entry(builtinCall).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(builtinCall);
+
+        var gdccCall = newFunction("call_gdcc", GdVoidType.VOID);
+        gdccCall.addParameter(new LirParameterDef("peer", new GdObjectType("EngineUsagePeer"), null, gdccCall));
+        entry(gdccCall).appendInstruction(new CallMethodInsn(null, "ping", "peer", List.of()));
+        entry(gdccCall).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(gdccCall);
+
+        var module = new LirModule("engine_helper_generation_module", List.of(workerClass, peerClass));
+        var api = engineHelperApi();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        // The public single-function renderer is intentionally side-effect free for module helper usage.
+        var queueFreePreview = codegen.generateFuncBody(workerClass, queueFreeA);
+        assertTrue(queueFreePreview.contains("gdcc_engine_call_node_queue_free_P_RV"), queueFreePreview);
+
+        var files = codegen.generate();
+        var filePaths = files.stream().map(GeneratedFile::filePath).toList();
+        var entrySource = generatedFileText(files, "entry.c");
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+        var hCode = generatedFileText(files, "entry.h");
+
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), filePaths);
+        assertTrue(hCode.contains("#include \"engine_method_binds.h\""), hCode);
+        assertContainsAll(
+                bindHeaderCode,
+                "gdcc_engine_method_bind_node_queue_free_P_RV(",
+                "gdcc_engine_call_node_queue_free_P_RV(",
+                "gdcc_engine_method_bind_static_node_make_P_RL4Node_(",
+                "gdcc_engine_call_static_node_make_P_RL4Node_(",
+                "gdcc_engine_method_bind_object_call_PS_RR_Xv(",
+                "gdcc_engine_callv_object_call_PS_RR_Xv("
+        );
+        assertContainsAll(
+                entrySource,
+                "gdcc_engine_call_node_queue_free_P_RV(",
+                "gdcc_engine_call_static_node_make_P_RL4Node_()",
+                "gdcc_engine_callv_object_call_PS_RR_Xv("
+        );
+        assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_array_size_"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_engineusagepeer_ping_"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_variant_callv_"), bindHeaderCode);
+        assertEquals(
+                1,
+                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_node_queue_free_P_RV("),
+                bindHeaderCode
+        );
+        assertEquals(
+                1,
+                countOccurrences(bindHeaderCode, "static inline void gdcc_engine_call_node_queue_free_P_RV("),
+                bindHeaderCode
+        );
+        assertEquals(
+                1,
+                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_object_call_PS_RR_Xv("),
+                bindHeaderCode
+        );
+    }
+
+    @Test
+    public void generateShouldUseSessionBoundBodyRendererInsteadOfPublicGenerateFuncBody() {
+        var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
+        var queueFree = newFunction("call_queue_free", GdVoidType.VOID);
+        queueFree.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, queueFree));
+        entry(queueFree).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        entry(queueFree).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(queueFree);
+
+        var module = new LirModule("engine_usage_render_dispatch_module", List.of(workerClass));
+        var api = engineHelperApi();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var publicBodyCalled = new boolean[]{false};
+        var sessionBodyCalled = new boolean[]{false};
+        var codegen = new CCodegen() {
+            @Override
+            public String generateFuncBody(@NotNull LirClassDef clazz, @NotNull LirFunctionDef func) {
+                publicBodyCalled[0] = true;
+                return super.generateFuncBody(clazz, func);
+            }
+
+            @Override
+            @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                             @NotNull LirFunctionDef func,
+                                             @NotNull EngineMethodUsageBuffer usageBuffer) {
+                sessionBodyCalled[0] = true;
+                return super.generateFuncBody(clazz, func, usageBuffer);
+            }
+        };
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+
+        assertTrue(sessionBodyCalled[0], "generate() should render bodies through the session-bound helper path.");
+        assertFalse(publicBodyCalled[0], "generate() should not route through the public no-op usage renderer.");
+        assertTrue(bindHeaderCode.contains("gdcc_engine_method_bind_node_queue_free_P_RV("), bindHeaderCode);
+    }
+
+    @Test
+    public void failedSessionBodyRenderShouldNotLeakEngineMethodUsageIntoTheModuleSession() {
+        var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
+
+        var valid = newFunction("call_queue_free_valid", GdVoidType.VOID);
+        valid.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, valid));
+        entry(valid).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        entry(valid).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(valid);
+
+        var invalid = newFunction("call_queue_free_invalid", GdVoidType.VOID);
+        invalid.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, invalid));
+        invalid.createAndAddVariable("left", GdIntType.INT);
+        invalid.createAndAddVariable("right", GdIntType.INT);
+        invalid.createAndAddVariable("sum", GdIntType.INT);
+        entry(invalid).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        entry(invalid).appendInstruction(new BinaryOpInsn("sum", GodotOperator.ADD, "left", "right"));
+        entry(invalid).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(invalid);
+
+        var module = new LirModule("engine_usage_failed_render_module", List.of(workerClass));
+        var api = engineHelperApi();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var usageSession = new EngineMethodUsageSession();
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, invalid, usageSession));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(usageSession.snapshot().isEmpty(), "Failed function renders must not commit helper usage.");
+
+        var validBody = codegen.generateFuncBody(workerClass, valid, usageSession);
+        var snapshot = usageSession.snapshot();
+
+        assertTrue(validBody.contains("gdcc_engine_call_node_queue_free_P_RV"), validBody);
+        assertEquals(1, snapshot.size(), snapshot.toString());
+        assertEquals("queue_free", snapshot.getFirst().methodName());
+        assertEquals("Node", snapshot.getFirst().ownerClassName());
     }
 
     @Test
@@ -240,7 +448,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var hCode = new String(files.getLast().contentWriter());
+        var hCode = generatedFileText(files, "entry.h");
 
         var acceptVariantBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Variant_ret_int");
         var echoVariantBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Variant_ret_Variant");
@@ -374,8 +582,8 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         // Method registration splits the outward contract across entry.c and entry.h:
         // entry.c passes the base variant type, while entry.h fixes hint/hint_string/class_name/usage.
@@ -542,8 +750,8 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         var typedBindCall = resolveMethodBindCall(cCode, "accept_typed_payload");
         var typedBindBody = resolveMethodBindHelperBody(hCode, "_1_arg_Array_ret_int");
@@ -722,7 +930,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var hCode = new String(files.getLast().contentWriter());
+        var hCode = generatedFileText(files, "entry.h");
 
         var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_int");
         var packedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Array_ret_bool");
@@ -844,7 +1052,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        var hCode = new String(files.getLast().contentWriter());
+        var hCode = generatedFileText(files, "entry.h");
 
         var typedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_int");
         var mixedCallBody = resolveCallWrapperBody(hCode, "_1_arg_Dictionary_ret_bool");
@@ -1330,8 +1538,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
 
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         assertTrue(hCode.contains("struct RuntimeOuter {"), hCode);
         assertTrue(hCode.contains("RuntimeOuter_class_create_instance"), hCode);
@@ -1369,8 +1577,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         var files = codegen.generate();
 
-        var cCode = new String(files.getFirst().contentWriter());
-        var hCode = new String(files.getLast().contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
 
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_binary_in_int_int_to_bool("), hCode);
         assertTrue(hCode.contains("static inline godot_bool gdcc_eval_unary_not_bool_to_bool("), hCode);
@@ -1434,8 +1642,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         List<GeneratedFile> files = codegen.generate();
 
-        var cCode = new String(files.get(0).contentWriter());
-        var hCode = new String(files.get(1).contentWriter());
+        var cCode = generatedFileText(files, "entry.c");
+        var hCode = generatedFileText(files, "entry.h");
         var childObjectPtrHelperBody = resolveFunctionBodyByPrefix(
                 cCode,
                 "static inline GDExtensionObjectPtr GDChildNode_object_ptr"
@@ -1662,6 +1870,15 @@ public class CCodegenTest {
         }
     }
 
+    private static String generatedFileText(List<GeneratedFile> files, String filePath) {
+        for (var file : files) {
+            if (file.filePath().equals(filePath)) {
+                return new String(file.contentWriter());
+            }
+        }
+        throw new AssertionError("Missing generated file: " + filePath);
+    }
+
     private static String generateHeader(LirModule module) throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var classRegistry = new ClassRegistry(api);
@@ -1671,7 +1888,7 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
         var files = codegen.generate();
-        return new String(files.getLast().contentWriter());
+        return generatedFileText(files, "entry.h");
     }
 
     private static int countOccurrences(String text, String needle) {
@@ -1753,6 +1970,127 @@ public class CCodegenTest {
                 List.of(),
                 List.of(),
                 List.of(intBuiltin),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static LirFunctionDef newFunction(String name, GdType returnType) {
+        var func = new LirFunctionDef(name);
+        func.setReturnType(returnType);
+        func.addBasicBlock(new LirBasicBlock("entry"));
+        func.setEntryBlockId("entry");
+        return func;
+    }
+
+    private static LirBasicBlock entry(LirFunctionDef func) {
+        return func.getBasicBlock("entry");
+    }
+
+    private static LirInstruction.VariableOperand varOperand(String id) {
+        return new LirInstruction.VariableOperand(id);
+    }
+
+    private static ExtensionAPI engineHelperApi() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(arrayBuiltinWithSizeBuiltin()),
+                List.of(
+                        nodeClassWithQueueFreeAndStaticFactory(77L, 88L),
+                        objectClassWithVarargCall(93L)
+                ),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionBuiltinClass arrayBuiltinWithSizeBuiltin() {
+        var size = new ExtensionBuiltinClass.ClassMethod(
+                "size",
+                "int",
+                false,
+                true,
+                false,
+                false,
+                0L,
+                List.of(),
+                List.of(),
+                new ExtensionBuiltinClass.ClassMethod.ReturnValue("int")
+        );
+        return new ExtensionBuiltinClass(
+                "Array",
+                false,
+                List.of(),
+                List.of(size),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithQueueFreeAndStaticFactory(long queueFreeHash, long makeHash) {
+        var queueFree = new ExtensionGdClass.ClassMethod(
+                "queue_free",
+                false,
+                false,
+                false,
+                false,
+                queueFreeHash,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of()
+        );
+        var make = new ExtensionGdClass.ClassMethod(
+                "make",
+                false,
+                false,
+                true,
+                false,
+                makeHash,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("Node"),
+                List.of()
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(queueFree, make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass objectClassWithVarargCall(long hash) {
+        var call = new ExtensionGdClass.ClassMethod(
+                "call",
+                false,
+                true,
+                false,
+                false,
+                hash,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("Variant"),
+                List.of(new ExtensionFunctionArgument("method", "StringName", null, null))
+        );
+        return new ExtensionGdClass(
+                "Object",
+                false,
+                true,
+                "",
+                "core",
+                List.of(),
+                List.of(call),
                 List.of(),
                 List.of(),
                 List.of()

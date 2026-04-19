@@ -6,6 +6,7 @@ import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdStringType;
 import dev.superice.gdcc.type.GdVariantType;
+import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -14,6 +15,35 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class ExtensionMetadataTypeParsingTest {
+    @Test
+    void engineMethodMissingReturnValueMetadataShouldNormalizeToVoid() {
+        var engineMethod = new ExtensionGdClass.ClassMethod(
+                "add_to_group",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                null,
+                List.of()
+        );
+        var engineMethodWithNullReturnType = new ExtensionGdClass.ClassMethod(
+                "add_to_group",
+                false,
+                false,
+                false,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn(null),
+                List.of()
+        );
+
+        assertEquals(GdVoidType.VOID, engineMethod.getReturnType());
+        assertEquals(GdVoidType.VOID, engineMethodWithNullReturnType.getReturnType());
+    }
+
     @Test
     void extensionFunctionArgumentShouldUseSharedMetadataParser() {
         var flagsArgument = new ExtensionFunctionArgument(

@@ -19,9 +19,10 @@
 ### 覆盖范围
 
 - 指令生成入口：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
-- 分派与签名解析：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/MethodCallResolver.java`
+- 分派与签名解析：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
 - 调用发射与生命周期托管：`src/main/java/dev/superice/gdcc/backend/c/gen/CBodyBuilder.java`
 - 模板/运行时辅助：
+  - `src/main/c/codegen/template_451/engine_method_binds.h.ftl`
   - `src/main/c/codegen/template_451/entry.c.ftl`
   - `src/main/c/codegen/include_451/gdcc/gdcc_helper.h`
 
@@ -62,6 +63,16 @@
   - 目标为非 `Variant`：调用 helper unpack 后写入目标
 - pack default temp / dynamic temp 均采用逆序 destroy
 
+### 已实现 exact engine helper route
+
+- exact engine route 的详细实现、ABI 合同、命名规则与测试锚点，统一以：
+  - `doc/module_impl/backend/engine_method_bind_implementation.md`
+  - 作为唯一事实源
+- 本文只保留与 `CALL_METHOD` 总体实现仍强相关的交界事实：
+  - exact engine route 已切到 backend-owned generated helper
+  - `gdextension-lite` public wrapper 不再是 migrated exact engine route 的事实来源
+  - static engine method 通过实例 `call_method` 命中时，仍保留 warning + receiver-free helper 合同
+
 ## 长期约定（必须保持）
 
 ### 1. 分派与失败策略
@@ -95,16 +106,9 @@
 - 当 receiver 是 GDCC wrapper，但目标 owner 为 ENGINE 时，必须先做 GDCC -> Godot raw ptr 转换，再按需要 cast 到 `godot_<Owner>*`。
 - 禁止仅通过 C cast 把 GDCC wrapper 指针伪装成 engine 指针。
 - `CBodyBuilder.renderArgument(...)` 的 ptr kind/type fail-fast 防线属于不可回退约束。
-
-#### 阶段 4 对齐结论（2026-02-27）
-
-- `CALL_METHOD` 相关 receiver 转换已与基线一致：
-  - GDCC receiver -> ENGINE owner：生成 `gdcc_object_to_godot_object_ptr(receiver, ReceiverType_object_ptr)`，随后再 cast 到 `godot_<Owner>*`。
-  - GDCC 子类 receiver -> GDCC 父类 owner：生成 `_super` 链安全上行表达式（例如 `&($child->_super)`），无裸 cast。
-- 回归覆盖已同步到以下测试，且断言与当前实现一致：
-  - `CallMethodInsnGenTest`
-  - `CallMethodInsnGenEngineTest`
-  - `CBodyBuilderPhaseCTest`
+- 当前实现事实：
+  - GDCC receiver -> ENGINE owner：生成 `gdcc_object_to_godot_object_ptr(receiver, ReceiverType_object_ptr)`，随后再 cast 到 `godot_<Owner>*`
+  - GDCC 子类 receiver -> GDCC 父类 owner：生成 `_super` 链安全上行表达式（例如 `&($child->_super)`），无裸 cast
 
 ### 5. `VARIANT_DYNAMIC` 诊断定位约束
 

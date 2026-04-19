@@ -1051,6 +1051,28 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("GDCC object arg should be converted via helper when calling gdcc_engine_call_ function")
+        void testGdccObjectArgConvertedForEngineHelperFunc() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+
+            builder.callVoid("gdcc_engine_call_MyGdccClass_attach_P_RV", List.of(value));
+
+            assertEquals("gdcc_engine_call_MyGdccClass_attach_P_RV(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("GDCC object arg should be converted via helper when calling gdcc_engine_callv_ function")
+        void testGdccObjectArgConvertedForEngineVarargHelperFunc() {
+            var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var value = builder.valueOfVar(gdccVar);
+
+            builder.callVoid("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv", List.of(value));
+
+            assertEquals("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+        }
+
+        @Test
         @DisplayName("Engine object arg should NOT be converted when calling godot_ function")
         void testEngineObjectArgNotConvertedForGodotFunc() {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
@@ -1059,6 +1081,28 @@ public class CBodyBuilderPhaseCTest {
             builder.callVoid("godot_Node_do_thing", List.of(value));
 
             assertEquals("godot_Node_do_thing($node);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("Engine object arg should NOT be converted when calling gdcc_engine_call_ function")
+        void testEngineObjectArgNotConvertedForEngineHelperFunc() {
+            var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var value = builder.valueOfVar(nodeVar);
+
+            builder.callVoid("gdcc_engine_call_Node_do_thing_P_RV", List.of(value));
+
+            assertEquals("gdcc_engine_call_Node_do_thing_P_RV($node);\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("Engine object arg should NOT be converted when calling gdcc_engine_callv_ function")
+        void testEngineObjectArgNotConvertedForEngineVarargHelperFunc() {
+            var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var value = builder.valueOfVar(nodeVar);
+
+            builder.callVoid("gdcc_engine_callv_Node_do_thing_P_RV_Xv", List.of(value));
+
+            assertEquals("gdcc_engine_callv_Node_do_thing_P_RV_Xv($node);\n", builder.build());
         }
 
         @Test
@@ -1222,6 +1266,32 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("callAssign should wrap gdcc_engine_call_ return with fromGodotObjectPtr for GDCC target")
+        void testCallAssignGdccTargetFromEngineHelperFunc() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("MyGdccClass"), List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_call_Node_spawn_P_RL4Node_())"),
+                    "Should wrap engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign should wrap gdcc_engine_callv_ return with fromGodotObjectPtr for GDCC target")
+        void testCallAssignGdccTargetFromEngineVarargHelperFunc() {
+            var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("MyGdccClass"), List.of());
+
+            var result = builder.build();
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv())"),
+                    "Should wrap vararg engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
+        }
+
+        @Test
         @DisplayName("callAssign should NOT wrap for engine target from godot_ function")
         void testCallAssignEngineTargetFromGodotFuncNoWrap() {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
@@ -1234,6 +1304,36 @@ public class CBodyBuilderPhaseCTest {
                     "Should NOT wrap for engine target. Actual:\n" + result);
             assertTrue(result.contains("$node = godot_get_node()"),
                     "Should assign directly. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign should NOT wrap for engine target from gdcc_engine_call_ function")
+        void testCallAssignEngineTargetFromEngineHelperFuncNoWrap() {
+            var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("Node"), List.of());
+
+            var result = builder.build();
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
+            assertTrue(result.contains("$node = gdcc_engine_call_Node_spawn_P_RL4Node_()"),
+                    "Should assign helper return directly. Actual:\n" + result);
+        }
+
+        @Test
+        @DisplayName("callAssign should NOT wrap for engine target from gdcc_engine_callv_ function")
+        void testCallAssignEngineTargetFromEngineVarargHelperFuncNoWrap() {
+            var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("Node"), List.of());
+
+            var result = builder.build();
+            assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
+                    "Vararg engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
+            assertTrue(result.contains("$node = gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()"),
+                    "Should assign vararg helper return directly. Actual:\n" + result);
         }
 
         @Test

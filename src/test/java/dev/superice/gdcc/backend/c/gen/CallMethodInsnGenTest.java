@@ -71,7 +71,7 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should emit engine static dispatch for Node.queue_free")
+    @DisplayName("CALL_METHOD should emit exact engine helper dispatch for Node.queue_free")
     void callMethodEngineShouldEmitStaticDispatch() {
         var clazz = newClass("Worker");
         var func = newFunction("call_queue_free");
@@ -86,7 +86,8 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("godot_Node_queue_free($node);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_queue_free_P_RV($node);"), body);
+        assertFalse(body.contains("godot_Node_queue_free("), body);
     }
 
     @Test
@@ -105,8 +106,35 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("godot_Node_queue_free((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"), body);
-        assertFalse(body.contains("godot_Node_queue_free((godot_Node*)$self);"), body);
+        assertTrue(
+                body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"),
+                body
+        );
+        assertFalse(body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)$self);"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit exact engine helper dispatch for object-parameter methods")
+    void callMethodEngineObjectParamShouldEmitHelperRoute() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_add_child");
+        func.createAndAddVariable("holder", new GdObjectType("Node"));
+        func.createAndAddVariable("child", new GdObjectType("Node"));
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "add_child",
+                "holder",
+                List.of(new LirInstruction.VariableOperand("child"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAddChild())), List.of(clazz));
+        assertTrue(body.contains("gdcc_engine_call_node_add_child_PL4Node_ZI_RV($holder, $child,"), body);
+        assertTrue(body.contains("__gdcc_tmp_default_arg_2_"), body);
+        assertTrue(body.contains("__gdcc_tmp_default_arg_3_"), body);
+        assertFalse(body.contains("godot_Node_add_child("), body);
+        assertFalse(body.contains("(const godot_Node_InternalMode *)&"), body);
     }
 
     @Test
@@ -311,9 +339,74 @@ class CallMethodInsnGenTest {
         }
 
         var output = outputBuffer.toString(StandardCharsets.UTF_8);
-        assertTrue(body.contains("godot_Node_make()"), body);
+        assertTrue(body.contains("gdcc_engine_call_static_node_make_P_RL4Node_()"), body);
+        assertFalse(body.contains("godot_Node_make()"), body);
         assertTrue(output.contains("call_method on receiver"), output);
         assertTrue(output.contains("resolved static method 'Node.make'"), output);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit exact engine callv helper route and keep extra tail on caller side")
+    void callMethodExactEngineVarargShouldEmitHelperRouteAndKeepExtraTailOnCallerSide() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_vararg_exact");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("label", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("tail", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "spread",
+                "node",
+                List.of(
+                        new LirInstruction.VariableOperand("label"),
+                        new LirInstruction.VariableOperand("tail")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithVarargSpread(93L))), List.of(clazz));
+        assertTrue(body.contains("gdcc_engine_callv_node_spread_PS_RV_Xv($node, &$label, __gdcc_tmp_argv_"), body);
+        assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
+        assertFalse(body.contains("godot_Node_spread("), body);
+        assertFalse(body.contains("godot_new_Variant_with_StringName($label)"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should emit exact static engine callv helper route without receiver argument")
+    void callMethodExactStaticEngineVarargShouldEmitStaticHelperRouteWithoutReceiverArgument() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_static_vararg");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        func.createAndAddVariable("prefix", GdIntType.INT);
+        func.createAndAddVariable("tail", GdVariantType.VARIANT);
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "broadcast",
+                "node",
+                List.of(
+                        new LirInstruction.VariableOperand("prefix"),
+                        new LirInstruction.VariableOperand("tail")
+                )
+        ));
+        clazz.addFunction(func);
+
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
+        var originalOut = System.out;
+        String body;
+        try {
+            System.setOut(capture);
+            body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithStaticVarargBroadcast(94L))), List.of(clazz));
+        } finally {
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        var output = outputBuffer.toString(StandardCharsets.UTF_8);
+        assertTrue(body.contains("gdcc_engine_callv_static_node_broadcast_PI_RV_Xv($prefix, __gdcc_tmp_argv_"), body);
+        assertFalse(body.contains("gdcc_engine_callv_static_node_broadcast_PI_RV_Xv($node"), body);
+        assertFalse(body.contains("godot_Node_broadcast("), body);
+        assertTrue(output.contains("resolved static method 'Node.broadcast'"), output);
     }
 
     @Test
@@ -472,6 +565,23 @@ class CallMethodInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_METHOD should reject exact engine route when metadata hash is missing")
+    void callMethodShouldRejectExactEngineRouteWhenMetadataHashIsMissing() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_queue_free_missing_hash");
+        func.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(func).appendInstruction(new CallMethodInsn(null, "queue_free", "node", List.of()));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree(0L))), List.of(clazz))
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Exact engine method 'Node.queue_free' is missing method-bind hash"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("CALL_METHOD should reject missing argument variable")
     void callMethodShouldRejectMissingArgumentVariable() {
         var clazz = newClass("Worker");
@@ -519,8 +629,8 @@ class CallMethodInsnGenTest {
     }
 
     @Test
-    @DisplayName("CALL_METHOD should pass provided bitfield arguments through wrapper-compatible pointer casts")
-    void callMethodShouldPassProvidedBitfieldArgByPointerCast() {
+    @DisplayName("CALL_METHOD should pass provided bitfield arguments through normalized engine helper surface")
+    void callMethodShouldPassProvidedBitfieldArgThroughNormalizedHelperSurface() {
         var clazz = newClass("Worker");
         var func = newFunction("call_set_process_thread_messages");
         func.createAndAddVariable("node", new GdObjectType("Node"));
@@ -534,18 +644,14 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
-        assertTrue(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
-        assertTrue(body.contains("= $flags;"), body);
-        assertTrue(
-                body.contains("godot_Node_set_process_thread_messages($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_bitfield_arg_1_"),
-                body
-        );
-        assertFalse(body.contains("godot_Node_set_process_thread_messages($node, $flags)"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_PI_RV($node, $flags);"), body);
+        assertFalse(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
+        assertFalse(body.contains("(const godot_Node_ProcessThreadMessages *)&"), body);
     }
 
     @Test
-    @DisplayName("CALL_METHOD should materialize bitfield defaults through wrapper-compatible pointer casts")
-    void callMethodShouldMaterializeBitfieldDefaultByPointerCast() {
+    @DisplayName("CALL_METHOD should materialize bitfield defaults through normalized engine helper surface")
+    void callMethodShouldMaterializeBitfieldDefaultThroughNormalizedHelperSurface() {
         var clazz = newClass("Worker");
         var func = newFunction("call_set_process_thread_messages_default");
         func.createAndAddVariable("node", new GdObjectType("Node"));
@@ -559,11 +665,8 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
         assertTrue(body.contains("godot_int __gdcc_tmp_default_arg_1_"), body);
-        assertTrue(
-                body.contains("godot_Node_set_process_thread_messages($node, (const godot_Node_ProcessThreadMessages *)&__gdcc_tmp_default_arg_1_"),
-                body
-        );
-        assertFalse(body.contains("godot_Node_set_process_thread_messages($node, __gdcc_tmp_default_arg_1_"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_PI_RV($node, __gdcc_tmp_default_arg_1_"), body);
+        assertFalse(body.contains("(const godot_Node_ProcessThreadMessages *)&"), body);
     }
 
     @Test
@@ -925,13 +1028,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithQueueFree() {
+        return nodeClassWithQueueFree(77L);
+    }
+
+    private ExtensionGdClass nodeClassWithQueueFree(long hash) {
         var queueFree = new ExtensionGdClass.ClassMethod(
                 "queue_free",
                 false,
                 false,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of()
@@ -951,13 +1058,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithBitfieldDefaultParam() {
+        return nodeClassWithBitfieldDefaultParam(67L);
+    }
+
+    private ExtensionGdClass nodeClassWithBitfieldDefaultParam(long hash) {
         var setProcessThreadMessages = new ExtensionGdClass.ClassMethod(
                 "set_process_thread_messages",
                 false,
                 false,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("flags", "bitfield::Node.ProcessThreadMessages", "0", null))
@@ -977,13 +1088,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithStaticFactory() {
+        return nodeClassWithStaticFactory(88L);
+    }
+
+    private ExtensionGdClass nodeClassWithStaticFactory(long hash) {
         var make = new ExtensionGdClass.ClassMethod(
                 "make",
                 false,
                 false,
                 true,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("Node"),
                 List.of()
@@ -996,6 +1111,36 @@ class CallMethodInsnGenTest {
                 "core",
                 List.of(),
                 List.of(make),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithAddChild() {
+        var addChild = new ExtensionGdClass.ClassMethod(
+                "add_child",
+                false,
+                false,
+                false,
+                false,
+                79L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(
+                        new ExtensionFunctionArgument("node", "Node", null, null),
+                        new ExtensionFunctionArgument("legible_unique_name", "bool", "false", null),
+                        new ExtensionFunctionArgument("internal", "int", "0", null)
+                )
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(addChild),
                 List.of(),
                 List.of(),
                 List.of()
@@ -1093,13 +1238,17 @@ class CallMethodInsnGenTest {
     }
 
     private ExtensionGdClass nodeClassWithVarargSpread() {
+        return nodeClassWithVarargSpread(93L);
+    }
+
+    private ExtensionGdClass nodeClassWithVarargSpread(long hash) {
         var spread = new ExtensionGdClass.ClassMethod(
                 "spread",
                 false,
                 true,
                 false,
                 false,
-                0L,
+                hash,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
                 List.of(new ExtensionFunctionArgument("name", "StringName", null, null))
@@ -1112,6 +1261,32 @@ class CallMethodInsnGenTest {
                 "core",
                 List.of(),
                 List.of(spread),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private ExtensionGdClass nodeClassWithStaticVarargBroadcast(long hash) {
+        var broadcast = new ExtensionGdClass.ClassMethod(
+                "broadcast",
+                false,
+                true,
+                true,
+                false,
+                hash,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("prefix", "int", null, null))
+        );
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(broadcast),
                 List.of(),
                 List.of(),
                 List.of()

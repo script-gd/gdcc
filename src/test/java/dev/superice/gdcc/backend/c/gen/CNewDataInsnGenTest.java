@@ -90,6 +90,13 @@ public class CNewDataInsnGenTest {
     }
 
     @Test
+    @DisplayName("literal_string_name should normalize frontend quoted StringName syntax")
+    void literalStringNameShouldNormalizeFrontendQuotedSyntax() {
+        var body = generateBody("sn", GdStringNameType.STRING_NAME, false, new LiteralStringNameInsn("sn", "&\"hero\""));
+        assertTrue(body.contains("godot_new_StringName_with_utf8_chars(u8\"hero\")"));
+    }
+
+    @Test
     @DisplayName("literal_string should call init function for ref variable")
     void literalStringShouldCallInitForRef() {
         var body = generateBody("s", GdStringType.STRING, true, new LiteralStringInsn("s", "hello"));

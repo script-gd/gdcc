@@ -98,4 +98,45 @@ public final class StringUtil {
         }
         return sb.toString();
     }
+
+    public static @NotNull String unescapeQuoted(@NotNull String content) {
+        var out = new StringBuilder();
+        for (var i = 0; i < content.length(); i++) {
+            var ch = content.charAt(i);
+            if (ch != '\\') {
+                out.append(ch);
+                continue;
+            }
+            if (i + 1 >= content.length()) {
+                out.append('\\');
+                break;
+            }
+            var next = content.charAt(++i);
+            switch (next) {
+                case 'n' -> out.append('\n');
+                case 'r' -> out.append('\r');
+                case 't' -> out.append('\t');
+                case '\\' -> out.append('\\');
+                case '"' -> out.append('"');
+                case 'u' -> {
+                    if (i + 4 >= content.length()) {
+                        throw new IllegalArgumentException("Invalid unicode escape in literal: \\" + next);
+                    }
+                    var hex = content.substring(i + 1, i + 5);
+                    out.append((char) Integer.parseInt(hex, 16));
+                    i += 4;
+                }
+                case 'U' -> {
+                    if (i + 8 >= content.length()) {
+                        throw new IllegalArgumentException("Invalid unicode escape in literal: \\" + next);
+                    }
+                    var hex = content.substring(i + 1, i + 9);
+                    out.appendCodePoint(Integer.parseInt(hex, 16));
+                    i += 8;
+                }
+                default -> out.append(next);
+            }
+        }
+        return out.toString();
+    }
 }

@@ -1,5 +1,7 @@
 package dev.superice.gdcc.backend.c.gen;
 
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
+import dev.superice.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.lir.*;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -28,6 +30,7 @@ public final class CBodyBuilder {
     private final @NotNull CGenHelper helper;
     private final @NotNull LirClassDef clazz;
     private final @NotNull LirFunctionDef func;
+    private final @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer;
     private final @NotNull StringBuilder out = new StringBuilder();
 
     private @Nullable LirBasicBlock currentBlock;
@@ -39,9 +42,17 @@ public final class CBodyBuilder {
     public CBodyBuilder(@NotNull CGenHelper helper,
                         @NotNull LirClassDef clazz,
                         @NotNull LirFunctionDef func) {
+        this(helper, clazz, func, EngineMethodUsageBuffer.noOp());
+    }
+
+    CBodyBuilder(@NotNull CGenHelper helper,
+                 @NotNull LirClassDef clazz,
+                 @NotNull LirFunctionDef func,
+                 @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer) {
         this.helper = Objects.requireNonNull(helper);
         this.clazz = Objects.requireNonNull(clazz);
         this.func = Objects.requireNonNull(func);
+        this.engineMethodUsageBuffer = Objects.requireNonNull(engineMethodUsageBuffer);
     }
 
     public @NotNull CBodyBuilder setCurrentPosition(@NotNull LirBasicBlock block,
@@ -202,6 +213,12 @@ public final class CBodyBuilder {
 
     public @NotNull String build() {
         return out.toString();
+    }
+
+    /// Exact engine usage collection is function-local at builder scope.
+    /// The buffer stays isolated from module session state until the caller commits after a successful render.
+    public void recordUsedEngineMethodCall(@NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
+        engineMethodUsageBuffer.record(resolved);
     }
 
     /// Resolves the PtrKind for a given GdType based on the class registry.
@@ -1267,6 +1284,12 @@ public final class CBodyBuilder {
         if (funcName.startsWith("gdcc_eval_")) {
             return true;
         }
+        if (funcName.startsWith("gdcc_engine_call_")) {
+            return true;
+        }
+        if (funcName.startsWith("gdcc_engine_callv_")) {
+            return true;
+        }
         if (funcName.startsWith("godot_")) {
             return true;
         }
@@ -1277,7 +1300,10 @@ public final class CBodyBuilder {
     }
 
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {
-        return funcName.startsWith("godot_") || funcName.startsWith("gdcc_eval_");
+        return funcName.startsWith("godot_")
+                || funcName.startsWith("gdcc_eval_")
+                || funcName.startsWith("gdcc_engine_call_")
+                || funcName.startsWith("gdcc_engine_callv_");
     }
 
     private @NotNull PtrKind resolveCallResultPtrKind(@NotNull String cFuncName,

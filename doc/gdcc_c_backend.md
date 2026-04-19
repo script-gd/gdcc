@@ -97,6 +97,15 @@
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
 
+### Exact Engine Method Bind Route
+
+- 唯一事实源：
+  - `doc/module_impl/backend/engine_method_bind_implementation.md`
+- 本文只保留总览提醒：
+  - exact engine `CALL_METHOD` 已改走 backend-owned generated helper
+  - migrated exact engine route 不再以 `gdextension-lite` public wrapper 为事实来源
+  - helper ABI、symbol identity、usage collector、normalized caller surface 与 `ptrcall/call` 合同均只在上面的实现文档维护
+
 ### Backend-owned Runtime Writeback Helper
 
 - `CallGlobalInsn` now accepts a narrow set of backend-owned helpers in addition to class-registry utility functions.
