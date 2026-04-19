@@ -17,7 +17,8 @@ public class GdScriptExpandedCoverageCompileRunnerTest {
             "algorithm/graph_traversal.gd",
             "collection/array_sum_and_mutation.gd",
             "collection/dictionary_mutation_and_lookup.gd",
-            "runtime/engine_node_refcounted_workflow.gd"
+            "runtime/engine_node_refcounted_workflow.gd",
+            "runtime/string_literal_internal_surface.gd"
     );
 
     @TestFactory

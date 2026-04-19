@@ -9,7 +9,7 @@
 - inner class 运行时行为
 - Node / RefCounted 派生类在场景中的协作
 
-在设计这些正向样例时，确认了两条当前仍然成立、且会直接影响测试写法的边界。
+在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界。
 
 ## 1. `for` / `match` / `lambda` 仍不属于 frontend body semantic MVP
 
@@ -93,21 +93,6 @@
 
 - 本轮所有会进入 compile-run 的 resource script 都移除了可执行 body 内注释
 
-## 6. 当前 string surface 仍存在实现偏差，不适合作为正向 compile-run 回归锚点
-
-本轮尝试为 `algorithm/string_processing.gd` 增加字符串拼接、切片与比较覆盖时，观察到两类异常：
-
-- `substr(...)` 结果出现明显偏移，返回值与 Godot 0-based 直觉不一致
-- 字符串拼接结果出现带引号片段，例如：
-  - `"gdcc""-engine-""suite""|bad"`
-
-后续即便把用例收缩到更简单的字符串比较/参数分类，这条 string resource case 仍未稳定通过。
-
-当前处理结论：
-
-- 本轮不把 string case 继续保留在正向 `test_suite` resource set 中
-- 相关异常作为已确认错误记录在此，后续若修复 string runtime / lowering surface，应再补独立的 compile-run regression case
-
 ## 7. inner GDCC `Node` / `RefCounted` 子类与 engine scene API 的 compile surface 尚未闭环
 
 本轮尝试增加 `scene/nested_node_refcounted_scene.gd`，目标是让 inner `SceneChild extends Node` 真正挂进场景树，并让 inner `SceneWorker extends RefCounted` 参与运行时协作。实测暴露出：
@@ -167,3 +152,12 @@
 
 - 若后续要为纯 `RefCounted` 顶层脚本补真引擎 compile/link/run case，需要先扩展 `test_suite` harness，而不是继续往现有 scene-mounted 合同里硬塞
 - 若 frontend 后续正式支持 `for` / `match` / `lambda`，应补一轮更贴近 Godot 习惯写法的算法端到端样例，并把当前基于 `while` 的替代写法保留为 regression anchor
+
+## 已修复回顾
+
+- 原问题 6“编译脚本内部 string literal surface 污染”已不再属于当前 known limit。
+- 当前回归锚点包括：
+  - `src/test/test_suite/unit_test/script/runtime/string_literal_internal_surface.gd`
+  - `src/test/test_suite/unit_test/validation/runtime/string_literal_internal_surface.gd`
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptExpandedCoverageCompileRunnerTest.java`
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`

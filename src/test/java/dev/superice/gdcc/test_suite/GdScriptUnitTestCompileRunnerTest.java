@@ -64,6 +64,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/engine_node_refcounted_workflow.gd",
             "runtime/engine_option_button_default_args.gd",
             "runtime/engine_scene_tree_call_group_flags_exact_vararg.gd",
+            "runtime/string_literal_internal_surface.gd",
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd"
