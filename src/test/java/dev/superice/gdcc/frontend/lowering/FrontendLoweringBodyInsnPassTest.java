@@ -36,6 +36,7 @@ import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
+import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.LiteralNullInsn;
@@ -1982,6 +1983,42 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals("touch", callInsn.methodName()),
                 () -> assertFalse(pingContext.targetFunction().getVariables().containsKey("cfg_tmp_v0")),
                 () -> assertTrue(assignSourcesByTarget(instructions).values().stream().noneMatch("self"::equals))
+        );
+    }
+
+    @Test
+    void runSkipsCommentStatementsInsideExecutableBodies() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_comment_statement.gd",
+                """
+                        class_name BodyInsnCommentStatement
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            # leading
+                            pass
+                            # trailing
+                        """,
+                Map.of("BodyInsnCommentStatement", "RuntimeBodyInsnCommentStatement"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCommentStatement",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var lineNumberInsn = requireOnlyInstruction(pingContext.targetFunction(), LineNumberInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(instructions, LineNumberInsn.class)),
+                () -> assertTrue(lineNumberInsn.lineNumber() > 0),
+                () -> assertNotNull(requireOnlyReturnInsn(pingContext.targetFunction()))
         );
     }
 

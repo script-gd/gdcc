@@ -13,6 +13,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
@@ -34,12 +35,14 @@ import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
@@ -134,6 +137,41 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(List.of(), returnValue.operandValueIds()),
                 () -> assertEquals("v0", returnValue.resultValueId()),
                 () -> assertEquals(returnStatement.value(), returnValue.expression())
+        );
+    }
+
+    @Test
+    void buildExecutableBodySkipsCommentStatementsInsideFunctionBodies() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_comment_statement.gd",
+                """
+                        class_name CfgBuilderCommentStatement
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            # leading
+                            pass
+                            # trailing
+                        """,
+                "ping",
+                Map.of("CfgBuilderCommentStatement", "RuntimeCfgBuilderCommentStatement")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var passStatement = assertInstanceOf(PassStatement.class, rootBlock.statements().get(1));
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, graph.requireNode("seq_0"));
+        var sourceAnchor = assertInstanceOf(SourceAnchorItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(3, rootBlock.statements().size()),
+                () -> assertInstanceOf(CommentStatement.class, rootBlock.statements().getFirst()),
+                () -> assertInstanceOf(CommentStatement.class, rootBlock.statements().getLast()),
+                () -> assertEquals(List.of("seq_0", "stop_0"), graph.nodeIds()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(passStatement, sourceAnchor.statement())
         );
     }
 

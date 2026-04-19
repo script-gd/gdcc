@@ -9,7 +9,7 @@
 - inner class 运行时行为
 - Node / RefCounted 派生类在场景中的协作
 
-在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界。
+在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界，以及少量已经修复、但需要从旧测试写法中清理掉的历史回归。
 
 ## 1. `for` / `match` / `lambda` 仍不属于 frontend body semantic MVP
 
@@ -75,23 +75,12 @@
 - 正向资源脚本改为显式 `var alpha_key: Variant = "alpha"` 后再做 `scores[alpha_key]`
 - 这是当前实现的可工作 surface，不代表 Godot 原生最自然写法已经完全闭环
 
-## 5. GDScript 可执行 body 中的 `CommentStatement` 目前会让 CFG builder fail-fast
+## 5. 已修复：GDScript 可执行 body 中的 `CommentStatement` 不再阻断 CFG builder
 
-本轮第一次把解释性注释放进 graph traversal 资源脚本的函数体后，lowering 直接在 CFG 阶段中止：
-
-- `Frontend CFG builder reached an unsupported reachable statement: CommentStatement`
-
-对 test suite 的直接影响：
-
-- resource script 里的复杂说明性注释不能直接放在可执行语句块中
-- 同一份说明应迁移到：
-  - Java wrapper 注释
-  - `doc/test_error` / module 文档
-  - 或 GDScript 函数体外的更安全位置
-
-当前处理结论：
-
-- 本轮所有会进入 compile-run 的 resource script 都移除了可执行 body 内注释
+- `CommentStatement` 现在被 frontend CFG builder 视为 executable lowering 的 lexical no-op
+- comment 不再发布 `SequenceItem`，也不会额外生成 runtime `LineNumberInsn`
+- compile-run resource script 不需要再因为“函数体里有注释”而迁移说明文字
+- 若确实需要一个稳定、可执行的 source-level no-op 行，仍应使用真正的 `pass`
 
 ## 7. inner GDCC `Node` / `RefCounted` 子类与 engine scene API 的 compile surface 尚未闭环
 
