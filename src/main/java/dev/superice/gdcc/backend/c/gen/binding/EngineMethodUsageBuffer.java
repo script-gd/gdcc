@@ -12,7 +12,7 @@ public final class EngineMethodUsageBuffer {
     private static final @NotNull EngineMethodUsageBuffer NO_OP = new EngineMethodUsageBuffer(true);
 
     private final boolean noOp;
-    private final LinkedHashMap<EngineMethodBindKey, BackendMethodCallResolver.ResolvedMethodCall> methodsByKey =
+    private final LinkedHashMap<EngineMethodSymbolKey, BackendMethodCallResolver.ResolvedMethodCall> methodsByKey =
             new LinkedHashMap<>();
 
     private EngineMethodUsageBuffer() {
@@ -31,14 +31,14 @@ public final class EngineMethodUsageBuffer {
         if (noOp) {
             return;
         }
-        var key = EngineMethodBindKey.from(resolved);
+        var key = EngineMethodSymbolKey.from(resolved);
         if (key == null) {
             return;
         }
         methodsByKey.putIfAbsent(key, resolved);
     }
 
-    @NotNull Map<EngineMethodBindKey, BackendMethodCallResolver.ResolvedMethodCall> snapshot() {
+    @NotNull Map<EngineMethodSymbolKey, BackendMethodCallResolver.ResolvedMethodCall> snapshot() {
         return new LinkedHashMap<>(methodsByKey);
     }
 

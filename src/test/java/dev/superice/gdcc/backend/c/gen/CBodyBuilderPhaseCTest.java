@@ -1056,9 +1056,9 @@ public class CBodyBuilderPhaseCTest {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
-            builder.callVoid("gdcc_engine_call_MyGdccClass_attach_77", List.of(value));
+            builder.callVoid("gdcc_engine_call_MyGdccClass_attach_P_RV", List.of(value));
 
-            assertEquals("gdcc_engine_call_MyGdccClass_attach_77(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+            assertEquals("gdcc_engine_call_MyGdccClass_attach_P_RV(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
         }
 
         @Test
@@ -1067,9 +1067,9 @@ public class CBodyBuilderPhaseCTest {
             var gdccVar = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var value = builder.valueOfVar(gdccVar);
 
-            builder.callVoid("gdcc_engine_callv_MyGdccClass_attach_77", List.of(value));
+            builder.callVoid("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv", List.of(value));
 
-            assertEquals("gdcc_engine_callv_MyGdccClass_attach_77(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
+            assertEquals("gdcc_engine_callv_MyGdccClass_attach_P_RV_Xv(gdcc_object_to_godot_object_ptr($myObj, MyGdccClass_object_ptr));\n", builder.build());
         }
 
         @Test
@@ -1089,9 +1089,9 @@ public class CBodyBuilderPhaseCTest {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
-            builder.callVoid("gdcc_engine_call_Node_do_thing_77", List.of(value));
+            builder.callVoid("gdcc_engine_call_Node_do_thing_P_RV", List.of(value));
 
-            assertEquals("gdcc_engine_call_Node_do_thing_77($node);\n", builder.build());
+            assertEquals("gdcc_engine_call_Node_do_thing_P_RV($node);\n", builder.build());
         }
 
         @Test
@@ -1100,9 +1100,9 @@ public class CBodyBuilderPhaseCTest {
             var nodeVar = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var value = builder.valueOfVar(nodeVar);
 
-            builder.callVoid("gdcc_engine_callv_Node_do_thing_77", List.of(value));
+            builder.callVoid("gdcc_engine_callv_Node_do_thing_P_RV_Xv", List.of(value));
 
-            assertEquals("gdcc_engine_callv_Node_do_thing_77($node);\n", builder.build());
+            assertEquals("gdcc_engine_callv_Node_do_thing_P_RV_Xv($node);\n", builder.build());
         }
 
         @Test
@@ -1271,10 +1271,10 @@ public class CBodyBuilderPhaseCTest {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
-            builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_77", new GdObjectType("MyGdccClass"), List.of());
+            builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_call_Node_spawn_77())"),
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_call_Node_spawn_P_RL4Node_())"),
                     "Should wrap engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
         }
 
@@ -1284,10 +1284,10 @@ public class CBodyBuilderPhaseCTest {
             var target = new LirVariable("myObj", new GdObjectType("MyGdccClass"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
-            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_77", new GdObjectType("MyGdccClass"), List.of());
+            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("MyGdccClass"), List.of());
 
             var result = builder.build();
-            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_callv_Node_spawn_77())"),
+            assertTrue(result.contains("(MyGdccClass*)gdcc_object_from_godot_object_ptr(gdcc_engine_callv_Node_spawn_P_RL4Node__Xv())"),
                     "Should wrap vararg engine helper return with fromGodotObjectPtr for GDCC target. Actual:\n" + result);
         }
 
@@ -1312,12 +1312,12 @@ public class CBodyBuilderPhaseCTest {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
-            builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_77", new GdObjectType("Node"), List.of());
+            builder.callAssign(targetRef, "gdcc_engine_call_Node_spawn_P_RL4Node_", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
             assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
                     "Engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
-            assertTrue(result.contains("$node = gdcc_engine_call_Node_spawn_77()"),
+            assertTrue(result.contains("$node = gdcc_engine_call_Node_spawn_P_RL4Node_()"),
                     "Should assign helper return directly. Actual:\n" + result);
         }
 
@@ -1327,12 +1327,12 @@ public class CBodyBuilderPhaseCTest {
             var target = new LirVariable("node", new GdObjectType("Node"), lirFunctionDef);
             var targetRef = builder.targetOfVar(target);
 
-            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_77", new GdObjectType("Node"), List.of());
+            builder.callAssign(targetRef, "gdcc_engine_callv_Node_spawn_P_RL4Node__Xv", new GdObjectType("Node"), List.of());
 
             var result = builder.build();
             assertFalse(result.contains("gdcc_object_from_godot_object_ptr"),
                     "Vararg engine helper return should stay on raw engine pointer surface. Actual:\n" + result);
-            assertTrue(result.contains("$node = gdcc_engine_callv_Node_spawn_77()"),
+            assertTrue(result.contains("$node = gdcc_engine_callv_Node_spawn_P_RL4Node__Xv()"),
                     "Should assign vararg helper return directly. Actual:\n" + result);
         }
 

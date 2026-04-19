@@ -152,7 +152,7 @@ class MethodResolverParityTest {
 
         assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
         assertEquals(GdIntType.INT, backendResolved.parameters().getFirst().type());
-        assertEquals("gdcc_engine_call_node_set_process_thread_messages_4660", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_call_node_set_process_thread_messages_PI_RV", backendResolved.cFunctionName());
         assertEquals(0x1234L, bindSpec.hash());
         assertIterableEquals(List.of(17L, 19L), bindSpec.hashCompatibility());
 
@@ -174,7 +174,7 @@ class MethodResolverParityTest {
 
         assertEquals(77L, bindSpec.hash());
         assertTrue(bindSpec.hashCompatibility().isEmpty());
-        assertEquals("gdcc_engine_call_node_queue_free_77", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_call_node_queue_free_P_RV", backendResolved.cFunctionName());
     }
 
     @Test
@@ -210,7 +210,7 @@ class MethodResolverParityTest {
 
         assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
         assertTrue(backendResolved.isStatic());
-        assertEquals("gdcc_engine_call_static_node_make_88", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_call_static_node_make_P_RL4Node_", backendResolved.cFunctionName());
     }
 
     @Test
@@ -234,7 +234,7 @@ class MethodResolverParityTest {
 
         assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
         assertTrue(backendResolved.isVararg());
-        assertEquals("gdcc_engine_callv_node_spread_93", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_callv_node_spread_PT_RV_Xv", backendResolved.cFunctionName());
         assertEquals(93L, bindSpec.hash());
         assertIterableEquals(List.of(931L), bindSpec.hashCompatibility());
     }
@@ -261,7 +261,7 @@ class MethodResolverParityTest {
         assertEquals(BackendMethodCallResolver.DispatchMode.ENGINE, backendResolved.mode());
         assertTrue(backendResolved.isVararg());
         assertTrue(backendResolved.isStatic());
-        assertEquals("gdcc_engine_callv_static_node_broadcast_94", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_callv_static_node_broadcast_PI_RV_Xv", backendResolved.cFunctionName());
         assertEquals(94L, bindSpec.hash());
         assertIterableEquals(List.of(941L), bindSpec.hashCompatibility());
     }
@@ -283,7 +283,7 @@ class MethodResolverParityTest {
                 BackendMethodCallResolver.EngineHelperSlotExtraParamSpecData.class,
                 backendResolved.parameters().getFirst().extraParamSpecData()
         );
-        assertEquals("gdcc_engine_call_node_set_process_thread_messages_67", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_call_node_set_process_thread_messages_PI_RV", backendResolved.cFunctionName());
         assertEquals(67L, bindSpec.hash());
         assertEquals(
                 BackendMethodCallResolver.EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS,
@@ -310,7 +310,7 @@ class MethodResolverParityTest {
                 backendResolved.parameters().getFirst().extraParamSpecData()
         );
 
-        assertEquals("gdcc_engine_call_node_set_internal_mode_68", backendResolved.cFunctionName());
+        assertEquals("gdcc_engine_call_node_set_internal_mode_PI_RV", backendResolved.cFunctionName());
         assertEquals(68L, bindSpec.hash());
         assertEquals(
                 BackendMethodCallResolver.EngineHelperSlotMode.LOCAL_VALUE_SLOT_ADDRESS,

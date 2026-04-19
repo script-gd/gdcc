@@ -8,7 +8,7 @@ import java.util.List;
 
 /// Module-scope collector that keeps first-hit render order stable across successful body renders.
 public final class EngineMethodUsageSession {
-    private final LinkedHashMap<EngineMethodBindKey, BackendMethodCallResolver.ResolvedMethodCall> methodsByKey =
+    private final LinkedHashMap<EngineMethodSymbolKey, BackendMethodCallResolver.ResolvedMethodCall> methodsByKey =
             new LinkedHashMap<>();
 
     public @NotNull EngineMethodUsageBuffer newFunctionBuffer() {

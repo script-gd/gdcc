@@ -271,7 +271,7 @@ public class CCodegenTest {
 
         // The public single-function renderer is intentionally side-effect free for module helper usage.
         var queueFreePreview = codegen.generateFuncBody(workerClass, queueFreeA);
-        assertTrue(queueFreePreview.contains("gdcc_engine_call_node_queue_free_77"), queueFreePreview);
+        assertTrue(queueFreePreview.contains("gdcc_engine_call_node_queue_free_P_RV"), queueFreePreview);
 
         var files = codegen.generate();
         var filePaths = files.stream().map(GeneratedFile::filePath).toList();
@@ -283,40 +283,40 @@ public class CCodegenTest {
         assertTrue(hCode.contains("#include \"engine_method_binds.h\""), hCode);
         assertContainsAll(
                 bindHeaderCode,
-                "gdcc_engine_method_bind_node_queue_free_77(",
-                "gdcc_engine_call_node_queue_free_77(",
-                "gdcc_engine_method_bind_static_node_make_88(",
-                "gdcc_engine_call_static_node_make_88(",
-                "gdcc_engine_method_bind_vararg_object_call_93(",
-                "gdcc_engine_callv_object_call_93("
+                "gdcc_engine_method_bind_node_queue_free_P_RV(",
+                "gdcc_engine_call_node_queue_free_P_RV(",
+                "gdcc_engine_method_bind_static_node_make_P_RL4Node_(",
+                "gdcc_engine_call_static_node_make_P_RL4Node_(",
+                "gdcc_engine_method_bind_object_call_PS_RR_Xv(",
+                "gdcc_engine_callv_object_call_PS_RR_Xv("
         );
         assertContainsAll(
                 entrySource,
-                "gdcc_engine_call_node_queue_free_77(",
-                "gdcc_engine_call_static_node_make_88()",
-                "gdcc_engine_callv_object_call_93("
+                "gdcc_engine_call_node_queue_free_P_RV(",
+                "gdcc_engine_call_static_node_make_P_RL4Node_()",
+                "gdcc_engine_callv_object_call_PS_RR_Xv("
         );
         assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_array_size_"), bindHeaderCode);
         assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_engineusagepeer_ping_"), bindHeaderCode);
         assertFalse(bindHeaderCode.contains("gdcc_engine_method_bind_variant_callv_"), bindHeaderCode);
         assertEquals(
                 1,
-                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_node_queue_free_77("),
+                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_node_queue_free_P_RV("),
                 bindHeaderCode
         );
         assertEquals(
                 1,
-                countOccurrences(bindHeaderCode, "static inline void gdcc_engine_call_node_queue_free_77("),
+                countOccurrences(bindHeaderCode, "static inline void gdcc_engine_call_node_queue_free_P_RV("),
                 bindHeaderCode
         );
         assertEquals(
                 1,
-                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_vararg_object_call_93("),
+                countOccurrences(bindHeaderCode, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_object_call_PS_RR_Xv("),
                 bindHeaderCode
         );
     }
 
-        @Test
+    @Test
     public void generateShouldUseSessionBoundBodyRendererInsteadOfPublicGenerateFuncBody() {
         var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
         var queueFree = newFunction("call_queue_free", GdVoidType.VOID);
@@ -356,7 +356,7 @@ public class CCodegenTest {
 
         assertTrue(sessionBodyCalled[0], "generate() should render bodies through the session-bound helper path.");
         assertFalse(publicBodyCalled[0], "generate() should not route through the public no-op usage renderer.");
-        assertTrue(bindHeaderCode.contains("gdcc_engine_method_bind_node_queue_free_77("), bindHeaderCode);
+        assertTrue(bindHeaderCode.contains("gdcc_engine_method_bind_node_queue_free_P_RV("), bindHeaderCode);
     }
 
     @Test
@@ -396,7 +396,7 @@ public class CCodegenTest {
         var validBody = codegen.generateFuncBody(workerClass, valid, usageSession);
         var snapshot = usageSession.snapshot();
 
-        assertTrue(validBody.contains("gdcc_engine_call_node_queue_free_77"), validBody);
+        assertTrue(validBody.contains("gdcc_engine_call_node_queue_free_P_RV"), validBody);
         assertEquals(1, snapshot.size(), snapshot.toString());
         assertEquals("queue_free", snapshot.getFirst().methodName());
         assertEquals("Node", snapshot.getFirst().ownerClassName());

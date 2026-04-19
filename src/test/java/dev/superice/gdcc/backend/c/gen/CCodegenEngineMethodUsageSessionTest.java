@@ -2,6 +2,7 @@ package dev.superice.gdcc.backend.c.gen;
 
 import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.ProjectInfo;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import dev.superice.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.InvalidInsnException;
@@ -105,19 +106,19 @@ class CCodegenEngineMethodUsageSessionTest {
         var session = new EngineMethodUsageSession();
 
         codegen.generateFuncBody(hostClass, instanceTwice, session);
-        assertSnapshot(session, List.of(spec("Probe", "touch", 55L, false, false)));
+        assertSnapshot(session, List.of(spec("Probe", "touch", false, "P_RV")));
 
         codegen.generateFuncBody(hostClass, builtinCall, session);
         codegen.generateFuncBody(hostClass, dynamicCall, session);
         codegen.generateFuncBody(hostClass, gdccCall, session);
-        assertSnapshot(session, List.of(spec("Probe", "touch", 55L, false, false)));
+        assertSnapshot(session, List.of(spec("Probe", "touch", false, "P_RV")));
 
         codegen.generateFuncBody(hostClass, staticCall, session);
         codegen.generateFuncBody(hostClass, varargCall, session);
         assertSnapshot(session, List.of(
-                spec("Probe", "touch", 55L, false, false),
-                spec("Probe", "touch", 55L, true, false),
-                spec("Probe", "touch", 55L, false, true)
+                spec("Probe", "touch", false, "P_RV"),
+                spec("Probe", "touch", true, "PT_RV"),
+                spec("Probe", "touch", false, "PI_RV_Xv")
         ));
     }
 
@@ -173,7 +174,7 @@ class CCodegenEngineMethodUsageSessionTest {
         assertTrue(session.snapshot().isEmpty());
 
         codegen.generateFuncBody(hostClass, valid, session);
-        assertSnapshot(session, List.of(spec("Probe", "count", 72L, false, false)));
+        assertSnapshot(session, List.of(spec("Probe", "count", false, "P_RI")));
     }
 
     @Test
@@ -208,26 +209,24 @@ class CCodegenEngineMethodUsageSessionTest {
 
         var session = new EngineMethodUsageSession();
         codegen.generateFuncBody(hostClass, sessionRender, session);
-        assertSnapshot(session, List.of(spec("Probe", "touch", 55L, true, false)));
+        assertSnapshot(session, List.of(spec("Probe", "touch", true, "PT_RV")));
     }
 
     private record SnapshotSpec(
             @NotNull String ownerClassName,
             @NotNull String methodName,
-            long hash,
             boolean isStatic,
-            boolean isVararg
+            @NotNull String symbolId
     ) {
     }
 
     private static @NotNull SnapshotSpec spec(
             @NotNull String ownerClassName,
             @NotNull String methodName,
-            long hash,
             boolean isStatic,
-            boolean isVararg
+            @NotNull String symbolId
     ) {
-        return new SnapshotSpec(ownerClassName, methodName, hash, isStatic, isVararg);
+        return new SnapshotSpec(ownerClassName, methodName, isStatic, symbolId);
     }
 
     private static void assertSnapshot(
@@ -236,14 +235,13 @@ class CCodegenEngineMethodUsageSessionTest {
     ) {
         var actual = session.snapshot().stream()
                 .map(resolved -> {
-                    var bindSpec = resolved.engineMethodBindSpec();
-                    assertNotNull(bindSpec, "session snapshot should only contain exact engine methods");
+                    var key = EngineMethodSymbolKey.from(resolved);
+                    assertNotNull(key, "session snapshot should only contain exact engine methods");
                     return spec(
                             resolved.ownerClassName(),
                             resolved.methodName(),
-                            bindSpec.hash(),
                             resolved.isStatic(),
-                            resolved.isVararg()
+                            key.symbolId()
                     );
                 })
                 .toList();

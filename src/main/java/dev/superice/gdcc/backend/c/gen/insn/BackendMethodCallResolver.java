@@ -1,6 +1,8 @@
 package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodAbiSignature;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.lir.LirVariable;
 import dev.superice.gdcc.scope.ScopeOwnerKind;
@@ -19,7 +21,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 
 /// Backend adapter for the shared method resolver.
@@ -234,6 +235,8 @@ public final class BackendMethodCallResolver {
                         mode,
                         ownerClassName,
                         resolved.methodName(),
+                        parameters,
+                        resolved.returnType(),
                         engineMethodBindSpec,
                         resolved.isVararg(),
                         resolved.isStatic()
@@ -349,6 +352,8 @@ public final class BackendMethodCallResolver {
     private static @NotNull String renderMethodCFunctionName(@NotNull DispatchMode mode,
                                                              @NotNull String ownerClassName,
                                                              @NotNull String methodName,
+                                                             @NotNull List<MethodParamSpec> parameters,
+                                                             @NotNull GdType returnType,
                                                              @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                                              boolean isVararg,
                                                              boolean isStatic) {
@@ -357,6 +362,8 @@ public final class BackendMethodCallResolver {
             case ENGINE -> renderEngineMethodCFunctionName(
                     ownerClassName,
                     methodName,
+                    parameters,
+                    returnType,
                     engineMethodBindSpec,
                     isVararg,
                     isStatic
@@ -369,34 +376,21 @@ public final class BackendMethodCallResolver {
     /// Exact engine helper naming assumes bind lookup identity has already been validated.
     private static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
                                                                    @NotNull String methodName,
+                                                                   @NotNull List<MethodParamSpec> parameters,
+                                                                   @NotNull GdType returnType,
                                                                    @Nullable EngineMethodBindSpec engineMethodBindSpec,
                                                                    boolean isVararg,
                                                                    boolean isStatic) {
-        var bindSpec = Objects.requireNonNull(engineMethodBindSpec, "Exact engine route requires method bind spec");
-        var name = new StringBuilder(isVararg ? "gdcc_engine_callv_" : "gdcc_engine_call_");
-        if (isStatic) {
-            name.append("static_");
-        }
-        name.append(sanitizeHelperNameFragment(ownerClassName))
-                .append("_")
-                .append(sanitizeHelperNameFragment(methodName))
-                .append("_")
-                .append(bindSpec.hash());
-        return name.toString();
-    }
-
-    private static @NotNull String sanitizeHelperNameFragment(@NotNull String raw) {
-        var normalized = raw.toLowerCase(Locale.ROOT);
-        var sanitized = normalized.replaceAll("[^a-z0-9_]+", "_").replaceAll("_+", "_");
-        if (sanitized.startsWith("_")) {
-            sanitized = sanitized.substring(1);
-        }
-        if (sanitized.endsWith("_")) {
-            sanitized = sanitized.substring(0, sanitized.length() - 1);
-        }
-        if (sanitized.isBlank()) {
-            throw new IllegalArgumentException("Identifier fragment becomes empty after sanitization: " + raw);
-        }
-        return sanitized;
+        Objects.requireNonNull(engineMethodBindSpec, "Exact engine route requires method bind spec");
+        return new EngineMethodSymbolKey(
+                ownerClassName,
+                methodName,
+                isStatic,
+                new EngineMethodAbiSignature(
+                        parameters.stream().map(MethodParamSpec::type).toList(),
+                        returnType,
+                        isVararg
+                )
+        ).renderCallHelperName();
     }
 }

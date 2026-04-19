@@ -4,8 +4,9 @@ import dev.superice.gdcc.backend.CodegenContext;
 import dev.superice.gdcc.backend.c.gen.binding.BindingData;
 import dev.superice.gdcc.backend.c.gen.binding.BoundMetadata;
 import dev.superice.gdcc.backend.c.gen.binding.EngineMethodHelperParam;
-import dev.superice.gdcc.backend.c.gen.insn.OperatorResolver;
+import dev.superice.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import dev.superice.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
+import dev.superice.gdcc.backend.c.gen.insn.OperatorResolver;
 import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.exception.NotImplementedException;
 import dev.superice.gdcc.lir.LirClassDef;
@@ -22,14 +23,12 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
-import java.util.regex.Pattern;
 
 import static dev.superice.gdcc.util.StringUtil.escapeStringLiteral;
 
 public final class CGenHelper {
     private static final String GODOT_UTILITY_PREFIX = "godot_";
     private static final String VARIANT_WRITEBACK_HELPER_NAME = "gdcc_variant_requires_writeback";
-    private static final Pattern NON_C_IDENTIFIER_PATTERN = Pattern.compile("[^a-z0-9_]");
     private static final FunctionSignature VARIANT_WRITEBACK_HELPER_SIGNATURE = new FunctionSignature(
             VARIANT_WRITEBACK_HELPER_NAME,
             List.of(new FunctionSignature.Parameter("value", GdVariantType.VARIANT, null)),
@@ -361,23 +360,7 @@ public final class CGenHelper {
     public @NotNull String renderEngineMethodBindAccessorName(
             @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
     ) {
-        var bindSpec = Objects.requireNonNull(
-                resolved.engineMethodBindSpec(),
-                "Exact engine method bind metadata is required to render accessor names"
-        );
-        var name = new StringBuilder("gdcc_engine_method_bind_");
-        if (resolved.isStatic()) {
-            name.append("static_");
-        }
-        if (resolved.isVararg()) {
-            name.append("vararg_");
-        }
-        name.append(sanitizeCIdentifierFragment(resolved.ownerClassName()))
-                .append("_")
-                .append(sanitizeCIdentifierFragment(resolved.methodName()))
-                .append("_")
-                .append(bindSpec.hash());
-        return name.toString();
+        return requireEngineMethodSymbolKey(resolved).renderBindAccessorName();
     }
 
     /// The accessor tries the primary hash first, then compatibility hashes in declared order.
@@ -404,20 +387,7 @@ public final class CGenHelper {
     public @NotNull String renderEngineMethodCallHelperName(
             @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
     ) {
-        var bindSpec = Objects.requireNonNull(
-                resolved.engineMethodBindSpec(),
-                "Exact engine method bind metadata is required to render helper names"
-        );
-        var name = new StringBuilder(resolved.isVararg() ? "gdcc_engine_callv_" : "gdcc_engine_call_");
-        if (resolved.isStatic()) {
-            name.append("static_");
-        }
-        name.append(sanitizeCIdentifierFragment(resolved.ownerClassName()))
-                .append("_")
-                .append(sanitizeCIdentifierFragment(resolved.methodName()))
-                .append("_")
-                .append(bindSpec.hash());
-        return name.toString();
+        return requireEngineMethodSymbolKey(resolved).renderCallHelperName();
     }
 
     /// Helper parameters intentionally mirror the current callable surface:
@@ -510,24 +480,17 @@ public final class CGenHelper {
         );
     }
 
-    private @NotNull String renderEngineMethodHelperLocalSlotName(@NotNull EngineMethodHelperParam param) {
-        return param.name() + "_slot";
+    private @NotNull EngineMethodSymbolKey requireEngineMethodSymbolKey(
+            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
+    ) {
+        return Objects.requireNonNull(
+                EngineMethodSymbolKey.from(resolved),
+                "Exact engine helper symbol key requires resolved exact engine metadata"
+        );
     }
 
-    private @NotNull String sanitizeCIdentifierFragment(@NotNull String raw) {
-        var normalized = raw.toLowerCase(Locale.ROOT);
-        var sanitized = NON_C_IDENTIFIER_PATTERN.matcher(normalized).replaceAll("_");
-        sanitized = sanitized.replaceAll("_+", "_");
-        if (sanitized.startsWith("_")) {
-            sanitized = sanitized.substring(1);
-        }
-        if (sanitized.endsWith("_")) {
-            sanitized = sanitized.substring(0, sanitized.length() - 1);
-        }
-        if (sanitized.isBlank()) {
-            throw new IllegalArgumentException("Identifier fragment becomes empty after sanitization: " + raw);
-        }
-        return sanitized;
+    private @NotNull String renderEngineMethodHelperLocalSlotName(@NotNull EngineMethodHelperParam param) {
+        return param.name() + "_slot";
     }
 
     public @NotNull String renderFuncBindName(@NotNull FunctionDef functionDef) {

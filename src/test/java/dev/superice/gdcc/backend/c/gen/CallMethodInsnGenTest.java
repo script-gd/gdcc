@@ -86,7 +86,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
-        assertTrue(body.contains("gdcc_engine_call_node_queue_free_77($node);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_queue_free_P_RV($node);"), body);
         assertFalse(body.contains("godot_Node_queue_free("), body);
     }
 
@@ -107,10 +107,10 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithQueueFree())), List.of(clazz));
         assertTrue(
-                body.contains("gdcc_engine_call_node_queue_free_77((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"),
+                body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)gdcc_object_to_godot_object_ptr($self, GDMyNode_object_ptr));"),
                 body
         );
-        assertFalse(body.contains("gdcc_engine_call_node_queue_free_77((godot_Node*)$self);"), body);
+        assertFalse(body.contains("gdcc_engine_call_node_queue_free_P_RV((godot_Node*)$self);"), body);
     }
 
     @Test
@@ -130,7 +130,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithAddChild())), List.of(clazz));
-        assertTrue(body.contains("gdcc_engine_call_node_add_child_79($holder, $child,"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_add_child_PL4Node_ZI_RV($holder, $child,"), body);
         assertTrue(body.contains("__gdcc_tmp_default_arg_2_"), body);
         assertTrue(body.contains("__gdcc_tmp_default_arg_3_"), body);
         assertFalse(body.contains("godot_Node_add_child("), body);
@@ -339,7 +339,7 @@ class CallMethodInsnGenTest {
         }
 
         var output = outputBuffer.toString(StandardCharsets.UTF_8);
-        assertTrue(body.contains("gdcc_engine_call_static_node_make_88()"), body);
+        assertTrue(body.contains("gdcc_engine_call_static_node_make_P_RL4Node_()"), body);
         assertFalse(body.contains("godot_Node_make()"), body);
         assertTrue(output.contains("call_method on receiver"), output);
         assertTrue(output.contains("resolved static method 'Node.make'"), output);
@@ -365,7 +365,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithVarargSpread(93L))), List.of(clazz));
-        assertTrue(body.contains("gdcc_engine_callv_node_spread_93($node, &$label, __gdcc_tmp_argv_"), body);
+        assertTrue(body.contains("gdcc_engine_callv_node_spread_PS_RV_Xv($node, &$label, __gdcc_tmp_argv_"), body);
         assertTrue(body.contains("const godot_Variant* __gdcc_tmp_argv_"), body);
         assertFalse(body.contains("godot_Node_spread("), body);
         assertFalse(body.contains("godot_new_Variant_with_StringName($label)"), body);
@@ -403,8 +403,8 @@ class CallMethodInsnGenTest {
         }
 
         var output = outputBuffer.toString(StandardCharsets.UTF_8);
-        assertTrue(body.contains("gdcc_engine_callv_static_node_broadcast_94($prefix, __gdcc_tmp_argv_"), body);
-        assertFalse(body.contains("gdcc_engine_callv_static_node_broadcast_94($node"), body);
+        assertTrue(body.contains("gdcc_engine_callv_static_node_broadcast_PI_RV_Xv($prefix, __gdcc_tmp_argv_"), body);
+        assertFalse(body.contains("gdcc_engine_callv_static_node_broadcast_PI_RV_Xv($node"), body);
         assertFalse(body.contains("godot_Node_broadcast("), body);
         assertTrue(output.contains("resolved static method 'Node.broadcast'"), output);
     }
@@ -644,7 +644,7 @@ class CallMethodInsnGenTest {
         clazz.addFunction(func);
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
-        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, $flags);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_PI_RV($node, $flags);"), body);
         assertFalse(body.contains("__gdcc_tmp_bitfield_arg_1_"), body);
         assertFalse(body.contains("(const godot_Node_ProcessThreadMessages *)&"), body);
     }
@@ -665,7 +665,7 @@ class CallMethodInsnGenTest {
 
         var body = generateBody(clazz, func, newApi(List.of(), List.of(nodeClassWithBitfieldDefaultParam())), List.of(clazz));
         assertTrue(body.contains("godot_int __gdcc_tmp_default_arg_1_"), body);
-        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_67($node, __gdcc_tmp_default_arg_1_"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_set_process_thread_messages_PI_RV($node, __gdcc_tmp_default_arg_1_"), body);
         assertFalse(body.contains("(const godot_Node_ProcessThreadMessages *)&"), body);
     }
 

@@ -2,12 +2,13 @@
 
 ## 文档状态
 
-- 状态：Completed（按当前代码库事实核对，阶段 1-8 已完成）
+- 状态：Completed（按当前代码库事实核对，阶段 1-9 已完成）
 - 最近同步：2026-04-19
 - 范围：`CALL_METHOD` 的 exact engine route 渐进式摆脱 `gdextension-lite`
-- 本文包含两部分目标：
+- 本文包含三部分目标：
   - 第一阶段基础设施：记录已使用的 exact engine method，并生成专用 method bind 头文件
   - 后续切换阶段：将 exact engine call 的实际调用路径从 `gdextension-lite` wrapper 切到 direct method bind route
+  - 第九阶段稳定化：将 generated helper / accessor / usage key 的身份从主 `hash` 上解耦，只把 `hash` 留在 bind lookup 层
 - 当前明确非目标：
   - 本计划只覆盖 `CALL_METHOD` 的 exact engine route
   - 不在本轮顺手迁移 `CALL_GLOBAL`、property、index、constructor、`CALL_STATIC_METHOD`
@@ -250,7 +251,7 @@
   - 不新增 public 框架式抽象
   - 推荐落在 `src/main/java/dev/superice/gdcc/backend/c/gen/binding/` 下的独立小类型
 - `EngineMethodUsageSession` 职责：
-  - 持有 module 级 `LinkedHashMap<EngineMethodBindKey, ResolvedMethodCall>`
+  - 持有 module 级 `LinkedHashMap<EngineMethodSymbolKey, ResolvedMethodCall>`
   - 提供稳定顺序去重后的 snapshot
 - `EngineMethodUsageBuffer` 职责：
   - 只持有单次 `generateFuncBody(...)` render 的 local buffer
@@ -275,16 +276,16 @@
   - `CBodyBuilder` 只持有“本次函数 render 的 buffer”
   - 不回头引用 `helper` 或 `codegen` 上的共享 collector 状态
 
-1. key 建议最小化为：
+1. 当前实现中的 usage key 已收敛为：
 - `ownerClassName`
 - `methodName`
-- `hash`
 - `isStatic`
-- `isVararg`
+- `abiDescriptor`
 - 说明：
-  - `godot_classdb_get_method_bind(...)` 的 bind lookup 身份仍主要依赖 `ownerClassName + methodName + hash`
-  - 但 generated helper 的 ABI surface 还受 `isStatic()` / `isVararg()` 影响
-  - collector 若只按 bind identity 去重，后续 helper 发射可能把“无 receiver 的 static helper”和“有 receiver 的 instance helper”错误折叠
+  - 阶段 2 初版曾按 bind lookup 身份（含 `hash`）建 key；阶段 9 已收敛为稳定的 `EngineMethodSymbolKey`
+  - `godot_classdb_get_method_bind(...)` 的 lookup 身份继续由 `EngineMethodBindSpec(hash, hashCompatibility)` 单独负责
+  - generated helper 的 callable ABI surface 由 `isStatic + abiDescriptor` 唯一决定，其中 `abiDescriptor` 已包含参数序列、返回类型与可选 `_Xv` vararg 后缀
+  - collector 若只按 lookup `hash` 去重，会让“同 ABI、不同 metadata hash”发生无意义漂移；若忽略 `isStatic` 或 ABI 描述符，又会把不同 helper surface 错误折叠
 
 1. 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/insn/CallMethodInsnGen.java`
 - exact engine usage 的采集仍建议只锚定在 `emitKnownSignatureCall(...)`
@@ -302,8 +303,8 @@
 ### 进度同步（2026-04-18）
 
 - [x] `CCodegen` 已引入 module-scope `EngineMethodUsageSession` 与 function-scope `EngineMethodUsageBuffer`
-  - session 以 `LinkedHashMap<EngineMethodBindKey, ResolvedMethodCall>` 保持 first-hit 顺序去重
-  - key 已按方案收窄为 `ownerClassName + methodName + hash + isStatic + isVararg`
+  - session 最终以 `LinkedHashMap<EngineMethodSymbolKey, ResolvedMethodCall>` 保持 first-hit 顺序去重
+  - 阶段 2 初版曾按 `hash` 去重；阶段 9 已收敛为 `ownerClassName + methodName + isStatic + abiDescriptor`
   - 相关类型已迁移到 `src/main/java/dev/superice/gdcc/backend/c/gen/binding/` 下作为独立类
 - [x] `CCodegen` 已补内部 render 路径：
   - public `generateFuncBody(clazz, func)` 固定走 no-op buffer
@@ -350,15 +351,15 @@
   - 内部缓存 `static GDExtensionMethodBindPtr bind = NULL;`
   - 首次调用时执行 `godot_classdb_get_method_bind(...)`
   - 主 `hash` 失败后按 `hashCompatibility` 顺序回退
-- accessor 命名建议：
-  - `gdcc_engine_method_bind_<Owner>_<method>_<hash>()`
+- accessor 命名的最终合同已由阶段 9 收敛为：
+  - `gdcc_engine_method_bind_<Owner>_<method>_<symbolId>()`
 - accessor 名必须保持 `gdcc_engine_*` 前缀体系，不允许与 `gdextension-lite` 已生成函数同名
 - 对 `isStatic() == true` 的 exact engine method，建议 accessor 符号也带显式 static 标记，例如：
-  - `gdcc_engine_method_bind_static_<Owner>_<method>_<hash>()`
+  - `gdcc_engine_method_bind_static_<Owner>_<method>_<symbolId>()`
 - 即便 bind lookup 最终仍使用同一组 class/method/hash 输入，生成符号也应让 review 时能直接区分“无 receiver 的 static helper route”
-- 若同一 `owner/method/hash` 同时存在 vararg / non-vararg route，accessor 符号也必须显式带 vararg 标记：
-  - 例如 `gdcc_engine_method_bind_vararg_<Owner>_<method>_<hash>()`
-  - 目的不是改变 bind lookup 身份，而是避免 skeleton/accessor 名冲突，并为后续 phase 4 helper surface 保持一一对应关系
+- vararg / non-vararg 不再使用独立 `vararg_` 前缀区分：
+  - 最终由 `symbolId` 中“是否携带 `_Xv`”表达
+  - 这样可以避免同一 ABI helper surface 因 metadata `hash` 变化或多余 marker 而额外漂移
 
 1. phase 3 不生成 `godot_<Owner>_<method>` 风格 public wrapper
 - 也不立刻切换 `resolved.cFunctionName()`
@@ -405,7 +406,7 @@
   - 无 exact engine call 时仍生成合法空壳头文件
 - [x] accessor 命名已落地到 backend-owned `gdcc_engine_*` 名称空间
   - `isStatic()` route 显式带 `static_` 标记
-  - `isVararg()` route 额外带 `vararg_` 标记，避免与 non-vararg route 在同一 `owner/method/hash` 下发生符号冲突
+  - `isVararg()` route 现由 `symbolId` 的 `_Xv` 后缀区分，不再保留独立 `vararg_` 前缀
 - [x] `CCodegen.generate()` 已切换为：
   1. `entry.c.ftl`
   2. `engine_method_binds.h.ftl`
@@ -448,10 +449,10 @@
 
 1. 在同一模板中，为每个已用 exact engine method 追加 internal helper
 - 命名建议：
-  - instance non-vararg: `gdcc_engine_call_<Owner>_<method>_<hash>(...)`
-  - static non-vararg: `gdcc_engine_call_static_<Owner>_<method>_<hash>(...)`
-  - instance vararg: `gdcc_engine_callv_<Owner>_<method>_<hash>(...)`
-  - static vararg: `gdcc_engine_callv_static_<Owner>_<method>_<hash>(...)`
+  - instance non-vararg: `gdcc_engine_call_<Owner>_<method>_<symbolId>(...)`
+  - static non-vararg: `gdcc_engine_call_static_<Owner>_<method>_<symbolId>(...)`
+  - instance vararg: `gdcc_engine_callv_<Owner>_<method>_<symbolId>(...)`
+  - static vararg: `gdcc_engine_callv_static_<Owner>_<method>_<symbolId>(...)`
 - helper 仍是 internal 符号，不对齐 `gdextension-lite` public ABI
 - helper 名称是强约束，不是可选建议：
   - 不允许回退为 `godot_<Owner>_<method>` 或其他会与 `gdextension-lite` wrapper 重名的形状
@@ -654,8 +655,8 @@
 ### 当前进度
 
 - [x] `BackendMethodCallResolver` 已切换 `DispatchMode == ENGINE && !isVararg && bind hash 可用` 的 `cFunctionName`
-  - 实例 exact route 现在发布 `gdcc_engine_call_<Owner>_<method>_<hash>`
-  - static exact route 现在发布 `gdcc_engine_call_static_<Owner>_<method>_<hash>`
+  - 实例 exact route 现在发布 `gdcc_engine_call_<Owner>_<method>_<symbolId>`
+  - static exact route 现在发布 `gdcc_engine_call_static_<Owner>_<method>_<symbolId>`
   - 缺失 bind hash 的 exact engine route 现显式报错，不再静默回退到 `godot_<Owner>_<method>`
 - [x] `CBodyBuilder` 已将 `gdcc_engine_call_` 纳入 raw Godot ptr helper 判定
   - object 参数继续复用 `checkGlobalFuncRequireGodotRawPtr(...)` 现有中央转换
@@ -833,8 +834,8 @@
 ### 当前进度
 
 - [x] `BackendMethodCallResolver` 已将 exact engine vararg route 切到 backend-owned helper 名称
-  - 有 hash 的实例 vararg 现解析到 `gdcc_engine_callv_<...>`
-  - 有 hash 的静态 vararg 现解析到 `gdcc_engine_callv_static_<...>`
+  - 有 hash 的实例 vararg 现解析到 `gdcc_engine_callv_<Owner>_<method>_<symbolId>`
+  - 有 hash 的静态 vararg 现解析到 `gdcc_engine_callv_static_<Owner>_<method>_<symbolId>`
   - 缺失 bind hash 的 exact vararg route 现显式报错，不再保留 `godot_<Owner>_<method>` 旧 wrapper surface
 - [x] `CallMethodInsnGen` 已复用现有 fixed/default/vararg split 合同，无需回退到 Java 侧 fixed prefix pack
   - caller 仍只负责 fixed 参数校验、default 补齐与 extra vararg `Variant` tail 传递
@@ -989,6 +990,262 @@
   - `doc/gdcc_c_backend.md` 已补齐 non-vararg `ptrcall` / vararg `call` 与 object-slot ABI 规则
   - `doc/test_error/test_suite_engine_integration_known_limits.md` 已把 `gdextension-lite` ABI debt 缩窄为 wrapper consumer 的剩余适用面
 
+## 阶段 9：解耦 helper/accessor 身份与主 `hash`，稳定 generated symbol surface
+
+### 问题界定
+
+- 当前实现把三件本应分离的事情同时绑在主 `hash` 上：
+  - bind lookup 身份
+  - generated accessor / helper 符号身份
+  - module/session 级 exact-engine usage 去重身份
+- 这会把“上游 API metadata 的 lookup 细节变化”错误放大成“generated symbol surface 整体漂移”：
+  - 只要主 `hash` 变化，即使 `hashCompatibility` 仍能保证 lookup 正常命中，`gdcc_engine_method_bind_<...>` / `gdcc_engine_call_<...>` 名称仍会整体变化
+  - `EngineMethodUsageSession` 当前也会把这类变化视为“新方法”，从而改变去重结果和首命中顺序
+  - 与 helper / accessor 名称直接耦合的 snapshot、header 文本和 codegen 断言都会跟着 churn
+- 阶段 9 的目标不是改 lookup 语义，也不是重新讨论 exact route 是否存在；它只负责把：
+  - `hash` / `hashCompatibility`
+  - generated helper / accessor 的稳定身份
+  - usage collector 的稳定去重身份
+  拆成三层彼此独立的责任边界。
+
+### 设计约束
+
+- `godot_classdb_get_method_bind(...)` 的 lookup 仍由 `ownerClassName + methodName + primaryHash` 驱动，并继续按 `hashCompatibility` 顺序回退。
+- generated helper / accessor / usage key 的身份只应在 helper ABI surface 真正变化时变化；仅主 `hash` 或 `hashCompatibility` 变化时不得漂移。
+- symbol key 不能偷简化为 `ownerClassName + methodName + isStatic + isVararg`：
+  - 这不足以区分不同 helper surface
+  - 会把未来可能出现的 ABI 差异、slot mode 差异或返回面差异错误合并
+- 阶段 9 不改变“缺失非零 bind hash 的 exact engine route 显式失败”这条既有合同。
+- 阶段 9 的 generated symbol identity 必须直接来自可读 ABI 描述符，而不是任何摘要算法；仍需保留：
+  - backend-owned namespace
+  - `static_` / `vararg_` 等可读语义前缀
+  - 便于 code review 的 owner / method 可读片段
+- ABI 描述符必须可逆解析：
+  - 能从字符串恢复出返回类型、参数类型列表与 vararg 标志
+  - 不能是“只负责生成、不负责解析”的一次性命名技巧
+
+### 实施
+
+1. 引入公共 ABI 描述符模型、解析器与生成器
+- 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/binding/`
+- 新增公共 ABI 协议类型，推荐：
+  - `EngineMethodAbiSignature`
+  - `EngineMethodAbiCodec`
+- 这里的“公共”是指：
+  - 不是 `private` / 局部 helper
+  - codegen、resolver、collector 与 focused tests 都复用同一套 codec
+  - 任何一方都不能再手写第二套 descriptor 拼接逻辑
+- ABI 描述符采用“JVM method descriptor 的 C-identifier-safe 变体”：
+  - 保留“参数序列 + 返回类型 + 可选 vararg 后缀”这一本质结构
+  - 但不使用 `(` `)` `;` 之类会破坏 C 符号名的字符
+- 推荐固定语法：
+  - `P<paramDescriptors>_R<returnDescriptor>[_Xv]`
+- 其中：
+  - `<paramDescriptors>` 是按顺序拼接的参数类型描述符，可为空
+  - `<returnDescriptor>` 是返回类型描述符
+  - `[_Xv]` 是可选后缀：
+    - 缺失表示 non-vararg
+    - 出现 `_Xv` 表示 vararg
+- 类型描述符规则：
+  - 叶子非 `Object` 类型统一由 codec 中央映射表编码成单字母
+  - `Array` / `Dictionary` 不再压成同一个叶子字母：
+    - `Array[T]` 编码为 `A<elementDescriptor>_`
+    - `Dictionary[K, V]` 编码为 `D<keyDescriptor><valueDescriptor>_`
+  - 这样可以在 typed container 场景下保持 descriptor 可逆，避免把不同 helper surface 误合并
+  - `Object` 类型统一编码为 `L<length><ClassName>_`
+  - 这里的 `<length>` 是十进制类名长度，用于解决类名中可包含 `_` 时的无歧义解析问题
+  - 无需为“类名以数字开头”设计额外转义：
+    - 语法上这类类名本就非法
+- 例如：
+  - non-vararg、返回 `void`、参数 `(Node, bool, int)` -> `PL4Node_ZI_RV`
+  - vararg、返回 `Variant`、固定参数 `(StringName)` -> `PS_RR_Xv`
+- codec 必须同时提供：
+  - descriptor 生成
+  - descriptor 解析
+  - round-trip 保真校验
+- 所有非 `Object` 类型的一字母映射必须集中维护在 codec 内，不允许散落在多个 helper 中各自约定。
+
+1. 引入稳定 symbol key
+- 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/binding/`
+- 将当前只服务 lookup-era 实现的 `EngineMethodBindKey` 升级/替换为新的稳定身份类型，推荐命名：
+  - `EngineMethodSymbolKey`
+- 该 key 明确不再持有主 `hash` 或 `hashCompatibility`；推荐最小字段集：
+  - `ownerClassName`
+  - `methodName`
+  - `isStatic`
+  - `EngineMethodAbiSignature` 或其 canonical descriptor
+- `isVararg` 不再作为独立命名后缀事实源：
+  - non-vararg 由“无 `_Xv` 后缀”显式表达
+  - vararg 由 `_Xv` 后缀显式表达
+  - helper 名称前缀仍可继续区分 `call` / `callv`，但 key 的 ABI 身份只认统一 codec 产物
+- 不能把 symbol key 的 canonical 文本建立在 record 默认 `toString()`、集合默认 `toString()` 或 Java `hashCode()` 上：
+  - 这些形式不适合作为长期稳定的生成身份合同
+  - 必须显式走公共 codec 的 canonical descriptor
+
+1. 生成稳定且可读的 symbol id
+- 文件：`src/main/java/dev/superice/gdcc/backend/c/gen/binding/` 或 `src/main/java/dev/superice/gdcc/backend/c/gen/`
+- `symbolId` 直接采用公共 codec 生成的 canonical ABI descriptor，不再经过摘要算法二次压缩。
+- 不允许继续使用 metadata 主 `hash` 直接作为 helper/accessor 名称后缀。
+- 阶段 9 完成后，generated symbol 允许长成：
+  - `gdcc_engine_method_bind_<Owner>_<method>_<symbolId>()`
+  - `gdcc_engine_method_bind_static_<Owner>_<method>_<symbolId>()`
+  - `gdcc_engine_call_<Owner>_<method>_<symbolId>(...)`
+  - `gdcc_engine_callv_static_<Owner>_<method>_<symbolId>(...)`
+- 但这里的 `<symbolId>` 已不再表示上游 metadata 主 `hash`，而是公共 codec 生成的 ABI 描述符。
+- 这条规则的设计目标是：
+  - helper/accessor 名字直接暴露 callable ABI
+  - reviewer 无需反查摘要算法就能知道“为什么这些 exact route 可以复用同一个 helper”
+
+1. 让 helper surface 成为单一事实源
+- 文件：
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/binding/`
+- 当前 `collectEngineMethodHelperParameters(...)` 已掌握 helper 参数面的真实 ABI 事实；阶段 9 不能再平行复制第二套“只给 key 用”的推导逻辑。
+- 推荐做法：
+  - 抽出公共 ABI 签名输入模型
+  - 让 symbol key、模板渲染和测试夹具都复用这套签名，而不是各自重算
+- ABI 描述符聚焦“helper 对 caller 暴露出的 callable surface”：
+  - 返回类型
+  - 有序参数类型
+  - 是否带 `_Xv` 后缀
+- helper-local 的实现细节，如：
+  - `VALUE_ADDRESS` / `STORAGE_POINTER` / `LOCAL_VALUE_SLOT_ADDRESS`
+  - enum / bitfield 的 `localSlotCType`
+  仍然由 backend 内部实现负责，但不再直接进入 symbol id。
+- 这意味着：
+  - 若未来只改了 lookup `hash`，symbol id 不得变化
+  - 若未来只改了 helper-local slot materialization，但 callable ABI 未变，symbol id 也应保持稳定
+  - 若 callable ABI 自身变化，symbol id 必须变化
+
+1. 替换 usage collector 的去重身份
+- 文件：
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/binding/EngineMethodUsageBuffer.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/binding/EngineMethodUsageSession.java`
+- `EngineMethodUsageBuffer` / `EngineMethodUsageSession` 的 map key 需要从：
+  - `EngineMethodBindKey`
+  改为：
+  - `EngineMethodSymbolKey`
+- 去重语义改为：
+  - 同一 helper ABI surface 在单次 codegen session 中只保留一份 generated helper/accessor
+  - 即使未来主 `hash` 变化，只要 helper ABI surface 未变，去重结果和首命中顺序都保持稳定
+- 这里不额外设计“同一 session 内合并两份不同 metadata 快照”的复杂合同：
+  - 单次 codegen 只面对一份 API metadata 事实源
+  - 阶段 9 关注的是跨不同 metadata 版本重新生成时的 symbol 稳定性，而不是同一轮生成中合并多个版本的 bind spec
+
+1. 收口 helper/accessor 命名入口，避免 caller/header 二次漂移
+- 文件：
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/CGenHelper.java`
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+- 当前 `CGenHelper` 与 `BackendMethodCallResolver.renderMethodCFunctionName(...)` 都会各自拼 exact-engine helper 名；阶段 9 必须收口为单一命名事实源。
+- 推荐做法：
+  - 由公共 `EngineMethodAbiCodec` 负责 descriptor 生成/解析
+  - 命名层只负责把 `owner + method + static marker + abiDescriptor` 组装成最终 C 符号
+- 约束：
+  - `renderEngineMethodBindAccessorName(...)` 与 `renderEngineMethodCallHelperName(...)` 不再读取主 `hash`
+  - `BackendMethodCallResolver` 发布给 caller side 的 `cFunctionName` 必须与模板最终生成的 helper 名完全同源
+  - `collectEngineMethodBindLookupHashes(...)` 继续只负责 lookup hash 列表，不再隐式承担 symbol identity 责任
+
+1. 保持 bind lookup 逻辑只依赖 `EngineMethodBindSpec`
+- 文件：
+  - `src/main/java/dev/superice/gdcc/backend/c/gen/insn/BackendMethodCallResolver.java`
+  - `src/main/c/codegen/template_451/engine_method_binds.h.ftl`
+- `EngineMethodBindSpec` 继续只描述：
+  - 主 `hash`
+  - `hashCompatibility`
+- 模板内 accessor body 仍然必须：
+  - 先试主 `hash`
+  - 再按 `hashCompatibility` 顺序回退
+- 阶段 9 不能把 lookup `hash` 的责任偷塞回 symbol key；也不能因为 symbol 稳定化而把 `hashCompatibility` fallback 简化掉。
+
+### 测试与验收
+
+1. 为 ABI codec / symbol key / naming 引入专门测试，而不是继续把这类断言分散在大段 header snapshot 里
+- 推荐新增 focused test，覆盖：
+  - `EngineMethodAbiCodec.generate(parse(x)) == x`
+  - `EngineMethodAbiCodec.parse(generate(x))` 能还原出相同签名
+  - 非法 descriptor 会显式失败，而不是静默容错
+  - 同一 owner / method / helper ABI、不同主 `hash` -> `EngineMethodSymbolKey` 相同
+  - 同一 owner / method / helper ABI、不同 `hashCompatibility` 列表 -> `EngineMethodSymbolKey` 与 helper/accessor 名称相同
+  - `isStatic` 变化 -> key 与名称不同
+  - “无 `_Xv` 后缀”与“有 `_Xv` 后缀”变化 -> key 与名称不同
+  - return descriptor 变化 -> key 与名称不同
+  - 参数 descriptor 序列变化 -> key 与名称不同
+- 这里的正反用例必须同时存在，不能只测“hash 变化不漂移”的 happy path。
+- codec 的测试还必须覆盖：
+  - 非 `Object` 类型的一字母映射唯一且稳定
+  - `Object` 类型统一采用 `L<length><ClassName>_`
+  - 对象类名包含 `_` 时仍可正确 round-trip
+  - 空参数列表、仅对象参数、对象与基础类型混排、vararg/non-vararg 两侧 round-trip
+
+1. 将 hash 细节断言从“所有 helper/accessor 测试”收缩到“lookup 行为测试”
+- 代表性受影响测试至少包括：
+  - `CallMethodInsnGenTest`
+  - `CCodegenTest`
+  - `CCodegenEngineMethodBindHeaderTest`
+  - `MethodResolverParityTest`
+  - `CCodegenEngineMethodUsageSessionTest`
+- 改造原则：
+  - helper/accessor route 测试改为断言命名空间、前缀、static/vararg marker、是否稳定复用
+  - 仅 lookup/accessor body 测试继续精确断言主 `hash` 与 `hashCompatibility` 的发射顺序
+- 阶段 9 的目标之一就是把“hash 变化引起的大面积测试 churn”缩到 lookup 专属测试面；如果 helper 命名改了但大部分测试仍直接锚定具体后缀，则视为未完成。
+
+1. 补一组“双 metadata 快照、同 helper surface”的稳定性回归
+- 推荐做法：
+  - 构造两组仅主 `hash` / `hashCompatibility` 不同、其余签名和 helper surface 完全一致的 engine metadata fixture
+  - 对同一 LIR/module 分别生成 `engine_method_binds.h`
+- 必须锁定：
+  - generated helper 名称不变
+  - generated accessor 名称不变
+  - `EngineMethodUsageSession` 的去重与顺序不变
+  - accessor body 内部的 lookup hash 列表会按新 metadata 变化
+
+1. 验收标准
+- 只改主 `hash` 或 `hashCompatibility` 时：
+  - helper/accessor 名称稳定
+  - usage collector key 稳定
+  - 相关测试文本锚点稳定
+  - accessor body lookup 列表随 metadata 正常更新
+- 真正改变 helper ABI surface 时：
+  - symbol key 改变
+  - helper/accessor 名称改变
+  - usage 去重不再错误复用旧 helper
+- 公共 ABI codec 已成为唯一事实源：
+  - descriptor 可生成也可解析
+  - resolver / helper naming / usage collector / tests 不再各自维护一套字符串协议
+- 阶段 9 落地后，文档中所有把 helper/accessor/key 直接表述为 `_<hash>` 的段落都应改写为“历史实现”或“lookup-only 语义”，不能继续与最终设计并列存在。
+
+### 当前进度
+
+- [x] 已新增公共 ABI 协议类型：
+  - `EngineMethodAbiSignature`
+  - `EngineMethodAbiCodec`
+  - `EngineMethodSymbolKey`
+- [x] ABI descriptor 已按可逆协议落地：
+  - 固定外层语法为 `P<paramDescriptors>_R<returnDescriptor>[_Xv]`
+  - 叶子非 `Object` 类型使用集中式一字母映射
+  - `Array` / `Dictionary` 使用递归容器描述符
+  - `Object` 使用 `L<length><ClassName>_`
+- [x] helper/accessor/caller 侧命名已切到 `symbolId = abiDescriptor`
+  - `BackendMethodCallResolver` 不再把主 `hash` 拼进 `cFunctionName`
+  - `CGenHelper.renderEngineMethodBindAccessorName(...)` / `renderEngineMethodCallHelperName(...)` 统一改走 `EngineMethodSymbolKey`
+- [x] `EngineMethodUsageBuffer` / `EngineMethodUsageSession` 已改用 `EngineMethodSymbolKey` 去重
+- [x] focused test、header/codegen 稳定性回归与 targeted test 已同步
+  - 已新增 `EngineMethodAbiCodecTest`
+  - 已新增 `EngineMethodSymbolKeyTest`
+  - 已改造 `MethodResolverParityTest`、`CCodegenEngineMethodUsageSessionTest`、`CCodegenEngineMethodBindHeaderTest`
+  - 已补“同 ABI、不同 bind hash”稳定性回归，锁定 helper/accessor 名称稳定、lookup body 随 metadata 更新
+  - 已运行 targeted tests：
+    - `EngineMethodAbiCodecTest`
+    - `EngineMethodSymbolKeyTest`
+    - `MethodResolverParityTest`
+    - `CCodegenEngineMethodUsageSessionTest`
+    - `CCodegenEngineMethodBindHeaderTest`
+    - `CCodegenTest`
+    - `CallMethodInsnGenTest`
+    - `CBodyBuilderPhaseCTest`
+    - `CallMethodInsnGenEngineTest`
+- [x] 本文阶段 2-7 中把 key / helper / accessor 直接写成 `_<hash>` 的历史性描述已回改为最终 `symbolId` / lookup-only 语义
+
 ## 完成定义（DoD）
 
 - `ResolvedMethodCall` 已稳定保留 exact engine method bind 身份信息
@@ -1009,6 +1266,17 @@
   - caller 继续拥有 extra vararg tail、default temp 与 call-site temp
 - `CBodyBuilder` 已识别新 helper 前缀的 raw ptr 参数 / 返回值合同
 - 新生成的 binding / helper C 函数名与 `gdextension-lite` 名称空间严格隔离，不存在同名函数
+- bind lookup 身份与 generated symbol 身份已明确分层：
+  - `EngineMethodBindSpec` 只服务主 `hash` + `hashCompatibility` lookup
+  - `EngineMethodSymbolKey` 只服务 helper/accessor 命名与 usage 去重
+- 公共 `EngineMethodAbiCodec` 已成为 ABI 协议唯一事实源：
+  - 叶子非 `Object` 类型使用单字母描述符
+  - `Array` / `Dictionary` 使用递归容器描述符
+  - `Object` 类型使用 `L<length><ClassName>_`
+  - ABI descriptor 同时承载参数列表、返回类型与可选 `_Xv` vararg 后缀
+  - descriptor 可稳定生成，也可稳定解析
+- 只改主 `hash` 或 `hashCompatibility` 时，helper/accessor 名称与 usage collector key 保持稳定
+- 只有 lookup 专属测试继续精确锚定 `hash` 细节；helper/accessor route 测试不再把 metadata 主 `hash` 当作命名合同
 - 项目级 DoD 不允许停留在阶段 5 的过渡态
 - `ArrayMesh.add_surface_from_arrays(...)` 已在阶段 6 的最终 helper surface 下稳定通过，不再依赖 engine route 的 wrapper-compatible bitfield cast
 - `Node.add_child(...)` 已重新成为真引擎正向 runtime 回归锚点
@@ -1118,6 +1386,37 @@
   - public `generateFuncBody(...)` 固定 no-op sink，不允许隐式绑定 module session
   - 失败 render 只有丢弃 sink，不存在 reset 共享 collector 的补救合同
 
+### 风险 11：稳定 symbol key 设计过窄，错误合并不同 helper ABI
+
+- 缓解：
+  - 阶段 9 明确把 ABI descriptor 中的返回类型、参数序列与“是否带 `_Xv` 后缀”纳入 key
+  - 正反测试必须同时覆盖“hash-only 变化不漂移”和“ABI 变化必须改名”两类断言
+
+### 风险 12：阶段 9 只改了命名实现，但测试仍大量硬编码具体 `hash` 后缀
+
+- 缓解：
+  - helper/accessor route 测试统一收缩到命名空间、marker 与稳定复用断言
+  - 仅 lookup/accessor body 测试继续精确断言主 `hash` 与 `hashCompatibility`
+  - 追加“双 metadata 快照、同 helper surface”的稳定性回归
+
+### 风险 13：resolver 与模板各自拼 symbol 名，重新出现 caller/header 失配
+
+- 缓解：
+  - 阶段 9 明确要求 helper/accessor 命名只有单一事实源
+  - `BackendMethodCallResolver` 发布给 caller side 的 `cFunctionName` 与模板最终 helper 名必须同源生成
+
+### 风险 14：ABI 协议只实现生成，不实现解析，后续测试与工具再次各自手写协议
+
+- 缓解：
+  - 阶段 9 明确要求公共 codec 同时提供 parse / generate
+  - focused test 必须覆盖 round-trip 与非法输入显式失败
+
+### 风险 15：类型编码表分散维护，导致同一 `GdType` 在不同位置得到不同 descriptor
+
+- 缓解：
+  - 叶子非 `Object` 类型的一字母映射与容器描述符规则统一集中在 `EngineMethodAbiCodec`
+  - 任何 helper/resolver/template/test 都不得内联自己的类型字母表
+
 ## 执行顺序建议
 
 1. 阶段 1：补齐 `ResolvedMethodCall` bind 身份
@@ -1128,3 +1427,4 @@
 6. 阶段 6：收敛 non-vararg helper surface，移除 bitfield wrapper ABI 遗产
 7. 阶段 7：切 vararg exact route
 8. 阶段 8：补全 `Node.add_child(...)`、`ArrayMesh.add_surface_from_arrays(...)` 与 build/runtime 回归，随后同步文档
+9. 阶段 9：解耦 helper/accessor 身份与主 `hash`，稳定 generated symbol surface

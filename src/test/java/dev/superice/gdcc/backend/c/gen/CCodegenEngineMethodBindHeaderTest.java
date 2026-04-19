@@ -124,17 +124,17 @@ class CCodegenEngineMethodBindHeaderTest {
         assertContainsAll(
                 bindHeader,
                 "GDEXTENSION_ENGINE_BIND_HEADER_MODULE_ENGINE_METHOD_BINDS_H",
-                "gdcc_engine_method_bind_probe_touch_55(",
-                "gdcc_engine_method_bind_static_probe_touch_55(",
-                "gdcc_engine_method_bind_vararg_probe_touch_55(",
-                "gdcc_engine_method_bind_probe_count_72(",
-                "gdcc_engine_call_probe_touch_55(",
-                "gdcc_engine_call_static_probe_touch_55(",
-                "gdcc_engine_callv_probe_touch_55(",
-                "gdcc_engine_call_probe_count_72("
+                "gdcc_engine_method_bind_probe_touch_P_RV(",
+                "gdcc_engine_method_bind_static_probe_touch_PT_RV(",
+                "gdcc_engine_method_bind_probe_touch_PI_RV_Xv(",
+                "gdcc_engine_method_bind_probe_count_P_RI(",
+                "gdcc_engine_call_probe_touch_P_RV(",
+                "gdcc_engine_call_static_probe_touch_PT_RV(",
+                "gdcc_engine_callv_probe_touch_PI_RV_Xv(",
+                "gdcc_engine_call_probe_count_P_RI("
         );
         assertContainsAll(
-                resolveFunctionBodyByPrefix(bindHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_72"),
+                resolveFunctionBodyByPrefix(bindHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_P_RI"),
                 "(GDExtensionInt)72LL",
                 "(GDExtensionInt)721LL",
                 "(GDExtensionInt)722LL"
@@ -146,13 +146,66 @@ class CCodegenEngineMethodBindHeaderTest {
 
         assertContainsAll(
                 entrySource,
-                "gdcc_engine_call_probe_touch_55(",
-                "gdcc_engine_call_static_probe_touch_55(",
-                "gdcc_engine_callv_probe_touch_55(",
-                "gdcc_engine_call_probe_count_72("
+                "gdcc_engine_call_probe_touch_P_RV(",
+                "gdcc_engine_call_static_probe_touch_PT_RV(",
+                "gdcc_engine_callv_probe_touch_PI_RV_Xv(",
+                "gdcc_engine_call_probe_count_P_RI("
         );
-        assertFalse(entrySource.contains("gdcc_engine_method_bind_probe_touch_55("), entrySource);
+        assertFalse(entrySource.contains("gdcc_engine_method_bind_probe_touch_P_RV("), entrySource);
         assertFalse(entrySource.contains("godot_Probe_touch("), entrySource);
+    }
+
+    @Test
+    @DisplayName("helper and accessor names should stay stable when only bind hashes change")
+    void helperAndAccessorNamesShouldStayStableWhenOnlyBindHashesChange() {
+        var hostClass = newClass("Worker", "RefCounted");
+        var callCount = newVoidFunction("call_count");
+        callCount.createAndAddVariable("probe", new GdObjectType("Probe"));
+        callCount.createAndAddVariable("count", GdIntType.INT);
+        entry(callCount).appendInstruction(new CallMethodInsn("count", "count", "probe", List.of()));
+        entry(callCount).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(callCount);
+
+        var module = new LirModule("engine_bind_hash_stability_module", List.of(hostClass));
+        var oldFiles = renderFiles(newCodegen(
+                module,
+                apiWith(List.of(), List.of(probeClassWithCount(72L, List.of(721L, 722L)))),
+                List.of(hostClass)
+        ).generate());
+        var newFiles = renderFiles(newCodegen(
+                module,
+                apiWith(List.of(), List.of(probeClassWithCount(172L, List.of(1721L)))),
+                List.of(hostClass)
+        ).generate());
+
+        var oldHeader = oldFiles.get("engine_method_binds.h");
+        var newHeader = newFiles.get("engine_method_binds.h");
+        var oldEntry = oldFiles.get("entry.c");
+        var newEntry = newFiles.get("entry.c");
+
+        assertContainsAll(
+                oldHeader,
+                "gdcc_engine_method_bind_probe_count_P_RI(",
+                "gdcc_engine_call_probe_count_P_RI("
+        );
+        assertContainsAll(
+                newHeader,
+                "gdcc_engine_method_bind_probe_count_P_RI(",
+                "gdcc_engine_call_probe_count_P_RI("
+        );
+        assertContainsAll(
+                resolveFunctionBodyByPrefix(oldHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_P_RI"),
+                "(GDExtensionInt)72LL",
+                "(GDExtensionInt)721LL",
+                "(GDExtensionInt)722LL"
+        );
+        assertContainsAll(
+                resolveFunctionBodyByPrefix(newHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_P_RI"),
+                "(GDExtensionInt)172LL",
+                "(GDExtensionInt)1721LL"
+        );
+        assertFalse(newHeader.contains("(GDExtensionInt)72LL"), newHeader);
+        assertEquals(oldEntry, newEntry);
     }
 
     @Test
@@ -241,7 +294,7 @@ class CCodegenEngineMethodBindHeaderTest {
 
         var linkSignature = resolveFunctionSignatureByPrefix(
                 bindHeader,
-                "static inline godot_int gdcc_engine_call_probe_link_91"
+                "static inline godot_int gdcc_engine_call_probe_link_PL5Probe_TI_RI"
         );
         assertContainsAll(
                 linkSignature,
@@ -250,10 +303,10 @@ class CCodegenEngineMethodBindHeaderTest {
                 "godot_String* arg1",
                 "godot_int arg2"
         );
-        var linkBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_int gdcc_engine_call_probe_link_91");
+        var linkBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_int gdcc_engine_call_probe_link_PL5Probe_TI_RI");
         assertContainsAll(
                 linkBody,
-                "GDExtensionMethodBindPtr bind = gdcc_engine_method_bind_probe_link_91();",
+                "GDExtensionMethodBindPtr bind = gdcc_engine_method_bind_probe_link_PL5Probe_TI_RI();",
                 "GDCC_PRINT_RUNTIME_ERROR(\"engine method bind lookup failed: Probe.link\"",
                 "return 0;",
                 "const GDExtensionConstTypePtr args[] = {",
@@ -268,17 +321,17 @@ class CCodegenEngineMethodBindHeaderTest {
 
         var spawnSignature = resolveFunctionSignatureByPrefix(
                 bindHeader,
-                "static inline void gdcc_engine_call_static_probe_spawn_92"
+                "static inline void gdcc_engine_call_static_probe_spawn_PT_RV"
         );
         assertFalse(spawnSignature.contains("self"), spawnSignature);
         assertContainsAll(spawnSignature, "godot_String* arg0");
         var spawnBody = resolveFunctionBodyByPrefix(
                 bindHeader,
-                "static inline void gdcc_engine_call_static_probe_spawn_92"
+                "static inline void gdcc_engine_call_static_probe_spawn_PT_RV"
         );
         assertContainsAll(
                 spawnBody,
-                "GDExtensionMethodBindPtr bind = gdcc_engine_method_bind_static_probe_spawn_92();",
+                "GDExtensionMethodBindPtr bind = gdcc_engine_method_bind_static_probe_spawn_PT_RV();",
                 "GDCC_PRINT_RUNTIME_ERROR(\"engine method bind lookup failed: Probe.spawn\"",
                 "godot_object_method_bind_ptrcall(",
                 "NULL,",
@@ -316,7 +369,7 @@ class CCodegenEngineMethodBindHeaderTest {
 
         var configureSignature = resolveFunctionSignatureByPrefix(
                 bindHeader,
-                "static inline void gdcc_engine_call_probe_configure_95"
+                "static inline void gdcc_engine_call_probe_configure_PIIT_RV"
         );
         assertContainsAll(
                 configureSignature,
@@ -328,7 +381,7 @@ class CCodegenEngineMethodBindHeaderTest {
         assertFalse(configureSignature.contains("godot_Probe_Mode*"), configureSignature);
         assertFalse(configureSignature.contains("godot_Probe_Flags*"), configureSignature);
 
-        var configureBody = resolveFunctionBodyByPrefix(bindHeader, "static inline void gdcc_engine_call_probe_configure_95");
+        var configureBody = resolveFunctionBodyByPrefix(bindHeader, "static inline void gdcc_engine_call_probe_configure_PIIT_RV");
         assertContainsAll(
                 configureBody,
                 "const godot_Probe_Mode arg0_slot = (godot_Probe_Mode)arg0;",
@@ -387,7 +440,7 @@ class CCodegenEngineMethodBindHeaderTest {
 
         var mixSignature = resolveFunctionSignatureByPrefix(
                 bindHeader,
-                "static inline godot_String gdcc_engine_callv_probe_mix_93"
+                "static inline godot_String gdcc_engine_callv_probe_mix_PRT_RT_Xv"
         );
         assertContainsAll(
                 mixSignature,
@@ -397,7 +450,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "const godot_Variant **argv",
                 "godot_int argc"
         );
-        var mixBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_String gdcc_engine_callv_probe_mix_93");
+        var mixBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_String gdcc_engine_callv_probe_mix_PRT_RT_Xv");
         assertContainsAll(
                 mixBody,
                 "godot_Variant fixed_arg_0 = godot_new_Variant_with_Variant(arg0);",
@@ -437,7 +490,7 @@ class CCodegenEngineMethodBindHeaderTest {
 
         var broadcastSignature = resolveFunctionSignatureByPrefix(
                 bindHeader,
-                "static inline void gdcc_engine_callv_static_probe_broadcast_94"
+                "static inline void gdcc_engine_callv_static_probe_broadcast_PI_RV_Xv"
         );
         assertFalse(broadcastSignature.contains("self"), broadcastSignature);
         assertContainsAll(
@@ -448,7 +501,7 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         var broadcastBody = resolveFunctionBodyByPrefix(
                 bindHeader,
-                "static inline void gdcc_engine_callv_static_probe_broadcast_94"
+                "static inline void gdcc_engine_callv_static_probe_broadcast_PI_RV_Xv"
         );
         assertContainsAll(
                 broadcastBody,
@@ -767,6 +820,32 @@ class CCodegenEngineMethodBindHeaderTest {
                 "core",
                 List.of(),
                 List.of(configure),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass probeClassWithCount(long hash, @NotNull List<Long> hashCompatibility) {
+        var count = new ExtensionGdClass.ClassMethod(
+                "count",
+                false,
+                false,
+                false,
+                false,
+                hash,
+                hashCompatibility,
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("int"),
+                List.of()
+        );
+        return new ExtensionGdClass(
+                "Probe",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(count),
                 List.of(),
                 List.of(),
                 List.of()
