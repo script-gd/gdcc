@@ -65,26 +65,13 @@
 
 ### 已实现 exact engine helper route
 
-- exact engine route 的事实来源已切到 backend-owned generated helper：
-  - non-vararg：`gdcc_engine_call_<...>`
-  - vararg：`gdcc_engine_callv_<...>`
-- non-vararg exact engine helper 直接执行 method-bind lookup，并用：
-  - `godot_object_method_bind_ptrcall(...)`
-- vararg exact engine helper 直接执行 method-bind lookup，并用：
-  - `godot_object_method_bind_call(...)`
-- object / enum / bitfield / wrapper 参数的 ABI 适配都下沉在 generated helper 内部：
-  - caller 保持 shared-normalized callable surface
-  - helper 自己物化 `ptrcall` slot 或 fixed-prefix `Variant`
-- vararg route 的 ownership split 已冻结：
-  - helper 只拥有 fixed prefix packed `Variant` 与本地 return `Variant`
-  - caller 继续拥有 extra vararg tail、default temp 与 call-site temp
-- static exact engine helper 继续保持 receiver-free contract：
-  - call site 不传 receiver
-  - helper 签名不接收 receiver
-  - bind 调用固定传 `NULL`
-- 结论：
-  - `gdextension-lite` public wrapper 不再是 exact engine route 的事实来源
-  - 它仍只属于 wrapper-based / dynamic / 其他未迁移 surface 的事实来源
+- exact engine route 的详细实现、ABI 合同、命名规则与测试锚点，统一以：
+  - `doc/module_impl/backend/engine_method_bind_implementation.md`
+  - 作为唯一事实源
+- 本文只保留与 `CALL_METHOD` 总体实现仍强相关的交界事实：
+  - exact engine route 已切到 backend-owned generated helper
+  - `gdextension-lite` public wrapper 不再是 migrated exact engine route 的事实来源
+  - static engine method 通过实例 `call_method` 命中时，仍保留 warning + receiver-free helper 合同
 
 ## 长期约定（必须保持）
 
@@ -119,16 +106,9 @@
 - 当 receiver 是 GDCC wrapper，但目标 owner 为 ENGINE 时，必须先做 GDCC -> Godot raw ptr 转换，再按需要 cast 到 `godot_<Owner>*`。
 - 禁止仅通过 C cast 把 GDCC wrapper 指针伪装成 engine 指针。
 - `CBodyBuilder.renderArgument(...)` 的 ptr kind/type fail-fast 防线属于不可回退约束。
-
-#### 阶段 4 对齐结论（2026-02-27）
-
-- `CALL_METHOD` 相关 receiver 转换已与基线一致：
-  - GDCC receiver -> ENGINE owner：生成 `gdcc_object_to_godot_object_ptr(receiver, ReceiverType_object_ptr)`，随后再 cast 到 `godot_<Owner>*`。
-  - GDCC 子类 receiver -> GDCC 父类 owner：生成 `_super` 链安全上行表达式（例如 `&($child->_super)`），无裸 cast。
-- 回归覆盖已同步到以下测试，且断言与当前实现一致：
-  - `CallMethodInsnGenTest`
-  - `CallMethodInsnGenEngineTest`
-  - `CBodyBuilderPhaseCTest`
+- 当前实现事实：
+  - GDCC receiver -> ENGINE owner：生成 `gdcc_object_to_godot_object_ptr(receiver, ReceiverType_object_ptr)`，随后再 cast 到 `godot_<Owner>*`
+  - GDCC 子类 receiver -> GDCC 父类 owner：生成 `_super` 链安全上行表达式（例如 `&($child->_super)`），无裸 cast
 
 ### 5. `VARIANT_DYNAMIC` 诊断定位约束
 

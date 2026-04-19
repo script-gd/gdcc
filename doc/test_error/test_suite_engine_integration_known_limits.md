@@ -328,7 +328,7 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 
 ### 8.7 `test_suite` 目前仍缺少 stock exact engine static route 的资源锚点
 
-本轮在补 `engine_method_bind_plan.md` 的 resource 回归时，还暴露出另一条剩余不足：
+本轮在补 `engine_method_bind_implementation.md` 对应的 resource 回归时，还暴露出另一条剩余不足：
 
 - `test_suite` 这条 stock compile/link/run harness 目前没有一个稳定、真实、可长期维护的 Godot API 样本，能在“不伪造 metadata”的前提下锚定：
   - 实例语法命中 static engine method

@@ -279,12 +279,12 @@ class CallMethodInsnGenEngineTest {
         assertFalse(buildResult.artifacts().isEmpty(), "Compilation should produce extension artifacts.");
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
-        assertTrue(entrySource.contains("gdcc_engine_call_node_get_child_count_"), "Engine dispatch should use the phase-5 helper route.");
+        assertTrue(entrySource.contains("gdcc_engine_call_node_get_child_count_"), "Engine dispatch should use the generated exact-engine helper route.");
         assertTrue(
                 entrySource.contains("gdcc_object_to_godot_object_ptr($self, GDGdccEngineOwnerBridgeNode_object_ptr)"),
                 "Engine dispatch on GDCC receiver should still cast after helper conversion."
         );
-        assertFalse(entrySource.contains("godot_Node_get_child_count("), "Phase-5 route should stop calling the legacy wrapper.");
+        assertFalse(entrySource.contains("godot_Node_get_child_count("), "Generated exact-engine route should stop calling the legacy wrapper.");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(

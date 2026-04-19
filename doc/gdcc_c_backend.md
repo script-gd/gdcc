@@ -99,26 +99,12 @@
 
 ### Exact Engine Method Bind Route
 
-- `CCodegen.generate()` always emits `engine_method_binds.h`, and `entry.h` includes it unconditionally.
-- Exact engine `CALL_METHOD` routes are backend-owned generated helpers rather than `gdextension-lite` public wrappers.
-- Non-vararg exact engine route:
-  - call site emits `gdcc_engine_call_<...>`
-  - helper performs direct bind lookup and calls `godot_object_method_bind_ptrcall(...)`
-  - every `ptrcall` argument is passed as a slot address
-  - object parameters therefore use the address of the local pointer slot inside the helper, not the wrapper-style raw pointer value ABI
-- Static non-vararg exact helper contract:
-  - helper signature has no receiver parameter
-  - helper always passes `NULL` as bind receiver
-  - `CALL_METHOD` call sites keep emitting the warning but do not pass the receiver into the helper
-- Vararg exact engine route:
-  - call site emits `gdcc_engine_callv_<...>`
-  - helper performs direct bind lookup and calls `godot_object_method_bind_call(...)`
-  - helper packs only the fixed prefix into helper-owned local `godot_Variant` values
-  - caller continues to own and pass the extra `const godot_Variant **argv, godot_int argc` tail
-  - helper must check `GDExtensionCallError` before typed unpack and always clean up helper-owned temps on both success and error paths
-- Consequence:
-  - when reasoning about exact engine object-slot ABI, the fact source is the generated helper body in `engine_method_binds.h`
-  - remaining `gdextension-lite` wrapper debt must not be projected onto these migrated exact routes
+- 唯一事实源：
+  - `doc/module_impl/backend/engine_method_bind_implementation.md`
+- 本文只保留总览提醒：
+  - exact engine `CALL_METHOD` 已改走 backend-owned generated helper
+  - migrated exact engine route 不再以 `gdextension-lite` public wrapper 为事实来源
+  - helper ABI、symbol identity、usage collector、normalized caller surface 与 `ptrcall/call` 合同均只在上面的实现文档维护
 
 ### Backend-owned Runtime Writeback Helper
 
