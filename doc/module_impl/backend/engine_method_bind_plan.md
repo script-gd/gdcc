@@ -851,8 +851,8 @@
   - `MethodResolverParityTest` 已锁定 exact vararg / static exact vararg 路由名切换到 `gdcc_engine_callv_*`
   - `CallMethodInsnGenTest` 已锁定 call-site 文本切到 helper route，且 caller 仍只保留 extra tail `argv/argc`
   - `CBodyBuilderPhaseCTest` 已锁定 `gdcc_engine_callv_*` 前缀继续复用对象参数与对象返回的 raw-ptr 合同
-  - `CCodegenEngineMethodBindHeaderTest` 已锁定 vararg helper 的 nil-initialized local `ret`、guarded unpack 与 helper-owned cleanup
-  - `CallMethodInsnGenEngineTest` 已继续验证真实 `Object.call(...)` 锚点改走 generated callv helper 后保持通过
+  - `CCodegenEngineMethodBindHeaderTest` 已锁定 vararg helper 的 nil-initialized local `ret`、guarded unpack、helper-owned cleanup，以及 `object + enum + bitfield + wrapper` 混合 fixed prefix 在 helper surface 上稳定归一化为 `Object/int/int/String`
+  - `CallMethodInsnGenEngineTest` 已继续验证真实 `Object.call(...)` 与 `SceneTree.call_group_flags(...)` 两条 stock vararg family 锚点改走 generated callv helper 后保持通过
 
 ### 验收
 
@@ -861,13 +861,14 @@
   - helper 只 pack / destroy fixed prefix
   - caller 继续拥有 extra vararg tail、default temp 与 call-site temp
 - 固定参数 pack / destroy 语义稳定，不泄漏 `Variant`
-- 现有 engine vararg 正例保持通过
+- 现有 engine vararg 正例保持通过，且不再只依赖 `Object.call(...)` 单一样本
 - 运行期 call error 能输出稳定诊断且不会留下未销毁 temp
 - `void` vararg helper 文本中不再出现 `godot_object_method_bind_call(..., NULL, &_error)` 这类 `NULL r_ret` 传法
 - typed return unpack 只会发生在 `_error.error == GDEXTENSION_CALL_OK` 之后
 - vararg helper 不会销毁 caller 提供的 `argv` tail，也不会在 helper 内重新 pack extra vararg tail
 - codegen 文本中可直接确认 vararg exact route 调用的是 `gdcc_engine_callv_<...>`，与 `gdextension-lite` 名称明确隔离
 - static vararg helper 与 instance vararg helper 在签名层面明确区分，并保持“无 receiver + `NULL` bind receiver”合同
+- `object + enum + bitfield + wrapper` 混合 fixed prefix 的 helper pack surface 与 error-decoding / cleanup 顺序已有 focused regression 锁定
 
 ## 阶段 8：回归矩阵与运行时锚点升级
 
@@ -909,6 +910,9 @@
   - 明确冻结其语义边界：
     - fixed prefix 由 helper pack / destroy
     - extra `Variant` tail 由 caller 提供并保持 caller ownership
+  - 至少应同时覆盖：
+    - `Object.call(...)` / `Node.call(...)` 一类 `StringName` fixed-prefix surface
+    - `SceneTree.call_group_flags(...)` 一类 `int + StringName + StringName` fixed-prefix surface
 
 1. 恢复 `Node.add_child(...)` 作为真实 runtime 回归锚点
 - 一旦阶段 5 落地，就应把 `Node.add_child(...)` 补回 exact engine runtime regression
@@ -984,7 +988,10 @@
   - 原因是 `ClassRegistry` 会按类名最后写入覆盖；测试夹具若把同一 owner 的方法拆散，会伪造出不存在于真实 API 的 dynamic fallback
 - [x] build / integration 回归已扩展
   - `FrontendLoweringToCProjectBuilderIntegrationTest` 现锁定生成工程稳定包含 `engine_method_binds.h`
-  - `CallMethodInsnGenEngineTest` 现把 exact vararg runtime 锚点扩展到 success / discard-return / call-error 三条路径
+  - `CallMethodInsnGenEngineTest` 现把 exact vararg runtime 锚点扩展到：
+    - `Object.call(...)` 的 success / discard-return / call-error 三条路径
+    - `SceneTree.call_group_flags(...)` 的第二条 stock vararg family 正向路径
+  - `Node.add_child(...)` 的真引擎回归锚点已从“typed receiver + 省略默认参数”扩展到“typed receiver + 显式 `bool/enum` 全参 internal route”
 - [x] 文档事实源已对齐到 generated helper / direct bind route
   - `doc/module_impl/backend/call_method_implementation.md` 已明确 exact engine route 以 generated helper + direct bind 为事实来源
   - `doc/gdcc_c_backend.md` 已补齐 non-vararg `ptrcall` / vararg `call` 与 object-slot ABI 规则

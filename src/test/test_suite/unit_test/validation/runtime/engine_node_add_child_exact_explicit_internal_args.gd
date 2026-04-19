@@ -7,8 +7,8 @@ func _ready() -> void:
         push_error("Target node missing.")
         return
 
-    var child_count = int(target.call("child_count_after_typed_add_child"))
+    var child_count = int(target.call("visible_plus_total_after_explicit_internal_add_child"))
     if child_count == 1:
         print("__UNIT_TEST_PASS_MARKER__")
     else:
-        push_error("Engine Node exact typed add_child validation failed: %s" % [child_count])
+        push_error("Engine Node exact explicit internal add_child validation failed: %s" % [child_count])

@@ -225,6 +225,11 @@ shared resolver 侧其实已经有正确的规范化逻辑：
 - 新增 `runtime/engine_node_add_child_exact_typed_receiver.gd`
   - 用 `var holder: Node = Node.new(); holder.add_child(Node.new())` 重新把 object-parameter exact route 锚定到 `test_suite`
   - 这条 resource 明确只认 typed receiver 形状，不把 plain `var holder = Node.new()` 的 dynamic fallback 混进 exact route 验收
+- 新增 `runtime/engine_node_add_child_exact_explicit_internal_args.gd`
+  - 用 `holder.add_child(child, false, 1)` + `get_child_count() + get_child_count(true)` 把 `Node.add_child(...)` 从“只验证默认参数窄形状”扩展到“显式 `bool/enum` 全参 internal route”
+  - 这条 resource 额外锁定：
+    - object 参数 exact route 在显式 `bool + enum::Node.InternalMode` 形状下继续走正向 helper
+    - runtime 结果必须区分“child 被作为 internal child 挂入”和“错误退回成普通 child / 调用失败”两类行为
 - 新增三条 `Node.call(...)` exact vararg resource：
   - `runtime/engine_node_call_exact_vararg_success.gd`
   - `runtime/engine_node_call_exact_vararg_discard_return.gd`
@@ -236,6 +241,21 @@ shared resolver 侧其实已经有正确的规范化逻辑：
   - `success` / `discard_return` 对应的 validation 额外要求：
     - 输出中不得出现 `engine method call failed: Object.call`
     - 避免把“中途已经触发 runtime error，但最终返回值碰巧满足断言”的假阳性记成通过
+- 新增 `runtime/engine_scene_tree_call_group_flags_exact_vararg.gd`
+  - 用 `SceneTree.call_group_flags(0, group, "add_child", child, false, 1)` 把第二条 stock exact vararg family 拉进 `test_suite`
+  - 这条 resource 额外覆盖：
+    - 非 `Object.call(...)` 的 exact vararg helper
+    - fixed prefix `int + StringName + StringName`
+    - caller-owned tail 中 `Object + bool + enum` 混排
+  - validation 同样要求输出中不得出现 `engine method call failed: SceneTree.call_group_flags`
+  - 编写这条 resource 时额外暴露出一个前端老问题：
+    - `add_to_group(...)` 这种 bare self inherited void engine call 会在语义分析阶段走到 `ExtensionGdClass.ClassMethod#getReturnType()`，而 `extension_api_451.json` 对 void engine method 通常不提供 `return_value`
+    - 当前会因此触发 `NullPointerException`
+    - 为了不让这条 vararg 锚点被无关缺陷阻塞，resource 改为等价的 `self.add_to_group(...)`
+- stock runtime API 目前仍缺少稳定、非 editor-only 的“object 位于 fixed prefix 的 vararg method”样本
+  - `src/main/resources/extension_api_451.json` 中这类 surface 主要落在 `EditorUndoRedoManager.add_do_method(...)` / `add_undo_method(...)`
+  - 它们不适合当前 scene-mounted runtime harness
+  - 因此 `object + enum + bitfield + wrapper` 混合 fixed prefix 的 helper pack surface，继续由 `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java` 这类 focused regression 锁定
 - `runtime/engine_node_refcounted_workflow.gd` 继续保留
   - 它现在是零参数 smoke anchor
   - 不再承担“代替 exact engine method default route”的职责
@@ -260,6 +280,10 @@ shared resolver 侧其实已经有正确的规范化逻辑：
   - `var holder: Node = Node.new()`
   - `holder.add_child(Node.new())`
   - 这条形状现在应视为 gdcc backend-focused 正向 runtime regression anchor，而不是 known limit 示例
+- 并且同一类 exact route 现已补上显式全参 internal 形状：
+  - `holder.add_child(child, false, 1)`
+  - `holder.get_child_count() + holder.get_child_count(true) == 1`
+  - 这说明当前锚点不再只停留在“默认参数窄形状”
 - plain `var holder = Node.new()` 仍只代表 dynamic fallback / runtime-open surface，不能拿来推导 exact route 结论
 
 剩余的 known-limit 结论应改写为：
@@ -316,6 +340,7 @@ shared resolver 侧其实已经有正确的规范化逻辑：
   - non-vararg exact instance route
   - object-parameter exact instance route
   - vararg exact route的 success / discard / error-path
+  - 第二条 stock vararg family：`SceneTree.call_group_flags(...)`
 - static exact route 仍主要依赖 focused integration / codegen tests：
   - `src/test/java/dev/superice/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
   - `src/test/java/dev/superice/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`

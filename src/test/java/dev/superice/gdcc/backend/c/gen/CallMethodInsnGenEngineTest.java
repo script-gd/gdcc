@@ -7,6 +7,7 @@ import dev.superice.gdcc.backend.c.build.CProjectInfo;
 import dev.superice.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import dev.superice.gdcc.backend.c.build.TargetPlatform;
 import dev.superice.gdcc.backend.c.build.ZigUtil;
+import dev.superice.gdcc.enums.GodotOperator;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirBasicBlock;
@@ -15,7 +16,10 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.lir.LirInstruction;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.lir.LirParameterDef;
+import dev.superice.gdcc.lir.insn.BinaryOpInsn;
 import dev.superice.gdcc.lir.insn.CallMethodInsn;
+import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
+import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringInsn;
 import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
@@ -81,6 +85,10 @@ class CallMethodInsnGenEngineTest {
                 entrySource.contains("gdcc_engine_callv_object_call_"),
                 "Engine vararg dispatch should route through generated callv helper."
         );
+        assertTrue(
+                entrySource.contains("gdcc_engine_callv_scenetree_call_group_flags_"),
+                "Broader engine vararg families should also route through generated callv helpers."
+        );
         assertTrue(entrySource.contains("__gdcc_tmp_argv_"), "Engine vararg dispatch should still emit caller-owned argv/argc.");
         assertFalse(entrySource.contains("godot_Object_call((godot_Object*)$node, &$dispatchMethod, __gdcc_tmp_argv_"), entrySource);
 
@@ -101,11 +109,19 @@ class CallMethodInsnGenEngineTest {
 
         assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("engine vararg call_method check passed."), "Vararg path should pass.\nOutput:\n" + combinedOutput);
+        assertTrue(
+                combinedOutput.contains("engine vararg call_group_flags check passed."),
+                "A second stock engine vararg family should also pass through the generated helper route.\nOutput:\n" + combinedOutput
+        );
         assertTrue(combinedOutput.contains("engine vararg discard call_method check passed."), "Discard path should pass.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("engine vararg error-path check passed."), "Error path should continue after helper cleanup.\nOutput:\n" + combinedOutput);
         assertTrue(
                 combinedOutput.contains("engine method call failed: Object.call: invalid target method 'missing_method'"),
                 "Helper should emit a stable runtime error with concrete call details for call-error paths.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("engine method call failed: SceneTree.call_group_flags"),
+                "The broader SceneTree vararg anchor should stay on the success path.\nOutput:\n" + combinedOutput
         );
         assertFalse(combinedOutput.contains("check failed"), "No check should fail.\nOutput:\n" + combinedOutput);
     }
@@ -367,6 +383,10 @@ class CallMethodInsnGenEngineTest {
                 "Exact object-parameter helper path should pass.\nOutput:\n" + combinedOutput
         );
         assertTrue(
+                combinedOutput.contains("engine exact explicit add_child full-args call_method check passed."),
+                "Typed receiver add_child should stay stable when bool/enum parameters are passed explicitly.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
                 combinedOutput.contains("engine bitfield helper call_method check passed."),
                 "Bitfield-compatible helper path should pass.\nOutput:\n" + combinedOutput
         );
@@ -386,6 +406,7 @@ class CallMethodInsnGenEngineTest {
         clazz.addFunction(newBuiltinSubstrFunction(selfType));
         clazz.addFunction(newEngineGetChildCountFunction(selfType));
         clazz.addFunction(newEngineAddChildExactFunction(selfType));
+        clazz.addFunction(newEngineAddChildExplicitInternalFunction(selfType));
         clazz.addFunction(newEngineAddSurfaceFromArraysFunction(selfType));
         clazz.addFunction(newObjectDynamicGetInstanceIdFunction(selfType));
         clazz.addFunction(newVariantDynamicToIntFunction(selfType));
@@ -398,6 +419,7 @@ class CallMethodInsnGenEngineTest {
 
         var selfType = new GdObjectType(clazz.getName());
         clazz.addFunction(newEngineVarargCallFunction(selfType));
+        clazz.addFunction(newEngineVarargGroupFlagsFunction(selfType));
         clazz.addFunction(newEngineVarargDiscardCallFunction(selfType));
         clazz.addFunction(newEngineVarargMissingMethodFunction(selfType));
         return clazz;
@@ -511,6 +533,43 @@ class CallMethodInsnGenEngineTest {
         return func;
     }
 
+    private static LirFunctionDef newEngineAddChildExplicitInternalFunction(GdObjectType selfType) {
+        var func = newMethod("call_engine_add_child_exact_full_args", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("holder", new GdObjectType("Node"), null, func));
+        func.addParameter(new LirParameterDef("child", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("forceReadableName", GdBoolType.BOOL);
+        func.createAndAddVariable("includeInternal", GdBoolType.BOOL);
+        func.createAndAddVariable("internalMode", GdIntType.INT);
+        func.createAndAddVariable("visibleCount", GdIntType.INT);
+        func.createAndAddVariable("totalCount", GdIntType.INT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new LiteralBoolInsn("forceReadableName", false));
+        entry(func).appendInstruction(new LiteralBoolInsn("includeInternal", true));
+        entry(func).appendInstruction(new LiteralIntInsn("internalMode", 1));
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "add_child",
+                "holder",
+                List.of(varRef("child"), varRef("forceReadableName"), varRef("internalMode"))
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "visibleCount",
+                "get_child_count",
+                "holder",
+                List.of()
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "totalCount",
+                "get_child_count",
+                "holder",
+                List.of(varRef("includeInternal"))
+        ));
+        entry(func).appendInstruction(new BinaryOpInsn("result", GodotOperator.ADD, "visibleCount", "totalCount"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
+        return func;
+    }
+
     private static LirFunctionDef newEngineAddSurfaceFromArraysFunction(GdObjectType selfType) {
         var func = newMethod("call_array_mesh_add_surface", GdIntType.INT, selfType);
         func.addParameter(new LirParameterDef("mesh", new GdObjectType("ArrayMesh"), null, func));
@@ -588,6 +647,74 @@ class CallMethodInsnGenEngineTest {
         ));
         entry(func).appendInstruction(new UnpackVariantInsn("resultBool", "resultVariant"));
         entry(func).appendInstruction(new ReturnInsn("resultBool"));
+        return func;
+    }
+
+    private static LirFunctionDef newEngineVarargGroupFlagsFunction(GdObjectType selfType) {
+        var func = newMethod("call_engine_vararg_group_flags_internal_add_child", GdIntType.INT, selfType);
+        func.addParameter(new LirParameterDef("child", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("tree", new GdObjectType("SceneTree"));
+        func.createAndAddVariable("flags", GdIntType.INT);
+        func.createAndAddVariable("groupName", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("dispatchMethod", GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("forceReadableName", GdBoolType.BOOL);
+        func.createAndAddVariable("includeInternal", GdBoolType.BOOL);
+        func.createAndAddVariable("internalMode", GdIntType.INT);
+        func.createAndAddVariable("childVariant", GdVariantType.VARIANT);
+        func.createAndAddVariable("forceReadableNameVariant", GdVariantType.VARIANT);
+        func.createAndAddVariable("internalModeVariant", GdVariantType.VARIANT);
+        func.createAndAddVariable("visibleCount", GdIntType.INT);
+        func.createAndAddVariable("totalCount", GdIntType.INT);
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                "tree",
+                "get_tree",
+                "self",
+                List.of()
+        ));
+        entry(func).appendInstruction(new LiteralIntInsn("flags", 0));
+        entry(func).appendInstruction(new LiteralStringNameInsn("groupName", "gdcc_exact_group_flags_smoke"));
+        entry(func).appendInstruction(new LiteralStringNameInsn("dispatchMethod", "add_child"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "add_to_group",
+                "self",
+                List.of(varRef("groupName"))
+        ));
+        entry(func).appendInstruction(new LiteralBoolInsn("forceReadableName", false));
+        entry(func).appendInstruction(new LiteralBoolInsn("includeInternal", true));
+        entry(func).appendInstruction(new LiteralIntInsn("internalMode", 1));
+        entry(func).appendInstruction(new PackVariantInsn("childVariant", "child"));
+        entry(func).appendInstruction(new PackVariantInsn("forceReadableNameVariant", "forceReadableName"));
+        entry(func).appendInstruction(new PackVariantInsn("internalModeVariant", "internalMode"));
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "call_group_flags",
+                "tree",
+                List.of(
+                        varRef("flags"),
+                        varRef("groupName"),
+                        varRef("dispatchMethod"),
+                        varRef("childVariant"),
+                        varRef("forceReadableNameVariant"),
+                        varRef("internalModeVariant")
+                )
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "visibleCount",
+                "get_child_count",
+                "self",
+                List.of()
+        ));
+        entry(func).appendInstruction(new CallMethodInsn(
+                "totalCount",
+                "get_child_count",
+                "self",
+                List.of(varRef("includeInternal"))
+        ));
+        entry(func).appendInstruction(new BinaryOpInsn("result", GodotOperator.ADD, "visibleCount", "totalCount"));
+        entry(func).appendInstruction(new ReturnInsn("result"));
         return func;
     }
 
@@ -760,6 +887,14 @@ class CallMethodInsnGenEngineTest {
                     else:
                         push_error("engine exact object-parameter call_method check failed.")
                 
+                    var internal_holder: Node = Node.new()
+                    var internal_child: Node = Node.new()
+                    var internal_count = int(target.call("call_engine_add_child_exact_full_args", internal_holder, internal_child))
+                    if internal_count == 1:
+                        print("engine exact explicit add_child full-args call_method check passed.")
+                    else:
+                        push_error("engine exact explicit add_child full-args call_method check failed.")
+                
                     var mesh: ArrayMesh = ArrayMesh.new()
                     var arrays := []
                     arrays.resize(Mesh.ARRAY_MAX)
@@ -800,6 +935,13 @@ class CallMethodInsnGenEngineTest {
                         print("engine vararg call_method check passed.")
                     else:
                         push_error("engine vararg call_method check failed.")
+                
+                    var group_child = Node.new()
+                    var group_count = int(target.call("call_engine_vararg_group_flags_internal_add_child", group_child))
+                    if group_count == 1:
+                        print("engine vararg call_group_flags check passed.")
+                    else:
+                        push_error("engine vararg call_group_flags check failed.")
                 
                     var discard_count = int(target.call("call_engine_vararg_discard_has_method", probe))
                     if discard_count == 0:

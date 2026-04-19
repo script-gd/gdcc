@@ -520,6 +520,102 @@ class CCodegenEngineMethodBindHeaderTest {
         assertFalse(broadcastBody.contains(", NULL,\n        &error"), broadcastBody);
     }
 
+    @Test
+    @DisplayName("generate should normalize mixed vararg fixed prefix surface before helper-owned pack and cleanup")
+    void generateShouldNormalizeMixedVarargFixedPrefixSurfaceBeforeHelperOwnedPackAndCleanup() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var callDispatch = newVoidFunction("call_dispatch");
+        callDispatch.createAndAddVariable("probe", new GdObjectType("Probe"));
+        callDispatch.createAndAddVariable("peer", new GdObjectType("Probe"));
+        callDispatch.createAndAddVariable("mode", GdIntType.INT);
+        callDispatch.createAndAddVariable("flags", GdIntType.INT);
+        callDispatch.createAndAddVariable("label", GdStringType.STRING);
+        callDispatch.createAndAddVariable("tail", GdVariantType.VARIANT);
+        callDispatch.createAndAddVariable("result", GdIntType.INT);
+        entry(callDispatch).appendInstruction(new CallMethodInsn(
+                "result",
+                "dispatch",
+                "probe",
+                List.of(
+                        varOperand("peer"),
+                        varOperand("mode"),
+                        varOperand("flags"),
+                        varOperand("label"),
+                        varOperand("tail")
+                )
+        ));
+        entry(callDispatch).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(callDispatch);
+
+        var module = new LirModule("engine_bind_vararg_mixed_prefix_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(probeClassWithVarargHelpers())),
+                List.of(hostClass)
+        );
+        var bindHeader = renderFiles(codegen.generate()).get("engine_method_binds.h");
+
+        var dispatchSignature = resolveFunctionSignatureByPrefix(
+                bindHeader,
+                "static inline godot_int gdcc_engine_callv_probe_dispatch_PL5Probe_IIT_RI_Xv"
+        );
+        assertContainsAll(
+                dispatchSignature,
+                "GDExtensionObjectPtr self",
+                "godot_Probe* arg0",
+                "godot_int arg1",
+                "godot_int arg2",
+                "godot_String* arg3",
+                "const godot_Variant **argv",
+                "godot_int argc"
+        );
+        assertFalse(dispatchSignature.contains("godot_Probe_Mode"), dispatchSignature);
+        assertFalse(dispatchSignature.contains("godot_Probe_Flags"), dispatchSignature);
+
+        var dispatchBody = resolveFunctionBodyByPrefix(
+                bindHeader,
+                "static inline godot_int gdcc_engine_callv_probe_dispatch_PL5Probe_IIT_RI_Xv"
+        );
+        assertContainsAll(
+                dispatchBody,
+                "godot_Variant fixed_arg_0 = godot_new_Variant_with_Object(arg0);",
+                "godot_Variant fixed_arg_1 = godot_new_Variant_with_int(arg1);",
+                "godot_Variant fixed_arg_2 = godot_new_Variant_with_int(arg2);",
+                "godot_Variant fixed_arg_3 = godot_new_Variant_with_String(arg3);",
+                "const GDExtensionConstVariantPtr fixed_args[] = {",
+                "&fixed_arg_0,",
+                "&fixed_arg_1,",
+                "&fixed_arg_2,",
+                "&fixed_arg_3",
+                "const godot_int fixed_argc = (godot_int)4;",
+                "GDExtensionConstVariantPtr final_args[4 + argc];",
+                "final_args[i] = fixed_args[i];",
+                "final_args[fixed_argc + i] = argv[i];",
+                "char call_error_desc[512];",
+                "engine method call failed: Probe.dispatch: invalid argument #%lld, expected '%s', got '%s'",
+                "engine method call failed: Probe.dispatch: too many arguments, expected %lld, got %lld",
+                "GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);",
+                "godot_Variant_destroy(&fixed_arg_3);",
+                "godot_Variant_destroy(&fixed_arg_2);",
+                "godot_Variant_destroy(&fixed_arg_1);",
+                "godot_Variant_destroy(&fixed_arg_0);"
+        );
+        assertFalse(dispatchBody.contains("arg1_slot"), dispatchBody);
+        assertFalse(dispatchBody.contains("arg2_slot"), dispatchBody);
+        assertFalse(dispatchBody.contains("godot_Probe_Mode"), dispatchBody);
+        assertFalse(dispatchBody.contains("godot_Probe_Flags"), dispatchBody);
+        assertOrderedFragments(
+                dispatchBody,
+                "if (error.error != GDEXTENSION_CALL_OK)",
+                "goto cleanup;",
+                "cleanup:",
+                "godot_Variant_destroy(&ret);",
+                "godot_Variant_destroy(&fixed_arg_3);",
+                "godot_Variant_destroy(&fixed_arg_0);"
+        );
+    }
+
     private static @NotNull Map<String, String> renderFiles(@NotNull List<GeneratedFile> files) {
         var rendered = new LinkedHashMap<String, String>();
         for (var file : files) {
@@ -771,6 +867,22 @@ class CCodegenEngineMethodBindHeaderTest {
                         new ExtensionFunctionArgument("label", "String", null, null)
                 )
         );
+        var dispatch = new ExtensionGdClass.ClassMethod(
+                "dispatch",
+                false,
+                true,
+                false,
+                false,
+                96L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("int"),
+                List.of(
+                        new ExtensionFunctionArgument("peer", "Probe", null, null),
+                        new ExtensionFunctionArgument("mode", "enum::Probe.Mode", null, null),
+                        new ExtensionFunctionArgument("flags", "bitfield::Probe.Flags", null, null),
+                        new ExtensionFunctionArgument("label", "String", null, null)
+                )
+        );
         var broadcast = new ExtensionGdClass.ClassMethod(
                 "broadcast",
                 false,
@@ -789,7 +901,7 @@ class CCodegenEngineMethodBindHeaderTest {
                 "Object",
                 "core",
                 List.of(),
-                List.of(mix, broadcast),
+                List.of(mix, dispatch, broadcast),
                 List.of(),
                 List.of(),
                 List.of()
