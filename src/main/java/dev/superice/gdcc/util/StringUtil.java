@@ -99,6 +99,21 @@ public final class StringUtil {
         return sb.toString();
     }
 
+    /// Decodes a full GDScript source lexeme into the runtime payload stored by LIR.
+    ///
+    /// Accepted inputs are ordinary string literals like `"text"` and `StringName` literals like
+    /// `&"text"`. The returned payload never contains the outer quoting syntax.
+    public static @NotNull String decodeGdStringLexeme(@NotNull String lexeme) {
+        var text = Objects.requireNonNull(lexeme, "lexeme must not be null");
+        if (text.startsWith("&\"")) {
+            return decodeQuotedLexeme(text, 2);
+        }
+        if (text.startsWith("\"")) {
+            return decodeQuotedLexeme(text, 1);
+        }
+        throw invalidGdStringLexeme(text);
+    }
+
     public static @NotNull String unescapeQuoted(@NotNull String content) {
         var out = new StringBuilder();
         for (var i = 0; i < content.length(); i++) {
@@ -138,5 +153,16 @@ public final class StringUtil {
             }
         }
         return out.toString();
+    }
+
+    private static @NotNull String decodeQuotedLexeme(@NotNull String lexeme, int contentStartIndex) {
+        if (lexeme.length() <= contentStartIndex || lexeme.charAt(lexeme.length() - 1) != '"') {
+            throw invalidGdStringLexeme(lexeme);
+        }
+        return unescapeQuoted(lexeme.substring(contentStartIndex, lexeme.length() - 1));
+    }
+
+    private static @NotNull IllegalArgumentException invalidGdStringLexeme(@NotNull String lexeme) {
+        return new IllegalArgumentException("Invalid GDScript string lexeme: " + lexeme);
     }
 }
