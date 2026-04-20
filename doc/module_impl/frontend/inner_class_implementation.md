@@ -28,7 +28,7 @@
   - 不引入 `cSymbolName`、额外 mangling 或 backend symbol alias
   - 不为 inner class 建立全局 `sourceName` alias
   - 不把 inner class 暴露到 value/function namespace
-  - 不改变 canonical `$` 当前可进入 backend 标识符链路的既有前提
+  - 不改变 canonical `__sub__` 当前可进入 backend 标识符链路的既有前提
 
 ---
 
@@ -65,7 +65,7 @@
   - 有 runtime-name mapping 时：`canonicalName = 映射后的顶层运行时名`
   - `sourceName = 源码中的顶层类名`
 - inner class：
-  - `canonicalName = Outer$Inner$Deep...`
+  - `canonicalName = Outer__sub__Inner__sub__Deep...`
   - `sourceName = 源代码中的局部类名`
 
 双名模型的用途严格区分为：
@@ -75,12 +75,12 @@
 - `sourceName`
   - frontend relation、lexical type namespace、source-facing 诊断使用的局部名字
 
-后续工程不得再把这两层重新混回单一字段，也不得把 canonical `$` spelling 反向暴露成 frontend source-level 命名合同。
+后续工程不得再把这两层重新混回单一字段，也不得把 canonical `__sub__` spelling 反向暴露成 frontend source-level 命名合同。
 
 ### 2.2 `ClassDef` / `LirClassDef`
 
 - `ClassDef#getName()` 返回 canonical class name
-- inner class 的 `LirClassDef#getName()` 直接返回 `Outer$Inner...`
+- inner class 的 `LirClassDef#getName()` 直接返回 `Outer__sub__Inner...`
 - `ClassDef` / `LirClassDef` 不承担 inner class 的 source-facing 名字
 
 任何新代码若只有 `ClassDef`，就只拥有 canonical identity；若需要 source-facing inner class 名字，必须显式消费 frontend relation 或 `ScopeTypeMeta`。
@@ -295,11 +295,11 @@ inner class 相关恢复规则当前已经冻结为：
 - `ClassDef#getName()` 与 `LirClassDef#getName()` 始终表示 canonical class name
 - top-level gdcc class 的 canonical identity 允许被 module runtime-name mapping 重写
 - top-level class 始终保留独立的 `sourceName`
-- inner class 满足 `canonicalName = Outer$Inner...`、`sourceName = 局部类名`
+- inner class 满足 `canonicalName = Outer__sub__Inner...`、`sourceName = 局部类名`
 - lexical type namespace 只发布 immediate inner classes
 - inner class 不进入 value/function namespace
 - declared type 解析不再依赖 `findType(...)` 的 guessed-object 主路径
-- `$` 当前允许原样进入 backend 标识符链路
+- `__sub__` 当前允许原样进入 backend 标识符链路
 
 ---
 
@@ -309,7 +309,7 @@ inner class 相关恢复规则当前已经冻结为：
 
 - 跨多个 gdcc module 的 inner class 可见性与稳定绑定协议
 - inner class source-facing 名字是否需要新的显式导出/别名机制
-- backend 在新工具链或平台约束下对 canonical `$` 的兼容策略
+- backend 在新工具链或平台约束下对 canonical `__sub__` 的兼容策略
 - source-facing 诊断在缺失 relation 时的降级协议
 - 若后续 frontend 语义工作需要持久化更多 inner class provenance，应扩展 relation 或 side-table，而不是反向污染 `ClassDef`
 - 若后续需要统一展示 inner class 名字，应从 `canonicalName` 派生 display 视图，而不是新增持久化 `runtimeName`

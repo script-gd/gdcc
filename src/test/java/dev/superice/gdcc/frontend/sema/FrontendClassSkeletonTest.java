@@ -190,23 +190,23 @@ class FrontendClassSkeletonTest {
                 .map(FrontendInnerClassRelation::sourceName)
                 .toList());
         assertEquals(List.of(
-                "OuterWithInner$InnerA",
-                "OuterWithInner$InnerA$Deep",
-                "OuterWithInner$InnerB"
+                "OuterWithInner__sub__InnerA",
+                "OuterWithInner__sub__InnerA__sub__Deep",
+                "OuterWithInner__sub__InnerB"
         ), relation.innerClassRelations().stream()
                 .map(FrontendInnerClassRelation::canonicalName)
                 .toList());
         assertEquals(List.of(
-                "OuterWithInner$InnerA",
-                "OuterWithInner$InnerA$Deep",
-                "OuterWithInner$InnerB"
+                "OuterWithInner__sub__InnerA",
+                "OuterWithInner__sub__InnerA__sub__Deep",
+                "OuterWithInner__sub__InnerB"
         ), innerClassDefs(relation).stream().map(LirClassDef::getName).toList());
         assertEquals(List.of("OuterWithInner"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
         assertEquals(List.of(
                 "OuterWithInner",
-                "OuterWithInner$InnerA",
-                "OuterWithInner$InnerA$Deep",
-                "OuterWithInner$InnerB"
+                "OuterWithInner__sub__InnerA",
+                "OuterWithInner__sub__InnerA__sub__Deep",
+                "OuterWithInner__sub__InnerB"
         ), result.allClassDefs().stream().map(LirClassDef::getName).toList());
 
         var innerADeclaration = findStatement(unit.ast().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("InnerA"));
@@ -232,7 +232,7 @@ class FrontendClassSkeletonTest {
         assertSame(relation.innerClassRelations().get(1), deepOwned);
         assertSame(innerADeclaration, deepOwned.lexicalOwner());
         assertEquals("Deep", deepOwned.sourceName());
-        assertEquals("OuterWithInner$InnerA$Deep", deepOwned.canonicalName());
+        assertEquals("OuterWithInner__sub__InnerA__sub__Deep", deepOwned.canonicalName());
         assertNull(relation.findRelation(unit.ast().statements().getFirst()));
 
         assertEquals(List.of("InnerA", "InnerB"), relation.findImmediateInnerRelations(unit.ast()).stream()
@@ -243,33 +243,33 @@ class FrontendClassSkeletonTest {
                 .toList());
         assertTrue(relation.findImmediateInnerRelations(innerBDeclaration).isEmpty());
 
-        var innerA = findClassByName(innerClassDefs(relation), "OuterWithInner$InnerA");
+        var innerA = findClassByName(innerClassDefs(relation), "OuterWithInner__sub__InnerA");
         assertEquals("RefCounted", innerA.getSuperName());
         assertEquals("hp", innerA.getProperties().getFirst().getName());
         assertEquals("ping", innerA.getFunctions().getFirst().getName());
 
-        var innerB = findClassByName(innerClassDefs(relation), "OuterWithInner$InnerB");
+        var innerB = findClassByName(innerClassDefs(relation), "OuterWithInner__sub__InnerB");
         assertEquals(1, innerB.getSignals().size());
         assertEquals("changed", innerB.getSignals().getFirst().getName());
 
-        var deep = findClassByName(innerClassDefs(relation), "OuterWithInner$InnerA$Deep");
+        var deep = findClassByName(innerClassDefs(relation), "OuterWithInner__sub__InnerA__sub__Deep");
         assertEquals("RefCounted", deep.getSuperName());
         assertEquals("nested", deep.getFunctions().getFirst().getName());
 
         assertNotNull(registry.findGdccClass("OuterWithInner"));
-        assertNotNull(registry.findGdccClass("OuterWithInner$InnerA"));
-        assertNotNull(registry.findGdccClass("OuterWithInner$InnerA$Deep"));
-        assertNotNull(registry.findGdccClass("OuterWithInner$InnerB"));
+        assertNotNull(registry.findGdccClass("OuterWithInner__sub__InnerA"));
+        assertNotNull(registry.findGdccClass("OuterWithInner__sub__InnerA__sub__Deep"));
+        assertNotNull(registry.findGdccClass("OuterWithInner__sub__InnerB"));
         assertNull(registry.findGdccClassSourceNameOverride("OuterWithInner"));
-        assertEquals("InnerA", registry.findGdccClassSourceNameOverride("OuterWithInner$InnerA"));
-        assertEquals("Deep", registry.findGdccClassSourceNameOverride("OuterWithInner$InnerA$Deep"));
-        assertEquals("InnerB", registry.findGdccClassSourceNameOverride("OuterWithInner$InnerB"));
+        assertEquals("InnerA", registry.findGdccClassSourceNameOverride("OuterWithInner__sub__InnerA"));
+        assertEquals("Deep", registry.findGdccClassSourceNameOverride("OuterWithInner__sub__InnerA__sub__Deep"));
+        assertEquals("InnerB", registry.findGdccClassSourceNameOverride("OuterWithInner__sub__InnerB"));
 
-        var innerAMeta = registry.resolveTypeMeta("OuterWithInner$InnerA");
+        var innerAMeta = registry.resolveTypeMeta("OuterWithInner__sub__InnerA");
         assertNotNull(innerAMeta);
-        assertEquals("OuterWithInner$InnerA", innerAMeta.canonicalName());
+        assertEquals("OuterWithInner__sub__InnerA", innerAMeta.canonicalName());
         assertEquals("InnerA", innerAMeta.sourceName());
-        assertEquals("OuterWithInner$InnerA", innerAMeta.displayName());
+        assertEquals("OuterWithInner__sub__InnerA", innerAMeta.displayName());
     }
 
     @Test
@@ -298,19 +298,19 @@ class FrontendClassSkeletonTest {
         );
         var relation = result.sourceClassRelations().getFirst();
         var lexicalLeafRelation = relation.innerClassRelations().stream()
-                .filter(innerRelation -> innerRelation.canonicalName().equals("SuperclassContract$LexicalLeaf"))
+                .filter(innerRelation -> innerRelation.canonicalName().equals("SuperclassContract__sub__LexicalLeaf"))
                 .findFirst()
                 .orElseThrow();
 
         assertEquals(new FrontendSuperClassRef("RefCounted", "RefCounted"), relation.superClassRef());
         assertEquals(
-                new FrontendSuperClassRef("Shared", "SuperclassContract$Shared"),
+                new FrontendSuperClassRef("Shared", "SuperclassContract__sub__Shared"),
                 lexicalLeafRelation.superClassRef()
         );
-        assertEquals("SuperclassContract$Shared", lexicalLeafRelation.classDef().getSuperName());
+        assertEquals("SuperclassContract__sub__Shared", lexicalLeafRelation.classDef().getSuperName());
         assertEquals(
-                "SuperclassContract$Shared",
-                findClassByName(result.allClassDefs(), "SuperclassContract$LexicalLeaf").getSuperName()
+                "SuperclassContract__sub__Shared",
+                findClassByName(result.allClassDefs(), "SuperclassContract__sub__LexicalLeaf").getSuperName()
         );
         assertTrue(result.diagnostics().isEmpty());
     }
@@ -347,19 +347,19 @@ class FrontendClassSkeletonTest {
         assertEquals("RuntimeOuter", relation.displayName());
         assertEquals("RuntimeOuter", relation.topLevelClassDef().getName());
         assertEquals(
-                List.of("RuntimeOuter$Inner"),
+                List.of("RuntimeOuter__sub__Inner"),
                 relation.innerClassRelations().stream()
                         .map(FrontendInnerClassRelation::canonicalName)
                         .toList()
         );
         assertEquals(
-                List.of("RuntimeOuter", "RuntimeOuter$Inner"),
+                List.of("RuntimeOuter", "RuntimeOuter__sub__Inner"),
                 result.allClassDefs().stream().map(LirClassDef::getName).toList()
         );
         assertNotNull(registry.findGdccClass("RuntimeOuter"));
-        assertNotNull(registry.findGdccClass("RuntimeOuter$Inner"));
+        assertNotNull(registry.findGdccClass("RuntimeOuter__sub__Inner"));
         assertEquals("MappedOuter", registry.findGdccClassSourceNameOverride("RuntimeOuter"));
-        assertEquals("Inner", registry.findGdccClassSourceNameOverride("RuntimeOuter$Inner"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("RuntimeOuter__sub__Inner"));
         var mappedTopLevelMeta = registry.resolveTypeMeta("RuntimeOuter");
         assertNotNull(mappedTopLevelMeta);
         assertEquals("MappedOuter", mappedTopLevelMeta.sourceName());
@@ -472,7 +472,7 @@ class FrontendClassSkeletonTest {
         var classDef = result.sourceClassRelations().getFirst().topLevelClassDef();
         var localWorkerProperty = classDef.getProperties().getFirst();
 
-        assertEquals(new GdObjectType("RuntimeWorker$MappedWorker"), localWorkerProperty.getType());
+        assertEquals(new GdObjectType("RuntimeWorker__sub__MappedWorker"), localWorkerProperty.getType());
         assertTrue(diagnostics.snapshot().isEmpty(), () -> "Unexpected diagnostics: " + diagnostics.snapshot());
     }
 
@@ -564,10 +564,10 @@ class FrontendClassSkeletonTest {
                 analysisData
         );
         var outer = findClassByName(topLevelClassDefs(result), "OuterTypes");
-        var directInner = findClassByName(result.allClassDefs(), "OuterTypes$DirectInner");
-        var deep = findClassByName(result.allClassDefs(), "OuterTypes$DirectInner$Deep");
+        var directInner = findClassByName(result.allClassDefs(), "OuterTypes__sub__DirectInner");
+        var deep = findClassByName(result.allClassDefs(), "OuterTypes__sub__DirectInner__sub__Deep");
 
-        assertObjectTypeName(findPropertyByName(outer, "direct_inner").getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(findPropertyByName(outer, "direct_inner").getType(), "OuterTypes__sub__DirectInner");
         assertObjectTypeName(findPropertyByName(outer, "module_item").getType(), "ModuleItem");
         var nodeLookupType = assertInstanceOf(
                 GdDictionaryType.class,
@@ -580,29 +580,29 @@ class FrontendClassSkeletonTest {
         assertObjectTypeName(producedSignal.getParameter(0).getType(), "ModuleItem");
 
         var wrapFunction = findFunctionByName(outer, "wrap");
-        assertObjectTypeName(wrapFunction.getParameter(0).getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(wrapFunction.getParameter(0).getType(), "OuterTypes__sub__DirectInner");
         assertObjectTypeName(wrapFunction.getReturnType(), "ModuleItem");
 
-        assertObjectTypeName(findPropertyByName(directInner, "self_ref").getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(findPropertyByName(directInner, "self_ref").getType(), "OuterTypes__sub__DirectInner");
         assertObjectTypeName(findPropertyByName(directInner, "outer_ref").getType(), "OuterTypes");
         assertObjectTypeName(findPropertyByName(directInner, "module_ref").getType(), "ModuleItem");
-        assertObjectTypeName(findPropertyByName(directInner, "helper_ref").getType(), "OuterTypes$Helper");
+        assertObjectTypeName(findPropertyByName(directInner, "helper_ref").getType(), "OuterTypes__sub__Helper");
         var helpersType = assertInstanceOf(
                 GdArrayType.class,
                 findPropertyByName(directInner, "helpers").getType()
         );
-        assertObjectTypeName(helpersType.getValueType(), "OuterTypes$Helper");
+        assertObjectTypeName(helpersType.getValueType(), "OuterTypes__sub__Helper");
         var helperLookupType = assertInstanceOf(
                 GdDictionaryType.class,
                 findPropertyByName(directInner, "helper_lookup").getType()
         );
         assertEquals(GdStringType.STRING, helperLookupType.getKeyType());
-        assertObjectTypeName(helperLookupType.getValueType(), "OuterTypes$Helper");
+        assertObjectTypeName(helperLookupType.getValueType(), "OuterTypes__sub__Helper");
 
-        assertObjectTypeName(findPropertyByName(deep, "self_ref").getType(), "OuterTypes$DirectInner$Deep");
-        assertObjectTypeName(findPropertyByName(deep, "parent_ref").getType(), "OuterTypes$DirectInner");
+        assertObjectTypeName(findPropertyByName(deep, "self_ref").getType(), "OuterTypes__sub__DirectInner__sub__Deep");
+        assertObjectTypeName(findPropertyByName(deep, "parent_ref").getType(), "OuterTypes__sub__DirectInner");
         assertObjectTypeName(findPropertyByName(deep, "outer_ref").getType(), "OuterTypes");
-        assertObjectTypeName(findPropertyByName(deep, "helper_ref").getType(), "OuterTypes$Helper");
+        assertObjectTypeName(findPropertyByName(deep, "helper_ref").getType(), "OuterTypes__sub__Helper");
 
         assertTrue(diagnostics.isEmpty());
         assertTrue(result.diagnostics().isEmpty());
@@ -640,7 +640,7 @@ class FrontendClassSkeletonTest {
 
         assertEquals(GdVariantType.VARIANT, findPropertyByName(consumer, "leaked").getType());
         assertObjectTypeName(findPropertyByName(consumer, "allowed").getType(), "OuterVisibility");
-        assertNotNull(registry.findGdccClass("OuterVisibility$HiddenInner"));
+        assertNotNull(registry.findGdccClass("OuterVisibility__sub__HiddenInner"));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.type_resolution")
                         && diagnostic.message().contains("HiddenInner")
@@ -779,7 +779,7 @@ class FrontendClassSkeletonTest {
                 analysisData
         );
         var topLevel = findClassByName(topLevelClassDefs(result), "ConstructorMembers");
-        var inner = findClassByName(result.allClassDefs(), "ConstructorMembers$Inner");
+        var inner = findClassByName(result.allClassDefs(), "ConstructorMembers__sub__Inner");
 
         var topLevelInit = findFunctionByName(topLevel, "_init");
         assertEquals(GdVoidType.VOID, topLevelInit.getReturnType());
@@ -830,7 +830,7 @@ class FrontendClassSkeletonTest {
                 analysisData
         );
         var topLevel = findClassByName(topLevelClassDefs(result), "DuplicateInitConstructor");
-        var inner = findClassByName(result.allClassDefs(), "DuplicateInitConstructor$Inner");
+        var inner = findClassByName(result.allClassDefs(), "DuplicateInitConstructor__sub__Inner");
 
         assertEquals(List.of("_init", "ping"), topLevel.getFunctions().stream()
                 .map(function -> function.getName())
@@ -917,13 +917,13 @@ class FrontendClassSkeletonTest {
                 registry
         );
         assertNotNull(registry.findGdccClass("Phase3Probe"));
-        assertNotNull(registry.findGdccClass("Phase3Probe$Inner"));
+        assertNotNull(registry.findGdccClass("Phase3Probe__sub__Inner"));
         assertNull(registry.findGdccClassSourceNameOverride("Phase3Probe"));
-        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Phase3Probe$Inner"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Phase3Probe__sub__Inner"));
 
-        var innerTypeMeta = registry.resolveTypeMeta("Phase3Probe$Inner");
+        var innerTypeMeta = registry.resolveTypeMeta("Phase3Probe__sub__Inner");
         assertNotNull(innerTypeMeta);
-        assertEquals("Phase3Probe$Inner", innerTypeMeta.canonicalName());
+        assertEquals("Phase3Probe__sub__Inner", innerTypeMeta.canonicalName());
         assertEquals("Inner", innerTypeMeta.sourceName());
 
         invokeBuilderMethod(
@@ -1142,22 +1142,22 @@ class FrontendClassSkeletonTest {
         );
         var relation = result.sourceClassRelations().getFirst();
 
-        assertEquals(List.of("OuterCycle", "OuterCycle$StableInner"), result.allClassDefs().stream()
+        assertEquals(List.of("OuterCycle", "OuterCycle__sub__StableInner"), result.allClassDefs().stream()
                 .map(LirClassDef::getName)
                 .toList());
         assertEquals(List.of("StableInner"), relation.innerClassRelations().stream()
                 .map(FrontendInnerClassRelation::sourceName)
                 .toList());
         assertNotNull(registry.findGdccClass("OuterCycle"));
-        assertNotNull(registry.findGdccClass("OuterCycle$StableInner"));
-        assertNull(registry.findGdccClass("OuterCycle$Alpha"));
-        assertNull(registry.findGdccClass("OuterCycle$Beta"));
-        assertNull(registry.findGdccClassSourceNameOverride("OuterCycle$Alpha"));
-        assertNull(registry.findGdccClassSourceNameOverride("OuterCycle$Beta"));
+        assertNotNull(registry.findGdccClass("OuterCycle__sub__StableInner"));
+        assertNull(registry.findGdccClass("OuterCycle__sub__Alpha"));
+        assertNull(registry.findGdccClass("OuterCycle__sub__Beta"));
+        assertNull(registry.findGdccClassSourceNameOverride("OuterCycle__sub__Alpha"));
+        assertNull(registry.findGdccClassSourceNameOverride("OuterCycle__sub__Beta"));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.inheritance_cycle")
-                        && diagnostic.message().contains("OuterCycle$Alpha")
-                        && diagnostic.message().contains("OuterCycle$Beta")
+                        && diagnostic.message().contains("OuterCycle__sub__Alpha")
+                        && diagnostic.message().contains("OuterCycle__sub__Beta")
         ));
     }
 

@@ -819,7 +819,12 @@ public final class FrontendClassSkeletonBuilder {
                     lexicalOwner,
                     classDeclaration,
                     innerClassName,
-                    parentCanonicalName + "$" + innerClassName,
+                    // Inner canonical names remain a pure frontend-derived identity: once the top-level
+                    // canonical is frozen, every nested layer appends the reserved separator and the
+                    // source-facing local name exactly once at header discovery time.
+                    parentCanonicalName
+                            + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                            + innerClassName,
                     StringUtil.trimToNull(classDeclaration.extendsTarget()),
                     FrontendRange.fromAstRange(classDeclaration.range()),
                     false
@@ -1420,7 +1425,7 @@ public final class FrontendClassSkeletonBuilder {
                     "autoload/singleton superclasses are not supported in frontend superclass binding"
             );
         }
-        if (rawExtendsText.contains("$")) {
+        if (rawExtendsText.contains(FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR)) {
             var canonicalHit = validationIndex.firstByCanonicalName().get(rawExtendsText);
             if (canonicalHit != null) {
                 return HeaderSuperBindingDecision.rejected(
@@ -1428,7 +1433,9 @@ public final class FrontendClassSkeletonBuilder {
                         rawExtendsText,
                         canonicalHit,
                         null,
-                        "canonical '$' spelling is not part of supported frontend extends syntax; use source-facing name '"
+                        "canonical '"
+                                + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                                + "' spelling is not part of supported frontend extends syntax; use source-facing name '"
                                 + canonicalHit.sourceName() + "' instead"
                 );
             }
@@ -1437,7 +1444,8 @@ public final class FrontendClassSkeletonBuilder {
                     rawExtendsText,
                     null,
                     null,
-                    "canonical '$' spelling is not part of frontend extends syntax"
+                    "canonical '" + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                            + "' spelling is not part of frontend extends syntax"
             );
         }
 

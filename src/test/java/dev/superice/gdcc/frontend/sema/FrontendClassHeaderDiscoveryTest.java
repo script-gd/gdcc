@@ -87,8 +87,8 @@ class FrontendClassHeaderDiscoveryTest {
         assertEquals(
                 List.of(
                         "Outer",
-                        "Outer$GoodInner",
-                        "Outer$SharedInner",
+                        "Outer__sub__GoodInner",
+                        "Outer__sub__SharedInner",
                         "StableModule"
                 ),
                 result.allClassDefs().stream().map(LirClassDef::getName).toList()
@@ -111,89 +111,13 @@ class FrontendClassHeaderDiscoveryTest {
         ));
         assertNotNull(registry.findGdccClass("Outer"));
         assertNotNull(registry.findGdccClass("StableModule"));
-        assertNotNull(registry.findGdccClass("Outer$GoodInner"));
-        assertNotNull(registry.findGdccClass("Outer$SharedInner"));
-        assertEquals("GoodInner", registry.findGdccClassSourceNameOverride("Outer$GoodInner"));
-        assertEquals("SharedInner", registry.findGdccClassSourceNameOverride("Outer$SharedInner"));
-        assertNull(registry.findGdccClass("Outer$SharedInner$HiddenChild"));
+        assertNotNull(registry.findGdccClass("Outer__sub__GoodInner"));
+        assertNotNull(registry.findGdccClass("Outer__sub__SharedInner"));
+        assertEquals("GoodInner", registry.findGdccClassSourceNameOverride("Outer__sub__GoodInner"));
+        assertEquals("SharedInner", registry.findGdccClassSourceNameOverride("Outer__sub__SharedInner"));
+        assertNull(registry.findGdccClass("Outer__sub__SharedInner__sub__HiddenChild"));
     }
 
-    @Test
-    void buildRejectsCanonicalNameConflictBetweenInnerClassAndTopLevelClass() throws Exception {
-        var parserService = new GdScriptParserService();
-        var diagnostics = new DiagnosticManager();
-        var outerUnit = parserService.parseUnit(
-                Path.of("tmp", "outer_canonical_conflict.gd"),
-                """
-                        class_name Outer
-                        extends RefCounted
-                        
-                        class Inner:
-                            func ok():
-                                pass
-                        
-                        class Sibling:
-                            pass
-                        """,
-                diagnostics
-        );
-        var conflictingTopLevelUnit = new FrontendSourceUnit(
-                Path.of("tmp", "outer_inner_top_level.gd"),
-                "",
-                new SourceFile(
-                        List.of(new ClassNameStatement("Outer$Inner", null, SYNTHETIC_RANGE)),
-                        SYNTHETIC_RANGE
-                )
-        );
-        var stableUnit = parserService.parseUnit(
-                Path.of("tmp", "keep_alive.gd"),
-                """
-                        class_name KeepAlive
-                        extends RefCounted
-                        """,
-                diagnostics
-        );
-
-        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var result = buildSkeleton(
-                "header_discovery",
-                List.of(outerUnit, conflictingTopLevelUnit, stableUnit),
-                registry,
-                diagnostics
-        );
-
-        var outerRelation = findSourceRelation(result, "Outer");
-        assertEquals(
-                List.of("Outer", "KeepAlive"),
-                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
-        );
-        assertEquals(
-                List.of(
-                        "Outer",
-                        "Outer$Inner",
-                        "Outer$Sibling",
-                        "KeepAlive"
-                ),
-                result.allClassDefs().stream().map(LirClassDef::getName).toList()
-        );
-        assertEquals(
-                List.of("Inner", "Sibling"),
-                outerRelation.innerClassRelations().stream()
-                        .map(FrontendInnerClassRelation::sourceName)
-                        .toList()
-        );
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("Canonical class name conflict 'Outer$Inner'")
-        ));
-        assertNotNull(registry.findGdccClass("Outer"));
-        assertNotNull(registry.findGdccClass("KeepAlive"));
-        assertNotNull(registry.findGdccClass("Outer$Inner"));
-        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer$Inner"));
-        assertEquals("Sibling", registry.findGdccClassSourceNameOverride("Outer$Sibling"));
-    }
-
-    @Test
     void buildRejectsInnerInheritanceCycleAndDependentsWhileKeepingStableSiblings() throws IOException {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
@@ -246,13 +170,13 @@ class FrontendClassHeaderDiscoveryTest {
         );
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.inheritance_cycle")
-                        && diagnostic.message().contains("OuterCycle$Alpha")
-                        && diagnostic.message().contains("OuterCycle$Beta")
+                        && diagnostic.message().contains("OuterCycle__sub__Alpha")
+                        && diagnostic.message().contains("OuterCycle__sub__Beta")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("OuterCycle$Gamma")
-                        && diagnostic.message().contains("OuterCycle$Alpha")
+                        && diagnostic.message().contains("OuterCycle__sub__Gamma")
+                        && diagnostic.message().contains("OuterCycle__sub__Alpha")
         ));
         assertNotNull(registry.findGdccClass("OuterCycle"));
         assertNotNull(registry.findGdccClass("StableRoot"));
@@ -275,7 +199,7 @@ class FrontendClassHeaderDiscoveryTest {
                                 ),
                                 new ClassDeclaration(
                                         "Leaf",
-                                        "CanonicalSuperBoundary$Shared",
+                                        "CanonicalSuperBoundary__sub__Shared",
                                         new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
                                         SYNTHETIC_RANGE
                                 ),
@@ -297,8 +221,8 @@ class FrontendClassHeaderDiscoveryTest {
         assertEquals(
                 List.of(
                         "CanonicalSuperBoundary",
-                        "CanonicalSuperBoundary$Shared",
-                        "CanonicalSuperBoundary$Stable"
+                        "CanonicalSuperBoundary__sub__Shared",
+                        "CanonicalSuperBoundary__sub__Stable"
                 ),
                 result.allClassDefs().stream().map(LirClassDef::getName).toList()
         );
@@ -310,13 +234,73 @@ class FrontendClassHeaderDiscoveryTest {
         );
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("CanonicalSuperBoundary$Leaf")
-                        && diagnostic.message().contains("canonical '$' spelling")
+                        && diagnostic.message().contains("CanonicalSuperBoundary__sub__Leaf")
+                        && diagnostic.message().contains("canonical '__sub__' spelling")
                         && diagnostic.message().contains("Shared")
         ));
-        assertNotNull(registry.findGdccClass("CanonicalSuperBoundary$Shared"));
-        assertNotNull(registry.findGdccClass("CanonicalSuperBoundary$Stable"));
-        assertNull(registry.findGdccClass("CanonicalSuperBoundary$Leaf"));
+        assertNotNull(registry.findGdccClass("CanonicalSuperBoundary__sub__Shared"));
+        assertNotNull(registry.findGdccClass("CanonicalSuperBoundary__sub__Stable"));
+        assertNull(registry.findGdccClass("CanonicalSuperBoundary__sub__Leaf"));
+    }
+
+    @Test
+    void buildDoesNotTreatNearMissExtendsTextAsCanonicalInnerSpelling() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var unit = new FrontendSourceUnit(
+                Path.of("tmp", "canonical_super_near_miss.gd"),
+                "",
+                new SourceFile(
+                        List.of(
+                                new ClassNameStatement("CanonicalNearMiss", "RefCounted", SYNTHETIC_RANGE),
+                                new ClassDeclaration(
+                                        "Shared",
+                                        null,
+                                        new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
+                                        SYNTHETIC_RANGE
+                                ),
+                                new ClassDeclaration(
+                                        "Leaf",
+                                        "CanonicalNearMiss__sub_Shared",
+                                        new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
+                                        SYNTHETIC_RANGE
+                                ),
+                                new ClassDeclaration(
+                                        "Stable",
+                                        null,
+                                        new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
+                                        SYNTHETIC_RANGE
+                                )
+                        ),
+                        SYNTHETIC_RANGE
+                )
+        );
+
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton("header_discovery", List.of(unit), registry, diagnostics);
+
+        var relation = findSourceRelation(result, "CanonicalNearMiss");
+        assertEquals(
+                List.of(
+                        "CanonicalNearMiss",
+                        "CanonicalNearMiss__sub__Shared",
+                        "CanonicalNearMiss__sub__Stable"
+                ),
+                result.allClassDefs().stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("Shared", "Stable"),
+                relation.innerClassRelations().stream()
+                        .map(FrontendInnerClassRelation::sourceName)
+                        .toList()
+        );
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("CanonicalNearMiss__sub_Shared")
+                        && !diagnostic.message().contains("canonical '__sub__' spelling")
+        ));
+        assertNotNull(registry.findGdccClass("CanonicalNearMiss__sub__Shared"));
+        assertNotNull(registry.findGdccClass("CanonicalNearMiss__sub__Stable"));
+        assertNull(registry.findGdccClass("CanonicalNearMiss__sub__Leaf"));
     }
 
     @Test
@@ -590,7 +574,7 @@ class FrontendClassHeaderDiscoveryTest {
         ));
         assertTrue(analysisData.skippedSubtreeRoots().containsKey(reservedUnit.ast()));
         assertNull(registry.findGdccClass("Hero__sub__Worker"));
-        assertNull(registry.findGdccClass("Hero__sub__Worker$InnerShouldDisappear"));
+        assertNull(registry.findGdccClass("Hero__sub__Worker__sub__InnerShouldDisappear"));
         assertNotNull(registry.findGdccClass("KeepAlive"));
     }
 
@@ -641,7 +625,7 @@ class FrontendClassHeaderDiscoveryTest {
                 topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
-                List.of("OuterReserved", "OuterReserved$GoodInner", "KeepAlive"),
+                List.of("OuterReserved", "OuterReserved__sub__GoodInner", "KeepAlive"),
                 result.allClassDefs().stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
@@ -655,10 +639,10 @@ class FrontendClassHeaderDiscoveryTest {
         ));
         assertTrue(analysisData.skippedSubtreeRoots().containsKey(rejectedInner));
         assertNotNull(registry.findGdccClass("OuterReserved"));
-        assertNotNull(registry.findGdccClass("OuterReserved$GoodInner"));
+        assertNotNull(registry.findGdccClass("OuterReserved__sub__GoodInner"));
         assertNotNull(registry.findGdccClass("KeepAlive"));
-        assertNull(registry.findGdccClass("OuterReserved$Worker__sub__Leaf"));
-        assertNull(registry.findGdccClass("OuterReserved$Worker__sub__Leaf$HiddenChild"));
+        assertNull(registry.findGdccClass("OuterReserved__sub__Worker__sub__Leaf"));
+        assertNull(registry.findGdccClass("OuterReserved__sub__Worker__sub__Leaf__sub__HiddenChild"));
     }
 
     @Test
@@ -691,11 +675,11 @@ class FrontendClassHeaderDiscoveryTest {
         assertTrue(result.diagnostics().isEmpty());
         assertTrue(analysisData.skippedSubtreeRoots().isEmpty());
         assertEquals(
-                List.of("Hero__subLeaf", "Hero__subLeaf$Worker__subLeaf"),
+                List.of("Hero__subLeaf", "Hero__subLeaf__sub__Worker__subLeaf"),
                 result.allClassDefs().stream().map(LirClassDef::getName).toList()
         );
         assertNotNull(registry.findGdccClass("Hero__subLeaf"));
-        assertNotNull(registry.findGdccClass("Hero__subLeaf$Worker__subLeaf"));
+        assertNotNull(registry.findGdccClass("Hero__subLeaf__sub__Worker__subLeaf"));
     }
 
     private FrontendSourceClassRelation findSourceRelation(

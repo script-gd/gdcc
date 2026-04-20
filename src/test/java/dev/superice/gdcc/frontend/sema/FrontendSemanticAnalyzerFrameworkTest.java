@@ -974,7 +974,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
         var topLevel = findClassByName(topLevelClassDefs(result.moduleSkeleton()), "ScopeTypeResolverParity");
-        var inner = findClassByName(result.moduleSkeleton().allClassDefs(), "ScopeTypeResolverParity$Inner");
+        var inner = findClassByName(result.moduleSkeleton().allClassDefs(), "ScopeTypeResolverParity__sub__Inner");
         var sourceScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(unit.ast()));
 
         assertEquals(
@@ -1015,9 +1015,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var result = analyzeModule("test_module", List.of(baseUnit, outerUnit), registry, diagnostics);
 
-        var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "OuterPrecedence$Leaf");
+        var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "OuterPrecedence__sub__Leaf");
         var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
-        assertEquals("OuterPrecedence$Shared", pickedType.getTypeName());
+        assertEquals("OuterPrecedence__sub__Shared", pickedType.getTypeName());
 
         var leafDeclaration = findClass(outerUnit.ast().statements(), "Leaf");
         var leafScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(leafDeclaration));
@@ -1025,7 +1025,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 GdObjectType.class,
                 ScopeTypeResolver.tryResolveDeclaredType(leafScope, "Shared")
         );
-        assertEquals("OuterPrecedence$Shared", resolvedShared.getTypeName());
+        assertEquals("OuterPrecedence__sub__Shared", resolvedShared.getTypeName());
         assertTrue(result.diagnostics().isEmpty());
     }
 
@@ -1046,7 +1046,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
 
-        var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "HeaderResolverGap$Leaf");
+        var leaf = findClassByName(result.moduleSkeleton().allClassDefs(), "HeaderResolverGap__sub__Leaf");
         var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
         var sourceRelation = result.moduleSkeleton().sourceClassRelations().getFirst();
         var leafRelation = assertInstanceOf(
@@ -1054,21 +1054,21 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 sourceRelation.findRelation(leafDeclaration)
         );
         assertEquals(
-                new FrontendSuperClassRef("Shared", "HeaderResolverGap$Shared"),
+                new FrontendSuperClassRef("Shared", "HeaderResolverGap__sub__Shared"),
                 leafRelation.superClassRef()
         );
-        assertEquals("HeaderResolverGap$Shared", leaf.getSuperName());
+        assertEquals("HeaderResolverGap__sub__Shared", leaf.getSuperName());
         assertNotNull(registry.findGdccClass(leaf.getSuperName()));
 
         var pickedType = assertInstanceOf(GdObjectType.class, findPropertyByName(leaf, "picked").getType());
-        assertEquals("HeaderResolverGap$Shared", pickedType.getTypeName());
+        assertEquals("HeaderResolverGap__sub__Shared", pickedType.getTypeName());
 
         var leafScope = assertInstanceOf(ClassScope.class, result.scopesByAst().get(leafDeclaration));
         var resolvedShared = assertInstanceOf(
                 GdObjectType.class,
                 ScopeTypeResolver.tryResolveDeclaredType(leafScope, "Shared")
         );
-        assertEquals("HeaderResolverGap$Shared", resolvedShared.getTypeName());
+        assertEquals("HeaderResolverGap__sub__Shared", resolvedShared.getTypeName());
         assertTrue(result.diagnostics().isEmpty());
     }
 
@@ -1089,7 +1089,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                                 ),
                                 new ClassDeclaration(
                                         "Leaf",
-                                        "CanonicalBoundary$Shared",
+                                        "CanonicalBoundary__sub__Shared",
                                         new Block(List.of(new PassStatement(SYNTHETIC_RANGE)), SYNTHETIC_RANGE),
                                         SYNTHETIC_RANGE
                                 )
@@ -1103,7 +1103,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var leafDeclaration = findClass(unit.ast().statements(), "Leaf");
         var sourceRelation = result.moduleSkeleton().sourceClassRelations().getFirst();
         assertEquals(
-                List.of("CanonicalBoundary", "CanonicalBoundary$Shared"),
+                List.of("CanonicalBoundary", "CanonicalBoundary__sub__Shared"),
                 result.moduleSkeleton().allClassDefs().stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
@@ -1114,11 +1114,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertNull(result.scopesByAst().get(leafDeclaration));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.class_skeleton")
-                        && diagnostic.message().contains("CanonicalBoundary$Leaf")
-                        && diagnostic.message().contains("canonical '$' spelling")
+                        && diagnostic.message().contains("CanonicalBoundary__sub__Leaf")
+                        && diagnostic.message().contains("canonical '__sub__' spelling")
         ));
-        assertNull(registry.findGdccClass("CanonicalBoundary$Leaf"));
-        assertNotNull(registry.findGdccClass("CanonicalBoundary$Shared"));
+        assertNull(registry.findGdccClass("CanonicalBoundary__sub__Leaf"));
+        assertNotNull(registry.findGdccClass("CanonicalBoundary__sub__Shared"));
     }
 
     @Test

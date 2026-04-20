@@ -91,11 +91,11 @@
 真正决定 inner canonical spelling 的行为入口当前很少，核心只有两类：
 
 - `FrontendClassSkeletonBuilder`
-  - inner canonical 生成当前写死为 `parentCanonicalName + "$" + innerClassName`
-  - header `extends` 当前显式拒绝源码里出现 canonical `$` spelling
+  - inner canonical 生成当前已经切到 `parentCanonicalName + "__sub__" + innerClassName`
+  - header `extends` 当前显式拒绝源码里出现 canonical `__sub__` spelling
 - `FrontendModule`
-  - `freezeTopLevelCanonicalNameMap(...)` 当前只校验 non-null / non-blank
-  - 尚未对保留 canonical separator 做输入边界检查
+  - `freezeTopLevelCanonicalNameMap(...)` 当前统一经 `FrontendClassNameContract` 冻结
+  - 已在 public boundary 上拒绝包含保留 canonical separator 的 key/value
 
 这意味着：
 
@@ -406,6 +406,26 @@
   - 改为 `parentCanonicalName + "__sub__" + innerClassName`
 - 把 header `extends` 中“canonical text 不属于 source-facing syntax”的拒绝规则从 `$` 迁移到 `__sub__`
 - 保持 source-facing `extends` 继续要求用户写局部 `sourceName`，而不是 canonical inner spelling
+
+执行状态：
+
+- [x] 2.1 把 `FrontendClassSkeletonBuilder` 的 inner canonical 派生切换到 `__sub__`
+- [x] 2.2 把 header `extends` canonical-text 拒绝规则与诊断文案同步迁移到 `__sub__`
+- [x] 2.3 增补阶段 2 哨兵/扩散测试并完成验收同步
+
+阶段 2 验收同步（2026-04-20）：
+
+- 实现锚点：
+  - `FrontendClassSkeletonBuilder` 现在通过 `FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR` 派生 inner canonical，不再直接拼接 `$`
+  - header `extends` canonical-text 拒绝改为识别 `__sub__`，并把诊断文案统一成 `canonical '__sub__' spelling`
+- 测试锚点：
+  - `FrontendClassSkeletonTest` 已把普通 inner、mapped top-level + inner、lexical superclass canonical 写回新的 `Outer__sub__Inner` 合同
+  - `FrontendClassHeaderDiscoveryTest` 已把 canonical-super negative path 切到 `extends Outer__sub__Inner`，并新增 near-miss case，确认 `CanonicalNearMiss__sub_Shared` 不会被误判成 canonical spelling
+  - `FrontendSemanticAnalyzerFrameworkTest` 已同步验证 semantic pipeline 下的 source-facing `extends Shared` 正常工作，而 canonical `extends Outer__sub__Inner` 继续在 frontend boundary 被拒绝
+  - 原“top-level 直接撞上 inner canonical namespace”的 header-discovery fixture 已删除，因为阶段 1 已经禁止源码类名和 mapping value 产生 `__sub__`；继续保留只会制造基线假红，掩盖真实阶段 2 回归
+- 已跑测试：
+  - 哨兵集：`FrontendClassHeaderDiscoveryTest`、`FrontendClassSkeletonTest`、`FrontendSemanticAnalyzerFrameworkTest`
+  - 扩散集：`FrontendModuleTest`、`FrontendInheritanceCycleTest`、`FrontendClassSkeletonAnnotationTest`
 
 验收细则：
 

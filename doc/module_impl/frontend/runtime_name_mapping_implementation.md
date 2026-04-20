@@ -112,7 +112,7 @@
 内部类继续维持局部源码名与派生 canonical 名的双名协议：
 
 - `sourceName = 源码 inner class 名`
-- `canonicalName = parentCanonicalName + "$" + sourceName`
+- `canonicalName = parentCanonicalName + "__sub__" + sourceName`
 - `displayName() = canonicalName`
 
 这意味着：
@@ -160,7 +160,7 @@
   - `canonicalName = 映射名`
 - inner class
   - `sourceName = 局部类名`
-  - `canonicalName = Outer$Inner...`
+  - `canonicalName = Outer__sub__Inner...`
 
 ### 4.2 `AbstractFrontendScope`
 
