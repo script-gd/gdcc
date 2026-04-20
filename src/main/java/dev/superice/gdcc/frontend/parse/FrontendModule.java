@@ -1,10 +1,8 @@
 package dev.superice.gdcc.frontend.parse;
 
-import dev.superice.gdcc.util.StringUtil;
+import dev.superice.gdcc.frontend.FrontendClassNameContract;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -23,7 +21,7 @@ public record FrontendModule(
     public FrontendModule {
         Objects.requireNonNull(moduleName, "moduleName must not be null");
         units = List.copyOf(Objects.requireNonNull(units, "units must not be null"));
-        topLevelCanonicalNameMap = freezeTopLevelCanonicalNameMap(Objects.requireNonNull(
+        topLevelCanonicalNameMap = FrontendClassNameContract.freezeTopLevelCanonicalNameMap(Objects.requireNonNull(
                 topLevelCanonicalNameMap,
                 "topLevelCanonicalNameMap must not be null"
         ));
@@ -43,25 +41,5 @@ public record FrontendModule(
             @NotNull Map<String, String> topLevelCanonicalNameMap
     ) {
         return new FrontendModule(moduleName, List.of(unit), topLevelCanonicalNameMap);
-    }
-
-    private static @NotNull Map<String, String> freezeTopLevelCanonicalNameMap(
-            @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) {
-        var frozenEntries = new LinkedHashMap<String, String>(topLevelCanonicalNameMap.size());
-        for (var entry : topLevelCanonicalNameMap.entrySet()) {
-            var sourceName = Objects.requireNonNull(
-                    entry.getKey(),
-                    "topLevelCanonicalNameMap key must not be null"
-            );
-            var canonicalName = Objects.requireNonNull(
-                    entry.getValue(),
-                    "topLevelCanonicalNameMap value must not be null"
-            );
-            StringUtil.requireNonBlank(sourceName, "topLevelCanonicalNameMap key");
-            StringUtil.requireNonBlank(canonicalName, "topLevelCanonicalNameMap value");
-            frozenEntries.put(sourceName, canonicalName);
-        }
-        return Collections.unmodifiableMap(frozenEntries);
     }
 }

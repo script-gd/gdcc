@@ -106,6 +106,50 @@ class FrontendModuleTest {
         );
     }
 
+    @Test
+    void constructorRejectsReservedSequenceInCanonicalMappingEntries() {
+        var unit = parse("reserved_map.gd", "class_name ReservedMap\nextends RefCounted\n");
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendModule(
+                        "test_module",
+                        List.of(unit),
+                        Map.of("Hero__sub__Worker", "RuntimeHero")
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendModule(
+                        "test_module",
+                        List.of(unit),
+                        Map.of("ReservedMap", "Runtime__sub__Worker")
+                )
+        );
+    }
+
+    @Test
+    void constructorAcceptsMappingEntriesThatOnlyApproximateReservedSequence() {
+        var unit = parse("near_reserved_map.gd", "class_name NearReservedMap\nextends RefCounted\n");
+
+        var module = new FrontendModule(
+                "test_module",
+                List.of(unit),
+                Map.of(
+                        "Hero__subLeaf",
+                        "Runtime__subLeaf"
+                )
+        );
+
+        assertEquals(
+                Map.of(
+                        "Hero__subLeaf",
+                        "Runtime__subLeaf"
+                ),
+                module.topLevelCanonicalNameMap()
+        );
+    }
+
     private FrontendSourceUnit parse(String fileName, String source) {
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);

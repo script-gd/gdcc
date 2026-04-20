@@ -542,6 +542,162 @@ class FrontendClassHeaderDiscoveryTest {
         assertNull(registry.findGdccClass("BetaSource"));
     }
 
+    @Test
+    void buildRejectsTopLevelClassNameUsingReservedSequenceAndKeepsOtherSources() throws IOException {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var reservedUnit = parserService.parseUnit(
+                Path.of("tmp", "reserved_top_level.gd"),
+                """
+                        class_name Hero__sub__Worker
+                        extends RefCounted
+                        
+                        class InnerShouldDisappear:
+                            pass
+                        """,
+                diagnostics
+        );
+        var keepAliveUnit = parserService.parseUnit(
+                Path.of("tmp", "keep_alive.gd"),
+                """
+                        class_name KeepAlive
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(reservedUnit, keepAliveUnit),
+                Map.of(),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        assertEquals(List.of("KeepAlive"), topLevelClassDefs(result).stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("KeepAlive"), result.allClassDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(
+                List.of("KeepAlive"),
+                result.sourceClassRelations().stream().map(FrontendSourceClassRelation::sourceName).toList()
+        );
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Top-level class name 'Hero__sub__Worker'")
+                        && diagnostic.message().contains("reserved gdcc class-name sequence '__sub__'")
+        ));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(reservedUnit.ast()));
+        assertNull(registry.findGdccClass("Hero__sub__Worker"));
+        assertNull(registry.findGdccClass("Hero__sub__Worker$InnerShouldDisappear"));
+        assertNotNull(registry.findGdccClass("KeepAlive"));
+    }
+
+    @Test
+    void buildRejectsInnerClassNameUsingReservedSequenceButKeepsSiblingInnerClassAndOtherSources() throws IOException {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var outerUnit = parserService.parseUnit(
+                Path.of("tmp", "reserved_inner.gd"),
+                """
+                        class_name OuterReserved
+                        extends RefCounted
+                        
+                        class Worker__sub__Leaf:
+                            class HiddenChild:
+                                pass
+                        
+                        class GoodInner:
+                            func ok():
+                                pass
+                        """,
+                diagnostics
+        );
+        var keepAliveUnit = parserService.parseUnit(
+                Path.of("tmp", "keep_alive.gd"),
+                """
+                        class_name KeepAlive
+                        extends RefCounted
+                        """,
+                diagnostics
+        );
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(outerUnit, keepAliveUnit),
+                Map.of(),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        var outerRelation = findSourceRelation(result, "OuterReserved");
+        var rejectedInner = findTopLevelInnerClass(outerUnit, "Worker__sub__Leaf");
+        assertEquals(
+                List.of("OuterReserved", "KeepAlive"),
+                topLevelClassDefs(result).stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("OuterReserved", "OuterReserved$GoodInner", "KeepAlive"),
+                result.allClassDefs().stream().map(LirClassDef::getName).toList()
+        );
+        assertEquals(
+                List.of("GoodInner"),
+                outerRelation.innerClassRelations().stream().map(FrontendInnerClassRelation::sourceName).toList()
+        );
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.class_skeleton")
+                        && diagnostic.message().contains("Inner class name 'Worker__sub__Leaf'")
+                        && diagnostic.message().contains("reserved gdcc class-name sequence '__sub__'")
+        ));
+        assertTrue(analysisData.skippedSubtreeRoots().containsKey(rejectedInner));
+        assertNotNull(registry.findGdccClass("OuterReserved"));
+        assertNotNull(registry.findGdccClass("OuterReserved$GoodInner"));
+        assertNotNull(registry.findGdccClass("KeepAlive"));
+        assertNull(registry.findGdccClass("OuterReserved$Worker__sub__Leaf"));
+        assertNull(registry.findGdccClass("OuterReserved$Worker__sub__Leaf$HiddenChild"));
+    }
+
+    @Test
+    void buildAcceptsClassNamesThatOnlyApproximateReservedSequence() throws IOException {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(
+                Path.of("tmp", "near_reserved_names.gd"),
+                """
+                        class_name Hero__subLeaf
+                        extends RefCounted
+                        
+                        class Worker__subLeaf:
+                            pass
+                        """,
+                diagnostics
+        );
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = buildSkeleton(
+                "header_discovery",
+                List.of(unit),
+                Map.of(),
+                registry,
+                diagnostics,
+                analysisData
+        );
+
+        assertTrue(result.diagnostics().isEmpty());
+        assertTrue(analysisData.skippedSubtreeRoots().isEmpty());
+        assertEquals(
+                List.of("Hero__subLeaf", "Hero__subLeaf$Worker__subLeaf"),
+                result.allClassDefs().stream().map(LirClassDef::getName).toList()
+        );
+        assertNotNull(registry.findGdccClass("Hero__subLeaf"));
+        assertNotNull(registry.findGdccClass("Hero__subLeaf$Worker__subLeaf"));
+    }
+
     private FrontendSourceClassRelation findSourceRelation(
             FrontendModuleSkeleton result,
             String className
@@ -574,12 +730,39 @@ class FrontendClassHeaderDiscoveryTest {
             ClassRegistry registry,
             DiagnosticManager diagnostics
     ) {
-        return new FrontendClassSkeletonBuilder().build(
-                new FrontendModule(moduleName, units, topLevelCanonicalNameMap),
+        return buildSkeleton(
+                moduleName,
+                units,
+                topLevelCanonicalNameMap,
                 registry,
                 diagnostics,
                 FrontendAnalysisData.bootstrap()
         );
+    }
+
+    private FrontendModuleSkeleton buildSkeleton(
+            String moduleName,
+            List<FrontendSourceUnit> units,
+            Map<String, String> topLevelCanonicalNameMap,
+            ClassRegistry registry,
+            DiagnosticManager diagnostics,
+            FrontendAnalysisData analysisData
+    ) {
+        return new FrontendClassSkeletonBuilder().build(
+                new FrontendModule(moduleName, units, topLevelCanonicalNameMap),
+                registry,
+                diagnostics,
+                analysisData
+        );
+    }
+
+    private ClassDeclaration findTopLevelInnerClass(FrontendSourceUnit unit, String className) {
+        return unit.ast().statements().stream()
+                .filter(ClassDeclaration.class::isInstance)
+                .map(ClassDeclaration.class::cast)
+                .filter(classDeclaration -> classDeclaration.name().equals(className))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Inner class not found: " + className));
     }
 
     private ClassRegistry createRegistryWithSingleton(String singletonName) {

@@ -372,6 +372,25 @@
   - 用户源码中的 class name 违规：`diagnostic + skip subtree`
   - `FrontendModule` 外部注入的 mapping 违规：public API boundary fail-fast
 
+执行状态：
+
+- [x] 1.1 集中定义 `__sub__` 保留序列事实源，并把 `FrontendModule` / `FrontendModuleSkeleton` 的 mapping 冻结逻辑收敛到同一 helper
+- [x] 1.2 为 top-level / inner 源码类名接入 `diagnostic + skip subtree` guard rail
+- [x] 1.3 增补哨兵测试并完成阶段 1 验收
+
+阶段 1 验收同步（2026-04-20）：
+
+- mapping 输入边界：
+  - `FrontendModuleTest` 新增正反锚点，确认 `topLevelCanonicalNameMap` 的 key/value 含 `__sub__` 时 public boundary fail-fast
+  - 同时确认仅近似 `__sub__`、但不包含完整 `__sub__` 序列的名字不会被误拒绝
+- 源码类名边界：
+  - `FrontendClassHeaderDiscoveryTest` 新增 top-level negative path，确认 `class_name Hero__sub__Worker` 会发 `sema.class_skeleton`、记录 skipped root，并且不会把坏 subtree 泄漏进 relation / registry
+  - 同文件新增 inner-class negative path，确认 `class Worker__sub__Leaf` 会被局部跳过，但 sibling inner class 与其他 source unit 继续工作
+  - 同文件新增 near-miss positive path，确认规则锚定的是完整 `__sub__` 序列，而不是泛化成“所有类似名字都拒绝”
+- 已跑测试：
+  - 哨兵集：`FrontendModuleTest`、`FrontendClassHeaderDiscoveryTest`、`FrontendClassSkeletonTest`
+  - 扩散集：`FrontendClassSkeletonAnnotationTest`、`FrontendInheritanceCycleTest`、`FrontendSemanticAnalyzerFrameworkTest`
+
 验收细则：
 
 - 源码声明 `class_name Hero__sub__Worker` 或 `class Worker__sub__Leaf` 时，skeleton phase 发 `sema.class_skeleton`，并跳过坏 subtree

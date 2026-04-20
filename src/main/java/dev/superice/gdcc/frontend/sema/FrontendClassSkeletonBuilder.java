@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.FrontendClassNameContract;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendAnnotationCollector;
 import dev.superice.gdcc.frontend.scope.ClassScope;
 import dev.superice.gdparser.frontend.ast.*;
@@ -727,6 +728,18 @@ public final class FrontendClassSkeletonBuilder {
                 true
         );
         discoveredHeadersInOrder.add(topLevelHeader);
+        // Reserve the future canonical separator at the source boundary first. That keeps
+        // source-space names disjoint before later phases start emitting `__sub__` identities.
+        if (FrontendClassNameContract.containsReservedSequence(topLevelSourceName)) {
+            diagnosticManager.error(
+                    "sema.class_skeleton",
+                    reservedClassNameDiagnostic("Top-level", topLevelSourceName),
+                    unit.path(),
+                    topLevelHeader.range()
+            );
+            rejectDiscoveredSubtree(topLevelHeader, rejectedCandidates, rejectedSubtreeRoots);
+            return topLevelHeader;
+        }
         discoverInnerClassHeaders(
                 unit,
                 unit.ast().statements(),
@@ -773,6 +786,25 @@ public final class FrontendClassSkeletonBuilder {
                         lexicalOwner,
                         classDeclaration,
                         null,
+                        null,
+                        StringUtil.trimToNull(classDeclaration.extendsTarget()),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                ));
+                rejectedSubtreeRoots.add(classDeclaration);
+                continue;
+            }
+            if (FrontendClassNameContract.containsReservedSequence(innerClassName)) {
+                diagnosticManager.error(
+                        "sema.class_skeleton",
+                        reservedClassNameDiagnostic("Inner", innerClassName),
+                        unit.path(),
+                        FrontendRange.fromAstRange(classDeclaration.range())
+                );
+                rejectedCandidates.add(new RejectedClassHeader(
+                        unit,
+                        lexicalOwner,
+                        classDeclaration,
+                        innerClassName,
                         null,
                         StringUtil.trimToNull(classDeclaration.extendsTarget()),
                         FrontendRange.fromAstRange(classDeclaration.range())
@@ -1472,6 +1504,12 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull Map<String, String> topLevelCanonicalNameMap
     ) {
         return topLevelCanonicalNameMap.getOrDefault(sourceName, sourceName);
+    }
+
+    private @NotNull String reservedClassNameDiagnostic(@NotNull String classKind, @NotNull String className) {
+        return classKind + " class name '" + className + "' contains reserved gdcc class-name sequence '"
+                + FrontendClassNameContract.INNER_CLASS_CANONICAL_SEPARATOR
+                + "'; this spelling is reserved for canonical inner-class names, so the skeleton subtree will be skipped";
     }
 
     private @NotNull String describeLexicalOwner(@NotNull MutableClassHeader discoveredHeader) {

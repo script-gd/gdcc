@@ -1,5 +1,6 @@
 package dev.superice.gdcc.frontend.sema;
 
+import dev.superice.gdcc.frontend.FrontendClassNameContract;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.scope.ResolveRestriction;
@@ -8,13 +9,10 @@ import dev.superice.gdcc.scope.ScopeLookupResult;
 import dev.superice.gdcc.scope.ScopeTypeMeta;
 import dev.superice.gdcc.scope.resolver.ScopeTypeResolver;
 import dev.superice.gdcc.type.GdType;
-import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -29,7 +27,7 @@ public record FrontendModuleSkeleton(
     public FrontendModuleSkeleton {
         Objects.requireNonNull(moduleName, "moduleName must not be null");
         sourceClassRelations = List.copyOf(Objects.requireNonNull(sourceClassRelations, "sourceClassRelations must not be null"));
-        topLevelCanonicalNameMap = freezeTopLevelCanonicalNameMap(Objects.requireNonNull(
+        topLevelCanonicalNameMap = FrontendClassNameContract.freezeTopLevelCanonicalNameMap(Objects.requireNonNull(
                 topLevelCanonicalNameMap,
                 "topLevelCanonicalNameMap must not be null"
         ));
@@ -140,23 +138,4 @@ public record FrontendModuleSkeleton(
         );
     }
 
-    private static @NotNull Map<String, String> freezeTopLevelCanonicalNameMap(
-            @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) {
-        var frozenEntries = new LinkedHashMap<String, String>(topLevelCanonicalNameMap.size());
-        for (var entry : topLevelCanonicalNameMap.entrySet()) {
-            var sourceName = Objects.requireNonNull(
-                    entry.getKey(),
-                    "topLevelCanonicalNameMap key must not be null"
-            );
-            var canonicalName = Objects.requireNonNull(
-                    entry.getValue(),
-                    "topLevelCanonicalNameMap value must not be null"
-            );
-            StringUtil.requireNonBlank(sourceName, "topLevelCanonicalNameMap key");
-            StringUtil.requireNonBlank(canonicalName, "topLevelCanonicalNameMap value");
-            frozenEntries.put(sourceName, canonicalName);
-        }
-        return Collections.unmodifiableMap(frozenEntries);
-    }
 }
