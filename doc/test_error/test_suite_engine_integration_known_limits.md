@@ -95,11 +95,10 @@
 - inner class 身份模型本身已存在
 - 但 inner GDCC class 与 engine `Node` API 的 assignability / callable route 仍未打通到可用于真场景 resource test 的程度
 
-当前处理结论：
+说明：
 
-- 本轮不把 `scene/nested_node_refcounted_scene.gd` 保留在正向 `test_suite` resource set 中
-- 正向 suite 改为补 `runtime/engine_node_refcounted_workflow.gd`，先锚定真实 engine `Node.new()` / `RefCounted.new()` runtime 行为
-- inner GDCC subclass scene interop 后续需要单独修复后再补回 compile-run regression
+- 当前真实剩余问题已经收束为 backend 的 Godot-facing class-name strategy，而不是这里只列出的临时 runner 调整步骤。
+- 详细盘点、成因链路与分步骤实施计划已迁移到 `doc/module_impl/frontend/godot_facing_class_name_surface_plan.md`。
 
 ## 8. exact engine route 剩余 resource gap
 

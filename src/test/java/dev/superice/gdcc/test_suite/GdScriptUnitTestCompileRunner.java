@@ -16,6 +16,7 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirModule;
 import dev.superice.gdcc.scope.ClassRegistry;
+import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.util.ResourceExtractor;
 import org.jetbrains.annotations.NotNull;
 
@@ -29,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -88,13 +88,7 @@ public final class GdScriptUnitTestCompileRunner {
         Files.createDirectories(projectDir);
 
         var lowered = lowerModule(sourcePath, source, caseName);
-        assertEquals(
-                1,
-                lowered.module().getClassDefs().size(),
-                () -> "Each unit-test script must lower to exactly one class, but " + scriptResourcePath + " lowered to " + lowered.module().getClassDefs().size()
-        );
-
-        var runtimeClassName = lowered.module().getClassDefs().getFirst().getName();
+        var runtimeClassName = requireRuntimeClassName(lowered, scriptResourcePath);
         var buildResult = buildNativeLibrary(lowered.module(), lowered.classRegistry(), projectDir, caseName);
         assertTrue(buildResult.success(), () -> "Native build failed for " + scriptResourcePath + ".\nBuild log:\n" + buildResult.buildLog());
 
@@ -137,6 +131,25 @@ public final class GdScriptUnitTestCompileRunner {
         assertNotNull(lowered, () -> "Lowering returned null for " + sourcePath + " with diagnostics: " + diagnostics.snapshot());
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics for " + sourcePath + ": " + diagnostics.snapshot());
         return new LoweredCase(lowered, classRegistry);
+    }
+
+    /// Unit-test scripts may lower additional inner classes. The mounted runtime root remains the
+    /// first published top-level class and must stay `Node`-derived so Godot installs it as a real
+    /// scene node instead of a placeholder.
+    private @NotNull String requireRuntimeClassName(@NotNull LoweredCase lowered, @NotNull String scriptResourcePath) {
+        var classDefs = lowered.module().getClassDefs();
+        assertFalse(classDefs.isEmpty(), () -> "Each unit-test script must lower to at least one class: " + scriptResourcePath);
+
+        var runtimeRootClass = classDefs.getFirst();
+        assertTrue(
+                lowered.classRegistry().checkAssignable(
+                        new GdObjectType(runtimeRootClass.getName()),
+                        new GdObjectType("Node")
+                ),
+                () -> "Mounted unit-test root class must remain Node-derived, but "
+                        + scriptResourcePath + " lowered root '" + runtimeRootClass.getName() + "' is not assignable to Node"
+        );
+        return runtimeRootClass.getName();
     }
 
     private @NotNull CBuildResult buildNativeLibrary(

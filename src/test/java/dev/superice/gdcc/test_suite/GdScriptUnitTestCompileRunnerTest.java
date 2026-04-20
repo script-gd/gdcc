@@ -68,6 +68,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/string_literal_escape_unicode_surface.gd",
             "runtime/string_literal_internal_surface.gd",
             "runtime/string_literal_utf8_offset_surface.gd",
+            "scene/nested_node_refcounted_scene.gd",
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd"
@@ -80,6 +81,7 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> INITIALIZER_SCRIPT_PATHS = scriptPathsWithPrefix("initializer/");
     private static final List<String> MEMBER_SCRIPT_PATHS = scriptPathsWithPrefix("member/");
     private static final List<String> RUNTIME_SCRIPT_PATHS = scriptPathsWithPrefix("runtime/");
+    private static final List<String> SCENE_SCRIPT_PATHS = scriptPathsWithPrefix("scene/");
     private static final List<String> SMOKE_SCRIPT_PATHS = scriptPathsWithPrefix("smoke/");
     private static final List<String> SUBSCRIPT_SCRIPT_PATHS = scriptPathsWithPrefix("subscript/");
 
@@ -156,6 +158,14 @@ public class GdScriptUnitTestCompileRunnerTest {
         return compileAndValidateBundledUnitScripts(
                 RUNTIME_SCRIPT_PATHS,
                 "Zig not found; skipping runtime GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesSceneScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                SCENE_SCRIPT_PATHS,
+                "Zig not found; skipping scene GDScript compile-run tests"
         );
     }
 
