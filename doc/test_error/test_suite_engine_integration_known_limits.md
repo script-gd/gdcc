@@ -148,5 +148,5 @@
 - 当前回归锚点包括：
   - `src/test/test_suite/unit_test/script/runtime/string_literal_internal_surface.gd`
   - `src/test/test_suite/unit_test/validation/runtime/string_literal_internal_surface.gd`
-  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptExpandedCoverageCompileRunnerTest.java`
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 中的 runtime category `@TestFactory`
   - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
