@@ -43,6 +43,7 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.BreakStatement;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CastExpression;
+import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.ConditionalExpression;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
@@ -84,6 +85,7 @@ import java.util.Objects;
 ///
 /// This builder owns structured executable control flow for the current supported statement surface:
 /// - straight-line statements and local `var`
+/// - lexical-no-op `CommentStatement`, which stays compile-ready but publishes no CFG item
 /// - `if` / `elif` / `else`
 /// - `while`
 /// - loop-local `break` / `continue`
@@ -169,6 +171,10 @@ public final class FrontendCfgGraphBuilder {
 
     private void processStatement(@NotNull BlockState state, @NotNull Statement statement) {
         switch (statement) {
+            case CommentStatement _ -> {
+                // Body comments are lexical trivia for lowering: accepted on compile surface, but
+                // intentionally omitted from CFG publication so they do not emit runtime line markers.
+            }
             case PassStatement passStatement ->
                     requireCurrentSequence(state).items().add(new SourceAnchorItem(passStatement));
             case ExpressionStatement expressionStatement ->

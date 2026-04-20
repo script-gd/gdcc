@@ -54,6 +54,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/array_constructor_size.gd",
             "runtime/array_void_return_helper_size.gd",
             "runtime/array_void_return_push_back_size.gd",
+            "runtime/comment_statement_control_flow_surface.gd",
             "runtime/dynamic_call.gd",
             "runtime/engine_array_mesh_exact_default_args.gd",
             "runtime/engine_node_add_child_exact_explicit_internal_args.gd",
@@ -64,10 +65,23 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/engine_node_refcounted_workflow.gd",
             "runtime/engine_option_button_default_args.gd",
             "runtime/engine_scene_tree_call_group_flags_exact_vararg.gd",
+            "runtime/string_literal_escape_unicode_surface.gd",
+            "runtime/string_literal_internal_surface.gd",
+            "runtime/string_literal_utf8_offset_surface.gd",
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd"
     );
+    private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");
+    private static final List<String> ALGORITHM_SCRIPT_PATHS = scriptPathsWithPrefix("algorithm/");
+    private static final List<String> COLLECTION_SCRIPT_PATHS = scriptPathsWithPrefix("collection/");
+    private static final List<String> CONSTRUCTOR_SCRIPT_PATHS = scriptPathsWithPrefix("constructor/");
+    private static final List<String> CONTROL_FLOW_SCRIPT_PATHS = scriptPathsWithPrefix("control_flow/");
+    private static final List<String> INITIALIZER_SCRIPT_PATHS = scriptPathsWithPrefix("initializer/");
+    private static final List<String> MEMBER_SCRIPT_PATHS = scriptPathsWithPrefix("member/");
+    private static final List<String> RUNTIME_SCRIPT_PATHS = scriptPathsWithPrefix("runtime/");
+    private static final List<String> SMOKE_SCRIPT_PATHS = scriptPathsWithPrefix("smoke/");
+    private static final List<String> SUBSCRIPT_SCRIPT_PATHS = scriptPathsWithPrefix("subscript/");
 
     @Test
     void listsExpectedBundledUnitScripts() throws Exception {
@@ -82,18 +96,110 @@ public class GdScriptUnitTestCompileRunnerTest {
     }
 
     @TestFactory
-    Stream<DynamicTest> compilesAndValidatesBundledUnitScripts() throws Exception {
-        Assumptions.assumeTrue(ZigUtil.findZig() != null, "Zig not found; skipping GDScript unit compile runner test");
+    Stream<DynamicTest> compilesAndValidatesAbiScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                ABI_SCRIPT_PATHS,
+                "Zig not found; skipping ABI GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesAlgorithmScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                ALGORITHM_SCRIPT_PATHS,
+                "Zig not found; skipping algorithm GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesCollectionScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                COLLECTION_SCRIPT_PATHS,
+                "Zig not found; skipping collection GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesConstructorScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                CONSTRUCTOR_SCRIPT_PATHS,
+                "Zig not found; skipping constructor GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesControlFlowScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                CONTROL_FLOW_SCRIPT_PATHS,
+                "Zig not found; skipping control-flow GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesInitializerScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                INITIALIZER_SCRIPT_PATHS,
+                "Zig not found; skipping initializer GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesMemberScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                MEMBER_SCRIPT_PATHS,
+                "Zig not found; skipping member GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesRuntimeScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                RUNTIME_SCRIPT_PATHS,
+                "Zig not found; skipping runtime GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesSmokeScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                SMOKE_SCRIPT_PATHS,
+                "Zig not found; skipping smoke GDScript compile-run tests"
+        );
+    }
+
+    @TestFactory
+    Stream<DynamicTest> compilesAndValidatesSubscriptScripts() throws Exception {
+        return compileAndValidateBundledUnitScripts(
+                SUBSCRIPT_SCRIPT_PATHS,
+                "Zig not found; skipping subscript GDScript compile-run tests"
+        );
+    }
+
+    private static Stream<DynamicTest> compileAndValidateBundledUnitScripts(
+            List<String> scriptPaths,
+            String skipMessage
+    ) throws Exception {
+        Assumptions.assumeTrue(ZigUtil.findZig() != null, skipMessage);
 
         var runner = new GdScriptUnitTestCompileRunner();
-        var scriptPaths = runner.listScriptResourcePaths();
-        assertFalse(scriptPaths.isEmpty(), "Expected at least one bundled unit-test case");
-        assertEquals(EXPECTED_SCRIPT_PATHS, scriptPaths, () -> "Unexpected bundled unit-test script set: " + scriptPaths);
+        var discoveredScriptPaths = runner.listScriptResourcePaths();
+        assertFalse(discoveredScriptPaths.isEmpty(), "Expected at least one bundled unit-test case");
+        assertEquals(
+                EXPECTED_SCRIPT_PATHS,
+                discoveredScriptPaths,
+                () -> "Unexpected bundled unit-test script set: " + discoveredScriptPaths
+        );
 
         return scriptPaths.stream()
                 .map(scriptResourcePath -> DynamicTest.dynamicTest(
                         scriptResourcePath,
                         () -> new GdScriptUnitTestCompileRunner().compileAndValidate(scriptResourcePath)
                 ));
+    }
+
+    private static List<String> scriptPathsWithPrefix(String prefix) {
+        return EXPECTED_SCRIPT_PATHS.stream()
+                .filter(scriptPath -> scriptPath.startsWith(prefix))
+                .toList();
     }
 }

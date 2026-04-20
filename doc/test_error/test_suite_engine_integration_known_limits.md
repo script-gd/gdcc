@@ -9,7 +9,7 @@
 - inner class 运行时行为
 - Node / RefCounted 派生类在场景中的协作
 
-在设计这些正向样例时，确认了两条当前仍然成立、且会直接影响测试写法的边界。
+在设计这些正向样例时，确认了多条当前仍然成立、且会直接影响测试写法的边界，以及少量已经修复、但需要从旧测试写法中清理掉的历史回归。
 
 ## 1. `for` / `match` / `lambda` 仍不属于 frontend body semantic MVP
 
@@ -75,38 +75,12 @@
 - 正向资源脚本改为显式 `var alpha_key: Variant = "alpha"` 后再做 `scores[alpha_key]`
 - 这是当前实现的可工作 surface，不代表 Godot 原生最自然写法已经完全闭环
 
-## 5. GDScript 可执行 body 中的 `CommentStatement` 目前会让 CFG builder fail-fast
+## 5. 已修复：GDScript 可执行 body 中的 `CommentStatement` 不再阻断 CFG builder
 
-本轮第一次把解释性注释放进 graph traversal 资源脚本的函数体后，lowering 直接在 CFG 阶段中止：
-
-- `Frontend CFG builder reached an unsupported reachable statement: CommentStatement`
-
-对 test suite 的直接影响：
-
-- resource script 里的复杂说明性注释不能直接放在可执行语句块中
-- 同一份说明应迁移到：
-  - Java wrapper 注释
-  - `doc/test_error` / module 文档
-  - 或 GDScript 函数体外的更安全位置
-
-当前处理结论：
-
-- 本轮所有会进入 compile-run 的 resource script 都移除了可执行 body 内注释
-
-## 6. 当前 string surface 仍存在实现偏差，不适合作为正向 compile-run 回归锚点
-
-本轮尝试为 `algorithm/string_processing.gd` 增加字符串拼接、切片与比较覆盖时，观察到两类异常：
-
-- `substr(...)` 结果出现明显偏移，返回值与 Godot 0-based 直觉不一致
-- 字符串拼接结果出现带引号片段，例如：
-  - `"gdcc""-engine-""suite""|bad"`
-
-后续即便把用例收缩到更简单的字符串比较/参数分类，这条 string resource case 仍未稳定通过。
-
-当前处理结论：
-
-- 本轮不把 string case 继续保留在正向 `test_suite` resource set 中
-- 相关异常作为已确认错误记录在此，后续若修复 string runtime / lowering surface，应再补独立的 compile-run regression case
+- `CommentStatement` 现在被 frontend CFG builder 视为 executable lowering 的 lexical no-op
+- comment 不再发布 `SequenceItem`，也不会额外生成 runtime `LineNumberInsn`
+- compile-run resource script 不需要再因为“函数体里有注释”而迁移说明文字
+- 若确实需要一个稳定、可执行的 source-level no-op 行，仍应使用真正的 `pass`
 
 ## 7. inner GDCC `Node` / `RefCounted` 子类与 engine scene API 的 compile surface 尚未闭环
 
@@ -167,3 +141,12 @@
 
 - 若后续要为纯 `RefCounted` 顶层脚本补真引擎 compile/link/run case，需要先扩展 `test_suite` harness，而不是继续往现有 scene-mounted 合同里硬塞
 - 若 frontend 后续正式支持 `for` / `match` / `lambda`，应补一轮更贴近 Godot 习惯写法的算法端到端样例，并把当前基于 `while` 的替代写法保留为 regression anchor
+
+## 已修复回顾
+
+- 原问题 6“编译脚本内部 string literal surface 污染”已不再属于当前 known limit。
+- 当前回归锚点包括：
+  - `src/test/test_suite/unit_test/script/runtime/string_literal_internal_surface.gd`
+  - `src/test/test_suite/unit_test/validation/runtime/string_literal_internal_surface.gd`
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 中的 runtime category `@TestFactory`
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`

@@ -97,15 +97,6 @@
 - Instruction generators should pass object arguments as regular `valueOfVar(...)` values and let `CBodyBuilder` handle pointer conversion centrally.
 - Do not duplicate per-generator object pointer normalization helpers for this case.
 
-### Exact Engine Method Bind Route
-
-- 唯一事实源：
-  - `doc/module_impl/backend/engine_method_bind_implementation.md`
-- 本文只保留总览提醒：
-  - exact engine `CALL_METHOD` 已改走 backend-owned generated helper
-  - migrated exact engine route 不再以 `gdextension-lite` public wrapper 为事实来源
-  - helper ABI、symbol identity、usage collector、normalized caller surface 与 `ptrcall/call` 合同均只在上面的实现文档维护
-
 ### Backend-owned Runtime Writeback Helper
 
 - `CallGlobalInsn` now accepts a narrow set of backend-owned helpers in addition to class-registry utility functions.
@@ -383,3 +374,11 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - `CBodyBuilder` and `CBuiltinBuilder` is only for generating code, they are NOT responsible for validating IR correctness, so they should assume the IR is already valid and throw `InvalidInsnException` when they encounter invalid IR.
 - The validation responsibility is on the instruction generators, they should validate all aspects of the IR and throw `InvalidInsnException` when the IR is invalid, so that the backend can fail fast and avoid generating invalid C code.
 - For function calls, the instruction generator should validate before calling the builder.
+
+### String-like Literal Payload Contract
+
+- String-like LIR literals are backend input contracts and must already carry normalized runtime payloads.
+- Raw source lexeme belongs to frontend/parsing surface, not backend decode responsibility; do not reintroduce consumers that silently accept both lexeme and payload.
+- Backend string-like literal materialization must stay payload-only:
+  - ordinary `String` payload is consumed as-is
+  - clearly detectable bad `StringName` lexeme shape must fail fast instead of being silently repaired

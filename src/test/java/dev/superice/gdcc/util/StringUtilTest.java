@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -85,5 +86,32 @@ public class StringUtilTest {
 
         var shortCodePoint = assertThrows(IllegalArgumentException.class, () -> StringUtil.unescapeQuoted("\\U1234567"));
         assertEquals("Invalid unicode escape in literal: \\U", shortCodePoint.getMessage());
+    }
+
+    @Test
+    public void decodeGdStringLexemeNormalizesStringAndStringNamePayloads() {
+        assertAll(
+                () -> assertEquals("hello", StringUtil.decodeGdStringLexeme("\"hello\"")),
+                () -> assertEquals("line\nbreak", StringUtil.decodeGdStringLexeme("\"line\\nbreak\"")),
+                () -> assertEquals("tab\tquote\"", StringUtil.decodeGdStringLexeme("\"tab\\tquote\\\"\"")),
+                () -> assertEquals("Node_2D", StringUtil.decodeGdStringLexeme("&\"Node_2D\"")),
+                () -> assertEquals("A", StringUtil.decodeGdStringLexeme("\"\\u0041\"")),
+                () -> assertEquals("\uD83D\uDE00", StringUtil.decodeGdStringLexeme("\"\\U0001F600\""))
+        );
+    }
+
+    @Test
+    public void decodeGdStringLexemeRejectsMalformedLexemes() {
+        assertAll(
+                () -> assertMalformedLexeme("\"unterminated"),
+                () -> assertMalformedLexeme("&hello"),
+                () -> assertMalformedLexeme("&\""),
+                () -> assertMalformedLexeme("plain")
+        );
+    }
+
+    private static void assertMalformedLexeme(String lexeme) {
+        var error = assertThrows(IllegalArgumentException.class, () -> StringUtil.decodeGdStringLexeme(lexeme));
+        assertEquals("Invalid GDScript string lexeme: " + lexeme, error.getMessage());
     }
 }

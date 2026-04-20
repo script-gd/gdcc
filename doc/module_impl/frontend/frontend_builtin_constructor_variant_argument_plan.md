@@ -396,7 +396,7 @@ GDCC 现已补齐对应 parity：保持 `resolvedCalls()` 中的 constructor rou
   - `src/test/test_suite/unit_test/script/constructor/builtin_variant_scalar_roundtrip.gd`
   - `src/test/test_suite/unit_test/script/constructor/builtin_variant_container_roundtrip.gd`
   - 两个 case 都由 `GdScriptUnitTestCompileRunner` 走完整的 frontend lowering -> C codegen -> native build -> Godot runtime 验证
-  - 并新增 `GdScriptBuiltinConstructorVariantCompileRunnerTest` 作为 targeted 入口，避免日常迭代时重跑整个 resource suite
+  - 并将 constructor category 的 targeted `@TestFactory` 收口到 `GdScriptUnitTestCompileRunnerTest`，避免日常迭代时重跑整个 resource suite
 - 已补齐 backend negative coverage：
   - `CConstructInsnGenTest` 新增 `ConstructBuiltinInsn(result=int, args=[Variant])` 仍必须 fail-closed
   - 这条测试直接锚定 backend `construct_builtin` 继续保持 exact constructor metadata contract，不接受伪造的 `[Variant]` constructor

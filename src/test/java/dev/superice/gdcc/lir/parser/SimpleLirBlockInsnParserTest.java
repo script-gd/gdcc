@@ -71,6 +71,28 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_stringLikeLiteralsNormalizeRuntimePayloads() {
+        var input = """
+                $0 = literal_string "line\\nbreak";
+                $1 = literal_string_name "Node_2D";
+                $2 = literal_string "tab\\tquote\\"";
+                """;
+
+        var insns = parse(input);
+        assertEquals(3, insns.size());
+
+        var stringInsn = assertInstanceOf(LiteralStringInsn.class, insns.get(0));
+        var stringNameInsn = assertInstanceOf(LiteralStringNameInsn.class, insns.get(1));
+        var escapedStringInsn = assertInstanceOf(LiteralStringInsn.class, insns.get(2));
+
+        assertAll(
+                () -> assertEquals("line\nbreak", stringInsn.value()),
+                () -> assertEquals("Node_2D", stringNameInsn.value()),
+                () -> assertEquals("tab\tquote\"", escapedStringInsn.value())
+        );
+    }
+
+    @Test
     public void parse_moreOpcodes() {
         var input = """
                 $1 = literal_int 42;

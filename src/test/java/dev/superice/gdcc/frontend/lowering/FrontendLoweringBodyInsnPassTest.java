@@ -7,6 +7,7 @@ import dev.superice.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CallItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.MergeValueItem;
+import dev.superice.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import dev.superice.gdcc.frontend.lowering.cfg.item.ValueOpItem;
@@ -35,9 +36,12 @@ import dev.superice.gdcc.lir.insn.ConstructBuiltinInsn;
 import dev.superice.gdcc.lir.insn.ConstructObjectInsn;
 import dev.superice.gdcc.lir.insn.GoIfInsn;
 import dev.superice.gdcc.lir.insn.GotoInsn;
+import dev.superice.gdcc.lir.insn.LineNumberInsn;
 import dev.superice.gdcc.lir.insn.LiteralBoolInsn;
 import dev.superice.gdcc.lir.insn.LiteralIntInsn;
 import dev.superice.gdcc.lir.insn.LiteralNullInsn;
+import dev.superice.gdcc.lir.insn.LiteralStringInsn;
+import dev.superice.gdcc.lir.insn.LiteralStringNameInsn;
 import dev.superice.gdcc.lir.insn.LoadStaticInsn;
 import dev.superice.gdcc.lir.insn.LoadPropertyInsn;
 import dev.superice.gdcc.lir.insn.PackVariantInsn;
@@ -58,7 +62,10 @@ import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
@@ -73,6 +80,8 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class FrontendLoweringBodyInsnPassTest {
+    private static final @NotNull Range SYNTHETIC_RANGE = new Range(0, 0, new Point(0, 0), new Point(0, 0));
+
     @Test
     void runLowersCompoundAssignmentOnLocalIntoBinaryOpAndFinalAssign() throws Exception {
         var prepared = prepareContext(
@@ -1978,6 +1987,42 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runSkipsCommentStatementsInsideExecutableBodies() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_comment_statement.gd",
+                """
+                        class_name BodyInsnCommentStatement
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            # leading
+                            pass
+                            # trailing
+                        """,
+                Map.of("BodyInsnCommentStatement", "RuntimeBodyInsnCommentStatement"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCommentStatement",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var lineNumberInsn = requireOnlyInstruction(pingContext.targetFunction(), LineNumberInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(instructions, LineNumberInsn.class)),
+                () -> assertTrue(lineNumberInsn.lineNumber() > 0),
+                () -> assertNotNull(requireOnlyReturnInsn(pingContext.targetFunction()))
+        );
+    }
+
+    @Test
     void runMaterializesVariantBoundariesAtReturnSlots() throws Exception {
         var prepared = prepareContext(
                 "body_insn_return_variant_boundary.gd",
@@ -2945,6 +2990,175 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersStringLiteralPropertyInitializerIntoNormalizedPayloadWhileAstKeepsRawLexeme() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_string_literal.gd",
+                """
+                        class_name BodyInsnPropertyStringLiteral
+                        extends RefCounted
+                        
+                        var ready_value: String = "line\\nbreak"
+                        
+                        func ping() -> String:
+                            return ready_value
+                        """,
+                Map.of("BodyInsnPropertyStringLiteral", "RuntimeBodyInsnPropertyStringLiteral"),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertyStringLiteral",
+                "_field_init_ready_value"
+        );
+        var sourceLiteral = findLiteralExpression(prepared.module().units().getFirst().ast(), "\"line\\nbreak\"");
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var instructions = allInstructions(initFunction);
+        var literalInsn = requireOnlyInstruction(initFunction, LiteralStringInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+        var selfParameter = initFunction.getParameter(0);
+        var selfParameterName = selfParameter == null ? null : selfParameter.name();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("\"line\\nbreak\"", sourceLiteral.sourceText()),
+                () -> assertEquals("line\nbreak", literalInsn.value()),
+                () -> assertNotEquals(sourceLiteral.sourceText(), literalInsn.value()),
+                () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                () -> assertEquals(2, initFunction.getBasicBlockCount()),
+                () -> assertEquals(1, initFunction.getParameters().size()),
+                () -> assertInstanceOf(LirParameterDef.class, selfParameter),
+                () -> assertEquals("self", selfParameterName),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class)),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersStringNameLiteralReturnIntoNormalizedPayloadWhileAstKeepsRawLexeme() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_name_literal.gd",
+                """
+                        class_name BodyInsnStringNameLiteral
+                        extends RefCounted
+                        
+                        func ping() -> StringName:
+                            return &"Hero_Node"
+                        """,
+                Map.of("BodyInsnStringNameLiteral", "RuntimeBodyInsnStringNameLiteral"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringNameLiteral",
+                "ping"
+        );
+        var sourceLiteral = findLiteralExpression(prepared.module().units().getFirst().ast(), "&\"Hero_Node\"");
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var pingFunction = pingContext.targetFunction();
+        var instructions = allInstructions(pingFunction);
+        var literalInsn = requireOnlyInstruction(pingFunction, LiteralStringNameInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingFunction);
+        var selfParameter = pingFunction.getParameter(0);
+        var selfParameterName = selfParameter == null ? null : selfParameter.name();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("&\"Hero_Node\"", sourceLiteral.sourceText()),
+                () -> assertEquals("Hero_Node", literalInsn.value()),
+                () -> assertNotEquals(sourceLiteral.sourceText(), literalInsn.value()),
+                () -> assertEquals("seq_0", pingFunction.getEntryBlockId()),
+                () -> assertEquals(2, pingFunction.getBasicBlockCount()),
+                () -> assertEquals(1, pingFunction.getParameters().size()),
+                () -> assertInstanceOf(LirParameterDef.class, selfParameter),
+                () -> assertEquals("self", selfParameterName),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class)),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenPublishedStringLiteralLexemeIsMalformed() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_bad_string_lexeme.gd",
+                """
+                        class_name BodyInsnBadStringLexeme
+                        extends RefCounted
+                        
+                        func ping() -> String:
+                            return "ok"
+                        """,
+                Map.of("BodyInsnBadStringLexeme", "RuntimeBodyInsnBadStringLexeme"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnBadStringLexeme",
+                "ping"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalLiteralItem = requireSingleValueProducerItem(originalGraph, OpaqueExprValueItem.class);
+        var entryNode = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                originalGraph.requireNode(originalGraph.entryNodeId())
+        );
+        var stopNode = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                originalGraph.requireNode(entryNode.nextId())
+        );
+        var mutatedLiteralItem = new OpaqueExprValueItem(
+                new LiteralExpression("string", "\"unterminated", SYNTHETIC_RANGE),
+                originalLiteralItem.operandValueIds(),
+                originalLiteralItem.resultValueId()
+        );
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalLiteralItem ? mutatedLiteralItem : item)
+                .toList();
+        var mutatedGraph = new FrontendCfgGraph(
+                originalGraph.entryNodeId(),
+                Map.of(
+                        entryNode.id(),
+                        new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId()),
+                        stopNode.id(),
+                        stopNode
+                )
+        );
+        var publishedType = originalContext.analysisData().expressionTypes().get(originalLiteralItem.expression());
+        assertNotNull(publishedType);
+        originalContext.analysisData().expressionTypes().put(mutatedLiteralItem.expression(), publishedType);
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(mutatedGraph);
+
+        var exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertEquals("Invalid GDScript string lexeme: \"unterminated", exception.getMessage());
+    }
+
+    @Test
     void runLowersCallPropertyInitializerIntoExecutableInitFunction() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_call.gd",
@@ -3301,6 +3515,31 @@ class FrontendLoweringBodyInsnPassTest {
         }
         assertEquals(1, matches.size(), "Expected exactly one ReturnInsn terminator");
         return matches.getFirst();
+    }
+
+    private static @NotNull LiteralExpression findLiteralExpression(
+            @NotNull Node root,
+            @NotNull String sourceText
+    ) {
+        var matches = new ArrayList<LiteralExpression>();
+        collectMatchingLiteralExpressions(root, sourceText, matches);
+        return matches.stream()
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("LiteralExpression not found: " + sourceText));
+    }
+
+    private static void collectMatchingLiteralExpressions(
+            @NotNull Node node,
+            @NotNull String sourceText,
+            @NotNull List<LiteralExpression> matches
+    ) {
+        if (node instanceof LiteralExpression literalExpression
+                && literalExpression.sourceText().equals(sourceText)) {
+            matches.add(literalExpression);
+        }
+        for (var child : node.getChildren()) {
+            collectMatchingLiteralExpressions(child, sourceText, matches);
+        }
     }
 
     private static @NotNull String onlyVariableOperandId(@NotNull List<LirInstruction.Operand> operands) {
