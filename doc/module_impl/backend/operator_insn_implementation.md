@@ -186,7 +186,7 @@
 5. `Variant -> Variant` 必须构造拷贝写回，避免浅拷贝 + 临时销毁导致悬挂。
 6. `Variant -> 非 Variant` 的类型检查规则：
    - builtin：要求 `GDExtensionVariantType` 精确匹配（`gdcc_check_variant_type_builtin`）；
-   - Object：先做精确类名匹配，再按目标类型类别允许子类匹配（engine / gdcc，`gdcc_check_variant_type_object`）。
+   - Object：expected class name 继续使用注册时的 canonical class name；exact match 始终通过，且 engine / gdcc object 都允许通过 `gdcc_check_variant_type_object(..., true)` 走 subclass-compatible fallback。
 
 ### 5.3 evaluator helper（缓存）
 

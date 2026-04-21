@@ -190,8 +190,8 @@
 这层的验收口径不是“hint string 正确”或“注册名正确”本身，而是：
 
 - runtime compare 使用的 expected class name 与实际注册名一致
-- typed container guard 与 `Variant -> Object` check 分别覆盖 exact-match 路径
-- engine object 的 subclass-match 逻辑保持原样，不因 gdcc inner canonical 改写而漂移
+- typed container guard 继续覆盖 exact-match 路径；`Variant -> Object` check 同时覆盖 exact-match 与 subclass-compatible 路径
+- engine / GDCC object 的 subclass-match 逻辑都应与 ClassDB 继承关系保持一致，不因 gdcc inner canonical 改写而漂移
 
 #### C4. Dormant / 预留面
 
@@ -539,7 +539,7 @@
 - runtime compare 面：
   - typed array guard 的 expected class name 与实际注册名一致
   - typed dictionary guard 的 expected class name 与实际注册名一致
-  - `gdcc_check_variant_type_object(...)` 的 expected class name 与实际注册名一致
+- `gdcc_check_variant_type_object(...)` 的 expected class name 与实际注册名一致，并继续允许 object runtime subclass fallback
 - dormant / 预留面：
   - `BoundMetadata.classNameExpr` 继续保持空值合同，不被顺手改成 canonical
 - engine-only 非目标面：
@@ -550,7 +550,7 @@
 
 - [x] 4.1 重验收注册身份面：注册名、bind owner class、instance attach 继续共用同一 canonical `__sub__` 名字
 - [x] 4.2 重验收 outward metadata 面：typed array / typed dictionary object leaf hint 继续直接输出 canonical `__sub__`
-- [x] 4.3 重验收 runtime compare 面：typed container guard 与 `gdcc_check_variant_type_object(...)` 继续直接比较 canonical `__sub__`
+- [x] 4.3 重验收 runtime compare 面：typed container guard 继续 exact compare canonical `__sub__`，`gdcc_check_variant_type_object(...)` 则继续使用 canonical expected class name 并保留 subclass-compatible fallback
 - [x] 4.4 重验收 dormant / engine-only 面：`BoundMetadata.classNameExpr` 继续保持空值合同，native construct / engine lookup 不回归
 
 阶段 4 执行同步（2026-04-21，已完成）：
@@ -589,15 +589,15 @@
     - `get_typed_class_name()` / `get_typed_value_class_name()` 会继续返回 canonical `Outer__sub__Inner` 风格的 `__sub__` 名字
     - method 参数/返回与 property get/set 的 runtime guard 都继续按 exact canonical class name 锁定行为，没有回落到 source-facing inner name
   - `OperatorInsnGen` 已补注释，明确：
-    - GDCC object 只做 exact canonical match
-    - engine/native object 继续保留 subclass-compatible fallback
-  - `COperatorInsnGenTest` 已新增 GDCC inner canonical 哨兵，确认 `Variant -> Object` type check 对 `RuntimeOuter__sub__Worker` 不会生成 engine-only subclass fallback
+    - `Variant -> Object` runtime compare 对 engine/native 与 GDCC object 都继续使用 canonical expected class name
+    - exact-match 仍然通过，同时统一保留 subclass-compatible fallback
+  - `COperatorInsnGenTest` 已重基线 GDCC object 哨兵，确认 `Variant -> Object` type check 对 `RuntimeOuter__sub__Shared` 会生成 canonical expected class name + subclass-compatible helper path，而不是旧的 GDCC exact-only 分支
 - 4.4 已完成：
   - dormant / 预留面：
     - `BoundMetadata.classNameExpr` 的空值合同已被新的 typed-container inner-canonical 哨兵重新锚定
   - engine-only 非目标面：
     - `CCodegenTest` 的注册身份面哨兵同步确认 inner class create-instance 仍然构造最近 native ancestor `RefCounted`
-    - `COperatorInsnGenTest` 中既有 engine object subtype test 继续通过，说明 engine-only subclass fallback 没有被 GDCC inner canonical 路线误伤
+    - `COperatorInsnGenTest` 中既有 engine object subtype test 继续通过，说明统一的 object subclass-compatible helper path 没有被 GDCC inner canonical 路线误伤
   - 阶段 4 范围内未新增 `renderGodotFacingClassName(...)` 或等价 alias helper
 - 4.2/4.3/4.4 已跑测试：
   - `CGenHelperTest`
@@ -728,7 +728,7 @@
    - typed dictionary guard
    - `Variant -> Object` runtime type check
    - 预期：expected class name 与实际注册名一致
-   - 预期：engine object subclass-match 行为不回归
+   - 预期：engine / GDCC object subclass-match 行为都不回归
 
 ## 风险与应对
 

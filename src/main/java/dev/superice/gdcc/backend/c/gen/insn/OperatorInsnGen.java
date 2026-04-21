@@ -361,28 +361,20 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                                                              @NotNull CBodyBuilder.TempVar resultVariant,
                                                              @NotNull GdType targetType) {
         if (targetType instanceof GdObjectType objectType) {
-            return renderVariantObjectTypeCheckExpr(bodyBuilder, resultVariant, objectType);
+            return renderVariantObjectTypeCheckExpr(resultVariant, objectType);
         }
         var expectedTypeLiteral = resolver.resolveVariantTypeEnumLiteral(bodyBuilder, targetType);
         return "gdcc_check_variant_type_builtin(&" + resultVariant.name() + ", " + expectedTypeLiteral + ")";
     }
 
-    private @NotNull String renderVariantObjectTypeCheckExpr(@NotNull CBodyBuilder bodyBuilder,
-                                                             @NotNull CBodyBuilder.TempVar resultVariant,
+    private @NotNull String renderVariantObjectTypeCheckExpr(@NotNull CBodyBuilder.TempVar resultVariant,
                                                              @NotNull GdObjectType targetObjectType) {
-        // GDCC objects compare against the exact registered canonical class name.
-        // Only engine/native objects keep the additional subclass-compatible fallback.
+        // Object targets keep using the registered canonical class name as the runtime identity surface.
+        // exact match still passes, and subclass fallback stays enabled for both engine/native and GDCC
+        // objects so Variant -> Object unpack remains aligned with ClassDB inheritance.
         var expectedClassLiteral = CBodyBuilder.renderStaticStringNameLiteral(targetObjectType.getTypeName());
-        var exactMatchExpr = "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
-                expectedClassLiteral + ", false)";
-
-        var isEngineType = targetObjectType.checkEngineType(bodyBuilder.classRegistry());
-        if (isEngineType) {
-            var subclassMatchExpr = "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
-                    expectedClassLiteral + ", true)";
-            return "(" + exactMatchExpr + " || " + subclassMatchExpr + ")";
-        }
-        return exactMatchExpr;
+        return "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
+                expectedClassLiteral + ", true)";
     }
 
     private void emitVariantEvaluateTypeCheckFailureReturn(@NotNull CBodyBuilder bodyBuilder,
