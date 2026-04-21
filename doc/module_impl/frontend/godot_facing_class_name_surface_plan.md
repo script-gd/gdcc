@@ -584,6 +584,10 @@
 - 4.3 已完成：
   - `CGenHelper` 已补注释，明确 typed-container runtime guard 的 object leaf 继续直接比较注册时使用的 exact class name
   - `CGenHelperTest` 已新增 inner canonical guard 哨兵，确认 typed array / typed dictionary 的 expected class name 都是 `GD_STATIC_SN(u8"RuntimeOuter__sub__Worker")`
+  - `test_suite` 已新增 resource-driven runtime 锚点，确认 typed array / typed dictionary 的 GDCC inner canonical object leaf 不再只停留在 helper/codegen 断言：
+    - validation 脚本先从编译产物拿到真实 inner object，再用 Godot 原生 `Array(...)` / `Dictionary(...)` typed constructor 构造 exact container
+    - `get_typed_class_name()` / `get_typed_value_class_name()` 会继续返回 canonical `Outer__sub__Inner` 风格的 `__sub__` 名字
+    - method 参数/返回与 property get/set 的 runtime guard 都继续按 exact canonical class name 锁定行为，没有回落到 source-facing inner name
   - `OperatorInsnGen` 已补注释，明确：
     - GDCC object 只做 exact canonical match
     - engine/native object 继续保留 subclass-compatible fallback
