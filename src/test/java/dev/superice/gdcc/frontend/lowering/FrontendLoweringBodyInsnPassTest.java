@@ -886,6 +886,45 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runAllowsPlainDictionaryStringKeysThroughSharedVariantBoundary() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_plain_dictionary_string_key.gd",
+                """
+                        class_name BodyInsnPlainDictionaryStringKey
+                        extends RefCounted
+                        
+                        func ping(box: Dictionary, key: String) -> int:
+                            box[key] = 7
+                            return int(box[key])
+                        """,
+                Map.of("BodyInsnPlainDictionaryStringKey", "RuntimeBodyInsnPlainDictionaryStringKey"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnPlainDictionaryStringKey",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, countInstructions(instructions, VariantSetKeyedInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetKeyedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantSetIndexedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetIndexedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantSetNamedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class)),
+                () -> assertFalse(instructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(instructions.stream().anyMatch(VariantGetInsn.class::isInstance))
+        );
+    }
+
+    @Test
     void runMaterializesVariantBoundariesForLocalInitializersAndOrdinaryPropertyAssignments() throws Exception {
         var prepared = prepareContext(
                 "body_insn_assignment_variant_boundary.gd",

@@ -14,6 +14,7 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -29,7 +30,7 @@ class FrontendSubscriptSemanticSupportTest {
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayResult.status());
-        assertEquals("int", arrayResult.publishedType().getTypeName());
+        assertEquals("int", Objects.requireNonNull(arrayResult.publishedType()).getTypeName());
 
         var dictionaryResult = support.resolveSubscriptType(
                 new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
@@ -37,7 +38,7 @@ class FrontendSubscriptSemanticSupportTest {
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryResult.status());
-        assertEquals("int", dictionaryResult.publishedType().getTypeName());
+        assertEquals("int", Objects.requireNonNull(dictionaryResult.publishedType()).getTypeName());
 
         var packedResult = support.resolveSubscriptType(
                 GdPackedNumericArrayType.PACKED_INT32_ARRAY,
@@ -45,11 +46,11 @@ class FrontendSubscriptSemanticSupportTest {
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, packedResult.status());
-        assertEquals("int", packedResult.publishedType().getTypeName());
+        assertEquals("int", Objects.requireNonNull(packedResult.publishedType()).getTypeName());
     }
 
     @Test
-    void resolveSubscriptTypePublishesDynamicVariantAndRejectsBadKeys() {
+    void resolveSubscriptTypePublishesDynamicVariantAndAcceptsSharedVariantBoundary() {
         var support = new FrontendSubscriptSemanticSupport(newRegistry(List.of()));
 
         var dynamicResult = support.resolveSubscriptType(
@@ -60,13 +61,34 @@ class FrontendSubscriptSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicResult.status());
         assertEquals(GdVariantType.VARIANT, dynamicResult.publishedType());
 
+        var plainDictionaryResult = support.resolveSubscriptType(
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                List.of(GdStringType.STRING),
+                "subscript expression"
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, plainDictionaryResult.status());
+        assertEquals(GdVariantType.VARIANT, plainDictionaryResult.publishedType());
+
+        var variantKeyResult = support.resolveSubscriptType(
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
+                List.of(GdVariantType.VARIANT),
+                "subscript expression"
+        );
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, variantKeyResult.status());
+        assertEquals("int", Objects.requireNonNull(variantKeyResult.publishedType()).getTypeName());
+    }
+
+    @Test
+    void resolveSubscriptTypeRejectsBadKeysOutsideSharedVariantBoundary() {
+        var support = new FrontendSubscriptSemanticSupport(newRegistry(List.of()));
+
         var badKeyResult = support.resolveSubscriptType(
                 new GdArrayType(GdIntType.INT),
                 List.of(GdStringType.STRING),
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.FAILED, badKeyResult.status());
-        assertTrue(badKeyResult.detailReason().contains("not assignable"));
+        assertTrue(Objects.requireNonNull(badKeyResult.detailReason()).contains("not frontend-boundary compatible"));
     }
 
     @Test
@@ -79,7 +101,7 @@ class FrontendSubscriptSemanticSupportTest {
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, keyedBuiltinResult.status());
-        assertTrue(keyedBuiltinResult.detailReason().contains("keyed access metadata"));
+        assertTrue(Objects.requireNonNull(keyedBuiltinResult.detailReason()).contains("keyed access metadata"));
 
         var scalarResult = support.resolveSubscriptType(
                 GdIntType.INT,
@@ -87,7 +109,7 @@ class FrontendSubscriptSemanticSupportTest {
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.FAILED, scalarResult.status());
-        assertTrue(scalarResult.detailReason().contains("does not support"));
+        assertTrue(Objects.requireNonNull(scalarResult.detailReason()).contains("does not support"));
 
         var multiArgumentResult = support.resolveSubscriptType(
                 new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
@@ -95,7 +117,7 @@ class FrontendSubscriptSemanticSupportTest {
                 "subscript expression"
         );
         assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, multiArgumentResult.status());
-        assertTrue(multiArgumentResult.detailReason().contains("exactly one key/index argument"));
+        assertTrue(Objects.requireNonNull(multiArgumentResult.detailReason()).contains("exactly one key/index argument"));
     }
 
     private static @NotNull ClassRegistry newRegistry(@NotNull List<ExtensionBuiltinClass> builtins) {
