@@ -246,7 +246,7 @@ GDCC 当前的 type-meta 解析仍主要建立在 lexical parent chain 上。结
 - `GDCC_CLASS` unsupported path 当前只会报中性的“unsupported gdcc superclass source”类诊断；在没有额外 provenance 前，不会再把它直接说成 global-script-class
 - member declared type 的 lexical/type-parser 覆盖面仍强于 header `extends`，两者必须被视为不同的产品边界
 - `LirClassDef.superName` 已可以被稳定解释为 canonical 继承目标
-- `$` canonical raw text、path-based `extends`、autoload superclass、global-script-class superclass 以及其他 unresolved raw text 现在都会在 skeleton/header phase 发显式 `sema.class_skeleton` diagnostic，并拒绝进入 accepted canonical contract
+- `__sub__` canonical raw text、path-based `extends`、autoload superclass、global-script-class superclass 以及其他 unresolved raw text 现在都会在 skeleton/header phase 发显式 `sema.class_skeleton` diagnostic，并拒绝进入 accepted canonical contract
 
 后续若要让 header inheritance 与 shared resolver 严格对齐，需要单独设计 super path 的 canonical 绑定产物，而不是默认复用当前字符串字段。
 

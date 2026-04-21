@@ -35,7 +35,7 @@ func inner_scene_interop_ok() -> bool:
     if not child.attach_grandchild():
         return false
 
-    if self.get_node_or_null(child_path).get_class() != "Node":
+    if self.get_node_or_null(child_path).get_class() != "NestedNodeRefcountedSceneSmoke__sub__SceneChild":
         return false
 
     if child.grandchild_class_name() != "Node":

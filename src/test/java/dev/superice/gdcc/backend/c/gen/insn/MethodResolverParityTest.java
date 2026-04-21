@@ -345,22 +345,23 @@ class MethodResolverParityTest {
     @Test
     @DisplayName("backend method adapter should preserve mapped canonical GDCC owner names")
     void backendMethodAdapterShouldPreserveMappedCanonicalGdccOwnerNames() {
-        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentClass = newClass("RuntimeOuter__sub__Shared", "RefCounted");
         var ping = newFunction("ping");
-        ping.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, ping));
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter__sub__Shared"), null, ping));
         entry(ping).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(ping);
 
-        var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");
+        var childClass = newClass("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared");
         var bodyBuilder = newBodyBuilder(
                 emptyApi(),
                 List.of(parentClass, childClass),
+                // Backend dispatch must keep the canonical owner identity even when source-facing inner names remain short.
                 Map.of(
-                        "RuntimeOuter$Shared", "Shared",
-                        "RuntimeOuter$Leaf", "Leaf"
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
                 )
         );
-        var receiverVar = new LirVariable("leaf", new GdObjectType("RuntimeOuter$Leaf"), bodyBuilder.func());
+        var receiverVar = new LirVariable("leaf", new GdObjectType("RuntimeOuter__sub__Leaf"), bodyBuilder.func());
 
         var shared = ScopeMethodResolver.resolveInstanceMethod(
                 bodyBuilder.classRegistry(),
@@ -371,10 +372,44 @@ class MethodResolverParityTest {
         var sharedResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, shared);
 
         var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "ping", List.of());
-        assertEquals("RuntimeOuter$Shared", sharedResolved.method().ownerClass().getName());
+        assertEquals("RuntimeOuter__sub__Shared", sharedResolved.method().ownerClass().getName());
         assertEquals(sharedResolved.method().ownerClass().getName(), backendResolved.ownerClassName());
         assertEquals(BackendMethodCallResolver.DispatchMode.GDCC, backendResolved.mode());
         assertNull(backendResolved.engineMethodBindSpec());
+    }
+
+    @Test
+    @DisplayName("backend method adapter should not treat source-facing inner name as global alias")
+    void backendMethodAdapterShouldNotTreatSourceFacingInnerNameAsGlobalAlias() {
+        var parentClass = newClass("RuntimeOuter__sub__Shared", "RefCounted");
+        var ping = newFunction("ping");
+        ping.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter__sub__Shared"), null, ping));
+        entry(ping).appendInstruction(new ReturnInsn(null));
+        parentClass.addFunction(ping);
+
+        var childClass = newClass("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared");
+        var bodyBuilder = newBodyBuilder(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
+                )
+        );
+        var receiverVar = new LirVariable("leaf", new GdObjectType("Leaf"), bodyBuilder.func());
+
+        var shared = ScopeMethodResolver.resolveInstanceMethod(
+                bodyBuilder.classRegistry(),
+                receiverVar.type(),
+                "ping",
+                List.of()
+        );
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, shared);
+
+        var backendResolved = BackendMethodCallResolver.resolve(bodyBuilder, receiverVar, "ping", List.of());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.RECEIVER_METADATA_UNKNOWN, fallback.reason());
+        assertEquals(BackendMethodCallResolver.DispatchMode.OBJECT_DYNAMIC, backendResolved.mode());
+        assertEquals("Leaf", backendResolved.ownerClassName());
     }
 
     @Test

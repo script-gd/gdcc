@@ -1677,6 +1677,167 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         );
     }
 
+    @Test
+    void lowerFrontendMappedTopLevelInnerClassBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping mapped top-level inner-class frontend integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_mapped_top_level_inner_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name MappedInnerRuntimeProbe
+                extends Node
+                                
+                class Shared extends RefCounted:
+                    func base_value() -> int:
+                        return 9
+                                
+                class Leaf extends Shared:
+                    func read() -> int:
+                        return base_value() + 4
+                                
+                class SceneChild extends Node:
+                    var leaf: Leaf = Leaf.new()
+                                
+                    func leaf_value() -> int:
+                        return leaf.read()
+                                
+                    func leaf_runtime_surface_ok() -> bool:
+                        var runtime_class = leaf.get_class()
+                        var matches_leaf = leaf.is_class("RuntimeMappedInnerRuntimeProbe__sub__Leaf")
+                        var matches_shared = leaf.is_class("RuntimeMappedInnerRuntimeProbe__sub__Shared")
+                        var matches_ref_counted = leaf.is_class("RefCounted")
+                        var leaks_leaf_source_name = leaf.is_class("Leaf")
+                        var leaks_shared_source_name = leaf.is_class("Shared")
+                        return runtime_class == "RuntimeMappedInnerRuntimeProbe__sub__Leaf" and matches_leaf and matches_shared and matches_ref_counted and not leaks_leaf_source_name and not leaks_shared_source_name
+                                
+                func mount_inner_child() -> bool:
+                    var child_name: StringName = StringName("SceneChild")
+                    var child_path: NodePath = NodePath("SceneChild")
+                    var child: SceneChild = SceneChild.new()
+                    var child_slot: Node = child
+                    child_slot.name = child_name
+                    self.add_child(child_slot)
+                    return self.has_node(child_path)
+                                
+                func mounted_child_runtime_surface_ok() -> bool:
+                    var child_path: NodePath = NodePath("SceneChild")
+                    if not self.has_node(child_path):
+                        return false
+                    var mounted_child = self.get_node_or_null(child_path)
+                    var runtime_class = mounted_child.get_class()
+                    var matches_child = mounted_child.is_class("RuntimeMappedInnerRuntimeProbe__sub__SceneChild")
+                    var matches_node = mounted_child.is_class("Node")
+                    var leaks_source_name = mounted_child.is_class("SceneChild")
+                    return runtime_class == "RuntimeMappedInnerRuntimeProbe__sub__SceneChild" and matches_child and matches_node and not leaks_source_name
+                                
+                func mounted_child_leaf_value() -> int:
+                    var child_path: NodePath = NodePath("SceneChild")
+                    var mounted_child = self.get_node_or_null(child_path)
+                    return int(mounted_child.call("leaf_value"))
+                                
+                func mounted_child_leaf_runtime_surface_ok() -> bool:
+                    var child_path: NodePath = NodePath("SceneChild")
+                    var mounted_child = self.get_node_or_null(child_path)
+                    return bool(mounted_child.call("leaf_runtime_surface_ok"))
+                """;
+        var module = parseModule(
+                tempDir.resolve("mapped_inner_runtime_probe.gd"),
+                source,
+                Map.of("MappedInnerRuntimeProbe", "RuntimeMappedInnerRuntimeProbe")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+        assertEquals(4, lowered.getClassDefs().size());
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeMappedInnerRuntimeProbe".equals(classDef.getName())));
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeMappedInnerRuntimeProbe__sub__Shared".equals(classDef.getName())));
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeMappedInnerRuntimeProbe__sub__Leaf".equals(classDef.getName())));
+        assertTrue(lowered.getClassDefs().stream().anyMatch(classDef -> "RuntimeMappedInnerRuntimeProbe__sub__SceneChild".equals(classDef.getName())));
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_mapped_top_level_inner_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeMappedInnerRuntimeProbe\")"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeMappedInnerRuntimeProbe__sub__Shared\")"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeMappedInnerRuntimeProbe__sub__Leaf\")"), entrySource);
+        assertTrue(entrySource.contains("GD_STATIC_SN(u8\"RuntimeMappedInnerRuntimeProbe__sub__SceneChild\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"MappedInnerRuntimeProbe__sub__Shared\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"MappedInnerRuntimeProbe__sub__Leaf\")"), entrySource);
+        assertFalse(entrySource.contains("GD_STATIC_SN(u8\"MappedInnerRuntimeProbe__sub__SceneChild\")"), entrySource);
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "MappedInnerRuntimeProbeNode",
+                        "RuntimeMappedInnerRuntimeProbe",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(mappedTopLevelInnerClassRuntimeTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend mapped inner outer runtime class check passed."),
+                () -> "Mapped outer runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend mapped inner scene mount check passed."),
+                () -> "Mapped inner scene mount check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend mapped inner scene child runtime class check passed."),
+                () -> "Mapped inner scene child runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend mapped inner refcounted runtime class check passed."),
+                () -> "Mapped inner refcounted runtime class check should pass.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend mapped inner outer runtime class check failed."),
+                () -> "Mapped outer runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend mapped inner scene mount check failed."),
+                () -> "Mapped inner scene mount check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend mapped inner scene child runtime class check failed."),
+                () -> "Mapped inner scene child runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend mapped inner refcounted runtime class check failed."),
+                () -> "Mapped inner refcounted runtime class check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
     private static @NotNull FrontendModule parseModule(
             @NotNull Path sourcePath,
             @NotNull String source,
@@ -1902,6 +2063,45 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend complex mapped runtime class check passed.")
                     else:
                         push_error("frontend complex mapped runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String mappedTopLevelInnerClassRuntimeTestScript() {
+        return """
+                extends Node
+                                
+                const TARGET_NODE_NAME = "MappedInnerRuntimeProbeNode"
+                                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                                
+                    var outer_runtime_class = String(target.get_class())
+                    if outer_runtime_class == "RuntimeMappedInnerRuntimeProbe" and target.is_class("RuntimeMappedInnerRuntimeProbe") and not target.is_class("MappedInnerRuntimeProbe"):
+                        print("frontend mapped inner outer runtime class check passed.")
+                    else:
+                        push_error("frontend mapped inner outer runtime class check failed.")
+                                
+                    var mounted = bool(target.call("mount_inner_child"))
+                    if mounted:
+                        print("frontend mapped inner scene mount check passed.")
+                    else:
+                        push_error("frontend mapped inner scene mount check failed.")
+                                
+                    var child_surface_ok = bool(target.call("mounted_child_runtime_surface_ok"))
+                    if child_surface_ok:
+                        print("frontend mapped inner scene child runtime class check passed.")
+                    else:
+                        push_error("frontend mapped inner scene child runtime class check failed.")
+                                
+                    var leaf_value = int(target.call("mounted_child_leaf_value"))
+                    var leaf_surface_ok = bool(target.call("mounted_child_leaf_runtime_surface_ok"))
+                    if leaf_value == 13 and leaf_surface_ok:
+                        print("frontend mapped inner refcounted runtime class check passed.")
+                    else:
+                        push_error("frontend mapped inner refcounted runtime class check failed.")
                 """;
     }
 

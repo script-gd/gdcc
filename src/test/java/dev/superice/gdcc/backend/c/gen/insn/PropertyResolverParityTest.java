@@ -147,36 +147,67 @@ class PropertyResolverParityTest {
     @Test
     @DisplayName("backend object-property adapter should preserve mapped canonical GDCC owner names")
     void objectPropertyAdapterShouldPreserveMappedCanonicalGdccOwnerNames() {
-        var parentClass = new LirClassDef("RuntimeOuter$Shared", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        var parentClass = new LirClassDef("RuntimeOuter__sub__Shared", "", false, false, Map.of(), List.of(), List.of(), List.of());
         parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
 
-        var childClass = new LirClassDef("RuntimeOuter$Leaf", "RuntimeOuter$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var childClass = new LirClassDef("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared", false, false, Map.of(), List.of(), List.of(), List.of());
         var bodyBuilder = newBodyBuilder(
                 emptyApi(),
                 List.of(parentClass, childClass),
+                // The registry can retain source-facing local names, but backend owner dispatch must stay canonical-only.
                 Map.of(
-                        "RuntimeOuter$Shared", "Shared",
-                        "RuntimeOuter$Leaf", "Leaf"
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
                 )
         );
         var shared = ScopePropertyResolver.resolveObjectProperty(
                 bodyBuilder.classRegistry(),
-                new GdObjectType("RuntimeOuter$Leaf"),
+                new GdObjectType("RuntimeOuter__sub__Leaf"),
                 "value"
         );
         var sharedResolved = assertInstanceOf(ScopePropertyResolver.Resolved.class, shared);
 
         var backendLookup = BackendPropertyAccessResolver.resolveObjectProperty(
                 bodyBuilder,
-                new GdObjectType("RuntimeOuter$Leaf"),
+                new GdObjectType("RuntimeOuter__sub__Leaf"),
                 "value",
                 "LOAD_PROPERTY"
         );
 
         assertNotNull(backendLookup);
-        assertEquals("RuntimeOuter$Shared", sharedResolved.property().ownerClass().getName());
+        assertEquals("RuntimeOuter__sub__Shared", sharedResolved.property().ownerClass().getName());
         assertEquals(sharedResolved.property().ownerClass().getName(), backendLookup.ownerClass().getName());
         assertEquals(BackendPropertyAccessResolver.PropertyOwnerDispatchMode.GDCC, backendLookup.ownerDispatchMode());
+    }
+
+    @Test
+    @DisplayName("backend object-property adapter should not treat source-facing inner name as global alias")
+    void objectPropertyAdapterShouldNotTreatSourceFacingInnerNameAsGlobalAlias() {
+        var parentClass = new LirClassDef("RuntimeOuter__sub__Shared", "", false, false, Map.of(), List.of(), List.of(), List.of());
+        parentClass.addProperty(new LirPropertyDef("value", GdStringType.STRING));
+
+        var childClass = new LirClassDef("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var bodyBuilder = newBodyBuilder(
+                emptyApi(),
+                List.of(parentClass, childClass),
+                Map.of(
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
+                )
+        );
+        var shared = ScopePropertyResolver.resolveObjectProperty(
+                bodyBuilder.classRegistry(),
+                new GdObjectType("Leaf"),
+                "value"
+        );
+
+        assertInstanceOf(ScopePropertyResolver.MetadataUnknown.class, shared);
+        assertNull(BackendPropertyAccessResolver.resolveObjectProperty(
+                bodyBuilder,
+                new GdObjectType("Leaf"),
+                "value",
+                "LOAD_PROPERTY"
+        ));
     }
 
     private static CBodyBuilder newBodyBuilder(ExtensionAPI api, List<LirClassDef> gdccClasses) {

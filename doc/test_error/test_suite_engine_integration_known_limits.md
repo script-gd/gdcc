@@ -82,23 +82,28 @@
 - compile-run resource script 不需要再因为“函数体里有注释”而迁移说明文字
 - 若确实需要一个稳定、可执行的 source-level no-op 行，仍应使用真正的 `pass`
 
-## 7. inner GDCC `Node` / `RefCounted` 子类与 engine scene API 的 compile surface 尚未闭环
+## 7. 已修复：inner GDCC `Node` / `RefCounted` 子类已能走通 scene API 正向路径
 
-本轮尝试增加 `scene/nested_node_refcounted_scene.gd`，目标是让 inner `SceneChild extends Node` 真正挂进场景树，并让 inner `SceneWorker extends RefCounted` 参与运行时协作。实测暴露出：
+`scene/nested_node_refcounted_scene.gd` 现在可以稳定覆盖以下组合 surface：
 
-- inner `SceneChild` 目前不能赋给 `Node` typed slot
-- `add_child(...)` / `get_node_or_null(...)` 这类 engine scene API 在这条 inner-class surface 上无法稳定解析
-- 即便退回 `call(...)` 形式，当前 compile surface 也未闭环
+- inner `SceneChild extends Node` 可赋给 `Node` typed slot
+- `add_child(...)` / `get_node_or_null(...)` 这类 engine scene API 可以在这条 inner-class 路径上稳定工作
+- inner `SceneWorker extends RefCounted` 可以作为 `SceneChild` 的对象字段参与同一条 runtime workflow
 
-这说明：
+当前合同需要注意的是：
 
-- inner class 身份模型本身已存在
-- 但 inner GDCC class 与 engine `Node` API 的 assignability / callable route 仍未打通到可用于真场景 resource test 的程度
+- scene-mounted inner GDCC node 的 `get_class()` 不会退回 stock `Node`
+- 它会返回 Godot-facing canonical class name，例如本例中的 `NestedNodeRefcountedSceneSmoke__sub__SceneChild`
+- 因此 test-suite fixture 应以 canonical runtime class name 为锚点，而不是把 inner node 当作 plain engine `Node`
 
 说明：
 
-- 当前真实剩余问题已经收束为 backend 的 Godot-facing class-name strategy，而不是这里只列出的临时 runner 调整步骤。
-- 详细盘点、成因链路与分步骤实施计划已迁移到 `doc/module_impl/frontend/godot_facing_class_name_surface_plan.md`。
+- 真正需要单独验收的仍然是 Godot-facing class-name surface 的分层合同，而不是把所有“会碰到类名的地方”压成一个平面：
+  - 注册身份面
+  - outward metadata 面
+  - runtime compare 面
+  - dormant / 预留面
+- 详细盘点、成因链路、分阶段实施状态统一维护在 `doc/module_impl/frontend/godot_facing_class_name_surface_plan.md`。
 
 ## 8. exact engine route 剩余 resource gap
 

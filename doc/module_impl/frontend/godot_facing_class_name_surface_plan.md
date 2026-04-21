@@ -563,8 +563,13 @@
     - `godot_object_set_instance(...)` 继续使用同一 canonical `__sub__` 名字
     - GDCC 父类注册关系继续写成父类 canonical `RuntimeOuter__sub__Shared`
     - native construct 仍然走最近 native ancestor `RefCounted`，没有把 canonical inner name 误塞回 engine-only construct surface
+  - `FrontendLoweringToCProjectBuilderIntegrationTest` 已新增 mapped-top-level + inner class 的 Godot runtime 锚点，确认：
+    - mapped outer `RuntimeMappedInnerRuntimeProbe` 可作为 scene node 实际挂进 Godot 场景
+    - mounted inner `Node` 的 `get_class()` / `is_class(...)` 会直接暴露 canonical `RuntimeMappedInnerRuntimeProbe__sub__SceneChild`，不会回落到 source-facing `SceneChild`
+    - inner `RefCounted` 继承链的 `get_class()` / `is_class(...)` 会直接使用 canonical `RuntimeMappedInnerRuntimeProbe__sub__Leaf` / `RuntimeMappedInnerRuntimeProbe__sub__Shared`
 - 4.1 已跑测试：
   - `CCodegenTest`
+  - `FrontendLoweringToCProjectBuilderIntegrationTest`
 - 4.2 已完成：
   - `CGenHelper` 已补注释，明确 typed array / typed dictionary outward metadata 会直接透传 engine/GDCC 的注册 class name，包括 canonical inner `Outer__sub__Inner`
   - `CGenHelperTest` 已新增 inner canonical 哨兵，确认：
@@ -593,6 +598,7 @@
   - `CGenHelperTest`
   - `COperatorInsnGenTest`
   - `CCodegenTest`
+  - `FrontendLoweringToCProjectBuilderIntegrationTest`
 
 ### 阶段 5：重基线 backend 内部 C 符号链路与代码生成断言
 
@@ -611,6 +617,21 @@
 - backend 不因 inner canonical 从 `$` 变成 `__sub__` 而引入新的 symbol alias 层
 - 与 engine/native object type 相关的既有行为保持不变
 
+执行状态：
+
+- [x] 5.1 backend canonical-consumer 测试已重基线到 `__sub__`
+  - `CBodyBuilderPhaseCTest` 的 inner-class upcast / fail-fast case 已切到 `Outer__sub__...`
+  - `PropertyResolverParityTest` 与 `MethodResolverParityTest` 的 mapped-canonical owner 断言已切到 `RuntimeOuter__sub__...`
+  - 已新增负向测试，明确 `Leaf` / `Shared` 这类 source-facing inner 名不会被 backend 当成 global alias
+  - 保留 `$self`、`$obj` 这类 C 局部槽位命名不变，避免把非目标 `$` 噪音误计入迁移面
+- [x] 5.2 backend 第 5 阶段哨兵测试已通过
+  - `CGenHelperTest`
+  - `COperatorInsnGenTest`
+  - `CCodegenTest`
+  - `CBodyBuilderPhaseCTest`
+  - `PropertyResolverParityTest`
+  - `MethodResolverParityTest`
+
 ### 阶段 6：测试与文档同步收敛
 
 实施内容：
@@ -628,9 +649,18 @@
 - 事实源文档之间不再互相矛盾
 - 新文档统一表述：
   - inner canonical separator 是 `__sub__`
-  - `__sub__` 是 gdcc 保留序列
-  - downstream 继续 canonical-only
+- `__sub__` 是 gdcc 保留序列
+- downstream 继续 canonical-only
 - 测试名称、断言文本、fixture 注释里不再保留过时的 `$` canonical 结论
+
+执行状态：
+
+- [x] 6.1 事实源文档残留已重新审计
+  - `runtime_name_mapping_implementation.md`、`inner_class_implementation.md`、`superclass_canonical_name_contract.md` 已与 `__sub__` 合同保持一致，无需额外改写
+  - `scope_type_resolver_implementation.md` 中剩余的 ``$ canonical raw text`` 已修正为 ``__sub__ canonical raw text``
+- [x] 6.2 known-limits 文档已收口为 symptom record
+  - `test_suite_engine_integration_known_limits.md` 的第 7 条不再承载历史性替名方案或实施步骤
+  - 文案改为显式指向 `Godot-facing class-name surface` 的分层合同与专项计划文档
 
 ## 最小实施顺序建议
 
