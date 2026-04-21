@@ -486,6 +486,24 @@ class COperatorInsnGenTest {
     }
 
     @Test
+    @DisplayName("variant == Nil should materialize Nil with dedicated nil ctor")
+    void variantEqualNilUsesDedicatedNilVariantCtor() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left", "right_nil"),
+                List.of(
+                        new VariableSpec("left", GdVariantType.VARIANT, false),
+                        new VariableSpec("right_nil", GdNilType.NIL, false),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertTrue(body.contains("godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL"), body);
+        assertTrue(body.contains("godot_new_Variant_nil()"), body);
+        assertFalse(body.contains("godot_new_Variant_with_Nil"), body);
+    }
+
+    @Test
     @DisplayName("variant_evaluate failure should return function default value for non-void function")
     void variantEvaluateFailureReturnsFunctionDefaultValue() {
         var body = generateBody(

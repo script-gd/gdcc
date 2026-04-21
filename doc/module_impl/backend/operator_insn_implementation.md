@@ -4,7 +4,7 @@
 
 - 状态：`Active`
 - 文档类型：`规范 / 事实源`
-- 更新时间：`2026-03-03`
+- 更新时间：`2026-04-21`
 - 适用范围：`backend.c` 中 `UNARY_OP`、`BINARY_OP` 的 C 代码生成与校验
 - 说明：本文件描述“已落地语义与约束”。如与历史文档或旧实现描述冲突，以本文件为准。
 
@@ -100,6 +100,9 @@
    - 对方为 `Object(null)` 时相等；
    - 其余情况不相等。
 4. `Nil` 非比较运算不特化，走默认分流。
+5. 该特化只在左右都不是已发布 `Variant` 时参与 resolver。
+   - 若任一操作数已经是 `Variant`，resolver 仍优先走 `godot_variant_evaluate`。
+   - 此时另一侧的 `Nil` 必须被物化为真实 nil `Variant`，即 `godot_new_Variant_nil()`，而不是伪造 `godot_new_Variant_with_Nil(...)`。
 
 ### 3.7 primitive 快路径（`bool` / `int` / `float`）
 
@@ -127,6 +130,10 @@
 3. `IN`：不参与 primitive 快路径，仅按原顺序 metadata 解析。
 4. `Variant -> Variant` 结果回写：统一构造拷贝写回（`godot_new_Variant_with_Variant`）。
 5. `Variant -> 非 Variant` 结果回写：先做运行时类型检查（`gdcc_check_variant_type_builtin` / `gdcc_check_variant_type_object`），通过后再 `unpack` 到目标类型。
+6. 这与 Godot GDScript analyzer 的一个 compile-time typing shortcut 不同：
+   - Godot 在分析 `x == null` / `x != null` 时，会先把结果类型固定成 `bool`，哪怕 `x` 已是 `Variant`
+   - GDCC 当前一旦操作数已发布为 `Variant`，backend 仍保持统一的 `godot_variant_evaluate` 路径
+   - 两者的运行时语义仍可对齐，前提是 `Nil` 侧确实打包成真实 nil `Variant`
 
 ---
 
@@ -161,9 +168,9 @@
 
 ### 5.1 分流顺序
 
-1. 比较特化（primitive / Object / Nil）。
-2. primitive 快路径（含 `POWER -> pow/pow_int`）。
-3. `binary_op` Variant 路径（统一 `godot_variant_evaluate`）。
+1. `binary_op` 先看 `Variant` 参与：任一操作数为 `Variant` 即走 `godot_variant_evaluate`。
+2. 其余再看比较特化（primitive / Object / Nil）。
+3. primitive 快路径（含 `POWER -> pow/pow_int`）。
 4. 非 Variant builtin evaluator 路径（严格原顺序 metadata）。
 5. 其余 fail-fast。
 
@@ -173,6 +180,7 @@
 2. evaluate 后通过 `callAssign` 写回目标。
 3. 禁止直接把 `r_return` 指向已初始化目标槽位。
 4. 输入侧按需 `pack`；结果侧按目标类型分流：
+   - `Nil -> Variant`：必须使用 dedicated nullary ctor `godot_new_Variant_nil()`；
    - `Variant -> Variant`：构造拷贝写回；
    - `Variant -> 非 Variant`：运行时类型检查通过后 `unpack`。
 5. `Variant -> Variant` 必须构造拷贝写回，避免浅拷贝 + 临时销毁导致悬挂。

@@ -286,13 +286,7 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         }
         var selfVariantTemp = bodyBuilder.newTempVariable("idx_self_variant", GdVariantType.VARIANT);
         bodyBuilder.declareTempVar(selfVariantTemp);
-        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(selfVar.type());
-        bodyBuilder.callAssign(
-                selfVariantTemp,
-                packFunctionName,
-                GdVariantType.VARIANT,
-                List.of(bodyBuilder.valueOfVar(selfVar))
-        );
+        InsnGenSupport.packVariantAssign(bodyBuilder, selfVariantTemp, selfVar);
         return new SelfOperand(
                 selfVariantTemp,
                 selfVariantTemp,

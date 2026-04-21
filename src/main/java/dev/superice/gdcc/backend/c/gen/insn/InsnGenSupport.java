@@ -2,6 +2,7 @@ package dev.superice.gdcc.backend.c.gen.insn;
 
 import dev.superice.gdcc.backend.c.gen.CBodyBuilder;
 import dev.superice.gdcc.lir.LirVariable;
+import dev.superice.gdcc.type.GdNilType;
 import dev.superice.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -13,9 +14,23 @@ import java.util.Objects;
 ///
 /// Centralizes:
 /// - variant operand materialization (pack non-Variant to temporary Variant)
+/// - Nil -> Variant materialization via the dedicated nullary constructor
 /// - argument code rendering with preCode handling and temp-guard validation
 final class InsnGenSupport {
     private InsnGenSupport() {
+    }
+
+    /// `Nil` does not belong to the unary `godot_new_Variant_with_<Type>` family.
+    static void packVariantAssign(@NotNull CBodyBuilder bodyBuilder,
+                                  @NotNull CBodyBuilder.TargetRef target,
+                                  @NotNull LirVariable valueVar) {
+        if (valueVar.type() instanceof GdNilType) {
+            bodyBuilder.callAssign(target, "godot_new_Variant_nil", GdVariantType.VARIANT, List.of());
+            return;
+        }
+
+        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(valueVar.type());
+        bodyBuilder.callAssign(target, packFunctionName, GdVariantType.VARIANT, List.of(bodyBuilder.valueOfVar(valueVar)));
     }
 
     static @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,
@@ -27,13 +42,7 @@ final class InsnGenSupport {
 
         var tempVariant = bodyBuilder.newTempVariable(tempPrefix, GdVariantType.VARIANT);
         bodyBuilder.declareTempVar(tempVariant);
-        var packFunctionName = bodyBuilder.helper().renderPackFunctionName(operandVar.type());
-        bodyBuilder.callAssign(
-                tempVariant,
-                packFunctionName,
-                GdVariantType.VARIANT,
-                List.of(bodyBuilder.valueOfVar(operandVar))
-        );
+        packVariantAssign(bodyBuilder, tempVariant, operandVar);
         return new VariantOperand(tempVariant, tempVariant);
     }
 

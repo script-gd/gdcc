@@ -565,6 +565,7 @@
     - native construct 仍然走最近 native ancestor `RefCounted`，没有把 canonical inner name 误塞回 engine-only construct surface
   - `FrontendLoweringToCProjectBuilderIntegrationTest` 已新增 mapped-top-level + inner class 的 Godot runtime 锚点，确认：
     - mapped outer `RuntimeMappedInnerRuntimeProbe` 可作为 scene node 实际挂进 Godot 场景
+    - scene-mounted inner lookup 现在直接用 `var mounted_child = self.get_node_or_null(child_path); if mounted_child == null:` 作为真引擎锚点，不再只靠 `has_node(...)` 绕过 runtime compare
     - mounted inner `Node` 的 `get_class()` / `is_class(...)` 会直接暴露 canonical `RuntimeMappedInnerRuntimeProbe__sub__SceneChild`，不会回落到 source-facing `SceneChild`
     - inner `RefCounted` 继承链的 `get_class()` / `is_class(...)` 会直接使用 canonical `RuntimeMappedInnerRuntimeProbe__sub__Leaf` / `RuntimeMappedInnerRuntimeProbe__sub__Shared`
 - 4.1 已跑测试：

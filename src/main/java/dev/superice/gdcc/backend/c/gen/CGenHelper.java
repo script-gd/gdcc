@@ -578,7 +578,12 @@ public final class CGenHelper {
         }
     }
 
+    /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.
+    /// `Nil` is excluded because it uses the dedicated nullary `godot_new_Variant_nil()`.
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
+        if (type instanceof GdNilType) {
+            throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
+        }
         if (type instanceof GdObjectType objectType) {
             if (objectType.checkGdccType(context.classRegistry())) {
                 return "gdcc_new_Variant_with_gdcc_Object";

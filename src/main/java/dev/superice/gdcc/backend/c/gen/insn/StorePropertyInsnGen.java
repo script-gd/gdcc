@@ -26,7 +26,6 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var insn = bodyBuilder.getCurrentInsn(this);
         var func = bodyBuilder.func();
-        var helper = bodyBuilder.helper();
 
         var objectVar = func.getVariableById(insn.objectId());
         if (objectVar == null) {
@@ -79,10 +78,9 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                     }
                 }
             } else {
-                var packFunc = helper.renderPackFunctionName(valueVar.type());
                 var tempVariant = bodyBuilder.newTempVariable("variant", GdVariantType.VARIANT);
                 bodyBuilder.declareTempVar(tempVariant);
-                bodyBuilder.callAssign(tempVariant, packFunc, GdVariantType.VARIANT, List.of(bodyBuilder.valueOfVar(valueVar)));
+                InsnGenSupport.packVariantAssign(bodyBuilder, tempVariant, valueVar);
                 bodyBuilder.callVoid(
                         "godot_Object_set",
                         List.of(

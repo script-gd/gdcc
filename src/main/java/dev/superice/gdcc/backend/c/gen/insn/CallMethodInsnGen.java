@@ -183,13 +183,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
 
             var packedVariantTemp = bodyBuilder.newTempVariable(tempPrefix + "_arg_" + (i + 1), GdVariantType.VARIANT);
             bodyBuilder.declareTempVar(packedVariantTemp);
-            var packFunctionName = bodyBuilder.helper().renderPackFunctionName(argVar.type());
-            bodyBuilder.callAssign(
-                    packedVariantTemp,
-                    packFunctionName,
-                    GdVariantType.VARIANT,
-                    List.of(bodyBuilder.valueOfVar(argVar))
-            );
+            InsnGenSupport.packVariantAssign(bodyBuilder, packedVariantTemp, argVar);
             values.add(packedVariantTemp);
             temps.add(packedVariantTemp);
         }

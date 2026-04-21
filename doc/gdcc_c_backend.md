@@ -66,6 +66,9 @@
     - `proven no-alias` overwrite routes copy directly from the current source address into the destination slot
     - `may-alias` overwrite routes stage a stable carrier first, then destroy the old slot, then consume that carrier into the destination slot
     - for backing-field reads, prefer `&($self->field)` over first shallow-copying `self->field` into a temp
+  - `Nil -> Variant` is a dedicated constructor route:
+    - use `godot_new_Variant_nil()`
+    - do not invent `godot_new_Variant_with_Nil(...)`
   - Destroying them using `godot_destroy_<TypeName>(TypeName* value)` is also needed which will decrease the reference count, and actually destroy the underlying C++ object only when the reference count reaches zero.
 - Especially for `Variant` & `Object`gdcc_object_from_godot_object_ptr the copy, construct and destroy function name use `variant` and `object` (lowercase).
 - Some objects that extends `RefCounted` are reference counted, and they need to be retained and released properly.

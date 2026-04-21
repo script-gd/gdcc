@@ -88,6 +88,7 @@
 
 - inner `SceneChild extends Node` 可赋给 `Node` typed slot
 - `add_child(...)` / `get_node_or_null(...)` 这类 engine scene API 可以在这条 inner-class 路径上稳定工作
+- `var mounted_child = self.get_node_or_null(child_path); mounted_child == null` 这条 compiled GDCC source 路径也已恢复稳定
 - inner `SceneWorker extends RefCounted` 可以作为 `SceneChild` 的对象字段参与同一条 runtime workflow
 
 当前合同需要注意的是：
@@ -95,6 +96,7 @@
 - scene-mounted inner GDCC node 的 `get_class()` 不会退回 stock `Node`
 - 它会返回 Godot-facing canonical class name，例如本例中的 `NestedNodeRefcountedSceneSmoke__sub__SceneChild`
 - 因此 test-suite fixture 应以 canonical runtime class name 为锚点，而不是把 inner node 当作 plain engine `Node`
+- 上面这条 `== null` 修复的根因在 backend `Nil -> Variant` 物化，而不是 Godot scene API 本身；引擎侧真实 nil `Variant` 构造函数始终是 `godot_new_Variant_nil()`
 
 说明：
 

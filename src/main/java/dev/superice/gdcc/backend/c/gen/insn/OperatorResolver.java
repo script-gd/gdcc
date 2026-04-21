@@ -83,6 +83,7 @@ public final class OperatorResolver {
         Objects.requireNonNull(leftType);
         Objects.requireNonNull(rightType);
 
+        // Once frontend has published either side as Variant, backend keeps the dynamic evaluator route.
         if (isVariantOperand(leftType, rightType)) {
             return new PathDecision(
                     OperatorPath.VARIANT_EVALUATE,

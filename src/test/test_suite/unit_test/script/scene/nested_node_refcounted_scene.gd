@@ -29,13 +29,14 @@ func inner_scene_interop_ok() -> bool:
     child_slot.name = child_name
     self.add_child(child)
 
-    if not self.has_node(child_path):
+    var mounted_child = self.get_node_or_null(child_path)
+    if mounted_child == null:
         return false
 
     if not child.attach_grandchild():
         return false
 
-    if self.get_node_or_null(child_path).get_class() != "NestedNodeRefcountedSceneSmoke__sub__SceneChild":
+    if mounted_child.get_class() != "NestedNodeRefcountedSceneSmoke__sub__SceneChild":
         return false
 
     if child.grandchild_class_name() != "Node":

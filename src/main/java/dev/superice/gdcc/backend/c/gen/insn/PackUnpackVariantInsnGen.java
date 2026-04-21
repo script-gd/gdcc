@@ -55,8 +55,7 @@ public final class PackUnpackVariantInsnGen implements CInsnGen<TypeInstruction>
                 throw bodyBuilder.invalidInsn("Value variable ID '" + packVariantInsn.valueId() + "' not found in function");
             }
 
-            var packFunc = helper.renderPackFunctionName(valueVar.type());
-            bodyBuilder.callAssign(target, packFunc, GdVariantType.VARIANT, List.of(bodyBuilder.valueOfVar(valueVar)));
+            InsnGenSupport.packVariantAssign(bodyBuilder, target, valueVar);
             return;
         }
 
