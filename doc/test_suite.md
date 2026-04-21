@@ -172,6 +172,14 @@ To add a new end-to-end unit case:
 6. Use `push_error(...)` for failure paths so Godot output remains diagnosable.
 7. If the case intentionally expects a runtime ABI rejection, add `# gdcc-test:` directives and print the pass marker immediately before the guarded bad call or property set.
 
+### Engine Virtual Observation Cases
+
+When the behavior under test is engine-driven virtual dispatch such as `_ready`, `_process`, or `_physics_process`:
+
+- Let the validation script observe state published by the compiled target instead of calling a helper that simulates the virtual itself.
+- `_process` / `_physics_process` cases may wait for a few `process_frame` / `physics_frame` ticks before checking the observed counters.
+- Do not call `set_process(true)` or `set_physics_process(true)` in either the compiled script or the validation script unless the toggle itself is the behavior under test.
+
 Why `extends Node` is mandatory:
 
 - `GdScriptUnitTestCompileRunner` installs the compiled runtime class as a scene node through `GodotGdextensionTestRunner.SceneNodeSpec`.

@@ -8,7 +8,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中，未实施
+- 状态：第一步已完成，其余步骤未实施
 - 更新时间：2026-04-21
 - 关联文档：
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -126,6 +126,24 @@
 - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdScriptUnitTestCompileRunnerTest`
 - 如需保留现有 `_ready` 真引擎锚点，再跑：
   - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CProjectBuilderIntegrationTest`
+
+### 当前实施状态（2026-04-21）
+
+- [x] 已新增三组 resource pair：
+  - `src/test/test_suite/unit_test/script/runtime/virtual/ready_called_once.gd`
+  - `src/test/test_suite/unit_test/script/runtime/virtual/process_called_and_delta_valid.gd`
+  - `src/test/test_suite/unit_test/script/runtime/virtual/physics_process_called_and_delta_valid.gd`
+  - 以及对应 `validation/runtime/virtual/` 脚本
+- [x] 已把三条新路径加入 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`
+- [x] 已新增 focused test：
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
+  - 该测试同时锚定正向 compile-run 入口与负向 fixture 约束
+- [x] 已确认默认 `DEFAULT_QUIT_AFTER_FRAMES = 10` 足以稳定覆盖 `_process` / `_physics_process`
+- [x] 已完成 targeted test run：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdScriptEngineVirtualOverrideRuntimeTest`
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdScriptUnitTestCompileRunnerTest`
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests CProjectBuilderIntegrationTest`
+- [x] 本轮未引入 `quit_after_frames` 指令；默认 runner 合同已满足当前三条 virtual 用例
 
 ---
 

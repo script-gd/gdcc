@@ -118,6 +118,19 @@
   - 这条 coverage 继续由 focused tests 锚定，例如：
     - `src/test/java/dev/superice/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
 
+## 9. 已修复：engine virtual runtime anchors 已补齐
+
+- `test_suite` 现已拥有三条真实 Godot runtime 锚点：
+  - `src/test/test_suite/unit_test/script/runtime/virtual/ready_called_once.gd`
+  - `src/test/test_suite/unit_test/script/runtime/virtual/process_called_and_delta_valid.gd`
+  - `src/test/test_suite/unit_test/script/runtime/virtual/physics_process_called_and_delta_valid.gd`
+- 对应 validation script 统一通过观测计数器与 `delta` 来验收引擎驱动结果，而不是主动模拟 virtual 调用。
+- `_process` / `_physics_process` validation 当前通过等待少量 `process_frame` / `physics_frame` 完成验证。
+- 本轮实测中，`GodotGdextensionTestRunner.DEFAULT_QUIT_AFTER_FRAMES = 10` 已足够稳定覆盖这三条用例，因此没有新增 `quit_after_frames` runner 指令。
+- 当前回归锚点包括：
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
+  - `src/test/java/dev/superice/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
+
 ## 2. `test_suite` 当前只能把 `Node` 根脚本挂进场景树
 
 事实来源：
