@@ -46,11 +46,13 @@ class CGenHelperTest {
 
         var gdccBase = new LirClassDef("MyBase", "RefCounted");
         var gdccChild = new LirClassDef("MyChild", "MyBase");
+        var gdccInner = new LirClassDef("RuntimeOuter__sub__Worker", "MyBase");
         classRegistry.addGdccClass(gdccBase);
         classRegistry.addGdccClass(gdccChild);
+        classRegistry.addGdccClass(gdccInner);
 
         var context = new CodegenContext(projectInfo, classRegistry);
-        helper = new CGenHelper(context, List.of(gdccBase, gdccChild));
+        helper = new CGenHelper(context, List.of(gdccBase, gdccChild, gdccInner));
 
         function = new LirFunctionDef("test");
     }
@@ -340,6 +342,28 @@ class CGenHelperTest {
         assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", gdccMetadata.hintEnumLiteral());
         assertEquals("GD_STATIC_S(u8\"MyChild\")", gdccMetadata.hintStringExpr());
         assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", gdccMetadata.usageExpr());
+    }
+
+    @Test
+    @DisplayName("renderBoundMetadata should keep inner canonical object leaves verbatim while leaving dormant class slot empty")
+    void renderBoundMetadataShouldKeepInnerCanonicalObjectLeavesVerbatimWhileLeavingDormantClassSlotEmpty() {
+        var typedArrayMetadata = helper.renderBoundMetadata(
+                new GdArrayType(new GdObjectType("RuntimeOuter__sub__Worker")),
+                "godot_PROPERTY_USAGE_DEFAULT",
+                "property"
+        );
+        var typedDictionaryMetadata = helper.renderBoundMetadata(
+                new GdDictionaryType(new GdObjectType("RuntimeOuter__sub__Worker"), GdVariantType.VARIANT),
+                "godot_PROPERTY_USAGE_NO_EDITOR",
+                "property"
+        );
+
+        assertEquals("godot_PROPERTY_HINT_ARRAY_TYPE", typedArrayMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"RuntimeOuter__sub__Worker\")", typedArrayMetadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"\")", typedArrayMetadata.classNameExpr());
+        assertEquals("godot_PROPERTY_HINT_DICTIONARY_TYPE", typedDictionaryMetadata.hintEnumLiteral());
+        assertEquals("GD_STATIC_S(u8\"RuntimeOuter__sub__Worker;Variant\")", typedDictionaryMetadata.hintStringExpr());
+        assertEquals("GD_STATIC_SN(u8\"\")", typedDictionaryMetadata.classNameExpr());
     }
 
     @Test
@@ -670,5 +694,23 @@ class CGenHelperTest {
         );
 
         assertTrue(ex.getMessage().contains("Unknown typed-dictionary guard side"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("typed container guard helpers should expose inner canonical class names verbatim")
+    void typedContainerGuardHelpersShouldExposeInnerCanonicalClassNamesVerbatim() {
+        var typedArray = new GdArrayType(new GdObjectType("RuntimeOuter__sub__Worker"));
+        var typedDictionary = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("RuntimeOuter__sub__Worker"));
+
+        assertTrue(helper.isTypedArrayGuardObjectLeaf(typedArray));
+        assertEquals(
+                "GD_STATIC_SN(u8\"RuntimeOuter__sub__Worker\")",
+                helper.renderTypedArrayGuardClassNameExpr(typedArray)
+        );
+        assertTrue(helper.isTypedDictionaryGuardObjectLeaf(typedDictionary, "value"));
+        assertEquals(
+                "GD_STATIC_SN(u8\"RuntimeOuter__sub__Worker\")",
+                helper.renderTypedDictionaryGuardClassNameExpr(typedDictionary, "value")
+        );
     }
 }

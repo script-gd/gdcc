@@ -691,6 +691,8 @@ public final class CGenHelper {
     ///   hint string whenever either side is stricter than `Variant`
     /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
     ///   `hint_string`, not in the top-level property info class slot
+    /// - GDCC inner classes keep flowing through these metadata surfaces as their canonical
+    ///   `Outer__sub__Inner` names; backend must not invent a second Godot-facing alias here
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr) {
         return renderBoundMetadata(type, baseUsageExpr, "bound slot");
@@ -844,6 +846,8 @@ public final class CGenHelper {
 
     /// Typed array and typed dictionary share the same runtime leaf triple shape even though
     /// their outward hint grammars and template blocks stay intentionally separate.
+    /// Object leaves keep using the exact engine/GDCC class name that registration published,
+    /// including canonical GDCC inner names like `Outer__sub__Inner`.
     private @NotNull TypedContainerRuntimeLeaf renderTypedContainerRuntimeLeaf(@NotNull GdType type,
                                                                                @NotNull String useSite,
                                                                                @NotNull String containerKind,

@@ -370,6 +370,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
     private @NotNull String renderVariantObjectTypeCheckExpr(@NotNull CBodyBuilder bodyBuilder,
                                                              @NotNull CBodyBuilder.TempVar resultVariant,
                                                              @NotNull GdObjectType targetObjectType) {
+        // GDCC objects compare against the exact registered canonical class name.
+        // Only engine/native objects keep the additional subclass-compatible fallback.
         var expectedClassLiteral = CBodyBuilder.renderStaticStringNameLiteral(targetObjectType.getTypeName());
         var exactMatchExpr = "gdcc_check_variant_type_object(&" + resultVariant.name() + ", " +
                 expectedClassLiteral + ", false)";

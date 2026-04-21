@@ -32,7 +32,9 @@ void initialize(void*, const GDExtensionInitializationLevel p_level) {
         godot_print(&msg_variant, NULL, 0);
         godot_Variant_destroy(&msg_variant);
     }
-    // Register user classes
+    <#-- Register user classes.-->
+    <#-- Registration, bind-owner lookup, and instance attach intentionally all reuse the-->
+    <#-- same canonical class name directly. There is no backend-only Godot alias layer here.-->
     <#list module.classDefs as classDef>
     {
         GDExtensionClassCreationInfo5 creation_info = {};
@@ -65,7 +67,8 @@ void deinitialize(void*, GDExtensionInitializationLevel p_level) {
     gdcc_s_registry_destroy_all();
 }
 
-// Bind Methods for each class
+<#-- Bind Methods for each class.-->
+<#-- The local `class_name` slot remains the canonical owner identity that registration used above.-->
 <#list module.classDefs as classDef>
 void ${classDef.name}_class_bind_methods() {
     godot_StringName* class_name = GD_STATIC_SN(u8"${classDef.name}");

@@ -1550,6 +1550,88 @@ public class CCodegenTest {
     }
 
     @Test
+    public void keepsInnerCanonicalIdentityConsistentAcrossRegistrationBindAndAttachSurfaces() throws Exception {
+        var sharedClass = new LirClassDef("RuntimeOuter__sub__Shared", "RefCounted");
+        var sharedRead = new LirFunctionDef("read");
+        sharedRead.setReturnType(GdIntType.INT);
+        sharedRead.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter__sub__Shared"), null, sharedRead));
+        var sharedEntry = new LirBasicBlock("entry");
+        var sharedResult = sharedRead.createAndAddTmpVariable(GdIntType.INT);
+        sharedEntry.appendInstruction(new LiteralIntInsn(sharedResult.id(), 7));
+        sharedEntry.setTerminator(new ReturnInsn(sharedResult.id()));
+        sharedRead.addBasicBlock(sharedEntry);
+        sharedRead.setEntryBlockId("entry");
+        sharedClass.addFunction(sharedRead);
+
+        var leafClass = new LirClassDef("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared");
+        var leafPing = new LirFunctionDef("ping");
+        leafPing.setReturnType(GdVoidType.VOID);
+        leafPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter__sub__Leaf"), null, leafPing));
+        var leafEntry = new LirBasicBlock("entry");
+        leafEntry.setTerminator(new ReturnInsn(null));
+        leafPing.addBasicBlock(leafEntry);
+        leafPing.setEntryBlockId("entry");
+        leafClass.addFunction(leafPing);
+
+        var module = new LirModule("inner_registration_surface_module", List.of(sharedClass, leafClass));
+
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+
+        var cCode = generatedFileText(files, "entry.c");
+        var sharedBindBody = resolveFunctionBodyByPrefix(cCode, "void RuntimeOuter__sub__Shared_class_bind_methods");
+        var leafBindBody = resolveFunctionBodyByPrefix(cCode, "void RuntimeOuter__sub__Leaf_class_bind_methods");
+        var sharedCreateInstanceBody = resolveCreateInstanceBody(cCode, "RuntimeOuter__sub__Shared");
+        var leafCreateInstanceBody = resolveCreateInstanceBody(cCode, "RuntimeOuter__sub__Leaf");
+
+        var sharedRegisterPattern = Pattern.compile(
+                "godot_classdb_register_extension_class5\\(class_library,\\s*" +
+                        "GD_STATIC_SN\\(u8\\\"RuntimeOuter__sub__Shared\\\"\\), GD_STATIC_SN\\(u8\\\"RefCounted\\\"\\),\\s*&creation_info\\);",
+                Pattern.DOTALL
+        );
+        var leafRegisterPattern = Pattern.compile(
+                "godot_classdb_register_extension_class5\\(class_library,\\s*" +
+                        "GD_STATIC_SN\\(u8\\\"RuntimeOuter__sub__Leaf\\\"\\), GD_STATIC_SN\\(u8\\\"RuntimeOuter__sub__Shared\\\"\\),\\s*&creation_info\\);",
+                Pattern.DOTALL
+        );
+        assertTrue(sharedRegisterPattern.matcher(cCode).find(), cCode);
+        assertTrue(leafRegisterPattern.matcher(cCode).find(), cCode);
+
+        assertContainsAll(
+                sharedBindBody,
+                "godot_StringName* class_name = GD_STATIC_SN(u8\"RuntimeOuter__sub__Shared\");",
+                "RuntimeOuter__sub__Shared_read"
+        );
+        assertContainsAll(
+                leafBindBody,
+                "godot_StringName* class_name = GD_STATIC_SN(u8\"RuntimeOuter__sub__Leaf\");",
+                "RuntimeOuter__sub__Leaf_ping"
+        );
+
+        assertContainsAll(
+                sharedCreateInstanceBody,
+                "godot_object_set_instance(obj, GD_STATIC_SN(u8\"RuntimeOuter__sub__Shared\"), self);"
+        );
+        assertContainsAll(
+                leafCreateInstanceBody,
+                "godot_object_set_instance(obj, GD_STATIC_SN(u8\"RuntimeOuter__sub__Leaf\"), self);"
+        );
+        assertFalse(sharedCreateInstanceBody.contains("GD_STATIC_SN(u8\"Shared\")"), sharedCreateInstanceBody);
+        assertFalse(leafCreateInstanceBody.contains("GD_STATIC_SN(u8\"Leaf\")"), leafCreateInstanceBody);
+
+        // Engine-facing native construction still follows the nearest native ancestor rather than the canonical leaf name.
+        assertEquals("RefCounted", resolveConstructTarget(cCode, "RuntimeOuter__sub__Shared"));
+        assertEquals("RefCounted", resolveConstructTarget(cCode, "RuntimeOuter__sub__Leaf"));
+    }
+
+    @Test
     public void rendersOperatorEvaluatorHelpersAndUsesHelperCallsInFunctionBody() {
         var workerClass = new LirClassDef("Worker", "RefCounted");
         var func = new LirFunctionDef("operator_eval");

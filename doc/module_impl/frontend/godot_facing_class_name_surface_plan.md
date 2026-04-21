@@ -546,6 +546,54 @@
   - native construct / engine method bind lookup 行为不变
 - 不新增 `renderGodotFacingClassName(...)` 之类新的 alias 层
 
+执行状态：
+
+- [x] 4.1 重验收注册身份面：注册名、bind owner class、instance attach 继续共用同一 canonical `__sub__` 名字
+- [x] 4.2 重验收 outward metadata 面：typed array / typed dictionary object leaf hint 继续直接输出 canonical `__sub__`
+- [x] 4.3 重验收 runtime compare 面：typed container guard 与 `gdcc_check_variant_type_object(...)` 继续直接比较 canonical `__sub__`
+- [x] 4.4 重验收 dormant / engine-only 面：`BoundMetadata.classNameExpr` 继续保持空值合同，native construct / engine lookup 不回归
+
+阶段 4 执行同步（2026-04-21，已完成）：
+
+- 4.1 已完成：
+  - `entry.c.ftl` 已补注释，明确 class registration、bind owner class 与 instance attach 三处 Godot-facing surface 都直接复用同一 canonical class name，不引入 backend-only alias
+  - `CCodegenTest` 已新增 mapped-top-level + inner canonical 哨兵，确认：
+    - `godot_classdb_register_extension_class5(...)` 对 inner class 直接注册 `RuntimeOuter__sub__Shared` / `RuntimeOuter__sub__Leaf`
+    - `class_bind_methods()` 中的 owner `class_name` 继续使用同一 canonical `__sub__` 名字
+    - `godot_object_set_instance(...)` 继续使用同一 canonical `__sub__` 名字
+    - GDCC 父类注册关系继续写成父类 canonical `RuntimeOuter__sub__Shared`
+    - native construct 仍然走最近 native ancestor `RefCounted`，没有把 canonical inner name 误塞回 engine-only construct surface
+- 4.1 已跑测试：
+  - `CCodegenTest`
+- 4.2 已完成：
+  - `CGenHelper` 已补注释，明确 typed array / typed dictionary outward metadata 会直接透传 engine/GDCC 的注册 class name，包括 canonical inner `Outer__sub__Inner`
+  - `CGenHelperTest` 已新增 inner canonical 哨兵，确认：
+    - typed array hint string 会直接输出 `RuntimeOuter__sub__Worker`
+    - typed dictionary hint string 会直接输出 `RuntimeOuter__sub__Worker;Variant`
+    - `BoundMetadata.classNameExpr` 在这些 typed-container surface 上继续保持空 `GD_STATIC_SN(u8"")`，没有把 dormant class slot 顺手填成 canonical
+  - 同批次保留并复用既有 negative/回归锚点，继续约束：
+    - engine leaf 仍输出 `Node`
+    - generic `Array` / `Dictionary` 仍保持未 typed 的 outward metadata
+    - nested typed leaf 继续按既有合同 fail-fast
+- 4.3 已完成：
+  - `CGenHelper` 已补注释，明确 typed-container runtime guard 的 object leaf 继续直接比较注册时使用的 exact class name
+  - `CGenHelperTest` 已新增 inner canonical guard 哨兵，确认 typed array / typed dictionary 的 expected class name 都是 `GD_STATIC_SN(u8"RuntimeOuter__sub__Worker")`
+  - `OperatorInsnGen` 已补注释，明确：
+    - GDCC object 只做 exact canonical match
+    - engine/native object 继续保留 subclass-compatible fallback
+  - `COperatorInsnGenTest` 已新增 GDCC inner canonical 哨兵，确认 `Variant -> Object` type check 对 `RuntimeOuter__sub__Worker` 不会生成 engine-only subclass fallback
+- 4.4 已完成：
+  - dormant / 预留面：
+    - `BoundMetadata.classNameExpr` 的空值合同已被新的 typed-container inner-canonical 哨兵重新锚定
+  - engine-only 非目标面：
+    - `CCodegenTest` 的注册身份面哨兵同步确认 inner class create-instance 仍然构造最近 native ancestor `RefCounted`
+    - `COperatorInsnGenTest` 中既有 engine object subtype test 继续通过，说明 engine-only subclass fallback 没有被 GDCC inner canonical 路线误伤
+  - 阶段 4 范围内未新增 `renderGodotFacingClassName(...)` 或等价 alias helper
+- 4.2/4.3/4.4 已跑测试：
+  - `CGenHelperTest`
+  - `COperatorInsnGenTest`
+  - `CCodegenTest`
+
 ### 阶段 5：重基线 backend 内部 C 符号链路与代码生成断言
 
 实施内容：
