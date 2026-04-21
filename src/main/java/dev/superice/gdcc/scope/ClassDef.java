@@ -10,7 +10,7 @@ public interface ClassDef {
     /// Returns the canonical class name used by shared registry/backends.
     ///
     /// For top-level classes this still matches the source declaration name. Inner classes may use
-    /// a canonicalized form such as `Outer$Inner`, while source-facing aliases are carried by
+    /// a canonicalized form such as `Outer__sub__Inner`, while source-facing aliases are carried by
     /// frontend relation/type-meta objects instead of `ClassDef` itself.
     @NotNull String getName();
 

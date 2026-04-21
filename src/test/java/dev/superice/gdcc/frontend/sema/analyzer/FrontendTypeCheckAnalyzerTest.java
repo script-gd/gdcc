@@ -286,7 +286,7 @@ class FrontendTypeCheckAnalyzerTest {
                 analyzer.events().get(2),
                 "property",
                 "inner_field",
-                "TypeCheckContextProbe$Inner",
+                "TypeCheckContextProbe__sub__Inner",
                 null,
                 ResolveRestriction.staticContext(),
                 true,

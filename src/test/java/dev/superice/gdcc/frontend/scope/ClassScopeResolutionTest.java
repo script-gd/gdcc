@@ -112,14 +112,14 @@ public class ClassScopeResolutionTest {
         var registry = FrontendScopeTestSupport.createRegistry();
         var parentPing = FrontendScopeTestSupport.createFunction("ping", GdStringType.STRING);
         var parentClass = FrontendScopeTestSupport.createClass(
-                "Outer$Shared",
+                "Outer__sub__Shared",
                 "Object",
                 java.util.List.of(FrontendScopeTestSupport.createProperty("hp", GdIntType.INT)),
                 java.util.List.of(parentPing)
         );
         var childClass = FrontendScopeTestSupport.createClass(
-                "Outer$Leaf",
-                "Outer$Shared",
+                "Outer__sub__Leaf",
+                "Outer__sub__Shared",
                 java.util.List.of(),
                 java.util.List.of()
         );
@@ -142,13 +142,13 @@ public class ClassScopeResolutionTest {
         var registry = FrontendScopeTestSupport.createRegistry();
         var parentPing = FrontendScopeTestSupport.createFunction("ping", GdStringType.STRING);
         var parentClass = FrontendScopeTestSupport.createClass(
-                "Outer$Shared",
+                "Outer__sub__Shared",
                 "Object",
                 java.util.List.of(FrontendScopeTestSupport.createProperty("hp", GdIntType.INT)),
                 java.util.List.of(parentPing)
         );
         var childClass = FrontendScopeTestSupport.createClass(
-                "Outer$BrokenLeaf",
+                "Outer__sub__BrokenLeaf",
                 "Shared",
                 java.util.List.of(),
                 java.util.List.of()
@@ -160,7 +160,10 @@ public class ClassScopeResolutionTest {
 
         assertThrows(ScopeLookupException.class, () -> classScope.resolveValueHere("hp"));
         assertThrows(ScopeLookupException.class, () -> classScope.resolveFunctionsHere("ping"));
-        assertEquals(new GdObjectType("Outer$Shared"), registry.resolveTypeMeta("Outer$Shared").instanceType());
+        assertEquals(
+                new GdObjectType("Outer__sub__Shared"),
+                registry.resolveTypeMeta("Outer__sub__Shared").instanceType()
+        );
     }
 
     @Test

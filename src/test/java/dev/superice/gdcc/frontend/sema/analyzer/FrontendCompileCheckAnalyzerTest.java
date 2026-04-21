@@ -465,8 +465,8 @@ class FrontendCompileCheckAnalyzerTest {
                         FrontendCallResolutionKind.CONSTRUCTOR,
                         FrontendReceiverKind.TYPE_META,
                         ScopeOwnerKind.GDCC,
-                        new GdObjectType("CompileCheckParameterizedCtorRegression$Worker"),
-                        new GdObjectType("CompileCheckParameterizedCtorRegression$Worker"),
+                        new GdObjectType("CompileCheckParameterizedCtorRegression__sub__Worker"),
+                        new GdObjectType("CompileCheckParameterizedCtorRegression__sub__Worker"),
                         List.of(GdVariantType.VARIANT),
                         new Object()
                 )

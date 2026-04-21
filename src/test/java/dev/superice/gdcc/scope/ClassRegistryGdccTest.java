@@ -55,48 +55,48 @@ public class ClassRegistryGdccTest {
     void addAndRemoveInnerGdccClassKeepsSourceNameOverrideSideTableInSync() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);
-        var innerClassDef = new LirClassDef("Outer$Inner", "Object");
+        var innerClassDef = new LirClassDef("Outer__sub__Inner", "Object");
 
         registry.addGdccClass(innerClassDef, "Inner");
-        assertTrue(registry.isGdccClass("Outer$Inner"));
-        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer$Inner"));
+        assertTrue(registry.isGdccClass("Outer__sub__Inner"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer__sub__Inner"));
         assertNull(registry.resolveTypeMeta("Inner"));
 
-        var innerMeta = registry.resolveTypeMeta("Outer$Inner");
+        var innerMeta = registry.resolveTypeMeta("Outer__sub__Inner");
         assertNotNull(innerMeta);
-        assertEquals("Outer$Inner", innerMeta.canonicalName());
+        assertEquals("Outer__sub__Inner", innerMeta.canonicalName());
         assertEquals("Inner", innerMeta.sourceName());
-        assertEquals("Outer$Inner", innerMeta.displayName());
+        assertEquals("Outer__sub__Inner", innerMeta.displayName());
 
-        var removed = registry.removeGdccClass("Outer$Inner");
+        var removed = registry.removeGdccClass("Outer__sub__Inner");
         assertSame(innerClassDef, removed);
-        assertNull(registry.findGdccClassSourceNameOverride("Outer$Inner"));
-        assertNull(registry.findGdccClass("Outer$Inner"));
-        assertNull(registry.resolveTypeMeta("Outer$Inner"));
+        assertNull(registry.findGdccClassSourceNameOverride("Outer__sub__Inner"));
+        assertNull(registry.findGdccClass("Outer__sub__Inner"));
+        assertNull(registry.resolveTypeMeta("Outer__sub__Inner"));
     }
 
     @Test
     void canonicalInnerSuperclassNamesDriveAssignabilityAndRefCountedStatus() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var registry = new ClassRegistry(api);
-        var parentClass = new LirClassDef("Outer$Shared", "RefCounted");
-        var childClass = new LirClassDef("Outer$Leaf", "Outer$Shared");
-        var brokenChildClass = new LirClassDef("Outer$BrokenLeaf", "Shared");
+        var parentClass = new LirClassDef("Outer__sub__Shared", "RefCounted");
+        var childClass = new LirClassDef("Outer__sub__Leaf", "Outer__sub__Shared");
+        var brokenChildClass = new LirClassDef("Outer__sub__BrokenLeaf", "Shared");
 
         registry.addGdccClass(parentClass, "Shared");
         registry.addGdccClass(childClass, "Leaf");
         registry.addGdccClass(brokenChildClass, "BrokenLeaf");
 
         assertTrue(registry.checkAssignable(
-                new GdObjectType("Outer$Leaf"),
-                new GdObjectType("Outer$Shared")
+                new GdObjectType("Outer__sub__Leaf"),
+                new GdObjectType("Outer__sub__Shared")
         ));
         assertFalse(registry.checkAssignable(
-                new GdObjectType("Outer$BrokenLeaf"),
-                new GdObjectType("Outer$Shared")
+                new GdObjectType("Outer__sub__BrokenLeaf"),
+                new GdObjectType("Outer__sub__Shared")
         ));
-        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("Outer$Leaf")));
-        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("Outer$BrokenLeaf")));
+        assertEquals(RefCountedStatus.YES, registry.getRefCountedStatus(new GdObjectType("Outer__sub__Leaf")));
+        assertEquals(RefCountedStatus.NO, registry.getRefCountedStatus(new GdObjectType("Outer__sub__BrokenLeaf")));
     }
 
     @Test

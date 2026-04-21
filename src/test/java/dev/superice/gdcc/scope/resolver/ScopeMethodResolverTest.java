@@ -110,70 +110,70 @@ class ScopeMethodResolverTest {
     @Test
     @DisplayName("shared method resolver should follow canonical inner-class superclass names")
     void resolveInstanceMethodShouldFollowCanonicalInnerSuperclassNames() {
-        var parentClass = newClass("Outer$Shared", "RefCounted");
+        var parentClass = newClass("Outer__sub__Shared", "RefCounted");
         var parentPing = newFunction("ping");
-        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer__sub__Shared"), null, parentPing));
         entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
-        var childClass = newClass("Outer$Leaf", "Outer$Shared");
+        var childClass = newClass("Outer__sub__Leaf", "Outer__sub__Shared");
         var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
         var result = ScopeMethodResolver.resolveInstanceMethod(
                 registry,
-                new GdObjectType("Outer$Leaf"),
+                new GdObjectType("Outer__sub__Leaf"),
                 "ping",
                 List.of()
         );
 
         var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
-        assertEquals("Outer$Shared", resolved.method().ownerClass().getName());
+        assertEquals("Outer__sub__Shared", resolved.method().ownerClass().getName());
         assertEquals(1, resolved.method().ownerDistance());
     }
 
     @Test
     @DisplayName("shared method resolver should follow mapped canonical inner-class superclass names")
     void resolveInstanceMethodShouldFollowMappedCanonicalInnerSuperclassNames() {
-        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentClass = newClass("RuntimeOuter__sub__Shared", "RefCounted");
         var parentPing = newFunction("ping");
-        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter__sub__Shared"), null, parentPing));
         entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
-        var childClass = newClass("RuntimeOuter$Leaf", "RuntimeOuter$Shared");
+        var childClass = newClass("RuntimeOuter__sub__Leaf", "RuntimeOuter__sub__Shared");
         var registry = newRegistry(
                 emptyApi(),
                 List.of(parentClass, childClass),
                 Map.of(
-                        "RuntimeOuter$Shared", "Shared",
-                        "RuntimeOuter$Leaf", "Leaf"
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
                 )
         );
         var result = ScopeMethodResolver.resolveInstanceMethod(
                 registry,
-                new GdObjectType("RuntimeOuter$Leaf"),
+                new GdObjectType("RuntimeOuter__sub__Leaf"),
                 "ping",
                 List.of()
         );
 
         var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
-        assertEquals("RuntimeOuter$Shared", resolved.method().ownerClass().getName());
+        assertEquals("RuntimeOuter__sub__Shared", resolved.method().ownerClass().getName());
         assertEquals(1, resolved.method().ownerDistance());
     }
 
     @Test
     @DisplayName("shared method resolver should surface stale source-styled inner superclass names as method-missing fallback")
     void resolveInstanceMethodShouldExposeSourceStyledInnerSuperclassRegression() {
-        var parentClass = newClass("Outer$Shared", "RefCounted");
+        var parentClass = newClass("Outer__sub__Shared", "RefCounted");
         var parentPing = newFunction("ping");
-        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer$Shared"), null, parentPing));
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("Outer__sub__Shared"), null, parentPing));
         entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
-        var childClass = newClass("Outer$Leaf", "Shared");
+        var childClass = newClass("Outer__sub__Leaf", "Shared");
         var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
         var result = ScopeMethodResolver.resolveInstanceMethod(
                 registry,
-                new GdObjectType("Outer$Leaf"),
+                new GdObjectType("Outer__sub__Leaf"),
                 "ping",
                 List.of()
         );
@@ -186,24 +186,24 @@ class ScopeMethodResolverTest {
     @Test
     @DisplayName("shared method resolver should surface stale source-styled mapped inner superclass names as method-missing fallback")
     void resolveInstanceMethodShouldExposeSourceStyledMappedInnerSuperclassRegression() {
-        var parentClass = newClass("RuntimeOuter$Shared", "RefCounted");
+        var parentClass = newClass("RuntimeOuter__sub__Shared", "RefCounted");
         var parentPing = newFunction("ping");
-        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter$Shared"), null, parentPing));
+        parentPing.addParameter(new LirParameterDef("self", new GdObjectType("RuntimeOuter__sub__Shared"), null, parentPing));
         entry(parentPing).appendInstruction(new ReturnInsn(null));
         parentClass.addFunction(parentPing);
 
-        var childClass = newClass("RuntimeOuter$Leaf", "Shared");
+        var childClass = newClass("RuntimeOuter__sub__Leaf", "Shared");
         var registry = newRegistry(
                 emptyApi(),
                 List.of(parentClass, childClass),
                 Map.of(
-                        "RuntimeOuter$Shared", "Shared",
-                        "RuntimeOuter$Leaf", "Leaf"
+                        "RuntimeOuter__sub__Shared", "Shared",
+                        "RuntimeOuter__sub__Leaf", "Leaf"
                 )
         );
         var result = ScopeMethodResolver.resolveInstanceMethod(
                 registry,
-                new GdObjectType("RuntimeOuter$Leaf"),
+                new GdObjectType("RuntimeOuter__sub__Leaf"),
                 "ping",
                 List.of()
         );

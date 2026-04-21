@@ -47,7 +47,7 @@ class FrontendModuleSkeletonTest {
         var ownerClass = new LirClassDef("Owner", "RefCounted");
         registry.addGdccClass(ownerClass);
         var scope = new ClassScope(registry, registry, ownerClass);
-        scope.defineTypeMeta(typeMeta("Owner$MappedWorker", "MappedWorker"));
+        scope.defineTypeMeta(typeMeta("Owner__sub__MappedWorker", "MappedWorker"));
         var moduleSkeleton = moduleSkeleton(Map.of("MappedWorker", "RuntimeWorker"));
 
         var resolvedTypeMeta = moduleSkeleton.resolveSourceFacingTypeMeta(
@@ -56,7 +56,7 @@ class FrontendModuleSkeletonTest {
                 ResolveRestriction.unrestricted()
         ).requireValue();
 
-        assertEquals("Owner$MappedWorker", resolvedTypeMeta.canonicalName());
+        assertEquals("Owner__sub__MappedWorker", resolvedTypeMeta.canonicalName());
         assertEquals("MappedWorker", resolvedTypeMeta.sourceName());
     }
 

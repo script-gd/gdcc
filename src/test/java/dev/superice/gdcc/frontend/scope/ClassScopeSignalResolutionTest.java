@@ -123,14 +123,14 @@ class ClassScopeSignalResolutionTest {
         var registry = FrontendScopeTestSupport.createRegistry();
         var parentSignal = FrontendScopeTestSupport.createSignal("changed", GdStringType.STRING);
         var parentClass = FrontendScopeTestSupport.createClass(
-                "Outer$Shared",
+                "Outer__sub__Shared",
                 "Object",
                 List.of(parentSignal),
                 List.of(),
                 List.of()
         );
         var childClass = FrontendScopeTestSupport.createClass(
-                "Outer$Leaf",
+                "Outer__sub__Leaf",
                 "Shared",
                 List.of(),
                 List.of(),

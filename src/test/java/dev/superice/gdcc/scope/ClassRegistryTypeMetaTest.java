@@ -86,18 +86,18 @@ public class ClassRegistryTypeMetaTest {
     void resolveInnerGdccTypeMetaUsesSourceNameOverrideWithoutCreatingGlobalAlias() throws IOException {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         registry.addGdccClass(new LirClassDef("Outer", "Object"));
-        registry.addGdccClass(new LirClassDef("Outer$Inner", "Object"), "Inner");
+        registry.addGdccClass(new LirClassDef("Outer__sub__Inner", "Object"), "Inner");
 
-        var innerType = registry.resolveTypeMeta("Outer$Inner");
+        var innerType = registry.resolveTypeMeta("Outer__sub__Inner");
         assertNotNull(innerType);
         assertEquals(ScopeTypeMetaKind.GDCC_CLASS, innerType.kind());
-        assertEquals("Outer$Inner", innerType.canonicalName());
+        assertEquals("Outer__sub__Inner", innerType.canonicalName());
         assertEquals("Inner", innerType.sourceName());
-        assertEquals("Outer$Inner", innerType.displayName());
-        assertEquals("Outer$Inner", innerType.instanceType().getTypeName());
+        assertEquals("Outer__sub__Inner", innerType.displayName());
+        assertEquals("Outer__sub__Inner", innerType.instanceType().getTypeName());
 
         assertNull(registry.findGdccClassSourceNameOverride("Outer"));
-        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer$Inner"));
+        assertEquals("Inner", registry.findGdccClassSourceNameOverride("Outer__sub__Inner"));
         assertNull(registry.resolveTypeMeta("Inner"));
     }
 

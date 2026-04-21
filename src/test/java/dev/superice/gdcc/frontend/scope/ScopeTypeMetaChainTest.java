@@ -45,7 +45,7 @@ public class ScopeTypeMetaChainTest {
 
         var classScope = new ClassScope(registry, registry, classDef);
         var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
-                "Hero$InnerType",
+                "Hero__sub__InnerType",
                 "InnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -61,7 +61,7 @@ public class ScopeTypeMetaChainTest {
         assertEquals(BlockScopeKind.BLOCK_STATEMENT, block.kind());
         assertEquals(outerTypeMeta, callable.resolveTypeMeta("InnerType"));
         assertEquals(outerTypeMeta, block.resolveTypeMeta("InnerType"));
-        assertEquals("Hero$InnerType", callable.resolveTypeMeta("InnerType").canonicalName());
+        assertEquals("Hero__sub__InnerType", callable.resolveTypeMeta("InnerType").canonicalName());
 
         var localAlias = FrontendScopeTestSupport.createTypeMeta(
                 "LocalAlias",
@@ -82,7 +82,7 @@ public class ScopeTypeMetaChainTest {
 
         var classScope = new ClassScope(registry, registry, classDef);
         var outerTypeMeta = FrontendScopeTestSupport.createTypeMeta(
-                "Hero$InnerType",
+                "Hero__sub__InnerType",
                 "InnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -138,7 +138,7 @@ public class ScopeTypeMetaChainTest {
 
         var classScope = new ClassScope(registry, registry, classDef);
         classScope.defineTypeMeta(FrontendScopeTestSupport.createTypeMeta(
-                "Hero$InnerType",
+                "Hero__sub__InnerType",
                 "InnerType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -148,7 +148,7 @@ public class ScopeTypeMetaChainTest {
 
         assertThrows(IllegalArgumentException.class, () -> classScope.defineTypeMeta(
                 FrontendScopeTestSupport.createTypeMeta(
-                        "Hero$ConflictingInnerType",
+                        "Hero__sub__ConflictingInnerType",
                         "InnerType",
                         GdIntType.INT,
                         ScopeTypeMetaKind.GLOBAL_ENUM,

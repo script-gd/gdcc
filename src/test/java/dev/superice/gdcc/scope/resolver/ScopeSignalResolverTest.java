@@ -65,14 +65,14 @@ class ScopeSignalResolverTest {
     @DisplayName("shared object signal resolver should follow canonical inner-class superclass names")
     void resolveObjectSignalShouldFollowCanonicalInnerSuperclassNames() {
         var parentSignal = createSignal("changed", GdStringType.STRING);
-        var parentClass = new LirClassDef("Outer$Shared", "RefCounted", false, false, Map.of(), List.of(parentSignal), List.of(), List.of());
-        var childClass = new LirClassDef("Outer$Leaf", "Outer$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var parentClass = new LirClassDef("Outer__sub__Shared", "RefCounted", false, false, Map.of(), List.of(parentSignal), List.of(), List.of());
+        var childClass = new LirClassDef("Outer__sub__Leaf", "Outer__sub__Shared", false, false, Map.of(), List.of(), List.of(), List.of());
 
         var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
-        var result = ScopeSignalResolver.resolveObjectSignal(registry, new GdObjectType("Outer$Leaf"), "changed");
+        var result = ScopeSignalResolver.resolveObjectSignal(registry, new GdObjectType("Outer__sub__Leaf"), "changed");
 
         var resolved = assertInstanceOf(ScopeSignalResolver.Resolved.class, result);
-        assertEquals("Outer$Shared", resolved.signal().ownerClass().getName());
+        assertEquals("Outer__sub__Shared", resolved.signal().ownerClass().getName());
         assertSame(parentSignal, resolved.signal().signal());
     }
 
@@ -146,11 +146,11 @@ class ScopeSignalResolverTest {
     @DisplayName("shared object signal resolver should reject stale source-styled inner superclass names")
     void resolveObjectSignalShouldRejectSourceStyledInnerSuperclassNames() {
         var parentSignal = createSignal("changed", GdStringType.STRING);
-        var parentClass = new LirClassDef("Outer$Shared", "RefCounted", false, false, Map.of(), List.of(parentSignal), List.of(), List.of());
-        var childClass = new LirClassDef("Outer$Leaf", "Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        var parentClass = new LirClassDef("Outer__sub__Shared", "RefCounted", false, false, Map.of(), List.of(parentSignal), List.of(), List.of());
+        var childClass = new LirClassDef("Outer__sub__Leaf", "Shared", false, false, Map.of(), List.of(), List.of(), List.of());
 
         var registry = newRegistry(emptyApi(), List.of(parentClass, childClass));
-        var result = ScopeSignalResolver.resolveObjectSignal(registry, new GdObjectType("Outer$Leaf"), "changed");
+        var result = ScopeSignalResolver.resolveObjectSignal(registry, new GdObjectType("Outer__sub__Leaf"), "changed");
 
         var failed = assertInstanceOf(ScopeSignalResolver.Failed.class, result);
         assertEquals(ScopeSignalResolver.FailureKind.MISSING_SUPER_METADATA, failed.kind());

@@ -33,7 +33,7 @@ public class FrontendNestedInnerClassScopeIsolationTest {
 
         var outerScope = new ClassScope(registry, registry, outerClass);
         outerScope.defineTypeMeta(FrontendScopeTestSupport.createTypeMeta(
-                "Outer$OuterType",
+                "Outer__sub__OuterType",
                 "OuterType",
                 GdIntType.INT,
                 ScopeTypeMetaKind.GLOBAL_ENUM,
@@ -43,7 +43,7 @@ public class FrontendNestedInnerClassScopeIsolationTest {
 
         var middleScope = new ClassScope(outerScope, registry, middleClass);
         middleScope.defineTypeMeta(FrontendScopeTestSupport.createTypeMeta(
-                "Outer$Middle",
+                "Outer__sub__Middle",
                 "MiddleType",
                 GdStringType.STRING,
                 ScopeTypeMetaKind.GDCC_CLASS,
@@ -54,9 +54,9 @@ public class FrontendNestedInnerClassScopeIsolationTest {
         var innerScope = new ClassScope(middleScope, registry, innerClass);
 
         assertEquals("OuterType", innerScope.resolveTypeMeta("OuterType").sourceName());
-        assertEquals("Outer$OuterType", innerScope.resolveTypeMeta("OuterType").canonicalName());
+        assertEquals("Outer__sub__OuterType", innerScope.resolveTypeMeta("OuterType").canonicalName());
         assertEquals("MiddleType", innerScope.resolveTypeMeta("MiddleType").sourceName());
-        assertEquals("Outer$Middle", innerScope.resolveTypeMeta("MiddleType").canonicalName());
+        assertEquals("Outer__sub__Middle", innerScope.resolveTypeMeta("MiddleType").canonicalName());
         assertNull(innerScope.resolveValue("outer_prop"));
         assertNull(innerScope.resolveValue("middle_prop"));
         assertTrue(innerScope.resolveFunctions("outer_call").isEmpty());

@@ -53,7 +53,7 @@ class FrontendChainHeadReceiverSupportTest {
         var literal = new LiteralExpression("string", "\"hi\"", TINY);
 
         context.bodyScope().defineLocal("worker", new GdObjectType("Worker"), workerValue);
-        context.classScope().defineTypeMeta(innerTypeMeta("Hero$Worker", "Worker"));
+        context.classScope().defineTypeMeta(innerTypeMeta("Hero__sub__Worker", "Worker"));
         context.analysisData().symbolBindings().put(workerValue, new FrontendBinding("worker", FrontendBindingKind.LOCAL_VAR, workerValue));
         context.analysisData().symbolBindings().put(workerType, new FrontendBinding("Worker", FrontendBindingKind.TYPE_META, null));
         context.analysisData().scopesByAst().put(workerValue, context.bodyScope());
@@ -71,9 +71,9 @@ class FrontendChainHeadReceiverSupportTest {
         assertNotNull(typeReceiver);
         assertEquals(FrontendChainReductionHelper.Status.RESOLVED, typeReceiver.status());
         assertEquals(FrontendReceiverKind.TYPE_META, typeReceiver.receiverKind());
-        assertEquals(new GdObjectType("Hero$Worker"), typeReceiver.receiverType());
+        assertEquals(new GdObjectType("Hero__sub__Worker"), typeReceiver.receiverType());
         assertEquals("Worker", typeReceiver.receiverTypeMeta().sourceName());
-        assertEquals("Hero$Worker", typeReceiver.receiverTypeMeta().displayName());
+        assertEquals("Hero__sub__Worker", typeReceiver.receiverTypeMeta().displayName());
 
         var literalReceiver = support.resolveHeadReceiver(literal);
         assertNotNull(literalReceiver);
@@ -86,7 +86,7 @@ class FrontendChainHeadReceiverSupportTest {
     void resolveHeadReceiverShouldFailFastWhenTypeMetaResolutionStartsWithoutPublishedModuleSkeleton() throws Exception {
         var context = newTestContext(false);
         var workerType = identifier("Worker");
-        context.classScope().defineTypeMeta(innerTypeMeta("Hero$Worker", "Worker"));
+        context.classScope().defineTypeMeta(innerTypeMeta("Hero__sub__Worker", "Worker"));
         context.analysisData().symbolBindings().put(workerType, new FrontendBinding("Worker", FrontendBindingKind.TYPE_META, null));
         context.analysisData().scopesByAst().put(workerType, context.bodyScope());
 

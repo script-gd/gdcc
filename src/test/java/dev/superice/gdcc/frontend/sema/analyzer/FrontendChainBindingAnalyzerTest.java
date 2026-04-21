@@ -651,7 +651,7 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(FrontendReceiverKind.TYPE_META, resolvedBuild.receiverKind());
         var resolvedBuildType = resolvedBuild.returnType();
         assertNotNull(resolvedBuildType);
-        assertEquals("ResolvedStaticRouteChain$Worker", resolvedBuildType.getTypeName());
+        assertEquals("ResolvedStaticRouteChain__sub__Worker", resolvedBuildType.getTypeName());
 
         var resolvedHandle = analyzed.analysisData().resolvedMembers().get(handleStep);
         assertNotNull(resolvedHandle);
@@ -660,7 +660,7 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(FrontendReceiverKind.INSTANCE, resolvedHandle.receiverKind());
         var resolvedHandleType = resolvedHandle.resultType();
         assertNotNull(resolvedHandleType);
-        assertEquals("ResolvedStaticRouteChain$Handle", resolvedHandleType.getTypeName());
+        assertEquals("ResolvedStaticRouteChain__sub__Handle", resolvedHandleType.getTypeName());
 
         var resolvedStart = analyzed.analysisData().resolvedCalls().get(startStep);
         assertNotNull(resolvedStart);

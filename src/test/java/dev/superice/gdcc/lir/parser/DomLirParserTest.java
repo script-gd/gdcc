@@ -183,7 +183,7 @@ public class DomLirParserTest {
     public void parse_preservesCanonicalSuperclassAttribute() throws Exception {
         var xml = """
                 <ir>
-                  <class_def name="Outer$Leaf" super="Outer$Shared" is_abstract="false" is_tool="false">
+                  <class_def name="Outer__sub__Leaf" super="Outer__sub__Shared" is_abstract="false" is_tool="false">
                     <functions/>
                   </class_def>
                 </ir>
@@ -193,8 +193,9 @@ public class DomLirParserTest {
         var mod = parser.parse(new StringReader(xml));
         var cls = mod.getClassDefs().getFirst();
 
-        assertEquals("Outer$Leaf", cls.getName());
-        assertEquals("Outer$Shared", cls.getSuperName());
+        // Parser should round-trip canonical inner names as opaque class identity, not normalize them back to legacy '$'.
+        assertEquals("Outer__sub__Leaf", cls.getName());
+        assertEquals("Outer__sub__Shared", cls.getSuperName());
     }
 
     @Test

@@ -444,6 +444,68 @@
 - 统一删除实现、注释、测试中把 inner canonical 写死为 `$` 的事实
 - 更新所有“canonical '$' spelling”“Outer$Inner”等断言、fixtures 与文案
 
+执行状态：
+
+- [x] 3.1 重基线 `ClassRegistry` / shared resolver / frontend scope 的 canonical inner-class 断言与注释
+- [x] 3.2 重基线 frontend analyzer / lowering 中消费 canonical class identity 的断言与 fixtures
+- [x] 3.3 重基线 DOM/LIR parser / serializer roundtrip 与相关事实源文档
+
+阶段 3 执行同步（2026-04-21，已完成）：
+
+- 3.1 已完成：
+  - `ClassDef` / `ScopeTypeMeta` 的 canonical 示例注释已改为 `Outer__sub__Inner`
+  - `ClassRegistryGdccTest`、`ClassRegistryTypeMetaTest`、`ScopeTypeResolverTest` 已把 inner canonical 和 mapped-inner canonical 全部重锚到 `__sub__`
+  - `ScopePropertyResolverTest`、`ScopeMethodResolverTest`、`ScopeSignalResolverTest` 继续分别覆盖：
+    - canonical inner superclass happy path
+    - stale source-styled superclass negative path
+    - mapped canonical inner superclass happy / negative path
+  - `ClassScopeResolutionTest`、`ClassScopeSignalResolutionTest`、`FrontendInnerClassScopeIsolationTest`、`FrontendNestedInnerClassScopeIsolationTest`、`ScopeTypeMetaChainTest` 已把 lexical type-meta / inherited member 可见性的 canonical 断言切到 `__sub__`
+- 3.1 已跑测试：
+  - `ClassRegistryGdccTest`
+  - `ClassRegistryTypeMetaTest`
+  - `ScopeTypeResolverTest`
+  - `ScopePropertyResolverTest`
+  - `ScopeMethodResolverTest`
+  - `ScopeSignalResolverTest`
+  - `ClassScopeResolutionTest`
+  - `ClassScopeSignalResolutionTest`
+  - `FrontendInnerClassScopeIsolationTest`
+  - `FrontendNestedInnerClassScopeIsolationTest`
+  - `ScopeTypeMetaChainTest`
+- 3.2 已完成：
+  - `FrontendDeclaredTypeSupportTest`、`FrontendModuleSkeletonTest` 已把 mapped top-level retry 与 lexical-hit 优先级断言重锚到 `__sub__` canonical
+  - `FrontendScopeAnalyzerTest` 已把 nested class scope、materialized inner class 边界与跨单元 nested LIR fixture 的 canonical identity 断言切到 `__sub__`
+  - `FrontendExprTypeAnalyzerTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendChainHeadReceiverSupportTest`、`FrontendCompileCheckAnalyzerTest` 已把 analyzer/support 链路中构造器返回类型、静态路由链、type-meta receiver 与 compile-check ctor regression 的 canonical object type 断言切到 `__sub__`
+  - `FrontendLoweringClassSkeletonPassTest`、`FrontendLoweringPassManagerTest`、`FrontendLoweringFunctionPreparationPassTest` 已把 lowering 产出的 inner class name、context owner canonical 与 DOM/LIR 快照断言切到 `__sub__`
+  - 本批次刻意保留非 canonical `$` surface 不变：
+    - GDScript `$Node`
+    - LIR operand `$0`
+    - synthetic helper function `_default_ping$alias`
+    - 这样做是为了把失败继续约束在 canonical identity 面，避免基线噪音掩盖真实回归
+- 3.2 已跑测试：
+  - `FrontendDeclaredTypeSupportTest`
+  - `FrontendModuleSkeletonTest`
+  - `FrontendScopeAnalyzerTest`
+  - `FrontendExprTypeAnalyzerTest`
+  - `FrontendTypeCheckAnalyzerTest`
+  - `FrontendChainBindingAnalyzerTest`
+  - `FrontendChainHeadReceiverSupportTest`
+  - `FrontendCompileCheckAnalyzerTest`
+  - `FrontendLoweringClassSkeletonPassTest`
+  - `FrontendLoweringPassManagerTest`
+  - `FrontendLoweringFunctionPreparationPassTest`
+- 3.3 已完成：
+  - `DomLirSerializerTest`、`DomLirParserTest` 已把 inner class / superclass roundtrip 锚点改为 `Outer__sub__Leaf` 与 `Outer__sub__Shared`
+  - 两个 roundtrip 测试都补了最小注释，明确它们验证的是“canonical class identity 透明保留”，不是 LIR operand `$` 语法
+  - 对 `doc/module_impl/frontend/**` 和阶段 3 代码面重新扫描后，未再发现把 `$` 当作“当前 canonical inner-class spelling”写死的事实源残留
+  - 剩余 `$` 命中仅属于允许保留的语法/说明面：
+    - GDScript `$Node`
+    - LIR operand `$0`
+    - Java/测试中的非 canonical helper 名
+- 3.3 已跑测试：
+  - `DomLirSerializerTest`
+  - `DomLirParserTest`
+
 验收细则：
 
 - registry 继续只以 canonical 做 gdcc class key

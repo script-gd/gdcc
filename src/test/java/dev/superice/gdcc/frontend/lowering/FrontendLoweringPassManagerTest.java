@@ -134,11 +134,11 @@ class FrontendLoweringPassManagerTest {
         assertNotNull(lowered);
         assertEquals("test_module", lowered.getModuleName());
         assertFalse(diagnostics.hasErrors());
-        assertEquals(List.of("RuntimeOuter", "RuntimeOuter$Inner"), lowered.getClassDefs().stream().map(LirClassDef::getName).toList());
+        assertEquals(List.of("RuntimeOuter", "RuntimeOuter__sub__Inner"), lowered.getClassDefs().stream().map(LirClassDef::getName).toList());
 
         var xml = new DomLirSerializer().serializeToString(lowered);
         assertTrue(xml.contains("name=\"RuntimeOuter\""), xml);
-        assertTrue(xml.contains("name=\"RuntimeOuter$Inner\""), xml);
+        assertTrue(xml.contains("name=\"RuntimeOuter__sub__Inner\""), xml);
         assertTrue(xml.contains("<signal name=\"changed\">"), xml);
         assertTrue(xml.contains("name=\"count\""), xml);
         assertTrue(xml.contains("type=\"int\""), xml);

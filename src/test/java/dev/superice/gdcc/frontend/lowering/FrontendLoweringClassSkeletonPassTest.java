@@ -39,7 +39,7 @@ class FrontendLoweringClassSkeletonPassTest {
         assertEquals("test_module", lirModule.getModuleName());
         assertEquals(moduleSkeleton.moduleName(), lirModule.getModuleName());
         assertEquals(
-                List.of("RuntimeOuter", "RuntimeOuter$Inner", "PlainPeer"),
+                List.of("RuntimeOuter", "RuntimeOuter__sub__Inner", "PlainPeer"),
                 lirModule.getClassDefs().stream().map(LirClassDef::getName).toList()
         );
         assertEquals(
@@ -70,7 +70,7 @@ class FrontendLoweringClassSkeletonPassTest {
 
         assertEquals("RuntimeOuter", mappedTopLevel.getName());
         assertEquals("RefCounted", mappedTopLevel.getSuperName());
-        assertEquals("RuntimeOuter$Inner", inner.getName());
+        assertEquals("RuntimeOuter__sub__Inner", inner.getName());
         assertEquals("RefCounted", inner.getSuperName());
         assertEquals("PlainPeer", plainPeer.getName());
         assertEquals("RefCounted", plainPeer.getSuperName());

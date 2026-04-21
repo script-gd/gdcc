@@ -74,7 +74,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertEquals(0, contexts.stream().filter(context -> context.kind() == FunctionLoweringContext.Kind.PARAMETER_DEFAULT_INIT).count());
 
         var outerClass = requireClass(lirModule, "RuntimePreparationOuter");
-        var innerClass = requireClass(lirModule, "RuntimePreparationOuter$Inner");
+        var innerClass = requireClass(lirModule, "RuntimePreparationOuter__sub__Inner");
         var outerSourceFile = prepared.module().units().getFirst().ast();
         var innerDeclaration = requireStatement(outerSourceFile.statements(), ClassDeclaration.class, ignored -> true);
         var outerConstructor = requireStatement(outerSourceFile.statements(), ConstructorDeclaration.class, ignored -> true);
@@ -149,7 +149,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         var pongContext = requireContext(
                 contexts,
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
-                "RuntimePreparationOuter$Inner",
+                "RuntimePreparationOuter__sub__Inner",
                 "pong"
         );
         assertSame(innerFunction, pongContext.sourceOwner());
@@ -158,7 +158,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         assertSame(requireFunction(innerClass, "pong"), pongContext.targetFunction());
         assertEquals(1, pongContext.targetFunction().getParameterCount());
         assertEquals("self", pongContext.targetFunction().getParameter(0).name());
-        assertEquals("RuntimePreparationOuter$Inner", pongContext.targetFunction().getParameter(0).type().getTypeName());
+        assertEquals("RuntimePreparationOuter__sub__Inner", pongContext.targetFunction().getParameter(0).type().getTypeName());
 
         var outerPropertyContext = requireContext(
                 contexts,
@@ -179,7 +179,7 @@ class FrontendLoweringFunctionPreparationPassTest {
         var innerPropertyContext = requireContext(
                 contexts,
                 FunctionLoweringContext.Kind.PROPERTY_INIT,
-                "RuntimePreparationOuter$Inner",
+                "RuntimePreparationOuter__sub__Inner",
                 "_field_init_label"
         );
         assertSame(innerProperty, innerPropertyContext.sourceOwner());
@@ -465,7 +465,7 @@ class FrontendLoweringFunctionPreparationPassTest {
     void runFailsFastWhenIndexedClassSkeletonIsMissingFromPublishedLirModule() throws Exception {
         var prepared = prepareCompileReadyContext();
         var lirModule = prepared.context().requireLirModule();
-        var innerClass = requireClass(lirModule, "RuntimePreparationOuter$Inner");
+        var innerClass = requireClass(lirModule, "RuntimePreparationOuter__sub__Inner");
         assertTrue(lirModule.getClassDefs().remove(innerClass));
 
         var exception = assertThrows(
@@ -473,7 +473,7 @@ class FrontendLoweringFunctionPreparationPassTest {
                 () -> new FrontendLoweringFunctionPreparationPass().run(prepared.context())
         );
 
-        assertTrue(exception.getMessage().contains("RuntimePreparationOuter$Inner"));
+        assertTrue(exception.getMessage().contains("RuntimePreparationOuter__sub__Inner"));
         assertTrue(exception.getMessage().contains("is not part of the published LIR module"));
     }
 

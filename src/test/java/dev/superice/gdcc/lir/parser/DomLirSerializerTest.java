@@ -67,14 +67,15 @@ public class DomLirSerializerTest {
 
     @Test
     public void serialize_module_preservesCanonicalSuperclassAttribute() throws Exception {
-        var cls = new LirClassDef("Outer$Leaf", "Outer$Shared", false, false, Map.of(), List.of(), List.of(), List.of());
+        // DOM serializer must preserve canonical class identity verbatim, regardless of separator spelling.
+        var cls = new LirClassDef("Outer__sub__Leaf", "Outer__sub__Shared", false, false, Map.of(), List.of(), List.of(), List.of());
         var module = new LirModule("m", List.of(cls));
         var serializer = new DomLirSerializer();
 
         var xml = serializer.serializeToString(module);
 
-        assertTrue(xml.contains("name=\"Outer$Leaf\""), xml);
-        assertTrue(xml.contains("super=\"Outer$Shared\""), xml);
+        assertTrue(xml.contains("name=\"Outer__sub__Leaf\""), xml);
+        assertTrue(xml.contains("super=\"Outer__sub__Shared\""), xml);
     }
 
     @Test

@@ -28,10 +28,10 @@ class ScopeTypeResolverTest {
         var outerClass = new LirClassDef("Outer", "Object");
         registry.addGdccClass(outerClass);
         var outerScope = new ClassScope(registry, registry, outerClass);
-        outerScope.defineTypeMeta(gdccTypeMeta("Outer$SharedType", "SharedType"));
+        outerScope.defineTypeMeta(gdccTypeMeta("Outer__sub__SharedType", "SharedType"));
 
         assertEquals(
-                new GdObjectType("Outer$SharedType"),
+                new GdObjectType("Outer__sub__SharedType"),
                 ScopeTypeResolver.tryResolveDeclaredType(outerScope, "SharedType")
         );
         assertEquals(
@@ -46,20 +46,20 @@ class ScopeTypeResolverTest {
         var outerClass = new LirClassDef("Outer", "Object");
         registry.addGdccClass(outerClass);
         var outerScope = new ClassScope(registry, registry, outerClass);
-        outerScope.defineTypeMeta(gdccTypeMeta("Outer$Inner", "Inner"));
+        outerScope.defineTypeMeta(gdccTypeMeta("Outer__sub__Inner", "Inner"));
 
         var arrayType = assertInstanceOf(
                 GdArrayType.class,
                 ScopeTypeResolver.tryResolveDeclaredType(outerScope, "Array[Inner]")
         );
-        assertEquals(new GdObjectType("Outer$Inner"), arrayType.getValueType());
+        assertEquals(new GdObjectType("Outer__sub__Inner"), arrayType.getValueType());
 
         var dictionaryType = assertInstanceOf(
                 GdDictionaryType.class,
                 ScopeTypeResolver.tryResolveDeclaredType(outerScope, "Dictionary[String, Inner]")
         );
         assertEquals(GdStringType.STRING, dictionaryType.getKeyType());
-        assertEquals(new GdObjectType("Outer$Inner"), dictionaryType.getValueType());
+        assertEquals(new GdObjectType("Outer__sub__Inner"), dictionaryType.getValueType());
     }
 
     @Test

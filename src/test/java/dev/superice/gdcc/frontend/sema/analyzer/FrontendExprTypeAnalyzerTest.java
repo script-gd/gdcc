@@ -703,7 +703,7 @@ class FrontendExprTypeAnalyzerTest {
         var constructorType = analyzed.analysisData().expressionTypes().get(constructorCall);
         assertNotNull(constructorType);
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, constructorType.status());
-        assertEquals("ExprTypeStaticRouteHeads$Worker", constructorType.publishedType().getTypeName());
+        assertEquals("ExprTypeStaticRouteHeads__sub__Worker", constructorType.publishedType().getTypeName());
 
         var builtinLoadType = analyzed.analysisData().expressionTypes().get(builtinLoad);
         assertNotNull(builtinLoadType);

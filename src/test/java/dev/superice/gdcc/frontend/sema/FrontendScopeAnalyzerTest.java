@@ -256,8 +256,8 @@ class FrontendScopeAnalyzerTest {
         var scopesByAst = analyzed.analysisData().scopesByAst();
         var sourceScope = assertInstanceOf(ClassScope.class, scopesByAst.get(sourceFile));
 
-        assertEquals("ScopeTypePublish$Middle", sourceScope.resolveTypeMeta("Middle").canonicalName());
-        assertEquals("ScopeTypePublish$Sibling", sourceScope.resolveTypeMeta("Sibling").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Middle", sourceScope.resolveTypeMeta("Middle").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Sibling", sourceScope.resolveTypeMeta("Sibling").canonicalName());
         assertNull(sourceScope.resolveTypeMeta("Deep"));
 
         var middleDeclaration = findStatement(
@@ -267,7 +267,7 @@ class FrontendScopeAnalyzerTest {
         );
         var middleScope = assertInstanceOf(ClassScope.class, scopesByAst.get(middleDeclaration));
         assertEquals("ScopeTypePublish", middleScope.resolveTypeMeta("ScopeTypePublish").canonicalName());
-        assertEquals("ScopeTypePublish$Middle$Deep", middleScope.resolveTypeMeta("Deep").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Middle__sub__Deep", middleScope.resolveTypeMeta("Deep").canonicalName());
         assertNull(middleScope.resolveValue("outer_prop"));
         assertTrue(middleScope.resolveFunctions("outer_call").isEmpty());
 
@@ -277,7 +277,7 @@ class FrontendScopeAnalyzerTest {
                 functionDeclaration -> functionDeclaration.name().equals("ping")
         );
         var pingScope = assertInstanceOf(CallableScope.class, scopesByAst.get(pingFunction));
-        assertEquals("ScopeTypePublish$Middle$Deep", pingScope.resolveTypeMeta("Deep").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Middle__sub__Deep", pingScope.resolveTypeMeta("Deep").canonicalName());
 
         var localLambdaDeclaration = findStatement(
                 pingFunction.body().statements(),
@@ -286,7 +286,7 @@ class FrontendScopeAnalyzerTest {
         );
         var localLambda = assertInstanceOf(LambdaExpression.class, localLambdaDeclaration.value());
         var lambdaScope = assertInstanceOf(CallableScope.class, scopesByAst.get(localLambda));
-        assertEquals("ScopeTypePublish$Sibling", lambdaScope.resolveTypeMeta("Sibling").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Sibling", lambdaScope.resolveTypeMeta("Sibling").canonicalName());
 
         var deepDeclaration = findStatement(
                 middleDeclaration.body().statements(),
@@ -294,8 +294,8 @@ class FrontendScopeAnalyzerTest {
                 classDeclaration -> classDeclaration.name().equals("Deep")
         );
         var deepScope = assertInstanceOf(ClassScope.class, scopesByAst.get(deepDeclaration));
-        assertEquals("ScopeTypePublish$Middle", deepScope.resolveTypeMeta("Middle").canonicalName());
-        assertEquals("ScopeTypePublish$Sibling", deepScope.resolveTypeMeta("Sibling").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Middle", deepScope.resolveTypeMeta("Middle").canonicalName());
+        assertEquals("ScopeTypePublish__sub__Sibling", deepScope.resolveTypeMeta("Sibling").canonicalName());
         assertNull(deepScope.resolveValue("outer_prop"));
         assertTrue(deepScope.resolveFunctions("outer_call").isEmpty());
     }
@@ -503,7 +503,7 @@ class FrontendScopeAnalyzerTest {
         var innerClass = findStatement(sourceFile.statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Inner"));
         var innerScope = assertInstanceOf(ClassScope.class, scopesByAst.get(innerClass));
         assertSame(sourceScope, innerScope.getParentScope());
-        assertEquals("MaterializedInnerClassBoundary$Inner", innerScope.getCurrentClass().getName());
+        assertEquals("MaterializedInnerClassBoundary__sub__Inner", innerScope.getCurrentClass().getName());
         assertSame(innerScope, scopesByAst.get(innerClass.body()));
         assertNull(innerScope.resolveValue("outer_prop"));
 
@@ -528,7 +528,7 @@ class FrontendScopeAnalyzerTest {
         var deepClass = findStatement(innerClass.body().statements(), ClassDeclaration.class, declaration -> declaration.name().equals("Deep"));
         var deepScope = assertInstanceOf(ClassScope.class, scopesByAst.get(deepClass));
         assertSame(innerScope, deepScope.getParentScope());
-        assertEquals("MaterializedInnerClassBoundary$Inner$Deep", deepScope.getCurrentClass().getName());
+        assertEquals("MaterializedInnerClassBoundary__sub__Inner__sub__Deep", deepScope.getCurrentClass().getName());
         assertSame(deepScope, scopesByAst.get(deepClass.body()));
 
         var deeperFunction = findStatement(deepClass.body().statements(), FunctionDeclaration.class, function -> function.name().equals("deeper"));
@@ -911,9 +911,9 @@ class FrontendScopeAnalyzerTest {
                                                 firstSourceFile,
                                                 outerInner,
                                                 "OuterInner",
-                                                "MultiUnitNestedA$OuterInner",
+                                                "MultiUnitNestedA__sub__OuterInner",
                                                 new FrontendSuperClassRef("RefCounted", "RefCounted"),
-                                                new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA$OuterInner", "RefCounted")
+                                                new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedA__sub__OuterInner", "RefCounted")
                                         ))
                                 ),
                                 new FrontendSourceClassRelation(
@@ -926,9 +926,9 @@ class FrontendScopeAnalyzerTest {
                                                 secondSourceFile,
                                                 secondInner,
                                                 "Inner",
-                                                "MultiUnitNestedB$Inner",
+                                                "MultiUnitNestedB__sub__Inner",
                                                 new FrontendSuperClassRef("RefCounted", "RefCounted"),
-                                                new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB$Inner", "RefCounted")
+                                                new dev.superice.gdcc.lir.LirClassDef("MultiUnitNestedB__sub__Inner", "RefCounted")
                                         ))
                                 )
                         ),

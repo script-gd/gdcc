@@ -146,17 +146,17 @@ class FrontendDeclaredTypeSupportTest {
     @Test
     void resolveTypeOrVariantRemapsMappedTopLevelSourceNameAfterStrictLexicalMiss() throws IOException {
         var diagnostics = new DiagnosticManager();
-        var registry = registryWithGdccClass("Game$Player");
+        var registry = registryWithGdccClass("Game__sub__Player");
 
         var resolvedType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
                 new TypeRef("Player", SYNTHETIC_RANGE),
                 registry,
-                Map.of("Player", "Game$Player"),
+                Map.of("Player", "Game__sub__Player"),
                 SOURCE_PATH,
                 diagnostics
         );
 
-        assertEquals(new GdObjectType("Game$Player"), resolvedType);
+        assertEquals(new GdObjectType("Game__sub__Player"), resolvedType);
         assertTrue(diagnostics.isEmpty());
     }
 

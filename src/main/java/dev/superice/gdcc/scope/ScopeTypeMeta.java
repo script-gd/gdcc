@@ -24,7 +24,7 @@ import java.util.Objects;
 /// Current examples:
 /// - builtin `String` -> `canonicalName == sourceName == "String"`
 /// - engine/gdcc class `Node` -> `canonicalName == sourceName == "Node"`
-/// - inner class `Outer$Inner` exposed locally as `Inner`
+/// - inner class `Outer__sub__Inner` exposed locally as `Inner`
 /// - global enum type -> instance type `GdIntType.INT`, with `pseudoType = true`
 /// - `Array[String]` -> synthesized strict type with no concrete declaration object
 public record ScopeTypeMeta(
