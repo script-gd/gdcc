@@ -10,9 +10,9 @@ import java.util.Objects;
 
 /// Shared frontend class-name contract.
 ///
-/// `__sub__` is a gdcc-owned reserved sequence. We freeze it here before every producer starts
-/// emitting that spelling so source-side guard rails and the later canonical inner-class migration
-/// both read one fact source.
+/// `__sub__` is a gdcc-owned reserved sequence. Source-side guard rails, injected top-level
+/// canonical mapping, and inner canonical derivation all read this one fact so source/canonical
+/// spaces stay disjoint.
 public final class FrontendClassNameContract {
     public static final String INNER_CLASS_CANONICAL_SEPARATOR = "__sub__";
 

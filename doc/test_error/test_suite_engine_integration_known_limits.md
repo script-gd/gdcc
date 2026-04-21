@@ -105,7 +105,7 @@
   - outward metadata 面
   - runtime compare 面
   - dormant / 预留面
-- 详细盘点、成因链路、分阶段实施状态统一维护在 `doc/module_impl/frontend/godot_facing_class_name_surface_plan.md`。
+- 详细盘点与当前冻结合同统一维护在 `doc/module_impl/frontend/gdcc_facing_class_name_contract.md`。
 
 ## 8. exact engine route 剩余 resource gap
 

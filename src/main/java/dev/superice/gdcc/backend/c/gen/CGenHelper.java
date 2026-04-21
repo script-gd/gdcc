@@ -697,7 +697,7 @@ public final class CGenHelper {
     /// - `class_name` stays on the existing empty default here; typed dictionary leaf identity lives in
     ///   `hint_string`, not in the top-level property info class slot
     /// - GDCC inner classes keep flowing through these metadata surfaces as their canonical
-    ///   `Outer__sub__Inner` names; backend must not invent a second Godot-facing alias here
+    ///   `Outer__sub__Inner` names; backend does not introduce a separate Godot-facing alias
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr) {
         return renderBoundMetadata(type, baseUsageExpr, "bound slot");

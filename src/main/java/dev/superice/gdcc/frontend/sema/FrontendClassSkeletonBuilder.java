@@ -629,8 +629,8 @@ public final class FrontendClassSkeletonBuilder {
             @NotNull DiagnosticManager diagnosticManager
     ) {
         Objects.requireNonNull(module, "module must not be null");
-        // Header discovery now receives the frozen module carrier directly so later canonical-name
-        // identity work can read module-level mapping without reopening another parallel API.
+        // Header discovery receives the frozen module carrier directly so the same module-level
+        // mapping remains available while deriving canonical identities and validating headers.
         var units = module.units();
         var sourceUnitHeaders = new ArrayList<MutableSourceUnitHeaders>(units.size());
         var discoveredHeadersInOrder = new ArrayList<MutableClassHeader>();
@@ -728,8 +728,8 @@ public final class FrontendClassSkeletonBuilder {
                 true
         );
         discoveredHeadersInOrder.add(topLevelHeader);
-        // Reserve the future canonical separator at the source boundary first. That keeps
-        // source-space names disjoint before later phases start emitting `__sub__` identities.
+        // Reject the reserved canonical separator at the source boundary so source-space names
+        // stay disjoint from canonical inner identities like `Outer__sub__Inner`.
         if (FrontendClassNameContract.containsReservedSequence(topLevelSourceName)) {
             diagnosticManager.error(
                     "sema.class_skeleton",
