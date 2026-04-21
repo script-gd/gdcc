@@ -58,7 +58,7 @@
 - class constant 的收集、注册、继承可见性与绑定不在 MVP 范围内，整体延后到 MVP 之后再实施。
 - callable scope / block scope 中手动声明或发布的类型别名不在 MVP 范围内；frontend body phase 必须对这类 scope-local `type-meta` 采用 fail-closed 的 deferred / unsupported 处理，而不是把它们当成普通 class-like `TYPE_META` 消费。
 - H1 subscript MVP 只正式支持 container family 的最小 typed contract：`Array[T]`、`Dictionary[K, V]`、packed array family。
-- 上述 container-family subscript 当前故意复用 `ClassRegistry.checkAssignable(...)` 做 key/index 校验；MVP 不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、以及 `Array` / packed array 的 float index 兼容。
+- 上述 container-family subscript 当前统一复用 `FrontendVariantBoundaryCompatibility` 做 key/index typed-boundary 校验；因此 plain `Dictionary`（`Dictionary[Variant, Variant]`）已接受 `String` 等 stable key 写入 `Variant` key slot。MVP 仍不追求复刻 Godot 更宽的 keyed/index 兼容规则，例如 `String` / `StringName` 互通、`int -> float`、以及 `Array` / packed array 的 float index 兼容。
 - builtin instance property access 与 builtin keyed access 必须继续严格区分：`vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 当前属于 compile-ready ordinary property route；`vector["x"]` 仍保持 unsupported。
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。

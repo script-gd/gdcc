@@ -19,8 +19,9 @@ import java.util.Objects;
 /// - keyed builtin metadata outside the container family as explicit `UNSUPPORTED`
 /// - everything else as explicit `FAILED`
 /// Key/index compatibility details are owned by
-/// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`; this helper currently keeps
-/// subscript rules narrower than Godot's wider keyed/index conversion surface on purpose.
+/// `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`; this helper reuses the shared
+/// frontend typed-boundary matrix and still intentionally rejects Godot's wider keyed/index-only
+/// conversions outside that matrix.
 public final class FrontendSubscriptSemanticSupport {
     private final @NotNull ClassRegistry classRegistry;
 
@@ -51,10 +52,14 @@ public final class FrontendSubscriptSemanticSupport {
         if (receiver instanceof GdContainerType containerType) {
             var keyType = containerType.getKeyType();
             var providedKeyType = arguments.getFirst();
-            if (!classRegistry.checkAssignable(providedKeyType, keyType)) {
+            if (!FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                    classRegistry,
+                    providedKeyType,
+                    keyType
+            )) {
                 return FrontendExpressionType.failed(
                         description + " key/index type '" + providedKeyType.getTypeName()
-                                + "' is not assignable to expected '" + keyType.getTypeName()
+                                + "' is not frontend-boundary compatible with expected '" + keyType.getTypeName()
                                 + "' for receiver '" + receiver.getTypeName() + "'"
                 );
             }

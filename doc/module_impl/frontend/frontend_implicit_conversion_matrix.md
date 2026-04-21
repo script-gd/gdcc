@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（Godot 规则已梳理，GDCC 当前支持面已对齐到现有实现）
-- 更新时间：2026-04-14
+- 更新时间：2026-04-21
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/dev/superice/gdcc/frontend/**`
@@ -262,13 +262,19 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - same type
 - `Variant` boundary
 
-### 6.3 subscript key/index 的额外 Godot 兼容
+### 6.3 subscript key/index 的 frontend 基线与剩余 Godot widened conversion
 
-这些不是 `Variant::can_convert_strict(...)` 的 generic assignment rule，而是 Godot keyed/index 路径上的更宽兼容；当前 GDCC frontend 也仍未支持：
+当前 GDCC subscript key/index 已复用 ordinary typed-boundary helper `FrontendVariantBoundaryCompatibility`。这意味着：
+
+- same type / object hierarchy / recursive container assignability 继续按 shared frontend boundary 处理
+- ordinary `Variant` boundary 也已经适用于 subscript key/index
+- 因此 plain `Dictionary`（`Dictionary[Variant, Variant]`）现在接受 `String` 等 stable key 写入 `Variant` key slot；对应 keyed lowering / backend codegen 会继续把 key 物化到真实 `Variant` 调用面
+
+当前仍未支持的，是 Godot keyed/index 路径上的额外 widened compatibility：
 
 | 场景 | Godot | GDCC | 备注 |
 | --- | --- | --- | --- |
-| `String` key 用于 `StringName` keyed access | Y | N | 当前 `FrontendSubscriptSemanticSupport` 仍直接回退 `ClassRegistry.checkAssignable(...)` |
+| `String` key 用于 `StringName` keyed access | Y | N | GDCC subscript 当前只复用 ordinary boundary helper，不单独追加 keyed widened conversion |
 | `float` index 用于 `Array` / packed array | Y | N | 本质上依赖 `float -> int` 兼容 |
 
 ---
@@ -335,6 +341,10 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `FrontendExpressionSemanticSupport.matchesCallableArguments(...)`
   - call-site fixed argument compatibility gate
   - 只能复用 shared helper，不得在 call path 单独放宽 conversion
+- `FrontendSubscriptSemanticSupport.resolveSubscriptType(...)`
+  - subscript key/index 的 public semantic gate
+  - 只能复用 `FrontendVariantBoundaryCompatibility` 提供的 ordinary boundary compatibility
+  - 不得在 subscript path 单独追加 keyed/index widened conversion
 - `FrontendTypeCheckAnalyzer`
   - 只消费已发布稳定类型事实，并通过 shared helper 执行 typed gate
   - 不得在 type-check phase 私自添加平行 conversion 规则

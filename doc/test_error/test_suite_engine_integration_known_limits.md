@@ -55,25 +55,22 @@
 - 正向资源脚本统一改写为 `Array()` / `Dictionary()` 无参构造，再用 `push_back(...)` 和 subscript 逐步填充
 - 这是一条当前 compile surface 的真实边界，后续若 frontend 为 literal lowering 开口，应补专门 regression case
 
-## 4. plain `Dictionary` keyed subscript 当前要求显式 `Variant` key slot
+## 4. 已修复：plain `Dictionary` keyed subscript 不再要求显式 `Variant` key slot
 
-本轮第一次 targeted run 还暴露出 plain `Dictionary` 的 keyed route 现状：
+- shared subscript semantic gate 现在统一复用 `FrontendVariantBoundaryCompatibility`
+- plain `Dictionary`（`Dictionary[Variant, Variant]`）的字符串 key 正向写法已经恢复为：
+  - `scores["alpha"] = 2`
+  - `int(scores["alpha"])`
+- keyed lowering 路由保持不变：plain `Dictionary` + `String` key 继续冻结为 `VariantSetKeyedInsn` / `VariantGetKeyedInsn`，backend codegen 再把 key 物化到真实 `Variant` 调用面
+- test-suite 资源脚本已去掉历史 workaround，不再需要显式 `var alpha_key: Variant = "alpha"`
+- 当前剩余 gap 只在 Godot 更宽的 keyed/index widened conversion，例如 `String` / `StringName` 互通、以及 `Array` / packed array 的 float index
 
-- 直接写 `scores["alpha"] = 2`
-- 直接读 `scores["alpha"]`
+当前回归锚点包括：
 
-当前会在 compile surface 失败，错误形如：
-
-- `subscript assignment target key/index type 'String' is not assignable to expected 'Variant' for receiver 'Dictionary'`
-
-对 test suite 的直接影响：
-
-- 不能把 plain `Dictionary` 的常见字符串 key 用法原样写进正向 compile-run 资源脚本
-
-当前处理结论：
-
-- 正向资源脚本改为显式 `var alpha_key: Variant = "alpha"` 后再做 `scores[alpha_key]`
-- 这是当前实现的可工作 surface，不代表 Godot 原生最自然写法已经完全闭环
+- `src/test/test_suite/unit_test/script/collection/dictionary_mutation_and_lookup.gd`
+- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendSubscriptSemanticSupportTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`
+- `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 的 collection category
 
 ## 5. 已修复：GDScript 可执行 body 中的 `CommentStatement` 不再阻断 CFG builder
 

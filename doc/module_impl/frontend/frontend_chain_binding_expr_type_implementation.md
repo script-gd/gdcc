@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
-- 更新时间：2026-04-14
+- 更新时间：2026-04-21
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -370,7 +370,9 @@
 稳定规则为：
 
 - receiver 为上述 `GdContainerType`
-  - 使用 `ClassRegistry.checkAssignable(...)` 做 strict key/index 校验
+  - key/index compatibility 统一复用 `FrontendVariantBoundaryCompatibility`
+  - 因此 plain `Dictionary`（`Dictionary[Variant, Variant]`）现在接受 stable key 写入 `Variant` key slot
+  - 但不额外支持 Godot keyed/index widened conversion，例如 `String` / `StringName` 互通或 float index
   - 成功后发布 element/value type
 - receiver 为 `Variant`
   - 发布 `DYNAMIC(Variant)`
