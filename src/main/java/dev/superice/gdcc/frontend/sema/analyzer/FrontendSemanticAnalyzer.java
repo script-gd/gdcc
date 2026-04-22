@@ -11,8 +11,8 @@ import java.util.Objects;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework wires eleven shared frontend phases plus one compile-only gate into one
-/// shared `FrontendAnalysisData` carrier:
+/// This analyzer wires eleven shared frontend phases plus one compile-only gate into one shared
+/// `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
 /// - callable-parameter and supported local-variable inventory

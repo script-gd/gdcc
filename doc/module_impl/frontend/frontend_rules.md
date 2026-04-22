@@ -30,6 +30,7 @@
   - 参数个数、参数类型、返回类型必须与 engine virtual 完全一致
   - 错误签名统一发 `sema.virtual_override`
 - `sema.virtual_override` 只负责报错，不得把同一函数 subtree 提前记入 skipped roots；函数体后续的 binding / expr / type-check facts 仍必须继续发布，供 inspection/LSP 和 compile precheck 复用。
+- compile-only 入口不得把已有的 `sema.virtual_override` 重新包装成 `sema.compile_check`；engine virtual override 的错误签名属于 shared semantic declaration error，compile-only 只沿用已有 error 阻断进入 lowering/backend。
 - 普通非-virtual 方法缺失显式类型时，现有 `resolveTypeOrVariant(...) -> Variant` fallback 合同保持不变；只有命中 engine virtual 的 override 路径才额外 fail-closed。
 - `break` / `continue` 的位置合法性属于 shared semantic contract；`FrontendLoopControlFlowAnalyzer` 必须在进入 compile-only gate 前就对非法 loop control 发出 `sema.loop_control_flow`，lowering 中的 loop-frame fail-fast 只能保留为实现不变量保护。
 - `_field_init_`、`_field_getter_`、`_field_setter_` 是 compiler-owned synthetic property helper 前缀；source class member 一旦以这些前缀开头，skeleton phase 必须发出清晰的 `sema.class_skeleton` 并跳过该 member subtree，而不是等到 lowering/backend 再因 helper 名冲突抛异常。
@@ -53,6 +54,7 @@
 
 - 每条新的 frontend 恢复规则都必须同时覆盖 happy path 与 negative path。
 - negative path 至少要锚定：正确 diagnostic category、坏 subtree 被跳过、同一 module 中其他合法 subtree 仍继续工作。
+- engine virtual override 的 compile-fail negative path 应优先锚定到 frontend focused tests，例如 `FrontendVirtualOverrideAnalyzerTest` 与 `FrontendCompileCheckAnalyzerTest`；`test_suite` 只保留 compile / link / run 的正向 runtime 锚点。
 
 ## MVP 支持约定 
 

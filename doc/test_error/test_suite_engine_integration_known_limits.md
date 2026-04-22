@@ -127,6 +127,9 @@
 - 对应 validation script 统一通过观测计数器与 `delta` 来验收引擎驱动结果，而不是主动模拟 virtual 调用。
 - `_process` / `_physics_process` validation 当前通过等待少量 `process_frame` / `physics_frame` 完成验证。
 - 本轮实测中，`GodotGdextensionTestRunner.DEFAULT_QUIT_AFTER_FRAMES = 10` 已足够稳定覆盖这三条用例，因此没有新增 `quit_after_frames` runner 指令。
+- 错误签名 negative path 继续留在 frontend focused tests，而不是回塞进 `test_suite` resource：
+  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
+  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
 - 当前回归锚点包括：
   - `src/test/java/dev/superice/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
   - `src/test/java/dev/superice/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`

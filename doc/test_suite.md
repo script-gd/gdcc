@@ -171,6 +171,7 @@ To add a new end-to-end unit case:
 5. Make the validation script print `__UNIT_TEST_PASS_MARKER__` only on success.
 6. Use `push_error(...)` for failure paths so Godot output remains diagnosable.
 7. If the case intentionally expects a runtime ABI rejection, add `# gdcc-test:` directives and print the pass marker immediately before the guarded bad call or property set.
+8. Keep frontend compile-fail declaration diagnostics, including bad engine virtual override signatures, in focused frontend tests instead of this suite.
 
 ### Engine Virtual Observation Cases
 
@@ -179,6 +180,7 @@ When the behavior under test is engine-driven virtual dispatch such as `_ready`,
 - Let the validation script observe state published by the compiled target instead of calling a helper that simulates the virtual itself.
 - `_process` / `_physics_process` cases may wait for a few `process_frame` / `physics_frame` ticks before checking the observed counters.
 - Do not call `set_process(true)` or `set_physics_process(true)` in either the compiled script or the validation script unless the toggle itself is the behavior under test.
+- These resource cases are positive runtime anchors only; wrong override signatures must stay in frontend-focused tests because they are expected to fail before build/run.
 
 Why `extends Node` is mandatory:
 

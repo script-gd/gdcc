@@ -151,6 +151,43 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileKeepsEngineVirtualOverrideDiagnosticsAsFrontendErrorsWithoutSynthesizingCompileCheckDuplicates()
+            throws Exception {
+        var source = """
+                class_name CompileCheckVirtualOverride
+                extends Node
+                
+                func _process(delta) -> void:
+                    pass
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_virtual_override.gd", source);
+        var sharedOverrideDiagnostics = diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.virtual_override");
+
+        assertTrue(sharedAnalyzed.diagnostics().hasErrors());
+        assertEquals(1, sharedOverrideDiagnostics.size());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(sharedOverrideDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.range() != null
+        ));
+        assertTrue(sharedOverrideDiagnostics.getFirst().message().contains("parameter #1 'delta'"));
+
+        var compiled = analyzeForCompile("compile_check_virtual_override.gd", source);
+        var compiledOverrideDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.virtual_override");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, compiledOverrideDiagnostics.size());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(compiledOverrideDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && diagnostic.range() != null
+        ));
+        assertEquals(sharedOverrideDiagnostics.getFirst().message(), compiledOverrideDiagnostics.getFirst().message());
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
     void analyzeForCompileTreatsVariableInventoryErrorsAsCompileBlockingWithoutSynthesizingCompileCheckDuplicates()
             throws Exception {
         var compiled = analyzeForCompile("compile_check_duplicate_local.gd", """
