@@ -5,6 +5,7 @@ import dev.superice.gdcc.exception.ApiDirectoryNotEmptyException;
 import dev.superice.gdcc.exception.ApiEntryTypeMismatchException;
 import dev.superice.gdcc.exception.ApiLinkCycleException;
 import dev.superice.gdcc.exception.ApiPathNotFoundException;
+import dev.superice.gdcc.frontend.FrontendClassNameContract;
 import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -22,8 +23,8 @@ final class ModuleState {
     private final @NotNull String moduleName;
     private final @NotNull Clock clock;
     private final @NotNull DirectoryNode root;
-    private final @NotNull CompileOptions compileOptions;
-    private final @NotNull Map<String, String> topLevelCanonicalNameMap;
+    private @NotNull CompileOptions compileOptions;
+    private @NotNull Map<String, String> topLevelCanonicalNameMap;
     private final boolean hasLastCompileResult;
 
     ModuleState(@NotNull String moduleId, @NotNull String moduleName, @NotNull Clock clock) {
@@ -159,6 +160,31 @@ final class ModuleState {
 
     synchronized @NotNull VfsEntrySnapshot readEntry(@NotNull VirtualPath path) {
         return snapshotNode(path, resolvePath(path, false, null).node());
+    }
+
+    synchronized @NotNull CompileOptions getCompileOptions() {
+        return compileOptions;
+    }
+
+    /// Compile options are replaced as one immutable snapshot so later compile orchestration can
+    /// freeze exactly one coherent configuration per module.
+    synchronized @NotNull CompileOptions setCompileOptions(@NotNull CompileOptions compileOptions) {
+        this.compileOptions = Objects.requireNonNull(compileOptions, "compileOptions must not be null");
+        return this.compileOptions;
+    }
+
+    synchronized @NotNull Map<String, String> getTopLevelCanonicalNameMap() {
+        return topLevelCanonicalNameMap;
+    }
+
+    /// The API layer deliberately reuses the frontend public contract instead of re-implementing
+    /// reserved-sequence and blank-entry checks under a second set of rules.
+    synchronized @NotNull Map<String, String> setTopLevelCanonicalNameMap(@NotNull Map<String, String> topLevelCanonicalNameMap) {
+        this.topLevelCanonicalNameMap = FrontendClassNameContract.freezeTopLevelCanonicalNameMap(Objects.requireNonNull(
+                topLevelCanonicalNameMap,
+                "topLevelCanonicalNameMap must not be null"
+        ));
+        return this.topLevelCanonicalNameMap;
     }
 
     private @NotNull DirectoryNode requireParentDirectory(@NotNull VirtualPath path, boolean createMissing) {

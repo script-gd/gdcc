@@ -416,6 +416,35 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.4 第四步：接入编译参数与类名映射配置
 
+当前状态（2026-04-23）：
+
+- 已完成：
+  - `API` 已新增第 4 步 public surface：
+    - `getCompileOptions(...)`
+    - `setCompileOptions(...)`
+    - `getTopLevelCanonicalNameMap(...)`
+    - `setTopLevelCanonicalNameMap(...)`
+  - `ModuleState` 已从“初始化后固定配置”切换为“可替换的模块级快照配置”：
+    - 编译参数以整份 `CompileOptions` 快照替换
+    - 顶层类名映射以整份 frozen map 替换
+  - `CompileOptions` 边界校验已补齐：
+    - `projectPath` 允许为空，但拒绝 blank path text
+    - `outputMountRoot` 已复用 `VirtualPath` 规范化，拒绝相对路径、反斜杠和其他非法 VFS 路径形状
+  - 顶层类名映射校验已明确复用 `FrontendClassNameContract.freezeTopLevelCanonicalNameMap(...)`，不在 `api` 包内维护第二套 `__sub__` 保留序列规则
+- targeted tests 与编译校验已完成：
+  - IntelliJ incremental build 成功
+  - `ApiCompileOptionsTest` 已通过（2 tests）
+  - `ApiCanonicalNameMapTest` 已通过（2 tests）
+  - `ApiVirtualLinkTest` 已通过（3 tests）
+  - `ApiVirtualFileSystemTest` 已通过（4 tests）
+  - `ApiVirtualPathTest` 已通过（3 tests）
+  - `ApiModuleLifecycleTest` 已通过（6 tests）
+- 与后续步骤的接口约束已冻结：
+  - 第 5 步 `compile(...)` 可直接读取模块级 `CompileOptions` 与 frozen 顶层类名映射快照，不需要再为编译阶段引入第二套配置容器
+  - `outputMountRoot` 已预先收口到合法 VFS 路径，因此第 6 步挂回本地产物时可以直接复用，不必在编译成功路径重新做路径语义判定
+- 测试调查记录：
+  - `Path.of(" ")` 会在 JDK `Path` 解析层先抛错，无法锚定 `CompileOptions.projectPath` 的 blank-boundary 合同；相关负例已改用 `Path.of("")` 进入 API 校验面并完成回归
+
 目标：
 
 - 让模块具备“可远程配置再编译”的最小状态面。

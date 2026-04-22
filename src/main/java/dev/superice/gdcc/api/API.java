@@ -8,6 +8,7 @@ import org.jetbrains.annotations.NotNull;
 import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -102,6 +103,28 @@ public final class API {
 
     public @NotNull VfsEntrySnapshot readEntry(@NotNull String moduleId, @NotNull String path) {
         return requireModuleState(moduleId).readEntry(VirtualPath.parse(path));
+    }
+
+    public @NotNull CompileOptions getCompileOptions(@NotNull String moduleId) {
+        return requireModuleState(moduleId).getCompileOptions();
+    }
+
+    public @NotNull CompileOptions setCompileOptions(
+            @NotNull String moduleId,
+            @NotNull CompileOptions compileOptions
+    ) {
+        return requireModuleState(moduleId).setCompileOptions(compileOptions);
+    }
+
+    public @NotNull Map<String, String> getTopLevelCanonicalNameMap(@NotNull String moduleId) {
+        return requireModuleState(moduleId).getTopLevelCanonicalNameMap();
+    }
+
+    public @NotNull Map<String, String> setTopLevelCanonicalNameMap(
+            @NotNull String moduleId,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) {
+        return requireModuleState(moduleId).setTopLevelCanonicalNameMap(topLevelCanonicalNameMap);
     }
 
     private @NotNull ModuleState requireModuleState(@NotNull String moduleId) {
