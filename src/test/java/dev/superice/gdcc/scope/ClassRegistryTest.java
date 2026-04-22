@@ -8,6 +8,8 @@ import dev.superice.gdcc.gdextension.ExtensionFunctionArgument;
 import dev.superice.gdcc.gdextension.ExtensionGdClass;
 import dev.superice.gdcc.gdextension.ExtensionUtilityFunction;
 import dev.superice.gdcc.lir.LirClassDef;
+import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
 import dev.superice.gdcc.type.GdFloatType;
@@ -15,6 +17,7 @@ import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdStringNameType;
 import dev.superice.gdcc.type.GdStringType;
+import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.type.GdVariantType;
 import dev.superice.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.Test;
@@ -213,6 +216,52 @@ public class ClassRegistryTest {
         for (var expectName : expectSet) {
             assertTrue(vMethodMap.containsKey(expectName), () -> "Expected virtual method not found: " + expectName);
         }
+        var processVirtual = vMethodMap.get("_process");
+        assertNotNull(processVirtual);
+        assertTrue(processVirtual.engineMethod());
+        assertEquals(1, processVirtual.function().getParameterCount());
+        assertEquals(GdFloatType.FLOAT, processVirtual.function().getParameter(0).getType());
+        assertEquals(GdVoidType.VOID, processVirtual.function().getReturnType());
+    }
+
+    @Test
+    void engineVirtualLookupShouldPreserveVisibleGdccShadowWhileStillExposingUnderlyingEngineContract() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var shadowBase = new LirClassDef("ShadowBase", "Node");
+        shadowBase.addFunction(abstractFunction("_process", GdVoidType.VOID, new ParameterSpec(
+                "delta",
+                GdVariantType.VARIANT,
+                null
+        )));
+        registry.addGdccClass(shadowBase);
+        registry.addGdccClass(new LirClassDef("ShadowChild", "ShadowBase"));
+
+        var visibleVirtual = registry.getVirtualMethods("ShadowChild").get("_process");
+        assertNotNull(visibleVirtual);
+        assertEquals("ShadowBase", visibleVirtual.ownerClassName());
+        assertFalse(visibleVirtual.engineMethod());
+        assertEquals(GdVariantType.VARIANT, visibleVirtual.function().getParameter(0).getType());
+
+        var engineVirtual = registry.findEngineVirtualMethod("ShadowChild", "_process");
+        assertNotNull(engineVirtual);
+        assertTrue(engineVirtual.engineMethod());
+        assertEquals("Node", engineVirtual.ownerClassName());
+        assertEquals(GdFloatType.FLOAT, engineVirtual.function().getParameter(0).getType());
+    }
+
+    @Test
+    void engineVirtualLookupShouldIgnoreGdccOnlyAbstractMethods() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var helperBase = new LirClassDef("HelperBase", "Node");
+        helperBase.addFunction(abstractFunction("tick", GdVoidType.VOID));
+        registry.addGdccClass(helperBase);
+        registry.addGdccClass(new LirClassDef("HelperChild", "HelperBase"));
+
+        var visibleVirtual = registry.getVirtualMethods("HelperChild").get("tick");
+        assertNotNull(visibleVirtual);
+        assertEquals("HelperBase", visibleVirtual.ownerClassName());
+        assertFalse(visibleVirtual.engineMethod());
+        assertNull(registry.findEngineVirtualMethod("HelperChild", "tick"));
     }
 
     @Test
@@ -497,5 +546,18 @@ public class ClassRegistryTest {
                 new GdArrayType(new GdObjectType("FutureEnemy")),
                 builtinClass.getFunctions().getFirst().getReturnType()
         );
+    }
+
+    private record ParameterSpec(String name, GdType type, String defaultValueFunc) {
+    }
+
+    private static LirFunctionDef abstractFunction(String name, GdType returnType, ParameterSpec... parameters) {
+        var function = new LirFunctionDef(name);
+        function.setAbstract(true);
+        function.setReturnType(returnType);
+        for (var parameter : parameters) {
+            function.addParameter(new LirParameterDef(parameter.name(), parameter.type(), parameter.defaultValueFunc(), function));
+        }
+        return function;
     }
 }

@@ -7,10 +7,12 @@ import dev.superice.gdcc.exception.InvalidInsnException;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.lir.LirClassDef;
 import dev.superice.gdcc.lir.LirFunctionDef;
+import dev.superice.gdcc.lir.LirParameterDef;
 import dev.superice.gdcc.lir.LirPropertyDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.type.GdArrayType;
 import dev.superice.gdcc.type.GdDictionaryType;
+import dev.superice.gdcc.type.GdFloatType;
 import dev.superice.gdcc.type.GdIntType;
 import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdcc.type.GdPackedNumericArrayType;
@@ -35,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CGenHelperTest {
     private CGenHelper helper;
+    private ClassRegistry classRegistry;
     private LirFunctionDef function;
 
     @BeforeEach
@@ -42,7 +45,7 @@ class CGenHelperTest {
         var projectInfo = new ProjectInfo("TestProject", GodotVersion.V451, Path.of(".")) {
         };
         var extensionApi = ExtensionApiLoader.loadDefault();
-        var classRegistry = new ClassRegistry(extensionApi);
+        classRegistry = new ClassRegistry(extensionApi);
 
         var gdccBase = new LirClassDef("MyBase", "RefCounted");
         var gdccChild = new LirClassDef("MyChild", "MyBase");
@@ -55,6 +58,66 @@ class CGenHelperTest {
         helper = new CGenHelper(context, List.of(gdccBase, gdccChild, gdccInner));
 
         function = new LirFunctionDef("test");
+    }
+
+    @Test
+    @DisplayName("checkVirtualMethod should accept exact engine virtual signatures")
+    void checkVirtualMethodShouldAcceptExactEngineVirtualSignatures() {
+        var processWorker = new LirClassDef("ProcessWorker", "Node");
+        var process = new LirFunctionDef("_process");
+        process.setReturnType(GdVoidType.VOID);
+        process.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, process));
+        processWorker.addFunction(process);
+        classRegistry.addGdccClass(processWorker);
+
+        assertTrue(helper.checkVirtualMethod(processWorker, process));
+    }
+
+    @Test
+    @DisplayName("checkVirtualMethod should ignore backend synthetic self parameter when matching engine virtuals")
+    void checkVirtualMethodShouldIgnoreBackendSyntheticSelfParameterWhenMatchingEngineVirtuals() {
+        var readyWorker = new LirClassDef("ReadyWorker", "Node");
+        var ready = new LirFunctionDef("_ready");
+        ready.setReturnType(GdVoidType.VOID);
+        ready.addParameter(new LirParameterDef("self", new GdObjectType("ReadyWorker"), null, ready));
+        readyWorker.addFunction(ready);
+        classRegistry.addGdccClass(readyWorker);
+
+        assertTrue(helper.checkVirtualMethod(readyWorker, ready));
+    }
+
+    @Test
+    @DisplayName("checkVirtualMethod should reject wrong engine virtual signatures even when the name matches")
+    void checkVirtualMethodShouldRejectWrongEngineVirtualSignaturesEvenWhenTheNameMatches() {
+        var processWorker = new LirClassDef("InvalidProcessWorker", "Node");
+        var process = new LirFunctionDef("_process");
+        process.setReturnType(GdVoidType.VOID);
+        processWorker.addFunction(process);
+        classRegistry.addGdccClass(processWorker);
+
+        assertFalse(helper.checkVirtualMethod(processWorker, process));
+    }
+
+    @Test
+    @DisplayName("checkVirtualMethod should still find the engine contract behind gdcc abstract shadow declarations")
+    void checkVirtualMethodShouldStillFindTheEngineContractBehindGdccAbstractShadowDeclarations() {
+        var shadowBase = new LirClassDef("ShadowBase", "Node");
+        var abstractProcess = new LirFunctionDef("_process");
+        abstractProcess.setAbstract(true);
+        abstractProcess.setReturnType(GdVoidType.VOID);
+        abstractProcess.addParameter(new LirParameterDef("delta", GdVariantType.VARIANT, null, abstractProcess));
+        shadowBase.addFunction(abstractProcess);
+        classRegistry.addGdccClass(shadowBase);
+
+        var shadowChild = new LirClassDef("ShadowChild", "ShadowBase");
+        var concreteProcess = new LirFunctionDef("_process");
+        concreteProcess.setReturnType(GdVoidType.VOID);
+        concreteProcess.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, concreteProcess));
+        shadowChild.addFunction(concreteProcess);
+        classRegistry.addGdccClass(shadowChild);
+
+        assertTrue(helper.checkVirtualMethod(shadowChild, concreteProcess));
+        assertFalse(helper.checkVirtualMethod(shadowBase, abstractProcess));
     }
 
     @Test

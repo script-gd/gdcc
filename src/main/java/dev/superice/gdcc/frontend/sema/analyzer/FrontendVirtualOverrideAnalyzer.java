@@ -11,7 +11,6 @@ import dev.superice.gdcc.lir.LirFunctionDef;
 import dev.superice.gdcc.scope.ClassRegistry;
 import dev.superice.gdcc.scope.FunctionDef;
 import dev.superice.gdcc.scope.Scope;
-import dev.superice.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -208,30 +207,11 @@ public class FrontendVirtualOverrideAnalyzer {
             @NotNull LirClassDef currentClass,
             @NotNull String functionName
     ) {
-        if (!requireClassRegistry().getVirtualMethods(currentClass.getName()).containsKey(functionName)) {
+        var engineVirtual = requireClassRegistry().findEngineVirtualMethod(currentClass.getName(), functionName);
+        if (engineVirtual == null) {
             return null;
         }
-
-        // `getVirtualMethods(...)` also includes gdcc-side abstract methods. This phase only
-        // closes the engine virtual contract, so it walks the superclass chain until it finds
-        // the first engine-owned abstract declaration with the same name.
-        var superClassName = currentClass.getSuperName();
-        while (!superClassName.isEmpty()) {
-            var superClassDef = requireClassRegistry().getClassDef(new GdObjectType(superClassName));
-            if (superClassDef == null) {
-                return null;
-            }
-            var matchingFunction = superClassDef.getFunctions().stream()
-                    .filter(FunctionDef::isAbstract)
-                    .filter(function -> function.getName().equals(functionName))
-                    .findFirst()
-                    .orElse(null);
-            if (matchingFunction != null && !superClassDef.isGdccClass()) {
-                return new EngineVirtualMatch(superClassDef.getName(), matchingFunction);
-            }
-            superClassName = superClassDef.getSuperName();
-        }
-        return null;
+        return new EngineVirtualMatch(engineVirtual.ownerClassName(), engineVirtual.function());
     }
 
     private @NotNull FrontendOwnedClassRelation requireClassRelation(@NotNull Node classOwner) {

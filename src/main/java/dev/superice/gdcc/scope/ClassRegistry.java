@@ -43,8 +43,12 @@ public final class ClassRegistry implements Scope {
     /// This is not a second global lookup namespace. It only preserves source-facing names for
     /// registry callers that already resolved a gdcc class by canonical identity.
     private final Map<String, String> gdccClassSourceNameByCanonicalName = new HashMap<>();
-    /// Virtual method for each class
-    private final Map<String, Map<String, FunctionDef>> virtualMethodsByClassName = new HashMap<>();
+    /// Shared virtual metadata surface keyed by the queried class name and then virtual name.
+    /// The visible map keeps local gdcc abstract methods and inherited engine virtuals in one place,
+    /// while the engine-only map ignores gdcc-only shadow declarations so frontend/backend can still
+    /// reach the underlying engine contract for strict override checks.
+    private final Map<String, Map<String, VirtualMethodInfo>> virtualMethodsByClassName = new HashMap<>();
+    private final Map<String, Map<String, VirtualMethodInfo>> engineVirtualMethodsByClassName = new HashMap<>();
 
     public ClassRegistry(@NotNull ExtensionAPI api) {
         for (var bc : api.builtinClasses()) {
@@ -119,11 +123,15 @@ public final class ClassRegistry implements Scope {
         if (sourceNameOverride != null && !sourceNameOverride.equals(canonicalName)) {
             gdccClassSourceNameByCanonicalName.put(canonicalName, sourceNameOverride);
         }
+        virtualMethodsByClassName.clear();
+        engineVirtualMethodsByClassName.clear();
     }
 
     /// Remove a user-defined class by canonical name.
     public @Nullable ClassDef removeGdccClass(@NotNull String name) {
         gdccClassSourceNameByCanonicalName.remove(name);
+        virtualMethodsByClassName.clear();
+        engineVirtualMethodsByClassName.clear();
         return gdccClassByName.remove(name);
     }
 
@@ -641,32 +649,66 @@ public final class ClassRegistry implements Scope {
         return new GdObjectType(t);
     }
 
-    public @NotNull Map<String, FunctionDef> getVirtualMethods(@NotNull String className) {
-        if (!virtualMethodsByClassName.containsKey(className)) {
-            var vMethods = new HashMap<String, FunctionDef>();
-            virtualMethodsByClassName.put(className, vMethods);
-            ClassDef gdClass = gdClassByName.get(className);
-            if (gdClass == null) {
-                gdClass = gdccClassByName.get(className);
+    public @NotNull @UnmodifiableView Map<String, VirtualMethodInfo> getVirtualMethods(@NotNull String className) {
+        var virtualMethods = virtualMethodsByClassName.get(className);
+        if (virtualMethods != null) {
+            return virtualMethods;
+        }
+        var builtVirtualMethods = buildVirtualMethodMap(className, false);
+        virtualMethodsByClassName.put(className, builtVirtualMethods);
+        return builtVirtualMethods;
+    }
+
+    public @NotNull @UnmodifiableView Map<String, VirtualMethodInfo> getEngineVirtualMethods(@NotNull String className) {
+        var engineVirtualMethods = engineVirtualMethodsByClassName.get(className);
+        if (engineVirtualMethods != null) {
+            return engineVirtualMethods;
+        }
+        var builtEngineVirtualMethods = buildVirtualMethodMap(className, true);
+        engineVirtualMethodsByClassName.put(className, builtEngineVirtualMethods);
+        return builtEngineVirtualMethods;
+    }
+
+    public @Nullable VirtualMethodInfo findEngineVirtualMethod(
+            @NotNull String className,
+            @NotNull String methodName
+    ) {
+        return getEngineVirtualMethods(className).get(methodName);
+    }
+
+    private @NotNull Map<String, VirtualMethodInfo> buildVirtualMethodMap(
+            @NotNull String className,
+            boolean engineOnly
+    ) {
+        var virtualMethods = new LinkedHashMap<String, VirtualMethodInfo>();
+        ClassDef classDef = gdClassByName.get(className);
+        if (classDef == null) {
+            classDef = gdccClassByName.get(className);
+        }
+        if (classDef == null) {
+            return Map.of();
+        }
+        for (var method : classDef.getFunctions()) {
+            if (!method.isAbstract()) {
+                continue;
             }
-            if (gdClass != null) {
-                for (var method : gdClass.getFunctions()) {
-                    if (method.isAbstract()) {
-                        vMethods.put(method.getName(), method);
-                    }
-                }
-                var superClassName = gdClass.getSuperName();
-                if (!superClassName.isEmpty()) {
-                    var superVMethods = getVirtualMethods(superClassName);
-                    for (var svm : superVMethods.values()) {
-                        if (!vMethods.containsKey(svm.getName())) {
-                            vMethods.put(svm.getName(), svm);
-                        }
-                    }
-                }
+            if (engineOnly && classDef.isGdccClass()) {
+                continue;
+            }
+            virtualMethods.put(method.getName(), new VirtualMethodInfo(
+                    classDef.getName(),
+                    !classDef.isGdccClass(),
+                    method
+            ));
+        }
+        var superClassName = classDef.getSuperName();
+        if (!superClassName.isEmpty()) {
+            var inheritedVirtualMethods = engineOnly ? getEngineVirtualMethods(superClassName) : getVirtualMethods(superClassName);
+            for (var inheritedEntry : inheritedVirtualMethods.entrySet()) {
+                virtualMethods.putIfAbsent(inheritedEntry.getKey(), inheritedEntry.getValue());
             }
         }
-        return virtualMethodsByClassName.get(className);
+        return Collections.unmodifiableMap(virtualMethods);
     }
 
     public @Nullable ClassDef getClassDef(@NotNull GdObjectType type) {

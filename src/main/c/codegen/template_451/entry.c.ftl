@@ -202,6 +202,8 @@ void ${classDef.name}_class_notification(GDExtensionClassInstancePtr p_instance,
 
 void* ${classDef.name}_class_get_virtual_with_data(void* p_class_userdata, GDExtensionConstStringNamePtr p_name,
                                                      uint32_t p_hash) {
+    (void)p_class_userdata;
+    (void)p_hash;
     // Bind virtual methods
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>
@@ -218,6 +220,7 @@ void ${classDef.name}_class_call_virtual_with_data(GDExtensionClassInstancePtr p
                                                      void* p_virtual_call_userdata,
                                                      const GDExtensionConstTypePtr* p_args,
                                                      GDExtensionTypePtr r_ret) {
+    (void)p_name;
     // Call virtual methods
     <#list classDef.functions as function>
         <#if helper.checkVirtualMethod(classDef, function)>

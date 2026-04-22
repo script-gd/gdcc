@@ -8,7 +8,7 @@
 
 ## 文档状态
 
-- 状态：第一步、第二步已完成，其余步骤未实施
+- 状态：第一步、第二步、第三步已完成，其余步骤未实施
 - 更新时间：2026-04-22
 - 关联文档：
   - `doc/module_impl/frontend/frontend_rules.md`
@@ -35,7 +35,7 @@
 - backend 当前 virtual override 识别仍偏向 name-only：
   - `ClassRegistry.getVirtualMethods(...)` 当前返回 `Map<String, FunctionDef>`
   - `CGenHelper.checkVirtualMethod(...)` 只按 `containsKey(methodName)` 判断
-- `src/main/c/codegen/template_451/entry.c.ftl` 中 `get_virtual_with_data(...)` 虽然收到了 `p_hash`，但当前没有消费它，这与 Godot 上游 virtual lookup 的更严格合同不一致。
+- `src/main/c/codegen/template_451/entry.c.ftl` 中 `get_virtual_with_data(...)` 虽然收到了 `p_hash`，但结合 Godot 上游实现可确认它表达的是 virtual compatibility hash；对 gdcc 而言，这一字段需要被正确理解，但不应作为第三步 backend 判定前提，因为第三方方法与 gdcc 方法都无法稳定提供同源 hash。
 
 当前结论：
 
@@ -51,7 +51,7 @@
 
 1. `test_suite` 拥有 `_ready`、`_process`、`_physics_process` 三条真实 Godot runtime 正向锚点。
 2. frontend 能在源码声明阶段拒绝错误的 engine virtual override 签名，不再把错误 case 留给 backend 或 runtime 暴露。
-3. backend 不再仅按方法名识别 virtual override，`get_virtual_with_data(...)` 与 helper 判定需要消费更严格的 virtual 身份信息。
+3. backend 不再仅按方法名识别 virtual override，`get_virtual_with_data(...)` 与 helper 判定需要依赖更严格的 virtual 身份信息，但不以 `p_hash` 对齐作为实现前提。
 4. 相关文档、focused tests 与 runtime resource tests 同步更新，后续维护者可以直接从测试结果判断“engine virtual override 是否仍闭环”。
 
 ---
@@ -62,7 +62,7 @@
 
 1. 先补 `test_suite` 的正向 runtime 锚点，优先验证真实 Godot 行为，而不是先在实现层猜测。
 2. 再在 frontend 封口 engine virtual override 的签名合同，避免错误声明继续流入 backend。
-3. 再收紧 backend virtual lookup / dispatch 合同，移除 name-only 识别与未消费 `p_hash` 的漂移点。
+3. 再收紧 backend virtual lookup / dispatch 合同，移除 name-only 识别的漂移点，并明确 `p_hash` 不属于 gdcc backend 的匹配判定条件。
 4. 最后补 focused negative tests 与文档收口，把本轮形成的合同写进长期文档。
 
 原因：
@@ -225,15 +225,58 @@
 目标：
 
 - backend 不再只按方法名把 source method 视为 virtual override。
-- `get_virtual_with_data(...)` 应消费 `p_hash`，并与更严格的 virtual 身份信息对齐。
+- backend 不对 `get_virtual_with_data(...)` 的 `p_hash` 做匹配校验，而是基于共享 metadata 中可稳定取得的 virtual 身份信息完成更严格识别。
+
+上游理论依据（2026-04-22 调研结论）：
+
+- `core/object/make_virtuals.py` 生成的 GDVIRTUAL 宏，在调用 `_gdvirtual_init_method_ptr(...)` 时传入的是 `_gdvirtual_<name>_get_method_info().get_compatibility_hash()`：
+  - 这说明传给 GDExtension `get_virtual_call_data2` / `get_virtual2` 的 `p_hash` 不是 `StringName` 的名字 hash，也不是“随便带一个校验值”
+  - 它表达的是该 virtual 可调用合同的 compatibility hash
+- `core/object/method_info.cpp` 中 `MethodInfo::get_compatibility_hash()` 的组成是：
+  - 是否有返回值
+  - 参数个数
+  - 返回类型与返回 `class_name`
+  - 每个参数的类型与参数 `class_name`
+  - 默认参数个数与默认值
+  - `const` / `vararg` 标志
+  - 该 hash 不包含方法名，也不包含参数名
+- `core/object/object.cpp` 中 `_gdvirtual_init_method_ptr(...)` 会把同一个 `p_compat_hash` 原样传给：
+  - `get_virtual_call_data2(_extension->class_userdata, &p_fn_name, p_compat_hash)`
+  - 或 `get_virtual2(_extension->class_userdata, &p_fn_name, p_compat_hash)`
+  - 只有在 extension 仍停留在旧版 callback 合同上时，才会落回不带 hash 的 deprecated 路径；这条旧路径是兼容层，不是 `get_virtual_with_data(...)` 这条新合同的事实源
+- `core/object/class_db.cpp` 把 virtual compatibility hash 当成“按方法名分组后的第二身份轴”：
+  - `add_virtual_compatibility_method(...)` 按方法名收集 `p_method.get_compatibility_hash()`
+  - `get_virtual_method_compatibility_hashes(...)` 会沿继承链取回这些 hash
+  - 这说明在 Godot 上游语义里，“方法名命中”只够定位 virtual family；真正决定 callable 合同是否兼容的，是同 family 下的 compatibility hash
+- `core/extension/extension_api_dump.cpp` 同时存在两类 hash 来源：
+  - 普通 method-bind 路径使用 `method->get_hash()` / `hash_compatibility`
+  - virtual metadata 生成路径使用 `mi.get_compatibility_hash()`
+  - 因此第三步实现时不能把 exact engine call 路径里的 bind hash 直接当作 `p_hash` 语义复用；两者来源和用途都不同
+- 对 gdcc 的直接边界约束是：
+  - 上述上游语义只作为理论背景，不作为 backend 匹配条件
+  - 原因是第三方方法与 gdcc 方法都无法稳定取得与 Godot 同源的 compatibility hash
+  - 因此第三步不能把“对齐 `p_hash`”设为实现前提，否则会把无法稳定获取的数据错误地升级为闭环条件
+
+对 gdcc 第三步实现的直接约束：
+
+- backend 可以保留对 `p_hash` 上游语义的理解，但不能把它作为 virtual override 成立与否的判定条件。
+- backend 的 virtual lookup 必须至少消费两类稳定可得信息：
+  - `p_name`：定位 virtual family
+  - shared metadata 中的签名/virtual 身份信息：确认 source method 是否与该 family 的 engine virtual 合同一致
+- 目前 `ClassRegistry.getVirtualMethods(...) -> Map<String, FunctionDef>` 会把 engine virtual metadata 擦薄到只剩名字与签名可见面；这不足以支撑第三步：
+  - consumer 无法区分“普通同名方法”与“来自 engine virtual 集合的候选”
+  - 也缺少供 frontend / backend 共享的、更严格的 virtual 身份视图
+- 因此第三步的第一落点不是直接改模板，而是先把 shared metadata surface 收紧到“能稳定暴露 virtual 签名与身份信息”的程度，再让 `entry.c.ftl` 与 `CGenHelper` 基于这份事实源工作。
 
 建议实施内容：
 
 - 先收紧 `ClassRegistry` 对 virtual metadata 的表达能力：
   - 不能继续只暴露“方法名 -> FunctionDef”这一级信息
-  - 至少要让 consumer 能读取 virtual 的签名与 hash 身份
+  - 至少要让 consumer 能读取 virtual 的签名与足够严格的身份信息
+  - 这层 metadata 要服务 frontend 与 backend 共享判断链路，不要把无法稳定取得的 `p_hash` 包装成必备字段
 - `CGenHelper.checkVirtualMethod(...)` 不再做 name-only `containsKey` 判定，而要基于“同名且签名兼容”的严格结果工作。
-- `src/main/c/codegen/template_451/entry.c.ftl` 中 `get_virtual_with_data(...)` 必须实际消费 `p_hash`，不要再保留未使用参数。
+- `src/main/c/codegen/template_451/entry.c.ftl` 中 `get_virtual_with_data(...)` 可以继续保留 `p_hash` 形参以满足 Godot ABI，但 gdcc backend 不依赖它做匹配判定。
+- 不得把 exact engine call 路径中的 bind hash / `hashCompatibility` 伪装成这条 virtual override 判断链上的 `p_hash` 事实源。
 - `call_virtual_with_data(...)` 的 userdata 识别仍可沿用当前函数指针路径，但其来源必须是前一步严格筛出的 virtual。
 - 如果需要新增 helper，请保持内聚：
   - 优先把合同收在 `ClassRegistry` / `CGenHelper` 的既有职责里
@@ -250,16 +293,29 @@
 
 - happy path：
   - 正确签名的 `_ready` / `_process` / `_physics_process` 仍能被 backend 识别为 virtual override。
-  - 生成的 `get_virtual_with_data(...)` 不再忽略 `p_hash`。
   - backend 与 frontend 使用同一份 virtual metadata 事实源，不出现“两套签名判断标准”。
+  - `get_virtual_with_data(...)` 即使保留 `p_hash` 形参，backend 也不会把它当作 gdcc virtual override 的成立条件。
 - negative path：
   - 同名但错误签名的方法不再被 backend 误判成 virtual override。
   - 不允许继续保留“只要名字一样就注册 virtual”的旧路径。
-  - 不允许再让 `p_hash` 形参长期处于未消费状态。
+  - 不允许把普通 engine method bind 的 `hash` / `hashCompatibility` 冒充成 gdcc backend 所需的 virtual override 判定依据。
+  - 不要求 backend 对齐或校验 `p_hash`；第三方方法与 gdcc 方法无法稳定提供同源 hash 时，仍应依赖共享 metadata 中的签名/virtual 身份信息完成判断。
 
 建议回归命令：
 
 - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ClassRegistryTest,CGenHelperTest,CCodegenTest`
+
+### 当前实施状态（2026-04-22）
+
+- [x] 已补充 `p_hash` 的上游语义调研结论，并确认该语义仅作为第三步理论背景，不作为 gdcc backend 的实现前提
+- [x] `ClassRegistry` 已发布 shared virtual metadata，并补充 engine-only virtual lookup surface
+- [x] `CGenHelper` / `entry.c.ftl` 已改为基于严格签名识别 engine virtual override，不再按同名直接注册
+- [x] focused unit tests 与 runtime regression 已补齐并通过：
+  - `ClassRegistryTest`
+  - `CGenHelperTest`
+  - `CCodegenTest`
+  - `FrontendVirtualOverrideAnalyzerTest`
+  - `GdScriptEngineVirtualOverrideRuntimeTest`
 
 ---
 
@@ -321,7 +377,7 @@
 
 1. `test_suite` 正向 runtime 锚点
 2. frontend engine virtual override 签名封口
-3. backend virtual lookup / `p_hash` 收紧
+3. backend virtual lookup / virtual override 识别收紧
 4. focused negative tests 与文档收口
 
 这样每一步都能独立回归，也更容易在评审中判断回归来源。

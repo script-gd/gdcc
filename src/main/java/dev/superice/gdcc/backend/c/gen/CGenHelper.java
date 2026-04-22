@@ -254,29 +254,6 @@ public final class CGenHelper {
                         functionDef.isStatic()
                 ));
             }
-            // Virtual methods binding data
-            var virtualFunctions = context.classRegistry().getVirtualMethods(classDef.getName());
-            for (var functionDef : classDef.getFunctions()) {
-                if (!virtualFunctions.containsKey(functionDef.getName())) {
-                    continue;
-                }
-                var paramTypes = new ArrayList<GdType>();
-                var defaultVariables = new ArrayList<GdType>();
-                if (functionDef.isStatic()) {
-                    throw new IllegalStateException("Virtual methods must be instance methods");
-                }
-                for (var parameterDef : functionDef.getParameters()) {
-                    if (parameterDef.getDefaultValueFunc() != null) {
-                        defaultVariables.add(parameterDef.getType());
-                    }
-                }
-                bindingDataSet.add(new BindingData(
-                        paramTypes,
-                        functionDef.getReturnType(),
-                        defaultVariables,
-                        functionDef.isStatic()
-                ));
-            }
         }
     }
 
@@ -1006,11 +983,11 @@ public final class CGenHelper {
     }
 
     public boolean checkVirtualMethod(@NotNull ClassDef classDef, @NotNull FunctionDef functionDef) {
-        return context.classRegistry().getVirtualMethods(classDef.getName()).containsKey(functionDef.getName());
-    }
-
-    public boolean checkVirtualMethod(@NotNull String className, @NotNull String methodName) {
-        return context.classRegistry().getVirtualMethods(className).containsKey(methodName);
+        var engineVirtual = context.classRegistry().findEngineVirtualMethod(classDef.getName(), functionDef.getName());
+        if (engineVirtual == null) {
+            return false;
+        }
+        return engineVirtual.checkOverrideSignature(functionDef, true);
     }
 
     public boolean checkGdccType(@NotNull GdType gdType) {

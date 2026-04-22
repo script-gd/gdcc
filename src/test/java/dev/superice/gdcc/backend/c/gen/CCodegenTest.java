@@ -317,6 +317,72 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generateShouldOnlyRegisterStrictEngineVirtualOverridesInVirtualDispatchTables() throws Exception {
+        var validClass = new LirClassDef("ValidVirtualDispatch", "Node");
+        var ready = newFunction("_ready", GdVoidType.VOID);
+        entry(ready).setTerminator(new ReturnInsn(null));
+        validClass.addFunction(ready);
+        var process = newFunction("_process", GdVoidType.VOID);
+        process.addParameter(new LirParameterDef("delta", GdFloatType.FLOAT, null, process));
+        entry(process).setTerminator(new ReturnInsn(null));
+        validClass.addFunction(process);
+
+        var invalidClass = new LirClassDef("InvalidVirtualDispatch", "Node");
+        var invalidReady = newFunction("_ready", GdVoidType.VOID);
+        invalidReady.setStatic(true);
+        entry(invalidReady).setTerminator(new ReturnInsn(null));
+        invalidClass.addFunction(invalidReady);
+        var invalidProcess = newFunction("_process", GdVoidType.VOID);
+        entry(invalidProcess).setTerminator(new ReturnInsn(null));
+        invalidClass.addFunction(invalidProcess);
+
+        var module = new LirModule("virtual_dispatch_module", List.of(validClass, invalidClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var entrySource = generatedFileText(files, "entry.c");
+
+        var validLookupBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void* ValidVirtualDispatch_class_get_virtual_with_data("
+        );
+        assertContainsAll(
+                validLookupBody,
+                "(void)p_class_userdata;",
+                "(void)p_hash;",
+                "return (void*)ValidVirtualDispatch__ready;",
+                "return (void*)ValidVirtualDispatch__process;"
+        );
+        var validDispatchBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void ValidVirtualDispatch_class_call_virtual_with_data("
+        );
+        assertContainsAll(
+                validDispatchBody,
+                "&ValidVirtualDispatch__ready",
+                "&ValidVirtualDispatch__process"
+        );
+
+        var invalidLookupBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void* InvalidVirtualDispatch_class_get_virtual_with_data("
+        );
+        assertFalse(invalidLookupBody.contains("InvalidVirtualDispatch__ready"), invalidLookupBody);
+        assertFalse(invalidLookupBody.contains("InvalidVirtualDispatch__process"), invalidLookupBody);
+        var invalidDispatchBody = resolveFunctionBodyByPrefix(
+                entrySource,
+                "void InvalidVirtualDispatch_class_call_virtual_with_data("
+        );
+        assertFalse(invalidDispatchBody.contains("InvalidVirtualDispatch__ready"), invalidDispatchBody);
+        assertFalse(invalidDispatchBody.contains("InvalidVirtualDispatch__process"), invalidDispatchBody);
+    }
+
+    @Test
     public void generateShouldUseSessionBoundBodyRendererInsteadOfPublicGenerateFuncBody() {
         var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
         var queueFree = newFunction("call_queue_free", GdVoidType.VOID);
