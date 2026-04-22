@@ -8,8 +8,8 @@
 
 ## 文档状态
 
-- 状态：第一步已完成，其余步骤未实施
-- 更新时间：2026-04-21
+- 状态：第一步、第二步已完成，其余步骤未实施
+- 更新时间：2026-04-22
 - 关联文档：
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/backend/engine_method_bind_implementation.md`
@@ -152,13 +152,17 @@
 目标：
 
 - 当源码方法名命中父类 engine virtual 时，frontend 必须按 extension metadata 校验 override 签名。
-- 错误签名必须在 frontend 阶段直接失败，而不是继续进入 backend 或运行时。
+- 错误签名必须在 frontend 阶段通过 error diagnostic 暴露，但不应因此阻断同一函数体后续的语义分析与 LSP/inspection 消费。
 
 建议实施内容：
 
-- 优先在 `FrontendClassSkeletonBuilder` 所在的 declaration / skeleton 路径完成封口：
-  - 此阶段已经掌握方法名、参数列表、返回类型、所属类和父类信息
-  - 与“函数头是否合法”这一职责边界更一致
+- 不要在 `FrontendClassSkeletonBuilder` 直接拒绝错误的 override 签名：
+  - skeleton phase 仍应继续发布 `LirFunctionDef`、参数与返回类型信息
+  - 这样同一 member subtree 的函数体仍能继续进入后续 semantic analyzer，避免 LSP/inspection 因 header-level override 错误而失去 body facts
+- 新增独立的 semantic analyzer 来承担这条合同，建议命名为 `FrontendVirtualOverrideAnalyzer`：
+  - 它消费 skeleton 已发布的函数头信息、owning class/superclass 信息与 `ClassRegistry` 中的 engine virtual metadata
+  - 它只负责发 diagnostic，不负责把该函数 subtree 标记为 skipped
+  - compile-only / codegen 入口仍可通过既有 `diagnostics.hasErrors()` 合同阻止错误 case 继续进入 backend
 - 复用 `ClassRegistry` 中已经导入的 engine virtual metadata，不要为 override 校验再造一套独立 metadata 表。
 - 对命中 engine virtual 的 source method，按“精确兼容”而不是“宽松兼容”处理：
   - 必须是 instance method
@@ -166,14 +170,15 @@
   - 参数类型必须与 metadata 一致
   - 返回类型必须与 metadata 一致
 - 对 `_process(delta)`、`_physics_process(delta)` 这类声明，若参数缺失显式类型而当前会被回退成 `Variant`，必须在 engine virtual override 路径上直接报错，而不是继续接受这条声明。
-- 诊断 owner 建议优先沿用 `sema.class_skeleton`：
-  - 这是 declaration-level 头部合同
-  - 不建议为本轮只创建一个单独 analyzer 再引入额外 owner/category
+- 诊断 owner/category 建议使用新的 analyzer 专属分类，例如 `sema.virtual_override`：
+  - 这样可以和 `sema.class_skeleton` 的“结构发布失败/跳过 subtree”语义明确分层
+  - 同时也能清楚表达“函数头 override 签名错误已被识别，但函数体仍继续分析”的合同
 - 普通非-virtual 方法的 `resolveTypeOrVariant(...) -> Variant` 现有行为不应被本轮一起改掉；本轮只收紧命中 engine virtual 的 override 路径。
 
 建议测试锚点：
 
-- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
+- `src/test/java/dev/superice/gdcc/frontend/sema/FrontendSemanticAnalyzerFrameworkTest.java`
 - 如需要补更小粒度的类型回退对照，可补充：
   - `src/test/java/dev/superice/gdcc/frontend/sema/FrontendDeclaredTypeSupportTest.java`
 
@@ -188,11 +193,30 @@
   - `func _ready() -> int` 产生明确 frontend diagnostic。
   - `func _process(delta)` 因缺失显式类型而产生明确 frontend diagnostic。
   - `func _physics_process(delta: int) -> void` 因参数类型不匹配产生明确 frontend diagnostic。
-  - 错误 case 不再进入 backend codegen 或 runtime 碰运气。
+  - override 签名错误本身不得把同一函数 subtree 提前标记为 skipped。
+  - 即使 override 签名错误存在，同一函数体内其它可恢复语义错误或已发布 facts 仍应继续产出，供 shared semantic / LSP 消费。
+  - 错误 case 仍不进入 backend codegen 或 runtime 碰运气，但阻断原因来自 diagnostic error，而不是 skeleton 提前拒绝发布。
 
 建议回归命令：
 
-- `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendClassSkeletonTest`
+- `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendVirtualOverrideAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest`
+
+### 当前实施状态（2026-04-22）
+
+- [x] 已新增 `FrontendVirtualOverrideAnalyzer`
+- [x] 已把该 analyzer 接入 `FrontendSemanticAnalyzer` shared semantic phase，位置固定为：
+  - `annotation usage -> virtual override -> type check -> loop control`
+- [x] skeleton phase 仍保持只发布函数头，不因坏 override 签名提前跳过 member subtree
+- [x] 已新增 focused test：
+  - `src/test/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
+  - 覆盖 exact happy path、错误签名 negative path、以及 body facts continue 合同
+- [x] 已更新 `FrontendSemanticAnalyzerFrameworkTest`，把新 phase 顺序与 diagnostics 刷新边界锁定到 framework 层
+- [x] 已同步更新 frontend 规则与 diagnostic 文档：
+  - `doc/module_impl/frontend/frontend_rules.md`
+  - `doc/module_impl/frontend/diagnostic_manager.md`
+- [x] 已完成 targeted test run：
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendVirtualOverrideAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest`
+  - `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendAnnotationUsageAnalyzerTest,FrontendTypeCheckAnalyzerTest`
 
 ---
 

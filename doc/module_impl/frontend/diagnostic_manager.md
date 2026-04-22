@@ -197,6 +197,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.deferred_expression_resolution`
 - `sema.unsupported_expression_route`
 - `sema.discarded_expression`
+- `sema.virtual_override`
 - `sema.type_check`
 - `sema.type_hint`
 - `sema.loop_control_flow`
@@ -242,6 +243,14 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `sema.unsafe_call_argument`
   - expr analyzer 对 bare builtin direct constructor 命中 unary stable-`Variant` special route 时发出的 warning
   - 与 `resolvedCalls()` 中的 `RESOLVED(CONSTRUCTOR)` 并存；它提示该 route 会依赖 runtime-open `Variant -> concrete builtin` 转换，而不是 exact constructor metadata winner
+- `sema.virtual_override`
+  - shared `FrontendVirtualOverrideAnalyzer` 对命中父类 engine virtual 名称的 source method 发出的 source-level error
+  - 当前固定校验：
+    - static / instance 是否匹配
+    - 参数个数是否匹配
+    - 参数类型是否与 engine metadata 完全一致
+    - 返回类型是否与 engine metadata 完全一致
+  - 该 category 只负责 override header 合同，不会把函数 subtree 提前标记为 skipped；后续 body analyzers 仍继续消费该函数体
 - `sema.type_check`
   - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
 - `sema.type_hint`
@@ -330,10 +339,13 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - 调用 `FrontendTopBindingAnalyzer.analyze(...)` 发布 `symbolBindings`
     - 调用 `FrontendChainBindingAnalyzer.analyze(...)` 发布 `resolvedMembers()` / `resolvedCalls()`
     - 调用 `FrontendExprTypeAnalyzer.analyze(...)` 发布 `expressionTypes()` 并补齐 expression-only diagnostics / discarded-expression warning
+    - 调用 `FrontendVarTypePostAnalyzer.analyze(...)` 发布 callable-local `slotTypes()`
+    - 调用 `FrontendAnnotationUsageAnalyzer.analyze(...)` 对 retained annotation 的合法挂载位置发出 `sema.annotation_usage`
+    - 调用 `FrontendVirtualOverrideAnalyzer.analyze(...)` 对 engine virtual override 签名发出 `sema.virtual_override`
     - 调用 `FrontendTypeCheckAnalyzer.analyze(...)` 对 ordinary local / class property / return typed contract 发出 `sema.type_check`，并对 property hint 发出 `sema.type_hint`
     - 调用 `FrontendLoopControlFlowAnalyzer.analyze(...)` 对非法 `break` / `continue` 发出 `sema.loop_control_flow`
     - 每个 phase 结束后都再次 `updateDiagnostics(...)`，把阶段边界快照刷新到最新 shared manager 状态
-- `analyzeForCompile(...)` 在共享 9 phase 之后追加：
+- `analyzeForCompile(...)` 在共享 11 phase 之后追加：
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
 - 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
@@ -373,7 +385,11 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - analyzer 返回共享 `FrontendAnalysisData`
   - parse->analyze shared pipeline 不重复导入 parse diagnostics
   - `FrontendAnalysisData` / `FrontendModuleSkeleton` 的 snapshot 在阶段后保持稳定
+  - `annotation usage -> virtual override -> type check -> loop control` 的 phase 顺序与 diagnostics 刷新边界被显式锁定
   - `analyzeForCompile(...)` 与共享 `analyze(...)` 的 lowering-readiness 边界被显式锁定
+- `FrontendVirtualOverrideAnalyzerTest`
+  - engine virtual override 的 happy path / negative path 都有 focused regression 锚点
+  - 坏 override header 不会导致函数 subtree 提前 skipped，函数体 facts 仍继续发布
 - `FrontendLoopControlFlowAnalyzerTest`
   - shared semantic 会对非法 `break` / `continue` 发出 `sema.loop_control_flow`
   - 合法 `while` / `for` loop body 不会误报 loop-control error
@@ -400,7 +416,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 最近一次通过的 frontend 相关定向测试命令为：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendScopeAnalyzerTest,FrontendClassSkeletonTest,FrontendSemanticAnalyzerFrameworkTest,FrontendAnalysisDataTest,FrontendParseSmokeTest,FrontendAnnotationParseBehaviorTest,FrontendClassSkeletonAnnotationTest,FrontendInheritanceCycleTest,GdScriptParserServiceDiagnosticManagerTest
+powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests FrontendScopeAnalyzerTest,FrontendClassSkeletonTest,FrontendSemanticAnalyzerFrameworkTest,FrontendVirtualOverrideAnalyzerTest,FrontendAnnotationUsageAnalyzerTest,FrontendTypeCheckAnalyzerTest,FrontendAnalysisDataTest,FrontendParseSmokeTest,FrontendAnnotationParseBehaviorTest,FrontendClassSkeletonAnnotationTest,FrontendInheritanceCycleTest,GdScriptParserServiceDiagnosticManagerTest
 ```
 
 ---

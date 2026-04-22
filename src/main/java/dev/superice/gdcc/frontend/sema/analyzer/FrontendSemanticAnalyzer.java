@@ -11,8 +11,8 @@ import java.util.Objects;
 
 /// Basic frontend semantic-analyzer framework.
 ///
-/// The current framework wires ten shared frontend phases plus one compile-only gate into one shared
-/// `FrontendAnalysisData` carrier:
+/// The current framework wires eleven shared frontend phases plus one compile-only gate into one
+/// shared `FrontendAnalysisData` carrier:
 /// - skeleton publication
 /// - lexical scope graph construction
 /// - callable-parameter and supported local-variable inventory
@@ -21,6 +21,7 @@ import java.util.Objects;
 /// - expression-type publication
 /// - callable-local slot-type publication
 /// - annotation-usage validation
+/// - diagnostics-only engine virtual override validation
 /// - diagnostics-only type-check traversal
 /// - diagnostics-only loop-control legality traversal
 /// - compile-only final gate via `analyzeForCompile(...)`
@@ -34,6 +35,7 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
     private final @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer;
     private final @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer;
+    private final @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer;
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
     private final @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer;
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
@@ -48,6 +50,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -64,6 +67,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -83,6 +87,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -101,8 +106,12 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTopBindingAnalyzer(),
                 new FrontendChainBindingAnalyzer(),
                 new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
-                new FrontendTypeCheckAnalyzer()
+                new FrontendVirtualOverrideAnalyzer(),
+                new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
+                new FrontendCompileCheckAnalyzer()
         );
     }
 
@@ -121,6 +130,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -143,6 +153,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendExprTypeAnalyzer(),
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -166,6 +177,7 @@ public final class FrontendSemanticAnalyzer {
                 exprTypeAnalyzer,
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -190,6 +202,7 @@ public final class FrontendSemanticAnalyzer {
                 exprTypeAnalyzer,
                 new FrontendVarTypePostAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 typeCheckAnalyzer,
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -215,6 +228,7 @@ public final class FrontendSemanticAnalyzer {
                 exprTypeAnalyzer,
                 new FrontendVarTypePostAnalyzer(),
                 annotationUsageAnalyzer,
+                new FrontendVirtualOverrideAnalyzer(),
                 typeCheckAnalyzer,
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
@@ -241,6 +255,7 @@ public final class FrontendSemanticAnalyzer {
                 exprTypeAnalyzer,
                 new FrontendVarTypePostAnalyzer(),
                 annotationUsageAnalyzer,
+                new FrontendVirtualOverrideAnalyzer(),
                 typeCheckAnalyzer,
                 loopControlFlowAnalyzer,
                 new FrontendCompileCheckAnalyzer()
@@ -267,6 +282,7 @@ public final class FrontendSemanticAnalyzer {
                 exprTypeAnalyzer,
                 new FrontendVarTypePostAnalyzer(),
                 annotationUsageAnalyzer,
+                new FrontendVirtualOverrideAnalyzer(),
                 typeCheckAnalyzer,
                 new FrontendLoopControlFlowAnalyzer(),
                 compileCheckAnalyzer
@@ -294,6 +310,7 @@ public final class FrontendSemanticAnalyzer {
                 exprTypeAnalyzer,
                 new FrontendVarTypePostAnalyzer(),
                 annotationUsageAnalyzer,
+                new FrontendVirtualOverrideAnalyzer(),
                 typeCheckAnalyzer,
                 loopControlFlowAnalyzer,
                 compileCheckAnalyzer
@@ -309,6 +326,7 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
             @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer,
             @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
+            @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer,
             @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
             @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
             @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
@@ -326,6 +344,10 @@ public final class FrontendSemanticAnalyzer {
         this.annotationUsageAnalyzer = Objects.requireNonNull(
                 annotationUsageAnalyzer,
                 "annotationUsageAnalyzer must not be null"
+        );
+        this.virtualOverrideAnalyzer = Objects.requireNonNull(
+                virtualOverrideAnalyzer,
+                "virtualOverrideAnalyzer must not be null"
         );
         this.typeCheckAnalyzer = Objects.requireNonNull(typeCheckAnalyzer, "typeCheckAnalyzer must not be null");
         this.loopControlFlowAnalyzer = Objects.requireNonNull(
@@ -403,6 +425,11 @@ public final class FrontendSemanticAnalyzer {
         // Annotation-usage validation consumes retained annotations plus the published class/scope
         // facts, but still stays diagnostics-only and does not mutate semantic side tables.
         annotationUsageAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Engine virtual override validation consumes the published class/function metadata and
+        // reports signature mismatches without skipping the owning function subtree.
+        virtualOverrideAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Type checking is diagnostics-only for now: it consumes the published frontend facts but

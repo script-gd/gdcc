@@ -15,6 +15,7 @@ import dev.superice.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
+import dev.superice.gdcc.frontend.sema.analyzer.FrontendVirtualOverrideAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVarTypePostAnalyzer;
 import dev.superice.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import dev.superice.gdcc.frontend.scope.BlockScope;
@@ -653,7 +654,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzePublishesPhaseBoundariesBeforeTypeCheckPhaseAndRefreshesDiagnosticsAfterEachPhase() throws Exception {
+    void analyzePublishesPhaseBoundariesThroughVirtualOverridePhaseAndRefreshesDiagnosticsAfterEachPhase() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "variable_phase_probe.gd"), """
@@ -671,6 +672,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var probeExprTypeAnalyzer = new RecordingExprTypeAnalyzer();
         var probeVarTypePostAnalyzer = new RecordingVarTypePostAnalyzer();
         var probeAnnotationUsageAnalyzer = new RecordingAnnotationUsageAnalyzer();
+        var probeVirtualOverrideAnalyzer = new RecordingVirtualOverrideAnalyzer();
         var probeTypeCheckAnalyzer = new RecordingTypeCheckAnalyzer();
         var probeLoopControlFlowAnalyzer = new RecordingLoopControlFlowAnalyzer();
         var analyzer = new FrontendSemanticAnalyzer(
@@ -682,6 +684,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 probeExprTypeAnalyzer,
                 probeVarTypePostAnalyzer,
                 probeAnnotationUsageAnalyzer,
+                probeVirtualOverrideAnalyzer,
                 probeTypeCheckAnalyzer,
                 probeLoopControlFlowAnalyzer,
                 new FrontendCompileCheckAnalyzer()
@@ -721,8 +724,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeAnnotationUsageAnalyzer.varTypeBoundaryPublished);
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnosticsMatchedManager);
         assertTrue(probeAnnotationUsageAnalyzer.stableAnnotationsReferencePreserved);
+        assertTrue(probeVirtualOverrideAnalyzer.invoked);
+        assertTrue(probeVirtualOverrideAnalyzer.annotationUsageBoundaryPublished);
+        assertTrue(probeVirtualOverrideAnalyzer.preVirtualOverrideDiagnosticsMatchedManager);
         assertTrue(probeTypeCheckAnalyzer.invoked);
-        assertTrue(probeTypeCheckAnalyzer.annotationUsageBoundaryPublished);
+        assertTrue(probeTypeCheckAnalyzer.virtualOverrideBoundaryPublished);
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnosticsMatchedManager);
         assertTrue(probeTypeCheckAnalyzer.stableExpressionTypesReferencePreserved);
         assertTrue(probeTypeCheckAnalyzer.expressionTypesRemainPublishedAfterTypeCheck);
@@ -770,10 +776,17 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertEquals(
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size() + 1,
+                probeVirtualOverrideAnalyzer.preVirtualOverrideDiagnostics.size()
+        );
+        assertTrue(probeVirtualOverrideAnalyzer.preVirtualOverrideDiagnostics.asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.annotation_usage_phase_probe")
+        ));
+        assertEquals(
+                probeVirtualOverrideAnalyzer.preVirtualOverrideDiagnostics.size() + 1,
                 probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size()
         );
         assertTrue(probeTypeCheckAnalyzer.preTypeCheckDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.annotation_usage_phase_probe")
+                diagnostic.category().equals("sema.virtual_override_phase_probe")
         ));
         assertEquals(
                 probeTypeCheckAnalyzer.preTypeCheckDiagnostics.size() + 1,
@@ -803,6 +816,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
+        ));
+        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
+                diagnostic.category().equals("sema.virtual_override_phase_probe")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.type_check_phase_probe")
@@ -1634,9 +1650,42 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    private static final class RecordingTypeCheckAnalyzer extends FrontendTypeCheckAnalyzer {
+    private static final class RecordingVirtualOverrideAnalyzer extends FrontendVirtualOverrideAnalyzer {
         private boolean invoked;
         private boolean annotationUsageBoundaryPublished;
+        private boolean preVirtualOverrideDiagnosticsMatchedManager;
+        private DiagnosticSnapshot preVirtualOverrideDiagnostics;
+
+        @Override
+        public void analyze(
+                @NotNull ClassRegistry classRegistry,
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            preVirtualOverrideDiagnostics = analysisData.diagnostics();
+            preVirtualOverrideDiagnosticsMatchedManager =
+                    preVirtualOverrideDiagnostics.equals(diagnosticManager.snapshot());
+            annotationUsageBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty()
+                    && !analysisData.slotTypes().isEmpty();
+            super.analyze(classRegistry, analysisData, diagnosticManager);
+            diagnosticManager.warning(
+                    "sema.virtual_override_phase_probe",
+                    "virtual-override phase probe diagnostic",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private static final class RecordingTypeCheckAnalyzer extends FrontendTypeCheckAnalyzer {
+        private boolean invoked;
+        private boolean virtualOverrideBoundaryPublished;
         private boolean preTypeCheckDiagnosticsMatchedManager;
         private boolean stableExpressionTypesReferencePreserved;
         private boolean expressionTypesRemainPublishedAfterTypeCheck;
@@ -1651,7 +1700,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
             invoked = true;
             preTypeCheckDiagnostics = analysisData.diagnostics();
             preTypeCheckDiagnosticsMatchedManager = preTypeCheckDiagnostics.equals(diagnosticManager.snapshot());
-            annotationUsageBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+            virtualOverrideBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
                     .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
                     && analysisData.symbolBindings().isEmpty()
                     && analysisData.resolvedMembers().isEmpty()
