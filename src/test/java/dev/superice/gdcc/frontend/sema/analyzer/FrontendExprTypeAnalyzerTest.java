@@ -1641,7 +1641,7 @@ class FrontendExprTypeAnalyzerTest {
         var failedSubscriptStepType = analyzed.analysisData().expressionTypes().get(failedSubscriptStep);
         assertNotNull(failedSubscriptStepType);
         assertEquals(FrontendExpressionTypeStatus.FAILED, failedSubscriptStepType.status());
-        assertTrue(failedSubscriptStepType.detailReason().contains("not assignable"));
+        assertTrue(failedSubscriptStepType.detailReason().contains("not frontend-boundary compatible"));
 
         var unsupportedSubscriptStepType = analyzed.analysisData().expressionTypes().get(unsupportedSubscriptStep);
         assertNotNull(unsupportedSubscriptStepType);
@@ -1730,7 +1730,7 @@ class FrontendExprTypeAnalyzerTest {
         var badKeyType = analyzed.analysisData().expressionTypes().get(badKeySubscript);
         assertNotNull(badKeyType);
         assertEquals(FrontendExpressionTypeStatus.FAILED, badKeyType.status());
-        assertTrue(badKeyType.detailReason().contains("not assignable"));
+        assertTrue(badKeyType.detailReason().contains("not frontend-boundary compatible"));
 
         var badReceiverType = analyzed.analysisData().expressionTypes().get(badReceiverSubscript);
         assertNotNull(badReceiverType);
@@ -1744,7 +1744,9 @@ class FrontendExprTypeAnalyzerTest {
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
         assertEquals(2, expressionDiagnostics.size());
-        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("not assignable")));
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("not frontend-boundary compatible")
+        ));
         assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("does not support")));
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
