@@ -5,23 +5,35 @@ import dev.superice.gdcc.exception.ApiModuleNotFoundException;
 import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
+import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 /// In-memory module registry facade intended for RPC adapters.
 ///
 /// The API package owns remote-facing lifecycle and state orchestration, while frontend/lowering/
-/// backend remain the sole compilation fact sources. Step 1 only stabilizes module lifecycle plus
-/// default per-module state; VFS and compile orchestration land in later steps.
+/// backend remain the sole compilation fact sources. Step 2 adds virtual-path normalization plus
+/// in-memory file/directory CRUD without coupling the facade to any transport framework.
 public final class API {
+    private final @NotNull Clock clock;
     private final @NotNull ConcurrentHashMap<String, ModuleState> modules = new ConcurrentHashMap<>();
+
+    public API() {
+        this(Clock.systemUTC());
+    }
+
+    API(@NotNull Clock clock) {
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    }
 
     public @NotNull ModuleSnapshot createModule(@NotNull String moduleId, @NotNull String moduleName) {
         var normalizedModuleId = normalizeModuleId(moduleId);
         var createdState = new ModuleState(
                 normalizedModuleId,
-                StringUtil.requireTrimmedNonBlank(moduleName, "moduleName")
+                StringUtil.requireTrimmedNonBlank(moduleName, "moduleName"),
+                clock
         );
         var existingState = modules.putIfAbsent(normalizedModuleId, createdState);
         if (existingState != null) {
@@ -49,6 +61,38 @@ public final class API {
             throw new ApiModuleNotFoundException("Module '" + normalizedModuleId + "' does not exist");
         }
         return removedState.snapshot();
+    }
+
+    public @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectory(
+            @NotNull String moduleId,
+            @NotNull String path
+    ) {
+        return requireModuleState(moduleId).createDirectory(VirtualPath.parse(path));
+    }
+
+    public @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
+            @NotNull String moduleId,
+            @NotNull String path,
+            @NotNull String content
+    ) {
+        return requireModuleState(moduleId).putFile(VirtualPath.parse(path), content);
+    }
+
+    public @NotNull String readFile(@NotNull String moduleId, @NotNull String path) {
+        return requireModuleState(moduleId).readFile(VirtualPath.parse(path));
+    }
+
+    public @NotNull VfsEntrySnapshot deletePath(@NotNull String moduleId, @NotNull String path, boolean recursive) {
+        return requireModuleState(moduleId).deletePath(VirtualPath.parse(path), recursive);
+    }
+
+    /// Directory entries are returned in stable lexical order so RPC consumers can diff results.
+    public @NotNull List<VfsEntrySnapshot> listDirectory(@NotNull String moduleId, @NotNull String path) {
+        return requireModuleState(moduleId).listDirectory(VirtualPath.parse(path));
+    }
+
+    public @NotNull VfsEntrySnapshot readEntry(@NotNull String moduleId, @NotNull String path) {
+        return requireModuleState(moduleId).readEntry(VirtualPath.parse(path));
     }
 
     private @NotNull ModuleState requireModuleState(@NotNull String moduleId) {

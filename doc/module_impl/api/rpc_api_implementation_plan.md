@@ -274,6 +274,37 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.2 第二步：落地虚拟文件系统与路径规范化
 
+当前状态（2026-04-22）：
+
+- 已完成：
+  - `VirtualPath` 已落地，统一规范模块内 POSIX 风格绝对路径：
+    - 根路径固定为 `/`
+    - 拒绝 blank path、相对路径、反斜杠分隔符、`.` / `..` 段、重复分隔段
+  - `ModuleState` 已接入最小 VFS 节点模型：
+    - `DirectoryNode` 使用有序 map 保证目录列举稳定排序
+    - `FileNode` 持有源码文本、UTF-8 字节数与更新时间戳
+    - `ModuleSnapshot.rootEntryCount` 现由根目录直系条目数真实驱动
+  - 第 2 步 public surface 已落地：
+    - `createDirectory(...)`
+    - `putFile(...)`
+    - `readFile(...)`
+    - `deletePath(..., recursive)`
+    - `listDirectory(...)`
+    - `readEntry(...)`
+  - 关键行为已在实现层冻结：
+    - `putFile(...)` 自动创建缺失父目录
+    - `createDirectory(...)` 对已存在目录保持幂等，并补齐缺失祖先目录
+    - `putFile("/")` 与 `deletePath("/")` 在 API boundary 明确失败，不允许把模块根目录重解释为普通文件或可删目录
+  - 第 2 步首批异常已落地：
+    - `ApiPathNotFoundException`
+    - `ApiEntryTypeMismatchException`
+    - `ApiDirectoryNotEmptyException`
+  - targeted tests 与编译校验已完成：
+    - IntelliJ incremental build 成功
+    - `ApiVirtualPathTest` 已通过（3 tests）
+    - `ApiVirtualFileSystemTest` 已通过（4 tests）
+    - `ApiModuleLifecycleTest` 已通过（6 tests）
+
 目标：
 
 - 支持远程增删改查文件与目录。
