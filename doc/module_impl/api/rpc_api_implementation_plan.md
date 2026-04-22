@@ -349,6 +349,31 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.3 第三步：补齐虚拟链接与链接解析规则
 
+当前状态（2026-04-22）：  
+
+- 已完成：
+  - `VfsNode` 已扩展 `LinkNode`，统一承载 `VIRTUAL` / `LOCAL` 两类链接。
+  - `API` 已新增 `createLink(...)` public surface，`ModuleState` 已接入链接创建、覆盖与删除前快照逻辑。
+  - `VfsEntrySnapshot` 已扩展 `LinkEntrySnapshot`、`LinkKind`、`BrokenReason`，支持在元数据面稳定暴露链接类型、目标文本与 broken/cycle 状态。
+  - 链接解析合同已在实现层冻结：
+    - `readEntry(...)` 读取链接自身元数据，不隐式解引用最终链接
+    - `readFile(...)` / `listDirectory(...)` 对 `VIRTUAL` 链接显式解引用
+    - `LOCAL` 链接只暴露元数据，不触碰宿主机文件系统
+    - 中间路径若命中指向目录的 `VIRTUAL` 链接，会按统一规则继续遍历目标目录
+    - 通过目录型 `VIRTUAL` 链接执行 `putFile(...)` / `createDirectory(...)` / `deletePath(...)` 时，会稳定落到目标目录，不额外复制节点
+  - broken link / cycle 已有清晰异常出口：
+    - `ApiBrokenLinkException`
+    - `ApiLinkCycleException`
+- targeted tests 与编译校验已完成：
+  - IntelliJ incremental build 成功
+  - `ApiVirtualLinkTest` 已通过（3 tests）
+  - `ApiVirtualFileSystemTest` 已通过（4 tests）
+  - `ApiVirtualPathTest` 已通过（3 tests）
+  - `ApiModuleLifecycleTest` 已通过（6 tests）
+- 与后续步骤的接口约束已冻结：
+  - 第 5 步源码收集可直接复用当前 `VIRTUAL` 链接解引用与 cycle/broken 检测逻辑
+  - 第 6 步编译产物回挂可直接复用当前 `LOCAL` 链接数据模型，无需重新定义 entry 类型
+
 目标：
 
 - 支持模块内虚拟链接。

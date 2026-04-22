@@ -82,6 +82,15 @@ public final class API {
         return requireModuleState(moduleId).readFile(VirtualPath.parse(path));
     }
 
+    public @NotNull VfsEntrySnapshot.LinkEntrySnapshot createLink(
+            @NotNull String moduleId,
+            @NotNull String path,
+            @NotNull VfsEntrySnapshot.LinkKind linkKind,
+            @NotNull String target
+    ) {
+        return requireModuleState(moduleId).createLink(VirtualPath.parse(path), linkKind, target);
+    }
+
     public @NotNull VfsEntrySnapshot deletePath(@NotNull String moduleId, @NotNull String path, boolean recursive) {
         return requireModuleState(moduleId).deletePath(VirtualPath.parse(path), recursive);
     }
