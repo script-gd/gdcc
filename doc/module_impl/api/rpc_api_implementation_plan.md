@@ -528,9 +528,10 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - `getLastCompileResult(moduleId)`
   - 异步任务模型已收口：
     - 每次编译都在新的虚拟线程中执行
-    - 同一模块同时只允许一个活动编译任务
+    - `compile(...)` 现在会先发布一个可立即轮询的 `QUEUED` task，再由后台虚拟线程等待模块 gate 并开始执行
+    - 同一模块同时只允许一个 queued/active compile task
     - 任务完成后会把结果回写到 `getLastCompileResult(...)`
-    - 调用方可通过 `CompileTaskSnapshot` 轮询 `RUNNING / SUCCEEDED / FAILED`
+    - 调用方可通过 `CompileTaskSnapshot` 轮询 `QUEUED / RUNNING / SUCCEEDED / FAILED`
   - `ModuleState` 已新增编译输入冻结逻辑：
     - 在模块锁内冻结 `CompileOptions`、顶层类名映射和源码快照
     - 递归收集整个模块 VFS 下的 `.gd` 源文件
@@ -559,18 +560,18 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - `ApiCompileDiagnosticsTest`
     - `ApiMappedClassCompileTest`
     - `ApiCompileTaskTest`
-- 已验证的行为锚点：
+  - 已验证的行为锚点：
   - happy path：
     - 多文件模块可成功构造 `FrontendModule` 并完成 backend build
     - 编译成功时可观测 `entry.c`、`entry.h`、`engine_method_binds.h` 与最终本地 artifact
     - 顶层类名映射可贯穿 lowering/backend，最终反映到 `entry.c` 的 runtime class name
     - `displayPath` 可贯穿到 API 结果中的 `sourcePaths`，并在 parse diagnostics 中优先显示
-    - `compile(...)` 启动后可通过任务号观察 `RUNNING -> SUCCEEDED/FAILED`
+    - `compile(...)` 返回后会立即有一个可查询的 taskId，必要时先停留在 `QUEUED`，随后再进入 `RUNNING -> SUCCEEDED/FAILED`
   - negative path：
     - parse diagnostics 会阻断 build，并保留 logical diagnostic path
     - `sema.compile_check` 类 frontend compile-block diagnostics 会阻断 build
     - broken virtual link、无源码文件、不可用 project path、native build failure 会返回不同 `CompileResult.Outcome`
-    - 同模块重复启动编译任务必须失败，并返回清晰错误
+    - 同模块重复启动编译任务必须失败，并准确区分已存在的是 queued task 还是 active task
 - 本步未做：
   - 编译产物自动回挂到 `outputMountRoot`
   - 旧编译产物链接刷新
@@ -643,8 +644,9 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - 新增单调递增 `revision`
   - `API.compile(moduleId)` 现已把源码冻结下沉到任务线程：
     - `compile(...)` 返回后，任务先以 `QUEUED` 快照可见
+    - 若模块 gate 正被普通同模块操作占用，`compile(...)` 也不会阻塞在提交路径上；任务会继续停留在 `QUEUED`
     - 任务线程随后推进到 `FREEZING_INPUTS` 与 `COLLECTING_SOURCES`
-    - 同模块“同时只能有一个活动编译任务”的约束保持不变
+    - 同模块“同时只能有一个 queued/active compile task”的约束保持不变
   - 编译主线关键检查点现已写入阶段快照：
     - 源码冻结前
     - 源码收集前后
@@ -681,6 +683,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - 已验证的行为锚点：
   - happy path：
     - `compile(...)` 返回任务号后，可先观察到 `QUEUED`
+    - 即使模块当时正被普通操作占用，`compile(...)` 也会立即返回同一个可轮询 taskId，而不是先阻塞到拿到 gate
     - 进入 native build 前，任务会沿既定阶段单调推进
     - 解析多文件模块时，可观察到 `PARSING` 阶段下的 `completedUnits / totalUnits`
     - 解析中间态会暴露 caller-facing `currentSourcePath`
@@ -691,6 +694,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - compile-only frontend blockers 保留 `LOWERING` 阶段上下文
     - native build failure 保留 `BUILDING_NATIVE` 阶段上下文
     - 任务停在同一阶段等待时，`revision` 不会无故变化
+    - 若同模块已有 queued compile task，后续 `compile(...)` 失败信息会明确返回 `queued compile task <id>`，不会谎报 active
     - 非编译任务线程调用静态事件记录接口时返回 `false`，不会污染任何任务日志
     - 事件类别或详细描述为空白时会在 API 边界被拒绝
 - 本步未做：
@@ -862,8 +866,9 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - 已完成：
   - API 已补齐模块级串行门控：
     - 同模块的文件 CRUD、link CRUD、配置读写、模块快照查询、最近编译结果查询，都会经过同一 `ManagedModule` gate
-    - `compile(moduleId)` 一旦成功分配任务号，就会先为该模块预留编译席位，后续同模块操作不能在其冻结输入前插队
-    - 编译任务会从任务启动一直持有该 gate，直到结果写回并释放，因此不会与同模块写入/删除交错
+    - `compile(moduleId)` 一旦成功分配任务号，就会先发布 queued task 并为该模块预留编译席位，后续同模块操作不能在其冻结输入前插队
+    - 若此时 gate 正被普通同模块操作占用，后台任务会继续排队，但 `compile(...)` 本身不会阻塞等待 gate
+    - 编译任务一旦真正拿到 gate，就会一直持有到结果写回并释放，因此不会与同模块写入/删除交错
   - 删除冲突语义已冻结：
     - 若模块存在 queued 或 active compile task，`deleteModule(...)` 会抛出清晰的 `ApiModuleBusyException`
     - 删除不会偷偷取消或中断已有编译任务
@@ -894,9 +899,11 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - 同模块编译进行中时，后续同模块写入会被阻塞，直到该次编译完成后才真正落盘
     - 不同模块之间互不共享编译锁；模块 A 编译时，模块 B 的写入与读取仍可正常完成
     - 编译结束后，模块仍可继续进行后续写入和再次编译
+    - 若前一个普通操作尚未释放 gate，新的 `compile(...)` 仍会立即返回 taskId，并保持 `QUEUED` 直到轮到它
   - negative path：
     - 同模块写入在编译期间不会插入到当前编译前面；测试已锚定“第一次编译成功、写入生效后第二次编译因新内容失败”的行为
     - 删除模块与 queued/active compile task 冲突时，会返回带任务号的清晰失败信息
+    - 同模块重复提交编译时，错误信息会准确反映冲突任务当前处于 queued 还是 active
     - `listModules()` 在并发删除时不会抛出内部状态异常
 
 - 本步未做：

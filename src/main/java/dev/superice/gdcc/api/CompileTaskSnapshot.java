@@ -9,9 +9,9 @@ import java.util.Objects;
 
 /// Frozen view of one asynchronous compile task.
 ///
-/// `compile(...)` starts a virtual-thread task and returns its ID immediately. Callers then poll
-/// `getCompileTask(...)` to observe both the coarse task lifecycle and the finer-grained compile
-/// stage that is currently executing.
+/// `compile(...)` registers one task and returns its ID immediately, even if an earlier same-module
+/// operation is still holding the module gate. Callers then poll `getCompileTask(...)` to observe
+/// both the coarse task lifecycle and the finer-grained compile stage that is currently executing.
 public record CompileTaskSnapshot(
         long taskId,
         @NotNull String moduleId,

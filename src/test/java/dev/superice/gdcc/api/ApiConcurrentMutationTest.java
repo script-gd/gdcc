@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,6 +47,41 @@ class ApiConcurrentMutationTest {
                 assertEquals("Frontend diagnostics blocked compilation", secondResult.failureMessage());
                 assertEquals(1, compiler.invocationCount());
             }
+        } finally {
+            compiler.release();
+        }
+    }
+
+    @Test
+    void compileStaysQueuedUntilEarlierSameModuleOperationReleasesGate(@TempDir Path tempDir) throws Exception {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.blockingSuccess();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Queued Gate Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("queued-gate-project")));
+        api.putFile("demo", "/src/demo.gd", validSource("QueuedGateDemo"));
+
+        try (var blocker = ApiCompileTestSupport.blockModuleOperation(api, "demo");
+             var executor = Executors.newSingleThreadExecutor()) {
+            assertTrue(blocker.awaitEntered());
+
+            var taskId = executor.submit(() -> api.compile("demo")).get(500, TimeUnit.MILLISECONDS);
+            var queuedTask = api.getCompileTask(taskId);
+
+            assertEquals(CompileTaskSnapshot.State.QUEUED, queuedTask.state());
+            assertEquals(CompileTaskSnapshot.Stage.QUEUED, queuedTask.stage());
+            assertEquals(1, queuedTask.revision());
+            assertNull(queuedTask.result());
+
+            ApiCompileTestSupport.sleepForProgressPolling();
+            assertEquals(queuedTask, api.getCompileTask(taskId));
+
+            blocker.release();
+            awaitNativeBuild(api, compiler, taskId);
+            compiler.release();
+            var result = ApiCompileTestSupport.awaitResult(api, taskId);
+
+            assertEquals(CompileResult.Outcome.SUCCESS, result.outcome());
         } finally {
             compiler.release();
         }

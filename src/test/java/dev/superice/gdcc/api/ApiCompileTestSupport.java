@@ -13,6 +13,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -50,6 +51,12 @@ final class ApiCompileTestSupport {
                 new CProjectBuilder(compiler),
                 compileTaskHooks
         );
+    }
+
+    static @NotNull ModuleOperationBlocker blockModuleOperation(@NotNull API api, @NotNull String moduleId) {
+        var blocker = new ModuleOperationBlocker(api, moduleId);
+        blocker.start();
+        return blocker;
     }
 
     static @NotNull CompileOptions compileOptions(@NotNull Path projectPath) {
@@ -178,6 +185,86 @@ final class ApiCompileTestSupport {
             if (!awaitLatch(releaseLatch)) {
                 throw new AssertionError("Timed out waiting for snapshot blocker release");
             }
+        }
+    }
+
+    /// Holds one ordinary same-module API operation open so tests can observe a compile task in the
+    /// true queued state before the background thread acquires the module gate.
+    static final class ModuleOperationBlocker implements AutoCloseable {
+        private final @NotNull API api;
+        private final @NotNull String moduleId;
+        private final @NotNull CountDownLatch enteredLatch = new CountDownLatch(1);
+        private final @NotNull CountDownLatch releaseLatch = new CountDownLatch(1);
+        private final @NotNull AtomicReference<Throwable> failure = new AtomicReference<>();
+        private volatile @Nullable Thread thread;
+
+        private ModuleOperationBlocker(@NotNull API api, @NotNull String moduleId) {
+            this.api = Objects.requireNonNull(api, "api must not be null");
+            this.moduleId = Objects.requireNonNull(moduleId, "moduleId must not be null");
+        }
+
+        private void start() {
+            thread = Thread.ofVirtual()
+                    .name("gdcc-api-test-op-" + moduleId)
+                    .start(this::runBlockingOperation);
+        }
+
+        boolean awaitEntered() {
+            return awaitLatch(enteredLatch);
+        }
+
+        void release() {
+            releaseLatch.countDown();
+        }
+
+        @Override
+        public void close() {
+            release();
+            var operationThread = Objects.requireNonNull(thread, "thread must not be null");
+            try {
+                operationThread.join(TimeUnit.SECONDS.toMillis(30));
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted while waiting for module operation blocker", exception);
+            }
+            if (operationThread.isAlive()) {
+                throw new AssertionError("Timed out waiting for module operation blocker to finish");
+            }
+            var blockerFailure = failure.get();
+            if (blockerFailure != null) {
+                throw new AssertionError("Module operation blocker failed", blockerFailure);
+            }
+        }
+
+        private void runBlockingOperation() {
+            try {
+                var managedModule = requireManagedModule();
+                var runExclusive = managedModule.getClass().getDeclaredMethod(
+                        "runExclusive",
+                        String.class,
+                        java.util.function.Function.class
+                );
+                runExclusive.setAccessible(true);
+                runExclusive.invoke(managedModule, moduleId, (java.util.function.Function<ModuleState, Object>) _ -> {
+                    enteredLatch.countDown();
+                    if (!awaitLatch(releaseLatch)) {
+                        throw new AssertionError("Timed out waiting for module operation blocker release");
+                    }
+                    return null;
+                });
+            } catch (InvocationTargetException exception) {
+                failure.set(exception.getCause() == null ? exception : exception.getCause());
+                enteredLatch.countDown();
+            } catch (ReflectiveOperationException exception) {
+                failure.set(exception);
+                enteredLatch.countDown();
+            }
+        }
+
+        private @NotNull Object requireManagedModule() throws ReflectiveOperationException {
+            var method = API.class.getDeclaredMethod("requireManagedModule", String.class);
+            method.setAccessible(true);
+            return method.invoke(api, moduleId);
         }
     }
 

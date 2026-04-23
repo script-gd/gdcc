@@ -48,6 +48,7 @@ public final class CompileTaskRunner implements Runnable {
     private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
     private final @NotNull CompileTaskState taskState;
+    private final @NotNull Runnable executionStarter;
     private final @NotNull Supplier<Request> requestSupplier;
     private final @NotNull Consumer<CompileResult> completionHandler;
 
@@ -57,6 +58,7 @@ public final class CompileTaskRunner implements Runnable {
             @NotNull FrontendLoweringPassManager loweringPassManager,
             @NotNull CProjectBuilder projectBuilder,
             @NotNull CompileTaskState taskState,
+            @NotNull Runnable executionStarter,
             @NotNull Supplier<Request> requestSupplier,
             @NotNull Consumer<CompileResult> completionHandler
     ) {
@@ -65,6 +67,7 @@ public final class CompileTaskRunner implements Runnable {
         this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.taskState = Objects.requireNonNull(taskState, "taskState must not be null");
+        this.executionStarter = Objects.requireNonNull(executionStarter, "executionStarter must not be null");
         this.requestSupplier = Objects.requireNonNull(requestSupplier, "requestSupplier must not be null");
         this.completionHandler = Objects.requireNonNull(completionHandler, "completionHandler must not be null");
     }
@@ -75,6 +78,7 @@ public final class CompileTaskRunner implements Runnable {
         CompileTaskState.bindCurrentThread(taskState);
         try {
             try {
+                executionStarter.run();
                 taskState.updateRunningStage(
                         CompileTaskSnapshot.Stage.FREEZING_INPUTS,
                         "Freezing compile inputs",

@@ -37,7 +37,6 @@ public final class API {
     private final @NotNull CompileTaskHooks compileTaskHooks;
     private final @NotNull ConcurrentHashMap<String, ManagedModule> modules = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
-    private final @NotNull ConcurrentHashMap<String, Long> activeCompileTasksByModule = new ConcurrentHashMap<>();
     private final @NotNull AtomicLong nextCompileTaskId = new AtomicLong(1);
 
     public API() {
@@ -245,27 +244,22 @@ public final class API {
         return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, ModuleState::getLastCompileResult);
     }
 
-    /// Starts one asynchronous compile on a fresh virtual thread and returns the task ID. The
-    /// caller must poll `getCompileTask(...)` for progress and completion.
+    /// Publishes one queued compile task immediately, then lets a fresh virtual thread wait for the
+    /// module gate and execute the actual compile. The caller must poll `getCompileTask(...)` for
+    /// queue progress, running stages, and final completion.
     public long compile(@NotNull String moduleId) {
         var normalizedModuleId = normalizeModuleId(moduleId);
         var managedModule = requireManagedModule(normalizedModuleId);
         var taskId = nextCompileTaskId.getAndIncrement();
-        var existingTaskId = activeCompileTasksByModule.putIfAbsent(normalizedModuleId, taskId);
-        if (existingTaskId != null) {
-            throw new ApiCompileAlreadyRunningException(
-                    "Module '" + normalizedModuleId + "' already has active compile task " + existingTaskId
-            );
-        }
+        var taskState = new CompileTaskState(taskId, normalizedModuleId, clock.instant(), compileTaskHooks);
+        compileTasks.put(taskId, taskState);
         try {
-            managedModule.beginCompile(normalizedModuleId, taskId);
+            managedModule.enqueueCompile(normalizedModuleId, taskId);
         } catch (RuntimeException exception) {
-            activeCompileTasksByModule.remove(normalizedModuleId, taskId);
+            compileTasks.remove(taskId);
             throw exception;
         }
         var ownerState = managedModule.state();
-        var taskState = new CompileTaskState(taskId, normalizedModuleId, clock.instant(), compileTaskHooks);
-        compileTasks.put(taskId, taskState);
         try {
             Thread.ofVirtual()
                     .name("gdcc-api-compile-" + taskId)
@@ -275,17 +269,16 @@ public final class API {
                             loweringPassManager,
                             projectBuilder,
                             taskState,
+                            () -> managedModule.awaitCompileTurn(normalizedModuleId, taskId),
                             () -> freezeCompileTaskRequest(ownerState),
                             result -> {
                                 ownerState.setLastCompileResult(result);
-                                activeCompileTasksByModule.remove(normalizedModuleId, taskId);
-                                managedModule.endCompile(taskId);
+                                managedModule.finishCompile(taskId);
                             }
                     ));
         } catch (RuntimeException exception) {
             compileTasks.remove(taskId);
-            activeCompileTasksByModule.remove(normalizedModuleId, taskId);
-            managedModule.endCompile(taskId);
+            managedModule.finishCompile(taskId);
             throw exception;
         }
         return taskId;
@@ -385,19 +378,36 @@ public final class API {
             return state.snapshot();
         }
 
-        /// A compile reserves the module as soon as `compile(...)` accepts the task ID so later
-        /// same-module operations cannot overtake it before inputs are frozen.
-        private synchronized void beginCompile(@NotNull String moduleId, long taskId) {
+        /// Queue reservation happens on the caller thread so `compile(...)` can return a visible
+        /// task ID immediately while still preventing later same-module operations from overtaking
+        /// the pending compile before its inputs are frozen.
+        private synchronized void enqueueCompile(@NotNull String moduleId, long taskId) {
             if (deleted) {
                 throw new ApiModuleNotFoundException("Module '" + moduleId + "' does not exist");
             }
+            var existingTaskId = pendingCompileTaskId();
+            if (existingTaskId != 0) {
+                var existingStateLabel = queuedCompileTaskId != 0 ? "queued" : "active";
+                throw new ApiCompileAlreadyRunningException(
+                        "Module '" + moduleId + "' already has " + existingStateLabel + " compile task " + existingTaskId
+                );
+            }
             queuedCompileTaskId = taskId;
+            notifyAll();
+        }
+
+        /// The background compile thread waits here until earlier same-module work drains, then it
+        /// converts its published queued reservation into the active compile slot.
+        private synchronized void awaitCompileTurn(@NotNull String moduleId, long taskId) {
             try {
                 while (busy) {
                     awaitTurn();
                 }
                 if (deleted) {
                     throw new ApiModuleNotFoundException("Module '" + moduleId + "' does not exist");
+                }
+                if (queuedCompileTaskId != taskId) {
+                    throw new IllegalStateException("Compile task " + taskId + " lost its queued reservation");
                 }
                 busy = true;
                 activeCompileTaskId = taskId;
@@ -450,15 +460,20 @@ public final class API {
             notifyAll();
         }
 
-        private synchronized void endCompile(long taskId) {
+        private synchronized void finishCompile(long taskId) {
+            var changed = false;
             if (queuedCompileTaskId == taskId) {
                 queuedCompileTaskId = 0;
+                changed = true;
             }
             if (activeCompileTaskId == taskId) {
                 activeCompileTaskId = 0;
+                busy = false;
+                changed = true;
             }
-            busy = false;
-            notifyAll();
+            if (changed) {
+                notifyAll();
+            }
         }
 
         private synchronized void enterOperation(@NotNull String moduleId) {

@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -62,6 +64,50 @@ class ApiCompileTaskTest {
         assertTrue(completedTask.success());
         assertTrue(compiler.ranOnVirtualThread());
         assertEquals(completedTask.result(), api.getLastCompileResult("demo"));
+    }
+
+    @Test
+    void compileReturnsQueuedTaskImmediatelyWhileModuleIsBusyWithNormalOperation(@TempDir Path tempDir) throws Exception {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.blockingSuccess();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Queued Compile Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("queued-compile-project")));
+        api.putFile("demo", "/src/demo.gd", """
+                class_name QueuedCompileDemo
+                extends RefCounted
+                
+                func value() -> int:
+                    return 7
+                """);
+
+        try (var blocker = ApiCompileTestSupport.blockModuleOperation(api, "demo");
+             var executor = Executors.newSingleThreadExecutor()) {
+            assertTrue(blocker.awaitEntered());
+
+            var taskId = executor.submit(() -> api.compile("demo")).get(500, TimeUnit.MILLISECONDS);
+            var queuedTask = api.getCompileTask(taskId);
+
+            assertEquals(CompileTaskSnapshot.State.QUEUED, queuedTask.state());
+            assertEquals(CompileTaskSnapshot.Stage.QUEUED, queuedTask.stage());
+            assertEquals(1, queuedTask.revision());
+            assertNull(queuedTask.result());
+
+            var duplicateCompileError = assertThrows(ApiCompileAlreadyRunningException.class, () -> api.compile("demo"));
+            assertEquals("Module 'demo' already has queued compile task " + taskId, duplicateCompileError.getMessage());
+
+            blocker.release();
+            assertTrue(compiler.awaitEntered());
+            compiler.release();
+            var completedTask = ApiCompileTestSupport.awaitTask(api, taskId);
+
+            assertEquals(CompileTaskSnapshot.State.SUCCEEDED, completedTask.state());
+            assertEquals(CompileTaskSnapshot.Stage.FINISHED, completedTask.stage());
+            assertTrue(completedTask.success());
+            assertTrue(compiler.ranOnVirtualThread());
+        } finally {
+            compiler.release();
+        }
     }
 
     @Test
