@@ -408,7 +408,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(1, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.getFirst().message().contains("supports only zero parameters"));
         assertTrue(typeCheckDiagnostics.getFirst().message().contains("Worker._init(...)"));
-        assertEquals(Path.of("tmp", "type_check_parameterized_gdcc_constructor.gd"), typeCheckDiagnostics.getFirst().sourcePath());
+        assertEquals(
+                FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_parameterized_gdcc_constructor.gd")),
+                typeCheckDiagnostics.getFirst().sourcePath()
+        );
         assertNotNull(typeCheckDiagnostics.getFirst().range());
     }
 
@@ -506,7 +509,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertTrue(typeCheckDiagnostic.message().contains("strict_float"));
         assertTrue(typeCheckDiagnostic.message().contains("int"));
         assertTrue(typeCheckDiagnostic.message().contains("float"));
-        assertEquals(Path.of("tmp", "type_check_local_compatibility.gd"), typeCheckDiagnostic.sourcePath());
+        assertEquals(
+                FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_local_compatibility.gd")),
+                typeCheckDiagnostic.sourcePath()
+        );
         assertNotNull(typeCheckDiagnostic.range());
 
         assertTrue(diagnosticsByCategory(
@@ -588,14 +594,18 @@ class FrontendTypeCheckAnalyzerTest {
         assertTrue(typeCheckDiagnostic.message().contains("wrong_type"));
         assertTrue(typeCheckDiagnostic.message().contains("String"));
         assertTrue(typeCheckDiagnostic.message().contains("int"));
-        assertEquals(Path.of("tmp", "type_check_property_compatibility.gd"), typeCheckDiagnostic.sourcePath());
+        assertEquals(
+                FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_property_compatibility.gd")),
+                typeCheckDiagnostic.sourcePath()
+        );
         assertNotNull(typeCheckDiagnostic.range());
 
         var typeHintDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_hint");
         assertEquals(4, typeHintDiagnostics.size());
         assertTrue(typeHintDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.WARNING
-                        && Path.of("tmp", "type_check_property_compatibility.gd").equals(diagnostic.sourcePath())
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_property_compatibility.gd"))
+                        .equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
         assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
@@ -729,7 +739,8 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(4, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && Path.of("tmp", "type_check_return_compatibility.gd").equals(diagnostic.sourcePath())
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_return_compatibility.gd"))
+                        .equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->

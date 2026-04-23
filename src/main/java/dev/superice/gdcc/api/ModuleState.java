@@ -10,7 +10,6 @@ import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayDeque;
@@ -517,7 +516,7 @@ final class ModuleState {
         var candidate = new SourceSnapshot(
                 surfacePath.text(),
                 fileNode.displayPath(),
-                logicalPathFor(surfacePath, fileNode.displayPath()),
+                logicalPathFor(surfacePath),
                 fileNode.content()
         );
         var existing = sourcesByFile.get(fileNode);
@@ -537,13 +536,11 @@ final class ModuleState {
         return existingNode instanceof FileNode fileNode ? fileNode.displayPath() : surfacePath.text();
     }
 
-    private @NotNull Path logicalPathFor(@NotNull VirtualPath sourcePath, @NotNull String displayPath) {
-        try {
-            return Path.of(displayPath);
-        } catch (InvalidPathException _) {
-            // Keep compile running even if the caller chooses a non-host-native display label.
-            return Path.of("vfs", moduleId).resolve(sourcePath.text().substring(1));
-        }
+    /// Compiler-facing paths are internal anchors only. They stay detached from caller-facing
+    /// `displayPath` strings so labels such as `res://player.gd` never need to masquerade as a
+    /// host-native `Path`.
+    private @NotNull Path logicalPathFor(@NotNull VirtualPath sourcePath) {
+        return Path.of("vfs", moduleId).resolve(sourcePath.text().substring(1));
     }
 
     private @NotNull String normalizeDisplayPath(@NotNull String displayPath) {

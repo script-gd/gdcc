@@ -46,7 +46,7 @@ public final class DiagnosticManager {
             @Nullable Path sourcePath,
             @Nullable FrontendRange range
     ) {
-        report(FrontendDiagnostic.warning(category, message, sourcePath, range));
+        report(FrontendDiagnostic.warning(category, message, FrontendDiagnostic.sourcePathText(sourcePath), range));
     }
 
     /// Reports an error without forcing callers to manually construct the record.
@@ -56,7 +56,7 @@ public final class DiagnosticManager {
             @Nullable Path sourcePath,
             @Nullable FrontendRange range
     ) {
-        report(FrontendDiagnostic.error(category, message, sourcePath, range));
+        report(FrontendDiagnostic.error(category, message, FrontendDiagnostic.sourcePathText(sourcePath), range));
     }
 
     /// Returns whether any accumulated diagnostic is an error.

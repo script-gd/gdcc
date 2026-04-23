@@ -275,7 +275,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals("sema.unsupported_parameter_default_value", error.category());
         assertTrue(error.message().contains("not supported"));
         assertTrue(error.message().contains("ignores the default value expression"));
-        assertEquals(phaseInput.unit().path(), error.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
         assertEquals(
                 FrontendRange.fromAstRange(pingFunction.parameters().getLast().defaultValue().range()),
                 error.range()
@@ -329,7 +329,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals("sema.unsupported_variable_inventory_subtree", error.category());
         assertTrue(error.message().contains("does not support lambda subtrees"));
         assertTrue(error.message().contains("parameters, default values, locals, and captures"));
-        assertEquals(phaseInput.unit().path(), error.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
         assertEquals(FrontendRange.fromAstRange(builderLambda.range()), error.range());
         assertNotNull(assertInstanceOf(
                 CallableScope.class,
@@ -399,17 +399,17 @@ class FrontendVariableAnalyzerTest {
         assertEquals("sema.unsupported_variable_inventory_subtree", forWarning.category());
         assertTrue(forWarning.message().contains("does not support `for` subtrees"));
         assertTrue(forWarning.message().contains("loop iterator binding"));
-        assertEquals(phaseInput.unit().path(), forWarning.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), forWarning.sourcePath());
         assertEquals(FrontendDiagnosticSeverity.ERROR, matchWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", matchWarning.category());
         assertTrue(matchWarning.message().contains("does not support `match` subtrees"));
         assertTrue(matchWarning.message().contains("pattern bindings"));
-        assertEquals(phaseInput.unit().path(), matchWarning.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), matchWarning.sourcePath());
         assertEquals(FrontendDiagnosticSeverity.ERROR, constWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", constWarning.category());
         assertTrue(constWarning.message().contains("does not support block-local `const` declarations"));
         assertTrue(constWarning.message().contains("constant 'answer'"));
-        assertEquals(phaseInput.unit().path(), constWarning.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), constWarning.sourcePath());
         var plainLocalBinding = pingBodyScope.resolveValueHere("plain_local");
         assertNotNull(plainLocalBinding);
         assertEquals(GdVariantType.VARIANT, plainLocalBinding.type());
@@ -450,7 +450,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", error.category());
         assertTrue(error.message().contains("does not support lambda subtrees"));
-        assertEquals(phaseInput.unit().path(), error.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
         assertEquals(FrontendRange.fromAstRange(returnedLambda.range()), error.range());
     }
 
@@ -511,7 +511,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
         assertEquals("sema.type_resolution", warning.category());
         assertTrue(warning.message().contains("MissingType"));
-        assertEquals(phaseInput.unit().path(), warning.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), warning.sourcePath());
         assertEquals(
                 FrontendRange.fromAstRange(pingFunction.parameters().getFirst().type().range()),
                 warning.range()
@@ -554,7 +554,7 @@ class FrontendVariableAnalyzerTest {
         assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
         assertEquals("sema.type_resolution", warning.category());
         assertTrue(warning.message().contains("MissingType"));
-        assertEquals(phaseInput.unit().path(), warning.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), warning.sourcePath());
         assertEquals(
                 FrontendRange.fromAstRange(missingLocal.type().range()),
                 warning.range()

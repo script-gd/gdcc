@@ -101,15 +101,15 @@ class FrontendAnnotationUsageAnalyzerTest {
                         && diagnostic.range() != null
         ));
         assertTrue(annotationUsageDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "non_node_onready.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "non_node_onready.gd")))
                         && diagnostic.message().contains("inherits from Node")
         ));
         assertTrue(annotationUsageDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "static_local_onready.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "static_local_onready.gd")))
                         && diagnostic.message().contains("static property 'child'")
         ));
         assertTrue(annotationUsageDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "static_local_onready.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "static_local_onready.gd")))
                         && diagnostic.message().contains("class properties declared with 'var'")
         ));
         assertFalse(analyzedModule.analysisData().diagnostics().asList().stream().anyMatch(diagnostic ->

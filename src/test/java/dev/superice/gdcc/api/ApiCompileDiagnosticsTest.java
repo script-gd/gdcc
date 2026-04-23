@@ -38,7 +38,7 @@ class ApiCompileDiagnosticsTest {
         assertFalse(result.success());
         assertEquals("Frontend diagnostics blocked compilation", result.failureMessage());
         assertTrue(result.diagnostics().hasErrors());
-        assertEquals(Path.of("shown broken.gd"), parseDiagnostic.sourcePath());
+        assertEquals("shown broken.gd", parseDiagnostic.sourcePath());
         assertTrue(parseDiagnostic.message().contains("CST structural issue"));
         assertEquals(List.of("shown broken.gd"), result.sourcePaths());
         assertTrue(result.generatedFiles().isEmpty());
@@ -75,6 +75,33 @@ class ApiCompileDiagnosticsTest {
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
         assertTrue(result.outputLinks().isEmpty());
+        assertEquals(0, compiler.invocationCount());
+    }
+
+    @Test
+    void compilePreservesGodotStyleDisplayPathsAsStringsInDiagnosticsAndResultSources(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Godot Display Path Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("godot-display-path-project")));
+        api.putFile("demo", "/src/player.gd", """
+                class_name Player
+                extends RefCounted
+                
+                static var shared := 1
+                """, "res://actors/player.gd");
+
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+        var compileDiagnostic = result.diagnostics().asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals("sema.compile_check"))
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(CompileResult.Outcome.FRONTEND_FAILED, result.outcome());
+        assertEquals("res://actors/player.gd", compileDiagnostic.sourcePath());
+        assertEquals(List.of("res://actors/player.gd"), result.sourcePaths());
+        assertTrue(compileDiagnostic.message().contains("Static property 'shared'"));
         assertEquals(0, compiler.invocationCount());
     }
 

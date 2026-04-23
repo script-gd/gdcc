@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
@@ -119,7 +120,7 @@ class FrontendDeclaredTypeSupportTest {
         assertEquals(FrontendDiagnosticSeverity.WARNING, diagnostic.severity());
         assertEquals("sema.type_resolution", diagnostic.category());
         assertTrue(diagnostic.message().contains("MissingType"));
-        assertEquals(SOURCE_PATH, diagnostic.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(SOURCE_PATH), diagnostic.sourcePath());
         assertEquals(FrontendRange.fromAstRange(SYNTHETIC_RANGE), diagnostic.range());
     }
 

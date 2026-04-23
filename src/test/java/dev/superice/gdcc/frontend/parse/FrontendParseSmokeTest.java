@@ -1,6 +1,7 @@
 package dev.superice.gdcc.frontend.parse;
 
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +55,6 @@ class FrontendParseSmokeTest {
         );
 
         var firstDiagnostic = snapshot.getFirst();
-        assertEquals(sourcePath, firstDiagnostic.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(sourcePath), firstDiagnostic.sourcePath());
     }
 }

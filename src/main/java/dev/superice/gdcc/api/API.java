@@ -11,6 +11,7 @@ import dev.superice.gdcc.exception.ApiModuleAlreadyExistsException;
 import dev.superice.gdcc.exception.ApiModuleBusyException;
 import dev.superice.gdcc.exception.ApiModuleNotFoundException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
@@ -477,7 +478,7 @@ public final class API {
                     sourceSnapshot.displayPath()
             );
         }
-        var parseAndFrontendDiagnostics = diagnostics.snapshot();
+        var parseAndFrontendDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
         if (parseAndFrontendDiagnostics.hasErrors()) {
             return new CompileResult(
                     CompileResult.Outcome.FRONTEND_FAILED,
@@ -525,7 +526,7 @@ public final class API {
                     null
             );
             var lowered = loweringPassManager.lower(frontendModule, classRegistry, diagnostics);
-            var frontendDiagnostics = diagnostics.snapshot();
+            var frontendDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
             if (lowered == null || frontendDiagnostics.hasErrors()) {
                 return new CompileResult(
                         CompileResult.Outcome.FRONTEND_FAILED,
@@ -625,7 +626,7 @@ public final class API {
                     request.compileOptions(),
                     request.topLevelCanonicalNameMap(),
                     sourcePaths,
-                    diagnostics.snapshot(),
+                    remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
                     "Build pipeline failed: " + exception.getMessage(),
                     exception.getMessage(),
                     collectGeneratedFiles(projectPath),
@@ -648,6 +649,49 @@ public final class API {
         return request.sourceSnapshots().stream()
                 .map(ModuleState.SourceSnapshot::displayPath)
                 .toList();
+    }
+
+    /// Frontend internals still track host-usable logical paths, but API callers care about the
+    /// original caller-facing labels such as `res://player.gd`. Results therefore remap matching
+    /// frontend diagnostic source paths back to each frozen source snapshot's `displayPath`.
+    private @NotNull DiagnosticSnapshot remapDiagnosticSourcePaths(
+            @NotNull ModuleState.CompileRequest request,
+            @NotNull DiagnosticSnapshot diagnostics
+    ) {
+        if (diagnostics.isEmpty()) {
+            return diagnostics;
+        }
+        var displayPathsByLogicalPath = request.sourceSnapshots().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        sourceSnapshot -> FrontendDiagnostic.sourcePathText(sourceSnapshot.logicalPath()),
+                        ModuleState.SourceSnapshot::displayPath,
+                        (first, _) -> first
+                ));
+        var remappedDiagnostics = diagnostics.asList().stream()
+                .map(diagnostic -> remapDiagnosticSourcePath(diagnostic, displayPathsByLogicalPath))
+                .toList();
+        return new DiagnosticSnapshot(remappedDiagnostics);
+    }
+
+    private @NotNull FrontendDiagnostic remapDiagnosticSourcePath(
+            @NotNull FrontendDiagnostic diagnostic,
+            @NotNull Map<String, String> displayPathsByLogicalPath
+    ) {
+        var sourcePath = diagnostic.sourcePath();
+        if (sourcePath == null) {
+            return diagnostic;
+        }
+        var displayPath = displayPathsByLogicalPath.get(sourcePath);
+        if (Objects.equals(sourcePath, displayPath) || displayPath == null) {
+            return diagnostic;
+        }
+        return new FrontendDiagnostic(
+                diagnostic.severity(),
+                diagnostic.category(),
+                diagnostic.message(),
+                displayPath,
+                diagnostic.range()
+        );
     }
 
     private void runCompileTask(

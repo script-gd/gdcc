@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.UnknownStatement;
 import dev.superice.gdparser.frontend.lowering.CstToAstMapper;
 import dev.superice.gdparser.infra.treesitter.GdParserFacade;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import org.junit.jupiter.api.Test;
 
@@ -49,12 +50,13 @@ class GdScriptParserServiceDiagnosticManagerTest {
 
         var snapshot = diagnostics.snapshot();
 
+        assertNotNull(unit.ast());
         assertFalse(snapshot.isEmpty());
         assertTrue(snapshot.asList().stream().allMatch(diagnostic -> diagnostic.category().equals("parse.lowering")));
         assertTrue(snapshot.asList().stream().anyMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && diagnostic.message().startsWith("CST structural issue:")
-                        && diagnostic.sourcePath().equals(Path.of("tmp", "broken.gd"))
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "broken.gd")).equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
     }
@@ -107,7 +109,7 @@ class GdScriptParserServiceDiagnosticManagerTest {
                 .filter(diagnostic -> diagnostic.message().contains("Implicit constructor base arguments"))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Expected legacy constructor syntax diagnostic"));
-        assertEquals(sourcePath, legacyDiagnostic.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(sourcePath), legacyDiagnostic.sourcePath());
         assertNotNull(legacyDiagnostic.range());
 
         var legacyStatement = unit.ast().statements().stream()
@@ -133,7 +135,7 @@ class GdScriptParserServiceDiagnosticManagerTest {
         assertEquals(FrontendDiagnosticSeverity.ERROR, diagnostic.severity());
         assertEquals("parse.internal", diagnostic.category());
         assertTrue(diagnostic.message().startsWith("Unexpected parser failure:"));
-        assertEquals(Path.of("tmp", "internal_failure.gd"), diagnostic.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "internal_failure.gd")), diagnostic.sourcePath());
         assertNull(diagnostic.range());
 
         assertNotNull(unit.ast());

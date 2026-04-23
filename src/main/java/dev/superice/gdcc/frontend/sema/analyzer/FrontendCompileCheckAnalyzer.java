@@ -785,7 +785,10 @@ public class FrontendCompileCheckAnalyzer {
         ) {
             var anchorRange = FrontendRange.fromAstRange(anchor.range());
             return publishedDiagnostics.asList().stream()
-                    .filter(diagnostic -> Objects.equals(diagnostic.sourcePath(), sourcePath))
+                    .filter(diagnostic -> Objects.equals(
+                            diagnostic.sourcePath(),
+                            FrontendDiagnostic.sourcePathText(sourcePath)
+                    ))
                     .filter(diagnostic -> Objects.equals(diagnostic.range(), anchorRange))
                     .filter(predicate)
                     .findFirst()

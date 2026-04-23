@@ -164,6 +164,7 @@
 - 文件显示还需要独立的 `displayPath` 元数据：
   - 模块 VFS 继续用规范化虚拟路径定位
   - `displayPath` 只要求 non-blank，可使用任意 caller-facing label，不要求满足模块虚拟路径格式
+  - `displayPath` 是纯显示字符串，不应被要求可映射为宿主机 `Path`
   - 文件快照、编译输入展示和诊断展示优先使用 `displayPath`
 
 ### 2.5 链接模型
@@ -534,9 +535,9 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - 在模块锁内冻结 `CompileOptions`、顶层类名映射和源码快照
     - 递归收集整个模块 VFS 下的 `.gd` 源文件
     - 跟随 `VIRTUAL` link、忽略 `LOCAL` link
-    - 若文件设置了 `displayPath`，优先将其作为 parser/logical diagnostic path
+    - 若文件设置了 `displayPath`，API 结果会优先将其作为 caller-facing diagnostic/source label
     - `CompileResult.sourcePaths` 只要求 non-blank，因此会原样保留 caller-facing `displayPath`，不再把它误当作 VFS 虚拟路径校验
-    - `displayPath` 不可直接映射为宿主机 `Path` 时，回退到 `vfs/<moduleId>/...` synthetic logical path，避免诊断泄漏真实构建目录
+    - compiler-facing `logicalPath` 与 `displayPath` 已拆开：内部统一使用 `vfs/<moduleId>/...` synthetic logical path，结果层再把匹配诊断映射回 `displayPath`
     - 对同一 backing `FileNode` 的多重别名路径做去重，避免一个源码节点因虚拟别名被重复编译
   - `compile(...)` 已接通真实主线：
     - `GdScriptParserService.parseUnit(...)`
@@ -600,7 +601,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - 编译输入收集建议只纳入 `.gd` 文件。
 - 同一模块内源码单元顺序建议按规范化虚拟路径排序，保证编译结果稳定。
 - 文件若显式设置了 `displayPath`，显示面与 `CompileResult.sourcePaths` 应优先展示 `displayPath`。
-- 诊断中的 `sourcePath` 应优先保留 caller-facing `displayPath`；若无法安全映射为 `Path`，则回退为可追溯到虚拟路径的逻辑路径，不要泄漏临时目录路径。
+- 诊断中的 `sourcePath` 应作为字符串优先保留 caller-facing `displayPath`；compiler-facing `logicalPath` 仅用于内部编译过程，不应反向约束显示路径。
 
 验收细则：
 
