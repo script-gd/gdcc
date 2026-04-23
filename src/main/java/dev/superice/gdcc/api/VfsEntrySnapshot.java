@@ -16,6 +16,8 @@ public sealed interface VfsEntrySnapshot permits VfsEntrySnapshot.DirectoryEntry
         VfsEntrySnapshot.LinkEntrySnapshot {
     @NotNull String path();
 
+    @NotNull String virtualPath();
+
     @NotNull String name();
 
     @NotNull Kind kind();
@@ -36,14 +38,21 @@ public sealed interface VfsEntrySnapshot permits VfsEntrySnapshot.DirectoryEntry
         CYCLE
     }
 
-    record DirectoryEntrySnapshot(@NotNull String path, @NotNull String name,
+    /// Directory and link snapshots still display their surfaced virtual path because they do not
+    /// own an alternate source-facing display path like files do.
+    record DirectoryEntrySnapshot(@NotNull String virtualPath, @NotNull String name,
                                   int childCount) implements VfsEntrySnapshot {
         public DirectoryEntrySnapshot {
-            path = VirtualPath.parse(path).text();
+            virtualPath = VirtualPath.parse(virtualPath).text();
             name = validateName(name);
             if (childCount < 0) {
                 throw new IllegalArgumentException("childCount must not be negative");
             }
+        }
+
+        @Override
+        public @NotNull String path() {
+            return virtualPath;
         }
 
         @Override
@@ -53,18 +62,25 @@ public sealed interface VfsEntrySnapshot permits VfsEntrySnapshot.DirectoryEntry
     }
 
     record FileEntrySnapshot(
-            @NotNull String path,
+            @NotNull String virtualPath,
+            @NotNull String displayPath,
             @NotNull String name,
             long byteCount,
             @NotNull Instant updatedAt
     ) implements VfsEntrySnapshot {
         public FileEntrySnapshot {
-            path = VirtualPath.parse(path).text();
+            virtualPath = VirtualPath.parse(virtualPath).text();
+            displayPath = StringUtil.requireTrimmedNonBlank(displayPath, "displayPath");
             name = validateName(name);
             if (byteCount < 0) {
                 throw new IllegalArgumentException("byteCount must not be negative");
             }
             Objects.requireNonNull(updatedAt, "updatedAt must not be null");
+        }
+
+        @Override
+        public @NotNull String path() {
+            return displayPath;
         }
 
         @Override
@@ -74,17 +90,22 @@ public sealed interface VfsEntrySnapshot permits VfsEntrySnapshot.DirectoryEntry
     }
 
     record LinkEntrySnapshot(
-            @NotNull String path,
+            @NotNull String virtualPath,
             @NotNull String name,
             @NotNull LinkKind linkKind,
             @NotNull String target,
             @Nullable BrokenReason brokenReason
     ) implements VfsEntrySnapshot {
         public LinkEntrySnapshot {
-            path = VirtualPath.parse(path).text();
+            virtualPath = VirtualPath.parse(virtualPath).text();
             name = validateName(name);
             Objects.requireNonNull(linkKind, "linkKind must not be null");
             target = validateTarget(linkKind, target);
+        }
+
+        @Override
+        public @NotNull String path() {
+            return virtualPath;
         }
 
         @Override

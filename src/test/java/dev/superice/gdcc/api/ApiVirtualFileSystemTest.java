@@ -66,6 +66,24 @@ class ApiVirtualFileSystemTest {
     }
 
     @Test
+    void putFileCanExposeDisplayPathWhileKeepingVirtualPathStable() {
+        var api = new API(FIXED_CLOCK);
+        api.createModule("demo", "Demo");
+
+        var created = api.putFile("demo", "/src/main.gd", "extends Node\n", "/display/main.gd");
+        var preserved = api.putFile("demo", "/src/main.gd", "extends RefCounted\n");
+        var entry = assertInstanceOf(VfsEntrySnapshot.FileEntrySnapshot.class, api.readEntry("demo", "/src/main.gd"));
+
+        assertEquals("/display/main.gd", created.path());
+        assertEquals("/src/main.gd", created.virtualPath());
+        assertEquals("/display/main.gd", preserved.path());
+        assertEquals("/src/main.gd", preserved.virtualPath());
+        assertEquals("/display/main.gd", entry.path());
+        assertEquals("/src/main.gd", entry.virtualPath());
+        assertEquals("main.gd", entry.name());
+    }
+
+    @Test
     void deletePathHonorsRecursiveFlagAndUpdatesModuleSnapshot() {
         var api = new API(FIXED_CLOCK);
         api.createModule("demo", "Demo");
@@ -170,5 +188,11 @@ class ApiVirtualFileSystemTest {
                 () -> api.putFile("demo", "/main.gd", null)
         );
         assertEquals("content must not be null", nullContentError.getMessage());
+
+        var blankDisplayPathError = assertThrows(
+                IllegalArgumentException.class,
+                () -> api.putFile("demo", "/main.gd", "body", "   ")
+        );
+        assertEquals("displayPath must not be blank", blankDisplayPathError.getMessage());
     }
 }

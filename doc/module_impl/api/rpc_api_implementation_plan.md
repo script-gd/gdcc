@@ -108,6 +108,7 @@
 - `getModule(...)`
 - `listModules()`
 - `putFile(...)`
+- `putFile(..., displayPath)`
 - `readFile(...)`
 - `deletePath(...)`
 - `createDirectory(...)`
@@ -119,6 +120,7 @@
 - `setTopLevelCanonicalNameMap(...)`
 - `getTopLevelCanonicalNameMap(...)`
 - `compile(...)`
+- `getCompileTask(...)`
 - `getLastCompileResult(...)`
 
 ### 2.3 建议的内部状态模型
@@ -141,6 +143,8 @@
   - 模块的编译参数快照。
 - `CompileResult`
   - 最近一次编译的输入快照、诊断、输出链接和底层构建结果摘要。
+- `CompileTaskSnapshot`
+  - 一次异步编译任务的状态快照，包括任务号、所属模块、运行中/成功/失败状态和最终 `CompileResult`。
 
 这组类型足以覆盖当前需求，不需要先引入 repository / gateway / adapter / driver 等抽象层。
 
@@ -157,6 +161,10 @@
 
 - 远程调用面不应暴露宿主机是 Windows 还是其他系统。
 - parser/backend 需要的 `Path` 只是内部适配结果，不应反向定义 RPC 路径语义。
+- 文件显示还需要独立的 `displayPath` 元数据：
+  - 模块 VFS 继续用规范化虚拟路径定位
+  - `displayPath` 只要求 non-blank，可使用任意 caller-facing label，不要求满足模块虚拟路径格式
+  - 文件快照、编译输入展示和诊断展示优先使用 `displayPath`
 
 ### 2.5 链接模型
 
@@ -180,17 +188,18 @@
 
 ### 2.6 编译管线在 API 层的建议责任
 
-API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力：
+API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力。当前建议把它做成“启动异步任务并返回任务号”的入口：
 
-1. 冻结模块快照。
-2. 从 VFS 递归收集参与编译的源码文件。
-3. 将每个源码文件转成 `FrontendSourceUnit`。
-4. 用模块名和顶层类名映射构造 `FrontendModule`。
-5. 根据 `CompileOptions` 初始化 `ClassRegistry`、`CodegenContext`、`CProjectInfo`。
-6. 调用 `FrontendLoweringPassManager.lower(...)`。
-7. 调用 `CCodegen.prepare(...)` 与 `CProjectBuilder.buildProject(...)`。
-8. 将生成文件和最终本地 artifact 以 `LOCAL` link 形式挂回模块 VFS。
-9. 记录本次编译结果快照供 RPC 查询。
+1. 检查同一模块当前是否已有活动编译任务；若有则拒绝启动第二个任务。
+2. 冻结模块快照。
+3. 在新的虚拟线程上，从 VFS 递归收集参与编译的源码文件。
+4. 将每个源码文件转成 `FrontendSourceUnit`。
+5. 用模块名和顶层类名映射构造 `FrontendModule`。
+6. 根据 `CompileOptions` 初始化 `ClassRegistry`、`CodegenContext`、`CProjectInfo`。
+7. 调用 `FrontendLoweringPassManager.lower(...)`。
+8. 调用 `CCodegen.prepare(...)` 与 `CProjectBuilder.buildProject(...)`。
+9. 将生成文件和最终本地 artifact 以 `LOCAL` link 形式挂回模块 VFS。
+10. 记录本次编译结果快照，并允许调用方通过任务号轮询 `CompileTaskSnapshot`。
 
 ---
 
@@ -206,6 +215,8 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
   - public record，表达 RPC 可设置的编译参数
 - `src/main/java/dev/superice/gdcc/api/CompileResult.java`
   - public record，表达 RPC 可观察的编译结果
+- `src/main/java/dev/superice/gdcc/api/CompileTaskSnapshot.java`
+  - public record，表达 RPC 可轮询的异步编译任务状态
 - `src/main/java/dev/superice/gdcc/api/ModuleSnapshot.java`
   - public record，表达模块当前元数据和 VFS 概览
 - `src/main/java/dev/superice/gdcc/api/ModuleState.java`
@@ -223,7 +234,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.1 第一步：建立模块仓库与公共 facade
 
-当前状态（2026-04-22）：
+当前状态（2026-04-23）：
 
 - 已完成：
   - `API` 已改为可实例化 facade，并在内存中维护模块表。
@@ -287,10 +298,18 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
   - 第 2 步 public surface 已落地：
     - `createDirectory(...)`
     - `putFile(...)`
+    - `putFile(..., displayPath)`
     - `readFile(...)`
     - `deletePath(..., recursive)`
     - `listDirectory(...)`
     - `readEntry(...)`
+  - 文件节点现已支持独立 `displayPath`：
+    - VFS 内部仍使用规范化虚拟路径定位
+    - `FileEntrySnapshot.path()` 返回显示路径
+    - `FileEntrySnapshot.virtualPath()` 保留 surfaced virtual path 供 RPC 后续操作使用
+    - `displayPath` 只要求 non-blank；它是显示标签，不要求可被模块 VFS 重新解析
+    - 未显式设置 `displayPath` 时，默认使用写入时的 surfaced virtual path
+    - 后续 `putFile(...)` 若未再次显式传入 `displayPath`，会保留已有显示路径
   - 关键行为已在实现层冻结：
     - `putFile(...)` 自动创建缺失父目录
     - `createDirectory(...)` 对已存在目录保持幂等，并补齐缺失祖先目录
@@ -302,7 +321,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
   - targeted tests 与编译校验已完成：
     - IntelliJ incremental build 成功
     - `ApiVirtualPathTest` 已通过（3 tests）
-    - `ApiVirtualFileSystemTest` 已通过（4 tests）
+    - `ApiVirtualFileSystemTest` 已通过（5 tests）
     - `ApiModuleLifecycleTest` 已通过（6 tests）
 
 目标：
@@ -323,17 +342,23 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - `API` 暴露：
   - `createDirectory`
   - `putFile`
+  - `putFile(..., displayPath)`
   - `readFile`
   - `deletePath`
   - `listDirectory`
   - `readEntry`
 - `putFile(...)` 建议自动创建缺失父目录。
+- 文件显示与文件定位应分离：
+  - VFS 操作继续使用虚拟路径
+  - 文件快照展示优先使用 `displayPath`
+  - 若后续覆盖未重新提供 `displayPath`，建议保留旧值，避免远程调用方的 source label 被静默重置
 - `deletePath(...)` 允许删文件、空目录、非空目录，但应通过明确参数控制是否递归，避免 RPC 调用歧义。
 
 验收细则：
 
 - happy path：
   - 可以写入 `/src/main.gd` 这类带目录的文件路径
+  - 可以为文件设置 `displayPath`，且覆盖写入后仍稳定保留
   - 列目录结果稳定、顺序可预测
   - 删除目录时递归与非递归行为清晰可验证
 - negative path：
@@ -341,6 +366,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
   - 读取不存在路径必须失败
   - 非递归删除非空目录必须失败
   - 非法虚拟路径必须在 API boundary 失败
+  - blank `displayPath` 必须在 API boundary 失败
 
 建议测试：
 
@@ -482,6 +508,74 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.5 第五步：把 VFS 模块接到现有编译器主线
 
+当前状态（2026-04-23）：
+
+- 已完成：
+  - `CompileResult` 已落地为 public record，并冻结以下编译结果事实：
+    - `outcome`
+    - `compileOptions`
+    - `topLevelCanonicalNameMap`
+    - `sourcePaths`（显示路径，而不是 raw VFS path）
+    - `diagnostics`
+    - `failureMessage`
+    - `buildLog`
+    - `generatedFiles`
+    - `artifacts`
+  - `API` 已新增：
+    - `compile(moduleId)`，启动虚拟线程异步编译并返回任务号
+    - `getCompileTask(taskId)`
+    - `getLastCompileResult(moduleId)`
+  - 异步任务模型已收口：
+    - 每次编译都在新的虚拟线程中执行
+    - 同一模块同时只允许一个活动编译任务
+    - 任务完成后会把结果回写到 `getLastCompileResult(...)`
+    - 调用方可通过 `CompileTaskSnapshot` 轮询 `RUNNING / SUCCEEDED / FAILED`
+  - `ModuleState` 已新增编译输入冻结逻辑：
+    - 在模块锁内冻结 `CompileOptions`、顶层类名映射和源码快照
+    - 递归收集整个模块 VFS 下的 `.gd` 源文件
+    - 跟随 `VIRTUAL` link、忽略 `LOCAL` link
+    - 若文件设置了 `displayPath`，优先将其作为 parser/logical diagnostic path
+    - `CompileResult.sourcePaths` 只要求 non-blank，因此会原样保留 caller-facing `displayPath`，不再把它误当作 VFS 虚拟路径校验
+    - `displayPath` 不可直接映射为宿主机 `Path` 时，回退到 `vfs/<moduleId>/...` synthetic logical path，避免诊断泄漏真实构建目录
+    - 对同一 backing `FileNode` 的多重别名路径做去重，避免一个源码节点因虚拟别名被重复编译
+  - `compile(...)` 已接通真实主线：
+    - `GdScriptParserService.parseUnit(...)`
+    - `FrontendModule(...)`
+    - `ClassRegistry(ExtensionApiLoader.loadVersion(...))`
+    - `FrontendLoweringPassManager.lower(...)`
+    - `CCodegen.prepare(...)`
+    - `CProjectBuilder.buildProject(...)`
+  - 本步失败语义已收口到 `CompileResult.Outcome`：
+    - `SOURCE_COLLECTION_FAILED`
+    - `CONFIGURATION_FAILED`
+    - `FRONTEND_FAILED`
+    - `BUILD_FAILED`
+    - `SUCCESS`
+  - 编译成功后，本步已在结果中返回本地生成文件路径和最终 artifact 路径；但尚未把它们回挂到模块 VFS，仍留待第六步处理。
+  - targeted 单元测试已补齐并通过：
+    - `ApiCompilePipelineTest`
+    - `ApiCompileDiagnosticsTest`
+    - `ApiMappedClassCompileTest`
+    - `ApiCompileTaskTest`
+- 已验证的行为锚点：
+  - happy path：
+    - 多文件模块可成功构造 `FrontendModule` 并完成 backend build
+    - 编译成功时可观测 `entry.c`、`entry.h`、`engine_method_binds.h` 与最终本地 artifact
+    - 顶层类名映射可贯穿 lowering/backend，最终反映到 `entry.c` 的 runtime class name
+    - `displayPath` 可贯穿到 API 结果中的 `sourcePaths`，并在 parse diagnostics 中优先显示
+    - `compile(...)` 启动后可通过任务号观察 `RUNNING -> SUCCEEDED/FAILED`
+  - negative path：
+    - parse diagnostics 会阻断 build，并保留 logical diagnostic path
+    - `sema.compile_check` 类 frontend compile-block diagnostics 会阻断 build
+    - broken virtual link、无源码文件、不可用 project path、native build failure 会返回不同 `CompileResult.Outcome`
+    - 同模块重复启动编译任务必须失败，并返回清晰错误
+- 本步未做：
+  - 编译产物自动回挂到 `outputMountRoot`
+  - 旧编译产物链接刷新
+  - 并发互斥与跨模块隔离增强
+- 当前验证命令：
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiModuleLifecycleTest,ApiVirtualFileSystemTest,ApiVirtualLinkTest,ApiVirtualPathTest,ApiCompileOptionsTest,ApiCanonicalNameMapTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest,ApiMappedClassCompileTest,ApiCompileTaskTest`
+
 目标：
 
 - 用现有 parser/lowering/backend 完成一次模块编译。
@@ -490,8 +584,9 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 建议实施内容：
 
 - 在 `API.compile(moduleId)` 中执行以下固定步骤：
+  - 检查同一模块是否已有活动编译任务；若有则拒绝启动
   - 冻结当前模块状态，避免编译中途被 RPC 更新破坏一致性
-  - 从 VFS 收集所有参与编译的源码文件
+  - 在新的虚拟线程上，从 VFS 收集所有参与编译的源码文件
   - 为每个源码文件构造“compiler-facing logical path”
   - 调用 `GdScriptParserService.parseUnit(logicalPath, source, diagnostics)`
   - 构造 `FrontendModule(moduleName, units, topLevelCanonicalNameMap)`
@@ -503,7 +598,8 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
   - 调用 `CProjectBuilder.buildProject(...)`
 - 编译输入收集建议只纳入 `.gd` 文件。
 - 同一模块内源码单元顺序建议按规范化虚拟路径排序，保证编译结果稳定。
-- 诊断中的 `sourcePath` 应保留可追溯到虚拟路径的逻辑路径，不要泄漏临时目录路径。
+- 文件若显式设置了 `displayPath`，显示面与 `CompileResult.sourcePaths` 应优先展示 `displayPath`。
+- 诊断中的 `sourcePath` 应优先保留 caller-facing `displayPath`；若无法安全映射为 `Path`，则回退为可追溯到虚拟路径的逻辑路径，不要泄漏临时目录路径。
 
 验收细则：
 
@@ -521,6 +617,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - `ApiCompilePipelineTest`
 - `ApiCompileDiagnosticsTest`
 - `ApiMappedClassCompileTest`
+- `ApiCompileTaskTest`
 
 ### 4.6 第六步：将本地编译产物挂回虚拟文件系统
 

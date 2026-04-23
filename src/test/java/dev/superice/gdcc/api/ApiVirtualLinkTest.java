@@ -56,7 +56,7 @@ class ApiVirtualLinkTest {
                 linkedDirectoryEntries.stream().map(VfsEntrySnapshot::name).toList()
         );
         assertEquals(
-                List.of("/src-link/generated", "/src-link/linked-write.gd", "/src-link/main.gd"),
+                List.of("/src-link/generated", "/src-link/linked-write.gd", "/src/main.gd"),
                 linkedDirectoryEntries.stream().map(VfsEntrySnapshot::path).toList()
         );
 
@@ -64,7 +64,8 @@ class ApiVirtualLinkTest {
                 VfsEntrySnapshot.FileEntrySnapshot.class,
                 api.readEntry("demo", "/src-link/main.gd")
         );
-        assertEquals("/src-link/main.gd", surfacedEntry.path());
+        assertEquals("/src/main.gd", surfacedEntry.path());
+        assertEquals("/src-link/main.gd", surfacedEntry.virtualPath());
 
         var rootEntries = api.listDirectory("demo", "/");
         assertEquals(

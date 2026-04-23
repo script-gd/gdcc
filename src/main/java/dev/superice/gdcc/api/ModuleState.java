@@ -10,22 +10,28 @@ import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
 final class ModuleState {
+    private static final @NotNull VirtualPath ROOT_PATH = VirtualPath.parse("/");
+
     private final @NotNull String moduleId;
     private final @NotNull String moduleName;
     private final @NotNull Clock clock;
     private final @NotNull DirectoryNode root;
     private @NotNull CompileOptions compileOptions;
     private @NotNull Map<String, String> topLevelCanonicalNameMap;
-    private final boolean hasLastCompileResult;
+    private @Nullable CompileResult lastCompileResult;
 
     ModuleState(@NotNull String moduleId, @NotNull String moduleName, @NotNull Clock clock) {
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId must not be null");
@@ -34,7 +40,7 @@ final class ModuleState {
         root = new DirectoryNode();
         compileOptions = CompileOptions.defaults();
         topLevelCanonicalNameMap = Map.of();
-        hasLastCompileResult = false;
+        lastCompileResult = null;
     }
 
     @NotNull
@@ -44,7 +50,7 @@ final class ModuleState {
                 moduleName,
                 compileOptions,
                 topLevelCanonicalNameMap,
-                hasLastCompileResult,
+                lastCompileResult != null,
                 root.childCount()
         );
     }
@@ -73,6 +79,17 @@ final class ModuleState {
             @NotNull VirtualPath path,
             @NotNull String content
     ) {
+        return putFile(path, content, null);
+    }
+
+    /// `displayPath` is purely a caller-facing source label. It does not change where the file
+    /// lives in module VFS, but snapshots and compile diagnostics prefer it over the surfaced
+    /// virtual path whenever the caller provided one.
+    synchronized @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
+            @NotNull VirtualPath path,
+            @NotNull String content,
+            @Nullable String displayPath
+    ) {
         if (path.isRoot()) {
             throw new IllegalArgumentException("path '/' cannot be used as a file path");
         }
@@ -82,7 +99,7 @@ final class ModuleState {
         if (existing instanceof DirectoryNode) {
             throw typeMismatch(path.text(), "directory", VfsEntrySnapshot.Kind.FILE);
         }
-        var fileNode = FileNode.fromContent(content, clock);
+        var fileNode = FileNode.fromContent(content, resolveDisplayPath(path, displayPath, existing), clock);
         parent.putChild(path.name(), fileNode);
         return fileNode.snapshot(path);
     }
@@ -185,6 +202,30 @@ final class ModuleState {
                 "topLevelCanonicalNameMap must not be null"
         ));
         return this.topLevelCanonicalNameMap;
+    }
+
+    /// Compile orchestration runs outside the module lock, so this method freezes all compile-facing
+    /// inputs up front and resolves virtual source aliases while the tree is still stable.
+    synchronized @NotNull CompileRequest freezeCompileRequest() {
+        var sourcesByFile = new IdentityHashMap<FileNode, SourceSnapshot>();
+        CompileRequestFailure failure = null;
+        try {
+            collectCompileSources(ROOT_PATH, root, sourcesByFile, new ArrayDeque<>(), new LinkedHashSet<>());
+        } catch (ApiBrokenLinkException | ApiLinkCycleException exception) {
+            failure = new CompileRequestFailure(CompileResult.Outcome.SOURCE_COLLECTION_FAILED, exception.getMessage());
+        }
+        var sources = sourcesByFile.values().stream()
+                .sorted(Comparator.comparing(SourceSnapshot::virtualPath))
+                .toList();
+        return new CompileRequest(moduleId, moduleName, compileOptions, topLevelCanonicalNameMap, sources, failure);
+    }
+
+    synchronized @Nullable CompileResult getLastCompileResult() {
+        return lastCompileResult;
+    }
+
+    synchronized void setLastCompileResult(@NotNull CompileResult compileResult) {
+        lastCompileResult = Objects.requireNonNull(compileResult, "compileResult must not be null");
     }
 
     private @NotNull DirectoryNode requireParentDirectory(@NotNull VirtualPath path, boolean createMissing) {
@@ -369,6 +410,98 @@ final class ModuleState {
         }
     }
 
+    /// Virtual links participate in source discovery, but duplicate surfaced aliases of the same
+    /// backing file are collapsed so one file node cannot be compiled twice in a single module pass.
+    private void collectCompileSources(
+            @NotNull VirtualPath directoryPath,
+            @NotNull DirectoryNode directoryNode,
+            @NotNull IdentityHashMap<FileNode, SourceSnapshot> sourcesByFile,
+            @NotNull ArrayDeque<String> linkStack,
+            @NotNull LinkedHashSet<String> activeLinks
+    ) {
+        for (var childEntry : directoryNode.children()) {
+            collectCompileEntry(
+                    directoryPath.child(childEntry.getKey()),
+                    childEntry.getValue(),
+                    sourcesByFile,
+                    linkStack,
+                    activeLinks
+            );
+        }
+    }
+
+    private void collectCompileEntry(
+            @NotNull VirtualPath surfacePath,
+            @NotNull VfsNode node,
+            @NotNull IdentityHashMap<FileNode, SourceSnapshot> sourcesByFile,
+            @NotNull ArrayDeque<String> linkStack,
+            @NotNull LinkedHashSet<String> activeLinks
+    ) {
+        switch (node) {
+            case DirectoryNode directoryNode ->
+                    collectCompileSources(surfacePath, directoryNode, sourcesByFile, linkStack, activeLinks);
+            case FileNode fileNode -> rememberSource(surfacePath, fileNode, sourcesByFile);
+            case LinkNode linkNode -> {
+                if (linkNode.linkKind() == VfsEntrySnapshot.LinkKind.LOCAL) {
+                    return;
+                }
+                var resolvedTarget = resolveLinkTarget(surfacePath.text(), linkNode, linkStack, activeLinks);
+                switch (resolvedTarget.node()) {
+                    case DirectoryNode directoryNode ->
+                            collectCompileSources(surfacePath, directoryNode, sourcesByFile, linkStack, activeLinks);
+                    case FileNode fileNode -> rememberSource(surfacePath, fileNode, sourcesByFile);
+                    case LinkNode nestedLink -> throw new IllegalStateException(
+                            "Virtual link '" + surfacePath.text() + "' unexpectedly resolved to link '" + nestedLink.target() + "'"
+                    );
+                }
+            }
+        }
+    }
+
+    private void rememberSource(
+            @NotNull VirtualPath surfacePath,
+            @NotNull FileNode fileNode,
+            @NotNull IdentityHashMap<FileNode, SourceSnapshot> sourcesByFile
+    ) {
+        if (!surfacePath.name().endsWith(".gd")) {
+            return;
+        }
+        var candidate = new SourceSnapshot(
+                surfacePath.text(),
+                fileNode.displayPath(),
+                logicalPathFor(surfacePath, fileNode.displayPath()),
+                fileNode.content()
+        );
+        var existing = sourcesByFile.get(fileNode);
+        if (existing == null || candidate.virtualPath().compareTo(existing.virtualPath()) < 0) {
+            sourcesByFile.put(fileNode, candidate);
+        }
+    }
+
+    private @NotNull String resolveDisplayPath(
+            @NotNull VirtualPath surfacePath,
+            @Nullable String displayPath,
+            @Nullable VfsNode existingNode
+    ) {
+        if (displayPath != null) {
+            return normalizeDisplayPath(displayPath);
+        }
+        return existingNode instanceof FileNode fileNode ? fileNode.displayPath() : surfacePath.text();
+    }
+
+    private @NotNull Path logicalPathFor(@NotNull VirtualPath sourcePath, @NotNull String displayPath) {
+        try {
+            return Path.of(displayPath);
+        } catch (InvalidPathException _) {
+            // Keep compile running even if the caller chooses a non-host-native display label.
+            return Path.of("vfs", moduleId).resolve(sourcePath.text().substring(1));
+        }
+    }
+
+    private @NotNull String normalizeDisplayPath(@NotNull String displayPath) {
+        return StringUtil.requireTrimmedNonBlank(displayPath, "displayPath");
+    }
+
     private @NotNull ApiPathNotFoundException pathNotFound(@NotNull String pathText) {
         return new ApiPathNotFoundException("Path '" + pathText + "' does not exist in module '" + moduleId + "'");
     }
@@ -455,5 +588,49 @@ final class ModuleState {
     }
 
     private record LinkInspection(@Nullable VfsEntrySnapshot.BrokenReason brokenReason) {
+    }
+
+    record CompileRequest(
+            @NotNull String moduleId,
+            @NotNull String moduleName,
+            @NotNull CompileOptions compileOptions,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            @NotNull List<SourceSnapshot> sourceSnapshots,
+            @Nullable CompileRequestFailure failure
+    ) {
+        CompileRequest {
+            Objects.requireNonNull(moduleId, "moduleId must not be null");
+            Objects.requireNonNull(moduleName, "moduleName must not be null");
+            Objects.requireNonNull(compileOptions, "compileOptions must not be null");
+            topLevelCanonicalNameMap = Map.copyOf(Objects.requireNonNull(
+                    topLevelCanonicalNameMap,
+                    "topLevelCanonicalNameMap must not be null"
+            ));
+            sourceSnapshots = List.copyOf(Objects.requireNonNull(sourceSnapshots, "sourceSnapshots must not be null"));
+        }
+    }
+
+    record SourceSnapshot(
+            @NotNull String virtualPath,
+            @NotNull String displayPath,
+            @NotNull Path logicalPath,
+            @NotNull String source
+    ) {
+        SourceSnapshot {
+            virtualPath = VirtualPath.parse(virtualPath).text();
+            displayPath = StringUtil.requireTrimmedNonBlank(displayPath, "displayPath");
+            Objects.requireNonNull(logicalPath, "logicalPath must not be null");
+            Objects.requireNonNull(source, "source must not be null");
+        }
+    }
+
+    record CompileRequestFailure(
+            @NotNull CompileResult.Outcome outcome,
+            @NotNull String message
+    ) {
+        CompileRequestFailure {
+            Objects.requireNonNull(outcome, "outcome must not be null");
+            message = StringUtil.requireTrimmedNonBlank(message, "message");
+        }
     }
 }

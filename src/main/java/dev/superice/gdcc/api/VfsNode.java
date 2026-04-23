@@ -48,11 +48,13 @@ final class DirectoryNode implements VfsNode {
 
 final class FileNode implements VfsNode {
     private final @NotNull String content;
+    private final @NotNull String displayPath;
     private final long byteCount;
     private final @NotNull Instant updatedAt;
 
-    FileNode(@NotNull String content, long byteCount, @NotNull Instant updatedAt) {
+    FileNode(@NotNull String content, @NotNull String displayPath, long byteCount, @NotNull Instant updatedAt) {
         this.content = Objects.requireNonNull(content, "content must not be null");
+        this.displayPath = Objects.requireNonNull(displayPath, "displayPath must not be null");
         if (byteCount < 0) {
             throw new IllegalArgumentException("byteCount must not be negative");
         }
@@ -60,10 +62,15 @@ final class FileNode implements VfsNode {
         this.updatedAt = Objects.requireNonNull(updatedAt, "updatedAt must not be null");
     }
 
-    static @NotNull FileNode fromContent(@NotNull String content, @NotNull Clock clock) {
+    static @NotNull FileNode fromContent(
+            @NotNull String content,
+            @NotNull String displayPath,
+            @NotNull Clock clock
+    ) {
         var text = Objects.requireNonNull(content, "content must not be null");
         return new FileNode(
                 text,
+                displayPath,
                 text.getBytes(StandardCharsets.UTF_8).length,
                 Instant.now(Objects.requireNonNull(clock, "clock must not be null"))
         );
@@ -73,8 +80,12 @@ final class FileNode implements VfsNode {
         return content;
     }
 
+    @NotNull String displayPath() {
+        return displayPath;
+    }
+
     public @NotNull VfsEntrySnapshot.FileEntrySnapshot snapshot(@NotNull VirtualPath path) {
-        return new VfsEntrySnapshot.FileEntrySnapshot(path.text(), path.name(), byteCount, updatedAt);
+        return new VfsEntrySnapshot.FileEntrySnapshot(path.text(), displayPath, path.name(), byteCount, updatedAt);
     }
 }
 
