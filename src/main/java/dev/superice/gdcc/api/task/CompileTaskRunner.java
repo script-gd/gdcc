@@ -1,0 +1,522 @@
+package dev.superice.gdcc.api.task;
+
+import dev.superice.gdcc.api.CompileOptions;
+import dev.superice.gdcc.api.CompileResult;
+import dev.superice.gdcc.api.CompileTaskSnapshot;
+import dev.superice.gdcc.api.VfsEntrySnapshot;
+import dev.superice.gdcc.backend.CodegenContext;
+import dev.superice.gdcc.backend.c.build.CProjectBuilder;
+import dev.superice.gdcc.backend.c.build.CProjectInfo;
+import dev.superice.gdcc.backend.c.gen.CCodegen;
+import dev.superice.gdcc.exception.ApiEntryTypeMismatchException;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.lowering.FrontendLoweringPassManager;
+import dev.superice.gdcc.frontend.parse.FrontendModule;
+import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
+import dev.superice.gdcc.frontend.parse.GdScriptParserService;
+import dev.superice.gdcc.gdextension.ExtensionApiLoader;
+import dev.superice.gdcc.scope.ClassRegistry;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+
+/// Executes one compile task after the API facade has accepted and registered it.
+public final class CompileTaskRunner implements Runnable {
+    private static final @NotNull DiagnosticSnapshot EMPTY_DIAGNOSTICS = new DiagnosticSnapshot(List.of());
+    private static final @NotNull List<String> GENERATED_FILE_NAMES = List.of(
+            "entry.c",
+            "engine_method_binds.h",
+            "entry.h"
+    );
+
+    private final @NotNull Clock clock;
+    private final @NotNull GdScriptParserService parserService;
+    private final @NotNull FrontendLoweringPassManager loweringPassManager;
+    private final @NotNull CProjectBuilder projectBuilder;
+    private final @NotNull CompileTaskState taskState;
+    private final @NotNull Supplier<Request> requestSupplier;
+    private final @NotNull Consumer<CompileResult> completionHandler;
+
+    public CompileTaskRunner(
+            @NotNull Clock clock,
+            @NotNull GdScriptParserService parserService,
+            @NotNull FrontendLoweringPassManager loweringPassManager,
+            @NotNull CProjectBuilder projectBuilder,
+            @NotNull CompileTaskState taskState,
+            @NotNull Supplier<Request> requestSupplier,
+            @NotNull Consumer<CompileResult> completionHandler
+    ) {
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
+        this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
+        this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
+        this.taskState = Objects.requireNonNull(taskState, "taskState must not be null");
+        this.requestSupplier = Objects.requireNonNull(requestSupplier, "requestSupplier must not be null");
+        this.completionHandler = Objects.requireNonNull(completionHandler, "completionHandler must not be null");
+    }
+
+    @Override
+    public void run() {
+        Request request = null;
+        CompileTaskState.bindCurrentThread(taskState);
+        try {
+            try {
+                taskState.updateRunningStage(
+                        CompileTaskSnapshot.Stage.FREEZING_INPUTS,
+                        "Freezing compile inputs",
+                        0,
+                        0,
+                        null
+                );
+                taskState.updateRunningStage(
+                        CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
+                        "Collecting .gd sources from module VFS",
+                        0,
+                        0,
+                        null
+                );
+                request = requestSupplier.get();
+                taskState.updateRunningStage(
+                        CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
+                        "Collected " + request.sourceSnapshots().size() + " source units",
+                        0,
+                        request.sourceSnapshots().size(),
+                        null
+                );
+                finishCompileTask(compileFrozenRequest(request));
+            } catch (Throwable throwable) {
+                finishCompileTask(unexpectedTaskFailure(request, throwable));
+            }
+        } finally {
+            CompileTaskState.clearCurrentThread();
+        }
+    }
+
+    private void finishCompileTask(@NotNull CompileResult result) {
+        taskState.complete(
+                clock.instant(),
+                result,
+                result.success() ? CompileTaskSnapshot.Stage.FINISHED : taskState.snapshot().stage()
+        );
+        completionHandler.accept(result);
+    }
+
+    /// Compilation runs against frozen source snapshots so later RPC writes cannot mutate the exact
+    /// input set or output mount used by this pipeline.
+    private @NotNull CompileResult compileFrozenRequest(@NotNull Request request) {
+        var sourcePaths = displaySourcePaths(request);
+        try {
+            request.outputMountPreparer().accept(request.compileOptions().outputMountRoot());
+        } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
+            return new CompileResult(
+                    CompileResult.Outcome.CONFIGURATION_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    EMPTY_DIAGNOSTICS,
+                    "Compile outputs for module '"
+                            + request.moduleId()
+                            + "' could not be mounted: "
+                            + exception.getMessage(),
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+        if (request.failure() != null) {
+            return new CompileResult(
+                    request.failure().outcome(),
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    EMPTY_DIAGNOSTICS,
+                    request.failure().message(),
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+        if (request.sourceSnapshots().isEmpty()) {
+            return new CompileResult(
+                    CompileResult.Outcome.SOURCE_COLLECTION_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    EMPTY_DIAGNOSTICS,
+                    "Module '" + request.moduleId() + "' has no .gd source files to compile",
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        var projectPath = request.compileOptions().projectPath();
+        if (projectPath == null) {
+            return new CompileResult(
+                    CompileResult.Outcome.CONFIGURATION_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    EMPTY_DIAGNOSTICS,
+                    "Compile options for module '" + request.moduleId() + "' must set projectPath before compile",
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        var diagnostics = new DiagnosticManager();
+        taskState.updateRunningStage(
+                CompileTaskSnapshot.Stage.PARSING,
+                "Parsing source units",
+                0,
+                request.sourceSnapshots().size(),
+                null
+        );
+        var units = new ArrayList<FrontendSourceUnit>(request.sourceSnapshots().size());
+        for (var index = 0; index < request.sourceSnapshots().size(); index++) {
+            var sourceSnapshot = request.sourceSnapshots().get(index);
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.PARSING,
+                    "Parsing " + sourceSnapshot.displayPath(),
+                    index,
+                    request.sourceSnapshots().size(),
+                    sourceSnapshot.displayPath()
+            );
+            units.add(parserService.parseUnit(
+                    sourceSnapshot.logicalPath(),
+                    sourceSnapshot.source(),
+                    diagnostics
+            ));
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.PARSING,
+                    "Parsed " + sourceSnapshot.displayPath(),
+                    index + 1,
+                    request.sourceSnapshots().size(),
+                    sourceSnapshot.displayPath()
+            );
+        }
+        var parseAndFrontendDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
+        if (parseAndFrontendDiagnostics.hasErrors()) {
+            return new CompileResult(
+                    CompileResult.Outcome.FRONTEND_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    parseAndFrontendDiagnostics,
+                    "Frontend diagnostics blocked compilation",
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        var projectPathError = ensureProjectPathUsable(projectPath);
+        if (projectPathError != null) {
+            return new CompileResult(
+                    CompileResult.Outcome.CONFIGURATION_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    parseAndFrontendDiagnostics,
+                    projectPathError,
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
+
+        try {
+            var extensionApi = ExtensionApiLoader.loadVersion(request.compileOptions().godotVersion());
+            var classRegistry = new ClassRegistry(extensionApi);
+            var frontendModule = new FrontendModule(
+                    request.moduleName(),
+                    units,
+                    request.topLevelCanonicalNameMap()
+            );
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.LOWERING,
+                    "Lowering frontend module",
+                    request.sourceSnapshots().size(),
+                    request.sourceSnapshots().size(),
+                    null
+            );
+            var lowered = loweringPassManager.lower(frontendModule, classRegistry, diagnostics);
+            var frontendDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
+            if (lowered == null || frontendDiagnostics.hasErrors()) {
+                return new CompileResult(
+                        CompileResult.Outcome.FRONTEND_FAILED,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        "Frontend diagnostics blocked compilation",
+                        "",
+                        List.of(),
+                        List.of(),
+                        List.of()
+                );
+            }
+
+            var projectInfo = new CProjectInfo(
+                    request.moduleId(),
+                    request.compileOptions().godotVersion(),
+                    projectPath,
+                    request.compileOptions().optimizationLevel(),
+                    request.compileOptions().targetPlatform()
+            );
+            var codegen = new CCodegen();
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.CODEGEN_PREPARE,
+                    "Preparing C code generation",
+                    request.sourceSnapshots().size(),
+                    request.sourceSnapshots().size(),
+                    null
+            );
+            codegen.prepare(
+                    new CodegenContext(projectInfo, classRegistry, request.compileOptions().strictMode()),
+                    lowered
+            );
+
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.BUILDING_NATIVE,
+                    "Building native artifacts",
+                    request.sourceSnapshots().size(),
+                    request.sourceSnapshots().size(),
+                    null
+            );
+            var buildResult = projectBuilder.buildProject(projectInfo, codegen);
+            var generatedFiles = collectGeneratedFiles(projectPath);
+            if (!buildResult.success()) {
+                return new CompileResult(
+                        CompileResult.Outcome.BUILD_FAILED,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        "Native build reported failure; see buildLog for details",
+                        buildResult.buildLog(),
+                        generatedFiles,
+                        buildResult.artifacts(),
+                        List.of()
+                );
+            }
+            try {
+                var outputLinks = request.outputMounter().apply(new BuildOutputs(
+                        generatedFiles,
+                        buildResult.artifacts()
+                ));
+                return new CompileResult(
+                        CompileResult.Outcome.SUCCESS,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        null,
+                        buildResult.buildLog(),
+                        generatedFiles,
+                        buildResult.artifacts(),
+                        outputLinks
+                );
+            } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
+                return new CompileResult(
+                        CompileResult.Outcome.CONFIGURATION_FAILED,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        "Compile outputs for module '"
+                                + request.moduleId()
+                                + "' could not be mounted: "
+                                + exception.getMessage(),
+                        buildResult.buildLog(),
+                        generatedFiles,
+                        buildResult.artifacts(),
+                        List.of()
+                );
+            }
+        } catch (IOException exception) {
+            return new CompileResult(
+                    CompileResult.Outcome.BUILD_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
+                    "Build pipeline failed: " + exception.getMessage(),
+                    exception.getMessage(),
+                    collectGeneratedFiles(projectPath),
+                    List.of(),
+                    List.of()
+            );
+        }
+    }
+
+    private @Nullable String ensureProjectPathUsable(@NotNull Path projectPath) {
+        try {
+            Files.createDirectories(projectPath);
+            return null;
+        } catch (IOException exception) {
+            return "Project path '" + projectPath + "' cannot be used as a build directory: " + exception.getMessage();
+        }
+    }
+
+    private @NotNull List<String> displaySourcePaths(@NotNull Request request) {
+        return request.sourceSnapshots().stream()
+                .map(SourceSnapshot::displayPath)
+                .toList();
+    }
+
+    /// Frontend internals still track host-usable logical paths, but API callers care about the
+    /// original caller-facing labels such as `res://player.gd`. Results therefore remap matching
+    /// frontend diagnostic source paths back to each frozen source snapshot's `displayPath`.
+    private @NotNull DiagnosticSnapshot remapDiagnosticSourcePaths(
+            @NotNull Request request,
+            @NotNull DiagnosticSnapshot diagnostics
+    ) {
+        if (diagnostics.isEmpty()) {
+            return diagnostics;
+        }
+        var displayPathsByLogicalPath = request.sourceSnapshots().stream()
+                .collect(Collectors.toMap(
+                        sourceSnapshot -> FrontendDiagnostic.sourcePathText(sourceSnapshot.logicalPath()),
+                        SourceSnapshot::displayPath,
+                        (first, _) -> first
+                ));
+        var remappedDiagnostics = diagnostics.asList().stream()
+                .map(diagnostic -> remapDiagnosticSourcePath(diagnostic, displayPathsByLogicalPath))
+                .toList();
+        return new DiagnosticSnapshot(remappedDiagnostics);
+    }
+
+    private @NotNull FrontendDiagnostic remapDiagnosticSourcePath(
+            @NotNull FrontendDiagnostic diagnostic,
+            @NotNull Map<String, String> displayPathsByLogicalPath
+    ) {
+        var sourcePath = diagnostic.sourcePath();
+        if (sourcePath == null) {
+            return diagnostic;
+        }
+        var displayPath = displayPathsByLogicalPath.get(sourcePath);
+        if (Objects.equals(sourcePath, displayPath) || displayPath == null) {
+            return diagnostic;
+        }
+        return new FrontendDiagnostic(
+                diagnostic.severity(),
+                diagnostic.category(),
+                diagnostic.message(),
+                displayPath,
+                diagnostic.range()
+        );
+    }
+
+    private @NotNull CompileResult unexpectedTaskFailure(
+            @Nullable Request request,
+            @NotNull Throwable throwable
+    ) {
+        var projectPath = request == null ? null : request.compileOptions().projectPath();
+        var failureMessage = "Compile task failed unexpectedly: " + describeThrowable(throwable);
+        return new CompileResult(
+                CompileResult.Outcome.BUILD_FAILED,
+                request == null ? CompileOptions.defaults() : request.compileOptions(),
+                request == null ? Map.of() : request.topLevelCanonicalNameMap(),
+                request == null ? List.of() : displaySourcePaths(request),
+                EMPTY_DIAGNOSTICS,
+                failureMessage,
+                failureMessage,
+                projectPath == null ? List.of() : collectGeneratedFiles(projectPath),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull String describeThrowable(@NotNull Throwable throwable) {
+        var message = throwable.getMessage();
+        return message == null || message.isBlank()
+                ? throwable.getClass().getSimpleName()
+                : throwable.getClass().getSimpleName() + ": " + message;
+    }
+
+    private @NotNull List<Path> collectGeneratedFiles(@NotNull Path projectPath) {
+        return GENERATED_FILE_NAMES.stream()
+                .map(projectPath::resolve)
+                .filter(Files::exists)
+                .toList();
+    }
+
+    /// Frozen inputs and module-owned callbacks captured at compile-task start.
+    public record Request(
+            @NotNull String moduleId,
+            @NotNull String moduleName,
+            @NotNull CompileOptions compileOptions,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            @NotNull List<SourceSnapshot> sourceSnapshots,
+            @Nullable Failure failure,
+            @NotNull Consumer<String> outputMountPreparer,
+            @NotNull Function<BuildOutputs, List<VfsEntrySnapshot.LinkEntrySnapshot>> outputMounter
+    ) {
+        public Request {
+            Objects.requireNonNull(moduleId, "moduleId must not be null");
+            Objects.requireNonNull(moduleName, "moduleName must not be null");
+            Objects.requireNonNull(compileOptions, "compileOptions must not be null");
+            topLevelCanonicalNameMap = Map.copyOf(Objects.requireNonNull(
+                    topLevelCanonicalNameMap,
+                    "topLevelCanonicalNameMap must not be null"
+            ));
+            sourceSnapshots = List.copyOf(Objects.requireNonNull(sourceSnapshots, "sourceSnapshots must not be null"));
+            Objects.requireNonNull(outputMountPreparer, "outputMountPreparer must not be null");
+            Objects.requireNonNull(outputMounter, "outputMounter must not be null");
+        }
+    }
+
+    public record SourceSnapshot(
+            @NotNull String displayPath,
+            @NotNull Path logicalPath,
+            @NotNull String source
+    ) {
+        public SourceSnapshot {
+            Objects.requireNonNull(displayPath, "displayPath must not be null");
+            Objects.requireNonNull(logicalPath, "logicalPath must not be null");
+            Objects.requireNonNull(source, "source must not be null");
+        }
+    }
+
+    public record Failure(
+            @NotNull CompileResult.Outcome outcome,
+            @NotNull String message
+    ) {
+        public Failure {
+            Objects.requireNonNull(outcome, "outcome must not be null");
+            Objects.requireNonNull(message, "message must not be null");
+        }
+    }
+
+    public record BuildOutputs(
+            @NotNull List<Path> generatedFiles,
+            @NotNull List<Path> artifacts
+    ) {
+        public BuildOutputs {
+            generatedFiles = List.copyOf(Objects.requireNonNull(generatedFiles, "generatedFiles must not be null"));
+            artifacts = List.copyOf(Objects.requireNonNull(artifacts, "artifacts must not be null"));
+        }
+    }
+}

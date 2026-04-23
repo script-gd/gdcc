@@ -1,5 +1,6 @@
 package dev.superice.gdcc.api;
 
+import dev.superice.gdcc.api.task.CompileTaskHooks;
 import dev.superice.gdcc.backend.c.build.CBuildResult;
 import dev.superice.gdcc.backend.c.build.CCompiler;
 import dev.superice.gdcc.backend.c.build.COptimizationLevel;
@@ -35,12 +36,12 @@ final class ApiCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull RecordingCompiler compiler) {
-        return newApi(compiler, API.CompileTaskHooks.none());
+        return newApi(compiler, CompileTaskHooks.none());
     }
 
     static @NotNull API newApi(
             @NotNull RecordingCompiler compiler,
-            @NotNull API.CompileTaskHooks compileTaskHooks
+            @NotNull CompileTaskHooks compileTaskHooks
     ) {
         return new API(
                 FIXED_CLOCK,
@@ -150,8 +151,8 @@ final class ApiCompileTestSupport {
             this.predicate = Objects.requireNonNull(predicate, "predicate must not be null");
         }
 
-        @NotNull API.CompileTaskHooks hooks() {
-            return API.CompileTaskHooks.afterSnapshotUpdate(snapshot -> {
+        @NotNull CompileTaskHooks hooks() {
+            return CompileTaskHooks.afterSnapshotUpdate(snapshot -> {
                 if (!predicate.test(snapshot) || !blocked.compareAndSet(false, true)) {
                     return;
                 }
