@@ -763,6 +763,59 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.7 第七步：将本地编译产物挂回虚拟文件系统
 
+当前状态（2026-04-23）：
+
+- 已完成：
+  - `CompileResult` 已补充 `outputLinks`：
+    - 成功编译后会返回实际挂入模块 VFS 的 `LOCAL` link 快照
+    - 结果对象现能明确区分：
+      - `generatedFiles`
+      - `artifacts`
+      - `outputLinks`
+  - API 编译成功后，现会把以下本地输出稳定挂到 `outputMountRoot`：
+    - `outputMountRoot/generated/entry.c`
+    - `outputMountRoot/generated/entry.h`
+    - `outputMountRoot/generated/engine_method_binds.h`
+    - `outputMountRoot/artifacts/<artifact-file-name>`
+  - 重新编译刷新逻辑已落地：
+    - 每轮编译开始前，都会先清理当前 `outputMountRoot` 下 compiler-owned 的 `generated` / `artifacts` 子目录
+    - 若上一轮成功编译使用的是不同的 `outputMountRoot`，其旧挂载子目录也会被一并清理，避免切换挂载根后残留旧链接
+    - 清理只作用于 compiler-owned 子目录，不会递归删除 `outputMountRoot` 下其他无关用户内容
+  - 输出挂载失败语义已冻结：
+    - 若当前 `outputMountRoot` 或其 compiler-owned 子目录被普通文件/链接占位，编译返回清晰的 `CONFIGURATION_FAILED`
+    - build 已成功但挂载失败时，结果仍会保留 `generatedFiles` / `artifacts` / `buildLog`，但 `outputLinks` 保持为空
+    - 编译失败时不会把新的半成品本地路径误发布成成功输出链接
+  - targeted 单元测试已补齐并通过：
+    - `ApiCompileArtifactLinkTest`
+    - `ApiRecompileArtifactRefreshTest`
+    - 同时回归通过：
+      - `ApiCompilePipelineTest`
+      - `ApiCompileDiagnosticsTest`
+      - `ApiMappedClassCompileTest`
+      - `ApiCompileTaskTest`
+      - `ApiCompileTaskProgressTest`
+      - `ApiCompileTaskFailureStageTest`
+      - `ApiCompileTaskEventTest`
+      - 以及现有模块/VFS/API 配置类测试
+
+- 已验证的行为锚点：
+  - happy path：
+    - 编译成功后，结果对象会返回生成文件、本地产物和对应的 `outputLinks`
+    - `outputMountRoot` 可配置，挂载到自定义根时目录结构和链接命名仍保持稳定可预测
+    - 重新编译并切换 `outputMountRoot` 后，旧根下的旧输出链接会被清理，新根下只保留新结果
+  - negative path：
+    - `outputMountRoot` 被普通文件占位时，编译不会静默覆盖，而是返回清晰失败信息
+    - build 失败后，上一轮成功挂载的输出会先被清理，新的 `outputLinks` 不会被发布
+    - frontend/source collection/configuration 失败结果都保持 `outputLinks` 为空
+
+- 本步未做：
+  - 基于 `outputLinks` 的增量查询接口
+  - 多 artifact 同名冲突的专门去重/重命名策略
+
+- 当前验证命令：
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiCompileArtifactLinkTest,ApiRecompileArtifactRefreshTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest`
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiModuleLifecycleTest,ApiVirtualFileSystemTest,ApiVirtualLinkTest,ApiVirtualPathTest,ApiCompileOptionsTest,ApiCanonicalNameMapTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest,ApiMappedClassCompileTest,ApiCompileTaskTest,ApiCompileTaskProgressTest,ApiCompileTaskFailureStageTest,ApiCompileTaskEventTest,ApiCompileArtifactLinkTest,ApiRecompileArtifactRefreshTest`
+
 目标：
 
 - 让远程调用方在不额外扫描磁盘的情况下，直接从模块 VFS 看到编译输出。

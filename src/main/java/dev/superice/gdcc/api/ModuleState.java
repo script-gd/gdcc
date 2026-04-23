@@ -24,6 +24,8 @@ import java.util.Objects;
 
 final class ModuleState {
     private static final @NotNull VirtualPath ROOT_PATH = VirtualPath.parse("/");
+    private static final @NotNull String GENERATED_OUTPUT_DIR = "generated";
+    private static final @NotNull String ARTIFACT_OUTPUT_DIR = "artifacts";
 
     private final @NotNull String moduleId;
     private final @NotNull String moduleName;
@@ -226,6 +228,52 @@ final class ModuleState {
 
     synchronized void setLastCompileResult(@NotNull CompileResult compileResult) {
         lastCompileResult = Objects.requireNonNull(compileResult, "compileResult must not be null");
+    }
+
+    /// Compile output links live under two compiler-owned subdirectories so callers can reserve a
+    /// stable mount root without forcing the API to delete unrelated user content in that subtree.
+    synchronized void prepareOutputMountRoot(@NotNull String outputMountRoot) {
+        var currentRoot = VirtualPath.parse(outputMountRoot);
+        clearManagedOutputDirectories(currentRoot, true);
+        var previousRoot = previousOutputMountRoot();
+        if (previousRoot != null && !previousRoot.equals(currentRoot)) {
+            clearManagedOutputDirectories(previousRoot, false);
+        }
+    }
+
+    /// Successful compiles publish their generated files and final artifacts back into the module
+    /// VFS as `LOCAL` links so remote callers can inspect them without host-directory scans.
+    synchronized @NotNull List<VfsEntrySnapshot.LinkEntrySnapshot> mountCompileOutputs(
+            @NotNull String outputMountRoot,
+            @NotNull List<Path> generatedFiles,
+            @NotNull List<Path> artifacts
+    ) {
+        var mountRoot = VirtualPath.parse(outputMountRoot);
+        createDirectory(mountRoot);
+        var mountedLinks = new ArrayList<VfsEntrySnapshot.LinkEntrySnapshot>(generatedFiles.size() + artifacts.size());
+
+        var generatedDir = mountRoot.child(GENERATED_OUTPUT_DIR);
+        createDirectory(generatedDir);
+        for (var generatedFile : generatedFiles) {
+            mountedLinks.add(createLink(
+                    generatedDir.child(generatedFile.getFileName().toString()),
+                    VfsEntrySnapshot.LinkKind.LOCAL,
+                    generatedFile.toString()
+            ));
+        }
+
+        var artifactsDir = mountRoot.child(ARTIFACT_OUTPUT_DIR);
+        createDirectory(artifactsDir);
+        for (var artifact : artifacts.stream()
+                .sorted(Comparator.comparing((Path path) -> path.getFileName().toString()).thenComparing(Path::toString))
+                .toList()) {
+            mountedLinks.add(createLink(
+                    artifactsDir.child(artifact.getFileName().toString()),
+                    VfsEntrySnapshot.LinkKind.LOCAL,
+                    artifact.toString()
+            ));
+        }
+        return List.copyOf(mountedLinks);
     }
 
     private @NotNull DirectoryNode requireParentDirectory(@NotNull VirtualPath path, boolean createMissing) {
@@ -500,6 +548,63 @@ final class ModuleState {
 
     private @NotNull String normalizeDisplayPath(@NotNull String displayPath) {
         return StringUtil.requireTrimmedNonBlank(displayPath, "displayPath");
+    }
+
+    private void clearManagedOutputDirectories(@NotNull VirtualPath mountRoot, boolean strict) {
+        var rootDirectory = resolveExistingOutputDirectory(mountRoot, strict);
+        if (rootDirectory == null) {
+            return;
+        }
+        deleteManagedOutputDirectory(mountRoot.child(GENERATED_OUTPUT_DIR), strict);
+        deleteManagedOutputDirectory(mountRoot.child(ARTIFACT_OUTPUT_DIR), strict);
+        if (!mountRoot.isRoot() && !rootDirectory.hasChildren()) {
+            deletePath(mountRoot, false);
+        }
+    }
+
+    private void deleteManagedOutputDirectory(@NotNull VirtualPath directoryPath, boolean strict) {
+        var existing = resolveExistingOutputNode(directoryPath);
+        if (existing == null) {
+            return;
+        }
+        switch (existing) {
+            case DirectoryNode _ -> deletePath(directoryPath, true);
+            case FileNode _, LinkNode _ -> {
+                if (strict) {
+                    throw typeMismatch(directoryPath.text(), nodeLabel(existing), VfsEntrySnapshot.Kind.DIRECTORY);
+                }
+            }
+        }
+    }
+
+    private @Nullable DirectoryNode resolveExistingOutputDirectory(@NotNull VirtualPath path, boolean strict) {
+        var existing = resolveExistingOutputNode(path);
+        if (existing == null) {
+            return null;
+        }
+        return switch (existing) {
+            case DirectoryNode directoryNode -> directoryNode;
+            case FileNode _, LinkNode _ -> {
+                if (strict) {
+                    throw typeMismatch(path.text(), nodeLabel(existing), VfsEntrySnapshot.Kind.DIRECTORY);
+                }
+                yield null;
+            }
+        };
+    }
+
+    private @Nullable VfsNode resolveExistingOutputNode(@NotNull VirtualPath path) {
+        try {
+            return resolvePath(path, false, null).node();
+        } catch (ApiPathNotFoundException _) {
+            return null;
+        }
+    }
+
+    private @Nullable VirtualPath previousOutputMountRoot() {
+        return lastCompileResult == null
+                ? null
+                : VirtualPath.parse(lastCompileResult.compileOptions().outputMountRoot());
     }
 
     private @NotNull ApiPathNotFoundException pathNotFound(@NotNull String pathText) {

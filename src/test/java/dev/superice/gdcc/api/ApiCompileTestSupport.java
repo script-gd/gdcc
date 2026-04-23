@@ -52,7 +52,13 @@ final class ApiCompileTestSupport {
     }
 
     static @NotNull CompileOptions compileOptions(@NotNull Path projectPath) {
-        return compileOptions(projectPath, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform(), false);
+        return compileOptions(
+                projectPath,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform(),
+                false,
+                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
+        );
     }
 
     static @NotNull CompileOptions compileOptions(
@@ -61,13 +67,29 @@ final class ApiCompileTestSupport {
             @NotNull TargetPlatform targetPlatform,
             boolean strictMode
     ) {
+        return compileOptions(
+                projectPath,
+                optimizationLevel,
+                targetPlatform,
+                strictMode,
+                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
+        );
+    }
+
+    static @NotNull CompileOptions compileOptions(
+            @NotNull Path projectPath,
+            @NotNull COptimizationLevel optimizationLevel,
+            @NotNull TargetPlatform targetPlatform,
+            boolean strictMode,
+            @NotNull String outputMountRoot
+    ) {
         return new CompileOptions(
                 GodotVersion.V451,
                 projectPath,
                 optimizationLevel,
                 targetPlatform,
                 strictMode,
-                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
+                outputMountRoot
         );
     }
 
@@ -159,8 +181,7 @@ final class ApiCompileTestSupport {
     }
 
     static final class RecordingCompiler implements CCompiler {
-        private final boolean success;
-        private final @NotNull String buildLog;
+        private final @NotNull List<InvocationOutcome> invocationOutcomes;
         private final @Nullable CountDownLatch enteredLatch;
         private final @Nullable CountDownLatch releaseLatch;
         private final @NotNull List<CompileTaskEvent> eventsToRecord;
@@ -173,33 +194,53 @@ final class ApiCompileTestSupport {
         private volatile @NotNull List<Path> lastCFiles = List.of();
 
         private RecordingCompiler(
-                boolean success,
-                @NotNull String buildLog,
+                @NotNull List<InvocationOutcome> invocationOutcomes,
                 @Nullable CountDownLatch enteredLatch,
                 @Nullable CountDownLatch releaseLatch,
                 @NotNull List<CompileTaskEvent> eventsToRecord
         ) {
-            this.success = success;
-            this.buildLog = buildLog;
+            this.invocationOutcomes = List.copyOf(invocationOutcomes);
             this.enteredLatch = enteredLatch;
             this.releaseLatch = releaseLatch;
             this.eventsToRecord = List.copyOf(eventsToRecord);
         }
 
         static @NotNull RecordingCompiler succeeding() {
-            return new RecordingCompiler(true, "ok", null, null, List.of());
+            return new RecordingCompiler(List.of(new InvocationOutcome(true, "ok")), null, null, List.of());
         }
 
         static @NotNull RecordingCompiler failing(@NotNull String buildLog) {
-            return new RecordingCompiler(false, buildLog, null, null, List.of());
+            return new RecordingCompiler(List.of(new InvocationOutcome(false, buildLog)), null, null, List.of());
+        }
+
+        static @NotNull RecordingCompiler succeedingThenFailing(@NotNull String secondBuildLog) {
+            return new RecordingCompiler(
+                    List.of(
+                            new InvocationOutcome(true, "ok"),
+                            new InvocationOutcome(false, secondBuildLog)
+                    ),
+                    null,
+                    null,
+                    List.of()
+            );
         }
 
         static @NotNull RecordingCompiler blockingSuccess() {
-            return new RecordingCompiler(true, "ok", new CountDownLatch(1), new CountDownLatch(1), List.of());
+            return new RecordingCompiler(
+                    List.of(new InvocationOutcome(true, "ok")),
+                    new CountDownLatch(1),
+                    new CountDownLatch(1),
+                    List.of()
+            );
         }
 
         static @NotNull RecordingCompiler blockingSuccessWithEvents(@NotNull CompileTaskEvent... events) {
-            return new RecordingCompiler(true, "ok", new CountDownLatch(1), new CountDownLatch(1), List.of(events));
+            return new RecordingCompiler(
+                    List.of(new InvocationOutcome(true, "ok")),
+                    new CountDownLatch(1),
+                    new CountDownLatch(1),
+                    List.of(events)
+            );
         }
 
         @Override
@@ -211,7 +252,8 @@ final class ApiCompileTestSupport {
                 @NotNull COptimizationLevel optimizationLevel,
                 @NotNull TargetPlatform targetPlatform
         ) throws IOException {
-            invocationCount.incrementAndGet();
+            var invocationIndex = invocationCount.getAndIncrement();
+            var outcome = invocationOutcome(invocationIndex);
             ranOnVirtualThread = Thread.currentThread().isVirtual();
             lastIncludeDirs = List.copyOf(includeDirs);
             lastCFiles = List.copyOf(cFiles);
@@ -227,14 +269,14 @@ final class ApiCompileTestSupport {
                 enteredLatch.countDown();
             }
             awaitReleaseIfNeeded();
-            if (!success) {
-                return new CBuildResult(false, buildLog, List.of());
+            if (!outcome.success()) {
+                return new CBuildResult(false, outcome.buildLog(), List.of());
             }
 
             Files.createDirectories(projectDir);
             var artifact = projectDir.resolve(targetPlatform.sharedLibraryFileName(outputBaseName));
             Files.writeString(artifact, "dummy");
-            return new CBuildResult(true, buildLog, List.of(artifact));
+            return new CBuildResult(true, outcome.buildLog(), List.of(artifact));
         }
 
         int invocationCount() {
@@ -290,6 +332,16 @@ final class ApiCompileTestSupport {
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
                 throw new AssertionError("Interrupted while waiting for test latch", exception);
+            }
+        }
+
+        private @NotNull InvocationOutcome invocationOutcome(int invocationIndex) {
+            return invocationOutcomes.get(Math.min(invocationIndex, invocationOutcomes.size() - 1));
+        }
+
+        private record InvocationOutcome(boolean success, @NotNull String buildLog) {
+            private InvocationOutcome {
+                Objects.requireNonNull(buildLog, "buildLog must not be null");
             }
         }
     }

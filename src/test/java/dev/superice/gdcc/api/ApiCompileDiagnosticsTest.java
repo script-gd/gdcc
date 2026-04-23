@@ -43,6 +43,7 @@ class ApiCompileDiagnosticsTest {
         assertEquals(List.of("shown broken.gd"), result.sourcePaths());
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
     }
 
@@ -73,6 +74,7 @@ class ApiCompileDiagnosticsTest {
         assertEquals(List.of("/src/blocked.gd"), result.sourcePaths());
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
     }
 
@@ -93,6 +95,7 @@ class ApiCompileDiagnosticsTest {
                 result.failureMessage()
         );
         assertTrue(result.diagnostics().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
     }
 
@@ -111,6 +114,7 @@ class ApiCompileDiagnosticsTest {
         assertEquals("Module 'demo' has no .gd source files to compile", result.failureMessage());
         assertTrue(result.sourcePaths().isEmpty());
         assertTrue(result.diagnostics().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
     }
 
@@ -132,6 +136,7 @@ class ApiCompileDiagnosticsTest {
         assertTrue(failureMessage.contains(occupiedPath.toString()));
         assertTrue(failureMessage.contains("cannot be used as a build directory"));
         assertTrue(result.diagnostics().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
         assertEquals(0, compiler.invocationCount());
     }
 
@@ -160,6 +165,7 @@ class ApiCompileDiagnosticsTest {
                 result.generatedFiles()
         );
         assertTrue(result.artifacts().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
         assertEquals(1, compiler.invocationCount());
     }
 

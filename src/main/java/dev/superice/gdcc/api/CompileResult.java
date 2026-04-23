@@ -19,7 +19,8 @@ import java.util.Objects;
 /// - `compileOptions`, class-name mapping, and source paths freeze the user-visible inputs
 /// - `sourcePaths` intentionally expose file display paths rather than raw module VFS paths
 /// - frontend diagnostics remain the canonical semantic fact source
-/// - backend build details stay summarized as generated-file/artifact paths plus build log
+/// - backend build details stay summarized as generated-file/artifact paths, mounted VFS links,
+///   and build log
 public record CompileResult(
         @NotNull Outcome outcome,
         @NotNull CompileOptions compileOptions,
@@ -29,7 +30,8 @@ public record CompileResult(
         @Nullable String failureMessage,
         @NotNull String buildLog,
         @NotNull List<Path> generatedFiles,
-        @NotNull List<Path> artifacts
+        @NotNull List<Path> artifacts,
+        @NotNull List<VfsEntrySnapshot.LinkEntrySnapshot> outputLinks
 ) {
     public CompileResult {
         Objects.requireNonNull(outcome, "outcome must not be null");
@@ -44,6 +46,7 @@ public record CompileResult(
         Objects.requireNonNull(buildLog, "buildLog must not be null");
         generatedFiles = freezeHostPaths(generatedFiles, "generatedFiles");
         artifacts = freezeHostPaths(artifacts, "artifacts");
+        outputLinks = freezeOutputLinks(outputLinks);
     }
 
     public boolean success() {
@@ -83,6 +86,19 @@ public record CompileResult(
         var frozen = List.copyOf(Objects.requireNonNull(paths, fieldName + " must not be null"));
         for (var path : frozen) {
             Objects.requireNonNull(path, fieldName + " must not contain null elements");
+        }
+        return frozen;
+    }
+
+    private static @NotNull List<VfsEntrySnapshot.LinkEntrySnapshot> freezeOutputLinks(
+            @NotNull List<VfsEntrySnapshot.LinkEntrySnapshot> outputLinks
+    ) {
+        var frozen = List.copyOf(Objects.requireNonNull(outputLinks, "outputLinks must not be null"));
+        for (var outputLink : frozen) {
+            Objects.requireNonNull(outputLink, "outputLinks must not contain null elements");
+            if (outputLink.linkKind() != VfsEntrySnapshot.LinkKind.LOCAL) {
+                throw new IllegalArgumentException("outputLinks must contain only LOCAL links");
+            }
         }
         return frozen;
     }

@@ -6,6 +6,7 @@ import dev.superice.gdcc.backend.c.build.CProjectInfo;
 import dev.superice.gdcc.backend.c.gen.CCodegen;
 import dev.superice.gdcc.exception.ApiCompileAlreadyRunningException;
 import dev.superice.gdcc.exception.ApiCompileTaskNotFoundException;
+import dev.superice.gdcc.exception.ApiEntryTypeMismatchException;
 import dev.superice.gdcc.exception.ApiModuleAlreadyExistsException;
 import dev.superice.gdcc.exception.ApiModuleNotFoundException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
@@ -313,10 +314,30 @@ public final class API {
     /// Compilation runs against a frozen module snapshot so RPC writes after `compile(...)` starts
     /// cannot mutate the exact source set or compile options consumed by this pipeline.
     private @NotNull CompileResult compileFrozenRequest(
+            @NotNull ModuleState ownerState,
             @NotNull ModuleState.CompileRequest request,
             @NotNull CompileTaskState taskState
     ) {
         var sourcePaths = displaySourcePaths(request);
+        try {
+            ownerState.prepareOutputMountRoot(request.compileOptions().outputMountRoot());
+        } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
+            return new CompileResult(
+                    CompileResult.Outcome.CONFIGURATION_FAILED,
+                    request.compileOptions(),
+                    request.topLevelCanonicalNameMap(),
+                    sourcePaths,
+                    EMPTY_DIAGNOSTICS,
+                    "Compile outputs for module '"
+                            + request.moduleId()
+                            + "' could not be mounted: "
+                            + exception.getMessage(),
+                    "",
+                    List.of(),
+                    List.of(),
+                    List.of()
+            );
+        }
         if (request.failure() != null) {
             return new CompileResult(
                     request.failure().outcome(),
@@ -326,6 +347,7 @@ public final class API {
                     EMPTY_DIAGNOSTICS,
                     request.failure().message(),
                     "",
+                    List.of(),
                     List.of(),
                     List.of()
             );
@@ -339,6 +361,7 @@ public final class API {
                     EMPTY_DIAGNOSTICS,
                     "Module '" + request.moduleId() + "' has no .gd source files to compile",
                     "",
+                    List.of(),
                     List.of(),
                     List.of()
             );
@@ -354,6 +377,7 @@ public final class API {
                     EMPTY_DIAGNOSTICS,
                     "Compile options for module '" + request.moduleId() + "' must set projectPath before compile",
                     "",
+                    List.of(),
                     List.of(),
                     List.of()
             );
@@ -401,6 +425,7 @@ public final class API {
                     "Frontend diagnostics blocked compilation",
                     "",
                     List.of(),
+                    List.of(),
                     List.of()
             );
         }
@@ -415,6 +440,7 @@ public final class API {
                     parseAndFrontendDiagnostics,
                     projectPathError,
                     "",
+                    List.of(),
                     List.of(),
                     List.of()
             );
@@ -446,6 +472,7 @@ public final class API {
                         frontendDiagnostics,
                         "Frontend diagnostics blocked compilation",
                         "",
+                        List.of(),
                         List.of(),
                         List.of()
                 );
@@ -480,17 +507,55 @@ public final class API {
             );
             var buildResult = projectBuilder.buildProject(projectInfo, codegen);
             var generatedFiles = collectGeneratedFiles(projectPath);
-            return new CompileResult(
-                    buildResult.success() ? CompileResult.Outcome.SUCCESS : CompileResult.Outcome.BUILD_FAILED,
-                    request.compileOptions(),
-                    request.topLevelCanonicalNameMap(),
-                    sourcePaths,
-                    frontendDiagnostics,
-                    buildResult.success() ? null : "Native build reported failure; see buildLog for details",
-                    buildResult.buildLog(),
-                    generatedFiles,
-                    buildResult.artifacts()
-            );
+            if (!buildResult.success()) {
+                return new CompileResult(
+                        CompileResult.Outcome.BUILD_FAILED,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        "Native build reported failure; see buildLog for details",
+                        buildResult.buildLog(),
+                        generatedFiles,
+                        buildResult.artifacts(),
+                        List.of()
+                );
+            }
+            try {
+                var outputLinks = ownerState.mountCompileOutputs(
+                        request.compileOptions().outputMountRoot(),
+                        generatedFiles,
+                        buildResult.artifacts()
+                );
+                return new CompileResult(
+                        CompileResult.Outcome.SUCCESS,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        null,
+                        buildResult.buildLog(),
+                        generatedFiles,
+                        buildResult.artifacts(),
+                        outputLinks
+                );
+            } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
+                return new CompileResult(
+                        CompileResult.Outcome.CONFIGURATION_FAILED,
+                        request.compileOptions(),
+                        request.topLevelCanonicalNameMap(),
+                        sourcePaths,
+                        frontendDiagnostics,
+                        "Compile outputs for module '"
+                                + request.moduleId()
+                                + "' could not be mounted: "
+                                + exception.getMessage(),
+                        buildResult.buildLog(),
+                        generatedFiles,
+                        buildResult.artifacts(),
+                        List.of()
+                );
+            }
         } catch (IOException exception) {
             return new CompileResult(
                     CompileResult.Outcome.BUILD_FAILED,
@@ -501,6 +566,7 @@ public final class API {
                     "Build pipeline failed: " + exception.getMessage(),
                     exception.getMessage(),
                     collectGeneratedFiles(projectPath),
+                    List.of(),
                     List.of()
             );
         }
@@ -552,7 +618,7 @@ public final class API {
                         request.sourceSnapshots().size(),
                         null
                 );
-                var result = compileFrozenRequest(request, taskState);
+                var result = compileFrozenRequest(ownerState, request, taskState);
                 finishCompileTask(taskState, normalizedModuleId, ownerState, result);
             } catch (Throwable throwable) {
                 finishCompileTask(
@@ -599,6 +665,7 @@ public final class API {
                 failureMessage,
                 failureMessage,
                 projectPath == null ? List.of() : collectGeneratedFiles(projectPath),
+                List.of(),
                 List.of()
         );
     }

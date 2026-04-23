@@ -70,6 +70,15 @@ class ApiCompilePipelineTest {
         assertEquals(1, result.artifacts().size());
         assertTrue(Files.exists(result.artifacts().getFirst()));
         assertTrue(result.artifacts().getFirst().getFileName().toString().endsWith(".wasm"));
+        assertEquals(
+                List.of(
+                        "/__build__/generated/entry.c",
+                        "/__build__/generated/engine_method_binds.h",
+                        "/__build__/generated/entry.h",
+                        "/__build__/artifacts/" + result.artifacts().getFirst().getFileName()
+                ),
+                result.outputLinks().stream().map(VfsEntrySnapshot.LinkEntrySnapshot::virtualPath).toList()
+        );
 
         var completedTask = api.getCompileTask(taskId);
         assertTrue(completedTask.completed());
