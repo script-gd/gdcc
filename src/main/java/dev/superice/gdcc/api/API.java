@@ -8,6 +8,7 @@ import dev.superice.gdcc.exception.ApiCompileAlreadyRunningException;
 import dev.superice.gdcc.exception.ApiCompileTaskNotFoundException;
 import dev.superice.gdcc.exception.ApiEntryTypeMismatchException;
 import dev.superice.gdcc.exception.ApiModuleAlreadyExistsException;
+import dev.superice.gdcc.exception.ApiModuleBusyException;
 import dev.superice.gdcc.exception.ApiModuleNotFoundException;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
@@ -33,6 +34,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.function.Consumer;
 
 /// In-memory module registry facade intended for RPC adapters.
@@ -54,7 +56,7 @@ public final class API {
     private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
     private final @NotNull CompileTaskHooks compileTaskHooks;
-    private final @NotNull ConcurrentHashMap<String, ModuleState> modules = new ConcurrentHashMap<>();
+    private final @NotNull ConcurrentHashMap<String, ManagedModule> modules = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<String, Long> activeCompileTasksByModule = new ConcurrentHashMap<>();
     private final @NotNull AtomicLong nextCompileTaskId = new AtomicLong(1);
@@ -139,7 +141,7 @@ public final class API {
                 StringUtil.requireTrimmedNonBlank(moduleName, "moduleName"),
                 clock
         );
-        var existingState = modules.putIfAbsent(normalizedModuleId, createdState);
+        var existingState = modules.putIfAbsent(normalizedModuleId, new ManagedModule(createdState));
         if (existingState != null) {
             throw new ApiModuleAlreadyExistsException("Module '" + normalizedModuleId + "' already exists");
         }
@@ -147,31 +149,47 @@ public final class API {
     }
 
     public @NotNull ModuleSnapshot getModule(@NotNull String moduleId) {
-        return requireModuleState(moduleId).snapshot();
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, ModuleState::snapshot);
     }
 
     /// Stable ordering keeps RPC list responses predictable even though storage uses a concurrent map.
     public @NotNull List<ModuleSnapshot> listModules() {
         return modules.values().stream()
-                .map(ModuleState::snapshot)
+                .map(ManagedModule::snapshotIfPresent)
+                .filter(Objects::nonNull)
                 .sorted(Comparator.comparing(ModuleSnapshot::moduleId))
                 .toList();
     }
 
     public @NotNull ModuleSnapshot deleteModule(@NotNull String moduleId) {
         var normalizedModuleId = normalizeModuleId(moduleId);
-        var removedState = modules.remove(normalizedModuleId);
-        if (removedState == null) {
+        var managedModule = modules.get(normalizedModuleId);
+        if (managedModule == null) {
             throw new ApiModuleNotFoundException("Module '" + normalizedModuleId + "' does not exist");
         }
-        return removedState.snapshot();
+        var removedSnapshot = managedModule.reserveDelete(normalizedModuleId);
+        try {
+            if (!modules.remove(normalizedModuleId, managedModule)) {
+                throw new ApiModuleNotFoundException("Module '" + normalizedModuleId + "' does not exist");
+            }
+            managedModule.finishDelete();
+            return removedSnapshot;
+        } catch (RuntimeException exception) {
+            managedModule.cancelDelete();
+            throw exception;
+        }
     }
 
     public @NotNull VfsEntrySnapshot.DirectoryEntrySnapshot createDirectory(
             @NotNull String moduleId,
             @NotNull String path
     ) {
-        return requireModuleState(moduleId).createDirectory(VirtualPath.parse(path));
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                state -> state.createDirectory(VirtualPath.parse(path))
+        );
     }
 
     public @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
@@ -179,7 +197,11 @@ public final class API {
             @NotNull String path,
             @NotNull String content
     ) {
-        return requireModuleState(moduleId).putFile(VirtualPath.parse(path), content);
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                state -> state.putFile(VirtualPath.parse(path), content)
+        );
     }
 
     public @NotNull VfsEntrySnapshot.FileEntrySnapshot putFile(
@@ -188,11 +210,18 @@ public final class API {
             @NotNull String content,
             @NotNull String displayPath
     ) {
-        return requireModuleState(moduleId).putFile(VirtualPath.parse(path), content, displayPath);
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
+                state.putFile(VirtualPath.parse(path), content, displayPath)
+        );
     }
 
     public @NotNull String readFile(@NotNull String moduleId, @NotNull String path) {
-        return requireModuleState(moduleId).readFile(VirtualPath.parse(path));
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                state -> state.readFile(VirtualPath.parse(path))
+        );
     }
 
     public @NotNull VfsEntrySnapshot.LinkEntrySnapshot createLink(
@@ -201,53 +230,80 @@ public final class API {
             @NotNull VfsEntrySnapshot.LinkKind linkKind,
             @NotNull String target
     ) {
-        return requireModuleState(moduleId).createLink(VirtualPath.parse(path), linkKind, target);
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
+                state.createLink(VirtualPath.parse(path), linkKind, target)
+        );
     }
 
     public @NotNull VfsEntrySnapshot deletePath(@NotNull String moduleId, @NotNull String path, boolean recursive) {
-        return requireModuleState(moduleId).deletePath(VirtualPath.parse(path), recursive);
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
+                state.deletePath(VirtualPath.parse(path), recursive)
+        );
     }
 
     /// Directory entries are returned in stable lexical order so RPC consumers can diff results.
     public @NotNull List<VfsEntrySnapshot> listDirectory(@NotNull String moduleId, @NotNull String path) {
-        return requireModuleState(moduleId).listDirectory(VirtualPath.parse(path));
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                state -> state.listDirectory(VirtualPath.parse(path))
+        );
     }
 
     public @NotNull VfsEntrySnapshot readEntry(@NotNull String moduleId, @NotNull String path) {
-        return requireModuleState(moduleId).readEntry(VirtualPath.parse(path));
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                state -> state.readEntry(VirtualPath.parse(path))
+        );
     }
 
     public @NotNull CompileOptions getCompileOptions(@NotNull String moduleId) {
-        return requireModuleState(moduleId).getCompileOptions();
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, ModuleState::getCompileOptions);
     }
 
     public @NotNull CompileOptions setCompileOptions(
             @NotNull String moduleId,
             @NotNull CompileOptions compileOptions
     ) {
-        return requireModuleState(moduleId).setCompileOptions(compileOptions);
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                state -> state.setCompileOptions(compileOptions)
+        );
     }
 
     public @NotNull Map<String, String> getTopLevelCanonicalNameMap(@NotNull String moduleId) {
-        return requireModuleState(moduleId).getTopLevelCanonicalNameMap();
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(
+                normalizedModuleId,
+                ModuleState::getTopLevelCanonicalNameMap
+        );
     }
 
     public @NotNull Map<String, String> setTopLevelCanonicalNameMap(
             @NotNull String moduleId,
             @NotNull Map<String, String> topLevelCanonicalNameMap
     ) {
-        return requireModuleState(moduleId).setTopLevelCanonicalNameMap(topLevelCanonicalNameMap);
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, state ->
+                state.setTopLevelCanonicalNameMap(topLevelCanonicalNameMap)
+        );
     }
 
     public @Nullable CompileResult getLastCompileResult(@NotNull String moduleId) {
-        return requireModuleState(moduleId).getLastCompileResult();
+        var normalizedModuleId = normalizeModuleId(moduleId);
+        return requireManagedModule(normalizedModuleId).runExclusive(normalizedModuleId, ModuleState::getLastCompileResult);
     }
 
     /// Starts one asynchronous compile on a fresh virtual thread and returns the task ID. The
     /// caller must poll `getCompileTask(...)` for progress and completion.
     public long compile(@NotNull String moduleId) {
         var normalizedModuleId = normalizeModuleId(moduleId);
-        var moduleState = requireModuleState(normalizedModuleId);
+        var managedModule = requireManagedModule(normalizedModuleId);
         var taskId = nextCompileTaskId.getAndIncrement();
         var existingTaskId = activeCompileTasksByModule.putIfAbsent(normalizedModuleId, taskId);
         if (existingTaskId != null) {
@@ -255,15 +311,22 @@ public final class API {
                     "Module '" + normalizedModuleId + "' already has active compile task " + existingTaskId
             );
         }
+        try {
+            managedModule.beginCompile(normalizedModuleId, taskId);
+        } catch (RuntimeException exception) {
+            activeCompileTasksByModule.remove(normalizedModuleId, taskId);
+            throw exception;
+        }
         var taskState = new CompileTaskState(taskId, normalizedModuleId, clock.instant(), compileTaskHooks);
         compileTasks.put(taskId, taskState);
         try {
             Thread.ofVirtual()
                     .name("gdcc-api-compile-" + taskId)
-                    .start(() -> runCompileTask(taskState, normalizedModuleId, moduleState));
+                    .start(() -> runCompileTask(taskState, normalizedModuleId, managedModule));
         } catch (RuntimeException exception) {
             compileTasks.remove(taskId);
             activeCompileTasksByModule.remove(normalizedModuleId, taskId);
+            managedModule.endCompile(taskId);
             throw exception;
         }
         return taskId;
@@ -287,13 +350,13 @@ public final class API {
         requireCompileTaskState(taskId).clearEvents();
     }
 
-    private @NotNull ModuleState requireModuleState(@NotNull String moduleId) {
+    private @NotNull ManagedModule requireManagedModule(@NotNull String moduleId) {
         var normalizedModuleId = normalizeModuleId(moduleId);
-        var moduleState = modules.get(normalizedModuleId);
-        if (moduleState == null) {
+        var managedModule = modules.get(normalizedModuleId);
+        if (managedModule == null) {
             throw new ApiModuleNotFoundException("Module '" + normalizedModuleId + "' does not exist");
         }
-        return moduleState;
+        return managedModule;
     }
 
     private @NotNull String normalizeModuleId(@NotNull String moduleId) {
@@ -590,7 +653,7 @@ public final class API {
     private void runCompileTask(
             @NotNull CompileTaskState taskState,
             @NotNull String normalizedModuleId,
-            @NotNull ModuleState ownerState
+            @NotNull ManagedModule ownerModule
     ) {
         ModuleState.CompileRequest request = null;
         CURRENT_COMPILE_TASK.set(taskState);
@@ -610,7 +673,7 @@ public final class API {
                         0,
                         null
                 );
-                request = ownerState.freezeCompileRequest();
+                request = ownerModule.state().freezeCompileRequest();
                 taskState.updateRunningStage(
                         CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
                         "Collected " + request.sourceSnapshots().size() + " source units",
@@ -618,13 +681,13 @@ public final class API {
                         request.sourceSnapshots().size(),
                         null
                 );
-                var result = compileFrozenRequest(ownerState, request, taskState);
-                finishCompileTask(taskState, normalizedModuleId, ownerState, result);
+                var result = compileFrozenRequest(ownerModule.state(), request, taskState);
+                finishCompileTask(taskState, normalizedModuleId, ownerModule, result);
             } catch (Throwable throwable) {
                 finishCompileTask(
                         taskState,
                         normalizedModuleId,
-                        ownerState,
+                        ownerModule,
                         unexpectedTaskFailure(request, throwable)
                 );
             }
@@ -636,7 +699,7 @@ public final class API {
     private void finishCompileTask(
             @NotNull CompileTaskState taskState,
             @NotNull String normalizedModuleId,
-            @NotNull ModuleState ownerState,
+            @NotNull ManagedModule ownerModule,
             @NotNull CompileResult result
     ) {
         taskState.complete(
@@ -644,10 +707,9 @@ public final class API {
                 result,
                 result.success() ? CompileTaskSnapshot.Stage.FINISHED : taskState.snapshot().stage()
         );
-        if (modules.get(normalizedModuleId) == ownerState) {
-            ownerState.setLastCompileResult(result);
-        }
+        ownerModule.state().setLastCompileResult(result);
         activeCompileTasksByModule.remove(normalizedModuleId, taskState.taskId());
+        ownerModule.endCompile(taskState.taskId());
     }
 
     private @NotNull CompileResult unexpectedTaskFailure(
@@ -682,6 +744,137 @@ public final class API {
                 .map(projectPath::resolve)
                 .filter(Files::exists)
                 .toList();
+    }
+
+    /// First implementation favors correctness over read/write concurrency: all same-module API
+    /// operations serialize through one gate, while different modules remain independent.
+    private static final class ManagedModule {
+        private final @NotNull ModuleState state;
+        private boolean busy;
+        private boolean deleted;
+        private long queuedCompileTaskId;
+        private long activeCompileTaskId;
+
+        private ManagedModule(@NotNull ModuleState state) {
+            this.state = Objects.requireNonNull(state, "state must not be null");
+        }
+
+        private @NotNull ModuleState state() {
+            return state;
+        }
+
+        private synchronized @Nullable ModuleSnapshot snapshotIfPresent() {
+            if (deleted) {
+                return null;
+            }
+            // Registry listing is best-effort: once a module is deleted we skip it, otherwise we
+            // expose the latest stable state snapshot without publishing a partially deleted entry.
+            return state.snapshot();
+        }
+
+        /// A compile reserves the module as soon as `compile(...)` accepts the task ID so later
+        /// same-module operations cannot overtake it before inputs are frozen.
+        private synchronized void beginCompile(@NotNull String moduleId, long taskId) {
+            if (deleted) {
+                throw new ApiModuleNotFoundException("Module '" + moduleId + "' does not exist");
+            }
+            queuedCompileTaskId = taskId;
+            try {
+                while (busy) {
+                    awaitTurn();
+                }
+                if (deleted) {
+                    throw new ApiModuleNotFoundException("Module '" + moduleId + "' does not exist");
+                }
+                busy = true;
+                activeCompileTaskId = taskId;
+                queuedCompileTaskId = 0;
+            } catch (RuntimeException exception) {
+                if (queuedCompileTaskId == taskId) {
+                    queuedCompileTaskId = 0;
+                    notifyAll();
+                }
+                throw exception;
+            }
+        }
+
+        private <T> T runExclusive(@NotNull String moduleId, @NotNull Function<ModuleState, T> operation) {
+            enterOperation(moduleId);
+            try {
+                return Objects.requireNonNull(operation, "operation must not be null").apply(state);
+            } finally {
+                leaveOperation();
+            }
+        }
+
+        private synchronized @NotNull ModuleSnapshot reserveDelete(@NotNull String moduleId) {
+            while (busy && activeCompileTaskId == 0 && queuedCompileTaskId == 0) {
+                awaitTurn();
+            }
+            if (deleted) {
+                throw new ApiModuleNotFoundException("Module '" + moduleId + "' does not exist");
+            }
+            var compileTaskId = pendingCompileTaskId();
+            if (compileTaskId != 0) {
+                throw new ApiModuleBusyException(
+                        "Module '" + moduleId + "' cannot be deleted while compile task "
+                                + compileTaskId
+                                + " is queued or active"
+                );
+            }
+            busy = true;
+            return state.snapshot();
+        }
+
+        private synchronized void finishDelete() {
+            deleted = true;
+            busy = false;
+            notifyAll();
+        }
+
+        private synchronized void cancelDelete() {
+            busy = false;
+            notifyAll();
+        }
+
+        private synchronized void endCompile(long taskId) {
+            if (queuedCompileTaskId == taskId) {
+                queuedCompileTaskId = 0;
+            }
+            if (activeCompileTaskId == taskId) {
+                activeCompileTaskId = 0;
+            }
+            busy = false;
+            notifyAll();
+        }
+
+        private synchronized void enterOperation(@NotNull String moduleId) {
+            while (busy || queuedCompileTaskId != 0) {
+                awaitTurn();
+            }
+            if (deleted) {
+                throw new ApiModuleNotFoundException("Module '" + moduleId + "' does not exist");
+            }
+            busy = true;
+        }
+
+        private synchronized void leaveOperation() {
+            busy = false;
+            notifyAll();
+        }
+
+        private long pendingCompileTaskId() {
+            return queuedCompileTaskId != 0 ? queuedCompileTaskId : activeCompileTaskId;
+        }
+
+        private void awaitTurn() {
+            try {
+                wait();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting for module operation", exception);
+            }
+        }
     }
 
     private static final class CompileTaskState {

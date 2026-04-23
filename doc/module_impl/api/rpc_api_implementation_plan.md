@@ -856,6 +856,57 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.8 第八步：补齐并发约束、回归测试与文档
 
+当前状态（2026-04-23）：
+
+- 已完成：
+  - API 已补齐模块级串行门控：
+    - 同模块的文件 CRUD、link CRUD、配置读写、模块快照查询、最近编译结果查询，都会经过同一 `ManagedModule` gate
+    - `compile(moduleId)` 一旦成功分配任务号，就会先为该模块预留编译席位，后续同模块操作不能在其冻结输入前插队
+    - 编译任务会从任务启动一直持有该 gate，直到结果写回并释放，因此不会与同模块写入/删除交错
+  - 删除冲突语义已冻结：
+    - 若模块存在 queued 或 active compile task，`deleteModule(...)` 会抛出清晰的 `ApiModuleBusyException`
+    - 删除不会偷偷取消或中断已有编译任务
+  - 模块列表并发语义已收口：
+    - `listModules()` 遇到并发删除时会跳过已删除模块，不再暴露内部异常或半删除条目
+  - targeted 单元测试已补齐并通过：
+    - `ApiConcurrentMutationTest`
+    - `ApiMultiModuleIsolationTest`
+  - API 相关回归测试已通过：
+    - `ApiModuleLifecycleTest`
+    - `ApiVirtualFileSystemTest`
+    - `ApiVirtualLinkTest`
+    - `ApiVirtualPathTest`
+    - `ApiCompileOptionsTest`
+    - `ApiCanonicalNameMapTest`
+    - `ApiCompilePipelineTest`
+    - `ApiCompileDiagnosticsTest`
+    - `ApiMappedClassCompileTest`
+    - `ApiCompileTaskTest`
+    - `ApiCompileTaskProgressTest`
+    - `ApiCompileTaskFailureStageTest`
+    - `ApiCompileTaskEventTest`
+    - `ApiCompileArtifactLinkTest`
+    - `ApiRecompileArtifactRefreshTest`
+
+- 已验证的行为锚点：
+  - happy path：
+    - 同模块编译进行中时，后续同模块写入会被阻塞，直到该次编译完成后才真正落盘
+    - 不同模块之间互不共享编译锁；模块 A 编译时，模块 B 的写入与读取仍可正常完成
+    - 编译结束后，模块仍可继续进行后续写入和再次编译
+  - negative path：
+    - 同模块写入在编译期间不会插入到当前编译前面；测试已锚定“第一次编译成功、写入生效后第二次编译因新内容失败”的行为
+    - 删除模块与 queued/active compile task 冲突时，会返回带任务号的清晰失败信息
+    - `listModules()` 在并发删除时不会抛出内部状态异常
+
+- 本步未做：
+  - 基于 `ReadWriteLock` 或更细粒度并发结构的读写分离优化
+  - 模块级门控的显式公平队列或取消机制
+  - 针对“编译已排队但前一个普通操作长时间占用 gate”的专门可观测指标
+
+- 当前验证命令：
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiConcurrentMutationTest,ApiMultiModuleIsolationTest,ApiCompileTaskTest`
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiModuleLifecycleTest,ApiVirtualFileSystemTest,ApiVirtualLinkTest,ApiVirtualPathTest,ApiCompileOptionsTest,ApiCanonicalNameMapTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest,ApiMappedClassCompileTest,ApiCompileTaskTest,ApiCompileTaskProgressTest,ApiCompileTaskFailureStageTest,ApiCompileTaskEventTest,ApiCompileArtifactLinkTest,ApiRecompileArtifactRefreshTest,ApiConcurrentMutationTest,ApiMultiModuleIsolationTest`
+
 目标：
 
 - 让该 API 可安全作为 RPC 后端使用。
