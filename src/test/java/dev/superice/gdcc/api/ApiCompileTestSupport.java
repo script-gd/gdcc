@@ -21,7 +21,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 
 final class ApiCompileTestSupport {
     static final Instant FIXED_TIME = Instant.parse("2026-04-23T10:15:30Z");
@@ -32,11 +35,19 @@ final class ApiCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull RecordingCompiler compiler) {
+        return newApi(compiler, API.CompileTaskHooks.none());
+    }
+
+    static @NotNull API newApi(
+            @NotNull RecordingCompiler compiler,
+            @NotNull API.CompileTaskHooks compileTaskHooks
+    ) {
         return new API(
                 FIXED_CLOCK,
                 new GdScriptParserService(),
                 new FrontendLoweringPassManager(),
-                new CProjectBuilder(compiler)
+                new CProjectBuilder(compiler),
+                compileTaskHooks
         );
     }
 
@@ -76,6 +87,27 @@ final class ApiCompileTestSupport {
         return Objects.requireNonNull(awaitTask(api, taskId).result());
     }
 
+    static @NotNull CompileTaskSnapshot awaitSnapshot(
+            @NotNull API api,
+            long taskId,
+            @NotNull Predicate<CompileTaskSnapshot> predicate,
+            @NotNull String description
+    ) {
+        var deadline = System.currentTimeMillis() + TASK_TIMEOUT_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            var snapshot = api.getCompileTask(taskId);
+            if (predicate.test(snapshot)) {
+                return snapshot;
+            }
+            sleepBriefly();
+        }
+        throw new AssertionError("Timed out waiting for compile task " + taskId + " to reach " + description);
+    }
+
+    static void sleepForProgressPolling() {
+        sleepBriefly();
+    }
+
     private static void sleepBriefly() {
         try {
             Thread.sleep(10);
@@ -85,11 +117,53 @@ final class ApiCompileTestSupport {
         }
     }
 
+    static final class SnapshotBlocker {
+        private final @NotNull Predicate<CompileTaskSnapshot> predicate;
+        private final @NotNull CountDownLatch enteredLatch = new CountDownLatch(1);
+        private final @NotNull CountDownLatch releaseLatch = new CountDownLatch(1);
+        private final @NotNull AtomicBoolean blocked = new AtomicBoolean();
+        private final @NotNull AtomicReference<CompileTaskSnapshot> matchedSnapshot = new AtomicReference<>();
+
+        SnapshotBlocker(@NotNull Predicate<CompileTaskSnapshot> predicate) {
+            this.predicate = Objects.requireNonNull(predicate, "predicate must not be null");
+        }
+
+        @NotNull API.CompileTaskHooks hooks() {
+            return API.CompileTaskHooks.afterSnapshotUpdate(snapshot -> {
+                if (!predicate.test(snapshot) || !blocked.compareAndSet(false, true)) {
+                    return;
+                }
+                matchedSnapshot.set(snapshot);
+                enteredLatch.countDown();
+                awaitReleaseIfNeeded();
+            });
+        }
+
+        boolean awaitEntered() {
+            return awaitLatch(enteredLatch);
+        }
+
+        void release() {
+            releaseLatch.countDown();
+        }
+
+        @NotNull CompileTaskSnapshot matchedSnapshot() {
+            return Objects.requireNonNull(matchedSnapshot.get(), "matchedSnapshot must not be null");
+        }
+
+        private void awaitReleaseIfNeeded() {
+            if (!awaitLatch(releaseLatch)) {
+                throw new AssertionError("Timed out waiting for snapshot blocker release");
+            }
+        }
+    }
+
     static final class RecordingCompiler implements CCompiler {
         private final boolean success;
         private final @NotNull String buildLog;
         private final @Nullable CountDownLatch enteredLatch;
         private final @Nullable CountDownLatch releaseLatch;
+        private final @NotNull List<CompileTaskEvent> eventsToRecord;
         private volatile boolean ranOnVirtualThread;
         private final @NotNull AtomicInteger invocationCount = new AtomicInteger();
         private volatile @Nullable String lastOutputBaseName;
@@ -102,24 +176,30 @@ final class ApiCompileTestSupport {
                 boolean success,
                 @NotNull String buildLog,
                 @Nullable CountDownLatch enteredLatch,
-                @Nullable CountDownLatch releaseLatch
+                @Nullable CountDownLatch releaseLatch,
+                @NotNull List<CompileTaskEvent> eventsToRecord
         ) {
             this.success = success;
             this.buildLog = buildLog;
             this.enteredLatch = enteredLatch;
             this.releaseLatch = releaseLatch;
+            this.eventsToRecord = List.copyOf(eventsToRecord);
         }
 
         static @NotNull RecordingCompiler succeeding() {
-            return new RecordingCompiler(true, "ok", null, null);
+            return new RecordingCompiler(true, "ok", null, null, List.of());
         }
 
         static @NotNull RecordingCompiler failing(@NotNull String buildLog) {
-            return new RecordingCompiler(false, buildLog, null, null);
+            return new RecordingCompiler(false, buildLog, null, null, List.of());
         }
 
         static @NotNull RecordingCompiler blockingSuccess() {
-            return new RecordingCompiler(true, "ok", new CountDownLatch(1), new CountDownLatch(1));
+            return new RecordingCompiler(true, "ok", new CountDownLatch(1), new CountDownLatch(1), List.of());
+        }
+
+        static @NotNull RecordingCompiler blockingSuccessWithEvents(@NotNull CompileTaskEvent... events) {
+            return new RecordingCompiler(true, "ok", new CountDownLatch(1), new CountDownLatch(1), List.of(events));
         }
 
         @Override
@@ -138,6 +218,11 @@ final class ApiCompileTestSupport {
             lastOutputBaseName = outputBaseName;
             lastOptimizationLevel = optimizationLevel;
             lastTargetPlatform = targetPlatform;
+            for (var event : eventsToRecord) {
+                if (!API.recordCurrentCompileTaskEvent(event.category(), event.detail())) {
+                    throw new AssertionError("Expected compile task event recorder to be bound on compiler thread");
+                }
+            }
             if (enteredLatch != null) {
                 enteredLatch.countDown();
             }
@@ -206,6 +291,15 @@ final class ApiCompileTestSupport {
                 Thread.currentThread().interrupt();
                 throw new AssertionError("Interrupted while waiting for test latch", exception);
             }
+        }
+    }
+
+    private static boolean awaitLatch(@NotNull CountDownLatch latch) {
+        try {
+            return latch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("Interrupted while waiting for test latch", exception);
         }
     }
 }

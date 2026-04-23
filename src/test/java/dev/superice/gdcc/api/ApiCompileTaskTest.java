@@ -23,18 +23,32 @@ class ApiCompileTaskTest {
         api.putFile("demo", "/src/task_demo.gd", """
                 class_name CompileTaskDemo
                 extends RefCounted
-
+                
                 func value() -> int:
                     return 3
                 """);
 
         var taskId = api.compile("demo");
 
+        var queuedTask = api.getCompileTask(taskId);
+        assertEquals(CompileTaskSnapshot.State.QUEUED, queuedTask.state());
+        assertEquals(CompileTaskSnapshot.Stage.QUEUED, queuedTask.stage());
+        assertEquals(1, queuedTask.revision());
+        assertNull(queuedTask.result());
+
         assertTrue(compiler.awaitEntered());
-        var runningTask = api.getCompileTask(taskId);
+        var runningTask = ApiCompileTestSupport.awaitSnapshot(
+                api,
+                taskId,
+                snapshot -> snapshot.state() == CompileTaskSnapshot.State.RUNNING
+                        && snapshot.stage() == CompileTaskSnapshot.Stage.BUILDING_NATIVE,
+                "BUILDING_NATIVE"
+        );
         assertEquals(taskId, runningTask.taskId());
         assertEquals("demo", runningTask.moduleId());
         assertEquals(CompileTaskSnapshot.State.RUNNING, runningTask.state());
+        assertEquals(CompileTaskSnapshot.Stage.BUILDING_NATIVE, runningTask.stage());
+        assertTrue(runningTask.revision() > queuedTask.revision());
         assertNull(runningTask.result());
 
         var duplicateCompileError = assertThrows(ApiCompileAlreadyRunningException.class, () -> api.compile("demo"));
@@ -44,6 +58,7 @@ class ApiCompileTaskTest {
         var completedTask = ApiCompileTestSupport.awaitTask(api, taskId);
 
         assertEquals(CompileTaskSnapshot.State.SUCCEEDED, completedTask.state());
+        assertEquals(CompileTaskSnapshot.Stage.FINISHED, completedTask.stage());
         assertTrue(completedTask.success());
         assertTrue(compiler.ranOnVirtualThread());
         assertEquals(completedTask.result(), api.getLastCompileResult("demo"));

@@ -12,6 +12,7 @@ import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
+import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.gdextension.ExtensionApiLoader;
 import dev.superice.gdcc.scope.ClassRegistry;
@@ -24,12 +25,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /// In-memory module registry facade intended for RPC adapters.
 ///
@@ -43,34 +46,89 @@ public final class API {
             "engine_method_binds.h",
             "entry.h"
     );
+    private static final @NotNull ThreadLocal<CompileTaskState> CURRENT_COMPILE_TASK = new ThreadLocal<>();
 
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
     private final @NotNull FrontendLoweringPassManager loweringPassManager;
     private final @NotNull CProjectBuilder projectBuilder;
+    private final @NotNull CompileTaskHooks compileTaskHooks;
     private final @NotNull ConcurrentHashMap<String, ModuleState> modules = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<String, Long> activeCompileTasksByModule = new ConcurrentHashMap<>();
     private final @NotNull AtomicLong nextCompileTaskId = new AtomicLong(1);
 
+    static final class CompileTaskHooks {
+        private static final @NotNull CompileTaskHooks NONE = new CompileTaskHooks(null);
+
+        private final @Nullable Consumer<CompileTaskSnapshot> afterSnapshotUpdate;
+
+        private CompileTaskHooks(@Nullable Consumer<CompileTaskSnapshot> afterSnapshotUpdate) {
+            this.afterSnapshotUpdate = afterSnapshotUpdate;
+        }
+
+        static @NotNull CompileTaskHooks none() {
+            return NONE;
+        }
+
+        static @NotNull CompileTaskHooks afterSnapshotUpdate(@NotNull Consumer<CompileTaskSnapshot> afterSnapshotUpdate) {
+            return new CompileTaskHooks(Objects.requireNonNull(
+                    afterSnapshotUpdate,
+                    "afterSnapshotUpdate must not be null"
+            ));
+        }
+
+        void afterSnapshotUpdate(@NotNull CompileTaskSnapshot snapshot) {
+            if (afterSnapshotUpdate != null) {
+                afterSnapshotUpdate.accept(snapshot);
+            }
+        }
+    }
+
     public API() {
-        this(Clock.systemUTC(), new GdScriptParserService(), new FrontendLoweringPassManager(), new CProjectBuilder());
+        this(
+                Clock.systemUTC(),
+                new GdScriptParserService(),
+                new FrontendLoweringPassManager(),
+                new CProjectBuilder(),
+                CompileTaskHooks.none()
+        );
     }
 
     API(@NotNull Clock clock) {
-        this(clock, new GdScriptParserService(), new FrontendLoweringPassManager(), new CProjectBuilder());
+        this(
+                clock,
+                new GdScriptParserService(),
+                new FrontendLoweringPassManager(),
+                new CProjectBuilder(),
+                CompileTaskHooks.none()
+        );
     }
 
     API(
             @NotNull Clock clock,
             @NotNull GdScriptParserService parserService,
             @NotNull FrontendLoweringPassManager loweringPassManager,
-            @NotNull CProjectBuilder projectBuilder
+            @NotNull CProjectBuilder projectBuilder,
+            @NotNull CompileTaskHooks compileTaskHooks
     ) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
         this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
+        this.compileTaskHooks = Objects.requireNonNull(compileTaskHooks, "compileTaskHooks must not be null");
+    }
+
+    /// Records one event for the compile task currently executing on this thread. This is meant for
+    /// frontend/backend code that runs inside the API-managed compile pipeline.
+    public static boolean recordCurrentCompileTaskEvent(@NotNull String category, @NotNull String detail) {
+        var event = new CompileTaskEvent(category, detail);
+        var taskState = CURRENT_COMPILE_TASK.get();
+        if (taskState == null) {
+            return false;
+        }
+        taskState.recordEvent(event);
+        return true;
     }
 
     public @NotNull ModuleSnapshot createModule(@NotNull String moduleId, @NotNull String moduleName) {
@@ -196,21 +254,12 @@ public final class API {
                     "Module '" + normalizedModuleId + "' already has active compile task " + existingTaskId
             );
         }
-
-        ModuleState.CompileRequest request;
-        try {
-            request = moduleState.freezeCompileRequest();
-        } catch (RuntimeException exception) {
-            activeCompileTasksByModule.remove(normalizedModuleId, taskId);
-            throw exception;
-        }
-
-        var taskState = new CompileTaskState(taskId, normalizedModuleId, clock.instant());
+        var taskState = new CompileTaskState(taskId, normalizedModuleId, clock.instant(), compileTaskHooks);
         compileTasks.put(taskId, taskState);
         try {
             Thread.ofVirtual()
                     .name("gdcc-api-compile-" + taskId)
-                    .start(() -> runCompileTask(taskState, normalizedModuleId, moduleState, request));
+                    .start(() -> runCompileTask(taskState, normalizedModuleId, moduleState));
         } catch (RuntimeException exception) {
             compileTasks.remove(taskId);
             activeCompileTasksByModule.remove(normalizedModuleId, taskId);
@@ -221,14 +270,20 @@ public final class API {
 
     /// Returns the latest snapshot for one compile task started by `compile(...)`.
     public @NotNull CompileTaskSnapshot getCompileTask(long taskId) {
-        if (taskId <= 0) {
-            throw new IllegalArgumentException("taskId must be positive");
-        }
-        var taskState = compileTasks.get(taskId);
-        if (taskState == null) {
-            throw new ApiCompileTaskNotFoundException("Compile task '" + taskId + "' does not exist");
-        }
-        return taskState.snapshot();
+        return requireCompileTaskState(taskId).snapshot();
+    }
+
+    public @Nullable CompileTaskEvent getLatestCompileTaskEvent(long taskId) {
+        return requireCompileTaskState(taskId).latestEvent();
+    }
+
+    /// Events are returned in append order so clients can treat the list as a stable task log.
+    public @NotNull List<CompileTaskEvent> listCompileTaskEvents(long taskId) {
+        return requireCompileTaskState(taskId).events();
+    }
+
+    public void clearCompileTaskEvents(long taskId) {
+        requireCompileTaskState(taskId).clearEvents();
     }
 
     private @NotNull ModuleState requireModuleState(@NotNull String moduleId) {
@@ -244,9 +299,23 @@ public final class API {
         return StringUtil.requireTrimmedNonBlank(moduleId, "moduleId");
     }
 
+    private @NotNull CompileTaskState requireCompileTaskState(long taskId) {
+        if (taskId <= 0) {
+            throw new IllegalArgumentException("taskId must be positive");
+        }
+        var taskState = compileTasks.get(taskId);
+        if (taskState == null) {
+            throw new ApiCompileTaskNotFoundException("Compile task '" + taskId + "' does not exist");
+        }
+        return taskState;
+    }
+
     /// Compilation runs against a frozen module snapshot so RPC writes after `compile(...)` starts
     /// cannot mutate the exact source set or compile options consumed by this pipeline.
-    private @NotNull CompileResult compileFrozenRequest(@NotNull ModuleState.CompileRequest request) {
+    private @NotNull CompileResult compileFrozenRequest(
+            @NotNull ModuleState.CompileRequest request,
+            @NotNull CompileTaskState taskState
+    ) {
         var sourcePaths = displaySourcePaths(request);
         if (request.failure() != null) {
             return new CompileResult(
@@ -291,13 +360,36 @@ public final class API {
         }
 
         var diagnostics = new DiagnosticManager();
-        var units = request.sourceSnapshots().stream()
-                .map(sourceSnapshot -> parserService.parseUnit(
-                        sourceSnapshot.logicalPath(),
-                        sourceSnapshot.source(),
-                        diagnostics
-                ))
-                .toList();
+        taskState.updateRunningStage(
+                CompileTaskSnapshot.Stage.PARSING,
+                "Parsing source units",
+                0,
+                request.sourceSnapshots().size(),
+                null
+        );
+        var units = new ArrayList<FrontendSourceUnit>(request.sourceSnapshots().size());
+        for (var index = 0; index < request.sourceSnapshots().size(); index++) {
+            var sourceSnapshot = request.sourceSnapshots().get(index);
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.PARSING,
+                    "Parsing " + sourceSnapshot.displayPath(),
+                    index,
+                    request.sourceSnapshots().size(),
+                    sourceSnapshot.displayPath()
+            );
+            units.add(parserService.parseUnit(
+                    sourceSnapshot.logicalPath(),
+                    sourceSnapshot.source(),
+                    diagnostics
+            ));
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.PARSING,
+                    "Parsed " + sourceSnapshot.displayPath(),
+                    index + 1,
+                    request.sourceSnapshots().size(),
+                    sourceSnapshot.displayPath()
+            );
+        }
         var parseAndFrontendDiagnostics = diagnostics.snapshot();
         if (parseAndFrontendDiagnostics.hasErrors()) {
             return new CompileResult(
@@ -336,6 +428,13 @@ public final class API {
                     units,
                     request.topLevelCanonicalNameMap()
             );
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.LOWERING,
+                    "Lowering frontend module",
+                    request.sourceSnapshots().size(),
+                    request.sourceSnapshots().size(),
+                    null
+            );
             var lowered = loweringPassManager.lower(frontendModule, classRegistry, diagnostics);
             var frontendDiagnostics = diagnostics.snapshot();
             if (lowered == null || frontendDiagnostics.hasErrors()) {
@@ -360,11 +459,25 @@ public final class API {
                     request.compileOptions().targetPlatform()
             );
             var codegen = new CCodegen();
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.CODEGEN_PREPARE,
+                    "Preparing C code generation",
+                    request.sourceSnapshots().size(),
+                    request.sourceSnapshots().size(),
+                    null
+            );
             codegen.prepare(
                     new CodegenContext(projectInfo, classRegistry, request.compileOptions().strictMode()),
                     lowered
             );
 
+            taskState.updateRunningStage(
+                    CompileTaskSnapshot.Stage.BUILDING_NATIVE,
+                    "Building native artifacts",
+                    request.sourceSnapshots().size(),
+                    request.sourceSnapshots().size(),
+                    null
+            );
             var buildResult = projectBuilder.buildProject(projectInfo, codegen);
             var generatedFiles = collectGeneratedFiles(projectPath);
             return new CompileResult(
@@ -411,14 +524,46 @@ public final class API {
     private void runCompileTask(
             @NotNull CompileTaskState taskState,
             @NotNull String normalizedModuleId,
-            @NotNull ModuleState ownerState,
-            @NotNull ModuleState.CompileRequest request
+            @NotNull ModuleState ownerState
     ) {
+        ModuleState.CompileRequest request = null;
+        CURRENT_COMPILE_TASK.set(taskState);
         try {
-            var result = compileFrozenRequest(request);
-            finishCompileTask(taskState, normalizedModuleId, ownerState, result);
-        } catch (Throwable throwable) {
-            finishCompileTask(taskState, normalizedModuleId, ownerState, unexpectedTaskFailure(request, throwable));
+            try {
+                taskState.updateRunningStage(
+                        CompileTaskSnapshot.Stage.FREEZING_INPUTS,
+                        "Freezing compile inputs",
+                        0,
+                        0,
+                        null
+                );
+                taskState.updateRunningStage(
+                        CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
+                        "Collecting .gd sources from module VFS",
+                        0,
+                        0,
+                        null
+                );
+                request = ownerState.freezeCompileRequest();
+                taskState.updateRunningStage(
+                        CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
+                        "Collected " + request.sourceSnapshots().size() + " source units",
+                        0,
+                        request.sourceSnapshots().size(),
+                        null
+                );
+                var result = compileFrozenRequest(request, taskState);
+                finishCompileTask(taskState, normalizedModuleId, ownerState, result);
+            } catch (Throwable throwable) {
+                finishCompileTask(
+                        taskState,
+                        normalizedModuleId,
+                        ownerState,
+                        unexpectedTaskFailure(request, throwable)
+                );
+            }
+        } finally {
+            CURRENT_COMPILE_TASK.remove();
         }
     }
 
@@ -428,7 +573,11 @@ public final class API {
             @NotNull ModuleState ownerState,
             @NotNull CompileResult result
     ) {
-        taskState.complete(clock.instant(), result);
+        taskState.complete(
+                clock.instant(),
+                result,
+                result.success() ? CompileTaskSnapshot.Stage.FINISHED : taskState.snapshot().stage()
+        );
         if (modules.get(normalizedModuleId) == ownerState) {
             ownerState.setLastCompileResult(result);
         }
@@ -436,16 +585,16 @@ public final class API {
     }
 
     private @NotNull CompileResult unexpectedTaskFailure(
-            @NotNull ModuleState.CompileRequest request,
+            @Nullable ModuleState.CompileRequest request,
             @NotNull Throwable throwable
     ) {
-        var projectPath = request.compileOptions().projectPath();
+        var projectPath = request == null ? null : request.compileOptions().projectPath();
         var failureMessage = "Compile task failed unexpectedly: " + describeThrowable(throwable);
         return new CompileResult(
                 CompileResult.Outcome.BUILD_FAILED,
-                request.compileOptions(),
-                request.topLevelCanonicalNameMap(),
-                displaySourcePaths(request),
+                request == null ? CompileOptions.defaults() : request.compileOptions(),
+                request == null ? Map.of() : request.topLevelCanonicalNameMap(),
+                request == null ? List.of() : displaySourcePaths(request),
                 EMPTY_DIAGNOSTICS,
                 failureMessage,
                 failureMessage,
@@ -472,13 +621,34 @@ public final class API {
         private final long taskId;
         private final @NotNull String moduleId;
         private final @NotNull Instant createdAt;
+        private final @NotNull CompileTaskHooks compileTaskHooks;
+        private final @NotNull ArrayList<CompileTaskEvent> events = new ArrayList<>();
         private volatile @NotNull CompileTaskSnapshot snapshot;
 
-        private CompileTaskState(long taskId, @NotNull String moduleId, @NotNull Instant createdAt) {
+        private CompileTaskState(
+                long taskId,
+                @NotNull String moduleId,
+                @NotNull Instant createdAt,
+                @NotNull CompileTaskHooks compileTaskHooks
+        ) {
             this.taskId = taskId;
             this.moduleId = moduleId;
             this.createdAt = createdAt;
-            snapshot = new CompileTaskSnapshot(taskId, moduleId, CompileTaskSnapshot.State.RUNNING, createdAt, null, null);
+            this.compileTaskHooks = compileTaskHooks;
+            snapshot = new CompileTaskSnapshot(
+                    taskId,
+                    moduleId,
+                    CompileTaskSnapshot.State.QUEUED,
+                    CompileTaskSnapshot.Stage.QUEUED,
+                    "Queued for execution",
+                    0,
+                    0,
+                    null,
+                    1,
+                    createdAt,
+                    null,
+                    null
+            );
         }
 
         private long taskId() {
@@ -489,15 +659,105 @@ public final class API {
             return snapshot;
         }
 
-        private synchronized void complete(@NotNull Instant completedAt, @NotNull CompileResult result) {
-            snapshot = new CompileTaskSnapshot(
+        private synchronized void recordEvent(@NotNull CompileTaskEvent event) {
+            events.add(Objects.requireNonNull(event, "event must not be null"));
+        }
+
+        private synchronized @Nullable CompileTaskEvent latestEvent() {
+            return events.isEmpty() ? null : events.getLast();
+        }
+
+        private synchronized @NotNull List<CompileTaskEvent> events() {
+            return List.copyOf(events);
+        }
+
+        private synchronized void clearEvents() {
+            events.clear();
+        }
+
+        private void updateRunningStage(
+                @NotNull CompileTaskSnapshot.Stage stage,
+                @Nullable String stageMessage,
+                int completedUnits,
+                int totalUnits,
+                @Nullable String currentSourcePath
+        ) {
+            var next = nextRunningSnapshot(stage, stageMessage, completedUnits, totalUnits, currentSourcePath);
+            if (next == null) {
+                return;
+            }
+            compileTaskHooks.afterSnapshotUpdate(next);
+        }
+
+        private synchronized @Nullable CompileTaskSnapshot nextRunningSnapshot(
+                @NotNull CompileTaskSnapshot.Stage stage,
+                @Nullable String stageMessage,
+                int completedUnits,
+                int totalUnits,
+                @Nullable String currentSourcePath
+        ) {
+            var current = snapshot;
+            if (current.completed()) {
+                throw new IllegalStateException("Completed compile task cannot return to RUNNING state");
+            }
+            var next = new CompileTaskSnapshot(
                     taskId,
                     moduleId,
-                    result.success() ? CompileTaskSnapshot.State.SUCCEEDED : CompileTaskSnapshot.State.FAILED,
+                    CompileTaskSnapshot.State.RUNNING,
+                    stage,
+                    stageMessage,
+                    completedUnits,
+                    totalUnits,
+                    currentSourcePath,
+                    current.revision() + 1,
                     createdAt,
-                    completedAt,
-                    result
+                    null,
+                    null
             );
+            if (sameProgress(current, next)) {
+                return null;
+            }
+            snapshot = next;
+            return next;
+        }
+
+        private void complete(
+                @NotNull Instant completedAt,
+                @NotNull CompileResult result,
+                @NotNull CompileTaskSnapshot.Stage completedStage
+        ) {
+            CompileTaskSnapshot next;
+            synchronized (this) {
+                var current = snapshot;
+                next = new CompileTaskSnapshot(
+                        taskId,
+                        moduleId,
+                        result.success() ? CompileTaskSnapshot.State.SUCCEEDED : CompileTaskSnapshot.State.FAILED,
+                        completedStage,
+                        result.success() ? "Compile completed successfully" : current.stageMessage(),
+                        result.success() ? current.totalUnits() : current.completedUnits(),
+                        current.totalUnits(),
+                        result.success() ? null : current.currentSourcePath(),
+                        current.revision() + 1,
+                        createdAt,
+                        completedAt,
+                        result
+                );
+                snapshot = next;
+            }
+            compileTaskHooks.afterSnapshotUpdate(next);
+        }
+
+        private boolean sameProgress(
+                @NotNull CompileTaskSnapshot current,
+                @NotNull CompileTaskSnapshot next
+        ) {
+            return current.state() == next.state()
+                    && current.stage() == next.stage()
+                    && Objects.equals(current.stageMessage(), next.stageMessage())
+                    && current.completedUnits() == next.completedUnits()
+                    && current.totalUnits() == next.totalUnits()
+                    && Objects.equals(current.currentSourcePath(), next.currentSourcePath());
         }
     }
 }

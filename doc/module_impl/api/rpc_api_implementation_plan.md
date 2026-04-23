@@ -551,7 +551,8 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - `FRONTEND_FAILED`
     - `BUILD_FAILED`
     - `SUCCESS`
-  - 编译成功后，本步已在结果中返回本地生成文件路径和最终 artifact 路径；但尚未把它们回挂到模块 VFS，仍留待第六步处理。
+  - `CompileTaskSnapshot` 当前只暴露粗粒度 `RUNNING / SUCCEEDED / FAILED`；更细的阶段型进度轮询仍留待第六步处理。
+  - 编译成功后，本步已在结果中返回本地生成文件路径和最终 artifact 路径；但尚未把它们回挂到模块 VFS，仍留待第七步处理。
   - targeted 单元测试已补齐并通过：
     - `ApiCompilePipelineTest`
     - `ApiCompileDiagnosticsTest`
@@ -619,7 +620,148 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - `ApiMappedClassCompileTest`
 - `ApiCompileTaskTest`
 
-### 4.6 第六步：将本地编译产物挂回虚拟文件系统
+### 4.6 第六步：补充编译任务阶段快照与进度轮询
+
+当前状态（2026-04-23）：
+
+- 已完成：
+  - `CompileTaskSnapshot` 已扩展为“coarse lifecycle + fine-grained stage snapshot”：
+    - `state` 现覆盖 `QUEUED / RUNNING / SUCCEEDED / FAILED`
+    - `stage` 现覆盖：
+      - `QUEUED`
+      - `FREEZING_INPUTS`
+      - `COLLECTING_SOURCES`
+      - `PARSING`
+      - `LOWERING`
+      - `CODEGEN_PREPARE`
+      - `BUILDING_NATIVE`
+      - `FINISHED`
+    - 新增 `stageMessage`
+    - 新增 `completedUnits` / `totalUnits`
+    - 新增 `currentSourcePath`
+    - 新增单调递增 `revision`
+  - `API.compile(moduleId)` 现已把源码冻结下沉到任务线程：
+    - `compile(...)` 返回后，任务先以 `QUEUED` 快照可见
+    - 任务线程随后推进到 `FREEZING_INPUTS` 与 `COLLECTING_SOURCES`
+    - 同模块“同时只能有一个活动编译任务”的约束保持不变
+  - 编译主线关键检查点现已写入阶段快照：
+    - 源码冻结前
+    - 源码收集前后
+    - 每个 `parseUnit(...)` 前后
+    - `FrontendLoweringPassManager.lower(...)` 前
+    - `CCodegen.prepare(...)` 前
+    - `CProjectBuilder.buildProject(...)` 前
+    - 最终任务完成时
+  - 阶段进度语义已冻结：
+    - `PARSING` 阶段使用源码单元计数驱动 `completedUnits / totalUnits`
+    - `currentSourcePath` 优先暴露 caller-facing `displayPath`
+    - `BUILDING_NATIVE` 首版只暴露 coarse stage 与说明文本，不承诺精确百分比
+    - 若两次轮询之间没有新阶段/计数/当前文件变化，`revision` 保持不变
+  - 失败态保留了最后阶段上下文：
+    - broken source link / cycle 等 source collection failure 以 `COLLECTING_SOURCES` 结束
+    - parse diagnostics 以 `PARSING` 结束
+    - compile-only frontend blockers 以 `LOWERING` 结束
+    - native build failure 以 `BUILDING_NATIVE` 结束
+    - 只有成功任务会进入 `SUCCEEDED + FINISHED`
+  - 已补充编译任务事件记录能力：
+    - 新增 `CompileTaskEvent(category, detail)`，事件面只保留类别与详细描述两个字符串字段
+    - 新增静态 `API.recordCurrentCompileTaskEvent(category, detail)`，供 frontend/backend 在 API 管理的当前编译线程上直接记录事件
+    - 新增 `getLatestCompileTaskEvent(taskId)` / `listCompileTaskEvents(taskId)` / `clearCompileTaskEvents(taskId)`，供调用方轮询和清空事件
+    - 当前事件能力刻意保持为“完整列表 + 最新事件”，尚未引入 after-seq 增量游标
+  - targeted 单元测试已补齐并通过：
+    - `ApiCompileTaskTest`
+    - `ApiCompileTaskProgressTest`
+    - `ApiCompileTaskFailureStageTest`
+    - `ApiCompileTaskEventTest`
+    - 同时回归通过：
+      - `ApiCompilePipelineTest`
+      - `ApiCompileDiagnosticsTest`
+      - `ApiMappedClassCompileTest`
+- 已验证的行为锚点：
+  - happy path：
+    - `compile(...)` 返回任务号后，可先观察到 `QUEUED`
+    - 进入 native build 前，任务会沿既定阶段单调推进
+    - 解析多文件模块时，可观察到 `PARSING` 阶段下的 `completedUnits / totalUnits`
+    - 解析中间态会暴露 caller-facing `currentSourcePath`
+    - 成功任务最终进入 `SUCCEEDED + FINISHED`
+  - negative path：
+    - source collection failure 不再只暴露笼统 `FAILED`，而是保留 `COLLECTING_SOURCES`
+    - parse diagnostics 保留 `PARSING` 阶段上下文
+    - compile-only frontend blockers 保留 `LOWERING` 阶段上下文
+    - native build failure 保留 `BUILDING_NATIVE` 阶段上下文
+    - 任务停在同一阶段等待时，`revision` 不会无故变化
+    - 非编译任务线程调用静态事件记录接口时返回 `false`，不会污染任何任务日志
+    - 事件类别或详细描述为空白时会在 API 边界被拒绝
+- 本步未做：
+  - 基于 after-seq 的事件增量拉取
+  - native build 内部的更细粒度子阶段或精确百分比
+- 当前验证命令：
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiModuleLifecycleTest,ApiVirtualFileSystemTest,ApiVirtualLinkTest,ApiVirtualPathTest,ApiCompileOptionsTest,ApiCanonicalNameMapTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest,ApiMappedClassCompileTest,ApiCompileTaskTest,ApiCompileTaskProgressTest,ApiCompileTaskFailureStageTest,ApiCompileTaskEventTest`
+
+目标：
+
+- 让客户端在不改动 `compile(moduleId)` / `getCompileTask(taskId)` 主交互形状的前提下，可轮询当前编译进度与详细阶段状态。
+
+建议实施内容：
+
+- 保留现有异步任务模型：
+  - `compile(moduleId)` 继续只负责启动任务并返回任务号
+  - `getCompileTask(taskId)` 继续作为唯一的任务轮询入口
+- 将 `CompileTaskSnapshot` 从“粗粒度运行态”扩展为“运行态 + 当前阶段快照”：
+  - 保留 coarse `state`，继续表达 `QUEUED / RUNNING / SUCCEEDED / FAILED`
+  - 新增细粒度 `stage`，建议首批覆盖：
+    - `QUEUED`
+    - `FREEZING_INPUTS`
+    - `COLLECTING_SOURCES`
+    - `PARSING`
+    - `LOWERING`
+    - `CODEGEN_PREPARE`
+    - `BUILDING_NATIVE`
+    - `FINISHED`
+  - 新增 `stageMessage`，用于暴露当前阶段的人类可读说明
+  - 新增 `completedUnits` / `totalUnits`，用于表达基于源码单元的阶段进度
+  - 新增 `currentSourcePath`，用于在解析阶段指出当前正在处理的源码显示路径
+  - 新增单调递增 `revision`，让客户端可以判断快照自上次轮询以来是否真的有推进
+- 将当前位于 `compile(...)` 调用线程中的 `freezeCompileRequest()` 下沉到任务线程中：
+  - 这样 `FREEZING_INPUTS` 与 `COLLECTING_SOURCES` 才能被 `getCompileTask(...)` 轮询观察到
+  - `compile(...)` 返回后，客户端即可立刻看到任务从 `QUEUED` 推进到后续阶段
+- 在 `runCompileTask(...)` 中为以下关键检查点追加快照更新：
+  - 进入源码冻结前
+  - 开始收集源码时
+  - 逐个 `parseUnit(...)` 前后
+  - 进入 `FrontendLoweringPassManager.lower(...)` 前后
+  - 进入 `CCodegen.prepare(...)` 前后
+  - 进入 `CProjectBuilder.buildProject(...)` 前后
+  - 写入最终 `SUCCEEDED / FAILED` 结果前
+- 解析阶段的进度建议以“源码单元计数”驱动，而不是伪造全局百分比：
+  - `completedUnits / totalUnits` 只在真正可计数的阶段推进
+  - `BUILDING_NATIVE` 首版只暴露阶段状态与说明文本，不强行承诺精确百分比
+- 所有任务状态更新都应保持单调：
+  - `revision` 每次更新递增
+  - 已完成任务不可回退为运行中
+  - 失败任务应保留失败前最后一个阶段信息，并同时附带最终 `CompileResult`
+
+验收细则：
+
+- happy path：
+  - `compile(...)` 返回任务号后，客户端可轮询到 `QUEUED/RUNNING` 以及后续阶段迁移
+  - 解析多文件模块时，可观察到 `PARSING` 阶段下的 `completedUnits / totalUnits`
+  - 当前解析文件的 `currentSourcePath` 与 caller-facing `displayPath` 保持一致
+  - 编译完成后，任务进入 `SUCCEEDED` 且 `stage == FINISHED`
+- negative path：
+  - 若源码收集失败，最后一次快照应停留在 `COLLECTING_SOURCES` 或其直接后的失败态，而不是只有笼统 `FAILED`
+  - 若 frontend diagnostics 阻断编译，最后一次快照应保留 `PARSING` 或 `LOWERING` 阶段上下文
+  - 若 native build 失败，最后一次快照应保留 `BUILDING_NATIVE` 阶段上下文
+  - 若任务在两次轮询之间没有推进，`revision` 不应变化，避免客户端误判
+
+建议测试：
+
+- `ApiCompileTaskTest`
+- `ApiCompileTaskProgressTest`
+- `ApiCompileTaskFailureStageTest`
+- `ApiCompileTaskEventTest`
+
+### 4.7 第七步：将本地编译产物挂回虚拟文件系统
 
 目标：
 
@@ -659,7 +801,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - `ApiCompileArtifactLinkTest`
 - `ApiRecompileArtifactRefreshTest`
 
-### 4.7 第七步：补齐并发约束、回归测试与文档
+### 4.8 第八步：补齐并发约束、回归测试与文档
 
 目标：
 
@@ -755,11 +897,15 @@ API 层只保存映射并在构造 `FrontendModule` 时传递。真正的 reserv
    - compile-check error
    - broken source link
    - 不可写项目目录
-8. 输出挂载：
+8. 编译任务进度轮询：
+   - 阶段迁移可观察
+   - 解析进度计数可观察
+   - 失败时保留最后阶段上下文
+9. 输出挂载：
    - 生成文件链接
    - 本地动态库链接
    - 重新编译刷新旧链接
-9. 并发与隔离：
+10. 并发与隔离：
    - 同模块写入/编译互斥
    - 多模块互不污染
 
@@ -774,8 +920,9 @@ API 层只保存映射并在构造 `FrontendModule` 时传递。真正的 reserv
 3. VFS link 与 link 解析
 4. 编译参数与类名映射配置
 5. compile orchestration 接入现有 frontend/lowering/backend
-6. 编译输出链接回挂
-7. 并发、回归测试、文档收尾
+6. 编译任务阶段快照与进度轮询
+7. 编译输出链接回挂
+8. 并发、回归测试、文档收尾
 
 每一步都应保持：
 
@@ -811,7 +958,8 @@ API 层只保存映射并在构造 `FrontendModule` 时传递。真正的 reserv
 
 - `api` 包提供稳定的模块生命周期、VFS CRUD、链接、参数设置、类名映射设置和编译入口
 - 编译路径复用现有 `FrontendModule`、`FrontendLoweringPassManager`、`CCodegen`、`CProjectBuilder`
+- `getCompileTask(...)` 可返回任务中间阶段、解析进度与最终结果，而不只是开始/结束态
 - 编译成功后，本地生成文件与最终 artifact 会以 `LOCAL` link 形式稳定挂回模块 VFS
 - 失败场景能返回清晰的 diagnostics / buildLog / broken link 信息
-- 新增 targeted tests 覆盖模块管理、VFS、链接、编译成功与失败、输出挂载、并发隔离
+- 新增 targeted tests 覆盖模块管理、VFS、链接、编译成功与失败、任务进度轮询、输出挂载、并发隔离
 - `doc/module_impl/api` 下有与实现一致的长期文档

@@ -1,6 +1,7 @@
 .gradle
 build/
 tmp/
+__build__/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
