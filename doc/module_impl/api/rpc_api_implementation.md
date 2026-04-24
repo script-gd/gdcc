@@ -153,9 +153,12 @@ and validated through `FrontendClassNameContract`. API code must not maintain a 
 
 - `compile(moduleId)`
 - `getCompileTask(taskId)`
+- `cancelCompileTask(taskId)`
 - `getLastCompileResult(moduleId)`
 - `getLatestCompileTaskEvent(taskId)`
 - `listCompileTaskEvents(taskId)`
+- `listCompileTaskEvents(taskId, startIndex, maxCount)`
+- `listCompileTaskEvents(taskId, category, startIndex, maxCount)`
 - `clearCompileTaskEvents(taskId)`
 - `API.recordCurrentCompileTaskEvent(category, detail)`
 
@@ -267,6 +270,7 @@ Current outcomes:
 - `CONFIGURATION_FAILED`
 - `FRONTEND_FAILED`
 - `BUILD_FAILED`
+- `CANCELED`
 
 ### 4.7 Compile Task Snapshot
 
@@ -278,6 +282,7 @@ States:
 - `RUNNING`
 - `SUCCEEDED`
 - `FAILED`
+- `CANCELED`
 
 Stages:
 
@@ -456,8 +461,20 @@ Events are simple append-order records:
 - `category`
 - `detail`
 
-The current event API returns the full retained event list or latest event. It does not provide
-sequence-based incremental reads, event caps, or truncation metadata.
+Event retrieval supports append-order indexed paging. Callers can read pages with
+`listCompileTaskEvents(taskId, startIndex, maxCount)`, where `startIndex` is the zero-based event
+index in the retained append order and `maxCount` is the requested page size.
+
+The API also supports category-filtered paging with
+`listCompileTaskEvents(taskId, category, startIndex, maxCount)`. The returned indexes still refer to
+the retained full event stream, not to a re-numbered category-local stream.
+
+`maxCount` is limited by `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE`. Requests outside `1..MAX` fail
+rather than silently truncating. Adapters that need incremental reads should persist the next unread
+index and resume from that index on the next call. The latest event and full retained event list are
+still available, but consumers should not assume the only choices are full-list reads or latest-event
+polling. The API exposes paging limits, but it does not attach per-page truncation metadata beyond
+the returned event slice itself.
 
 ---
 
@@ -513,9 +530,9 @@ Important follow-up items:
   against configured writable roots.
 - Add project-path-level locking so different modules cannot concurrently write the same build
   directory.
-- Add compile cancellation and native build timeout.
+- Add native build timeout policy.
 - Add quotas for modules, VFS entries, source bytes, retained tasks, and event logs.
-- Add event sequence numbers plus incremental, limited reads.
+- Add event retention caps or truncation metadata if adapters need bounded long-running task logs.
 - Replace or supplement host `Path` exposure with opaque artifact handles for remote clients.
 - Add ownership markers or manifests for compiler-published output directories.
 - Split unexpected internal failures from native build failures in `CompileResult.Outcome` if clients

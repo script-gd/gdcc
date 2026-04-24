@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ZigCcCompiler implements CCompiler {
     private static final String PROJECT_CACHE_DIR_NAME = "compiler-cache";
     private static final String SHARED_CACHE_DIR_NAME = "shared-compiler-cache";
+    private static final Duration OUTPUT_READER_JOIN_TIMEOUT = Duration.ofSeconds(1);
 
     @Override
     public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
@@ -80,8 +82,21 @@ public class ZigCcCompiler implements CCompiler {
                             outputFailure.set(exception);
                         }
                     });
-            var exit = ProcessUtil.waitForInterruptibly(p, outputReader);
-            outputReader.join();
+            var interrupted = false;
+            int exit;
+            try {
+                exit = ProcessUtil.waitForInterruptibly(p, outputReader);
+            } catch (InterruptedException exception) {
+                interrupted = true;
+                throw exception;
+            } finally {
+                if (interrupted) {
+                    outputReader.interrupt();
+                    ProcessUtil.joinThreadAfterInterrupt(outputReader, OUTPUT_READER_JOIN_TIMEOUT);
+                } else {
+                    outputReader.join();
+                }
+            }
             var readFailure = outputFailure.get();
             if (readFailure != null) {
                 throw readFailure;
