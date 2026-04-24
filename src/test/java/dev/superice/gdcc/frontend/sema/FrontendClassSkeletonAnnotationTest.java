@@ -2,6 +2,7 @@ package dev.superice.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import dev.superice.gdcc.frontend.parse.FrontendModule;
 import dev.superice.gdcc.frontend.parse.FrontendSourceUnit;
@@ -135,7 +136,10 @@ class FrontendClassSkeletonAnnotationTest {
         assertEquals("sema.unsupported_annotation", diagnostic.category());
         assertTrue(diagnostic.message().contains("@warning_ignore"));
         assertTrue(diagnostic.message().contains("hp"));
-        assertEquals(Path.of("tmp", "unsupported_property_annotation.gd"), diagnostic.sourcePath());
+        assertEquals(
+                FrontendDiagnostic.sourcePathText(Path.of("tmp", "unsupported_property_annotation.gd")),
+                diagnostic.sourcePath()
+        );
         assertNotNull(diagnostic.range());
     }
 

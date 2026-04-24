@@ -51,7 +51,7 @@ public final class GdScriptParserService {
                             },
                             "parse.lowering",
                             diagnostic.message(),
-                            sourcePath,
+                            FrontendDiagnostic.sourcePathText(sourcePath),
                             FrontendRange.fromAstRange(diagnostic.range())
                     ))
                     .toList();
@@ -61,7 +61,7 @@ public final class GdScriptParserService {
             var parseDiagnostics = List.of(FrontendDiagnostic.error(
                     "parse.internal",
                     "Unexpected parser failure: " + exception.getMessage(),
-                    sourcePath,
+                    FrontendDiagnostic.sourcePathText(sourcePath),
                     null
             ));
             diagnosticManager.reportAll(parseDiagnostics);

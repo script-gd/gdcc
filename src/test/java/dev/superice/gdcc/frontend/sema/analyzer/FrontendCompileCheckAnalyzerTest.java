@@ -113,7 +113,8 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(8, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && Path.of("tmp", "compile_check_explicit_blocks.gd").equals(diagnostic.sourcePath())
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "compile_check_explicit_blocks.gd"))
+                        .equals(diagnostic.sourcePath())
                         && diagnostic.range() != null
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));

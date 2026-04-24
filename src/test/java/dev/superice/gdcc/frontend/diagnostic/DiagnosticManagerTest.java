@@ -11,8 +11,18 @@ class DiagnosticManagerTest {
     @Test
     void reportPreservesInsertionOrderAndEarlierSnapshotsStayStable() {
         var manager = new DiagnosticManager();
-        var first = FrontendDiagnostic.warning("parse.lowering", "first", Path.of("tmp", "first.gd"), null);
-        var second = FrontendDiagnostic.error("sema.class_skeleton", "second", Path.of("tmp", "second.gd"), null);
+        var first = FrontendDiagnostic.warning(
+                "parse.lowering",
+                "first",
+                FrontendDiagnostic.sourcePathText(Path.of("tmp", "first.gd")),
+                null
+        );
+        var second = FrontendDiagnostic.error(
+                "sema.class_skeleton",
+                "second",
+                FrontendDiagnostic.sourcePathText(Path.of("tmp", "second.gd")),
+                null
+        );
 
         manager.report(first);
         var beforeSecond = manager.snapshot();
@@ -73,14 +83,14 @@ class DiagnosticManagerTest {
         assertEquals(FrontendDiagnosticSeverity.WARNING, warning.severity());
         assertEquals("parse.lowering", warning.category());
         assertEquals("warning", warning.message());
-        assertEquals(sourcePath, warning.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(sourcePath), warning.sourcePath());
         assertEquals(range, warning.range());
 
         var error = snapshot.getLast();
         assertEquals(FrontendDiagnosticSeverity.ERROR, error.severity());
         assertEquals("parse.internal", error.category());
         assertEquals("error", error.message());
-        assertEquals(sourcePath, error.sourcePath());
+        assertEquals(FrontendDiagnostic.sourcePathText(sourcePath), error.sourcePath());
         assertNull(error.range());
     }
 

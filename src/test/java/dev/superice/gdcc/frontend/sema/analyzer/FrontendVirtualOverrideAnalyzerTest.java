@@ -158,28 +158,28 @@ class FrontendVirtualOverrideAnalyzerTest {
                         && diagnostic.range() != null
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "ready_with_arg.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "ready_with_arg.gd")))
                         && diagnostic.message().contains("_ready")
                         && diagnostic.message().contains("declares 1 parameter(s); expected 0")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "ready_returns_int.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "ready_returns_int.gd")))
                         && diagnostic.message().contains("returns 'int'; expected 'void'")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "process_delta_variant.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "process_delta_variant.gd")))
                         && diagnostic.message().contains("parameter #1 'delta'")
                         && diagnostic.message().contains("Variant")
                         && diagnostic.message().contains("float")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "physics_process_int.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "physics_process_int.gd")))
                         && diagnostic.message().contains("_physics_process")
                         && diagnostic.message().contains("int")
                         && diagnostic.message().contains("float")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(Path.of("tmp", "static_ready.gd"))
+                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "static_ready.gd")))
                         && diagnostic.message().contains("declared static")
         ));
 
