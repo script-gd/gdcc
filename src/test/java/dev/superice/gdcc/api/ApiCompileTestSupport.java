@@ -17,7 +17,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
@@ -32,24 +34,50 @@ final class ApiCompileTestSupport {
     static final Instant FIXED_TIME = Instant.parse("2026-04-23T10:15:30Z");
     static final Clock FIXED_CLOCK = Clock.fixed(FIXED_TIME, ZoneOffset.UTC);
     private static final long TASK_TIMEOUT_MILLIS = 30_000;
+    private static final Duration TEST_COMPLETED_COMPILE_TASK_TTL = Duration.ofSeconds(5);
+    private static final Duration TEST_COMPILE_TASK_SWEEP_INTERVAL = Duration.ofMillis(50);
 
     private ApiCompileTestSupport() {
     }
 
     static @NotNull API newApi(@NotNull RecordingCompiler compiler) {
-        return newApi(compiler, CompileTaskHooks.none());
+        return newApi(
+                compiler,
+                CompileTaskHooks.none(),
+                Clock.systemUTC(),
+                TEST_COMPLETED_COMPILE_TASK_TTL,
+                TEST_COMPILE_TASK_SWEEP_INTERVAL
+        );
     }
 
     static @NotNull API newApi(
             @NotNull RecordingCompiler compiler,
             @NotNull CompileTaskHooks compileTaskHooks
     ) {
+        return newApi(
+                compiler,
+                compileTaskHooks,
+                Clock.systemUTC(),
+                TEST_COMPLETED_COMPILE_TASK_TTL,
+                TEST_COMPILE_TASK_SWEEP_INTERVAL
+        );
+    }
+
+    static @NotNull API newApi(
+            @NotNull RecordingCompiler compiler,
+            @NotNull CompileTaskHooks compileTaskHooks,
+            @NotNull Clock clock,
+            @NotNull Duration completedCompileTaskTtl,
+            @NotNull Duration compileTaskSweepInterval
+    ) {
         return new API(
-                FIXED_CLOCK,
+                clock,
                 new GdScriptParserService(),
                 new FrontendLoweringPassManager(),
                 new CProjectBuilder(compiler),
-                compileTaskHooks
+                compileTaskHooks,
+                completedCompileTaskTtl,
+                compileTaskSweepInterval
         );
     }
 
@@ -265,6 +293,40 @@ final class ApiCompileTestSupport {
             var method = API.class.getDeclaredMethod("requireManagedModule", String.class);
             method.setAccessible(true);
             return method.invoke(api, moduleId);
+        }
+    }
+
+    static final class MutableClock extends Clock {
+        private final @NotNull AtomicReference<Instant> currentInstant;
+        private final @NotNull ZoneId zone;
+
+        MutableClock(@NotNull Instant initialInstant) {
+            this(new AtomicReference<>(Objects.requireNonNull(initialInstant, "initialInstant must not be null")), ZoneOffset.UTC);
+        }
+
+        private MutableClock(@NotNull AtomicReference<Instant> currentInstant, @NotNull ZoneId zone) {
+            this.currentInstant = Objects.requireNonNull(currentInstant, "currentInstant must not be null");
+            this.zone = Objects.requireNonNull(zone, "zone must not be null");
+        }
+
+        void advance(@NotNull Duration duration) {
+            var delta = Objects.requireNonNull(duration, "duration must not be null");
+            currentInstant.updateAndGet(current -> current.plus(delta));
+        }
+
+        @Override
+        public @NotNull ZoneId getZone() {
+            return zone;
+        }
+
+        @Override
+        public @NotNull Clock withZone(@NotNull ZoneId zone) {
+            return new MutableClock(currentInstant, zone);
+        }
+
+        @Override
+        public @NotNull Instant instant() {
+            return currentInstant.get();
         }
     }
 

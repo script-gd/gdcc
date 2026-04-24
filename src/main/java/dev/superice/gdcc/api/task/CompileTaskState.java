@@ -6,6 +6,7 @@ import dev.superice.gdcc.api.CompileTaskSnapshot;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -81,6 +82,16 @@ public final class CompileTaskState {
 
     public synchronized void clearEvents() {
         events.clear();
+    }
+
+    public boolean expiredAt(@NotNull Instant now, @NotNull Duration ttl) {
+        Objects.requireNonNull(now, "now must not be null");
+        Objects.requireNonNull(ttl, "ttl must not be null");
+        var current = snapshot;
+        return current.completed()
+                && !Objects.requireNonNull(current.completedAt(), "completedAt must not be null")
+                .plus(ttl)
+                .isAfter(now);
     }
 
     synchronized void recordEvent(@NotNull CompileTaskEvent event) {

@@ -123,25 +123,6 @@ public final class CompileTaskRunner implements Runnable {
     /// input set or output mount used by this pipeline.
     private @NotNull CompileResult compileFrozenRequest(@NotNull Request request) {
         var sourcePaths = displaySourcePaths(request);
-        try {
-            request.outputMountPreparer().accept(request.compileOptions().outputMountRoot());
-        } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
-            return new CompileResult(
-                    CompileResult.Outcome.CONFIGURATION_FAILED,
-                    request.compileOptions(),
-                    request.topLevelCanonicalNameMap(),
-                    sourcePaths,
-                    EMPTY_DIAGNOSTICS,
-                    "Compile outputs for module '"
-                            + request.moduleId()
-                            + "' could not be mounted: "
-                            + exception.getMessage(),
-                    "",
-                    List.of(),
-                    List.of(),
-                    List.of()
-            );
-        }
         if (request.failure() != null) {
             return new CompileResult(
                     request.failure().outcome(),
@@ -301,6 +282,10 @@ public final class CompileTaskRunner implements Runnable {
                     new CodegenContext(projectInfo, classRegistry, request.compileOptions().strictMode()),
                     lowered
             );
+            var outputMountError = validateAndPrepareOutputPublication(request, sourcePaths, frontendDiagnostics);
+            if (outputMountError != null) {
+                return outputMountError;
+            }
 
             taskState.updateRunningStage(
                     CompileTaskSnapshot.Stage.BUILDING_NATIVE,
@@ -343,20 +328,14 @@ public final class CompileTaskRunner implements Runnable {
                         outputLinks
                 );
             } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
-                return new CompileResult(
-                        CompileResult.Outcome.CONFIGURATION_FAILED,
-                        request.compileOptions(),
-                        request.topLevelCanonicalNameMap(),
+                return outputMountConfigurationFailure(
+                        request,
                         sourcePaths,
                         frontendDiagnostics,
-                        "Compile outputs for module '"
-                                + request.moduleId()
-                                + "' could not be mounted: "
-                                + exception.getMessage(),
+                        exception,
                         buildResult.buildLog(),
                         generatedFiles,
-                        buildResult.artifacts(),
-                        List.of()
+                        buildResult.artifacts()
                 );
             }
         } catch (IOException exception) {
@@ -372,6 +351,22 @@ public final class CompileTaskRunner implements Runnable {
                     List.of(),
                     List.of()
             );
+        }
+    }
+
+    /// Output publication is split into a non-mutating validation pass and a later cleanup pass so
+    /// early failures keep the last successful output links intact until a new publish is imminent.
+    private @Nullable CompileResult validateAndPrepareOutputPublication(
+            @NotNull Request request,
+            @NotNull List<String> sourcePaths,
+            @NotNull DiagnosticSnapshot diagnostics
+    ) {
+        try {
+            request.outputMountValidator().accept(request.compileOptions().outputMountRoot());
+            request.outputPublicationPreparer().accept(request.compileOptions().outputMountRoot());
+            return null;
+        } catch (ApiEntryTypeMismatchException | IllegalArgumentException exception) {
+            return outputMountConfigurationFailure(request, sourcePaths, diagnostics, exception, "", List.of(), List.of());
         }
     }
 
@@ -467,6 +462,32 @@ public final class CompileTaskRunner implements Runnable {
                 .toList();
     }
 
+    private @NotNull CompileResult outputMountConfigurationFailure(
+            @NotNull Request request,
+            @NotNull List<String> sourcePaths,
+            @NotNull DiagnosticSnapshot diagnostics,
+            @NotNull Exception exception,
+            @NotNull String buildLog,
+            @NotNull List<Path> generatedFiles,
+            @NotNull List<Path> artifacts
+    ) {
+        return new CompileResult(
+                CompileResult.Outcome.CONFIGURATION_FAILED,
+                request.compileOptions(),
+                request.topLevelCanonicalNameMap(),
+                sourcePaths,
+                diagnostics,
+                "Compile outputs for module '"
+                        + request.moduleId()
+                        + "' could not be mounted: "
+                        + exception.getMessage(),
+                buildLog,
+                generatedFiles,
+                artifacts,
+                List.of()
+        );
+    }
+
     /// Frozen inputs and module-owned callbacks captured at compile-task start.
     public record Request(
             @NotNull String moduleId,
@@ -475,7 +496,8 @@ public final class CompileTaskRunner implements Runnable {
             @NotNull Map<String, String> topLevelCanonicalNameMap,
             @NotNull List<SourceSnapshot> sourceSnapshots,
             @Nullable Failure failure,
-            @NotNull Consumer<String> outputMountPreparer,
+            @NotNull Consumer<String> outputMountValidator,
+            @NotNull Consumer<String> outputPublicationPreparer,
             @NotNull Function<BuildOutputs, List<VfsEntrySnapshot.LinkEntrySnapshot>> outputMounter
     ) {
         public Request {
@@ -487,7 +509,8 @@ public final class CompileTaskRunner implements Runnable {
                     "topLevelCanonicalNameMap must not be null"
             ));
             sourceSnapshots = List.copyOf(Objects.requireNonNull(sourceSnapshots, "sourceSnapshots must not be null"));
-            Objects.requireNonNull(outputMountPreparer, "outputMountPreparer must not be null");
+            Objects.requireNonNull(outputMountValidator, "outputMountValidator must not be null");
+            Objects.requireNonNull(outputPublicationPreparer, "outputPublicationPreparer must not be null");
             Objects.requireNonNull(outputMounter, "outputMounter must not be null");
         }
     }

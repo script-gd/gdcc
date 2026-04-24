@@ -33,6 +33,7 @@ final class ModuleState {
     private @NotNull CompileOptions compileOptions;
     private @NotNull Map<String, String> topLevelCanonicalNameMap;
     private @Nullable CompileResult lastCompileResult;
+    private @Nullable VirtualPath publishedOutputMountRoot;
 
     ModuleState(@NotNull String moduleId, @NotNull String moduleName, @NotNull Clock clock) {
         this.moduleId = Objects.requireNonNull(moduleId, "moduleId must not be null");
@@ -229,15 +230,22 @@ final class ModuleState {
         lastCompileResult = Objects.requireNonNull(compileResult, "compileResult must not be null");
     }
 
-    /// Compile output links live under two compiler-owned subdirectories so callers can reserve a
-    /// stable mount root without forcing the API to delete unrelated user content in that subtree.
-    synchronized void prepareOutputMountRoot(@NotNull String outputMountRoot) {
+    /// Validate that the caller-selected mount root and compiler-owned subdirectories can later host
+    /// generated outputs without mutating any existing published links yet.
+    synchronized void validateOutputMountRoot(@NotNull String outputMountRoot) {
+        var mountRoot = VirtualPath.parse(outputMountRoot);
+        validateManagedOutputDirectories(mountRoot);
+    }
+
+    /// Once the compile has passed source collection, configuration, and frontend validation, the
+    /// API can replace any previously published outputs before native build begins.
+    synchronized void prepareOutputPublication(@NotNull String outputMountRoot) {
         var currentRoot = VirtualPath.parse(outputMountRoot);
         clearManagedOutputDirectories(currentRoot, true);
-        var previousRoot = previousOutputMountRoot();
-        if (previousRoot != null && !previousRoot.equals(currentRoot)) {
-            clearManagedOutputDirectories(previousRoot, false);
+        if (publishedOutputMountRoot != null && !publishedOutputMountRoot.equals(currentRoot)) {
+            clearManagedOutputDirectories(publishedOutputMountRoot, false);
         }
+        publishedOutputMountRoot = null;
     }
 
     /// Successful compiles publish their generated files and final artifacts back into the module
@@ -272,6 +280,7 @@ final class ModuleState {
                     artifact.toString()
             ));
         }
+        publishedOutputMountRoot = mountRoot;
         return List.copyOf(mountedLinks);
     }
 
@@ -547,6 +556,12 @@ final class ModuleState {
         return StringUtil.requireTrimmedNonBlank(displayPath, "displayPath");
     }
 
+    private void validateManagedOutputDirectories(@NotNull VirtualPath mountRoot) {
+        resolveExistingOutputDirectory(mountRoot, true);
+        resolveExistingOutputDirectory(mountRoot.child(GENERATED_OUTPUT_DIR), true);
+        resolveExistingOutputDirectory(mountRoot.child(ARTIFACT_OUTPUT_DIR), true);
+    }
+
     private void clearManagedOutputDirectories(@NotNull VirtualPath mountRoot, boolean strict) {
         var rootDirectory = resolveExistingOutputDirectory(mountRoot, strict);
         if (rootDirectory == null) {
@@ -596,12 +611,6 @@ final class ModuleState {
         } catch (ApiPathNotFoundException _) {
             return null;
         }
-    }
-
-    private @Nullable VirtualPath previousOutputMountRoot() {
-        return lastCompileResult == null
-                ? null
-                : VirtualPath.parse(lastCompileResult.compileOptions().outputMountRoot());
     }
 
     private @NotNull ApiPathNotFoundException pathNotFound(@NotNull String pathText) {

@@ -107,6 +107,107 @@ class ApiRecompileArtifactRefreshTest {
         assertEquals("Path '/__build__/artifacts' does not exist in module 'demo'", staleArtifactError.getMessage());
     }
 
+    @Test
+    void frontendFailureKeepsPreviousMountedOutputsUntilNextSuccessfulPublish(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Frontend Failure Refresh Demo");
+        api.putFile("demo", "/src/main.gd", validSource("FrontendFailureRefreshDemo"));
+        api.setCompileOptions(
+                "demo",
+                ApiCompileTestSupport.compileOptions(
+                        tempDir.resolve("first-project"),
+                        dev.superice.gdcc.backend.c.build.COptimizationLevel.DEBUG,
+                        TargetPlatform.WEB_WASM32,
+                        false,
+                        "/first-build"
+                )
+        );
+
+        var firstResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+        assertEquals(CompileResult.Outcome.SUCCESS, firstResult.outcome());
+        assertPublishedLinkExists(api, "/first-build/generated/entry.c");
+
+        api.setCompileOptions(
+                "demo",
+                ApiCompileTestSupport.compileOptions(
+                        tempDir.resolve("second-project"),
+                        dev.superice.gdcc.backend.c.build.COptimizationLevel.RELEASE,
+                        TargetPlatform.getNativePlatform(),
+                        false,
+                        "/second-build"
+                )
+        );
+        api.putFile("demo", "/src/main.gd", brokenSource());
+
+        var secondResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.FRONTEND_FAILED, secondResult.outcome());
+        assertTrue(secondResult.outputLinks().isEmpty());
+        assertPublishedLinkExists(api, "/first-build/generated/entry.c");
+        assertPathMissing(api, "/second-build/generated/entry.c");
+
+        api.putFile("demo", "/src/main.gd", validSource("FrontendFailureRefreshDemo"));
+        var thirdResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.SUCCESS, thirdResult.outcome());
+        assertPublishedLinkExists(api, "/second-build/generated/entry.c");
+        assertPathMissing(api, "/first-build/generated/entry.c");
+    }
+
+    @Test
+    void sourceCollectionFailureKeepsPreviouslyMountedOutputs(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Source Collection Failure Demo");
+        api.putFile("demo", "/src/main.gd", validSource("SourceCollectionFailureDemo"));
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("source-collection-project")));
+
+        var firstResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+        assertEquals(CompileResult.Outcome.SUCCESS, firstResult.outcome());
+        assertPublishedLinkExists(api, "/__build__/generated/entry.c");
+
+        api.createLink("demo", "/broken", VfsEntrySnapshot.LinkKind.VIRTUAL, "/missing");
+        var secondResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.SOURCE_COLLECTION_FAILED, secondResult.outcome());
+        assertTrue(secondResult.outputLinks().isEmpty());
+        assertEquals(
+                "Virtual link '/broken' in module 'demo' points to missing path '/missing'",
+                secondResult.failureMessage()
+        );
+        assertEquals(1, compiler.invocationCount());
+        assertPublishedLinkExists(api, "/__build__/generated/entry.c");
+    }
+
+    @Test
+    void configurationFailureKeepsPreviouslyMountedOutputs(@TempDir Path tempDir) {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(compiler);
+
+        api.createModule("demo", "Configuration Failure Demo");
+        api.putFile("demo", "/src/main.gd", validSource("ConfigurationFailureDemo"));
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(tempDir.resolve("configuration-success-project")));
+
+        var firstResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+        assertEquals(CompileResult.Outcome.SUCCESS, firstResult.outcome());
+        assertPublishedLinkExists(api, "/__build__/generated/entry.c");
+
+        api.setCompileOptions("demo", CompileOptions.defaults());
+        var secondResult = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.CONFIGURATION_FAILED, secondResult.outcome());
+        assertEquals(
+                "Compile options for module 'demo' must set projectPath before compile",
+                secondResult.failureMessage()
+        );
+        assertTrue(secondResult.outputLinks().isEmpty());
+        assertEquals(1, compiler.invocationCount());
+        assertPublishedLinkExists(api, "/__build__/generated/entry.c");
+    }
+
     private static String validSource(String className) {
         return """
                 class_name %s
@@ -115,5 +216,24 @@ class ApiRecompileArtifactRefreshTest {
                 func value() -> int:
                     return 1
                 """.formatted(className);
+    }
+
+    private static String brokenSource() {
+        return """
+                class_name BrokenRefreshDemo
+                extends RefCounted
+                
+                func value(
+                    return 1
+                """;
+    }
+
+    private static void assertPublishedLinkExists(API api, String virtualPath) {
+        assertInstanceOf(VfsEntrySnapshot.LinkEntrySnapshot.class, api.readEntry("demo", virtualPath));
+    }
+
+    private static void assertPathMissing(API api, String virtualPath) {
+        var missingPath = assertThrows(ApiPathNotFoundException.class, () -> api.readEntry("demo", virtualPath));
+        assertEquals("Path '" + virtualPath + "' does not exist in module 'demo'", missingPath.getMessage());
     }
 }

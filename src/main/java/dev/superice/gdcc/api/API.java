@@ -1,5 +1,6 @@
 package dev.superice.gdcc.api;
 
+import dev.superice.gdcc.api.cleaner.CompileTaskCleaner;
 import dev.superice.gdcc.api.task.CompileTaskHooks;
 import dev.superice.gdcc.api.task.CompileTaskRunner;
 import dev.superice.gdcc.api.task.CompileTaskState;
@@ -16,6 +17,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,9 @@ import java.util.function.Function;
 /// backend remain the sole compilation fact sources. Step 2 adds virtual-path normalization plus
 /// in-memory file/directory CRUD without coupling the facade to any transport framework.
 public final class API {
+    private static final @NotNull Duration DEFAULT_COMPLETED_COMPILE_TASK_TTL = Duration.ofMinutes(30);
+    private static final @NotNull Duration DEFAULT_COMPILE_TASK_SWEEP_INTERVAL = Duration.ofMinutes(1);
+
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
     private final @NotNull FrontendLoweringPassManager loweringPassManager;
@@ -37,6 +42,7 @@ public final class API {
     private final @NotNull CompileTaskHooks compileTaskHooks;
     private final @NotNull ConcurrentHashMap<String, ManagedModule> modules = new ConcurrentHashMap<>();
     private final @NotNull ConcurrentHashMap<Long, CompileTaskState> compileTasks = new ConcurrentHashMap<>();
+    private final @NotNull CompileTaskCleaner compileTaskCleaner;
     private final @NotNull AtomicLong nextCompileTaskId = new AtomicLong(1);
 
     public API() {
@@ -45,7 +51,9 @@ public final class API {
                 new GdScriptParserService(),
                 new FrontendLoweringPassManager(),
                 new CProjectBuilder(),
-                CompileTaskHooks.none()
+                CompileTaskHooks.none(),
+                DEFAULT_COMPLETED_COMPILE_TASK_TTL,
+                DEFAULT_COMPILE_TASK_SWEEP_INTERVAL
         );
     }
 
@@ -55,7 +63,9 @@ public final class API {
                 new GdScriptParserService(),
                 new FrontendLoweringPassManager(),
                 new CProjectBuilder(),
-                CompileTaskHooks.none()
+                CompileTaskHooks.none(),
+                DEFAULT_COMPLETED_COMPILE_TASK_TTL,
+                DEFAULT_COMPILE_TASK_SWEEP_INTERVAL
         );
     }
 
@@ -64,13 +74,21 @@ public final class API {
             @NotNull GdScriptParserService parserService,
             @NotNull FrontendLoweringPassManager loweringPassManager,
             @NotNull CProjectBuilder projectBuilder,
-            @NotNull CompileTaskHooks compileTaskHooks
+            @NotNull CompileTaskHooks compileTaskHooks,
+            @NotNull Duration completedCompileTaskTtl,
+            @NotNull Duration compileTaskSweepInterval
     ) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.parserService = Objects.requireNonNull(parserService, "parserService must not be null");
         this.loweringPassManager = Objects.requireNonNull(loweringPassManager, "loweringPassManager must not be null");
         this.projectBuilder = Objects.requireNonNull(projectBuilder, "projectBuilder must not be null");
         this.compileTaskHooks = Objects.requireNonNull(compileTaskHooks, "compileTaskHooks must not be null");
+        compileTaskCleaner = new CompileTaskCleaner(
+                clock,
+                compileTasks,
+                completedCompileTaskTtl,
+                compileTaskSweepInterval
+        );
     }
 
     /// Records one event for the compile task currently executing on this thread. This is meant for
@@ -246,7 +264,8 @@ public final class API {
 
     /// Publishes one queued compile task immediately, then lets a fresh virtual thread wait for the
     /// module gate and execute the actual compile. The caller must poll `getCompileTask(...)` for
-    /// queue progress, running stages, and final completion.
+    /// queue progress, running stages, and final completion. Completed tasks stay queryable only
+    /// until their retention TTL expires.
     public long compile(@NotNull String moduleId) {
         var normalizedModuleId = normalizeModuleId(moduleId);
         var managedModule = requireManagedModule(normalizedModuleId);
@@ -261,6 +280,7 @@ public final class API {
         }
         var ownerState = managedModule.state();
         try {
+            compileTaskCleaner.ensureRunning();
             Thread.ofVirtual()
                     .name("gdcc-api-compile-" + taskId)
                     .start(new CompileTaskRunner(
@@ -284,16 +304,19 @@ public final class API {
         return taskId;
     }
 
-    /// Returns the latest snapshot for one compile task started by `compile(...)`.
+    /// Returns the latest snapshot for one compile task started by `compile(...)`. Once the retention
+    /// TTL expires, the task behaves as not found.
     public @NotNull CompileTaskSnapshot getCompileTask(long taskId) {
         return requireCompileTaskState(taskId).snapshot();
     }
 
+    /// Returns the latest event for one retained compile task.
     public @Nullable CompileTaskEvent getLatestCompileTaskEvent(long taskId) {
         return requireCompileTaskState(taskId).latestEvent();
     }
 
-    /// Events are returned in append order so clients can treat the list as a stable task log.
+    /// Events are returned in append order so clients can treat the list as a stable task log during
+    /// the task retention window.
     public @NotNull List<CompileTaskEvent> listCompileTaskEvents(long taskId) {
         return requireCompileTaskState(taskId).events();
     }
@@ -343,7 +366,8 @@ public final class API {
                 request.failure() == null
                         ? null
                         : new CompileTaskRunner.Failure(request.failure().outcome(), request.failure().message()),
-                ownerState::prepareOutputMountRoot,
+                ownerState::validateOutputMountRoot,
+                ownerState::prepareOutputPublication,
                 outputs -> ownerState.mountCompileOutputs(
                         request.compileOptions().outputMountRoot(),
                         outputs.generatedFiles(),

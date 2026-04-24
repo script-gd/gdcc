@@ -10,13 +10,13 @@ import java.util.Objects;
 ///
 /// RPC callers always speak POSIX-style virtual paths so module state never leaks host-specific
 /// path semantics into parser or backend-facing code.
-record VirtualPath(@NotNull String text, @NotNull List<String> segments) {
-    VirtualPath {
+public record VirtualPath(@NotNull String text, @NotNull List<String> segments) {
+    public VirtualPath {
         text = Objects.requireNonNull(text, "text must not be null");
         segments = List.copyOf(Objects.requireNonNull(segments, "segments must not be null"));
     }
 
-    static @NotNull VirtualPath parse(@NotNull String rawPath) {
+    public static @NotNull VirtualPath parse(@NotNull String rawPath) {
         var text = Objects.requireNonNull(rawPath, "path must not be null");
         if (text.isBlank()) {
             throw new IllegalArgumentException("path must not be blank");
@@ -40,15 +40,15 @@ record VirtualPath(@NotNull String text, @NotNull List<String> segments) {
         return new VirtualPath("/" + String.join("/", normalizedSegments), normalizedSegments);
     }
 
-    boolean isRoot() {
+    public boolean isRoot() {
         return segments.isEmpty();
     }
 
-    @NotNull String name() {
+    @NotNull public String name() {
         return isRoot() ? "/" : segments.getLast();
     }
 
-    @NotNull String prefixText(int segmentCount) {
+    @NotNull public String prefixText(int segmentCount) {
         if (segmentCount < 0 || segmentCount > segments.size()) {
             throw new IllegalArgumentException("segmentCount out of range: " + segmentCount);
         }
@@ -58,7 +58,7 @@ record VirtualPath(@NotNull String text, @NotNull List<String> segments) {
         return "/" + String.join("/", segments.subList(0, segmentCount));
     }
 
-    @NotNull VirtualPath child(@NotNull String segment) {
+    @NotNull public VirtualPath child(@NotNull String segment) {
         validateSegment(Objects.requireNonNull(segment, "segment must not be null"), segment);
         var childSegments = new ArrayList<String>(segments.size() + 1);
         childSegments.addAll(segments);

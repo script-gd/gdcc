@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：计划维护中
-- 更新时间：2026-04-22
+- 更新时间：2026-04-24
 - 目标目录：
   - `src/main/java/dev/superice/gdcc/api/**`
   - `src/test/java/dev/superice/gdcc/api/**`
@@ -235,7 +235,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.1 第一步：建立模块仓库与公共 facade
 
-当前状态（2026-04-23）：
+当前状态（2026-04-24）：
 
 - 已完成：
   - `API` 已改为可实例化 facade，并在内存中维护模块表。
@@ -443,7 +443,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.4 第四步：接入编译参数与类名映射配置
 
-当前状态（2026-04-23）：
+当前状态（2026-04-24）：
 
 - 已完成：
   - `API` 已新增第 4 步 public surface：
@@ -768,7 +768,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.7 第七步：将本地编译产物挂回虚拟文件系统
 
-当前状态（2026-04-23）：
+当前状态（2026-04-24）：
 
 - 已完成：
   - `CompileResult` 已补充 `outputLinks`：
@@ -783,8 +783,9 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - `outputMountRoot/generated/engine_method_binds.h`
     - `outputMountRoot/artifacts/<artifact-file-name>`
   - 重新编译刷新逻辑已落地：
-    - 每轮编译开始前，都会先清理当前 `outputMountRoot` 下 compiler-owned 的 `generated` / `artifacts` 子目录
-    - 若上一轮成功编译使用的是不同的 `outputMountRoot`，其旧挂载子目录也会被一并清理，避免切换挂载根后残留旧链接
+    - 编译会先做不改写 VFS 的输出挂载校验；只有在源码收集、配置检查、frontend/lowering 都通过后，才会进入“发布新输出前清理旧输出”阶段
+    - 进入输出发布阶段时，会先清理当前 `outputMountRoot` 下 compiler-owned 的 `generated` / `artifacts` 子目录
+    - 若上一轮成功发布使用的是不同的 `outputMountRoot`，其旧挂载子目录也会被一并清理，避免切换挂载根后残留旧链接
     - 清理只作用于 compiler-owned 子目录，不会递归删除 `outputMountRoot` 下其他无关用户内容
   - 输出挂载失败语义已冻结：
     - 若当前 `outputMountRoot` 或其 compiler-owned 子目录被普通文件/链接占位，编译返回清晰的 `CONFIGURATION_FAILED`
@@ -810,8 +811,9 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - 重新编译并切换 `outputMountRoot` 后，旧根下的旧输出链接会被清理，新根下只保留新结果
   - negative path：
     - `outputMountRoot` 被普通文件占位时，编译不会静默覆盖，而是返回清晰失败信息
+    - source collection / configuration / frontend 失败时，会保留上一轮成功发布的输出链接，不会因为早期失败先删旧结果
     - build 失败后，上一轮成功挂载的输出会先被清理，新的 `outputLinks` 不会被发布
-    - frontend/source collection/configuration 失败结果都保持 `outputLinks` 为空
+    - frontend/source collection/configuration 失败结果都保持 `outputLinks` 为空；旧输出是否存在以模块 VFS 中上一轮成功发布结果为准
 
 - 本步未做：
   - 基于 `outputLinks` 的增量查询接口
@@ -861,7 +863,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 
 ### 4.8 第八步：补齐并发约束、回归测试与文档
 
-当前状态（2026-04-23）：
+当前状态（2026-04-24）：
 
 - 已完成：
   - API 已补齐模块级串行门控：
@@ -869,6 +871,11 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - `compile(moduleId)` 一旦成功分配任务号，就会先发布 queued task 并为该模块预留编译席位，后续同模块操作不能在其冻结输入前插队
     - 若此时 gate 正被普通同模块操作占用，后台任务会继续排队，但 `compile(...)` 本身不会阻塞等待 gate
     - 编译任务一旦真正拿到 gate，就会一直持有到结果写回并释放，因此不会与同模块写入/删除交错
+  - 编译任务 retention 语义已冻结：
+    - 已完成 `CompileTaskSnapshot` 与其事件日志不再永久保留；默认只在完成后的 TTL 窗口内可轮询
+    - API 现会启动一个独立虚拟线程，按固定周期扫描 `compileTasks` 并回收已超过 TTL 的完成任务
+    - 回收只针对已完成任务，queued/running 任务不会因为创建时间较早而被误删
+    - 回收使用 `ConcurrentHashMap.remove(taskId, taskState)` 做条件删除，避免并发读写时误删新状态
   - 删除冲突语义已冻结：
     - 若模块存在 queued 或 active compile task，`deleteModule(...)` 会抛出清晰的 `ApiModuleBusyException`
     - 删除不会偷偷取消或中断已有编译任务
@@ -877,6 +884,7 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
   - targeted 单元测试已补齐并通过：
     - `ApiConcurrentMutationTest`
     - `ApiMultiModuleIsolationTest`
+    - `ApiCompileTaskTtlTest`
   - API 相关回归测试已通过：
     - `ApiModuleLifecycleTest`
     - `ApiVirtualFileSystemTest`
@@ -900,20 +908,24 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
     - 不同模块之间互不共享编译锁；模块 A 编译时，模块 B 的写入与读取仍可正常完成
     - 编译结束后，模块仍可继续进行后续写入和再次编译
     - 若前一个普通操作尚未释放 gate，新的 `compile(...)` 仍会立即返回 taskId，并保持 `QUEUED` 直到轮到它
+    - 已完成任务在 TTL 窗口内仍可继续轮询快照与事件，方便 RPC 客户端做收尾读取
   - negative path：
     - 同模块写入在编译期间不会插入到当前编译前面；测试已锚定“第一次编译成功、写入生效后第二次编译因新内容失败”的行为
     - 删除模块与 queued/active compile task 冲突时，会返回带任务号的清晰失败信息
     - 同模块重复提交编译时，错误信息会准确反映冲突任务当前处于 queued 还是 active
     - `listModules()` 在并发删除时不会抛出内部状态异常
+    - TTL 到期后，`getCompileTask(...)` 与事件访问器会统一回到 `ApiCompileTaskNotFoundException`
+    - 时钟前移超过 TTL 时，仍处于 queued/running 的任务不会被回收
 
 - 本步未做：
   - 基于 `ReadWriteLock` 或更细粒度并发结构的读写分离优化
   - 模块级门控的显式公平队列或取消机制
   - 针对“编译已排队但前一个普通操作长时间占用 gate”的专门可观测指标
+  - 按事件序号做增量截断或 after-seq 拉取；当前仍是“整个任务日志随任务 TTL 一起回收”
 
 - 当前验证命令：
-  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiConcurrentMutationTest,ApiMultiModuleIsolationTest,ApiCompileTaskTest`
-  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiModuleLifecycleTest,ApiVirtualFileSystemTest,ApiVirtualLinkTest,ApiVirtualPathTest,ApiCompileOptionsTest,ApiCanonicalNameMapTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest,ApiMappedClassCompileTest,ApiCompileTaskTest,ApiCompileTaskProgressTest,ApiCompileTaskFailureStageTest,ApiCompileTaskEventTest,ApiCompileArtifactLinkTest,ApiRecompileArtifactRefreshTest,ApiConcurrentMutationTest,ApiMultiModuleIsolationTest`
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiConcurrentMutationTest,ApiMultiModuleIsolationTest,ApiCompileTaskTest,ApiCompileTaskTtlTest`
+  - `powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests ApiModuleLifecycleTest,ApiVirtualFileSystemTest,ApiVirtualLinkTest,ApiVirtualPathTest,ApiCompileOptionsTest,ApiCanonicalNameMapTest,ApiCompilePipelineTest,ApiCompileDiagnosticsTest,ApiMappedClassCompileTest,ApiCompileTaskTest,ApiCompileTaskProgressTest,ApiCompileTaskFailureStageTest,ApiCompileTaskEventTest,ApiCompileTaskTtlTest,ApiCompileArtifactLinkTest,ApiRecompileArtifactRefreshTest,ApiConcurrentMutationTest,ApiMultiModuleIsolationTest`
 
 目标：
 
@@ -955,6 +967,8 @@ API 层的 `compile(...)` 不应重写编译器主线，只应编排现有能力
 - 默认不把 `LOCAL` link 当作源码输入。
 - 默认编译 backend 固定为当前已实现的 C backend。
 - 默认 Godot 版本固定由 `CompileOptions.godotVersion` 指定；若未设置，直接使用 `V451`。
+- 默认已完成编译任务 TTL：10 分钟。
+- 默认编译任务回收扫描周期：1 分钟。
 
 这些默认值都可以在后续扩展，但第一版不应为了“将来可能支持更多”而把 API 先做成开放式配置系统。
 
@@ -1013,6 +1027,7 @@ API 层只保存映射并在构造 `FrontendModule` 时传递。真正的 reserv
    - 阶段迁移可观察
    - 解析进度计数可观察
    - 失败时保留最后阶段上下文
+   - TTL 到期后会被回收，不会永久堆积
 9. 输出挂载：
    - 生成文件链接
    - 本地动态库链接
@@ -1071,6 +1086,7 @@ API 层只保存映射并在构造 `FrontendModule` 时传递。真正的 reserv
 - `api` 包提供稳定的模块生命周期、VFS CRUD、链接、参数设置、类名映射设置和编译入口
 - 编译路径复用现有 `FrontendModule`、`FrontendLoweringPassManager`、`CCodegen`、`CProjectBuilder`
 - `getCompileTask(...)` 可返回任务中间阶段、解析进度与最终结果，而不只是开始/结束态
+- 已完成编译任务与事件日志有明确 TTL 与后台回收策略，适合长寿命 RPC 服务
 - 编译成功后，本地生成文件与最终 artifact 会以 `LOCAL` link 形式稳定挂回模块 VFS
 - 失败场景能返回清晰的 diagnostics / buildLog / broken link 信息
 - 新增 targeted tests 覆盖模块管理、VFS、链接、编译成功与失败、任务进度轮询、输出挂载、并发隔离
