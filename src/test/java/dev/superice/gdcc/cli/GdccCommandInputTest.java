@@ -1,8 +1,12 @@
 package dev.superice.gdcc.cli;
 
 import dev.superice.gdcc.api.API;
+import dev.superice.gdcc.api.CompileOptions;
 import dev.superice.gdcc.api.ModuleSnapshot;
 import dev.superice.gdcc.api.VfsEntrySnapshot;
+import dev.superice.gdcc.backend.c.build.COptimizationLevel;
+import dev.superice.gdcc.backend.c.build.TargetPlatform;
+import dev.superice.gdcc.enums.GodotVersion;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -137,6 +141,37 @@ class GdccCommandInputTest {
         assertEquals(0, terminal.api.getModule("demo").rootEntryCount());
     }
 
+    @Test
+    void setsCompileOptionsFromOutputTargetAndGdeVersion(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--gde",
+                "4.5.1",
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        var options = terminal.api.getCompileOptions("demo");
+        assertEquals(GodotVersion.V451, options.godotVersion());
+        assertEquals(tempDir.resolve("build").toAbsolutePath().normalize(), options.projectPath());
+        assertDefaultNonCliCompileOptions(options);
+    }
+
+    @Test
+    void outputWithoutParentUsesCurrentWorkingDirectoryAsProjectPath(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute("-o", "demo", source.toString());
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertEquals(Path.of("").toAbsolutePath().normalize(), terminal.api.getCompileOptions("demo").projectPath());
+    }
+
     private static void assertSourceFile(API api, String virtualPath, String displayPath, String source) {
         var entry = assertInstanceOf(VfsEntrySnapshot.FileEntrySnapshot.class, api.readEntry("demo", virtualPath));
         assertEquals(virtualPath, entry.virtualPath());
@@ -147,6 +182,13 @@ class GdccCommandInputTest {
     private static Path writeSource(Path path, String source) throws IOException {
         Files.createDirectories(path.getParent());
         return Files.writeString(path, source, StandardCharsets.UTF_8);
+    }
+
+    private static void assertDefaultNonCliCompileOptions(CompileOptions options) {
+        assertEquals(COptimizationLevel.DEBUG, options.optimizationLevel());
+        assertEquals(TargetPlatform.getNativePlatform(), options.targetPlatform());
+        assertFalse(options.strictMode());
+        assertEquals(CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, options.outputMountRoot());
     }
 
     private static final class Terminal {

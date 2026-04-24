@@ -1,6 +1,10 @@
 package dev.superice.gdcc.cli;
 
 import dev.superice.gdcc.api.API;
+import dev.superice.gdcc.api.CompileOptions;
+import dev.superice.gdcc.backend.c.build.COptimizationLevel;
+import dev.superice.gdcc.backend.c.build.TargetPlatform;
+import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.GdccException;
 import dev.superice.gdcc.logger.GdccLogger;
 import dev.superice.gdcc.util.ConsoleOutputUtil;
@@ -112,15 +116,17 @@ public final class GdccCommand implements Callable<Integer> {
     public @NotNull Integer call() {
         try {
             var outputTarget = outputTarget();
+            var compileOptions = compileOptions(outputTarget);
             var sourceInputs = sourceInputs();
 
             api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
+            api.setCompileOptions(outputTarget.moduleId(), compileOptions);
             for (var sourceInput : sourceInputs) {
                 api.putFile(outputTarget.moduleId(), sourceInput.virtualPath(), sourceInput.source(), sourceInput.displayPath());
             }
 
-            // Step 2 intentionally stops after preparing the API module inputs. Later steps configure
-            // compile options, mappings, task polling, and result rendering on top of this boundary.
+            // Step 3 intentionally stops after preparing module inputs and compile options. Later
+            // steps configure mappings, task polling, and result rendering on top of this boundary.
             err.println("gdcc CLI compile task execution is not implemented yet.");
             return EXIT_USAGE;
         } catch (IOException exception) {
@@ -143,7 +149,32 @@ public final class GdccCommand implements Callable<Integer> {
         if (moduleName.isBlank()) {
             throw new IllegalArgumentException("Output path module name must not be blank");
         }
-        return new OutputTarget(moduleName, moduleName);
+        var outputDirectory = normalizedOutput.getParent();
+        if (outputDirectory == null) {
+            outputDirectory = Path.of("").toAbsolutePath().normalize();
+        }
+        return new OutputTarget(moduleName, moduleName, outputDirectory);
+    }
+
+    private @NotNull CompileOptions compileOptions(@NotNull OutputTarget outputTarget) {
+        return new CompileOptions(
+                godotVersion(),
+                outputTarget.projectPath(),
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform(),
+                false,
+                CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
+        );
+    }
+
+    private @NotNull GodotVersion godotVersion() {
+        var normalizedGde = gde.strip();
+        if (GodotVersion.V451.version.equals(normalizedGde)) {
+            return GodotVersion.V451;
+        }
+        throw new IllegalArgumentException(
+                "Unsupported --gde value '" + gde + "'. Supported versions: " + GodotVersion.V451.version
+        );
     }
 
     private @NotNull List<SourceInput> sourceInputs() throws IOException {
@@ -185,7 +216,7 @@ public final class GdccCommand implements Callable<Integer> {
         return EXIT_USAGE;
     }
 
-    private record OutputTarget(@NotNull String moduleId, @NotNull String moduleName) {
+    private record OutputTarget(@NotNull String moduleId, @NotNull String moduleName, @NotNull Path projectPath) {
     }
 
     private record SourceInput(@NotNull String virtualPath, @NotNull String source, @NotNull String displayPath) {
