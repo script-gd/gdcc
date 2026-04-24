@@ -1,5 +1,6 @@
 package dev.superice.gdcc.logger;
 
+import dev.superice.gdcc.util.ConsoleOutputUtil;
 import picocli.CommandLine.Help.Ansi;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -21,9 +22,18 @@ public final class GdccLogger extends LegacyAbstractLogger {
     private static final String LOGGER_NAME_STYLE = "fg(white),faint";
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final Object OUTPUT_LOCK = new Object();
+    private static volatile boolean plainOutput;
 
     public GdccLogger(@NotNull String loggerName) {
         this.name = loggerName;
+    }
+
+    public static void setPlainOutput(boolean enabled) {
+        plainOutput = enabled;
+    }
+
+    public static boolean isPlainOutput() {
+        return plainOutput;
     }
 
     @Override
@@ -39,22 +49,31 @@ public final class GdccLogger extends LegacyAbstractLogger {
             @Nullable Object[] arguments,
             @Nullable Throwable throwable
     ) {
-        var levelStyle = LogLevelStyle.fromSlf4jLevel(level);
         var content = MessageFormatter.basicArrayFormat(messagePattern, arguments);
         if (content == null) {
             content = "null";
         }
 
+        if (plainOutput) {
+            print(content, throwable);
+            return;
+        }
+
+        var levelStyle = LogLevelStyle.fromSlf4jLevel(level);
         var timeText = LocalTime.now().format(TIME_FORMATTER);
         var line = colorize(TIME_STYLE, timeText)
                 + " " + colorize(levelStyle.ansiStyle(), "[" + levelStyle.label() + "]")
                 + " " + colorize(LOGGER_NAME_STYLE, "[" + name + "]")
                 + " " + content;
 
+        print(line, throwable);
+    }
+
+    private static void print(@NotNull String line, @Nullable Throwable throwable) {
         synchronized (OUTPUT_LOCK) {
-            System.out.println(line);
+            ConsoleOutputUtil.println(System.out, line);
             if (throwable != null) {
-                throwable.printStackTrace(System.out);
+                throwable.printStackTrace(ConsoleOutputUtil.writerFor(System.out));
             }
         }
     }

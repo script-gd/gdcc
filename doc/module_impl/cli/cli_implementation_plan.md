@@ -228,12 +228,22 @@ event 处理：
 - 记录下一个未读 event index，避免重复打印 events。
 - task 完成后，最终渲染结果前再 drain 一次剩余 event pages。
 
+logger 与控制台编码：
+
+- CLI 模式下必须把 `GdccLogger` 切到 plain output 模式，日志只输出 SLF4J message pattern 格式化后的内容，不再追加时间、等级、logger name 或 ANSI 颜色。
+- plain output 只应在 CLI 执行期间生效；嵌入式调用或测试结束后要恢复进入 CLI 前的 logger 输出模式，避免污染同一 JVM 内后续调用。
+- CLI 和 logger 写入 stdout/stderr 时不得默认假定终端是 UTF-8；应读取当前 `PrintStream.charset()`，按真实 stdout/stderr 编码写出。
+- 为避免目标编码无法表示的字符被静默替换成 `?` 或丢失，输出前应按 code point 检查可编码性；不可编码字符转义为 `\uXXXX` 或 `\UXXXXXXXX` 后再写入。这样即使控制台是 ASCII/GBK 等受限编码，用户仍能看到完整的原始字符信息。
+
 验收：
 
 - 默认输出足够稳定，脚本可以识别 success/failure 和 artifact paths。
 - `-v` 打印 compiler phases 记录的所有 `CompileTaskEvent` entries。
 - `-v` 不依赖 `listCompileTaskEvents(taskId)` 全量读取。
 - 重复传入 `-v` 不改变编译行为。
+- CLI 模式下 logger 输出不包含时间、等级、logger name 或 ANSI 颜色。
+- 默认非 CLI logger 输出仍保留原有彩色格式。
+- stdout/stderr writer 使用各自 `PrintStream.charset()`，UTF-8 可表示文本保持原样，目标编码不可表示文本转为 `\uXXXX`/`\UXXXXXXXX`，不发生静默漏字。
 
 ### 1.7 Exit Codes
 
@@ -257,6 +267,8 @@ event 处理：
 
 ### Step 1：新增 CLI package 与 picocli 入口
 
+状态：已实施，已通过聚焦测试验证。
+
 创建 `dev.superice.gdcc.cli.GdccCommand`。
 
 所有新增 CLI 相关生产代码类都必须放在 `dev.superice.gdcc.cli` 包下。`Main` 只作为现有顶层入口保留在
@@ -278,11 +290,23 @@ event 处理：
 
 验收：
 
-- `Main.main(args)` 委托给 picocli。
-- `GdccCommand` help text 列出 files、`-o/--output`、`--prefix`、`--class-map`、`--gde` 和 `-v/--verbose`。
-- 除 `Main` 外，新增 CLI 生产代码全部位于 `dev.superice.gdcc.cli` 包。
-- `GdccCommand` 使用声明式 picocli annotations，而不是手写一套 option parser。
-- 不为单一实现新增 service interface。
+- [x] `Main.main(args)` 委托给 picocli。
+- [x] `GdccCommand` help text 列出 files、`-o/--output`、`--prefix`、`--class-map`、`--gde` 和 `-v/--verbose`。
+- [x] 除 `Main` 外，新增 CLI 生产代码全部位于 `dev.superice.gdcc.cli` 包。
+- [x] `GdccCommand` 使用声明式 picocli annotations，而不是手写一套 option parser。
+- [x] 不为单一实现新增 service interface。
+
+实施记录：
+
+- `dev.superice.gdcc.cli.GdccCommand` 当前只安装声明式命令面，并持有后续步骤需要的 parsed options、terminal writers 和 `API` 实例。
+- `GdccCommand.call()` 在 Step 1 阶段故意返回 usage failure，并输出 compile pipeline 尚未实现；Step 2 之后由真实 API-backed 编译流程替换该边界。
+- `Main` 保持在 `dev.superice.gdcc` 根包内，但只调用 `GdccCommand.execute(args)`，不包含 option handling 或编译编排。
+- `GdccCommandOptionTest` 覆盖声明式 annotations、help 文本、缺失必填项时 picocli 在 command body 前失败、repeatable `--class-map`、`-vv` 计数，以及 Step 1 临时边界。
+- `MainEntrypointTest` 固定 `Main.run(args)` 到 picocli help 的委托行为，避免入口重新引入本地 option parsing 或编译编排。
+- 测试发现：picocli 4.7.7 不会把 `int -v` 字段自动当作计数 flag；`-vv` 会被解释为 `-v v` 并触发 int 转换错误。Step 1 实现改用声明式 `boolean[]` flag 累积，并通过 `verbosityLevel()` 暴露计数。
+- 已运行 `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,MainEntrypointTest`，结果通过。
+- CLI 入口通过 `GdccLogger.setPlainOutput(true)` 临时启用 logger 朴素输出，并在 `finally` 中恢复原状态。
+- `ConsoleOutputUtil` 统一创建 stdout/stderr writer，并在 logger 直接写入 `System.out` 时复用同一编码策略；该策略读取目标 `PrintStream.charset()`，对不可编码 code point 进行可逆文本转义，避免控制台编码不支持时漏字。
 
 ### Step 2：实现 CLI 输入归一化
 
@@ -440,8 +464,8 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 ## 3. 验收清单
 
 - [ ] `gdcc -o build/demo a.gd b.gd` 创建且只创建一个 API module。
-- [ ] 除 `Main` 外，新增 CLI 生产代码全部位于 `dev.superice.gdcc.cli` 包。
-- [ ] `GdccCommand` 使用声明式 picocli annotations。
+- [x] 除 `Main` 外，新增 CLI 生产代码全部位于 `dev.superice.gdcc.cli` 包。
+- [x] `GdccCommand` 使用声明式 picocli annotations。
 - [ ] 每个输入文件以确定性的 `/src/...` path 放入 module VFS。
 - [ ] diagnostics 和 result source paths 使用原始 display paths。
 - [ ] `-o/--output` 控制 module name 和宿主机构建目录。
