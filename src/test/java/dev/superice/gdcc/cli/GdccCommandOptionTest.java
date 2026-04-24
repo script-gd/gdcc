@@ -2,12 +2,16 @@ package dev.superice.gdcc.cli;
 
 import dev.superice.gdcc.api.API;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
@@ -96,12 +100,14 @@ class GdccCommandOptionTest {
     }
 
     @Test
-    void validStepOneInvocationReachesDocumentedTemporaryBoundary() {
+    void validInvocationReachesCurrentStepBoundary(@TempDir Path tempDir) throws IOException {
+        var source = tempDir.resolve("player.gd");
+        Files.writeString(source, "extends Node\n", StandardCharsets.UTF_8);
         var terminal = new Terminal();
-        var exitCode = terminal.command().commandLine().execute("-o", "build/demo", "src/player.gd");
+        var exitCode = terminal.command().commandLine().execute("-o", tempDir.resolve("build/demo").toString(), source.toString());
 
         assertEquals(GdccCommand.EXIT_USAGE, exitCode);
-        assertTrue(terminal.errText().contains("compile pipeline is not implemented yet"), terminal.errText());
+        assertTrue(terminal.errText().contains("compile task execution is not implemented yet"), terminal.errText());
     }
 
     private static final class Terminal {

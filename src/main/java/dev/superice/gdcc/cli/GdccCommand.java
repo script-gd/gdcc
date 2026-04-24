@@ -1,6 +1,7 @@
 package dev.superice.gdcc.cli;
 
 import dev.superice.gdcc.api.API;
+import dev.superice.gdcc.exception.GdccException;
 import dev.superice.gdcc.logger.GdccLogger;
 import dev.superice.gdcc.util.ConsoleOutputUtil;
 import org.jetbrains.annotations.NotNull;
@@ -9,10 +10,14 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 
@@ -24,7 +29,6 @@ import java.util.concurrent.Callable;
 public final class GdccCommand implements Callable<Integer> {
     static final int EXIT_USAGE = 2;
 
-    @SuppressWarnings({"FieldCanBeLocal", "unused"})
     private final @NotNull API api;
     private final @NotNull PrintWriter out;
     private final @NotNull PrintWriter err;
@@ -106,9 +110,84 @@ public final class GdccCommand implements Callable<Integer> {
 
     @Override
     public @NotNull Integer call() {
-        // Step 1 only installs the annotated command surface. Later steps replace this boundary with
-        // API-backed source loading, option normalization, compile-task polling, and result rendering.
-        err.println("gdcc CLI compile pipeline is not implemented yet.");
+        try {
+            var outputTarget = outputTarget();
+            var sourceInputs = sourceInputs();
+
+            api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
+            for (var sourceInput : sourceInputs) {
+                api.putFile(outputTarget.moduleId(), sourceInput.virtualPath(), sourceInput.source(), sourceInput.displayPath());
+            }
+
+            // Step 2 intentionally stops after preparing the API module inputs. Later steps configure
+            // compile options, mappings, task polling, and result rendering on top of this boundary.
+            err.println("gdcc CLI compile task execution is not implemented yet.");
+            return EXIT_USAGE;
+        } catch (IOException exception) {
+            return failUsage("Failed to read input file: " + exception.getMessage());
+        } catch (GdccException | IllegalArgumentException exception) {
+            return failUsage(exception.getMessage());
+        }
+    }
+
+    private @NotNull OutputTarget outputTarget() {
+        if (output.toString().isBlank()) {
+            throw new IllegalArgumentException("Output path must not be blank");
+        }
+        var normalizedOutput = output.toAbsolutePath().normalize();
+        var moduleNamePath = normalizedOutput.getFileName();
+        if (moduleNamePath == null) {
+            throw new IllegalArgumentException("Output path must include a module name");
+        }
+        var moduleName = moduleNamePath.toString();
+        if (moduleName.isBlank()) {
+            throw new IllegalArgumentException("Output path module name must not be blank");
+        }
+        return new OutputTarget(moduleName, moduleName);
+    }
+
+    private @NotNull List<SourceInput> sourceInputs() throws IOException {
+        var normalizedInputs = new ArrayList<SourceInput>(files.size());
+        for (var index = 0; index < files.size(); index++) {
+            normalizedInputs.add(sourceInput(index, files.get(index)));
+        }
+        return normalizedInputs;
+    }
+
+    private @NotNull SourceInput sourceInput(int index, @NotNull Path input) throws IOException {
+        if (input.toString().isBlank()) {
+            throw new IllegalArgumentException("Input path must not be blank");
+        }
+
+        var normalizedInput = input.toAbsolutePath().normalize();
+        if (Files.notExists(normalizedInput)) {
+            throw new IllegalArgumentException("Input file does not exist: " + input);
+        }
+        if (Files.isDirectory(normalizedInput)) {
+            throw new IllegalArgumentException("Input path is a directory: " + input);
+        }
+        if (!Files.isRegularFile(normalizedInput)) {
+            throw new IllegalArgumentException("Input path is not a regular file: " + input);
+        }
+
+        var source = Files.readString(normalizedInput, StandardCharsets.UTF_8);
+        return new SourceInput(virtualSourcePath(index, normalizedInput), source, input.toString());
+    }
+
+    private @NotNull String virtualSourcePath(int index, @NotNull Path normalizedInput) {
+        // The index segment keeps duplicate host basenames distinct while preserving the frontend's
+        // filename-based default class-name behavior.
+        return String.format(Locale.ROOT, "/src/%04d/%s", index, normalizedInput.getFileName());
+    }
+
+    private int failUsage(@NotNull String message) {
+        err.println("gdcc: " + message);
         return EXIT_USAGE;
+    }
+
+    private record OutputTarget(@NotNull String moduleId, @NotNull String moduleName) {
+    }
+
+    private record SourceInput(@NotNull String virtualPath, @NotNull String source, @NotNull String displayPath) {
     }
 }

@@ -299,7 +299,8 @@ logger 与控制台编码：
 实施记录：
 
 - `dev.superice.gdcc.cli.GdccCommand` 当前只安装声明式命令面，并持有后续步骤需要的 parsed options、terminal writers 和 `API` 实例。
-- `GdccCommand.call()` 在 Step 1 阶段故意返回 usage failure，并输出 compile pipeline 尚未实现；Step 2 之后由真实 API-backed 编译流程替换该边界。
+- `GdccCommand.call()` 在 Step 1 阶段故意返回 usage failure，并输出 compile pipeline 尚未实现；该边界已在 Step 2
+  替换为真实的 API module/input 准备逻辑，后续步骤继续在此基础上接入 compile options、mapping 和 task polling。
 - `Main` 保持在 `dev.superice.gdcc` 根包内，但只调用 `GdccCommand.execute(args)`，不包含 option handling 或编译编排。
 - `GdccCommandOptionTest` 覆盖声明式 annotations、help 文本、缺失必填项时 picocli 在 command body 前失败、repeatable `--class-map`、`-vv` 计数，以及 Step 1 临时边界。
 - `MainEntrypointTest` 固定 `Main.run(args)` 到 picocli help 的委托行为，避免入口重新引入本地 option parsing 或编译编排。
@@ -310,15 +311,17 @@ logger 与控制台编码：
 
 ### Step 2：实现 CLI 输入归一化
 
+状态：已实施，已通过聚焦测试验证。
+
 职责：
 
-- 要求至少一个文件。
-- 要求 `-o/--output`。
-- 使用 `Path` 归一化并校验宿主机输入路径。
-- 在创建 API module 前拒绝缺失文件和目录。
-- 按 UTF-8 读取 source files。
-- 创建一个 module。
-- 按如下方式写入每个文件：
+- [x] 要求至少一个文件。
+- [x] 要求 `-o/--output`。
+- [x] 使用 `Path` 归一化并校验宿主机输入路径。
+- [x] 在创建 API module 前拒绝缺失文件和目录。
+- [x] 按 UTF-8 读取 source files。
+- [x] 创建一个 module。
+- [x] 按如下方式写入每个文件：
 
 ```java
 api.putFile(moduleId, virtualPath, sourceText, displayPath)
@@ -328,9 +331,26 @@ api.putFile(moduleId, virtualPath, sourceText, displayPath)
 
 验收：
 
-- 缺失 input file 在 compile task 创建前失败。
-- 重复 host file arguments 默认可视为用户有意创建重复 sources；如果测试中证明这很困惑，再以清晰 CLI error 拒绝重复项。
-- VFS path 生成是确定性的，且不依赖宿主机 path separators。
+- [x] 缺失 input file 在 compile task 创建前失败。
+- [x] 重复 host file arguments 默认可视为用户有意创建重复 sources；如果测试中证明这很困惑，再以清晰 CLI error
+  拒绝重复项。
+- [x] VFS path 生成是确定性的，且不依赖宿主机 path separators。
+
+实施记录：
+
+- `GdccCommand.call()` 现在先解析 `-o/--output` 的最后一个 path segment 作为 `moduleId`/`moduleName`，再预读所有输入文件，
+  最后才调用 `API.createModule(...)` 和 `API.putFile(...)`。因此缺失文件、目录输入、blank/root-only output path 等错误不会创建
+  module。
+- 输入文件使用 `Path.toAbsolutePath().normalize()` 进行宿主机校验，并通过 `Files.readString(..., StandardCharsets.UTF_8)` 读取。
+  API `displayPath` 保留用户传入的原始 path 文本，避免诊断以后显示 synthetic VFS path。
+- VFS 路径采用 `/src/%04d/<host-file-name>`。补零 index 让普通输入规模下的 lexical order 与参数顺序一致，同时允许两个不同目录的
+  `main.gd` 或同一个 host file 重复传入时都作为独立 source 写入同一 module。
+- 当前 Step 2 仍不会创建 compile task；成功准备 module/input 后继续返回 usage exit code `2` 并输出
+  `compile task execution is not implemented yet`。Step 5 接入 task polling 后再替换为真实编译返回码。
+- 新增 `GdccCommandInputTest`，覆盖 UTF-8 source 读取、同名 basename、重复 host file、缺失文件、目录输入、blank/root-only
+  output path，以及 API module duplicate error 的 user-facing 渲染。
+- 已运行 `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,MainEntrypointTest`，
+  结果通过。
 
 ### Step 3：配置 `CompileOptions`
 
@@ -463,10 +483,10 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 
 ## 3. 验收清单
 
-- [ ] `gdcc -o build/demo a.gd b.gd` 创建且只创建一个 API module。
+- [x] `gdcc -o build/demo a.gd b.gd` 创建且只创建一个 API module。
 - [x] 除 `Main` 外，新增 CLI 生产代码全部位于 `dev.superice.gdcc.cli` 包。
 - [x] `GdccCommand` 使用声明式 picocli annotations。
-- [ ] 每个输入文件以确定性的 `/src/...` path 放入 module VFS。
+- [x] 每个输入文件以确定性的 `/src/...` path 放入 module VFS。
 - [ ] diagnostics 和 result source paths 使用原始 display paths。
 - [ ] `-o/--output` 控制 module name 和宿主机构建目录。
 - [ ] `--gde 4.5.1` 选择 `GodotVersion.V451`。
@@ -482,7 +502,7 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 - [ ] interrupted compile attempts 调用 `API.cancelCompileTask(taskId)`。
 - [ ] success 返回 exit code `0`。
 - [ ] compile failure 返回 exit code `1`。
-- [ ] usage/configuration failure 返回 exit code `2`。
+- [x] usage/configuration failure 返回 exit code `2`。
 - [ ] interrupt 返回 exit code `130`。
 - [ ] focused tests 通过 targeted Gradle script 运行。
 
