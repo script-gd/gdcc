@@ -10,8 +10,8 @@ import java.util.Objects;
 
 /// Frozen module view returned to RPC adapters and tests.
 ///
-/// Even after VFS CRUD lands, this snapshot intentionally stays coarse. Detailed file tree access
-/// goes through dedicated VFS entry APIs so module metadata can remain stable and cheap to query.
+/// This snapshot intentionally stays coarse. Detailed file tree access goes through dedicated VFS
+/// entry APIs so module metadata can remain stable and cheap to query.
 public record ModuleSnapshot(
         @NotNull String moduleId,
         @NotNull String moduleName,

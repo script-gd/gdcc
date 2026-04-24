@@ -30,8 +30,9 @@ import java.util.function.Function;
 /// In-memory module registry facade intended for RPC adapters.
 ///
 /// The API package owns remote-facing lifecycle and state orchestration, while frontend/lowering/
-/// backend remain the sole compilation fact sources. Step 2 adds virtual-path normalization plus
-/// in-memory file/directory CRUD without coupling the facade to any transport framework.
+/// backend remain the sole compilation fact sources. The facade provides virtual-path normalized
+/// module VFS operations, compile configuration, task polling, and output publication without
+/// coupling itself to any transport framework.
 public final class API {
     private static final @NotNull Duration DEFAULT_COMPLETED_COMPILE_TASK_TTL = Duration.ofMinutes(30);
     private static final @NotNull Duration DEFAULT_COMPILE_TASK_SWEEP_INTERVAL = Duration.ofMinutes(1);

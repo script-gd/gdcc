@@ -12,12 +12,12 @@ import java.util.Objects;
 
 /// Per-module compile settings owned by the API layer.
 ///
-/// The defaults intentionally match the current backend surface without forcing step-1 callers to
-/// choose a project directory before compile orchestration exists.
+/// The defaults intentionally match the current backend surface while allowing callers to configure
+/// a module before assigning a concrete local build directory.
 ///
 /// @param godotVersion Selects the Godot API/ABI surface the compile pipeline should target. The
-///                     later compile step will use it to load the matching extension metadata and
-///                     to keep generated code aligned with that engine version's contracts.
+///                     compile pipeline uses it to load matching extension metadata and keep
+///                     generated code aligned with that engine version's contracts.
 /// @param projectPath Local host-filesystem build directory used to materialize generated C sources
 ///                    and final native artifacts. This is intentionally distinct from module VFS
 ///                    paths like `/src/main.gd`; `null` means the module has not been assigned a
@@ -28,11 +28,11 @@ import java.util.Objects;
 ///                          linker flags without inventing a second config container.
 /// @param targetPlatform Declares the output platform rather than the current host platform. It
 ///                       defaults to the native host, but callers can set cross-targets such as
-///                       `WEB_WASM32`; later backend build steps will use it for target triples and
-///                       output naming.
+///                       `WEB_WASM32`; backend build code uses it for target triples and output
+///                       naming.
 /// @param strictMode Module-level compile policy switch reserved for stricter behavior. It already
-///                   round-trips through the API and snapshots today; future compile steps can use
-///                   it to tighten diagnostics or guard rails without reshaping module state.
+///                   round-trips through the API and is passed into codegen context so validation
+///                   can tighten diagnostics or guard rails without reshaping module state.
 /// @param outputMountRoot Absolute module-VFS directory under which successful compile outputs will
 ///                        be linked back into the virtual filesystem. This must stay a normalized
 ///                        virtual path such as `/__build__` or `/build/demo`, not a host filesystem
