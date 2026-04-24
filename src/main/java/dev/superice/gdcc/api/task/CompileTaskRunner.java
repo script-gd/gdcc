@@ -26,6 +26,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -367,6 +369,9 @@ public final class CompileTaskRunner implements Runnable {
                 );
             }
         } catch (IOException exception) {
+            if (taskState.cancellationRequested()) {
+                throw new TaskCanceledException();
+            }
             return new CompileResult(
                     CompileResult.Outcome.BUILD_FAILED,
                     request.compileOptions(),
@@ -554,10 +559,10 @@ public final class CompileTaskRunner implements Runnable {
             Objects.requireNonNull(moduleId, "moduleId must not be null");
             Objects.requireNonNull(moduleName, "moduleName must not be null");
             Objects.requireNonNull(compileOptions, "compileOptions must not be null");
-            topLevelCanonicalNameMap = Map.copyOf(Objects.requireNonNull(
+            topLevelCanonicalNameMap = Collections.unmodifiableMap(new LinkedHashMap<>(Objects.requireNonNull(
                     topLevelCanonicalNameMap,
                     "topLevelCanonicalNameMap must not be null"
-            ));
+            )));
             sourceSnapshots = List.copyOf(Objects.requireNonNull(sourceSnapshots, "sourceSnapshots must not be null"));
             Objects.requireNonNull(outputMountValidator, "outputMountValidator must not be null");
             Objects.requireNonNull(outputPublicationPreparer, "outputPublicationPreparer must not be null");

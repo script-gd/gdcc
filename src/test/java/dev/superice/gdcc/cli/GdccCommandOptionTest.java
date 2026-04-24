@@ -1,6 +1,5 @@
 package dev.superice.gdcc.cli;
 
-import dev.superice.gdcc.api.API;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine.Command;
@@ -100,14 +99,20 @@ class GdccCommandOptionTest {
     }
 
     @Test
-    void validInvocationReachesCurrentStepBoundary(@TempDir Path tempDir) throws IOException {
+    void validInvocationRunsCompileTask(@TempDir Path tempDir) throws IOException {
         var source = tempDir.resolve("player.gd");
-        Files.writeString(source, "extends Node\n", StandardCharsets.UTF_8);
+        Files.writeString(source, """
+                class_name Player
+                extends RefCounted
+                
+                func value() -> int:
+                    return 3
+                """, StandardCharsets.UTF_8);
         var terminal = new Terminal();
         var exitCode = terminal.command().commandLine().execute("-o", tempDir.resolve("build/demo").toString(), source.toString());
 
-        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
-        assertTrue(terminal.errText().contains("compile task execution is not implemented yet"), terminal.errText());
+        assertEquals(0, exitCode);
+        assertTrue(terminal.outText().contains("Compiled module demo"), terminal.outText());
     }
 
     private static final class Terminal {
@@ -115,7 +120,11 @@ class GdccCommandOptionTest {
         private final StringWriter err = new StringWriter();
 
         GdccCommand command() {
-            return new GdccCommand(new API(), new PrintWriter(out, true), new PrintWriter(err, true));
+            return new GdccCommand(
+                    CliCompileTestSupport.newApi(CliCompileTestSupport.TestCompiler.succeeding()),
+                    new PrintWriter(out, true),
+                    new PrintWriter(err, true)
+            );
         }
 
         String outText() {
@@ -131,7 +140,8 @@ class GdccCommandOptionTest {
         }
 
         void assertCommandBodyDidNotRun() {
-            assertFalse(errText().contains("compile pipeline is not implemented yet"), errText());
+            assertFalse(errText().contains("Compile failed:"), errText());
+            assertFalse(outText().contains("Compiled module"), outText());
         }
     }
 }

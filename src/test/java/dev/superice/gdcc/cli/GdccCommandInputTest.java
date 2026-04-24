@@ -26,8 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GdccCommandInputTest {
     @Test
     void loadsInputFilesIntoOneModuleWithStableVirtualPathsAndDisplayPaths(@TempDir Path tempDir) throws IOException {
-        var firstSource = writeSource(tempDir.resolve("one/main.gd"), "extends Node\nvar label = \"玩家\"\n");
-        var secondSource = writeSource(tempDir.resolve("two/main.gd"), "extends RefCounted\n");
+        var firstSource = writeSource(tempDir.resolve("one/main.gd"), validSource("FirstMain"));
+        var secondSource = writeSource(tempDir.resolve("two/main.gd"), validSource("SecondMain"));
         var terminal = new Terminal();
 
         var exitCode = terminal.command().commandLine().execute(
@@ -37,21 +37,20 @@ class GdccCommandInputTest {
                 secondSource.toString()
         );
 
-        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
-        assertTrue(terminal.errText().contains("compile task execution is not implemented yet"), terminal.errText());
+        assertEquals(0, exitCode);
         assertEquals(List.of("demo"), terminal.api.listModules().stream().map(ModuleSnapshot::moduleId).toList());
-        assertEquals(1, terminal.api.getModule("demo").rootEntryCount());
         assertEquals(List.of("0000", "0001"), terminal.api.listDirectory("demo", "/src").stream()
                 .map(VfsEntrySnapshot::name)
                 .toList());
 
-        assertSourceFile(terminal.api, "/src/0000/main.gd", firstSource.toString(), "extends Node\nvar label = \"玩家\"\n");
-        assertSourceFile(terminal.api, "/src/0001/main.gd", secondSource.toString(), "extends RefCounted\n");
+        assertSourceFile(terminal.api, "/src/0000/main.gd", firstSource.toString(), validSource("FirstMain"));
+        assertSourceFile(terminal.api, "/src/0001/main.gd", secondSource.toString(), validSource("SecondMain"));
+        assertEquals(List.of(firstSource.toString(), secondSource.toString()), terminal.api.getLastCompileResult("demo").sourcePaths());
     }
 
     @Test
     void duplicateHostFileArgumentsStayDistinctInVirtualFileSystem(@TempDir Path tempDir) throws IOException {
-        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var source = writeSource(tempDir.resolve("player.gd"), validDefaultSource());
         var terminal = new Terminal();
 
         var exitCode = terminal.command().commandLine().execute(
@@ -61,14 +60,15 @@ class GdccCommandInputTest {
                 source.toString()
         );
 
-        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
-        assertSourceFile(terminal.api, "/src/0000/player.gd", source.toString(), "extends Node\n");
-        assertSourceFile(terminal.api, "/src/0001/player.gd", source.toString(), "extends Node\n");
+        assertEquals(GdccCommand.EXIT_COMPILE_FAILED, exitCode);
+        assertTrue(terminal.errText().contains("Compile failed: FRONTEND_FAILED"), terminal.errText());
+        assertSourceFile(terminal.api, "/src/0000/player.gd", source.toString(), validDefaultSource());
+        assertSourceFile(terminal.api, "/src/0001/player.gd", source.toString(), validDefaultSource());
     }
 
     @Test
     void missingInputFileFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
-        var existingSource = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var existingSource = writeSource(tempDir.resolve("player.gd"), validSource("ExistingPlayer"));
         var missingSource = tempDir.resolve("missing.gd");
         var terminal = new Terminal();
 
@@ -81,7 +81,7 @@ class GdccCommandInputTest {
 
         assertEquals(GdccCommand.EXIT_USAGE, exitCode);
         assertTrue(terminal.errText().contains("Input file does not exist"), terminal.errText());
-        terminal.assertNoStepBoundary();
+        terminal.assertCompilerNotInvoked();
         assertTrue(terminal.api.listModules().isEmpty());
     }
 
@@ -99,13 +99,13 @@ class GdccCommandInputTest {
 
         assertEquals(GdccCommand.EXIT_USAGE, exitCode);
         assertTrue(terminal.errText().contains("Input path is a directory"), terminal.errText());
-        terminal.assertNoStepBoundary();
+        terminal.assertCompilerNotInvoked();
         assertTrue(terminal.api.listModules().isEmpty());
     }
 
     @Test
     void invalidOutputPathFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
-        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var blankOutput = new Terminal();
         var rootOutput = new Terminal();
 
@@ -114,18 +114,18 @@ class GdccCommandInputTest {
 
         assertEquals(GdccCommand.EXIT_USAGE, blankExitCode);
         assertTrue(blankOutput.errText().contains("Output path must not be blank"), blankOutput.errText());
-        blankOutput.assertNoStepBoundary();
+        blankOutput.assertCompilerNotInvoked();
         assertTrue(blankOutput.api.listModules().isEmpty());
 
         assertEquals(GdccCommand.EXIT_USAGE, rootExitCode);
         assertTrue(rootOutput.errText().contains("Output path must include a module name"), rootOutput.errText());
-        rootOutput.assertNoStepBoundary();
+        rootOutput.assertCompilerNotInvoked();
         assertTrue(rootOutput.api.listModules().isEmpty());
     }
 
     @Test
     void apiModuleCreationFailureIsRenderedAsUsageError(@TempDir Path tempDir) throws IOException {
-        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var terminal = new Terminal();
         terminal.api.createModule("demo", "Existing Demo");
 
@@ -137,13 +137,13 @@ class GdccCommandInputTest {
 
         assertEquals(GdccCommand.EXIT_USAGE, exitCode);
         assertTrue(terminal.errText().contains("Module 'demo' already exists"), terminal.errText());
-        terminal.assertNoStepBoundary();
+        terminal.assertCompilerNotInvoked();
         assertEquals(0, terminal.api.getModule("demo").rootEntryCount());
     }
 
     @Test
     void setsCompileOptionsFromOutputTargetAndGdeVersion(@TempDir Path tempDir) throws IOException {
-        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var terminal = new Terminal();
 
         var exitCode = terminal.command().commandLine().execute(
@@ -154,7 +154,7 @@ class GdccCommandInputTest {
                 source.toString()
         );
 
-        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertEquals(0, exitCode);
         var options = terminal.api.getCompileOptions("demo");
         assertEquals(GodotVersion.V451, options.godotVersion());
         assertEquals(tempDir.resolve("build").toAbsolutePath().normalize(), options.projectPath());
@@ -162,14 +162,20 @@ class GdccCommandInputTest {
     }
 
     @Test
-    void outputWithoutParentUsesCurrentWorkingDirectoryAsProjectPath(@TempDir Path tempDir) throws IOException {
-        var source = writeSource(tempDir.resolve("player.gd"), "extends Node\n");
+    void outputWithoutParentUsesCurrentWorkingDirectoryAsProjectPathBeforeTaskCreation(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var terminal = new Terminal();
 
-        var exitCode = terminal.command().commandLine().execute("-o", "demo", source.toString());
+        var exitCode = terminal.command().commandLine().execute(
+                "-o", "demo",
+                "--class-map", "Player=Runtime__sub__Player",
+                source.toString()
+        );
 
         assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("reserved gdcc class-name sequence"), terminal.errText());
         assertEquals(Path.of("").toAbsolutePath().normalize(), terminal.api.getCompileOptions("demo").projectPath());
+        terminal.assertCompilerNotInvoked();
     }
 
     private static void assertSourceFile(API api, String virtualPath, String displayPath, String source) {
@@ -184,6 +190,25 @@ class GdccCommandInputTest {
         return Files.writeString(path, source, StandardCharsets.UTF_8);
     }
 
+    private static String validSource(String className) {
+        return """
+                class_name %s
+                extends RefCounted
+                
+                func value() -> int:
+                    return 3
+                """.formatted(className);
+    }
+
+    private static String validDefaultSource() {
+        return """
+                extends RefCounted
+                
+                func value() -> int:
+                    return 3
+                """;
+    }
+
     private static void assertDefaultNonCliCompileOptions(CompileOptions options) {
         assertEquals(COptimizationLevel.DEBUG, options.optimizationLevel());
         assertEquals(TargetPlatform.getNativePlatform(), options.targetPlatform());
@@ -192,7 +217,8 @@ class GdccCommandInputTest {
     }
 
     private static final class Terminal {
-        private final API api = new API();
+        private final CliCompileTestSupport.TestCompiler compiler = CliCompileTestSupport.TestCompiler.succeeding();
+        private final API api = CliCompileTestSupport.newApi(compiler);
         private final StringWriter out = new StringWriter();
         private final StringWriter err = new StringWriter();
 
@@ -204,8 +230,8 @@ class GdccCommandInputTest {
             return err.toString();
         }
 
-        void assertNoStepBoundary() {
-            assertFalse(errText().contains("compile task execution is not implemented yet"), errText());
+        void assertCompilerNotInvoked() {
+            assertEquals(0, compiler.invocationCount());
         }
     }
 }

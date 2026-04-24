@@ -2,12 +2,21 @@ package dev.superice.gdcc.cli;
 
 import dev.superice.gdcc.api.API;
 import dev.superice.gdcc.api.CompileOptions;
+import dev.superice.gdcc.api.CompileResult;
+import dev.superice.gdcc.api.CompileTaskEvent;
+import dev.superice.gdcc.api.CompileTaskSnapshot;
 import dev.superice.gdcc.backend.c.build.COptimizationLevel;
 import dev.superice.gdcc.backend.c.build.TargetPlatform;
 import dev.superice.gdcc.enums.GodotVersion;
 import dev.superice.gdcc.exception.GdccException;
+import dev.superice.gdcc.frontend.FrontendClassNameContract;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticManager;
+import dev.superice.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
+import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.logger.GdccLogger;
 import dev.superice.gdcc.util.ConsoleOutputUtil;
+import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import org.jetbrains.annotations.NotNull;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -20,8 +29,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 
@@ -31,9 +43,13 @@ import java.util.concurrent.Callable;
         description = "Compile GDScript source files into a GDCC module."
 )
 public final class GdccCommand implements Callable<Integer> {
+    static final int EXIT_COMPILE_FAILED = 1;
     static final int EXIT_USAGE = 2;
+    static final int EXIT_INTERRUPTED = 130;
+    private static final long POLL_INTERVAL_MILLIS = 10;
 
     private final @NotNull API api;
+    private final @NotNull GdScriptParserService parserService;
     private final @NotNull PrintWriter out;
     private final @NotNull PrintWriter err;
 
@@ -87,6 +103,7 @@ public final class GdccCommand implements Callable<Integer> {
 
     GdccCommand(@NotNull API api, @NotNull PrintWriter out, @NotNull PrintWriter err) {
         this.api = Objects.requireNonNull(api, "api must not be null");
+        parserService = new GdScriptParserService();
         this.out = Objects.requireNonNull(out, "out must not be null");
         this.err = Objects.requireNonNull(err, "err must not be null");
     }
@@ -118,17 +135,20 @@ public final class GdccCommand implements Callable<Integer> {
             var outputTarget = outputTarget();
             var compileOptions = compileOptions(outputTarget);
             var sourceInputs = sourceInputs();
+            var topLevelCanonicalNameMap = topLevelCanonicalNameMap(sourceInputs);
 
             api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
             api.setCompileOptions(outputTarget.moduleId(), compileOptions);
+            api.setTopLevelCanonicalNameMap(outputTarget.moduleId(), topLevelCanonicalNameMap);
             for (var sourceInput : sourceInputs) {
                 api.putFile(outputTarget.moduleId(), sourceInput.virtualPath(), sourceInput.source(), sourceInput.displayPath());
             }
 
-            // Step 3 intentionally stops after preparing module inputs and compile options. Later
-            // steps configure mappings, task polling, and result rendering on top of this boundary.
-            err.println("gdcc CLI compile task execution is not implemented yet.");
-            return EXIT_USAGE;
+            var taskId = api.compile(outputTarget.moduleId());
+            var completedSnapshot = waitForTask(taskId);
+            return renderCompletedTask(completedSnapshot);
+        } catch (CliInterruptedException exception) {
+            return EXIT_INTERRUPTED;
         } catch (IOException exception) {
             return failUsage("Failed to read input file: " + exception.getMessage());
         } catch (GdccException | IllegalArgumentException exception) {
@@ -202,13 +222,188 @@ public final class GdccCommand implements Callable<Integer> {
         }
 
         var source = Files.readString(normalizedInput, StandardCharsets.UTF_8);
-        return new SourceInput(virtualSourcePath(index, normalizedInput), source, input.toString());
+        var virtualPath = virtualSourcePath(index, normalizedInput);
+        return new SourceInput(virtualPath, Path.of(virtualPath), source, input.toString());
     }
 
     private @NotNull String virtualSourcePath(int index, @NotNull Path normalizedInput) {
         // The index segment keeps duplicate host basenames distinct while preserving the frontend's
         // filename-based default class-name behavior.
         return String.format(Locale.ROOT, "/src/%04d/%s", index, normalizedInput.getFileName());
+    }
+
+    private @NotNull Map<String, String> topLevelCanonicalNameMap(@NotNull List<SourceInput> sourceInputs) {
+        var mappings = new LinkedHashMap<String, String>();
+        if (prefix != null) {
+            for (var sourceInput : sourceInputs) {
+                if (hasExplicitTopLevelClassName(sourceInput)) {
+                    continue;
+                }
+                var sourceName = FrontendClassNameContract.deriveDefaultTopLevelSourceName(sourceInput.logicalPath());
+                mappings.put(sourceName, prefix + sourceName);
+            }
+        }
+
+        var explicitSourceNames = new HashSet<String>();
+        for (var classMap : classMaps) {
+            var mapping = explicitClassMap(classMap);
+            if (!explicitSourceNames.add(mapping.source())) {
+                throw new IllegalArgumentException("Duplicate --class-map source name: " + mapping.source());
+            }
+            // Explicit entries are the second merge phase. Reinsert overridden generated entries so
+            // the final LinkedHashMap order reflects that phase boundary as well as the value.
+            mappings.remove(mapping.source());
+            mappings.put(mapping.source(), mapping.canonical());
+        }
+        return mappings;
+    }
+
+    private @NotNull ClassMap explicitClassMap(@NotNull String classMap) {
+        var separatorIndex = classMap.indexOf('=');
+        if (separatorIndex < 0 || separatorIndex != classMap.lastIndexOf('=')) {
+            throw new IllegalArgumentException("--class-map must use Source=Canonical syntax: " + classMap);
+        }
+        return new ClassMap(classMap.substring(0, separatorIndex), classMap.substring(separatorIndex + 1));
+    }
+
+    private boolean hasExplicitTopLevelClassName(@NotNull SourceInput sourceInput) {
+        var diagnosticManager = new DiagnosticManager();
+        var unit = parserService.parseUnit(sourceInput.logicalPath(), sourceInput.source(), diagnosticManager);
+        if (diagnosticManager.snapshot().hasErrors()) {
+            return true;
+        }
+        return unit.ast().statements().stream().anyMatch(ClassNameStatement.class::isInstance);
+    }
+
+    private @NotNull CompileTaskSnapshot waitForTask(long taskId) {
+        var nextEventIndex = 0L;
+        var lastRevision = 0L;
+        while (true) {
+            var snapshot = api.getCompileTask(taskId);
+            if (verbosityLevel() > 0 && snapshot.revision() != lastRevision) {
+                renderTaskProgress(snapshot);
+                lastRevision = snapshot.revision();
+            }
+            if (verbosityLevel() > 0) {
+                nextEventIndex = drainEvents(taskId, nextEventIndex);
+            }
+            if (snapshot.completed()) {
+                if (verbosityLevel() > 0) {
+                    drainEvents(taskId, nextEventIndex);
+                }
+                return snapshot;
+            }
+            sleepBeforeNextPoll(taskId);
+        }
+    }
+
+    private void sleepBeforeNextPoll(long taskId) {
+        try {
+            Thread.sleep(POLL_INTERVAL_MILLIS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            api.cancelCompileTask(taskId);
+            throw new CliInterruptedException();
+        }
+    }
+
+    private long drainEvents(long taskId, long nextEventIndex) {
+        var currentIndex = nextEventIndex;
+        while (true) {
+            var page = api.listCompileTaskEvents(taskId, currentIndex, API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE);
+            if (page.isEmpty()) {
+                return currentIndex;
+            }
+            for (var indexedEvent : page) {
+                renderEvent(indexedEvent);
+                currentIndex = indexedEvent.index() + 1;
+            }
+            if (page.size() < API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE) {
+                return currentIndex;
+            }
+        }
+    }
+
+    private int renderCompletedTask(@NotNull CompileTaskSnapshot snapshot) {
+        var result = Objects.requireNonNull(snapshot.result(), "completed compile task must carry a result");
+        renderResult(snapshot.moduleId(), result);
+        if (result.success()) {
+            return 0;
+        }
+        return result.outcome() == CompileResult.Outcome.CANCELED ? EXIT_INTERRUPTED : EXIT_COMPILE_FAILED;
+    }
+
+    private void renderResult(@NotNull String moduleId, @NotNull CompileResult result) {
+        for (var diagnostic : result.diagnostics().asList()) {
+            err.println(formatDiagnostic(diagnostic));
+        }
+        if (verbosityLevel() >= 2) {
+            renderDetailedResultInputs(result);
+        }
+        if (result.success()) {
+            out.println("Compiled module " + moduleId);
+            for (var artifact : result.artifacts()) {
+                out.println("Artifact: " + artifact);
+            }
+            if (verbosityLevel() >= 2 && !result.buildLog().isBlank()) {
+                out.println(result.buildLog());
+            }
+            return;
+        }
+
+        err.println("Compile failed: " + result.outcome());
+        if (result.failureMessage() != null) {
+            err.println(result.failureMessage());
+        }
+        if (result.outcome() == CompileResult.Outcome.BUILD_FAILED || verbosityLevel() >= 2) {
+            if (!result.buildLog().isBlank()) {
+                err.println(result.buildLog());
+            }
+        }
+    }
+
+    private void renderDetailedResultInputs(@NotNull CompileResult result) {
+        out.println("Compile options: " + result.compileOptions());
+        out.println("Sources: " + result.sourcePaths());
+        out.println("Top-level canonical map: " + result.topLevelCanonicalNameMap());
+        out.println("Generated files: " + result.generatedFiles());
+        if (verbosityLevel() > 0) {
+            out.println("Output links: " + result.outputLinks());
+        }
+    }
+
+    private @NotNull String formatDiagnostic(@NotNull FrontendDiagnostic diagnostic) {
+        return diagnostic.severity()
+                + " "
+                + diagnostic.category()
+                + " "
+                + Objects.requireNonNullElse(diagnostic.sourcePath(), "<unknown>")
+                + formatRange(diagnostic.range())
+                + ": "
+                + diagnostic.message();
+    }
+
+    private @NotNull String formatRange(FrontendRange range) {
+        if (range == null) {
+            return "";
+        }
+        return ":" + range.start().line() + ":" + range.start().column();
+    }
+
+    private void renderTaskProgress(@NotNull CompileTaskSnapshot snapshot) {
+        err.println("Task "
+                + snapshot.taskId()
+                + " "
+                + snapshot.state()
+                + " "
+                + snapshot.stage()
+                + " "
+                + Objects.requireNonNullElse(snapshot.stageMessage(), ""));
+    }
+
+    private void renderEvent(@NotNull CompileTaskEvent.Indexed indexedEvent) {
+        var event = indexedEvent.event();
+        err.println("Event " + indexedEvent.index() + " " + event.category() + ": " + event.detail());
     }
 
     private int failUsage(@NotNull String message) {
@@ -219,6 +414,17 @@ public final class GdccCommand implements Callable<Integer> {
     private record OutputTarget(@NotNull String moduleId, @NotNull String moduleName, @NotNull Path projectPath) {
     }
 
-    private record SourceInput(@NotNull String virtualPath, @NotNull String source, @NotNull String displayPath) {
+    private record SourceInput(
+            @NotNull String virtualPath,
+            @NotNull Path logicalPath,
+            @NotNull String source,
+            @NotNull String displayPath
+    ) {
+    }
+
+    private record ClassMap(@NotNull String source, @NotNull String canonical) {
+    }
+
+    private static final class CliInterruptedException extends RuntimeException {
     }
 }

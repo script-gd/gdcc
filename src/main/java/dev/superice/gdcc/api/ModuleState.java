@@ -14,8 +14,10 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -713,10 +715,10 @@ final class ModuleState {
             Objects.requireNonNull(moduleId, "moduleId must not be null");
             Objects.requireNonNull(moduleName, "moduleName must not be null");
             Objects.requireNonNull(compileOptions, "compileOptions must not be null");
-            topLevelCanonicalNameMap = Map.copyOf(Objects.requireNonNull(
+            topLevelCanonicalNameMap = Collections.unmodifiableMap(new LinkedHashMap<>(Objects.requireNonNull(
                     topLevelCanonicalNameMap,
                     "topLevelCanonicalNameMap must not be null"
-            ));
+            )));
             sourceSnapshots = List.copyOf(Objects.requireNonNull(sourceSnapshots, "sourceSnapshots must not be null"));
         }
     }
