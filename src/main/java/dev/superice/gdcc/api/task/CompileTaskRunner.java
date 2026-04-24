@@ -78,7 +78,9 @@ public final class CompileTaskRunner implements Runnable {
         CompileTaskState.bindCurrentThread(taskState);
         try {
             try {
+                throwIfCancellationRequested();
                 executionStarter.run();
+                throwIfCancellationRequested();
                 taskState.updateRunningStage(
                         CompileTaskSnapshot.Stage.FREEZING_INPUTS,
                         "Freezing compile inputs",
@@ -86,6 +88,7 @@ public final class CompileTaskRunner implements Runnable {
                         0,
                         null
                 );
+                throwIfCancellationRequested();
                 taskState.updateRunningStage(
                         CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
                         "Collecting .gd sources from module VFS",
@@ -94,6 +97,7 @@ public final class CompileTaskRunner implements Runnable {
                         null
                 );
                 request = requestSupplier.get();
+                throwIfCancellationRequested();
                 taskState.updateRunningStage(
                         CompileTaskSnapshot.Stage.COLLECTING_SOURCES,
                         "Collected " + request.sourceSnapshots().size() + " source units",
@@ -103,7 +107,11 @@ public final class CompileTaskRunner implements Runnable {
                 );
                 finishCompileTask(compileFrozenRequest(request));
             } catch (Throwable throwable) {
-                finishCompileTask(unexpectedTaskFailure(request, throwable));
+                if (taskState.cancellationRequested() || throwable instanceof TaskCanceledException) {
+                    finishCanceledTask(request);
+                } else {
+                    finishCompileTask(unexpectedTaskFailure(request, throwable));
+                }
             }
         } finally {
             CompileTaskState.clearCurrentThread();
@@ -111,17 +119,27 @@ public final class CompileTaskRunner implements Runnable {
     }
 
     private void finishCompileTask(@NotNull CompileResult result) {
-        taskState.complete(
+        var completed = taskState.complete(
                 clock.instant(),
                 result,
                 result.success() ? CompileTaskSnapshot.Stage.FINISHED : taskState.snapshot().stage()
         );
-        completionHandler.accept(result);
+        if (completed) {
+            completionHandler.accept(result);
+        }
+    }
+
+    private void finishCanceledTask(@Nullable Request request) {
+        var result = canceledResult(request);
+        if (taskState.completeCanceled(clock.instant(), result)) {
+            completionHandler.accept(result);
+        }
     }
 
     /// Compilation runs against frozen source snapshots so later RPC writes cannot mutate the exact
     /// input set or output mount used by this pipeline.
     private @NotNull CompileResult compileFrozenRequest(@NotNull Request request) {
+        throwIfCancellationRequested();
         var sourcePaths = displaySourcePaths(request);
         if (request.failure() != null) {
             return new CompileResult(
@@ -169,6 +187,7 @@ public final class CompileTaskRunner implements Runnable {
         }
 
         var diagnostics = new DiagnosticManager();
+        throwIfCancellationRequested();
         taskState.updateRunningStage(
                 CompileTaskSnapshot.Stage.PARSING,
                 "Parsing source units",
@@ -179,6 +198,7 @@ public final class CompileTaskRunner implements Runnable {
         var units = new ArrayList<FrontendSourceUnit>(request.sourceSnapshots().size());
         for (var index = 0; index < request.sourceSnapshots().size(); index++) {
             var sourceSnapshot = request.sourceSnapshots().get(index);
+            throwIfCancellationRequested();
             taskState.updateRunningStage(
                     CompileTaskSnapshot.Stage.PARSING,
                     "Parsing " + sourceSnapshot.displayPath(),
@@ -191,6 +211,7 @@ public final class CompileTaskRunner implements Runnable {
                     sourceSnapshot.source(),
                     diagnostics
             ));
+            throwIfCancellationRequested();
             taskState.updateRunningStage(
                     CompileTaskSnapshot.Stage.PARSING,
                     "Parsed " + sourceSnapshot.displayPath(),
@@ -232,6 +253,7 @@ public final class CompileTaskRunner implements Runnable {
         }
 
         try {
+            throwIfCancellationRequested();
             var extensionApi = ExtensionApiLoader.loadVersion(request.compileOptions().godotVersion());
             var classRegistry = new ClassRegistry(extensionApi);
             var frontendModule = new FrontendModule(
@@ -239,6 +261,7 @@ public final class CompileTaskRunner implements Runnable {
                     units,
                     request.topLevelCanonicalNameMap()
             );
+            throwIfCancellationRequested();
             taskState.updateRunningStage(
                     CompileTaskSnapshot.Stage.LOWERING,
                     "Lowering frontend module",
@@ -247,6 +270,7 @@ public final class CompileTaskRunner implements Runnable {
                     null
             );
             var lowered = loweringPassManager.lower(frontendModule, classRegistry, diagnostics);
+            throwIfCancellationRequested();
             var frontendDiagnostics = remapDiagnosticSourcePaths(request, diagnostics.snapshot());
             if (lowered == null || frontendDiagnostics.hasErrors()) {
                 return new CompileResult(
@@ -271,6 +295,7 @@ public final class CompileTaskRunner implements Runnable {
                     request.compileOptions().targetPlatform()
             );
             var codegen = new CCodegen();
+            throwIfCancellationRequested();
             taskState.updateRunningStage(
                     CompileTaskSnapshot.Stage.CODEGEN_PREPARE,
                     "Preparing C code generation",
@@ -287,6 +312,7 @@ public final class CompileTaskRunner implements Runnable {
                 return outputMountError;
             }
 
+            throwIfCancellationRequested();
             taskState.updateRunningStage(
                     CompileTaskSnapshot.Stage.BUILDING_NATIVE,
                     "Building native artifacts",
@@ -295,6 +321,7 @@ public final class CompileTaskRunner implements Runnable {
                     null
             );
             var buildResult = projectBuilder.buildProject(projectInfo, codegen);
+            throwIfCancellationRequested();
             var generatedFiles = collectGeneratedFiles(projectPath);
             if (!buildResult.success()) {
                 return new CompileResult(
@@ -311,6 +338,7 @@ public final class CompileTaskRunner implements Runnable {
                 );
             }
             try {
+                throwIfCancellationRequested();
                 var outputLinks = request.outputMounter().apply(new BuildOutputs(
                         generatedFiles,
                         buildResult.artifacts()
@@ -351,6 +379,12 @@ public final class CompileTaskRunner implements Runnable {
                     List.of(),
                     List.of()
             );
+        }
+    }
+
+    private void throwIfCancellationRequested() {
+        if (taskState.cancellationRequested()) {
+            throw new TaskCanceledException();
         }
     }
 
@@ -442,6 +476,22 @@ public final class CompileTaskRunner implements Runnable {
                 EMPTY_DIAGNOSTICS,
                 failureMessage,
                 failureMessage,
+                projectPath == null ? List.of() : collectGeneratedFiles(projectPath),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private @NotNull CompileResult canceledResult(@Nullable Request request) {
+        var projectPath = request == null ? null : request.compileOptions().projectPath();
+        return new CompileResult(
+                CompileResult.Outcome.CANCELED,
+                request == null ? CompileOptions.defaults() : request.compileOptions(),
+                request == null ? Map.of() : request.topLevelCanonicalNameMap(),
+                request == null ? List.of() : displaySourcePaths(request),
+                EMPTY_DIAGNOSTICS,
+                "Compile task was canceled",
+                "",
                 projectPath == null ? List.of() : collectGeneratedFiles(projectPath),
                 List.of(),
                 List.of()
@@ -545,5 +595,8 @@ public final class CompileTaskRunner implements Runnable {
             generatedFiles = List.copyOf(Objects.requireNonNull(generatedFiles, "generatedFiles must not be null"));
             artifacts = List.copyOf(Objects.requireNonNull(artifacts, "artifacts must not be null"));
         }
+    }
+
+    private static final class TaskCanceledException extends RuntimeException {
     }
 }

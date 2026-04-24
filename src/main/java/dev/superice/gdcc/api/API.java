@@ -10,6 +10,7 @@ import dev.superice.gdcc.exception.ApiCompileTaskNotFoundException;
 import dev.superice.gdcc.exception.ApiModuleAlreadyExistsException;
 import dev.superice.gdcc.exception.ApiModuleBusyException;
 import dev.superice.gdcc.exception.ApiModuleNotFoundException;
+import dev.superice.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import dev.superice.gdcc.frontend.lowering.FrontendLoweringPassManager;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.util.StringUtil;
@@ -281,9 +282,9 @@ public final class API {
         var ownerState = managedModule.state();
         try {
             compileTaskCleaner.ensureRunning();
-            Thread.ofVirtual()
+            var thread = Thread.ofVirtual()
                     .name("gdcc-api-compile-" + taskId)
-                    .start(new CompileTaskRunner(
+                    .unstarted(new CompileTaskRunner(
                             clock,
                             parserService,
                             loweringPassManager,
@@ -296,6 +297,8 @@ public final class API {
                                 managedModule.finishCompile(taskId);
                             }
                     ));
+            taskState.attachRunnerThread(thread);
+            thread.start();
         } catch (RuntimeException exception) {
             compileTasks.remove(taskId);
             managedModule.finishCompile(taskId);
@@ -308,6 +311,27 @@ public final class API {
     /// TTL expires, the task behaves as not found.
     public @NotNull CompileTaskSnapshot getCompileTask(long taskId) {
         return requireCompileTaskState(taskId).snapshot();
+    }
+
+    /// Requests cancellation for a retained queued or running compile task. Queued tasks release the
+    /// module reservation immediately; running tasks are interrupted and complete as canceled once
+    /// the compile runner reaches an interruptible point.
+    public @NotNull CompileTaskSnapshot cancelCompileTask(long taskId) {
+        var taskState = requireCompileTaskState(taskId);
+        if (!taskState.requestCancellation()) {
+            return taskState.snapshot();
+        }
+
+        var snapshot = taskState.snapshot();
+        var managedModule = modules.get(snapshot.moduleId());
+        if (managedModule != null && managedModule.cancelQueuedCompile(taskId)) {
+            var result = canceledResult(snapshot);
+            if (taskState.completeCanceled(clock.instant(), result)) {
+                managedModule.state().setLastCompileResult(result);
+            }
+        }
+        taskState.interruptRunner();
+        return taskState.snapshot();
     }
 
     /// Returns the latest event for one retained compile task.
@@ -373,6 +397,21 @@ public final class API {
                         outputs.generatedFiles(),
                         outputs.artifacts()
                 )
+        );
+    }
+
+    private @NotNull CompileResult canceledResult(@NotNull CompileTaskSnapshot snapshot) {
+        return new CompileResult(
+                CompileResult.Outcome.CANCELED,
+                CompileOptions.defaults(),
+                Map.of(),
+                List.of(),
+                new DiagnosticSnapshot(List.of()),
+                "Compile task " + snapshot.taskId() + " was canceled",
+                "",
+                List.of(),
+                List.of(),
+                List.of()
         );
     }
 
@@ -498,6 +537,15 @@ public final class API {
             if (changed) {
                 notifyAll();
             }
+        }
+
+        private synchronized boolean cancelQueuedCompile(long taskId) {
+            if (queuedCompileTaskId != taskId) {
+                return false;
+            }
+            queuedCompileTaskId = 0;
+            notifyAll();
+            return true;
         }
 
         private synchronized void enterOperation(@NotNull String moduleId) {

@@ -96,11 +96,24 @@ public record CompileTaskSnapshot(
                     throw new IllegalArgumentException("failed task must not carry a successful result");
                 }
             }
+            case CANCELED -> {
+                if (stage == Stage.FINISHED) {
+                    throw new IllegalArgumentException("canceled task must preserve the stopped stage context");
+                }
+                Objects.requireNonNull(completedAt, "completedAt must not be null after task completion");
+                Objects.requireNonNull(result, "result must not be null after task completion");
+                if (result.success()) {
+                    throw new IllegalArgumentException("canceled task must not carry a successful result");
+                }
+                if (result.outcome() != CompileResult.Outcome.CANCELED) {
+                    throw new IllegalArgumentException("canceled task must carry a canceled result");
+                }
+            }
         }
     }
 
     public boolean completed() {
-        return state == State.SUCCEEDED || state == State.FAILED;
+        return state == State.SUCCEEDED || state == State.FAILED || state == State.CANCELED;
     }
 
     public boolean success() {
@@ -111,7 +124,8 @@ public record CompileTaskSnapshot(
         QUEUED,
         RUNNING,
         SUCCEEDED,
-        FAILED
+        FAILED,
+        CANCELED
     }
 
     public enum Stage {

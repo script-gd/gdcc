@@ -1,13 +1,16 @@
 package dev.superice.gdcc.backend.c.build;
 
+import dev.superice.gdcc.util.ProcessUtil;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ZigCcCompiler implements CCompiler {
     private static final String PROJECT_CACHE_DIR_NAME = "compiler-cache";
@@ -63,8 +66,27 @@ public class ZigCcCompiler implements CCompiler {
             pb.environment().put("ZIG_CACHE_DIR", cachePath.resolve("local").toString());
             pb.environment().put("ZIG_GLOBAL_CACHE_DIR", cachePath.resolve("global").toString());
             var p = pb.start();
-            var out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            var exit = p.waitFor();
+            // Drain Zig output on a companion virtual thread so a verbose compiler cannot fill the
+            // process pipe and block shutdown. The compile thread stays interruptible; cancellation
+            // destroys the Zig process through ProcessUtil and interrupts the output reader.
+            var outputBytes = new ByteArrayOutputStream();
+            var outputFailure = new AtomicReference<IOException>();
+            var outputReader = Thread.ofVirtual()
+                    .name("gdcc-zig-output")
+                    .start(() -> {
+                        try (var input = p.getInputStream()) {
+                            input.transferTo(outputBytes);
+                        } catch (IOException exception) {
+                            outputFailure.set(exception);
+                        }
+                    });
+            var exit = ProcessUtil.waitForInterruptibly(p, outputReader);
+            outputReader.join();
+            var readFailure = outputFailure.get();
+            if (readFailure != null) {
+                throw readFailure;
+            }
+            var out = outputBytes.toString(StandardCharsets.UTF_8);
             boolean success = exit == 0 && Files.exists(outputPath);
             var artifacts = new ArrayList<Path>(3);
             if (success) {
@@ -81,8 +103,10 @@ public class ZigCcCompiler implements CCompiler {
                 out = "Command: " + cmdStr + "\n" + out;
             }
             return new CBuildResult(success, out, artifacts);
-        } catch (IOException | InterruptedException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return new CBuildResult(false, "Failed to run zig: interrupted", List.of());
+        } catch (IOException e) {
             return new CBuildResult(false, "Failed to run zig: " + e.getMessage(), List.of());
         }
     }

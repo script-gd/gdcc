@@ -55,6 +55,7 @@ public record CompileResult(
 
     public enum Outcome {
         SUCCESS,
+        CANCELED,
         SOURCE_COLLECTION_FAILED,
         CONFIGURATION_FAILED,
         FRONTEND_FAILED,

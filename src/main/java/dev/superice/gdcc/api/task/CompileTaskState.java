@@ -22,6 +22,8 @@ public final class CompileTaskState {
     private final @NotNull CompileTaskHooks compileTaskHooks;
     private final @NotNull ArrayList<CompileTaskEvent> events = new ArrayList<>();
     private volatile @NotNull CompileTaskSnapshot snapshot;
+    private volatile boolean cancellationRequested;
+    private volatile @Nullable Thread runnerThread;
 
     public CompileTaskState(
             long taskId,
@@ -84,6 +86,29 @@ public final class CompileTaskState {
         events.clear();
     }
 
+    public void attachRunnerThread(@NotNull Thread thread) {
+        runnerThread = Objects.requireNonNull(thread, "thread must not be null");
+    }
+
+    public synchronized boolean requestCancellation() {
+        if (snapshot.completed()) {
+            return false;
+        }
+        cancellationRequested = true;
+        return true;
+    }
+
+    public boolean cancellationRequested() {
+        return cancellationRequested;
+    }
+
+    public void interruptRunner() {
+        var thread = runnerThread;
+        if (thread != null) {
+            thread.interrupt();
+        }
+    }
+
     public boolean expiredAt(@NotNull Instant now, @NotNull Duration ttl) {
         Objects.requireNonNull(now, "now must not be null");
         Objects.requireNonNull(ttl, "ttl must not be null");
@@ -112,7 +137,7 @@ public final class CompileTaskState {
         compileTaskHooks.afterSnapshotUpdate(next);
     }
 
-    void complete(
+    boolean complete(
             @NotNull Instant completedAt,
             @NotNull CompileResult result,
             @NotNull CompileTaskSnapshot.Stage completedStage
@@ -120,6 +145,9 @@ public final class CompileTaskState {
         CompileTaskSnapshot next;
         synchronized (this) {
             var current = snapshot;
+            if (current.completed()) {
+                return false;
+            }
             next = new CompileTaskSnapshot(
                     taskId,
                     moduleId,
@@ -137,6 +165,34 @@ public final class CompileTaskState {
             snapshot = next;
         }
         compileTaskHooks.afterSnapshotUpdate(next);
+        return true;
+    }
+
+    public boolean completeCanceled(@NotNull Instant completedAt, @NotNull CompileResult result) {
+        CompileTaskSnapshot next;
+        synchronized (this) {
+            var current = snapshot;
+            if (current.completed()) {
+                return false;
+            }
+            next = new CompileTaskSnapshot(
+                    taskId,
+                    moduleId,
+                    CompileTaskSnapshot.State.CANCELED,
+                    current.stage(),
+                    "Compile task canceled",
+                    current.completedUnits(),
+                    current.totalUnits(),
+                    current.currentSourcePath(),
+                    current.revision() + 1,
+                    createdAt,
+                    completedAt,
+                    result
+            );
+            snapshot = next;
+        }
+        compileTaskHooks.afterSnapshotUpdate(next);
+        return true;
     }
 
     private synchronized @Nullable CompileTaskSnapshot nextRunningSnapshot(
