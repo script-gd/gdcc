@@ -9,6 +9,7 @@ import org.jetbrains.annotations.Nullable;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Objects;
 
@@ -20,7 +21,9 @@ public final class CompileTaskState {
     private final @NotNull String moduleId;
     private final @NotNull Instant createdAt;
     private final @NotNull CompileTaskHooks compileTaskHooks;
-    private final @NotNull ArrayList<CompileTaskEvent> events = new ArrayList<>();
+    private final @NotNull ArrayList<CompileTaskEvent.Indexed> events = new ArrayList<>();
+    private final @NotNull HashMap<String, ArrayList<CompileTaskEvent.Indexed>> eventsByCategory = new HashMap<>();
+    private long nextEventIndex;
     private volatile @NotNull CompileTaskSnapshot snapshot;
     private volatile boolean cancellationRequested;
     private volatile @Nullable Thread runnerThread;
@@ -75,15 +78,38 @@ public final class CompileTaskState {
     }
 
     public synchronized @Nullable CompileTaskEvent latestEvent() {
-        return events.isEmpty() ? null : events.getLast();
+        return events.isEmpty() ? null : events.getLast().event();
     }
 
     public synchronized @NotNull List<CompileTaskEvent> events() {
-        return List.copyOf(events);
+        return events.stream()
+                .map(CompileTaskEvent.Indexed::event)
+                .toList();
+    }
+
+    public synchronized @NotNull List<CompileTaskEvent.Indexed> events(
+            @Nullable String category,
+            long startIndex,
+            int maxCount
+    ) {
+        if (startIndex < 0) {
+            throw new IllegalArgumentException("startIndex must not be negative");
+        }
+        if (maxCount <= 0) {
+            throw new IllegalArgumentException("maxCount must be positive");
+        }
+        var source = category == null ? events : eventsByCategory.get(category);
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        var startOffset = firstEventAtOrAfter(source, startIndex);
+        var endOffset = (int) Math.min(source.size(), (long) startOffset + maxCount);
+        return List.copyOf(source.subList(startOffset, endOffset));
     }
 
     public synchronized void clearEvents() {
         events.clear();
+        eventsByCategory.clear();
     }
 
     public void attachRunnerThread(@NotNull Thread thread) {
@@ -120,7 +146,13 @@ public final class CompileTaskState {
     }
 
     synchronized void recordEvent(@NotNull CompileTaskEvent event) {
-        events.add(Objects.requireNonNull(event, "event must not be null"));
+        var indexedEvent = new CompileTaskEvent.Indexed(
+                nextEventIndex++,
+                Objects.requireNonNull(event, "event must not be null")
+        );
+        events.add(indexedEvent);
+        eventsByCategory.computeIfAbsent(indexedEvent.event().category(), _ -> new ArrayList<>())
+                .add(indexedEvent);
     }
 
     void updateRunningStage(
@@ -237,5 +269,19 @@ public final class CompileTaskState {
                 && current.completedUnits() == next.completedUnits()
                 && current.totalUnits() == next.totalUnits()
                 && Objects.equals(current.currentSourcePath(), next.currentSourcePath());
+    }
+
+    private static int firstEventAtOrAfter(@NotNull List<CompileTaskEvent.Indexed> source, long startIndex) {
+        var low = 0;
+        var high = source.size();
+        while (low < high) {
+            var mid = low + (high - low) / 2;
+            if (source.get(mid).index() < startIndex) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        return low;
     }
 }

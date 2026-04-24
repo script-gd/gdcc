@@ -35,6 +35,7 @@ import java.util.function.Function;
 public final class API {
     private static final @NotNull Duration DEFAULT_COMPLETED_COMPILE_TASK_TTL = Duration.ofMinutes(30);
     private static final @NotNull Duration DEFAULT_COMPILE_TASK_SWEEP_INTERVAL = Duration.ofMinutes(1);
+    public static final int MAX_COMPILE_TASK_EVENT_PAGE_SIZE = 1_000;
 
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
@@ -343,6 +344,39 @@ public final class API {
     /// the task retention window.
     public @NotNull List<CompileTaskEvent> listCompileTaskEvents(long taskId) {
         return requireCompileTaskState(taskId).events();
+    }
+
+    /// Returns an indexed, bounded event page starting at `startIndex`, inclusive. The index is kept
+    /// outside `CompileTaskEvent` so the event payload stays transport-neutral.
+    public @NotNull List<CompileTaskEvent.Indexed> listCompileTaskEvents(
+            long taskId,
+            long startIndex,
+            int maxCount
+    ) {
+        return listCompileTaskEvents(taskId, null, startIndex, maxCount);
+    }
+
+    /// Returns an indexed, bounded event page for one category starting at `startIndex`, inclusive.
+    public @NotNull List<CompileTaskEvent.Indexed> listCompileTaskEvents(
+            long taskId,
+            @Nullable String category,
+            long startIndex,
+            int maxCount
+    ) {
+        var normalizedCategory = category == null ? null : StringUtil.requireTrimmedNonBlank(category, "category");
+        if (startIndex < 0) {
+            throw new IllegalArgumentException("startIndex must not be negative");
+        }
+        if (maxCount <= 0 || maxCount > MAX_COMPILE_TASK_EVENT_PAGE_SIZE) {
+            throw new IllegalArgumentException(
+                    "maxCount must be between 1 and " + MAX_COMPILE_TASK_EVENT_PAGE_SIZE
+            );
+        }
+        return requireCompileTaskState(taskId).events(
+                normalizedCategory,
+                startIndex,
+                maxCount
+        );
     }
 
     public void clearCompileTaskEvents(long taskId) {

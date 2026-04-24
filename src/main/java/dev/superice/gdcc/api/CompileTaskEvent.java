@@ -3,6 +3,8 @@ package dev.superice.gdcc.api;
 import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.Objects;
+
 /// Frozen compile-task event recorded from code executing on the task thread.
 ///
 /// Events intentionally stay minimal so frontend/backend code can emit human-readable progress
@@ -12,5 +14,14 @@ public record CompileTaskEvent(@NotNull String category, @NotNull String detail)
     public CompileTaskEvent {
         category = StringUtil.requireTrimmedNonBlank(category, "category");
         detail = StringUtil.requireTrimmedNonBlank(detail, "detail");
+    }
+
+    public record Indexed(long index, @NotNull CompileTaskEvent event) {
+        public Indexed {
+            if (index < 0) {
+                throw new IllegalArgumentException("index must not be negative");
+            }
+            Objects.requireNonNull(event, "event must not be null");
+        }
     }
 }

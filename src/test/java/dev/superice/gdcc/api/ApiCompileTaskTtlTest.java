@@ -60,6 +60,7 @@ class ApiCompileTaskTtlTest {
         assertTaskNotFound(() -> api.getCompileTask(taskId), taskId);
         assertTaskNotFound(() -> api.getLatestCompileTaskEvent(taskId), taskId);
         assertTaskNotFound(() -> api.listCompileTaskEvents(taskId), taskId);
+        assertTaskNotFound(() -> api.listCompileTaskEvents(taskId, "backend.build", 0, 10), taskId);
         assertTaskNotFound(() -> api.clearCompileTaskEvents(taskId), taskId);
     }
 

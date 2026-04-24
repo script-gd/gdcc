@@ -44,9 +44,27 @@ class ApiCompileTaskEventTest {
 
         assertEquals(emittedEvents, api.listCompileTaskEvents(taskId));
         assertEquals(emittedEvents.getLast(), api.getLatestCompileTaskEvent(taskId));
+        assertEquals(
+                List.of(
+                        new CompileTaskEvent.Indexed(0, emittedEvents.getFirst()),
+                        new CompileTaskEvent.Indexed(1, emittedEvents.getLast())
+                ),
+                api.listCompileTaskEvents(taskId, 0, 10)
+        );
+        assertEquals(
+                List.of(new CompileTaskEvent.Indexed(1, emittedEvents.getLast())),
+                api.listCompileTaskEvents(taskId, 1, 1)
+        );
+        assertEquals(List.of(), api.listCompileTaskEvents(taskId, 2, 10));
+        assertEquals(
+                List.of(new CompileTaskEvent.Indexed(1, emittedEvents.getLast())),
+                api.listCompileTaskEvents(taskId, " backend.build ", 0, 10)
+        );
+        assertEquals(List.of(), api.listCompileTaskEvents(taskId, "backend.codegen", 1, 10));
 
         api.clearCompileTaskEvents(taskId);
         assertEquals(List.of(), api.listCompileTaskEvents(taskId));
+        assertEquals(List.of(), api.listCompileTaskEvents(taskId, 0, 10));
         assertNull(api.getLatestCompileTaskEvent(taskId));
 
         compiler.release();
@@ -85,8 +103,40 @@ class ApiCompileTaskEventTest {
         var listError = assertThrows(ApiCompileTaskNotFoundException.class, () -> api.listCompileTaskEvents(42));
         assertEquals("Compile task '42' does not exist", listError.getMessage());
 
+        var indexedListError = assertThrows(ApiCompileTaskNotFoundException.class, () ->
+                api.listCompileTaskEvents(42, "backend.build", 0, 10)
+        );
+        assertEquals("Compile task '42' does not exist", indexedListError.getMessage());
+
         var clearError = assertThrows(ApiCompileTaskNotFoundException.class, () -> api.clearCompileTaskEvents(42));
         assertEquals("Compile task '42' does not exist", clearError.getMessage());
+    }
+
+    @Test
+    void indexedCompileTaskEventAccessorsRejectInvalidPageArguments() {
+        var api = new API(ApiCompileTestSupport.FIXED_CLOCK);
+
+        var negativeStartIndex = assertThrows(IllegalArgumentException.class, () ->
+                api.listCompileTaskEvents(42, -1, 10)
+        );
+        assertEquals("startIndex must not be negative", negativeStartIndex.getMessage());
+
+        var zeroMaxCount = assertThrows(IllegalArgumentException.class, () ->
+                api.listCompileTaskEvents(42, 0, 0)
+        );
+        assertEquals("maxCount must be between 1 and " + API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE,
+                zeroMaxCount.getMessage());
+
+        var tooLargeMaxCount = assertThrows(IllegalArgumentException.class, () ->
+                api.listCompileTaskEvents(42, 0, API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE + 1)
+        );
+        assertEquals("maxCount must be between 1 and " + API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE,
+                tooLargeMaxCount.getMessage());
+
+        var blankCategory = assertThrows(IllegalArgumentException.class, () ->
+                api.listCompileTaskEvents(42, " ", 0, 10)
+        );
+        assertEquals("category must not be blank", blankCategory.getMessage());
     }
 
     private static String validSource(String className) {
