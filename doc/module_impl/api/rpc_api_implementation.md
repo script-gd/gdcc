@@ -7,7 +7,7 @@
 ## Document Status
 
 - Status: fact source maintained
-- Updated: 2026-04-24
+- Updated: 2026-04-25
 - Scope:
   - `src/main/java/dev/superice/gdcc/api/**`
   - `src/test/java/dev/superice/gdcc/api/**`
@@ -381,17 +381,33 @@ One compile task performs:
 9. Run `FrontendLoweringPassManager.lower(...)`.
 10. Prepare C codegen with `CCodegen.prepare(...)`.
 11. Validate and prepare output publication.
-12. Build the local C project with `CProjectBuilder.buildProject(...)`.
+12. Build the local C project with `CProjectBuilder.buildProject(...)`, which returns `CBuildResult`:
+    the generated files written by this codegen pass plus the native `CCompileResult`.
 13. Publish generated files and artifacts into module VFS as `LOCAL` links if build succeeds.
 14. Write final `CompileResult` to the task and module's last-result slot.
 
 If parser or frontend diagnostics contain errors, compilation stops before native build and returns
 `FRONTEND_FAILED`.
 
+Non-`.gd` VFS files remain ordinary module files and are not compile sources. Adapters that expose a
+source-file input contract, such as the CLI `files` argument, must reject non-`.gd` host inputs at
+their own boundary before writing them into the module VFS.
+
 If `projectPath` is missing or cannot be created as a directory, compilation returns
 `CONFIGURATION_FAILED`.
 
-Build failures return `BUILD_FAILED` with build log and any generated files that exist.
+Build failures return `BUILD_FAILED` with build log and the generated files that the current
+`CProjectBuilder` invocation actually wrote. The task runner must not infer generated files by
+scanning fixed names under `projectPath`, because stale files from earlier attempts are not part of
+the current compile result.
+
+The result boundary is intentional:
+
+- `CCompileResult` belongs to `CCompiler` implementations such as `ZigCcCompiler`; it reports only
+  native compiler success, build log, and artifacts.
+- `CBuildResult` belongs to `CProjectBuilder`; it wraps the native compile result and adds
+  `generatedFiles`, because only the project builder knows which `GeneratedFile` instances were
+  written for the current invocation.
 
 ---
 
@@ -558,6 +574,7 @@ Focused API tests currently anchor the contract:
   `ApiCompileTaskTtlTest`
 - output publication: `ApiCompileArtifactLinkTest`, `ApiRecompileArtifactRefreshTest`
 - concurrency and module isolation: `ApiConcurrentMutationTest`, `ApiMultiModuleIsolationTest`
+- generated-file provenance: `ApiCompileDiagnosticsTest`, `CProjectBuilderSharedIncludeTest`
 
 When extending this API, prefer targeted tests that pin the affected contract instead of broad,
 slow suite runs during iteration.

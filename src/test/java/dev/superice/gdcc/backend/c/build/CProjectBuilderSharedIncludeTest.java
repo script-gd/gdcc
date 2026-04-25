@@ -55,14 +55,25 @@ public class CProjectBuilderSharedIncludeTest {
         var builder = new CProjectBuilder(compiler);
 
         builder.initProject(projectInfo);
+        Files.writeString(projectDir.resolve("stale.c"), "stale");
         var result = builder.buildProject(projectInfo, prepareCodegen(projectInfo));
 
         var expectedGdcc = sharedIncludeDir.toAbsolutePath().normalize().resolve("gdcc");
         var expectedGdextensionLite = sharedIncludeDir.toAbsolutePath().normalize().resolve("gdextension-lite");
+        var expectedGeneratedFiles = List.of(
+                projectDir.resolve("entry.c").toAbsolutePath().normalize(),
+                projectDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
+                projectDir.resolve("entry.h").toAbsolutePath().normalize()
+        );
 
         assertTrue(result.success());
+        assertEquals(expectedGeneratedFiles, result.generatedFiles().stream()
+                .map(path -> path.toAbsolutePath().normalize())
+                .toList());
         assertEquals(List.of(expectedGdcc, expectedGdextensionLite), compiler.includeDirs());
+        assertTrue(compiler.cFiles().contains(projectDir.resolve("entry.c").toAbsolutePath().normalize()));
         assertTrue(compiler.cFiles().contains(expectedGdextensionLite.resolve("gdextension-lite-one.c")));
+        assertFalse(compiler.cFiles().contains(projectDir.resolve("stale.c").toAbsolutePath().normalize()));
     }
 
     @Test
@@ -114,13 +125,13 @@ public class CProjectBuilderSharedIncludeTest {
         private List<Path> cFiles = List.of();
 
         @Override
-        public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) throws IOException {
+        public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) throws IOException {
             this.includeDirs = includeDirs.stream().map(path -> path.toAbsolutePath().normalize()).toList();
             this.cFiles = cFiles.stream().map(path -> path.toAbsolutePath().normalize()).toList();
 
             var artifact = projectDir.resolve(targetPlatform.sharedLibraryFileName(outputBaseName));
             Files.writeString(artifact, "dummy");
-            return new CBuildResult(true, "ok", List.of(artifact));
+            return new CCompileResult(true, "ok", List.of(artifact));
         }
 
         private @NotNull List<Path> includeDirs() {

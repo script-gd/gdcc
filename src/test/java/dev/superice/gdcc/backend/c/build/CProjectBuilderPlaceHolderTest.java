@@ -27,11 +27,11 @@ public class CProjectBuilderPlaceHolderTest {
         // create builder with fake CCompiler that simulates successful compilation
         var fakeCompiler = new CCompiler() {
             @Override
-            public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) throws IOException {
+            public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) throws IOException {
                 // simulate writing an output file
                 var out = projectDir.resolve("testproj.dll");
                 Files.writeString(out, "dummy");
-                return new CBuildResult(true, "ok", List.of(out));
+                return new CCompileResult(true, "ok", List.of(out));
             }
         };
 

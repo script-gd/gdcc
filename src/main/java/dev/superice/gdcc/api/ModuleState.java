@@ -14,8 +14,10 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -466,8 +468,9 @@ final class ModuleState {
         }
     }
 
-    /// Virtual links participate in source discovery, but duplicate surfaced aliases of the same
-    /// backing file are collapsed so one file node cannot be compiled twice in a single module pass.
+    /// Virtual links participate in source discovery, but only surfaced `.gd` files are compile
+    /// sources. Duplicate surfaced aliases of the same backing file are collapsed so one file node
+    /// cannot be compiled twice in a single module pass.
     private void collectCompileSources(
             @NotNull VirtualPath directoryPath,
             @NotNull DirectoryNode directoryNode,
@@ -713,10 +716,10 @@ final class ModuleState {
             Objects.requireNonNull(moduleId, "moduleId must not be null");
             Objects.requireNonNull(moduleName, "moduleName must not be null");
             Objects.requireNonNull(compileOptions, "compileOptions must not be null");
-            topLevelCanonicalNameMap = Map.copyOf(Objects.requireNonNull(
+            topLevelCanonicalNameMap = Collections.unmodifiableMap(new LinkedHashMap<>(Objects.requireNonNull(
                     topLevelCanonicalNameMap,
                     "topLevelCanonicalNameMap must not be null"
-            ));
+            )));
             sourceSnapshots = List.copyOf(Objects.requireNonNull(sourceSnapshots, "sourceSnapshots must not be null"));
         }
     }

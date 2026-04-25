@@ -1,12 +1,16 @@
 package dev.superice.gdcc;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import dev.superice.gdcc.cli.GdccCommand;
 
-public class Main {
-    public static final Logger LOGGER = LoggerFactory.getLogger("Main");
+public final class Main {
+    private Main() {
+    }
 
-    void main(String[] args) {
-        LOGGER.info("GDCC: GDScript Compiler Collection");
+    static void main(String[] args) {
+        System.exit(run(args));
+    }
+
+    static int run(String[] args) {
+        return GdccCommand.execute(args);
     }
 }

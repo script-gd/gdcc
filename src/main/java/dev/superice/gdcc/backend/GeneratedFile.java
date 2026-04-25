@@ -10,9 +10,10 @@ public record GeneratedFile(
         byte[] contentWriter,
         @NotNull String filePath
 ) {
-    public void saveTo(@NotNull Path directory) throws IOException {
+    public @NotNull Path saveTo(@NotNull Path directory) throws IOException {
         var fullPath = directory.resolve(this.filePath);
         Files.createDirectories(fullPath.getParent());
         Files.write(fullPath, this.contentWriter);
+        return fullPath;
     }
 }

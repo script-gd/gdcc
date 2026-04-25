@@ -3,6 +3,7 @@ package dev.superice.gdcc.frontend;
 import dev.superice.gdcc.util.StringUtil;
 import org.jetbrains.annotations.NotNull;
 
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -22,6 +23,42 @@ public final class FrontendClassNameContract {
     public static boolean containsReservedSequence(@NotNull String name) {
         Objects.requireNonNull(name, "name must not be null");
         return name.contains(INNER_CLASS_CANONICAL_SEPARATOR);
+    }
+
+    /// Derives the implicit top-level source class name used for scripts without `class_name`.
+    /// Keeping this rule here lets CLI prefix expansion and semantic skeleton discovery share one
+    /// filename contract instead of drifting through duplicated string logic.
+    public static @NotNull String deriveDefaultTopLevelSourceName(@NotNull Path sourcePath) {
+        Objects.requireNonNull(sourcePath, "sourcePath must not be null");
+        var fileName = sourcePath.getFileName() != null ? sourcePath.getFileName().toString() : "script";
+        var extensionIndex = fileName.lastIndexOf('.');
+        var baseName = extensionIndex > 0 ? fileName.substring(0, extensionIndex) : fileName;
+        var tokens = baseName.split("[^A-Za-z0-9]+");
+
+        var classNameBuilder = new StringBuilder();
+        for (var token : tokens) {
+            if (token.isBlank()) {
+                continue;
+            }
+            classNameBuilder.append(Character.toUpperCase(token.charAt(0)));
+            if (token.length() > 1) {
+                classNameBuilder.append(token.substring(1));
+            }
+        }
+
+        if (classNameBuilder.isEmpty()) {
+            classNameBuilder.append("Script");
+        }
+        if (!Character.isJavaIdentifierStart(classNameBuilder.charAt(0))) {
+            classNameBuilder.insert(0, "Gd");
+        }
+        for (var index = 1; index < classNameBuilder.length(); index++) {
+            var currentChar = classNameBuilder.charAt(index);
+            if (!Character.isJavaIdentifierPart(currentChar)) {
+                classNameBuilder.setCharAt(index, '_');
+            }
+        }
+        return classNameBuilder.toString();
     }
 
     /// Mapping injection is a public frontend boundary, so invalid reserved-sequence entries must

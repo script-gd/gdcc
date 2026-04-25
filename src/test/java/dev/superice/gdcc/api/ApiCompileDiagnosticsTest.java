@@ -1,5 +1,6 @@
 package dev.superice.gdcc.api;
 
+import dev.superice.gdcc.api.task.CompileTaskHooks;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -7,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -194,6 +196,40 @@ class ApiCompileDiagnosticsTest {
         assertTrue(result.artifacts().isEmpty());
         assertTrue(result.outputLinks().isEmpty());
         assertEquals(1, compiler.invocationCount());
+    }
+
+    @Test
+    void unexpectedFailureDoesNotReportStaleGeneratedFilesFromProjectPath(@TempDir Path tempDir) throws Exception {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var projectPath = tempDir.resolve("stale-generated-project");
+        Files.createDirectories(projectPath);
+        Files.writeString(projectPath.resolve("entry.c"), "stale entry");
+        Files.writeString(projectPath.resolve("engine_method_binds.h"), "stale binds");
+        Files.writeString(projectPath.resolve("entry.h"), "stale header");
+        var hookTriggered = new AtomicBoolean();
+        var api = ApiCompileTestSupport.newApi(
+                compiler,
+                CompileTaskHooks.afterSnapshotUpdate(snapshot -> {
+                    if (snapshot.stage() == CompileTaskSnapshot.Stage.COLLECTING_SOURCES
+                            && Objects.equals(snapshot.stageMessage(), "Collected 1 source units")
+                            && hookTriggered.compareAndSet(false, true)) {
+                        throw new IllegalStateException("test hook failure after request freeze");
+                    }
+                })
+        );
+
+        api.createModule("demo", "Stale Generated Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(projectPath));
+        api.putFile("demo", "/src/valid.gd", validSource("StaleGeneratedSmoke"));
+
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+
+        assertEquals(CompileResult.Outcome.BUILD_FAILED, result.outcome());
+        assertTrue(Objects.requireNonNull(result.failureMessage()).contains("test hook failure after request freeze"));
+        assertTrue(result.generatedFiles().isEmpty());
+        assertTrue(result.artifacts().isEmpty());
+        assertTrue(result.outputLinks().isEmpty());
+        assertEquals(0, compiler.invocationCount());
     }
 
     private static String validSource(String className) {

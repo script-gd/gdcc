@@ -22,6 +22,7 @@ class GdccSlf4jServiceProviderTest {
 
     @Test
     void shouldPrintWarnLineWithExpectedFormatAndColors() {
+        GdccLogger.setPlainOutput(false);
         var outputBuffer = new ByteArrayOutputStream();
         var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
         var originalOut = System.out;
@@ -45,5 +46,45 @@ class GdccSlf4jServiceProviderTest {
         assertTrue(firstLine.contains("\u001B[33m[WARNING]\u001B[39m\u001B[0m"));
         assertTrue(firstLine.contains("\u001B[37m\u001B[2m[gdcc.format.test]\u001B[22m\u001B[39m\u001B[0m"));
         assertTrue(plainLine.matches("^\\d{2}:\\d{2}:\\d{2} \\[WARNING] \\[gdcc\\.format\\.test] hello world$"));
+    }
+
+    @Test
+    void plainOutputModePrintsOnlyFormattedMessage() {
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.UTF_8);
+        var originalOut = System.out;
+
+        try {
+            System.setOut(capture);
+            GdccLogger.setPlainOutput(true);
+            var logger = LoggerFactory.getLogger("gdcc.plain.test");
+            logger.info("plain {}", "message");
+        } finally {
+            GdccLogger.setPlainOutput(false);
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        assertTrue(outputBuffer.toString(StandardCharsets.UTF_8).lines().toList().contains("plain message"));
+    }
+
+    @Test
+    void plainOutputModeEscapesTextThatTheConsoleCharsetCannotRepresent() {
+        var outputBuffer = new ByteArrayOutputStream();
+        var capture = new PrintStream(outputBuffer, true, StandardCharsets.US_ASCII);
+        var originalOut = System.out;
+
+        try {
+            System.setOut(capture);
+            GdccLogger.setPlainOutput(true);
+            var logger = LoggerFactory.getLogger("gdcc.ascii.plain.test");
+            logger.info("plain {} {}", "中", "🙂");
+        } finally {
+            GdccLogger.setPlainOutput(false);
+            System.setOut(originalOut);
+            capture.close();
+        }
+
+        assertTrue(outputBuffer.toString(StandardCharsets.US_ASCII).lines().toList().contains("plain \\u4E2D \\U0001F642"));
     }
 }

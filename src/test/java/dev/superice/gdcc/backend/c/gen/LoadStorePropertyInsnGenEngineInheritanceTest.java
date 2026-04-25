@@ -324,9 +324,9 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
     }
 
     private static GodotGdextensionTestRunner.GodotRunResult runWithSceneAndScript(@NotNull List<Path> artifacts,
-                                                                                    @NotNull String sceneName,
-                                                                                    @NotNull String className,
-                                                                                    @NotNull String script) throws IOException, InterruptedException {
+                                                                                   @NotNull String sceneName,
+                                                                                   @NotNull String className,
+                                                                                   @NotNull String script) throws IOException, InterruptedException {
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
                 artifacts,
@@ -456,7 +456,7 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var control = Control.new()
                     control.process_mode = Node.PROCESS_MODE_ALWAYS
                     var result = int(target.call("load_engine_parent_process_mode", control))
@@ -478,7 +478,7 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var control = Control.new()
                     control.process_mode = Node.PROCESS_MODE_INHERIT
                     target.call("store_engine_parent_process_mode", control, Node.PROCESS_MODE_DISABLED)
@@ -500,7 +500,7 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var obj = GDGdccEnginePropertyBridgeChild.new()
                     obj.process_mode = Node.PROCESS_MODE_ALWAYS
                     var result = int(target.call("load_engine_process_mode_from_gdcc", obj))
@@ -522,7 +522,7 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
                     if target == null:
                         push_error("Target node missing.")
                         return
-
+                
                     var obj = GDGdccEnginePropertyBridgeChild.new()
                     obj.process_mode = Node.PROCESS_MODE_INHERIT
                     target.call("store_engine_process_mode_to_gdcc", obj, Node.PROCESS_MODE_PAUSABLE)
@@ -561,9 +561,9 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
     private static String getterSelfEngineInheritanceScript() {
         return """
                 extends Node
-                                
+                
                 const TARGET_NODE_NAME = "GetterSelfEngineInheritanceNode"
-                                
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:
@@ -591,9 +591,9 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
     private static String setterSelfEngineInheritanceScript() {
         return """
                 extends Node
-                                
+                
                 const TARGET_NODE_NAME = "SetterSelfEngineInheritanceNode"
-                                
+                
                 func _ready() -> void:
                     var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
                     if target == null:

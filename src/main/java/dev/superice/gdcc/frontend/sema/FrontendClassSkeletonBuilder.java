@@ -183,7 +183,7 @@ public final class FrontendClassSkeletonBuilder {
         if (className != null) {
             return className;
         }
-        return deriveClassNameFromFileName(sourcePath);
+        return FrontendClassNameContract.deriveDefaultTopLevelSourceName(sourcePath);
     }
 
     /// Top-level scripts may spell inheritance either on `class_name Name extends Base` or on a
@@ -1537,38 +1537,6 @@ public final class FrontendClassSkeletonBuilder {
                 : "inner class '" + discoveredHeader.sourceName()
                   + "' (canonical '" + discoveredHeader.canonicalName() + "')";
         return discoveredHeader.unit().path() + " (" + classKind + ")";
-    }
-
-    private @NotNull String deriveClassNameFromFileName(@NotNull Path sourcePath) {
-        var fileName = sourcePath.getFileName() != null ? sourcePath.getFileName().toString() : "script";
-        var extensionIndex = fileName.lastIndexOf('.');
-        var baseName = extensionIndex > 0 ? fileName.substring(0, extensionIndex) : fileName;
-        var tokens = baseName.split("[^A-Za-z0-9]+");
-
-        var classNameBuilder = new StringBuilder();
-        for (var token : tokens) {
-            if (token.isBlank()) {
-                continue;
-            }
-            classNameBuilder.append(Character.toUpperCase(token.charAt(0)));
-            if (token.length() > 1) {
-                classNameBuilder.append(token.substring(1));
-            }
-        }
-
-        if (classNameBuilder.isEmpty()) {
-            classNameBuilder.append("Script");
-        }
-        if (!Character.isJavaIdentifierStart(classNameBuilder.charAt(0))) {
-            classNameBuilder.insert(0, "Gd");
-        }
-        for (var index = 1; index < classNameBuilder.length(); index++) {
-            var currentChar = classNameBuilder.charAt(index);
-            if (!Character.isJavaIdentifierPart(currentChar)) {
-                classNameBuilder.setCharAt(index, '_');
-            }
-        }
-        return classNameBuilder.toString();
     }
 
     private enum VisitState {

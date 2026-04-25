@@ -59,25 +59,26 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         var includeRoot = resolveIncludeRoot(projectPath);
         ResourceExtractor.extract(INCLUDE_RESOURCE_DIR, includeRoot, getClass().getClassLoader());
 
-        // Generate files
         var generated = codegen.generate();
-
-        // Save generated files into project root
+        var generatedFiles = new ArrayList<Path>(generated.size());
         for (var gf : generated) {
-            gf.saveTo(projectPath);
+            generatedFiles.add(gf.saveTo(projectPath));
         }
 
-        // Gather .c files to compile: all generated .c plus gdextension-lite-one.c from extracted include
+        // Native compiler inputs are exactly the C files written by this codegen pass plus the
+        // extracted gdextension-lite amalgamation; callers must not infer them by scanning projectPath.
         var cFiles = new ArrayList<Path>();
-        for (var gf : generated) {
-            if (gf.filePath().endsWith(".c")) {
-                cFiles.add(projectPath.resolve(gf.filePath()));
+        for (var generatedFile : generatedFiles) {
+            if (generatedFile.getFileName().toString().endsWith(".c")) {
+                cFiles.add(generatedFile);
             }
         }
 
         // gdextension-lite-one.c should be under <includeRoot>/gdextension-lite/gdextension-lite-one.c
         var gdextOne = includeRoot.resolve("gdextension-lite").resolve("gdextension-lite-one.c");
-        if (Files.exists(gdextOne)) cFiles.add(gdextOne);
+        if (Files.exists(gdextOne)) {
+            cFiles.add(gdextOne);
+        }
 
         // include dir
         var includeDirs = List.of(
@@ -93,8 +94,8 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         var opt = projectInfo.getOptimizationLevel();
         var tp = projectInfo.getTargetPlatform();
 
-        // Delegate compile to CCompiler and return
-        return cCompiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
+        var compileResult = cCompiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
+        return new CBuildResult(compileResult, generatedFiles);
     }
 
     private @NotNull Path resolveIncludeRoot(@NotNull Path projectPath) {
