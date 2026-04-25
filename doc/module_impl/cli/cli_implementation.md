@@ -118,6 +118,33 @@ gdcc-version.properties
 
 `GdccVersion` 是读取该资源的工具类。它首次调用时加载 properties，随后缓存同一个 `Info` 实例；如果资源不存在，显示值降级为 `unknown`，以便 IDE/classpath 运行仍能完成 `--version` 输出。
 
+### 2.2 Jar Distribution
+
+Gradle 的 `jar` task 生成可通过 `java -jar` 启动的主 jar。manifest 固定包含：
+
+```text
+Main-Class: dev.superice.gdcc.Main
+Class-Path: lib/<runtime-dependency>.jar ...
+```
+
+`Class-Path` 条目只使用相对路径和 `/` 分隔符，指向主 jar 同级目录下的 `lib` 文件夹。运行时依赖来自 Gradle `runtimeClasspath`；`compileOnly` 依赖不进入 `lib`，也不写入 manifest。
+
+`syncRuntimeLibs` task 将 runtime dependencies 同步到：
+
+```text
+build/libs/lib/
+```
+
+`jar` task 依赖 `syncRuntimeLibs`，因此直接运行 `jar` 也会刷新同级 `lib` 文件夹。
+
+`packageDistribution` task 生成 zip distribution：
+
+```text
+build/distributions/gdcc-<version>.zip
+```
+
+zip 顶层包含主 jar 与 `lib/` 文件夹。该 distribution 面向 classpath-style `java -jar gdcc-<version>.jar` 启动；module-path 启动不依赖 manifest `Class-Path`，不属于当前分发合同。
+
 ---
 
 ## 3. 输入与 Module 准备
@@ -473,4 +500,4 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 - CLI 默认 `projectPath` 与显式完整 output path 已避免普通 CLI 调用共享 host build directory；直接 API 调用者若复用同一个 physical
   `projectPath`，仍需要未来的 project-path lock 或 server-owned workspace policy 才能获得跨 module host filesystem 隔离。
 - `--prefix` preflight parsing 会重复 API parse pass。当前这是 option expansion 的窄范围成本，不是编译管线替代品；若后续性能或语义变脆，应新增明确的 API / frontend preflight surface。
-- 可执行分发可能需要 Gradle `application` 配置或 wrapper scripts。该事项涉及 build 配置，应作为 CLI implementation 本体之外的独立变更处理。
+- 可执行 wrapper scripts 暂未提供。当前稳定分发面是主 jar、同级 `lib/` runtime dependencies，以及包含两者的 zip distribution。

@@ -7,6 +7,7 @@ group = "dev.superice"
 version = "1.0-SNAPSHOT"
 
 val generatedVersionResources = layout.buildDirectory.dir("generated/resources/gdccVersion")
+val runtimeLibDir = layout.buildDirectory.dir("libs/lib")
 
 fun gitOutput(vararg args: String): String {
     return try {
@@ -58,18 +59,54 @@ val generateVersionResource by tasks.registering {
         val branch = gitOutput("rev-parse", "--abbrev-ref", "HEAD").ifBlank { "unknown" }
         val commit = gitOutput("rev-parse", "--short", "HEAD").ifBlank { "unknown" }
         outputFile.writeText(
-                """
+            """
                 version=$version
                 branch=$branch
                 commit=$commit
                 """.trimIndent() + System.lineSeparator(),
-                Charsets.UTF_8
+            Charsets.UTF_8
         )
     }
 }
 
 tasks.processResources {
     dependsOn(generateVersionResource)
+}
+
+val syncRuntimeLibs by tasks.registering(Sync::class) {
+    group = "build"
+    description = "Copies runtime dependencies next to the generated jar."
+
+    from(configurations.runtimeClasspath)
+    into(runtimeLibDir)
+}
+
+tasks.jar {
+    dependsOn(syncRuntimeLibs)
+    manifest {
+        attributes(
+            "Main-Class" to "dev.superice.gdcc.Main",
+            "Class-Path" to configurations.runtimeClasspath.get()
+                .files
+                .sortedBy { it.name }
+                .joinToString(" ") { "lib/${it.name}" }
+        )
+    }
+}
+
+val packageDistribution by tasks.registering(Zip::class) {
+    group = "distribution"
+    description = "Packages the gdcc jar and sibling lib dependencies into a zip archive."
+
+    dependsOn(tasks.jar, syncRuntimeLibs)
+    archiveBaseName.set(project.name)
+    archiveVersion.set(project.version.toString())
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+
+    from(tasks.jar.flatMap { it.archiveFile })
+    from(runtimeLibDir) {
+        into("lib")
+    }
 }
 
 sourceSets {
