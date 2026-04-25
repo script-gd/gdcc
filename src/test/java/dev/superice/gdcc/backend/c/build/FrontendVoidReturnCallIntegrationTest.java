@@ -317,7 +317,7 @@ public class FrontendVoidReturnCallIntegrationTest {
     private static @NotNull CCompiler fakeCompiler() {
         return new CCompiler() {
             @Override
-            public @NotNull CBuildResult compile(
+            public @NotNull CCompileResult compile(
                     @NotNull Path projectDir,
                     @NotNull List<Path> includeDirs,
                     @NotNull List<Path> cFiles,
@@ -328,7 +328,7 @@ public class FrontendVoidReturnCallIntegrationTest {
                 var out = projectDir.resolve(outputBaseName + ".dll");
                 Files.createDirectories(projectDir);
                 Files.writeString(out, "dummy");
-                return new CBuildResult(true, "ok", List.of(out));
+                return new CCompileResult(true, "ok", List.of(out));
             }
         };
     }

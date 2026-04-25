@@ -19,14 +19,14 @@ public class ZigCcCompiler implements CCompiler {
     private static final Duration OUTPUT_READER_JOIN_TIMEOUT = Duration.ofSeconds(1);
 
     @Override
-    public CBuildResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
+    public CCompileResult compile(@NotNull Path projectDir, @NotNull List<Path> includeDirs, @NotNull List<Path> cFiles, @NotNull String outputBaseName, @NotNull COptimizationLevel optimizationLevel, @NotNull TargetPlatform targetPlatform) {
         var zig = ZigUtil.findZig();
         if (zig == null) {
-            return new CBuildResult(false, "Zig executable not found on PATH or known locations", List.of());
+            return new CCompileResult(false, "Zig executable not found on PATH or known locations", List.of());
         }
 
         if (cFiles.isEmpty()) {
-            return new CBuildResult(false, "No C files to compile", List.of());
+            return new CCompileResult(false, "No C files to compile", List.of());
         }
 
         // Build command: zig cc -shared -I<includeDir> -o <output> <cFiles...>
@@ -117,12 +117,12 @@ public class ZigCcCompiler implements CCompiler {
                 var cmdStr = String.join(" ", cmd);
                 out = "Command: " + cmdStr + "\n" + out;
             }
-            return new CBuildResult(success, out, artifacts);
+            return new CCompileResult(success, out, artifacts);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new CBuildResult(false, "Failed to run zig: interrupted", List.of());
+            return new CCompileResult(false, "Failed to run zig: interrupted", List.of());
         } catch (IOException e) {
-            return new CBuildResult(false, "Failed to run zig: " + e.getMessage(), List.of());
+            return new CCompileResult(false, "Failed to run zig: " + e.getMessage(), List.of());
         }
     }
 

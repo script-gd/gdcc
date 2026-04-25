@@ -39,11 +39,6 @@ import java.util.stream.Collectors;
 /// Executes one compile task after the API facade has accepted and registered it.
 public final class CompileTaskRunner implements Runnable {
     private static final @NotNull DiagnosticSnapshot EMPTY_DIAGNOSTICS = new DiagnosticSnapshot(List.of());
-    private static final @NotNull List<String> GENERATED_FILE_NAMES = List.of(
-            "entry.c",
-            "engine_method_binds.h",
-            "entry.h"
-    );
 
     private final @NotNull Clock clock;
     private final @NotNull GdScriptParserService parserService;
@@ -324,7 +319,6 @@ public final class CompileTaskRunner implements Runnable {
             );
             var buildResult = projectBuilder.buildProject(projectInfo, codegen);
             throwIfCancellationRequested();
-            var generatedFiles = collectGeneratedFiles(projectPath);
             if (!buildResult.success()) {
                 return new CompileResult(
                         CompileResult.Outcome.BUILD_FAILED,
@@ -334,7 +328,7 @@ public final class CompileTaskRunner implements Runnable {
                         frontendDiagnostics,
                         "Native build reported failure; see buildLog for details",
                         buildResult.buildLog(),
-                        generatedFiles,
+                        buildResult.generatedFiles(),
                         buildResult.artifacts(),
                         List.of()
                 );
@@ -342,7 +336,7 @@ public final class CompileTaskRunner implements Runnable {
             try {
                 throwIfCancellationRequested();
                 var outputLinks = request.outputMounter().apply(new BuildOutputs(
-                        generatedFiles,
+                        buildResult.generatedFiles(),
                         buildResult.artifacts()
                 ));
                 return new CompileResult(
@@ -353,7 +347,7 @@ public final class CompileTaskRunner implements Runnable {
                         frontendDiagnostics,
                         null,
                         buildResult.buildLog(),
-                        generatedFiles,
+                        buildResult.generatedFiles(),
                         buildResult.artifacts(),
                         outputLinks
                 );
@@ -364,7 +358,7 @@ public final class CompileTaskRunner implements Runnable {
                         frontendDiagnostics,
                         exception,
                         buildResult.buildLog(),
-                        generatedFiles,
+                        buildResult.generatedFiles(),
                         buildResult.artifacts()
                 );
             }
@@ -380,7 +374,7 @@ public final class CompileTaskRunner implements Runnable {
                     remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
                     "Build pipeline failed: " + exception.getMessage(),
                     exception.getMessage(),
-                    collectGeneratedFiles(projectPath),
+                    List.of(),
                     List.of(),
                     List.of()
             );
@@ -471,7 +465,6 @@ public final class CompileTaskRunner implements Runnable {
             @Nullable Request request,
             @NotNull Throwable throwable
     ) {
-        var projectPath = request == null ? null : request.compileOptions().projectPath();
         var failureMessage = "Compile task failed unexpectedly: " + describeThrowable(throwable);
         return new CompileResult(
                 CompileResult.Outcome.BUILD_FAILED,
@@ -481,14 +474,13 @@ public final class CompileTaskRunner implements Runnable {
                 EMPTY_DIAGNOSTICS,
                 failureMessage,
                 failureMessage,
-                projectPath == null ? List.of() : collectGeneratedFiles(projectPath),
+                List.of(),
                 List.of(),
                 List.of()
         );
     }
 
     private @NotNull CompileResult canceledResult(@Nullable Request request) {
-        var projectPath = request == null ? null : request.compileOptions().projectPath();
         return new CompileResult(
                 CompileResult.Outcome.CANCELED,
                 request == null ? CompileOptions.defaults() : request.compileOptions(),
@@ -497,7 +489,7 @@ public final class CompileTaskRunner implements Runnable {
                 EMPTY_DIAGNOSTICS,
                 "Compile task was canceled",
                 "",
-                projectPath == null ? List.of() : collectGeneratedFiles(projectPath),
+                List.of(),
                 List.of(),
                 List.of()
         );
@@ -508,13 +500,6 @@ public final class CompileTaskRunner implements Runnable {
         return message == null || message.isBlank()
                 ? throwable.getClass().getSimpleName()
                 : throwable.getClass().getSimpleName() + ": " + message;
-    }
-
-    private @NotNull List<Path> collectGeneratedFiles(@NotNull Path projectPath) {
-        return GENERATED_FILE_NAMES.stream()
-                .map(projectPath::resolve)
-                .filter(Files::exists)
-                .toList();
     }
 
     private @NotNull CompileResult outputMountConfigurationFailure(

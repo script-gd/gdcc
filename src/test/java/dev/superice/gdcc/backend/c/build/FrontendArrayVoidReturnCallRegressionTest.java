@@ -225,7 +225,7 @@ public class FrontendArrayVoidReturnCallRegressionTest {
     ) throws IOException {
         var fakeCompiler = new CCompiler() {
             @Override
-            public CBuildResult compile(
+            public CCompileResult compile(
                     @NotNull Path projectDir,
                     @NotNull List<Path> includeDirs,
                     @NotNull List<Path> cFiles,
@@ -236,7 +236,7 @@ public class FrontendArrayVoidReturnCallRegressionTest {
                 var out = projectDir.resolve(outputBaseName + ".dll");
                 Files.createDirectories(projectDir);
                 Files.writeString(out, "dummy");
-                return new CBuildResult(true, "ok", List.of(out));
+                return new CCompileResult(true, "ok", List.of(out));
             }
         };
 

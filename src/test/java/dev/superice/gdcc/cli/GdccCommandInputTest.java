@@ -157,12 +157,13 @@ class GdccCommandInputTest {
         assertEquals(0, exitCode);
         var options = terminal.api.getCompileOptions("demo");
         assertEquals(GodotVersion.V451, options.godotVersion());
-        assertEquals(tempDir.resolve("build").toAbsolutePath().normalize(), options.projectPath());
+        assertEquals(tempDir.resolve("build/demo").toAbsolutePath().normalize(), options.projectPath());
         assertDefaultNonCliCompileOptions(options);
     }
 
     @Test
-    void outputWithoutParentUsesCurrentWorkingDirectoryAsProjectPathBeforeTaskCreation(@TempDir Path tempDir) throws IOException {
+    void outputWithoutParentUsesNamedDirectoryUnderCurrentWorkingDirectoryBeforeTaskCreation(@TempDir Path tempDir)
+            throws IOException {
         var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var terminal = new Terminal();
 
@@ -174,8 +175,48 @@ class GdccCommandInputTest {
 
         assertEquals(GdccCommand.EXIT_USAGE, exitCode);
         assertTrue(terminal.errText().contains("reserved gdcc class-name sequence"), terminal.errText());
-        assertEquals(Path.of("").toAbsolutePath().normalize(), terminal.api.getCompileOptions("demo").projectPath());
+        assertEquals(Path.of("demo").toAbsolutePath().normalize(), terminal.api.getCompileOptions("demo").projectPath());
         terminal.assertCompilerNotInvoked();
+    }
+
+    @Test
+    void outputTargetsUnderSharedParentUseIndependentHostBuildDirectories(@TempDir Path tempDir)
+            throws IOException {
+        var playerSource = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var enemySource = writeSource(tempDir.resolve("enemy.gd"), validSource("Enemy"));
+        var terminal = new Terminal();
+
+        var playerExitCode = terminal.command().commandLine().execute(
+                "-o", tempDir.resolve("build/player").toString(),
+                playerSource.toString()
+        );
+        var enemyExitCode = terminal.command().commandLine().execute(
+                "-o", tempDir.resolve("build/enemy").toString(),
+                enemySource.toString()
+        );
+
+        assertEquals(0, playerExitCode);
+        assertEquals(0, enemyExitCode);
+        assertEquals(tempDir.resolve("build/player").toAbsolutePath().normalize(),
+                terminal.api.getCompileOptions("player").projectPath());
+        assertEquals(tempDir.resolve("build/enemy").toAbsolutePath().normalize(),
+                terminal.api.getCompileOptions("enemy").projectPath());
+        assertEquals(
+                List.of(
+                        tempDir.resolve("build/player/entry.c").toAbsolutePath().normalize(),
+                        tempDir.resolve("build/player/engine_method_binds.h").toAbsolutePath().normalize(),
+                        tempDir.resolve("build/player/entry.h").toAbsolutePath().normalize()
+                ),
+                terminal.api.getLastCompileResult("player").generatedFiles()
+        );
+        assertEquals(
+                List.of(
+                        tempDir.resolve("build/enemy/entry.c").toAbsolutePath().normalize(),
+                        tempDir.resolve("build/enemy/engine_method_binds.h").toAbsolutePath().normalize(),
+                        tempDir.resolve("build/enemy/entry.h").toAbsolutePath().normalize()
+                ),
+                terminal.api.getLastCompileResult("enemy").generatedFiles()
+        );
     }
 
     private static void assertSourceFile(API api, String virtualPath, String displayPath, String source) {

@@ -7,7 +7,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 public interface CCompiler {
-    CBuildResult compile(
+    CCompileResult compile(
             @NotNull Path projectDir,
             @NotNull List<Path> includeDirs,
             @NotNull List<Path> cFiles,

@@ -1,7 +1,7 @@
 package dev.superice.gdcc.api;
 
 import dev.superice.gdcc.api.task.CompileTaskHooks;
-import dev.superice.gdcc.backend.c.build.CBuildResult;
+import dev.superice.gdcc.backend.c.build.CCompileResult;
 import dev.superice.gdcc.backend.c.build.CCompiler;
 import dev.superice.gdcc.backend.c.build.COptimizationLevel;
 import dev.superice.gdcc.backend.c.build.CProjectBuilder;
@@ -394,7 +394,7 @@ final class ApiCompileTestSupport {
         }
 
         @Override
-        public @NotNull CBuildResult compile(
+        public @NotNull CCompileResult compile(
                 @NotNull Path projectDir,
                 @NotNull List<Path> includeDirs,
                 @NotNull List<Path> cFiles,
@@ -420,13 +420,13 @@ final class ApiCompileTestSupport {
             }
             awaitReleaseIfNeeded();
             if (!outcome.success()) {
-                return new CBuildResult(false, outcome.buildLog(), List.of());
+                return new CCompileResult(false, outcome.buildLog(), List.of());
             }
 
             Files.createDirectories(projectDir);
             var artifact = projectDir.resolve(targetPlatform.sharedLibraryFileName(outputBaseName));
             Files.writeString(artifact, "dummy");
-            return new CBuildResult(true, outcome.buildLog(), List.of(artifact));
+            return new CCompileResult(true, outcome.buildLog(), List.of(artifact));
         }
 
         int invocationCount() {

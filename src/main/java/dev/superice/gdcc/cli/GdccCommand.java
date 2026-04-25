@@ -169,11 +169,7 @@ public final class GdccCommand implements Callable<Integer> {
         if (moduleName.isBlank()) {
             throw new IllegalArgumentException("Output path module name must not be blank");
         }
-        var outputDirectory = normalizedOutput.getParent();
-        if (outputDirectory == null) {
-            outputDirectory = Path.of("").toAbsolutePath().normalize();
-        }
-        return new OutputTarget(moduleName, moduleName, outputDirectory);
+        return new OutputTarget(moduleName, moduleName, normalizedOutput);
     }
 
     private @NotNull CompileOptions compileOptions(@NotNull OutputTarget outputTarget) {
