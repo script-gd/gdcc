@@ -259,8 +259,8 @@ public final class GdccCommand implements Callable<Integer> {
             if (!explicitSourceNames.add(mapping.source())) {
                 throw new IllegalArgumentException("Duplicate --class-map source name: " + mapping.source());
             }
-            // Explicit entries are the second merge phase. Reinsert overridden generated entries so
-            // the final LinkedHashMap order reflects that phase boundary as well as the value.
+            // Reinsert overridden generated entries so explicit mappings appear at their final
+            // override position in the stable verbose-output order.
             mappings.remove(mapping.source());
             mappings.put(mapping.source(), mapping.canonical());
         }
