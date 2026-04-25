@@ -468,8 +468,9 @@ final class ModuleState {
         }
     }
 
-    /// Virtual links participate in source discovery, but duplicate surfaced aliases of the same
-    /// backing file are collapsed so one file node cannot be compiled twice in a single module pass.
+    /// Virtual links participate in source discovery, but only surfaced `.gd` files are compile
+    /// sources. Duplicate surfaced aliases of the same backing file are collapsed so one file node
+    /// cannot be compiled twice in a single module pass.
     private void collectCompileSources(
             @NotNull VirtualPath directoryPath,
             @NotNull DirectoryNode directoryNode,

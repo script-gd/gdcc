@@ -57,7 +57,7 @@ public final class GdccCommand implements Callable<Integer> {
             index = "0..*",
             arity = "1..*",
             paramLabel = "files",
-            description = "GDScript source files to compile into one virtual module."
+            description = "GDScript source files to compile into one module."
     )
     List<Path> files = new ArrayList<>();
 
@@ -215,6 +215,9 @@ public final class GdccCommand implements Callable<Integer> {
         }
         if (!Files.isRegularFile(normalizedInput)) {
             throw new IllegalArgumentException("Input path is not a regular file: " + input);
+        }
+        if (!normalizedInput.getFileName().toString().endsWith(".gd")) {
+            throw new IllegalArgumentException("Input file must use .gd extension: " + input);
         }
 
         var source = Files.readString(normalizedInput, StandardCharsets.UTF_8);

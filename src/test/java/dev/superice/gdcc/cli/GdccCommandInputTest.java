@@ -104,6 +104,23 @@ class GdccCommandInputTest {
     }
 
     @Test
+    void nonGdInputFileFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var textFile = writeSource(tempDir.resolve("player.txt"), validSource("Player"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                textFile.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("Input file must use .gd extension"), terminal.errText());
+        terminal.assertCompilerNotInvoked();
+        assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    @Test
     void invalidOutputPathFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
         var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var blankOutput = new Terminal();

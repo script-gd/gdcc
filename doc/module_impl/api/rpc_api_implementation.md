@@ -389,6 +389,10 @@ One compile task performs:
 If parser or frontend diagnostics contain errors, compilation stops before native build and returns
 `FRONTEND_FAILED`.
 
+Non-`.gd` VFS files remain ordinary module files and are not compile sources. Adapters that expose a
+source-file input contract, such as the CLI `files` argument, must reject non-`.gd` host inputs at
+their own boundary before writing them into the module VFS.
+
 If `projectPath` is missing or cannot be created as a directory, compilation returns
 `CONFIGURATION_FAILED`.
 

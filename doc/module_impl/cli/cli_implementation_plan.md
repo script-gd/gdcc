@@ -50,6 +50,7 @@ gdcc [options] <files...>
 必需行为：
 
 - `files` 是非空的宿主机 `.gd` 源文件列表。
+- 非 `.gd` 普通文件属于 CLI usage error，必须在创建 API module 和 compile task 前拒绝。
 - 每个文件按 UTF-8 文本读取，并写入同一个 API module VFS 的 `/src/...` 下。
 - 原始宿主机路径作为 API 文件 `displayPath` 传入，让诊断和结果里的 source path 对终端用户有意义。
 - `-o` / `--output` 指定编译目标，语义与 clang 风格一致：多个输入文件对应一个输出目标。
@@ -319,6 +320,7 @@ logger 与控制台编码：
 - [x] 要求 `-o/--output`。
 - [x] 使用 `Path` 归一化并校验宿主机输入路径。
 - [x] 在创建 API module 前拒绝缺失文件和目录。
+- [x] 在 CLI 边界拒绝非 `.gd` 输入文件，避免把不参与 API source collection 的文件静默写入 VFS。
 - [x] 按 UTF-8 读取 source files。
 - [x] 创建一个 module。
 - [x] 按如下方式写入每个文件：
@@ -332,6 +334,7 @@ api.putFile(moduleId, virtualPath, sourceText, displayPath)
 验收：
 
 - [x] 缺失 input file 在 compile task 创建前失败。
+- [x] 非 `.gd` input file 在 compile task 创建前失败。
 - [x] 重复 host file arguments 默认可视为用户有意创建重复 sources；如果测试中证明这很困惑，再以清晰 CLI error
   拒绝重复项。
 - [x] VFS path 生成是确定性的，且不依赖宿主机 path separators。
@@ -343,12 +346,14 @@ api.putFile(moduleId, virtualPath, sourceText, displayPath)
   module。
 - 输入文件使用 `Path.toAbsolutePath().normalize()` 进行宿主机校验，并通过 `Files.readString(..., StandardCharsets.UTF_8)` 读取。
   API `displayPath` 保留用户传入的原始 path 文本，避免诊断以后显示 synthetic VFS path。
+- `GdccCommand` 在 regular-file 校验后要求宿主机输入文件名以 `.gd` 结尾；非 `.gd` 文件以 exit code `2` 失败，
+  不创建 API module，也不会进入 API 的 whole-VFS source collection。
 - VFS 路径采用 `/src/%04d/<host-file-name>`。补零 index 让普通输入规模下的 lexical order 与参数顺序一致，同时允许两个不同目录的
   `main.gd` 或同一个 host file 重复传入时都作为独立 source 写入同一 module。
 - 当前 Step 3 仍不会创建 compile task；成功准备 module/input/options 后继续返回 usage exit code `2` 并输出
   `compile task execution is not implemented yet`。Step 5 接入 task polling 后再替换为真实编译返回码。
 - 新增 `GdccCommandInputTest`，覆盖 UTF-8 source 读取、同名 basename、重复 host file、缺失文件、目录输入、blank/root-only
-  output path，以及 API module duplicate error 的 user-facing 渲染。
+  output path、非 `.gd` 输入文件，以及 API module duplicate error 的 user-facing 渲染。
 - 已运行 `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,MainEntrypointTest`，
   结果通过。
 
