@@ -925,6 +925,50 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersExplicitSelfDirectPropertyAssignmentTargetWithoutMissingPrefixType() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_explicit_self_property_assignment.gd",
+                """
+                        class_name BodyInsnExplicitSelfPropertyAssignment
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        func ping(seed: int) -> void:
+                            self.hp = seed
+                        """,
+                Map.of(
+                        "BodyInsnExplicitSelfPropertyAssignment",
+                        "RuntimeBodyInsnExplicitSelfPropertyAssignment"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnExplicitSelfPropertyAssignment",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(pingContext.targetFunction());
+        var propertyStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("hp"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, propertyStores.size()),
+                () -> assertEquals("self", propertyStores.getFirst().objectId()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runMaterializesVariantBoundariesForLocalInitializersAndOrdinaryPropertyAssignments() throws Exception {
         var prepared = prepareContext(
                 "body_insn_assignment_variant_boundary.gd",

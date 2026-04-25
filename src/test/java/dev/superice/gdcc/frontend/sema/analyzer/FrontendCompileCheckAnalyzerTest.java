@@ -32,6 +32,7 @@ import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -185,6 +186,35 @@ class FrontendCompileCheckAnalyzerTest {
                         && diagnostic.range() != null
         ));
         assertEquals(sharedOverrideDiagnostics.getFirst().message(), compiledOverrideDiagnostics.getFirst().message());
+        assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
+    }
+
+    @Test
+    void analyzeForCompileKeepsStaticSelfAssignmentTargetDiagnosticAtSelfAnchor() throws Exception {
+        var compiled = analyzeForCompile("compile_check_static_self_assignment_target.gd", """
+                class_name CompileCheckStaticSelfAssignmentTarget
+                extends RefCounted
+                
+                var hp: int = 0
+                
+                static func ping_static() -> void:
+                    self.hp = 1
+                """);
+        var pingFunction = findFunction(compiled.unit().ast().statements(), "ping_static");
+        var explicitSelf = findNode(pingFunction, SelfExpression.class, _ -> true);
+
+        var bindingDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.binding");
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertTrue(compiled.diagnostics().hasErrors());
+        assertEquals(1, bindingDiagnostics.size());
+        assertEquals(FrontendRange.fromAstRange(explicitSelf.range()), bindingDiagnostics.getFirst().range());
+        assertTrue(bindingDiagnostics.getFirst().message().contains("static context"));
+        assertTrue(
+                compileDiagnostics.isEmpty(),
+                () -> "static self assignment target must not add assignment-root compile_check diagnostics: "
+                        + compileDiagnostics
+        );
         assertEquals(compiled.diagnostics(), compiled.diagnosticManager().snapshot());
     }
 

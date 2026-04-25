@@ -1325,10 +1325,97 @@ class FrontendExprTypeAnalyzerTest {
             assertEquals(GdVoidType.VOID, assignmentType.publishedType());
         }
 
+        var explicitSelfAssignment = assertInstanceOf(AttributeExpression.class, assignments.get(1).left());
+        var explicitSelf = assertInstanceOf(SelfExpression.class, explicitSelfAssignment.base());
+        var explicitSelfType = analyzed.analysisData().expressionTypes().get(explicitSelf);
+        assertNotNull(explicitSelfType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, explicitSelfType.status());
+        assertEquals("ExprTypeAssignmentSuccess", explicitSelfType.publishedType().getTypeName());
+        assertEquals(
+                1,
+                analyzed.analysisData().expressionTypes().entrySet().stream()
+                        .filter(entry -> entry.getKey() instanceof SelfExpression)
+                        .count()
+        );
+
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsExplicitSelfAssignmentTargetPrefixPublicationNarrow() throws Exception {
+        var analyzed = analyze(
+                "expr_type_assignment_self_prefix_narrow.gd",
+                """
+                        class_name ExprTypeAssignmentSelfPrefixNarrow
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        var payloads: Array[int]
+                        
+                        func ping(delta: int):
+                            self.hp += delta
+                            self.payloads[0] = delta
+                        """
+        );
+
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+        assertEquals(2, assignments.size());
+        for (var assignment : assignments) {
+            var assignmentType = analyzed.analysisData().expressionTypes().get(assignment);
+            assertNotNull(assignmentType);
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, assignmentType.status());
+            assertEquals(GdVoidType.VOID, assignmentType.publishedType());
+        }
+
+        var explicitSelfTargets = findNodes(findFunction(analyzed.ast(), "ping"), SelfExpression.class, _ -> true);
+        assertEquals(2, explicitSelfTargets.size());
+        for (var explicitSelfTarget : explicitSelfTargets) {
+            assertNull(analyzed.analysisData().expressionTypes().get(explicitSelfTarget));
+        }
+
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.discarded_expression").isEmpty());
+    }
+
+    @Test
+    void analyzePublishesBlockedExplicitSelfAssignmentTargetPrefixInStaticContext() throws Exception {
+        var analyzed = analyze(
+                "expr_type_static_self_assignment_target.gd",
+                """
+                        class_name ExprTypeStaticSelfAssignmentTarget
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        static func ping_static():
+                            self.hp = 1
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping_static");
+        var assignment = findNode(pingFunction, AssignmentExpression.class, _ -> true);
+        var target = assertInstanceOf(AttributeExpression.class, assignment.left());
+        var explicitSelf = assertInstanceOf(SelfExpression.class, target.base());
+        var explicitSelfType = analyzed.analysisData().expressionTypes().get(explicitSelf);
+        assertNotNull(explicitSelfType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, explicitSelfType.status());
+        assertTrue(explicitSelfType.detailReason().contains("static context"));
+
+        var assignmentType = analyzed.analysisData().expressionTypes().get(assignment);
+        assertNotNull(assignmentType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, assignmentType.status());
+        assertTrue(assignmentType.detailReason().contains("static context"));
+
+        var bindingDiagnostics = diagnosticsByCategory(analyzed, "sema.binding");
+        assertEquals(1, bindingDiagnostics.size());
+        assertTrue(bindingDiagnostics.getFirst().message().contains("static context"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package dev.superice.gdcc.util;
 
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,9 +14,9 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.TreeSet;
+import java.util.jar.JarEntry;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -175,33 +176,29 @@ public final class ResourceExtractor {
 
     private static void extractFromJar(URL url, Path targetDir) throws IOException {
         var conn = (JarURLConnection) url.openConnection();
+        conn.setUseCaches(false);
         var entryName = conn.getEntryName();
         if (entryName == null) throw new IOException("Cannot determine jar entry for URL: " + url);
-        try (var jarFs = FileSystems.newFileSystem(conn.getJarFileURL().toURI(), Map.of())) {
-            var pathInJar = jarFs.getPath("/" + entryName);
-            if (!Files.exists(pathInJar)) return;
-            Files.walkFileTree(pathInJar, new SimpleFileVisitor<>() {
-                @Override
-                public @NotNull FileVisitResult visitFile(@NotNull Path file, @NotNull BasicFileAttributes attrs) throws IOException {
-                    var rel = pathInJar.relativize(file);
-                    var out = targetDir.resolve(rel.toString());
-                    // create parent dirs
-                    Files.createDirectories(out.getParent());
-                    try (var is = Files.newInputStream(file)) {
-                        copyStreamOrUnpack(is, file.getFileName().toString(), out);
-                    }
-                    return FileVisitResult.CONTINUE;
+        try (var jarFile = conn.getJarFile()) {
+            var rootPrefix = jarRootPrefix(entryName);
+            var entries = jarFile.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                var relativeName = relativeJarEntryName(rootPrefix, entry);
+                if (relativeName == null) {
+                    continue;
                 }
-
-                @Override
-                public @NotNull FileVisitResult preVisitDirectory(@NotNull Path dir, @NotNull BasicFileAttributes attrs) throws IOException {
-                    if (!dir.equals(pathInJar)) {
-                        var rel = pathInJar.relativize(dir);
-                        Files.createDirectories(targetDir.resolve(rel.toString()));
-                    }
-                    return FileVisitResult.CONTINUE;
+                var out = safeResolve(targetDir, relativeName);
+                if (entry.isDirectory()) {
+                    Files.createDirectories(out);
+                    continue;
                 }
-            });
+                var parent = out.getParent();
+                if (parent != null) Files.createDirectories(parent);
+                try (var is = jarFile.getInputStream(entry)) {
+                    copyStreamOrUnpack(is, jarEntryFileName(entry), out);
+                }
+            }
         } catch (Exception e) {
             throw new IOException(e);
         }
@@ -225,23 +222,43 @@ public final class ResourceExtractor {
 
     private static void listFromJar(@NotNull URL url, @NotNull TreeSet<String> resourcePaths) throws IOException {
         var conn = (JarURLConnection) url.openConnection();
+        conn.setUseCaches(false);
         var entryName = conn.getEntryName();
         if (entryName == null) {
             throw new IOException("Cannot determine jar entry for URL: " + url);
         }
-        try (var jarFs = FileSystems.newFileSystem(conn.getJarFileURL().toURI(), Map.of())) {
-            var pathInJar = jarFs.getPath("/" + entryName);
-            if (!Files.exists(pathInJar)) {
-                return;
-            }
-            try (var walk = Files.walk(pathInJar)) {
-                for (var path : walk.filter(Files::isRegularFile).toList()) {
-                    resourcePaths.add(normalizeRelativeResourcePath(pathInJar.relativize(path)));
+        try (var jarFile = conn.getJarFile()) {
+            var rootPrefix = jarRootPrefix(entryName);
+            var entries = jarFile.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                var relativeName = relativeJarEntryName(rootPrefix, entry);
+                if (relativeName != null && !entry.isDirectory()) {
+                    resourcePaths.add(relativeName);
                 }
             }
         } catch (Exception e) {
             throw new IOException(e);
         }
+    }
+
+    private static @NotNull String jarRootPrefix(@NotNull String entryName) {
+        return entryName.endsWith("/") ? entryName : entryName + "/";
+    }
+
+    private static @Nullable String relativeJarEntryName(@NotNull String rootPrefix, @NotNull JarEntry entry) {
+        var name = entry.getName();
+        if (!name.startsWith(rootPrefix)) {
+            return null;
+        }
+        var relativeName = name.substring(rootPrefix.length());
+        return relativeName.isBlank() ? null : relativeName;
+    }
+
+    private static @NotNull String jarEntryFileName(@NotNull JarEntry entry) {
+        var name = entry.getName();
+        var lastSlash = name.lastIndexOf('/');
+        return lastSlash < 0 ? name : name.substring(lastSlash + 1);
     }
 
     private static void copyOrUnpack(Path sourceFile, Path out) throws IOException {

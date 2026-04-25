@@ -22,6 +22,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -366,6 +368,7 @@ public final class CompileTaskRunner implements Runnable {
             if (taskState.cancellationRequested()) {
                 throw new TaskCanceledException();
             }
+            var buildLog = stackTrace(exception);
             return new CompileResult(
                     CompileResult.Outcome.BUILD_FAILED,
                     request.compileOptions(),
@@ -373,12 +376,18 @@ public final class CompileTaskRunner implements Runnable {
                     sourcePaths,
                     remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
                     "Build pipeline failed: " + exception.getMessage(),
-                    exception.getMessage(),
+                    buildLog,
                     List.of(),
                     List.of(),
                     List.of()
             );
         }
+    }
+
+    private static @NotNull String stackTrace(@NotNull Throwable throwable) {
+        var writer = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(writer));
+        return writer.toString();
     }
 
     private void throwIfCancellationRequested() {

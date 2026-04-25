@@ -22,6 +22,7 @@ import dev.superice.gdcc.type.GdType;
 import dev.superice.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -49,6 +50,7 @@ import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.PreloadExpression;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.TypeTestExpression;
@@ -539,6 +541,9 @@ public class FrontendCompileCheckAnalyzer {
                 if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
+                if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor, publishedType)) {
+                    continue;
+                }
                 var compileAnchor = compileAnchorForExpressionType(anchor);
                 if (!compileSurfaceNodes.contains(compileAnchor)) {
                     continue;
@@ -667,6 +672,44 @@ public class FrontendCompileCheckAnalyzer {
                 return compileAnchorForExpression(expression);
             }
             return node;
+        }
+
+        /// Assignment root facts can propagate a prefix-owned blocked `self` route. When that exact
+        /// prefix already has the upstream binding diagnostic, keep ownership there instead of adding
+        /// a generic root-level compile blocker for the same cause.
+        private boolean isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(
+                @NotNull Node anchor,
+                @NotNull FrontendExpressionType publishedType
+        ) {
+            if (!(anchor instanceof AssignmentExpression assignmentExpression)
+                    || !(assignmentExpression.left() instanceof AttributeExpression attributeExpression)
+                    || !(attributeExpression.base() instanceof SelfExpression selfExpression)) {
+                return false;
+            }
+            if (!"=".equals(assignmentExpression.operator())
+                    || attributeExpression.steps().size() != 1
+                    || !(attributeExpression.steps().getFirst() instanceof AttributePropertyStep)) {
+                return false;
+            }
+            var selfType = expressionTypes.get(selfExpression);
+            if (selfType == null
+                    || selfType.status() != publishedType.status()
+                    || !isCompileBlocking(selfType.status())
+                    || !detailReasonContains(publishedType, selfType)) {
+                return false;
+            }
+            return hasPublishedConflictingDiagnosticAt(selfExpression);
+        }
+
+        private static boolean detailReasonContains(
+                @NotNull FrontendExpressionType container,
+                @NotNull FrontendExpressionType prefix
+        ) {
+            var containerDetail = container.detailReason();
+            var prefixDetail = prefix.detailReason();
+            return prefixDetail != null
+                    && containerDetail != null
+                    && containerDetail.contains(prefixDetail);
         }
 
         /// Validate the key shape used by `expressionTypes()` before compile diagnostics rely on it.
