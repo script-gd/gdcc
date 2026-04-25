@@ -14,6 +14,8 @@
   - `src/main/java/dev/superice/gdcc/Main.java`
   - `src/main/java/dev/superice/gdcc/cli/**`
   - `src/main/java/dev/superice/gdcc/util/ConsoleOutputUtil.java`
+  - `src/main/java/dev/superice/gdcc/util/GdccVersion.java`
+  - `build.gradle.kts`
   - `src/test/java/dev/superice/gdcc/cli/**`
   - CLI 行为依赖的聚焦 API / frontend / backend 测试
 - 直接事实源：
@@ -29,6 +31,8 @@
   - `src/main/java/dev/superice/gdcc/api/CompileTaskEvent.java`
   - `src/main/java/dev/superice/gdcc/frontend/FrontendClassNameContract.java`
   - `src/main/java/dev/superice/gdcc/frontend/sema/FrontendClassSkeletonBuilder.java`
+  - `src/main/java/dev/superice/gdcc/util/GdccVersion.java`
+  - `build.gradle.kts`
 - 关联事实源：
   - `src/main/java/dev/superice/gdcc/backend/c/build/CProjectBuilder.java`
   - `src/test/java/dev/superice/gdcc/api/**`
@@ -50,6 +54,7 @@
 CLI 的合法职责是：
 
 - 解析 picocli 命令行参数。
+- 处理 `--help` / `--version` 这类 picocli early-exit 输出。
 - 在 API state mutation 前完成 host input 边界校验。
 - 把 host `.gd` 文件读成 UTF-8 文本，并写入一个 API module VFS。
 - 构造 API `CompileOptions`。
@@ -78,6 +83,7 @@ gdcc [options] <files...>
 - `--class-map Source=Canonical`：显式顶层 source-to-canonical mapping，可重复传入。
 - `--gde <version>`：Godot GDExtension API 版本。当前唯一支持值是 `4.5.1`。
 - `-v` / `--verbose`：可重复传入的 verbosity flag。`-v` 为 level 1，`-vv` 为 level 2。
+- `-V` / `--version`：输出编译器构建版本信息并退出，不创建 API module 或 compile task。
 
 示例：
 
@@ -87,9 +93,30 @@ gdcc -o build/demo src/player.gd src/enemy.gd
 gdcc -o build/demo --prefix Game_ src/player.gd src/enemy.gd
 gdcc -o build/demo --class-map Player=RuntimePlayer --class-map Enemy=RuntimeEnemy src/player.gd src/enemy.gd
 gdcc -o build/demo --gde 4.5.1 -v src/player.gd src/enemy.gd
+gdcc --version
 ```
 
 picocli 解析阶段发现的 option / parameter 错误属于 usage error，返回 exit code `2`，且不进入 command body。
+
+`--help` 和 `--version` 由 picocli 标准 help/version option 短路处理，返回 exit code `0`，且不要求 `files` 参数。
+
+### 2.1 构建版本资源
+
+Gradle 在 `processResources` 前生成临时 classpath resource：
+
+```text
+gdcc-version.properties
+```
+
+该资源包含：
+
+- `version`：当前 Gradle project version。
+- `branch`：构建时 `git rev-parse --abbrev-ref HEAD` 的结果。
+- `commit`：构建时 `git rev-parse --short HEAD` 的结果。
+
+资源写入 `build/generated/resources/gdccVersion`，并通过 main source set 进入运行时 classpath。运行时代码不读取 jar manifest，也不在 CLI 内执行 git 命令。
+
+`GdccVersion` 是读取该资源的工具类。它首次调用时加载 properties，随后缓存同一个 `Info` 实例；如果资源不存在，显示值降级为 `unknown`，以便 IDE/classpath 运行仍能完成 `--version` 输出。
 
 ---
 
@@ -344,6 +371,16 @@ Compile failed: <outcome>
 
 verbosity levels 只增加渲染信息，不改变编译行为。
 
+### 8.4 Version 输出
+
+`--version` stdout 输出一行：
+
+```text
+gdcc <version> (<branch> <commit>)
+```
+
+其中三个字段来自 `GdccVersion` 缓存的 build metadata。`--version` 不输出 diagnostics、task events、artifacts、output links 或 build log，stderr 为空。
+
 ---
 
 ## 9. Logger 与控制台编码
@@ -363,7 +400,7 @@ CLI stdout / stderr writer 使用各自 `PrintStream.charset()`。输出前按 c
 
 稳定 exit-code surface：
 
-- `0`：compile succeeded。
+- `0`：compile succeeded，或 `--help` / `--version` early-exit succeeded。
 - `1`：compile task completed，但 `CompileResult.outcome()` 不是 `SUCCESS`。
 - `2`：compile task 创建前的命令行用法或配置错误。
 - `130`：等待 compile task 时被用户中断，CLI 已尝试 cancel task。
@@ -371,6 +408,7 @@ CLI stdout / stderr writer 使用各自 `PrintStream.charset()`。输出前按 c
 错误边界：
 
 - picocli option / parameter 错误返回 `2`。
+- picocli `--help` / `--version` 返回 `0`，不执行 CLI command body。
 - host input 校验、unsupported `--gde`、显式 output target 错误、duplicate `--class-map` key 以及 API module creation failure 返回 `2`。
 - frontend diagnostics、frontend failure、native build failure 都是 compile result，不是 CLI usage error，返回 `1`。
 - class-name 合法性和 canonical mapping 深层语义继续由 `FrontendClassNameContract` / API / frontend diagnostics 负责。
@@ -385,6 +423,7 @@ CLI 聚焦测试：
 - `GdccCommandOptionTest`
   - picocli annotations
   - help text
+  - version text
   - optional `-o/--output` 解析
   - missing input parameter
   - repeatable `--class-map`
@@ -415,6 +454,7 @@ CLI 聚焦测试：
 跨模块锚点：
 
 - `FrontendClassNameContractTest`：CLI 与 frontend 共享默认 top-level source-name 推导。
+- `GdccVersionTest`：build metadata resource 读取、缓存和显示格式。
 - `ApiCompilePipelineTest`：API compile task pipeline 行为。
 - `ApiCompileArtifactLinkTest`、`ApiRecompileArtifactRefreshTest`：output publication 与 stale artifact refresh。
 - backend C project builder tests：generated files、shared include、artifact provenance。
@@ -422,7 +462,7 @@ CLI 聚焦测试：
 推荐聚焦命令：
 
 ```powershell
-rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,GdccCommandMappingTest,GdccCommandTaskTest,FrontendClassNameContractTest
+rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,GdccCommandMappingTest,GdccCommandTaskTest,MainEntrypointTest,GdccVersionTest,FrontendClassNameContractTest
 ```
 
 ---

@@ -16,10 +16,12 @@ import dev.superice.gdcc.frontend.diagnostic.FrontendRange;
 import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.logger.GdccLogger;
 import dev.superice.gdcc.util.ConsoleOutputUtil;
+import dev.superice.gdcc.util.GdccVersion;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import org.jetbrains.annotations.NotNull;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.IVersionProvider;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
@@ -40,6 +42,7 @@ import java.util.concurrent.Callable;
 @Command(
         name = "gdcc",
         mixinStandardHelpOptions = true,
+        versionProvider = GdccCommand.VersionProvider.class,
         description = "Compile GDScript source files into a GDCC module."
 )
 public final class GdccCommand implements Callable<Integer> {
@@ -465,5 +468,12 @@ public final class GdccCommand implements Callable<Integer> {
     }
 
     private static final class CliInterruptedException extends RuntimeException {
+    }
+
+    public static final class VersionProvider implements IVersionProvider {
+        @Override
+        public String @NotNull [] getVersion() {
+            return new String[]{GdccVersion.displayText()};
+        }
     }
 }

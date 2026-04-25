@@ -1,5 +1,6 @@
 package dev.superice.gdcc.cli;
 
+import dev.superice.gdcc.util.GdccVersion;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import picocli.CommandLine.Command;
@@ -53,6 +54,18 @@ class GdccCommandOptionTest {
         assertTrue(help.contains("--class-map"), help);
         assertTrue(help.contains("--gde"), help);
         assertTrue(help.contains("-v, --verbose"), help);
+        assertTrue(help.contains("-V, --version"), help);
+    }
+
+    @Test
+    void versionTextUsesBuildMetadataAndSkipsCompileTask() {
+        var terminal = new Terminal();
+        var exitCode = terminal.command().commandLine().execute("--version");
+
+        assertEquals(0, exitCode);
+        assertEquals(GdccVersion.displayText() + System.lineSeparator(), terminal.outText());
+        terminal.assertNoErr();
+        terminal.assertCommandBodyDidNotRun();
     }
 
     @Test
