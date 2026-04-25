@@ -116,6 +116,10 @@ final class CliCompileTestSupport {
             return new TestCompiler(true, "ok", List.of(), null, null);
         }
 
+        static @NotNull TestCompiler succeeding(@NotNull String buildLog) {
+            return new TestCompiler(true, buildLog, List.of(), null, null);
+        }
+
         static @NotNull TestCompiler failing(@NotNull String buildLog) {
             return new TestCompiler(false, buildLog, List.of(), null, null);
         }

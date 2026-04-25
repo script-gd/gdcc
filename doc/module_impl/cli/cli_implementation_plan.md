@@ -477,7 +477,7 @@ polling loop：
 
 ### Step 6：渲染结果
 
-状态：已在 Step 5 中完成基础渲染，后续如需调整终端格式可在本节继续细化。
+状态：已实施，已通过聚焦测试验证。
 
 如果存在 frontend diagnostics，先渲染 diagnostics。
 
@@ -503,9 +503,20 @@ polling loop：
 
 验收：
 
-- frontend diagnostic display paths 与输入文件 display paths 一致。
-- success output 包含 API 报告的每个 artifact。
-- build failures 暴露足够 log text，用于调试 Zig 缺失或 C compiler errors。
+- [x] frontend diagnostic display paths 与输入文件 display paths 一致。
+- [x] success output 包含 API 报告的每个 artifact。
+- [x] build failures 暴露足够 log text，用于调试 Zig 缺失或 C compiler errors。
+
+实施记录：
+
+- `GdccCommand.renderResult(...)` 现在按稳定的逐行格式渲染结果：diagnostics 输出
+  `<severity> <category> <sourcePath>:<line>:<column>: <message>`，成功输出 `Compiled module <moduleId>`
+  和每个 `Artifact: <path>`，失败输出 `Compile failed: <outcome>`、failure message，以及必要的 build log。
+- `-v` 在成功结果中额外逐行打印 API 发布的 output VFS links，格式为
+  `Output link: <virtualPath> -> <hostTarget>`；该输出来自 `CompileResult.outputLinks()`，不由 CLI 猜测构造。
+- `-vv` 额外逐行打印 compile options、source display paths、top-level canonical map、generated host files，并在成功时也打印非空
+  build log。默认成功输出不打印 build log，避免把 native compiler warning/log noise 混入脚本常用输出。
+- build log 统一带 `Build log:` 前缀，方便脚本和测试稳定识别，同时保留原始 log 文本用于调试 Zig 缺失或 C compiler errors。
 
 ### Step 7：新增聚焦测试
 
@@ -524,8 +535,8 @@ polling loop：
   - 验证 `--prefix`、`--class-map`、explicit override、duplicate-key rejection、reserved sequence errors
 - `GdccCommandTaskTest`
   - 验证 successful compile exit code 和 artifact output
-  - 验证 frontend failure exit code
-  - 验证 build failure、verbose event drain、interrupt cancellation
+  - 验证 frontend failure exit code、display path diagnostic、severity/category/range 格式
+  - 验证 build failure 默认 build log、`-v` output links、分页 event drain、`-vv` 详细输入/输出/build log、interrupt cancellation
 - `FrontendClassNameContractTest`
   - 固定提取后的 `deriveDefaultTopLevelSourceName(Path)` 与既有文件名行为一致
 
@@ -537,8 +548,19 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 
 验收：
 
-- 测试不要求真实 Zig 安装。
-- 测试覆盖 CLI 行为，而不是复述整个 API test suite。
+- [x] 测试不要求真实 Zig 安装。
+- [x] 测试覆盖 CLI 行为，而不是复述整个 API test suite。
+
+实施记录：
+
+- `CliCompileTestSupport.TestCompiler` 新增 success build log factory，用于锚定“默认成功不打印 build log、`-vv` 成功打印非空
+  build log”的差异行为。
+- `GdccCommandTaskTest` 使用 `API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE + 1` 个 retained events 验证 CLI 通过 indexed paging
+  drain event pages，而不是只依赖小样本或全量读取。
+- `GdccCommandTaskTest` 补充 `-v` 与 `-vv` 的负向断言：`-v` 打印 output links 但不打印 compile options/generated files/success
+  build log；`-vv` 才打印详细 compile inputs、canonical map、generated files 和非空 success build log。
+- 已运行 `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandTaskTest`，结果通过。
+- 已运行 `rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps1 -Tests GdccCommandOptionTest,GdccCommandInputTest,GdccCommandMappingTest,GdccCommandTaskTest,FrontendClassNameContractTest`，结果通过。
 
 ---
 

@@ -337,6 +337,8 @@ public final class GdccCommand implements Callable<Integer> {
         for (var diagnostic : result.diagnostics().asList()) {
             err.println(formatDiagnostic(diagnostic));
         }
+        // Keep verbosity levels additive: -v exposes published VFS outputs, while -vv adds
+        // compile inputs and backend file details useful for debugging the API boundary.
         if (verbosityLevel() >= 2) {
             renderDetailedResultInputs(result);
         }
@@ -345,8 +347,11 @@ public final class GdccCommand implements Callable<Integer> {
             for (var artifact : result.artifacts()) {
                 out.println("Artifact: " + artifact);
             }
+            if (verbosityLevel() >= 1) {
+                renderOutputLinks(result);
+            }
             if (verbosityLevel() >= 2 && !result.buildLog().isBlank()) {
-                out.println(result.buildLog());
+                renderBuildLog(out, result.buildLog());
             }
             return;
         }
@@ -357,19 +362,43 @@ public final class GdccCommand implements Callable<Integer> {
         }
         if (result.outcome() == CompileResult.Outcome.BUILD_FAILED || verbosityLevel() >= 2) {
             if (!result.buildLog().isBlank()) {
-                err.println(result.buildLog());
+                renderBuildLog(err, result.buildLog());
             }
         }
     }
 
     private void renderDetailedResultInputs(@NotNull CompileResult result) {
-        out.println("Compile options: " + result.compileOptions());
-        out.println("Sources: " + result.sourcePaths());
-        out.println("Top-level canonical map: " + result.topLevelCanonicalNameMap());
-        out.println("Generated files: " + result.generatedFiles());
-        if (verbosityLevel() > 0) {
-            out.println("Output links: " + result.outputLinks());
+        var options = result.compileOptions();
+        out.println("Compile option: godotVersion=" + options.godotVersion().version);
+        out.println("Compile option: projectPath=" + options.projectPath());
+        out.println("Compile option: optimizationLevel=" + options.optimizationLevel());
+        out.println("Compile option: targetPlatform=" + options.targetPlatform());
+        out.println("Compile option: strictMode=" + options.strictMode());
+        out.println("Compile option: outputMountRoot=" + options.outputMountRoot());
+        for (var sourcePath : result.sourcePaths()) {
+            out.println("Source: " + sourcePath);
         }
+        if (result.topLevelCanonicalNameMap().isEmpty()) {
+            out.println("Top-level canonical map: <empty>");
+        } else {
+            for (var mapping : result.topLevelCanonicalNameMap().entrySet()) {
+                out.println("Top-level canonical map: " + mapping.getKey() + "=" + mapping.getValue());
+            }
+        }
+        for (var generatedFile : result.generatedFiles()) {
+            out.println("Generated file: " + generatedFile);
+        }
+    }
+
+    private void renderOutputLinks(@NotNull CompileResult result) {
+        for (var outputLink : result.outputLinks()) {
+            out.println("Output link: " + outputLink.virtualPath() + " -> " + outputLink.target());
+        }
+    }
+
+    private void renderBuildLog(@NotNull PrintWriter writer, @NotNull String buildLog) {
+        writer.println("Build log:");
+        writer.println(buildLog);
     }
 
     private @NotNull String formatDiagnostic(@NotNull FrontendDiagnostic diagnostic) {

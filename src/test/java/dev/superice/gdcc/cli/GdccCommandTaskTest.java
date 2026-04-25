@@ -2,6 +2,7 @@ package dev.superice.gdcc.cli;
 
 import dev.superice.gdcc.api.CompileResult;
 import dev.superice.gdcc.api.CompileTaskEvent;
+import dev.superice.gdcc.api.API;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -14,8 +15,10 @@ import java.nio.file.Path;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccCommandTaskTest {
@@ -29,7 +32,11 @@ class GdccCommandTaskTest {
         assertEquals(0, exitCode);
         assertTrue(terminal.outText().contains("Compiled module demo"), terminal.outText());
         assertTrue(terminal.outText().contains("Artifact:"), terminal.outText());
-        assertEquals(CompileResult.Outcome.SUCCESS, terminal.api.getLastCompileResult("demo").outcome());
+        assertEquals(CompileResult.Outcome.SUCCESS,
+                CliCompileTestSupport.awaitLastResult(terminal.api, "demo").outcome());
+        assertFalse(terminal.outText().contains("Output link:"), terminal.outText());
+        assertFalse(terminal.outText().contains("Compile option:"), terminal.outText());
+        assertFalse(terminal.outText().contains("Build log:"), terminal.outText());
     }
 
     @Test
@@ -51,6 +58,8 @@ class GdccCommandTaskTest {
                 terminal.errText().contains(normalizedPath(first)) || terminal.errText().contains(normalizedPath(second)),
                 terminal.errText()
         );
+        assertTrue(terminal.errText().contains("ERROR sema.class_skeleton"), terminal.errText());
+        assertTrue(terminal.errText().contains(":1:1:"), terminal.errText());
         assertEquals(0, compiler.invocationCount());
     }
 
@@ -63,16 +72,17 @@ class GdccCommandTaskTest {
 
         assertEquals(GdccCommand.EXIT_COMPILE_FAILED, exitCode);
         assertTrue(terminal.errText().contains("Compile failed: BUILD_FAILED"), terminal.errText());
+        assertTrue(terminal.errText().contains("Build log:"), terminal.errText());
         assertTrue(terminal.errText().contains("zig cc failed"), terminal.errText());
     }
 
     @Test
     void verboseCompileDrainsRetainedEventsWithIndexedPagination(@TempDir Path tempDir) throws IOException {
         var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
-        var terminal = new Terminal(CliCompileTestSupport.TestCompiler.succeedingWithEvents(
-                new CompileTaskEvent("backend.codegen", "prepared C sources"),
-                new CompileTaskEvent("backend.build", "called native compiler")
-        ));
+        var events = IntStream.rangeClosed(0, API.MAX_COMPILE_TASK_EVENT_PAGE_SIZE)
+                .mapToObj(index -> new CompileTaskEvent("backend.event", "event-" + index))
+                .toArray(CompileTaskEvent[]::new);
+        var terminal = new Terminal(CliCompileTestSupport.TestCompiler.succeedingWithEvents(events));
 
         var exitCode = terminal.command().commandLine().execute(
                 "-v",
@@ -82,8 +92,35 @@ class GdccCommandTaskTest {
 
         assertEquals(0, exitCode);
         assertTrue(terminal.errText().contains("Task 1"), terminal.errText());
-        assertTrue(terminal.errText().contains("Event 0 backend.codegen: prepared C sources"), terminal.errText());
-        assertTrue(terminal.errText().contains("Event 1 backend.build: called native compiler"), terminal.errText());
+        assertTrue(terminal.errText().contains("Event 0 backend.event: event-0"), terminal.errText());
+        assertTrue(terminal.errText().contains("Event 1000 backend.event: event-1000"), terminal.errText());
+        assertTrue(terminal.outText().contains("Output link: /__build__/artifacts/"), terminal.outText());
+        assertFalse(terminal.outText().contains("Compile option:"), terminal.outText());
+        assertFalse(terminal.outText().contains("Build log:"), terminal.outText());
+    }
+
+    @Test
+    void doubleVerboseCompilePrintsInputsGeneratedFilesCanonicalMapAndSuccessfulBuildLog(@TempDir Path tempDir)
+            throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validDefaultSource());
+        var terminal = new Terminal(CliCompileTestSupport.TestCompiler.succeeding("native compiler warnings"));
+
+        var exitCode = terminal.command().commandLine().execute(
+                "-vv",
+                "--prefix", "Game_",
+                "-o", tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(0, exitCode);
+        assertTrue(terminal.outText().contains("Compile option: godotVersion=4.5.1"), terminal.outText());
+        assertTrue(terminal.outText().contains("Compile option: outputMountRoot=/__build__"), terminal.outText());
+        assertTrue(terminal.outText().contains("Source: " + source), terminal.outText());
+        assertTrue(terminal.outText().contains("Top-level canonical map: Player=Game_Player"), terminal.outText());
+        assertTrue(terminal.outText().contains("Generated file:"), terminal.outText());
+        assertTrue(terminal.outText().contains("Output link: /__build__/generated/"), terminal.outText());
+        assertTrue(terminal.outText().contains("Build log:"), terminal.outText());
+        assertTrue(terminal.outText().contains("native compiler warnings"), terminal.outText());
     }
 
     @Test
@@ -94,7 +131,7 @@ class GdccCommandTaskTest {
         var exitCode = new AtomicReference<Integer>();
 
         try (var executor = Executors.newSingleThreadExecutor()) {
-            var future = executor.submit(() -> exitCode.set(terminal.command().commandLine().execute(
+            executor.submit(() -> exitCode.set(terminal.command().commandLine().execute(
                     "-o", tempDir.resolve("build/demo").toString(),
                     source.toString()
             )));
@@ -128,6 +165,15 @@ class GdccCommandTaskTest {
                 func value() -> int:
                     return 3
                 """.formatted(className);
+    }
+
+    private static String validDefaultSource() {
+        return """
+                extends RefCounted
+                
+                func value() -> int:
+                    return 3
+                """;
     }
 
     private static final class Terminal {
