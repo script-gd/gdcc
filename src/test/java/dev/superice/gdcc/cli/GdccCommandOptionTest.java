@@ -19,6 +19,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccCommandOptionTest {
@@ -47,6 +48,7 @@ class GdccCommandOptionTest {
         var help = terminal.outText();
         assertTrue(help.contains("files"), help);
         assertTrue(help.contains("-o, --output"), help);
+        assertTrue(help.contains("Defaults to input filenames"), help);
         assertTrue(help.contains("--prefix"), help);
         assertTrue(help.contains("--class-map"), help);
         assertTrue(help.contains("--gde"), help);
@@ -54,14 +56,13 @@ class GdccCommandOptionTest {
     }
 
     @Test
-    void missingOutputOptionFailsBeforeCommandBodyRuns() {
-        var terminal = new Terminal();
-        var exitCode = terminal.command().commandLine().execute("src/player.gd");
+    void missingOutputOptionIsParsedAsDefaultOutputRequest() {
+        var command = new Terminal().command();
 
-        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
-        assertTrue(terminal.errText().contains("Missing required option"), terminal.errText());
-        assertTrue(terminal.errText().contains("-o=<output>"), terminal.errText());
-        terminal.assertCommandBodyDidNotRun();
+        command.commandLine().parseArgs("src/player.gd", "src/enemy.gd");
+
+        assertNull(command.output);
+        assertEquals(List.of(Path.of("src/player.gd"), Path.of("src/enemy.gd")), command.files);
     }
 
     @Test

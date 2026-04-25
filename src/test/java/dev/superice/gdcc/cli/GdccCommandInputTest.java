@@ -7,6 +7,7 @@ import dev.superice.gdcc.api.VfsEntrySnapshot;
 import dev.superice.gdcc.backend.c.build.COptimizationLevel;
 import dev.superice.gdcc.backend.c.build.TargetPlatform;
 import dev.superice.gdcc.enums.GodotVersion;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +17,7 @@ import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,6 +26,18 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdccCommandInputTest {
+    private static final List<Path> DEFAULT_OUTPUT_BUILD_DIRECTORIES = List.of(
+            Path.of("player_enemy"),
+            Path.of("main_main")
+    );
+
+    @AfterEach
+    void cleanDefaultOutputBuildDirectories() throws IOException {
+        for (var directory : DEFAULT_OUTPUT_BUILD_DIRECTORIES) {
+            deleteDirectoryIfExists(directory);
+        }
+    }
+
     @Test
     void loadsInputFilesIntoOneModuleWithStableVirtualPathsAndDisplayPaths(@TempDir Path tempDir) throws IOException {
         var firstSource = writeSource(tempDir.resolve("one/main.gd"), validSource("FirstMain"));
@@ -46,6 +60,36 @@ class GdccCommandInputTest {
         assertSourceFile(terminal.api, "/src/0000/main.gd", firstSource.toString(), validSource("FirstMain"));
         assertSourceFile(terminal.api, "/src/0001/main.gd", secondSource.toString(), validSource("SecondMain"));
         assertEquals(List.of(firstSource.toString(), secondSource.toString()), terminal.api.getLastCompileResult("demo").sourcePaths());
+    }
+
+    @Test
+    void missingOutputUsesInputFileStemsAsModuleTarget(@TempDir Path tempDir) throws IOException {
+        var playerSource = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var enemySource = writeSource(tempDir.resolve("enemy.gd"), validSource("Enemy"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(playerSource.toString(), enemySource.toString());
+
+        assertEquals(0, exitCode);
+        assertEquals(List.of("player_enemy"), terminal.api.listModules().stream().map(ModuleSnapshot::moduleId).toList());
+        assertEquals(Path.of("player_enemy").toAbsolutePath().normalize(),
+                terminal.api.getCompileOptions("player_enemy").projectPath());
+        assertEquals(List.of(playerSource.toString(), enemySource.toString()),
+                CliCompileTestSupport.awaitLastResult(terminal.api, "player_enemy").sourcePaths());
+    }
+
+    @Test
+    void missingOutputKeepsRepeatedInputFileStems(@TempDir Path tempDir) throws IOException {
+        var firstSource = writeSource(tempDir.resolve("one/main.gd"), validSource("FirstMain"));
+        var secondSource = writeSource(tempDir.resolve("two/main.gd"), validSource("SecondMain"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(firstSource.toString(), secondSource.toString());
+
+        assertEquals(0, exitCode);
+        assertEquals(List.of("main_main"), terminal.api.listModules().stream().map(ModuleSnapshot::moduleId).toList());
+        assertEquals(Path.of("main_main").toAbsolutePath().normalize(),
+                terminal.api.getCompileOptions("main_main").projectPath());
     }
 
     @Test
@@ -246,6 +290,17 @@ class GdccCommandInputTest {
     private static Path writeSource(Path path, String source) throws IOException {
         Files.createDirectories(path.getParent());
         return Files.writeString(path, source, StandardCharsets.UTF_8);
+    }
+
+    private static void deleteDirectoryIfExists(Path directory) throws IOException {
+        if (Files.notExists(directory)) {
+            return;
+        }
+        try (var walk = Files.walk(directory)) {
+            for (var path : walk.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
     }
 
     private static String validSource(String className) {

@@ -63,9 +63,8 @@ public final class GdccCommand implements Callable<Integer> {
 
     @Option(
             names = {"-o", "--output"},
-            required = true,
             paramLabel = "<output>",
-            description = "Output target path. The final path segment becomes the module name."
+            description = "Output target path. Defaults to input filenames without .gd suffixes joined by underscores."
     )
     Path output;
 
@@ -132,9 +131,9 @@ public final class GdccCommand implements Callable<Integer> {
     @Override
     public @NotNull Integer call() {
         try {
-            var outputTarget = outputTarget();
-            var compileOptions = compileOptions(outputTarget);
             var sourceInputs = sourceInputs();
+            var outputTarget = outputTarget(sourceInputs);
+            var compileOptions = compileOptions(outputTarget);
             var topLevelCanonicalNameMap = topLevelCanonicalNameMap(sourceInputs);
 
             api.createModule(outputTarget.moduleId(), outputTarget.moduleName());
@@ -156,11 +155,12 @@ public final class GdccCommand implements Callable<Integer> {
         }
     }
 
-    private @NotNull OutputTarget outputTarget() {
-        if (output.toString().isBlank()) {
+    private @NotNull OutputTarget outputTarget(@NotNull List<SourceInput> sourceInputs) {
+        var target = output == null ? Path.of(defaultOutputName(sourceInputs)) : output;
+        if (target.toString().isBlank()) {
             throw new IllegalArgumentException("Output path must not be blank");
         }
-        var normalizedOutput = output.toAbsolutePath().normalize();
+        var normalizedOutput = target.toAbsolutePath().normalize();
         var moduleNamePath = normalizedOutput.getFileName();
         if (moduleNamePath == null) {
             throw new IllegalArgumentException("Output path must include a module name");
@@ -170,6 +170,14 @@ public final class GdccCommand implements Callable<Integer> {
             throw new IllegalArgumentException("Output path module name must not be blank");
         }
         return new OutputTarget(moduleName, moduleName, normalizedOutput);
+    }
+
+    private @NotNull String defaultOutputName(@NotNull List<SourceInput> sourceInputs) {
+        var stems = new ArrayList<String>(sourceInputs.size());
+        for (var sourceInput : sourceInputs) {
+            stems.add(sourceInput.defaultOutputStem());
+        }
+        return String.join("_", stems);
     }
 
     private @NotNull CompileOptions compileOptions(@NotNull OutputTarget outputTarget) {
@@ -222,7 +230,9 @@ public final class GdccCommand implements Callable<Integer> {
 
         var source = Files.readString(normalizedInput, StandardCharsets.UTF_8);
         var virtualPath = virtualSourcePath(index, normalizedInput);
-        return new SourceInput(virtualPath, Path.of(virtualPath), source, input.toString());
+        var fileName = normalizedInput.getFileName().toString();
+        var defaultOutputStem = fileName.substring(0, fileName.length() - ".gd".length());
+        return new SourceInput(virtualPath, Path.of(virtualPath), defaultOutputStem, source, input.toString());
     }
 
     private @NotNull String virtualSourcePath(int index, @NotNull Path normalizedInput) {
@@ -445,6 +455,7 @@ public final class GdccCommand implements Callable<Integer> {
     private record SourceInput(
             @NotNull String virtualPath,
             @NotNull Path logicalPath,
+            @NotNull String defaultOutputStem,
             @NotNull String source,
             @NotNull String displayPath
     ) {
