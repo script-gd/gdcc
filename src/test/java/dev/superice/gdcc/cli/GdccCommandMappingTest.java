@@ -73,8 +73,8 @@ class GdccCommandMappingTest {
     }
 
     @Test
-    void prefixDoesNotMapExplicitClassNameStatement(@TempDir Path tempDir) throws IOException {
-        var source = writeSource(tempDir.resolve("player.gd"), validSource("Hero"));
+    void prefixMapsExplicitClassNameStatement(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validHeroSource());
         var terminal = new Terminal();
 
         var exitCode = terminal.command().commandLine().execute(
@@ -84,7 +84,25 @@ class GdccCommandMappingTest {
         );
 
         assertEquals(0, exitCode);
-        assertEquals(Map.of(), terminal.api.getTopLevelCanonicalNameMap("demo"));
+        assertEquals(Map.of("Hero", "Game_Hero"), terminal.api.getTopLevelCanonicalNameMap("demo"));
+        assertEquals(Map.of("Hero", "Game_Hero"), terminal.api.getLastCompileResult("demo").topLevelCanonicalNameMap());
+    }
+
+    @Test
+    void explicitClassMapOverridesPrefixGeneratedMappingForExplicitClassName(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validHeroSource());
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "-o", tempDir.resolve("build/demo").toString(),
+                "--prefix", "Game_",
+                "--class-map", "Hero=RuntimeHero",
+                source.toString()
+        );
+
+        assertEquals(0, exitCode);
+        assertEquals(Map.of("Hero", "RuntimeHero"), terminal.api.getTopLevelCanonicalNameMap("demo"));
+        assertEquals(Map.of("Hero", "RuntimeHero"), terminal.api.getLastCompileResult("demo").topLevelCanonicalNameMap());
     }
 
     @Test
@@ -146,14 +164,14 @@ class GdccCommandMappingTest {
         return Files.writeString(path, source, StandardCharsets.UTF_8);
     }
 
-    private static String validSource(String className) {
+    private static String validHeroSource() {
         return """
-                class_name %s
+                class_name Hero
                 extends RefCounted
                 
                 func value() -> int:
                     return 3
-                """.formatted(className);
+                """;
     }
 
     private static String validDefaultSource() {

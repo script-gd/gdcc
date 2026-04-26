@@ -17,8 +17,10 @@ import dev.superice.gdcc.frontend.parse.GdScriptParserService;
 import dev.superice.gdcc.logger.GdccLogger;
 import dev.superice.gdcc.util.ConsoleOutputUtil;
 import dev.superice.gdcc.util.GdccVersion;
+import dev.superice.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.IVersionProvider;
@@ -74,7 +76,7 @@ public final class GdccCommand implements Callable<Integer> {
     @Option(
             names = "--prefix",
             paramLabel = "<prefix>",
-            description = "Canonical name prefix for filename-derived top-level classes."
+            description = "Canonical name prefix for top-level source classes."
     )
     String prefix;
 
@@ -248,10 +250,10 @@ public final class GdccCommand implements Callable<Integer> {
         var mappings = new LinkedHashMap<String, String>();
         if (prefix != null) {
             for (var sourceInput : sourceInputs) {
-                if (hasExplicitTopLevelClassName(sourceInput)) {
+                var sourceName = prefixSourceName(sourceInput);
+                if (sourceName == null) {
                     continue;
                 }
-                var sourceName = FrontendClassNameContract.deriveDefaultTopLevelSourceName(sourceInput.logicalPath());
                 mappings.put(sourceName, prefix + sourceName);
             }
         }
@@ -278,13 +280,22 @@ public final class GdccCommand implements Callable<Integer> {
         return new ClassMap(classMap.substring(0, separatorIndex), classMap.substring(separatorIndex + 1));
     }
 
-    private boolean hasExplicitTopLevelClassName(@NotNull SourceInput sourceInput) {
+    private @Nullable String prefixSourceName(@NotNull SourceInput sourceInput) {
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(sourceInput.logicalPath(), sourceInput.source(), diagnosticManager);
         if (diagnosticManager.snapshot().hasErrors()) {
-            return true;
+            return null;
         }
-        return unit.ast().statements().stream().anyMatch(ClassNameStatement.class::isInstance);
+        for (var statement : unit.ast().statements()) {
+            if (statement instanceof ClassNameStatement classNameStatement) {
+                var className = StringUtil.trimToNull(classNameStatement.name());
+                if (className != null) {
+                    return className;
+                }
+                break;
+            }
+        }
+        return FrontendClassNameContract.deriveDefaultTopLevelSourceName(sourceInput.logicalPath());
     }
 
     private @NotNull CompileTaskSnapshot waitForTask(long taskId) {
