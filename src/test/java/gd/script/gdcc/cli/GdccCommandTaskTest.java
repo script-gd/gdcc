@@ -108,12 +108,16 @@ class GdccCommandTaskTest {
         var exitCode = terminal.command().commandLine().execute(
                 "-vv",
                 "--prefix", "Game_",
+                "--opt", "release",
+                "--target", "web-wasm32",
                 "-o", tempDir.resolve("build/demo").toString(),
                 source.toString()
         );
 
         assertEquals(0, exitCode);
         assertTrue(terminal.outText().contains("Compile option: godotVersion=4.5.1"), terminal.outText());
+        assertTrue(terminal.outText().contains("Compile option: optimizationLevel=RELEASE"), terminal.outText());
+        assertTrue(terminal.outText().contains("Compile option: targetPlatform=WEB_WASM32"), terminal.outText());
         assertTrue(terminal.outText().contains("Compile option: outputMountRoot=/__build__"), terminal.outText());
         assertTrue(terminal.outText().contains("Source: " + source), terminal.outText());
         assertTrue(terminal.outText().contains("Top-level canonical map: Player=Game_Player"), terminal.outText());

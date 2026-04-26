@@ -82,6 +82,8 @@ gdcc [options] <files...>
 - `--prefix <prefix>`：为顶层 source name 生成 canonical prefix。
 - `--class-map Source=Canonical`：显式顶层 source-to-canonical mapping，可重复传入。
 - `--gde <version>`：Godot GDExtension API 版本。当前唯一支持值是 `4.5.1`。
+- `--opt` / `--optimize <level>`：C backend 编译优化等级。支持 `debug`、`release`，默认 `debug`。
+- `--target <platform>`：C backend 目标平台。默认 native host platform。
 - `-v` / `--verbose`：可重复传入的 verbosity flag。`-v` 为 level 1，`-vv` 为 level 2。
 - `-V` / `--version`：输出编译器构建版本信息并退出，不创建 API module 或 compile task。
 
@@ -93,6 +95,7 @@ gdcc -o build/demo src/player.gd src/enemy.gd
 gdcc -o build/demo --prefix Game_ src/player.gd src/enemy.gd
 gdcc -o build/demo --class-map Player=RuntimePlayer --class-map Enemy=RuntimeEnemy src/player.gd src/enemy.gd
 gdcc -o build/demo --gde 4.5.1 -v src/player.gd src/enemy.gd
+gdcc -o build/demo --optimize release --target linux-x86-64 src/player.gd
 gdcc --version
 ```
 
@@ -252,8 +255,8 @@ CLI 直接构造 API `CompileOptions`，不引入平行配置对象：
 new CompileOptions(
         parsedGodotVersion,
         outputTarget.projectPath(),
-        COptimizationLevel.DEBUG,
-        TargetPlatform.getNativePlatform(),
+        parsedOptimizationLevel,
+        parsedTargetPlatformOrNativeHost,
         false,
         CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
 )
@@ -266,7 +269,23 @@ new CompileOptions(
 - 不允许静默 fallback 到 `4.5.1`。
 - unsupported `--gde` 在 API state mutation 和 compile task 创建前返回 usage error。
 
-CLI 当前没有 release / target / strict flags。后续除非明确扩展 CLI surface，否则不应因为 `CompileOptions` 有字段就添加未使用 flags。
+`--opt` / `--optimize` 规则：
+
+- 接受 `debug` 与 `release`，大小写不敏感。
+- `-` 与 `_` 在输入中等价；例如 `release` 映射到 `COptimizationLevel.RELEASE`。
+- 省略时使用 `COptimizationLevel.DEBUG`。
+- unsupported `--opt` 在 API state mutation 和 compile task 创建前返回 usage error。
+
+`--target` 规则：
+
+- 接受 `TargetPlatform` 当前枚举值的 CLI 形式，大小写不敏感，`-` 与 `_` 在输入中等价。
+- 支持值为 `windows-x86-64`、`windows-aarch64`、`linux-x86-64`、`linux-aarch64`、`linux-riscv64`、
+  `android-x86-64`、`android-aarch64`、`web-wasm32`。
+- 省略时使用 `TargetPlatform.getNativePlatform()`。
+- `--target` 只设置 backend output platform，不改变 `-o` / `--output` 指向的 host build directory。
+- unsupported `--target` 在 API state mutation 和 compile task 创建前返回 usage error。
+
+CLI 当前没有 strict flag。后续除非明确扩展 CLI surface，否则不应因为 `CompileOptions` 有字段就添加未使用 flags。
 
 ---
 

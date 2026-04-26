@@ -35,7 +35,10 @@ class GdccCommandOptionTest {
                 .flatMap(option -> Arrays.stream(option.names()))
                 .toList();
 
-        assertEquals(Set.of("-o", "--output", "--prefix", "--class-map", "--gde", "-v", "--verbose"), Set.copyOf(optionFields));
+        assertEquals(
+                Set.of("-o", "--output", "--prefix", "--class-map", "--gde", "--opt", "--optimize", "--target", "-v", "--verbose"),
+                Set.copyOf(optionFields)
+        );
     }
 
     @Test
@@ -53,6 +56,8 @@ class GdccCommandOptionTest {
         assertTrue(help.contains("--prefix"), help);
         assertTrue(help.contains("--class-map"), help);
         assertTrue(help.contains("--gde"), help);
+        assertTrue(help.contains("--opt, --optimize"), help);
+        assertTrue(help.contains("--target"), help);
         assertTrue(help.contains("-v, --verbose"), help);
         assertTrue(help.contains("-V, --version"), help);
     }
@@ -99,6 +104,8 @@ class GdccCommandOptionTest {
                 "--class-map", "Enemy=RuntimeEnemy",
                 "--prefix", "Game_",
                 "--gde", "4.5.1",
+                "--opt", "release",
+                "--target", "WEB_WASM32",
                 "-o", "build/demo",
                 "src/player.gd",
                 "src/enemy.gd"
@@ -108,6 +115,8 @@ class GdccCommandOptionTest {
         assertEquals(List.of("Player=RuntimePlayer", "Enemy=RuntimeEnemy"), command.classMaps);
         assertEquals("Game_", command.prefix);
         assertEquals("4.5.1", command.gde);
+        assertEquals("release", command.opt);
+        assertEquals("WEB_WASM32", command.target);
         assertEquals(Path.of("build/demo"), command.output);
         assertEquals(List.of(Path.of("src/player.gd"), Path.of("src/enemy.gd")), command.files);
     }

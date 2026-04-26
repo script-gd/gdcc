@@ -223,6 +223,61 @@ class GdccCommandInputTest {
     }
 
     @Test
+    void setsCompileOptionsFromOptimizationAndTargetOptions(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--optimize",
+                "release",
+                "--target",
+                "web-wasm32",
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(0, exitCode);
+        var options = terminal.api.getCompileOptions("demo");
+        assertEquals(COptimizationLevel.RELEASE, options.optimizationLevel());
+        assertEquals(TargetPlatform.WEB_WASM32, options.targetPlatform());
+        assertFalse(options.strictMode());
+        assertEquals(CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT, options.outputMountRoot());
+    }
+
+    @Test
+    void invalidOptimizationOrTargetFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var invalidOpt = new Terminal();
+        var invalidTarget = new Terminal();
+
+        var invalidOptExitCode = invalidOpt.command().commandLine().execute(
+                "--opt",
+                "fast",
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+        var invalidTargetExitCode = invalidTarget.command().commandLine().execute(
+                "--target",
+                "macos-x86_64",
+                "-o",
+                tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, invalidOptExitCode);
+        assertTrue(invalidOpt.errText().contains("Unsupported --opt value 'fast'"), invalidOpt.errText());
+        invalidOpt.assertCompilerNotInvoked();
+        assertTrue(invalidOpt.api.listModules().isEmpty());
+
+        assertEquals(GdccCommand.EXIT_USAGE, invalidTargetExitCode);
+        assertTrue(invalidTarget.errText().contains("Unsupported --target value 'macos-x86_64'"), invalidTarget.errText());
+        invalidTarget.assertCompilerNotInvoked();
+        assertTrue(invalidTarget.api.listModules().isEmpty());
+    }
+
+    @Test
     void outputWithoutParentUsesNamedDirectoryUnderCurrentWorkingDirectoryBeforeTaskCreation(@TempDir Path tempDir)
             throws IOException {
         var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));

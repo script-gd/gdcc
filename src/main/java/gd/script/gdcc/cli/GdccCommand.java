@@ -96,6 +96,21 @@ public final class GdccCommand implements Callable<Integer> {
     String gde = "4.5.1";
 
     @Option(
+            names = {"--opt", "--optimize"},
+            defaultValue = "debug",
+            paramLabel = "<level>",
+            description = "Optimization level. Supported: debug, release. Defaults to debug."
+    )
+    String opt = "debug";
+
+    @Option(
+            names = "--target",
+            paramLabel = "<platform>",
+            description = "Target platform. Supported: windows-x86-64, windows-aarch64, linux-x86-64, linux-aarch64, linux-riscv64, android-x86-64, android-aarch64, web-wasm32. Defaults to the native host platform."
+    )
+    String target;
+
+    @Option(
             names = {"-v", "--verbose"},
             description = "Increase output verbosity. Repeat for more detail."
     )
@@ -189,8 +204,8 @@ public final class GdccCommand implements Callable<Integer> {
         return new CompileOptions(
                 godotVersion(),
                 outputTarget.projectPath(),
-                COptimizationLevel.DEBUG,
-                TargetPlatform.getNativePlatform(),
+                optimizationLevel(),
+                targetPlatform(),
                 false,
                 CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
         );
@@ -204,6 +219,40 @@ public final class GdccCommand implements Callable<Integer> {
         throw new IllegalArgumentException(
                 "Unsupported --gde value '" + gde + "'. Supported versions: " + GodotVersion.V451.version
         );
+    }
+
+    private @NotNull COptimizationLevel optimizationLevel() {
+        return parseEnumOption(COptimizationLevel.class, "--opt", opt);
+    }
+
+    private @NotNull TargetPlatform targetPlatform() {
+        return target == null ? TargetPlatform.getNativePlatform() : parseEnumOption(TargetPlatform.class, "--target", target);
+    }
+
+    private static <T extends Enum<T>> @NotNull T parseEnumOption(
+            @NotNull Class<T> enumClass,
+            @NotNull String optionName,
+            @NotNull String value
+    ) {
+        var normalizedValue = StringUtil.requireTrimmedNonBlank(value, optionName)
+                .replace('-', '_')
+                .toUpperCase(Locale.ROOT);
+        for (var candidate : enumClass.getEnumConstants()) {
+            if (candidate.name().equals(normalizedValue)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Unsupported " + optionName + " value '" + value + "'. Supported values: " + supportedEnumValues(enumClass)
+        );
+    }
+
+    private static <T extends Enum<T>> @NotNull String supportedEnumValues(@NotNull Class<T> enumClass) {
+        var values = new ArrayList<String>();
+        for (var candidate : enumClass.getEnumConstants()) {
+            values.add(candidate.name().toLowerCase(Locale.ROOT).replace('_', '-'));
+        }
+        return String.join(", ", values);
     }
 
     private @NotNull List<SourceInput> sourceInputs() throws IOException {
