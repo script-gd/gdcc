@@ -68,6 +68,8 @@ Link updated docs under doc/.
 -->
 - `doc/pr_message_guideline.md`
 
+**DO NOT INCLUDE THIS LINE AND BELOW IN PR MESSAGE**
+
 ---
 
 ## Checklist

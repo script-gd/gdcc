@@ -250,7 +250,7 @@ public final class GdccCommand implements Callable<Integer> {
         var mappings = new LinkedHashMap<String, String>();
         if (prefix != null) {
             for (var sourceInput : sourceInputs) {
-                var sourceName = prefixSourceName(sourceInput);
+                var sourceName = resolveTopLevelSourceName(sourceInput);
                 if (sourceName == null) {
                     continue;
                 }
@@ -280,7 +280,7 @@ public final class GdccCommand implements Callable<Integer> {
         return new ClassMap(classMap.substring(0, separatorIndex), classMap.substring(separatorIndex + 1));
     }
 
-    private @Nullable String prefixSourceName(@NotNull SourceInput sourceInput) {
+    private @Nullable String resolveTopLevelSourceName(@NotNull SourceInput sourceInput) {
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(sourceInput.logicalPath(), sourceInput.source(), diagnosticManager);
         if (diagnosticManager.snapshot().hasErrors()) {
