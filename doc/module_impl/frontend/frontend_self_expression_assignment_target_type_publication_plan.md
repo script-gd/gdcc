@@ -8,8 +8,8 @@
 
 ## 文档状态
 
-- 状态：3.1 已实施并通过 targeted validation（事实源迁移仍待后续处理）
-- 更新时间：2026-04-25
+- 状态：3.5、3.6、3.7、3.8 已实施并通过 targeted validation（事实源迁移仍待后续处理）
+- 更新时间：2026-04-26
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzer.java`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/support/FrontendAssignmentSemanticSupport.java`
@@ -388,7 +388,7 @@ root 级 generic compile blocker。
 
 ### 3.6 增加 CFG / body lowering 回归测试
 
-实施状态：已补充 body-lowering 回归用例并通过 targeted tests。
+实施状态：已补充 CFG 与 body-lowering 回归用例并通过 focused targeted tests。
 
 建议扩展以下测试类：
 
@@ -414,10 +414,21 @@ root 级 generic compile blocker。
 
 - `FrontendLoweringBodyInsnPassTest` 已增加 `self.hp = seed` 回归，验证 body lowering 能生成 `hp` 的
   `StorePropertyInsn`，object id 为 `self`，且不引入 Variant pack/unpack 边界。
+- `FrontendCfgGraphBuilderTest.buildExecutableBodyPublishesWritableRouteForRotatingCameraExplicitSelfPositionAssignment`
+  已增加 `Camera3D` / `Vector3` 形态的 `self.position = vec` 回归，验证 CFG builder 冻结
+  `AssignmentItem.writableRoutePayload`：root 为 explicit `SelfExpression` direct-slot，leaf 为 `position`
+  property，并且不把 nested property、container mutation 或 compound assignment 纳入本阶段验收。
+- `FrontendLoweringBodyInsnPassTest.runLowersRotatingCameraExplicitSelfPositionAssignmentSmoke`
+  已验证 body lowering 对同一最小 rotating-camera 形态生成最终 `position` `StorePropertyInsn`，object id 为
+  `self`；当前 `Vector3` 构造与 `Camera3D.position` 边界会产生 1 条 `PackVariantInsn` 与 1 条
+  `UnpackVariantInsn`，这属于该 engine property 路线的既有 materialization shape，不是 explicit-self
+  missing-type 缺口。
 - `FrontendCompileCheckAnalyzerTest` 已增加 static explicit-self assignment target 去重回归，确认已有
   `SelfExpression` range 上的 upstream binding error 时不新增 assignment-root 级 `sema.compile_check`。
 
 ### 3.7 增加 rotating-camera 形态 smoke
+
+实施状态：已补充最小 frontend lowering smoke，并通过 focused targeted tests。
 
 新增一个最小化 rotating-camera 形态回归，避免把无关 native build 问题混入 frontend 验收。
 
@@ -447,9 +458,17 @@ func _process(delta: float) -> void:
 - 若使用 C-project integration test，native build 失败不能作为 frontend 验收信号。
 - 测试命名必须体现 explicit self assignment target，而不是只写 rotating camera。
 
+测试产出注释：
+
+- `FrontendLoweringBodyInsnPassTest.runLowersRotatingCameraExplicitSelfPositionAssignmentSmoke` 使用最小
+  `class_name ... extends Camera3D`、`Vector3(...)` local 与 `self.position = vec`，测试名明确锚定
+  explicit self assignment target。
+- 本 smoke 停在 frontend body lowering / LIR shape 层面，避免把 native build path、Godot runtime 或
+  C-project packaging 问题混入本 frontend 缺口验收。
+
 ### 3.8 执行 targeted validation
 
-实施状态：targeted tests 通过；rotating-camera CLI smoke 已越过 frontend lowering，后续 native build path 失败另行归类。
+实施状态：targeted tests 与 rotating-camera CLI smoke 均已通过。
 
 先运行聚焦测试：
 
@@ -477,11 +496,16 @@ rtk java -jar build/libs/gdcc-1.0-SNAPSHOT.jar -o tmp/rotating_camera_compile -v
 
 验证产出注释：
 
-- `FrontendExprTypeAnalyzerTest,FrontendCompileCheckAnalyzerTest` targeted tests 已通过。
-- `FrontendLoweringBodyInsnPassTest,FrontendCfgGraphBuilderTest` targeted tests 已通过。
-- 重建 `build/libs/gdcc-1.0-SNAPSHOT.jar` 后执行 `build/libs/rotating_camera.gd` CLI smoke，frontend lowering 阶段通过；
-  当前失败发生在 `BUILDING_NATIVE`，错误为 `IllegalArgumentException: Path component should be '/'`，不再属于本次
-  `SelfExpression` missing published type 缺口。
+- `FrontendCfgGraphBuilderTest.buildExecutableBodyPublishesWritableRouteForRotatingCameraExplicitSelfPositionAssignment`
+  与 `FrontendLoweringBodyInsnPassTest.runLowersRotatingCameraExplicitSelfPositionAssignmentSmoke` focused targeted
+  tests 已通过。
+- `FrontendExprTypeAnalyzerTest,FrontendCompileCheckAnalyzerTest,FrontendCfgGraphBuilderTest,FrontendLoweringBodyInsnPassTest`
+  targeted tests 已通过，覆盖 semantic publication、compile gate 去重、CFG writable-route shape 与 body lowering
+  LIR shape。
+- 执行 `build/libs/rotating_camera.gd` CLI smoke：
+  `rtk java -jar build/libs/gdcc-1.0-SNAPSHOT.jar -o tmp/rotating_camera_compile -vv build/libs/rotating_camera.gd`。
+  结果完整通过，日志进入 `PARSING`、`LOWERING`、`CODEGEN_PREPARE`、`BUILDING_NATIVE` 后以
+  `Compile completed successfully` 结束，不再出现 `Missing published expression type for SelfExpression`。
 
 ---
 

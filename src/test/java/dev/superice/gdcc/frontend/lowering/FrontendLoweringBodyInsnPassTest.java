@@ -969,6 +969,51 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersRotatingCameraExplicitSelfPositionAssignmentSmoke() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_rotating_camera_self_position.gd",
+                """
+                        class_name BodyInsnRotatingCameraSelfPosition
+                        extends Camera3D
+                        
+                        func _process(delta: float) -> void:
+                            var vec = Vector3(1.0, 0.0, 0.0)
+                            self.position = vec
+                        """,
+                Map.of(
+                        "BodyInsnRotatingCameraSelfPosition",
+                        "RuntimeBodyInsnRotatingCameraSelfPosition"
+                ),
+                true
+        );
+        var processContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnRotatingCameraSelfPosition",
+                "_process"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(processContext.targetFunction());
+        var propertyStores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("position"))
+                .toList();
+        var vectorConstruct = requireOnlyInstruction(processContext.targetFunction(), ConstructBuiltinInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, propertyStores.size()),
+                () -> assertEquals("self", propertyStores.getFirst().objectId()),
+                () -> assertEquals(3, vectorConstruct.args().size()),
+                () -> assertEquals(1, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runMaterializesVariantBoundariesForLocalInitializersAndOrdinaryPropertyAssignments() throws Exception {
         var prepared = prepareContext(
                 "body_insn_assignment_variant_boundary.gd",
