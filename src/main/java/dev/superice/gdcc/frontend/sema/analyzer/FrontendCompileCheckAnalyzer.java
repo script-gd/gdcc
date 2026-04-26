@@ -681,35 +681,33 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull Node anchor,
                 @NotNull FrontendExpressionType publishedType
         ) {
-            if (!(anchor instanceof AssignmentExpression assignmentExpression)
-                    || !(assignmentExpression.left() instanceof AttributeExpression attributeExpression)
-                    || !(attributeExpression.base() instanceof SelfExpression selfExpression)) {
+            if (!(anchor instanceof AssignmentExpression assignmentExpression)) {
                 return false;
             }
-            if (!"=".equals(assignmentExpression.operator())
-                    || attributeExpression.steps().size() != 1
-                    || !(attributeExpression.steps().getFirst() instanceof AttributePropertyStep)) {
+            var selfExpression = directExplicitSelfAssignmentTargetPrefixOrNull(assignmentExpression);
+            if (selfExpression == null) {
                 return false;
             }
             var selfType = expressionTypes.get(selfExpression);
             if (selfType == null
                     || selfType.status() != publishedType.status()
-                    || !isCompileBlocking(selfType.status())
-                    || !detailReasonContains(publishedType, selfType)) {
+                    || !isCompileBlocking(selfType.status())) {
                 return false;
             }
             return hasPublishedConflictingDiagnosticAt(selfExpression);
         }
 
-        private static boolean detailReasonContains(
-                @NotNull FrontendExpressionType container,
-                @NotNull FrontendExpressionType prefix
+        private static @Nullable SelfExpression directExplicitSelfAssignmentTargetPrefixOrNull(
+                @NotNull AssignmentExpression assignmentExpression
         ) {
-            var containerDetail = container.detailReason();
-            var prefixDetail = prefix.detailReason();
-            return prefixDetail != null
-                    && containerDetail != null
-                    && containerDetail.contains(prefixDetail);
+            if (!"=".equals(assignmentExpression.operator())
+                    || !(assignmentExpression.left() instanceof AttributeExpression attributeExpression)
+                    || !(attributeExpression.base() instanceof SelfExpression selfExpression)
+                    || attributeExpression.steps().size() != 1
+                    || !(attributeExpression.steps().getFirst() instanceof AttributePropertyStep)) {
+                return null;
+            }
+            return selfExpression;
         }
 
         /// Validate the key shape used by `expressionTypes()` before compile diagnostics rely on it.

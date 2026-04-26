@@ -162,6 +162,8 @@ publishAssignmentTargetPrefixTypes(...)
 
 ### 3.2 将发布范围收缩到已复现的 explicit `SelfExpression`
 
+实施状态：已完成代码落地与聚焦测试补强，并通过本轮 targeted validation。
+
 当前没有明确 reproducer 能证明以下节点也存在同类 missing published type 缺口：
 
 - `IdentifierExpression`
@@ -209,7 +211,19 @@ feature 的验收，需要先提供独立 reproducer，证明失败仍然是 exp
 - unsupported assignment target form 仍通过原有 semantic / compile-check 路线失败。
 - 已合法的 assignment target 不新增重复诊断。
 
+实现产出注释：
+
+- `FrontendExprTypeAnalyzerTest.analyzeKeepsExplicitSelfAssignmentTargetPrefixPublicationNarrow` 已把同一
+  callable 中的 `hp = delta`、`holder.hp = delta`、`self.hp = delta`、`self.hp += delta`、
+  `self.payloads[index] = delta` 放在一起断言：只有 plain direct `self.hp = delta` 的 base
+  `SelfExpression` 获得新增 expression type fact。
+- attribute-subscript target 的 index 参数仍按既有 assignment target dependency 规则发布类型；本步骤只保证
+  这次 helper 不把 subscript key / index argument 当成新的补发 surface，也不补发该 target 的
+  explicit-`self` receiver。
+
 ### 3.3 保持 self 边界语义不变
+
+实施状态：已完成代码落地与 property-initializer 回归补强，并通过本轮 targeted validation。
 
 新增 hook 必须在 assignment expression 当前 analyzer context 中运行，沿用：
 
@@ -233,9 +247,21 @@ feature 的验收，需要先提供独立 reproducer，证明失败仍然是 exp
 - compile mode 能看到 blocked published fact；有既有 upstream error 时由该 error 阻断 lowering，且不新增
   assignment-root 级重复 blocker。
 
+实现产出注释：
+
+- `FrontendExprTypeAnalyzerTest.analyzePublishesBlockedExplicitSelfAssignmentTargetPrefixInStaticContext`
+  锚定 static context：新 helper 发布 `SelfExpression` 的 `BLOCKED` fact，但主诊断仍来自既有
+  `sema.binding`。
+- `FrontendExprTypeAnalyzerTest.analyzeKeepsExplicitSelfPropertyInitializerBoundaryUnchanged`
+  锚定 property-initializer boundary：`var blocked := self.hp` 中的 explicit `SelfExpression` 复用
+  `resolveSelfExpressionType(...)` 得到 blocked fact，诊断仍由 top-binding/property-initializer 规则拥有。
+- 调研确认当前 parser 不接受 property initializer value 中的 assignment expression 形态，例如
+  `var blocked := (self.hp = 1)` 会产生 parse lowering diagnostic。因此 3.3 的 property-initializer
+  验收锚定为“显式 `self` 边界语义不变”，不把不可解析的 assignment-target 形态纳入本阶段测试。
+
 ### 3.4 固定 diagnostic owner、anchor 与去重策略
 
-实施状态：已补充最小去重逻辑并通过 targeted tests。
+实施状态：已补充结构化 assignment-root 去重逻辑，并通过本轮 targeted validation。
 
 补齐 blocked / failed `SelfExpression` fact 后，`FrontendCompileCheckAnalyzer` 可能开始看到更多
 expression-type fact。这里必须先固定 diagnostic ownership，避免把一个 prefix 级错误漂移成 assignment
@@ -316,8 +342,14 @@ root 级 generic compile blocker。
 - 修正方向应保持窄范围：当 assignment root 的 non-lowering-ready fact 可追溯到左侧 direct
   explicit-`SelfExpression` prefix，且该 prefix range 已有 upstream blocking diagnostic 时，compile-check 应跳过
   root 级 generic blocker；其它 root-owned assignment failure 仍由 root 自身负责。
-- 实现产出保持同一窄范围：仅在 `operator == "="`、左侧是单步 `AttributePropertyStep`、base 是显式
-  `SelfExpression`，且 root detail 覆盖 prefix detail 时跳过 assignment-root generic blocker。
+- 实现产出保持同一窄范围：assignment-root 去重仅在 `operator == "="`、左侧是单步
+  `AttributePropertyStep`、base 是显式 `SelfExpression`，root 与 prefix 的 published status 相同且均为
+  compile-blocking，并且 prefix range 已有 upstream blocking diagnostic 时触发。该判断不依赖
+  `detailReason` 文本包含关系，避免诊断文案调整导致去重漂移。
+- 本轮曾尝试把同一去重推广到普通 property-initializer `self.hp` 的 member step fact，但 targeted
+  test 证明这会改变既有 compile-check 合同：property initializer 的 published member/call facts 本来
+  就由 compile-check 兜底报告。因此 3.4 只收敛 assignment-root propagated failure，不改变
+  `resolvedMembers()` / `resolvedCalls()` 的通用扫描规则。
 
 ### 3.5 增加聚焦 semantic 测试
 

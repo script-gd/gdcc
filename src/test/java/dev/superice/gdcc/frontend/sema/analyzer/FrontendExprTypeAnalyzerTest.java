@@ -25,6 +25,7 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
+import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdcc.type.GdCallableType;
@@ -1355,14 +1356,20 @@ class FrontendExprTypeAnalyzerTest {
                         var hp: int = 0
                         var payloads: Array[int]
                         
-                        func ping(delta: int):
+                        class Holder:
+                            var hp: int = 0
+                        
+                        func ping(holder: Holder, delta: int, index: int):
+                            hp = delta
+                            holder.hp = delta
+                            self.hp = delta
                             self.hp += delta
-                            self.payloads[0] = delta
+                            self.payloads[index] = delta
                         """
         );
 
         var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
-        assertEquals(2, assignments.size());
+        assertEquals(5, assignments.size());
         for (var assignment : assignments) {
             var assignmentType = analyzed.analysisData().expressionTypes().get(assignment);
             assertNotNull(assignmentType);
@@ -1370,11 +1377,32 @@ class FrontendExprTypeAnalyzerTest {
             assertEquals(GdVoidType.VOID, assignmentType.publishedType());
         }
 
-        var explicitSelfTargets = findNodes(findFunction(analyzed.ast(), "ping"), SelfExpression.class, _ -> true);
-        assertEquals(2, explicitSelfTargets.size());
-        for (var explicitSelfTarget : explicitSelfTargets) {
-            assertNull(analyzed.analysisData().expressionTypes().get(explicitSelfTarget));
-        }
+        var bareIdentifierTarget = assertInstanceOf(IdentifierExpression.class, assignments.getFirst().left());
+        var holderTarget = assertInstanceOf(AttributeExpression.class, assignments.get(1).left());
+        var directSelfTarget = assertInstanceOf(AttributeExpression.class, assignments.get(2).left());
+        var compoundSelfTarget = assertInstanceOf(AttributeExpression.class, assignments.get(3).left());
+        var attributeSubscriptSelfTarget = assertInstanceOf(AttributeExpression.class, assignments.get(4).left());
+
+        assertNull(analyzed.analysisData().expressionTypes().get(bareIdentifierTarget));
+        assertNull(analyzed.analysisData().expressionTypes().get(holderTarget.base()));
+        assertNotNull(analyzed.analysisData().expressionTypes().get(
+                assertInstanceOf(SelfExpression.class, directSelfTarget.base())
+        ));
+        assertNull(analyzed.analysisData().expressionTypes().get(
+                assertInstanceOf(SelfExpression.class, compoundSelfTarget.base())
+        ));
+        assertNull(analyzed.analysisData().expressionTypes().get(
+                assertInstanceOf(SelfExpression.class, attributeSubscriptSelfTarget.base())
+        ));
+
+        var indexTargetArgument = findNode(
+                attributeSubscriptSelfTarget,
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("index")
+        );
+        var indexTargetArgumentType = analyzed.analysisData().expressionTypes().get(indexTargetArgument);
+        assertNotNull(indexTargetArgumentType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, indexTargetArgumentType.status());
 
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.deferred_expression_resolution").isEmpty());
@@ -1414,6 +1442,42 @@ class FrontendExprTypeAnalyzerTest {
         var bindingDiagnostics = diagnosticsByCategory(analyzed, "sema.binding");
         assertEquals(1, bindingDiagnostics.size());
         assertTrue(bindingDiagnostics.getFirst().message().contains("static context"));
+        assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsExplicitSelfPropertyInitializerBoundaryUnchanged() throws Exception {
+        var analyzed = analyze(
+                "expr_type_property_initializer_self_boundary.gd",
+                """
+                        class_name ExprTypePropertyInitializerSelfBoundary
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        var blocked := self.hp
+                        """
+        );
+
+        var blockedDeclaration = findVariable(
+                assertInstanceOf(SourceFile.class, analyzed.ast()).statements(),
+                "blocked"
+        );
+        var blockedExpression = assertInstanceOf(AttributeExpression.class, blockedDeclaration.value());
+        var explicitSelf = assertInstanceOf(SelfExpression.class, blockedExpression.base());
+        var explicitSelfType = analyzed.analysisData().expressionTypes().get(explicitSelf);
+        assertNotNull(explicitSelfType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, explicitSelfType.status());
+        assertTrue(explicitSelfType.detailReason().contains("Property initializer"));
+
+        var blockedExpressionType = analyzed.analysisData().expressionTypes().get(blockedExpression);
+        assertNotNull(blockedExpressionType);
+        assertEquals(FrontendExpressionTypeStatus.BLOCKED, blockedExpressionType.status());
+        assertTrue(blockedExpressionType.detailReason().contains("Property initializer"));
+
+        var boundaryDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_binding_subtree");
+        assertEquals(1, boundaryDiagnostics.size());
+        assertTrue(boundaryDiagnostics.getFirst().message().contains("Property initializer"));
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed, "sema.unsupported_expression_route").isEmpty());
     }
