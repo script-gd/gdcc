@@ -84,6 +84,8 @@ gdcc [options] <files...>
 - `--gde <version>`：Godot GDExtension API 版本。当前唯一支持值是 `4.5.1`。
 - `--opt` / `--optimize <level>`：C backend 编译优化等级。支持 `debug`、`release`，默认 `debug`。
 - `--target <platform>`：C backend 目标平台。默认 native host platform。
+- `--project <project.godot>`：Godot 项目文件。仅当所有输入脚本的最近 `project.godot` 都是该文件时，成功编译后生成
+  `.gdextension` metadata 文件。
 - `-v` / `--verbose`：可重复传入的 verbosity flag。`-v` 为 level 1，`-vv` 为 level 2。
 - `-V` / `--version`：输出编译器构建版本信息并退出，不创建 API module 或 compile task。
 
@@ -96,6 +98,7 @@ gdcc -o build/demo --prefix Game_ src/player.gd src/enemy.gd
 gdcc -o build/demo --class-map Player=RuntimePlayer --class-map Enemy=RuntimeEnemy src/player.gd src/enemy.gd
 gdcc -o build/demo --gde 4.5.1 -v src/player.gd src/enemy.gd
 gdcc -o build/demo --optimize release --target linux-x86-64 src/player.gd
+gdcc --project game/project.godot -o build/demo game/src/player.gd
 gdcc --version
 ```
 
@@ -244,6 +247,35 @@ build/demo/demo_debug_x86_64.dll
 ```
 
 成功输出时，CLI 从 `CompileResult.artifacts()` 报告 artifact path，不自行猜测、不移动、不重命名 backend 产物。
+
+### 4.4 `.gdextension` metadata 生成
+
+CLI 可以在成功编译后生成 Godot 可读取的 `.gdextension` metadata 文件。该行为由 `--project <project.godot>`
+启用，但是否写文件取决于输入脚本是否都属于同一个 Godot 项目：
+
+- `--project` 必须指向真实存在的 `project.godot` 文件，否则在创建 API module 前返回 usage error。
+- 对每个输入 `.gd`，CLI 从该文件的父目录向上查找最近的 `project.godot`。
+- 当且仅当所有输入文件找到的最近 `project.godot` 都等于 `--project` 传入的文件时，CLI 在成功编译后写 metadata。
+- 省略 `--project`、某个输入不在任何 Godot 项目下、或某个输入属于另一个更近的 Godot 项目时，CLI 不生成 metadata。
+- metadata 文件位于 output target directory 内，文件名等于该目录名加 `.gdextension`。例如 `-o build/demo`
+  会生成 `build/demo/demo.gdextension`。
+- metadata 内的 library path 使用相对 `.gdextension` 文件所在目录的路径。当前 backend artifact 写在同一个 output
+  directory 下，因此通常是 artifact 文件名。
+
+生成内容复用 C backend 的 `GdextensionMetadataFile` 规则，与 Godot runtime 测试项目使用的 metadata 形状一致：
+
+```text
+[configuration]
+
+entry_symbol = "gdextension_entry"
+compatibility_minimum = "4.5"
+
+[libraries]
+<platform>.<debug|release> = "<relative-library-path>"
+```
+
+CLI 只生成 `.gdextension` 文件，不修改 Godot 的 `.godot/extension_list.cfg` 或编辑器缓存。用户仍可在 Godot 项目中按
+Godot 的 extension loading 流程启用该文件。
 
 ---
 
@@ -395,6 +427,7 @@ CLI 渲染 `CompileResult.diagnostics()` 中的 frontend diagnostics。诊断 pa
 ```text
 Compiled module <moduleId>
 Artifact: <artifact-path>
+Metadata: <metadata-path-if-generated>
 ```
 
 失败时 stderr 输出：
@@ -478,6 +511,7 @@ CLI 聚焦测试：
   - help text
   - version text
   - optional `-o/--output` 解析
+  - optional `--project` 解析
   - missing input parameter
   - repeatable `--class-map`
   - `-vv` verbosity count
@@ -488,6 +522,7 @@ CLI 聚焦测试：
   - VFS layout 与 display path
   - 默认 output target 推导
   - 显式 output target 与 `CompileOptions.projectPath`
+  - `--project` 触发的 `.gdextension` metadata 生成条件
   - explicit blank / root-only output failure
   - shared parent 下不同 output target 的 generated file 隔离
 - `GdccCommandMappingTest`

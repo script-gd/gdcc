@@ -36,7 +36,7 @@ class GdccCommandOptionTest {
                 .toList();
 
         assertEquals(
-                Set.of("-o", "--output", "--prefix", "--class-map", "--gde", "--opt", "--optimize", "--target", "-v", "--verbose"),
+                Set.of("-o", "--output", "--prefix", "--class-map", "--gde", "--opt", "--optimize", "--target", "--project", "-v", "--verbose"),
                 Set.copyOf(optionFields)
         );
     }
@@ -58,6 +58,7 @@ class GdccCommandOptionTest {
         assertTrue(help.contains("--gde"), help);
         assertTrue(help.contains("--opt, --optimize"), help);
         assertTrue(help.contains("--target"), help);
+        assertTrue(help.contains("--project"), help);
         assertTrue(help.contains("-v, --verbose"), help);
         assertTrue(help.contains("-V, --version"), help);
     }
@@ -106,6 +107,7 @@ class GdccCommandOptionTest {
                 "--gde", "4.5.1",
                 "--opt", "release",
                 "--target", "WEB_WASM32",
+                "--project", "game/project.godot",
                 "-o", "build/demo",
                 "src/player.gd",
                 "src/enemy.gd"
@@ -117,6 +119,7 @@ class GdccCommandOptionTest {
         assertEquals("4.5.1", command.gde);
         assertEquals("release", command.opt);
         assertEquals("WEB_WASM32", command.target);
+        assertEquals(Path.of("game/project.godot"), command.project);
         assertEquals(Path.of("build/demo"), command.output);
         assertEquals(List.of(Path.of("src/player.gd"), Path.of("src/enemy.gd")), command.files);
     }

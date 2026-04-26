@@ -5,6 +5,7 @@ import gd.script.gdcc.api.CompileOptions;
 import gd.script.gdcc.api.ModuleSnapshot;
 import gd.script.gdcc.api.VfsEntrySnapshot;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
 import org.junit.jupiter.api.AfterEach;
@@ -19,6 +20,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -246,6 +248,78 @@ class GdccCommandInputTest {
     }
 
     @Test
+    void projectOptionGeneratesGdextensionMetadataWhenInputsBelongToThatGodotProject(@TempDir Path tempDir)
+            throws IOException {
+        var projectFile = writeSource(tempDir.resolve("game/project.godot"), "config_version=5\n");
+        var playerSource = writeSource(tempDir.resolve("game/src/player.gd"), validSource("Player"));
+        var enemySource = writeSource(tempDir.resolve("game/src/enemy.gd"), validSource("Enemy"));
+        var outputDir = tempDir.resolve("build/demo");
+        var metadataPath = outputDir.resolve("demo.gdextension");
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--project", projectFile.toString(),
+                "-o", outputDir.toString(),
+                playerSource.toString(),
+                enemySource.toString()
+        );
+
+        assertEquals(0, exitCode);
+        assertTrue(Files.isRegularFile(metadataPath));
+        assertTrue(terminal.outText().contains("Metadata: " + metadataPath), terminal.outText());
+
+        var targetPlatform = TargetPlatform.getNativePlatform();
+        var expectedOutputBaseName = "demo_debug_" + targetPlatform.architecture.name().toLowerCase(Locale.ROOT);
+        var expectedArtifactName = targetPlatform.sharedLibraryFileName(expectedOutputBaseName);
+        var metadata = Files.readString(metadataPath, StandardCharsets.UTF_8);
+        assertTrue(metadata.contains("[configuration]"), metadata);
+        assertTrue(metadata.contains("entry_symbol = \"gdextension_entry\""), metadata);
+        assertTrue(metadata.contains("compatibility_minimum = \"4.5\""), metadata);
+        assertTrue(
+                metadata.contains(GdextensionMetadataFile.libraryKey(COptimizationLevel.DEBUG, targetPlatform)
+                        + " = \"" + expectedArtifactName + "\""),
+                metadata
+        );
+    }
+
+    @Test
+    void projectOptionDoesNotGenerateGdextensionMetadataWhenAnInputBelongsToAnotherProject(@TempDir Path tempDir)
+            throws IOException {
+        var projectFile = writeSource(tempDir.resolve("game/project.godot"), "config_version=5\n");
+        writeSource(tempDir.resolve("game/addon/project.godot"), "config_version=5\n");
+        var source = writeSource(tempDir.resolve("game/addon/player.gd"), validSource("Player"));
+        var outputDir = tempDir.resolve("build/demo");
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--project", projectFile.toString(),
+                "-o", outputDir.toString(),
+                source.toString()
+        );
+
+        assertEquals(0, exitCode);
+        assertFalse(Files.exists(outputDir.resolve("demo.gdextension")));
+        assertFalse(terminal.outText().contains("Metadata:"), terminal.outText());
+    }
+
+    @Test
+    void invalidProjectOptionFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--project", tempDir.resolve("not_project.txt").toString(),
+                "-o", tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("--project must point to a project.godot file"), terminal.errText());
+        terminal.assertCompilerNotInvoked();
+        assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    @Test
     void invalidOptimizationOrTargetFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
         var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var invalidOpt = new Terminal();
@@ -396,6 +470,10 @@ class GdccCommandInputTest {
 
         String errText() {
             return err.toString();
+        }
+
+        String outText() {
+            return out.toString();
         }
 
         void assertCompilerNotInvoked() {
