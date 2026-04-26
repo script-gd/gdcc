@@ -9,7 +9,7 @@
 ## 文档状态
 
 - 状态：事实源维护中
-- 更新时间：2026-04-25
+- 更新时间：2026-04-26
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/Main.java`
   - `src/main/java/dev/superice/gdcc/cli/**`
@@ -40,7 +40,7 @@
 - 明确非目标：
   - 不实现网络或 RPC transport。
   - 不在 CLI 代码中实现第二套编译管线。
-  - 除 `--prefix` 所需的窄范围 source-name preflight 外，不让 CLI 直接 parse / lower / codegen。
+  - 除 `--prefix` 展开所需的窄范围 source-name discovery preflight 外，不让 CLI 直接 parse / lower / codegen。
   - 不新增一套镜像 `CompileOptions` 的配置抽象。
   - 不在 build 后移动或重命名 backend 产物。
 
@@ -79,7 +79,7 @@ gdcc [options] <files...>
 
 - `files`：非空宿主机 `.gd` 源文件列表。
 - `-o` / `--output <output>`：可选 output target path。
-- `--prefix <prefix>`：为 filename-derived 顶层 source name 生成 canonical prefix。
+- `--prefix <prefix>`：为顶层 source name 生成 canonical prefix。
 - `--class-map Source=Canonical`：显式顶层 source-to-canonical mapping，可重复传入。
 - `--gde <version>`：Godot GDExtension API 版本。当前唯一支持值是 `4.5.1`。
 - `-v` / `--verbose`：可重复传入的 verbosity flag。`-v` 为 level 1，`-vv` 为 level 2。
@@ -296,19 +296,24 @@ CLI 当前没有 release / target / strict flags。后续除非明确扩展 CLI 
 --prefix PrefixText
 ```
 
-`--prefix` 只作用于没有显式 `class_name` statement、因此顶层 source name 由文件名推导得到的输入文件。对每个这类文件，CLI
-生成 mapping：
+`--prefix` 作用于每个可发现的顶层 source name。顶层 source name 与 frontend 合同一致：
+
+- 若 source 有显式顶层 `class_name` statement，使用该 `class_name`。
+- 否则使用文件名推导结果。
+
+对每个这类 source name，CLI 生成 mapping：
 
 ```text
-<defaultSourceName> -> <prefix><defaultSourceName>
+<sourceName> -> <prefix><sourceName>
 ```
 
 默认 source-name 推导复用 `FrontendClassNameContract.deriveDefaultTopLevelSourceName(Path)`，与
 `FrontendClassSkeletonBuilder` 保持同一规则真源。CLI 不复制 frontend 文件名规则。
 
-判断显式 `class_name` 是窄范围 option-expansion preflight：CLI 使用 `GdScriptParserService` 解析 source 并检查 top-level
-statements。该 preflight 不替代 API compile pipeline 的 parse / lowering / diagnostics。如果 preflight parsing 本身产生错误，CLI
-跳过该文件的 prefix-generated mapping，让实际 API compile 产生 canonical diagnostics。
+发现显式 `class_name` 是窄范围 option-expansion preflight：CLI 使用 `GdScriptParserService` 解析 source 并读取 top-level
+`ClassNameStatement`；若缺失有效 `class_name`，再回退到默认文件名推导。该 preflight 不替代 API compile pipeline 的 parse /
+lowering / diagnostics。如果 preflight parsing 本身产生错误，CLI 跳过该文件的 prefix-generated mapping，让实际 API compile
+产生 canonical diagnostics。
 
 ### 6.3 Merge 顺序
 
@@ -319,7 +324,9 @@ mapping merge 规则：
 3. 显式 entry 覆盖同 source name 的 generated entry。
 4. 最终 merged map 通过 `API.setTopLevelCanonicalNameMap(...)` 传入。
 
-当前实现使用 insertion-ordered map，以保持 verbose output 与测试 snapshot 稳定。
+当前实现使用 insertion-ordered map，以保持 verbose output 与测试 snapshot 稳定。generated entry 可以来自显式
+`class_name` 或文件名推导；例如 `--prefix Game_ --class-map Player=RuntimePlayer` 会让显式 `class_name Player` 的最终
+mapping 从 generated `Player -> Game_Player` 覆盖为 `Player -> RuntimePlayer`。
 
 ---
 
@@ -466,7 +473,7 @@ CLI 聚焦测试：
   - shared parent 下不同 output target 的 generated file 隔离
 - `GdccCommandMappingTest`
   - `--prefix` generated mapping
-  - 显式 `class_name` 不参与 prefix mapping
+  - `--prefix` 应用于显式 `class_name` 与 filename-derived 顶层 source name
   - 显式 `--class-map` 覆盖 generated mapping
   - duplicate explicit key
   - reserved canonical name failure
@@ -499,5 +506,5 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 - Artifact naming 仍由 backend/API output-name contract 控制，当前不完全 clang-compatible。若要改变 artifact basename，应修改 backend/API 契约，而不是在 CLI build 后移动或重命名文件。
 - CLI 默认 `projectPath` 与显式完整 output path 已避免普通 CLI 调用共享 host build directory；直接 API 调用者若复用同一个 physical
   `projectPath`，仍需要未来的 project-path lock 或 server-owned workspace policy 才能获得跨 module host filesystem 隔离。
-- `--prefix` preflight parsing 会重复 API parse pass。当前这是 option expansion 的窄范围成本，不是编译管线替代品；若后续性能或语义变脆，应新增明确的 API / frontend preflight surface。
+- `--prefix` source-name discovery preflight 会重复 API parse pass。当前这是 option expansion 的窄范围成本，不是编译管线替代品；若后续性能或语义变脆，应新增明确的 API / frontend preflight surface。
 - 可执行 wrapper scripts 暂未提供。当前稳定分发面是主 jar、同级 `lib/` runtime dependencies，以及包含两者的 zip distribution。
