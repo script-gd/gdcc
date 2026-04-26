@@ -549,18 +549,21 @@ public class FrontendExprTypeAnalyzer {
                 case IdentifierExpression identifierExpression ->
                         expressionSemanticSupport.resolveIdentifierExpressionType(identifierExpression).expressionType();
                 case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
-                case AssignmentExpression assignmentExpression -> finishSemanticResolution(
-                        assignmentExpression,
-                        FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
-                                assignmentSemanticContext,
-                                assignmentExpression,
-                                allowStatementResult
-                                        ? FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT
-                                        : FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
-                                this::resolveExpressionDependencyType,
-                                false
-                        )
-                );
+                case AssignmentExpression assignmentExpression -> {
+                    publishAssignmentTargetPrefixTypes(assignmentExpression);
+                    yield finishSemanticResolution(
+                            assignmentExpression,
+                            FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                                    assignmentSemanticContext,
+                                    assignmentExpression,
+                                    allowStatementResult
+                                            ? FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT
+                                            : FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED,
+                                    this::resolveExpressionDependencyType,
+                                    false
+                            )
+                    );
+                }
                 case CallExpression callExpression -> {
                     var resolution = expressionSemanticSupport.resolveCallExpressionType(
                             callExpression,
@@ -614,6 +617,25 @@ public class FrontendExprTypeAnalyzer {
                         )
                 );
             };
+        }
+
+        /// Assignment-target resolution uses a writable-target model instead of ordinary expression
+        /// traversal. Publish the one proven missing prefix fact before that model runs so lowering
+        /// can consume the same frozen `expressionTypes()` table as ordinary `self.member` reads.
+        private void publishAssignmentTargetPrefixTypes(@NotNull AssignmentExpression assignmentExpression) {
+            if (!"=".equals(assignmentExpression.operator())) {
+                return;
+            }
+            if (!(assignmentExpression.left() instanceof AttributeExpression attributeExpression)) {
+                return;
+            }
+            if (attributeExpression.steps().size() != 1
+                    || !(attributeExpression.steps().getFirst() instanceof AttributePropertyStep)) {
+                return;
+            }
+            if (attributeExpression.base() instanceof SelfExpression selfExpression) {
+                publishExpressionType(selfExpression);
+            }
         }
 
         /// Published final-step facts cover the exact fast path.

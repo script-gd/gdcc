@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、shared/compile 分流边界、unary/binary 非 blocker 合同已落地）
-- 更新时间：2026-04-02
+- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、explicit self assignment-target prefix 去重、shared/compile 分流边界、unary/binary 非 blocker 合同已落地）
+- 更新时间：2026-04-26
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -229,6 +229,12 @@ compile gate 当前会在 compile surface 上扫描以下已发布事实：
 
 `DYNAMIC` 继续保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 尚未实现的缺口。
 
+显式 `self` assignment-target prefix 的 published fact 也属于 generic scan 的正式输入：
+
+- 合法 `self.<property> = value` 中，prefix `SelfExpression` 应已发布为 `RESOLVED(current class object type)`，compile gate 不产生额外 diagnostic。
+- static context、property initializer boundary 等非法上下文中，prefix `SelfExpression` 可能发布为 `BLOCKED` / `FAILED`；compile gate 可以消费该 fact，但不得把已有 upstream source error 改写成 assignment-root 级 generic blocker。
+- 如果未来出现没有 upstream owner 的 non-lowering-ready `SelfExpression` fact，compile gate 的兜底 anchor 必须保持在具体 `SelfExpression`，而不是外层 assignment root。
+
 这条 blocker 合同当前对 unary / binary 已经产生直接效果：
 
 - 已稳定发布的 eager `UnaryExpression` / `BinaryExpression` 不会再因为“表达式家族尚未实现”被 compile gate 误封口
@@ -318,6 +324,12 @@ compile gate 当前统一使用：
 
 这样可以避免同一条 `static var value = [1]` 在 compile-only 路径上同时收到
 “static property blocked” 与 “array literal blocked” 两条 `sema.compile_check`。
+
+对 direct explicit-self assignment target 还额外保持一条窄去重规则：
+
+- 若 `self.<property> = value` 的 assignment root non-lowering-ready fact 只是传播左侧 prefix `SelfExpression` 的同一 blocking status，且该 `SelfExpression` exact range 已经有 upstream blocking diagnostic，generic scan 必须跳过 assignment-root 级 `sema.compile_check`。
+- 这条去重只覆盖 plain `=`、单步 `AttributePropertyStep`、base 为显式 `SelfExpression` 的 direct property assignment；assignment value type incompatibility、value-required assignment、以及真正 root-owned failure 仍由 root 自身负责。
+- 该规则不改变 `resolvedMembers()` / `resolvedCalls()` 的通用扫描合同，也不把 property-initializer 普通 member/call blocker 静默吞掉。
 
 ### 5.3 当前 published-error 匹配方式
 

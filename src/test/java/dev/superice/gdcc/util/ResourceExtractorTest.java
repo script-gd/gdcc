@@ -1,13 +1,18 @@
 package dev.superice.gdcc.util;
 
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -87,5 +92,36 @@ public class ResourceExtractorTest {
         var resources = ResourceExtractor.listResourceFilesRecursively("unit_test/script", loader);
 
         assertTrue(resources.contains("smoke/basic_arithmetic.gd"), () -> "Expected nested test-suite script, got " + resources);
+    }
+
+    @Test
+    public void testJarResourcesCanBeListedAndExtracted(@TempDir Path tempDir) throws IOException {
+        var jar = tempDir.resolve("resources.jar");
+        try (var zip = new ZipOutputStream(Files.newOutputStream(jar))) {
+            writeJarEntry(zip, "jar_root/");
+            writeJarEntry(zip, "jar_root/a.txt", "alpha");
+            writeJarEntry(zip, "jar_root/nested/");
+            writeJarEntry(zip, "jar_root/nested/b.txt", "beta");
+        }
+
+        try (var loader = new URLClassLoader(new URL[]{jar.toUri().toURL()})) {
+            var resources = ResourceExtractor.listResourceFilesRecursively("jar_root", loader);
+            assertEquals(List.of("a.txt", "nested/b.txt"), resources);
+
+            var out = tempDir.resolve("out");
+            ResourceExtractor.extract("jar_root", out, loader);
+            assertEquals("alpha", Files.readString(out.resolve("a.txt"), StandardCharsets.UTF_8));
+            assertEquals("beta", Files.readString(out.resolve("nested").resolve("b.txt"), StandardCharsets.UTF_8));
+        }
+    }
+
+    private static void writeJarEntry(@NotNull ZipOutputStream zip, @NotNull String name) throws IOException {
+        writeJarEntry(zip, name, "");
+    }
+
+    private static void writeJarEntry(@NotNull ZipOutputStream zip, @NotNull String name, @NotNull String content) throws IOException {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(content.getBytes(StandardCharsets.UTF_8));
+        zip.closeEntry();
     }
 }

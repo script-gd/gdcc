@@ -22,6 +22,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -366,6 +368,7 @@ public final class CompileTaskRunner implements Runnable {
             if (taskState.cancellationRequested()) {
                 throw new TaskCanceledException();
             }
+            var buildLog = stackTrace(exception);
             return new CompileResult(
                     CompileResult.Outcome.BUILD_FAILED,
                     request.compileOptions(),
@@ -373,12 +376,18 @@ public final class CompileTaskRunner implements Runnable {
                     sourcePaths,
                     remapDiagnosticSourcePaths(request, diagnostics.snapshot()),
                     "Build pipeline failed: " + exception.getMessage(),
-                    exception.getMessage(),
+                    buildLog,
                     List.of(),
                     List.of(),
                     List.of()
             );
         }
+    }
+
+    private static @NotNull String stackTrace(@NotNull Throwable throwable) {
+        var writer = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(writer));
+        return writer.toString();
     }
 
     private void throwIfCancellationRequested() {
@@ -466,6 +475,7 @@ public final class CompileTaskRunner implements Runnable {
             @NotNull Throwable throwable
     ) {
         var failureMessage = "Compile task failed unexpectedly: " + describeThrowable(throwable);
+        var buildLog = stackTrace(throwable);
         return new CompileResult(
                 CompileResult.Outcome.BUILD_FAILED,
                 request == null ? CompileOptions.defaults() : request.compileOptions(),
@@ -473,7 +483,7 @@ public final class CompileTaskRunner implements Runnable {
                 request == null ? List.of() : displaySourcePaths(request),
                 EMPTY_DIAGNOSTICS,
                 failureMessage,
-                failureMessage,
+                buildLog,
                 List.of(),
                 List.of(),
                 List.of()

@@ -226,6 +226,8 @@ class ApiCompileDiagnosticsTest {
 
         assertEquals(CompileResult.Outcome.BUILD_FAILED, result.outcome());
         assertTrue(Objects.requireNonNull(result.failureMessage()).contains("test hook failure after request freeze"));
+        assertTrue(result.buildLog().contains("java.lang.IllegalStateException: test hook failure after request freeze"));
+        assertTrue(result.buildLog().contains("unexpectedFailureDoesNotReportStaleGeneratedFilesFromProjectPath"));
         assertTrue(result.generatedFiles().isEmpty());
         assertTrue(result.artifacts().isEmpty());
         assertTrue(result.outputLinks().isEmpty());

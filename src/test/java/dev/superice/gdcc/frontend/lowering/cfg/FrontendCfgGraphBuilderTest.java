@@ -685,6 +685,54 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyPublishesWritableRouteForRotatingCameraExplicitSelfPositionAssignment() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_rotating_camera_self_position.gd",
+                """
+                        class_name CfgBuilderRotatingCameraSelfPosition
+                        extends Camera3D
+                        
+                        func _process(delta: float) -> void:
+                            var vec = Vector3(1.0, 0.0, 0.0)
+                            self.position = vec
+                        """,
+                "_process",
+                Map.of("CfgBuilderRotatingCameraSelfPosition", "RuntimeCfgBuilderRotatingCameraSelfPosition")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var targetAttribute = assertInstanceOf(AttributeExpression.class, assignmentExpression.left());
+        var explicitSelf = assertInstanceOf(SelfExpression.class, targetAttribute.base());
+        var positionStep = assertInstanceOf(AttributePropertyStep.class, targetAttribute.steps().getFirst());
+        var assignmentCommit = requireSingleSequenceItem(graph, AssignmentItem.class);
+        var assignmentPayload = requireNotNull(
+                assignmentCommit.writableRoutePayload(),
+                "explicit self.position assignment should publish a frozen writable route"
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertSame(assignmentExpression, assignmentCommit.assignment()),
+                () -> assertEquals(1, assignmentCommit.targetOperandValueIds().size()),
+                () -> assertSame(assignmentExpression, assignmentPayload.routeAnchor()),
+                () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, assignmentPayload.root().kind()),
+                () -> assertSame(explicitSelf, assignmentPayload.root().anchor()),
+                () -> assertNull(assignmentPayload.root().valueIdOrNull()),
+                () -> assertEquals(FrontendWritableRoutePayload.LeafKind.PROPERTY, assignmentPayload.leaf().kind()),
+                () -> assertSame(positionStep, assignmentPayload.leaf().anchor()),
+                () -> assertNull(assignmentPayload.leaf().containerValueIdOrNull()),
+                () -> assertEquals(List.of(), assignmentPayload.leaf().operandValueIds()),
+                () -> assertEquals("position", assignmentPayload.leaf().memberNameOrNull()),
+                () -> assertNull(assignmentPayload.leaf().subscriptAccessKindOrNull()),
+                () -> assertEquals(List.of(), assignmentPayload.reverseCommitSteps())
+        );
+    }
+
+    @Test
     void buildExecutableBodyKeepsIdentifierAliasForCompositeNoRebindingArguments() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_identifier_receiver_binary_argument.gd",
@@ -2440,6 +2488,25 @@ class FrontendCfgGraphBuilderTest {
     private static <T> @NotNull T requireNotNull(T value, @NotNull String detail) {
         assertNotNull(value, detail);
         return value;
+    }
+
+    private static <T extends SequenceItem> @NotNull T requireSingleSequenceItem(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull Class<T> itemType
+    ) {
+        var matches = new java.util.ArrayList<T>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (itemType.isInstance(item)) {
+                    matches.add(itemType.cast(item));
+                }
+            }
+        }
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + itemType.getSimpleName());
+        return matches.getFirst();
     }
 
     private static @NotNull String invokeAliasArgumentSafety(
