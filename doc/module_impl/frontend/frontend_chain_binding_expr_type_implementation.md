@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、`:=` 最小回填与 expr-owned diagnostics 已落地）
-- 更新时间：2026-04-21
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 最小回填与 expr-owned diagnostics 已落地）
+- 更新时间：2026-04-26
 - 适用范围：
   - `src/main/java/dev/superice/gdcc/frontend/sema/**`
   - `src/main/java/dev/superice/gdcc/frontend/sema/analyzer/**`
@@ -19,6 +19,9 @@
   - `frontend_top_binding_analyzer_implementation.md`
   - `frontend_variable_analyzer_implementation.md`
   - `frontend_visible_value_resolver_implementation.md`
+  - `frontend_compile_check_analyzer_implementation.md`
+  - `frontend_complex_writable_target_implementation.md`
+  - `frontend_lowering_cfg_pass_implementation.md`
   - `frontend_unary_binary_expr_semantic_implementation.md`
   - `scope_analyzer_implementation.md`
   - `scope_type_resolver_implementation.md`
@@ -405,6 +408,16 @@
 - compound assignment 当前共享语义支持面固定为：`+=`、`-=`、`*=`、`/=`、`%=`、`**=`、`>>=`、`<<=`、`&=`、`^=`、`|=`
 - compound operator 的中间结果类型统一复用 ordinary binary operator typing；若 operator 对给定 operand 不成立，继续发布 `FAILED` 而不是回退成 `UNSUPPORTED`
 - compound assignment 不再停留在 compile-only blocker；compile-ready lowering surface 现已直接消费这条 shared assignment contract
+
+显式 `self` 作为 assignment-target prefix 时还有一条独立的 publication 合同：
+
+- 对 plain direct property assignment `self.<property> = value`，`FrontendExprTypeAnalyzer` 必须在 assignment root resolution 前，为左侧 base 的具体 `SelfExpression` AST node 发布 `expressionTypes()` fact。
+- 该 fact 只能通过既有 `FrontendExpressionSemanticSupport.resolveSelfExpressionType(...)` 路径产生；helper 不得自行推导当前类类型、static context、property-initializer boundary，也不得直接写 `analysisData.expressionTypes()`。
+- 该 publication 不拥有 diagnostic。若当前上下文禁止 `self`，published status 继续沿用既有 resolver 的 `BLOCKED` / `FAILED` 结果，首条 source diagnostic 仍由 upstream owner 负责。
+- 合法 instance context 中，该 `SelfExpression` 的 published fact 固定为 `RESOLVED(current class object type)`；这只服务于 downstream materialization，不改变 assignment root 的 `RESOLVED(void)` 语义。
+- 发布面必须保持窄范围：只覆盖 plain `=`、左侧为单步 `AttributePropertyStep`、base 为显式 `SelfExpression` 的 direct property assignment。
+- 不得因为这条规则主动补发普通 `IdentifierExpression`、`IdentifierExpression + SELF`、一般 attribute prefix、subscript key / index argument、call prefix、nested property、container mutation 或 compound assignment 的 expression fact。
+- 若同一 AST node 已经有 published fact，expr analyzer 必须复用既有 fact，不覆盖已有结果。
 
 当前正式支持的 assignment target 为：
 
