@@ -475,6 +475,7 @@ public final class CompileTaskRunner implements Runnable {
             @NotNull Throwable throwable
     ) {
         var failureMessage = "Compile task failed unexpectedly: " + describeThrowable(throwable);
+        var buildLog = stackTrace(throwable);
         return new CompileResult(
                 CompileResult.Outcome.BUILD_FAILED,
                 request == null ? CompileOptions.defaults() : request.compileOptions(),
@@ -482,7 +483,7 @@ public final class CompileTaskRunner implements Runnable {
                 request == null ? List.of() : displaySourcePaths(request),
                 EMPTY_DIAGNOSTICS,
                 failureMessage,
-                failureMessage,
+                buildLog,
                 List.of(),
                 List.of(),
                 List.of()
