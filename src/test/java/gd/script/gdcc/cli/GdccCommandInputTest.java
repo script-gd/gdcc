@@ -320,6 +320,41 @@ class GdccCommandInputTest {
     }
 
     @Test
+    void missingProjectOptionFileFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--project", tempDir.resolve("game/project.godot").toString(),
+                "-o", tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("--project file does not exist"), terminal.errText());
+        terminal.assertCompilerNotInvoked();
+        assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    @Test
+    void nonRegularProjectOptionPathFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
+        var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
+        Files.createDirectories(tempDir.resolve("game/project.godot"));
+        var terminal = new Terminal();
+
+        var exitCode = terminal.command().commandLine().execute(
+                "--project", tempDir.resolve("game/project.godot").toString(),
+                "-o", tempDir.resolve("build/demo").toString(),
+                source.toString()
+        );
+
+        assertEquals(GdccCommand.EXIT_USAGE, exitCode);
+        assertTrue(terminal.errText().contains("--project path is not a regular file"), terminal.errText());
+        terminal.assertCompilerNotInvoked();
+        assertTrue(terminal.api.listModules().isEmpty());
+    }
+
+    @Test
     void invalidOptimizationOrTargetFailsBeforeCreatingModule(@TempDir Path tempDir) throws IOException {
         var source = writeSource(tempDir.resolve("player.gd"), validSource("Player"));
         var invalidOpt = new Terminal();

@@ -75,7 +75,15 @@ public final class GdScriptUnitTestCompileRunner {
     }
 
     public @NotNull CaseResult compileAndValidate(@NotNull String scriptResourcePath) throws Exception {
+        return compileAndValidate(scriptResourcePath, GodotGdextensionTestRunner.defaultRunOptions(true));
+    }
+
+    public @NotNull CaseResult compileAndValidate(
+            @NotNull String scriptResourcePath,
+            @NotNull GodotGdextensionTestRunner.RunOptions runOptions
+    ) throws Exception {
         Objects.requireNonNull(scriptResourcePath);
+        Objects.requireNonNull(runOptions);
 
         var source = readRequiredResourceText(SCRIPT_RESOURCE_ROOT + "/" + scriptResourcePath);
         var validation = prepareValidation(
@@ -104,7 +112,7 @@ public final class GdScriptUnitTestCompileRunner {
                 new GodotGdextensionTestRunner.TestScriptSpec(validation.script())
         ));
 
-        var runResult = runner.run(true);
+        var runResult = runner.run(runOptions);
         var combinedOutput = runResult.combinedOutput();
         var passMarker = expectedPassMarker(scriptResourcePath);
         assertTrue(

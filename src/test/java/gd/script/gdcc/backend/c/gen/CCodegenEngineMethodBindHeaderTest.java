@@ -399,6 +399,37 @@ class CCodegenEngineMethodBindHeaderTest {
     }
 
     @Test
+    @DisplayName("generate should zero initialize destroyable ptrcall return carriers")
+    void generateShouldZeroInitializeDestroyablePtrcallReturnCarriers() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var callName = newVoidFunction("call_name");
+        callName.createAndAddVariable("probe", new GdObjectType("Probe"));
+        callName.createAndAddVariable("name", GdStringType.STRING);
+        entry(callName).appendInstruction(new CallMethodInsn("name", "name", "probe", List.of()));
+        entry(callName).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(callName);
+
+        var module = new LirModule("engine_bind_destroyable_return_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(probeClassWithDestroyableReturnHelper())),
+                List.of(hostClass)
+        );
+        var bindHeader = renderFiles(codegen.generate()).get("engine_method_binds.h");
+
+        var nameBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_String gdcc_engine_call_probe_name_P_RT");
+        assertContainsAll(
+                nameBody,
+                "godot_String result = { 0 };",
+                "godot_object_method_bind_ptrcall(",
+                "&result",
+                "return result;"
+        );
+        assertFalse(nameBody.contains("godot_String result;\n"), nameBody);
+    }
+
+    @Test
     @DisplayName("generate should emit vararg helpers with guarded unpack and helper-owned cleanup only")
     void generateShouldEmitVarargHelpersWithGuardedUnpackAndHelperOwnedCleanupOnly() {
         var hostClass = newClass("Worker", "RefCounted");
@@ -903,6 +934,32 @@ class CCodegenEngineMethodBindHeaderTest {
                 "core",
                 List.of(),
                 List.of(mix, dispatch, broadcast),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass probeClassWithDestroyableReturnHelper() {
+        var name = new ExtensionGdClass.ClassMethod(
+                "name",
+                false,
+                false,
+                false,
+                false,
+                97L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("String"),
+                List.of()
+        );
+        return new ExtensionGdClass(
+                "Probe",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(name),
                 List.of(),
                 List.of(),
                 List.of()

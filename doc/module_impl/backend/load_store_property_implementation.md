@@ -17,7 +17,7 @@
   - `doc/gdcc_ownership_lifecycle_spec.md`
   - `doc/module_impl/call_method_implementation.md`
   - `doc/module_impl/cbodybuilder_implementation.md`
-  - `doc/module_impl/explicit_c_inheritance_layout.md`
+  - `doc/module_impl/backend/explicit_c_inheritance_layout_contract.md`
 
 ---
 

@@ -418,8 +418,11 @@ public final class GdccCommand implements Callable<Integer> {
         if (projectFileName == null || !"project.godot".equals(projectFileName.toString())) {
             throw new IllegalArgumentException("--project must point to a project.godot file: " + project);
         }
-        if (!Files.isRegularFile(projectFile)) {
+        if (Files.notExists(projectFile)) {
             throw new IllegalArgumentException("--project file does not exist: " + project);
+        }
+        if (!Files.isRegularFile(projectFile)) {
+            throw new IllegalArgumentException("--project path is not a regular file: " + project);
         }
         for (var sourceInput : sourceInputs) {
             if (!Objects.equals(nearestProjectFile(sourceInput.hostPath().getParent()), projectFile)) {

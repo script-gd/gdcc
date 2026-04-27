@@ -236,7 +236,7 @@ cleanup:
     );
     return;
 <#else>
-    ${helper.renderGdTypeInC(resolved.returnType)} result;
+    ${helper.renderGdTypeInC(resolved.returnType)} result = { 0 };
     godot_object_method_bind_ptrcall(
         bind,
 <#if resolved.isStatic()>

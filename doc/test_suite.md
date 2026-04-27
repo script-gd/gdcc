@@ -130,6 +130,25 @@ func _ready() -> void:
     print("Reached after bad call.")
 ```
 
+## Godot Project Preparation Contract
+
+`GodotGdextensionTestRunner` rewrites the shared Godot test project before each runtime case:
+
+- Native artifacts are copied into `bin/`.
+- `GDExtensionTest.gdextension` is written with `entry_symbol = "gdextension_entry"`, `compatibility_minimum = "4.5"`, and the current platform library key (`windows.debug`, `linux.debug`, or `macos.debug`).
+- `.godot/extension_list.cfg` is written with `res://GDExtensionTest.gdextension`.
+- `main.tscn` is regenerated with the compiled target node and the validation script node.
+
+The extension-list file is intentional. A plain runtime launch such as `godot --upwards main.tscn --headless` loads GDExtension entries from `.godot/extension_list.cfg`; it does not perform the editor filesystem scan that discovers `.gdextension` files. Editor/import runs can generate the file, but the test runner must not depend on an editor cache.
+
+The Java-side success contract has three layers:
+
+1. Godot must reach `root.gd` shutdown and print `Test stop.`.
+2. Combined Godot output must contain the injected `UNIT_TEST_PASS::<resource path>` marker.
+3. Any `# gdcc-test:` output directives are checked after the pass marker contract; directives do not replace the marker.
+
+`GdScriptUnitTestCompileRunner` uses the default runner options unless a test passes explicit `GodotGdextensionTestRunner.RunOptions`: headless mode, `--quit-after 10`, and no resource-level quit-frame directive. Tests that need a larger runtime budget should call `GodotGdextensionTestRunner.defaultRunOptions(...).withQuitAfterFrames(...)` from Java instead of adding fixture-side directives.
+
 ## Runtime and Build Prerequisites
 
 This suite depends on the same external tools as the existing end-to-end native integration tests.
@@ -179,6 +198,7 @@ When the behavior under test is engine-driven virtual dispatch such as `_ready`,
 
 - Let the validation script observe state published by the compiled target instead of calling a helper that simulates the virtual itself.
 - `_process` / `_physics_process` cases may wait for a few `process_frame` / `physics_frame` ticks before checking the observed counters.
+- If a physics-frame case needs more runtime than the default `--quit-after 10`, set a per-test Java `RunOptions` override instead of increasing the runner default for every Godot test.
 - Do not call `set_process(true)` or `set_physics_process(true)` in either the compiled script or the validation script unless the toggle itself is the behavior under test.
 - These resource cases are positive runtime anchors only; wrong override signatures must stay in frontend-focused tests because they are expected to fail before build/run.
 

@@ -11,7 +11,9 @@
     - `Class_object_ptr` must be the generated helper for the static type of `obj`.
   - `godot_object_from_gdcc_object_ptr` is deprecated and must not be used in new or migrated code paths.
   - Convert from Godot object pointer using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)`.
-  - `Variant` can be converted to/from GDCC types using `godot_new_Variant_with_gdcc_Object` and `godot_new_gdcc_Object_with_Variant`.
+  - `Variant` can be converted to/from GDCC object types using `gdcc_new_Variant_with_gdcc_Object(obj)` and `godot_new_gdcc_Object_with_Variant`.
+    - `gdcc_new_Variant_with_gdcc_Object(obj)` receives a raw GDCC wrapper pointer, selects the generated `<Class>_object_ptr` helper with `_Generic`, and performs the GDCC -> Godot pointer conversion internally.
+    - Do not pre-convert the argument with `gdcc_object_to_godot_object_ptr(...)` before passing it to this macro.
 - `godot_float` is usually a typedef for `double`, but it should always be used as `godot_float` for compatibility.
 - Any Object, including engine object and GDCC objects, are always passed as pointers, and the pointers are passed as values, usually we do not use pointers to pointers.
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
@@ -92,6 +94,29 @@
   - If the value static type is `MyChild*`, use `MyChild_object_ptr`.
   - Do not mix with parent helper unless the value has already been upcast safely.
 - Any touched legacy path that still depends on the deprecated macro must be migrated in the same change or explicitly tracked as migration debt.
+- Generated GDCC wrapper layout is the fact source for object pointer access:
+  - root GDCC wrapper structs store `GDExtensionObjectPtr _object`;
+  - GDCC subclasses store their parent wrapper as the first `_super` field;
+  - generated `<Class>_object_ptr(...)` and `<Class>_set_object_ptr(...)` are the only template helpers that read or write the real Godot object pointer through that layout.
+
+### GDExtension Entry Lifecycle Contract
+
+- Generated `gdextension_entry(...)` must publish the lifecycle level expected by the generated registration code:
+  - `r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;`
+  - `r_initialization->userdata = NULL;`
+  - `r_initialization->initialize = &initialize;`
+  - `r_initialization->deinitialize = &deinitialize;`
+- `initialize(...)` must return without side effects for levels other than `GDEXTENSION_INITIALIZATION_SCENE`.
+- `deinitialize(...)` must use the same level guard before printing unload messages or destroying GDCC static registries.
+- This keeps class registration, StringName/String registries, and module log output scoped to the scene-level lifecycle that Godot uses for runtime class availability.
+
+### Exact Engine Ptrcall Helper Return Carrier Contract
+
+- Backend-owned exact engine helpers in `engine_method_binds.h` call `godot_object_method_bind_ptrcall(...)` directly.
+- Non-`void` ptrcall return carriers must be initialized before the call:
+  - primitive carriers use the same generated `{ 0 }` form for consistency;
+  - destroyable value wrappers such as `godot_String`, `godot_Array`, `godot_Dictionary`, and `godot_Variant` must not be left as uninitialized stack storage.
+- This matches gdextension-lite wrapper behavior and avoids passing an invalid return carrier to Godot for value-semantic wrapper returns such as `Object.get_class() -> String`.
 
 ### Global Helper Raw Pointer Contract
 

@@ -24,12 +24,8 @@ import java.util.Objects;
 
 /// C code generator for `UNARY_OP` and `BINARY_OP`.
 ///
-/// Stage 1 scope:
-/// - Validate instruction wiring and variable contracts.
-/// - Route to resolver path decision.
-/// - Fail fast for all unresolved paths.
-///
-/// Stage 2 extends this generator with compare specializations.
+/// It validates instruction wiring, routes generation through `OperatorResolver`,
+/// emits the selected operator path, and fails fast for unresolved paths.
 public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
     private final @NotNull OperatorResolver resolver = new OperatorResolver();
 

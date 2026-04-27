@@ -121,12 +121,14 @@
 
 - `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)` 是当前推荐路径，且 NULL-safe。
 - `godot_object_from_gdcc_object_ptr(obj)` 已废弃，不得用于新增或迁移后的路径。
-- `godot_new_Variant_with_gdcc_Object(obj)` 已复用上述 helper，因此打包 Variant 时不应额外手动转换。
+- `gdcc_new_Variant_with_gdcc_Object(obj)` 已复用上述 helper，因此打包 Variant 时不应额外手动转换。
+  - 该宏接收原始 GDCC wrapper 指针，并在宏内部选择生成的 `<Class>_object_ptr(...)` helper。
+  - 调用侧不得先把参数手工转换成 Godot raw object pointer。
 
 ### 3.3 明确不替换的场景
 
-- `entry.c.ftl` 中 `self->_object = obj;` 是封装体字段初始化，不属于“调用侧 GDCC->Godot 转换”，不应替换。
-- helper 宏内部 `_o->_object` 是宏实现细节，不属于调用侧手写访问。
+- `entry.c.ftl` 中 `<Class>_set_object_ptr(self, obj);` 是封装体字段初始化，不属于“调用侧 GDCC->Godot 转换”，不应替换。
+- helper 宏内部对 `<Class>_object_ptr(...)` 的调用是宏实现细节，不属于调用侧手写访问。
 
 ## 4. `__prepare__` / `__finally__` 与返回槽
 

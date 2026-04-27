@@ -1,5 +1,7 @@
 # GdExtension Lite Library
 
+This document describes the Godot / GDExtension Lite binding layer. Project-owned GDCC helpers with `gdcc_*` or `gdcc_new_*` prefixes are generated backend helpers, not gdextension-lite bindings.
+
 ## Naming conventions
 
 1. Every type and function binding from Godot have the prefix `godot_`
@@ -18,3 +20,13 @@
 14. Godot utility functions have the format `godot_<function name>`
 15. Variadic methods and utility functions expect argv/argc parameters
 16. Singleton getters have the format `godot_<type name>_singleton`
+
+## GDCC helper boundary
+
+The generated backend may call GDCC-owned helpers next to gdextension-lite bindings. These helpers are intentionally outside the `godot_*` naming rules above:
+
+- `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)` converts a GDCC wrapper pointer to the backing Godot object pointer through the generated class helper.
+- `gdcc_new_Variant_with_gdcc_Object(obj)` packs a raw GDCC wrapper pointer into a `Variant` and performs the object-pointer conversion internally.
+- `gdcc_ref_counted_init_raw(obj, initialize)` handles explicit generated-code initialization for freshly constructed GDCC `RefCounted` wrappers.
+
+The generated `entry.c` initializes the gdextension-lite binding table by calling `gdextension_lite_initialize(...)` from the GDExtension entry point.

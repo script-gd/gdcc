@@ -17,12 +17,8 @@ import java.util.regex.Pattern;
 
 /// Shared resolver for operator instruction codegen.
 ///
-/// Stage 1 scope:
-/// - Define path-decision entry points for unary/binary operators.
-/// - Define metadata matching entry points.
-/// - Define return-type resolution entry points.
-///
-/// Stage 2 extends this resolver with compare specializations.
+/// It owns operator path decisions, metadata matching, return-type resolution,
+/// and compare-specific specialization selection.
 public final class OperatorResolver {
     private static final Logger LOGGER = LoggerFactory.getLogger(OperatorResolver.class);
     private static final Pattern NON_IDENTIFIER_PATTERN = Pattern.compile("[^a-z0-9_]");

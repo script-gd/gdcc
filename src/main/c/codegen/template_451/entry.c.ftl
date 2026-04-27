@@ -15,13 +15,16 @@ GDE_EXPORT GDExtensionBool gdextension_entry(
     gdextension_lite_initialize(p_get_proc_address);
     class_library = p_library;
 
+    r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;
+    r_initialization->userdata = NULL;
     r_initialization->initialize = &initialize;
     r_initialization->deinitialize = &deinitialize;
 
     return true;
 }
 
-void initialize(void*, const GDExtensionInitializationLevel p_level) {
+void initialize(void* userdata, const GDExtensionInitializationLevel p_level) {
+    (void)userdata;
     if (p_level != GDEXTENSION_INITIALIZATION_SCENE) {
         return;
     }
@@ -55,7 +58,11 @@ void initialize(void*, const GDExtensionInitializationLevel p_level) {
     </#list>
 }
 
-void deinitialize(void*, GDExtensionInitializationLevel p_level) {
+void deinitialize(void* userdata, GDExtensionInitializationLevel p_level) {
+    (void)userdata;
+    if (p_level != GDEXTENSION_INITIALIZATION_SCENE) {
+        return;
+    }
     <#--  Print start unloading  -->
     {
         godot_Variant msg_variant = godot_new_Variant_with_String(GD_STATIC_S(u8"Unloading ${module.moduleName}..."));

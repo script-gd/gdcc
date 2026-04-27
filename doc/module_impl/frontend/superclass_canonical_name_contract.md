@@ -24,7 +24,7 @@
   - `inner_class_implementation.md`
   - `scope_architecture_refactor_plan.md`
   - `scope_analyzer_implementation.md`
-  - `../backend/explicit_c_inheritance_layout.md`
+  - `../backend/explicit_c_inheritance_layout_contract.md`
 - 明确非目标：
   - 不重命名 `ClassDef#getSuperName()`、`LirClassDef#setSuperName(...)` 等既有接口
   - 不把 superclass 的 `sourceName` / `declaredText` 放进 `LirClassDef`

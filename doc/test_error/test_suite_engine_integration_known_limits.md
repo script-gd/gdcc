@@ -104,19 +104,28 @@
   - dormant / 预留面
 - 详细盘点与当前冻结合同统一维护在 `doc/module_impl/frontend/gdcc_facing_class_name_contract.md`。
 
-## 8. exact engine route 剩余 resource gap
+## 8. exact engine route resource 覆盖现状
 
-- `test_suite` 目前仍缺少稳定、真实、可长期维护的 stock exact engine static route resource。
-  - backend 侧 static exact route 继续主要依赖：
-    - `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
-    - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
-- stock runtime API 目前仍缺少稳定、非 editor-only 的“object 位于 fixed prefix 的 vararg method”样本。
-  - 这类 helper surface 继续由 focused regression 锚定：
-    - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
+- `test_suite` 现已包含多条真实 Godot runtime resource，覆盖 exact/default/vararg 路径：
+  - `runtime/engine_node_add_child_exact_explicit_internal_args.gd`
+  - `runtime/engine_node_add_child_exact_typed_receiver.gd`
+  - `runtime/engine_node_call_exact_vararg_success.gd`
+  - `runtime/engine_node_call_exact_vararg_error_path.gd`
+  - `runtime/engine_node_call_exact_vararg_discard_return.gd`
+  - `runtime/engine_scene_tree_call_group_flags_exact_vararg.gd`
+  - `runtime/engine_array_mesh_exact_default_args.gd`
+  - `runtime/engine_option_button_default_args.gd`
+- backend 侧 exact route 的文本/metadata 矩阵仍由 focused regression 维护：
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CallMethodInsnGenEngineTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
 - bare utility default 在当前 stock `test_suite` 中仍无真实 Godot 锚点。
   - `extension_api_451.json` 当前没有带 `default_value` 的 stock utility function
   - 这条 coverage 继续由 focused tests 锚定，例如：
     - `src/test/java/gd/script/gdcc/backend/c/gen/CallGlobalInsnGenTest.java`
+- 当前 ABI resource 分类还包括：
+  - `abi/variant`
+  - `abi/typed_array`
+  - `abi/typed_dictionary`
 
 ## 9. 已修复：engine virtual runtime anchors 已补齐
 
@@ -126,7 +135,8 @@
   - `src/test/test_suite/unit_test/script/runtime/virtual/physics_process_called_and_delta_valid.gd`
 - 对应 validation script 统一通过观测计数器与 `delta` 来验收引擎驱动结果，而不是主动模拟 virtual 调用。
 - `_process` / `_physics_process` validation 当前通过等待少量 `process_frame` / `physics_frame` 完成验证。
-- 本轮实测中，`GodotGdextensionTestRunner.DEFAULT_QUIT_AFTER_FRAMES = 10` 已足够稳定覆盖这三条用例，因此没有新增 `quit_after_frames` runner 指令。
+- `GodotGdextensionTestRunner.DEFAULT_QUIT_AFTER_FRAMES` 保持 `10`，避免所有 Godot runtime 测试都被迫多跑帧。
+- `_physics_process` validation 通过 Java 侧 `RunOptions.withQuitAfterFrames(60)` 单独提高预算；`--quit-after` 按 idle frame 计数，headless 运行中 10 个 idle frame 可能早于 validation 等到 3 个 `physics_frame`。
 - 错误签名 negative path 继续留在 frontend focused tests，而不是回塞进 `test_suite` resource：
   - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendVirtualOverrideAnalyzerTest.java`
   - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
