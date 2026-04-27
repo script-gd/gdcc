@@ -8,6 +8,20 @@ version = "0.0.1"
 
 val generatedVersionResources = layout.buildDirectory.dir("generated/resources/gdccVersion")
 val runtimeLibDir = layout.buildDirectory.dir("libs/lib")
+val launcherProjectDir = layout.projectDirectory.dir("src/launcher/zig")
+val launcherInstallDir = layout.buildDirectory.dir("launcher/zig")
+val launcherBinDir = launcherInstallDir.map { it.dir("bin") }
+
+data class LauncherDistribution(
+    val taskSuffix: String,
+    val platform: String,
+)
+
+val launcherDistributions = listOf(
+    LauncherDistribution("WindowsX86_64", "windows-x86_64"),
+    LauncherDistribution("LinuxX86_64", "linux-x86_64"),
+    LauncherDistribution("LinuxAarch64", "linux-aarch64"),
+)
 
 fun gitOutput(vararg args: String): String {
     return try {
@@ -40,7 +54,7 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.17")
     implementation("info.picocli:picocli:4.7.7")
     annotationProcessor("info.picocli:picocli-codegen:4.7.7")
-    implementation("com.github.SuperIceCN:gdparser:0.5.1")
+    implementation("com.github.SuperIceCN:gdparser:0.5.2")
 }
 
 tasks.test {
@@ -81,6 +95,30 @@ val syncRuntimeLibs by tasks.registering(Sync::class) {
     into(runtimeLibDir)
 }
 
+val buildZigLauncher by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Builds the default native gdcc launchers with Zig."
+
+    dependsOn(tasks.jar)
+    workingDir = launcherProjectDir.asFile
+    inputs.dir(launcherProjectDir)
+    inputs.property("jarName", tasks.jar.flatMap { it.archiveFileName })
+    outputs.dir(launcherBinDir)
+
+    // Zig owns the native target matrix; Gradle only passes the jar name and install prefix.
+    doFirst {
+        delete(launcherInstallDir)
+        commandLine(
+            "zig",
+            "build",
+            "--release=small",
+            "-Djar-name=${tasks.jar.get().archiveFileName.get()}",
+            "--prefix",
+            launcherInstallDir.get().asFile.absolutePath
+        )
+    }
+}
+
 tasks.jar {
     dependsOn(syncRuntimeLibs)
     manifest {
@@ -94,19 +132,40 @@ tasks.jar {
     }
 }
 
-val packageDistribution by tasks.registering(Zip::class) {
+fun registerLauncherDistribution(distribution: LauncherDistribution) = tasks.register<Zip>(
+    "packageDistribution${distribution.taskSuffix}"
+) {
     group = "distribution"
-    description = "Packages the gdcc jar and sibling lib dependencies into a zip archive."
+    description = "Packages the ${distribution.platform} gdcc distribution."
 
-    dependsOn(tasks.jar, syncRuntimeLibs)
+    dependsOn(tasks.jar, syncRuntimeLibs, buildZigLauncher)
     archiveBaseName.set(project.name)
     archiveVersion.set(project.version.toString())
+    archiveClassifier.set(distribution.platform)
     destinationDirectory.set(layout.buildDirectory.dir("distributions"))
 
     from(tasks.jar.flatMap { it.archiveFile })
     from(runtimeLibDir) {
         into("lib")
     }
+    from(launcherBinDir.map { it.dir(distribution.platform) }) {
+        // Keep the selected platform launcher at the archive root next to the jar.
+        filePermissions {
+            unix("0755")
+        }
+        dirPermissions {
+            unix("0755")
+        }
+    }
+}
+
+val platformDistributionTasks = launcherDistributions.map(::registerLauncherDistribution)
+
+val packageDistribution by tasks.registering {
+    group = "distribution"
+    description = "Packages all platform-specific gdcc distributions."
+
+    dependsOn(platformDistributionTasks)
 }
 
 sourceSets {

@@ -143,13 +143,23 @@ build/libs/lib/
 
 `jar` task 依赖 `syncRuntimeLibs`，因此直接运行 `jar` 也会刷新同级 `lib` 文件夹。
 
-`packageDistribution` task 生成 zip distribution：
+`buildZigLauncher` task 使用 Zig 构建默认 native launcher 矩阵：
 
 ```text
-build/distributions/gdcc-<version>.zip
+windows-x86_64/gdcc.exe
+linux-x86_64/gdcc
+linux-aarch64/gdcc
 ```
 
-zip 顶层包含主 jar 与 `lib/` 文件夹。该 distribution 面向 classpath-style `java -jar gdcc-<version>.jar` 启动；module-path 启动不依赖 manifest `Class-Path`，不属于当前分发合同。
+`packageDistribution` task 是聚合任务，生成三个平台 zip distribution：
+
+```text
+build/distributions/gdcc-<version>-windows-x86_64.zip
+build/distributions/gdcc-<version>-linux-x86_64.zip
+build/distributions/gdcc-<version>-linux-aarch64.zip
+```
+
+每个 zip 顶层只包含对应平台的 launcher、主 jar 与 `lib/` 文件夹，不包含其他平台 launcher。launcher 与主 jar 同级，最终仍通过 classpath-style `java -jar gdcc-<version>.jar` 启动；module-path 启动不依赖 manifest `Class-Path`，不属于当前分发合同。
 
 ---
 

@@ -1,0 +1,11 @@
+.{
+    .name = .gdcc_launcher,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+    .fingerprint = 0x1713e662055b7adb,
+}
