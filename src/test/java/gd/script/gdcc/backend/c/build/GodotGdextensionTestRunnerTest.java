@@ -35,6 +35,22 @@ public class GodotGdextensionTestRunnerTest {
     }
 
     @Test
+    public void prepareProjectShouldAcceptWasmArtifactAsDynamicLibrary() throws Exception {
+        var projectDir = tempDir.resolve("project");
+        var artifactDir = tempDir.resolve("artifacts");
+        Files.createDirectories(artifactDir);
+        var wasmLibrary = artifactDir.resolve("demo_debug_wasm32.wasm");
+        Files.writeString(wasmLibrary, "", StandardCharsets.UTF_8);
+
+        var runner = new GodotGdextensionTestRunner(projectDir);
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(List.of(wasmLibrary), List.of(), null));
+
+        assertTrue(Files.exists(projectDir.resolve("bin/demo_debug_wasm32.wasm")));
+        var gdextensionText = Files.readString(projectDir.resolve("GDExtensionTest.gdextension"), StandardCharsets.UTF_8);
+        assertTrue(gdextensionText.contains("res://bin/demo_debug_wasm32.wasm"), gdextensionText);
+    }
+
+    @Test
     public void defaultRunOptionsShouldAllowPerRunFrameBudgetOverride() {
         var runOptions = GodotGdextensionTestRunner.defaultRunOptions(true);
         var customRunOptions = runOptions.withQuitAfterFrames(60);

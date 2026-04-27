@@ -464,6 +464,11 @@ The current implementation treats `generated` and `artifacts` under the output m
 compiler-managed names. Future changes that allow arbitrary caller content under those names need an
 explicit ownership marker or publication manifest.
 
+The API compile pipeline does not generate Godot `.gdextension` metadata files. That host-file
+convenience belongs to adapters with enough caller context to relate host source files to a
+`project.godot` file. The local CLI currently performs that post-success step when its `--project`
+option proves that all input scripts belong to the same Godot project.
+
 ---
 
 ## 10. Task Retention and Events

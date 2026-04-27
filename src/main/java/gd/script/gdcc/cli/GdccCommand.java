@@ -6,6 +6,7 @@ import gd.script.gdcc.api.CompileResult;
 import gd.script.gdcc.api.CompileTaskEvent;
 import gd.script.gdcc.api.CompileTaskSnapshot;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.GdccException;
@@ -96,6 +97,28 @@ public final class GdccCommand implements Callable<Integer> {
     String gde = "4.5.1";
 
     @Option(
+            names = {"--opt", "--optimize"},
+            defaultValue = "debug",
+            paramLabel = "<level>",
+            description = "Optimization level. Supported: debug, release. Defaults to debug."
+    )
+    String opt = "debug";
+
+    @Option(
+            names = "--target",
+            paramLabel = "<platform>",
+            description = "Target platform. Supported: windows-x86-64, windows-aarch64, linux-x86-64, linux-aarch64, linux-riscv64, android-x86-64, android-aarch64, web-wasm32. Defaults to the native host platform."
+    )
+    String target;
+
+    @Option(
+            names = "--project",
+            paramLabel = "<project.godot>",
+            description = "Godot project.godot file. When every input belongs to this project, emit <output>/<output-name>.gdextension."
+    )
+    Path project;
+
+    @Option(
             names = {"-v", "--verbose"},
             description = "Increase output verbosity. Repeat for more detail."
     )
@@ -138,6 +161,7 @@ public final class GdccCommand implements Callable<Integer> {
         try {
             var sourceInputs = sourceInputs();
             var outputTarget = outputTarget(sourceInputs);
+            var gdextensionMetadataTarget = gdextensionMetadataTarget(sourceInputs, outputTarget);
             var compileOptions = compileOptions(outputTarget);
             var topLevelCanonicalNameMap = topLevelCanonicalNameMap(sourceInputs);
 
@@ -150,11 +174,11 @@ public final class GdccCommand implements Callable<Integer> {
 
             var taskId = api.compile(outputTarget.moduleId());
             var completedSnapshot = waitForTask(taskId);
-            return renderCompletedTask(completedSnapshot);
+            return renderCompletedTask(completedSnapshot, gdextensionMetadataTarget);
         } catch (CliInterruptedException exception) {
             return EXIT_INTERRUPTED;
         } catch (IOException exception) {
-            return failUsage("Failed to read input file: " + exception.getMessage());
+            return failUsage("I/O failure: " + exception.getMessage());
         } catch (GdccException | IllegalArgumentException exception) {
             return failUsage(exception.getMessage());
         }
@@ -189,8 +213,8 @@ public final class GdccCommand implements Callable<Integer> {
         return new CompileOptions(
                 godotVersion(),
                 outputTarget.projectPath(),
-                COptimizationLevel.DEBUG,
-                TargetPlatform.getNativePlatform(),
+                optimizationLevel(),
+                targetPlatform(),
                 false,
                 CompileOptions.DEFAULT_OUTPUT_MOUNT_ROOT
         );
@@ -204,6 +228,40 @@ public final class GdccCommand implements Callable<Integer> {
         throw new IllegalArgumentException(
                 "Unsupported --gde value '" + gde + "'. Supported versions: " + GodotVersion.V451.version
         );
+    }
+
+    private @NotNull COptimizationLevel optimizationLevel() {
+        return parseEnumOption(COptimizationLevel.class, "--opt", opt);
+    }
+
+    private @NotNull TargetPlatform targetPlatform() {
+        return target == null ? TargetPlatform.getNativePlatform() : parseEnumOption(TargetPlatform.class, "--target", target);
+    }
+
+    private static <T extends Enum<T>> @NotNull T parseEnumOption(
+            @NotNull Class<T> enumClass,
+            @NotNull String optionName,
+            @NotNull String value
+    ) {
+        var normalizedValue = StringUtil.requireTrimmedNonBlank(value, optionName)
+                .replace('-', '_')
+                .toUpperCase(Locale.ROOT);
+        for (var candidate : enumClass.getEnumConstants()) {
+            if (candidate.name().equals(normalizedValue)) {
+                return candidate;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Unsupported " + optionName + " value '" + value + "'. Supported values: " + supportedEnumValues(enumClass)
+        );
+    }
+
+    private static <T extends Enum<T>> @NotNull String supportedEnumValues(@NotNull Class<T> enumClass) {
+        var values = new ArrayList<String>();
+        for (var candidate : enumClass.getEnumConstants()) {
+            values.add(candidate.name().toLowerCase(Locale.ROOT).replace('_', '-'));
+        }
+        return String.join(", ", values);
     }
 
     private @NotNull List<SourceInput> sourceInputs() throws IOException {
@@ -237,7 +295,7 @@ public final class GdccCommand implements Callable<Integer> {
         var virtualPath = virtualSourcePath(index, normalizedInput);
         var fileName = normalizedInput.getFileName().toString();
         var defaultOutputStem = fileName.substring(0, fileName.length() - ".gd".length());
-        return new SourceInput(virtualPath, Path.of(virtualPath), defaultOutputStem, source, input.toString());
+        return new SourceInput(virtualPath, Path.of(virtualPath), normalizedInput, defaultOutputStem, source, input.toString());
     }
 
     private @NotNull String virtualSourcePath(int index, @NotNull Path normalizedInput) {
@@ -347,16 +405,80 @@ public final class GdccCommand implements Callable<Integer> {
         }
     }
 
-    private int renderCompletedTask(@NotNull CompileTaskSnapshot snapshot) {
+    private @Nullable GdextensionMetadataTarget gdextensionMetadataTarget(
+            @NotNull List<SourceInput> sourceInputs,
+            @NotNull OutputTarget outputTarget
+    ) {
+        if (project == null) {
+            return null;
+        }
+
+        var projectFile = project.toAbsolutePath().normalize();
+        var projectFileName = projectFile.getFileName();
+        if (projectFileName == null || !"project.godot".equals(projectFileName.toString())) {
+            throw new IllegalArgumentException("--project must point to a project.godot file: " + project);
+        }
+        if (Files.notExists(projectFile)) {
+            throw new IllegalArgumentException("--project file does not exist: " + project);
+        }
+        if (!Files.isRegularFile(projectFile)) {
+            throw new IllegalArgumentException("--project path is not a regular file: " + project);
+        }
+        for (var sourceInput : sourceInputs) {
+            if (!Objects.equals(nearestProjectFile(sourceInput.hostPath().getParent()), projectFile)) {
+                return null;
+            }
+        }
+        return new GdextensionMetadataTarget(
+                outputTarget.projectPath().resolve(outputTarget.moduleName() + ".gdextension")
+        );
+    }
+
+    private @Nullable Path nearestProjectFile(@NotNull Path sourceParent) {
+        for (Path current = sourceParent.toAbsolutePath().normalize(); current != null; current = current.getParent()) {
+            var candidate = current.resolve("project.godot");
+            if (Files.isRegularFile(candidate)) {
+                return candidate.toAbsolutePath().normalize();
+            }
+        }
+        return null;
+    }
+
+    private int renderCompletedTask(
+            @NotNull CompileTaskSnapshot snapshot,
+            @Nullable GdextensionMetadataTarget gdextensionMetadataTarget
+    ) throws IOException {
         var result = Objects.requireNonNull(snapshot.result(), "completed compile task must carry a result");
-        renderResult(snapshot.moduleId(), result);
+        var metadataPath = result.success() && gdextensionMetadataTarget != null
+                ? writeGdextensionMetadata(result, gdextensionMetadataTarget)
+                : null;
+        renderResult(snapshot.moduleId(), result, metadataPath);
         if (result.success()) {
             return 0;
         }
         return result.outcome() == CompileResult.Outcome.CANCELED ? EXIT_INTERRUPTED : EXIT_COMPILE_FAILED;
     }
 
-    private void renderResult(@NotNull String moduleId, @NotNull CompileResult result) {
+    private @Nullable Path writeGdextensionMetadata(
+            @NotNull CompileResult result,
+            @NotNull GdextensionMetadataTarget target
+    ) throws IOException {
+        if (result.artifacts().isEmpty()) {
+            return null;
+        }
+        return GdextensionMetadataFile.write(
+                target.metadataPath(),
+                result.artifacts().getFirst(),
+                result.compileOptions().optimizationLevel(),
+                result.compileOptions().targetPlatform()
+        );
+    }
+
+    private void renderResult(
+            @NotNull String moduleId,
+            @NotNull CompileResult result,
+            @Nullable Path gdextensionMetadataPath
+    ) {
         for (var diagnostic : result.diagnostics().asList()) {
             err.println(formatDiagnostic(diagnostic));
         }
@@ -369,6 +491,9 @@ public final class GdccCommand implements Callable<Integer> {
             out.println("Compiled module " + moduleId);
             for (var artifact : result.artifacts()) {
                 out.println("Artifact: " + artifact);
+            }
+            if (gdextensionMetadataPath != null) {
+                out.println("Metadata: " + gdextensionMetadataPath);
             }
             if (verbosityLevel() >= 1) {
                 renderOutputLinks(result);
@@ -469,6 +594,7 @@ public final class GdccCommand implements Callable<Integer> {
     private record SourceInput(
             @NotNull String virtualPath,
             @NotNull Path logicalPath,
+            @NotNull Path hostPath,
             @NotNull String defaultOutputStem,
             @NotNull String source,
             @NotNull String displayPath
@@ -476,6 +602,9 @@ public final class GdccCommand implements Callable<Integer> {
     }
 
     private record ClassMap(@NotNull String source, @NotNull String canonical) {
+    }
+
+    private record GdextensionMetadataTarget(@NotNull Path metadataPath) {
     }
 
     private static final class CliInterruptedException extends RuntimeException {

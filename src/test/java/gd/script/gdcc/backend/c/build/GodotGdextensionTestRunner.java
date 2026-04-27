@@ -17,7 +17,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
@@ -60,10 +59,10 @@ public final class GodotGdextensionTestRunner {
         clearDirectory(binDir);
 
         var copiedArtifacts = copyArtifacts(setup.artifacts(), binDir);
-        var runtimePlatform = RuntimePlatform.detectCurrent();
-        var dynamicLibrary = findDynamicLibrary(copiedArtifacts, runtimePlatform.librarySuffix());
-
-        writeGdextensionFile(dynamicLibrary.getFileName().toString(), runtimePlatform);
+        var targetPlatform = TargetPlatform.getNativePlatform();
+        var dynamicLibrary = findDynamicLibrary(copiedArtifacts, librarySuffix(targetPlatform));
+        var dynamicLibraryPath = testProjectDir.relativize(dynamicLibrary).toString();
+        writeGdextensionFile("res://" + dynamicLibraryPath, targetPlatform);
         writeExtensionListFile();
         if (setup.testScript() != null) {
             writeTestScript(setup.testScript());
@@ -256,20 +255,22 @@ public final class GodotGdextensionTestRunner {
     }
 
     private static boolean isDynamicLibrary(@NotNull String artifactName) {
-        return artifactName.endsWith(".dll") || artifactName.endsWith(".so") || artifactName.endsWith(".dylib");
+        return artifactName.endsWith(".dll")
+                || artifactName.endsWith(".so")
+                || artifactName.endsWith(".dylib")
+                || artifactName.endsWith(".wasm");
     }
 
-    private void writeGdextensionFile(@NotNull String libraryFileName, @NotNull RuntimePlatform platform) throws IOException {
-        var content = """
-                [configuration]
-                
-                entry_symbol = "gdextension_entry"
-                compatibility_minimum = "4.5"
-                
-                [libraries]
-                %s = "res://bin/%s"
-                """.formatted(platform.gdextensionKey(), libraryFileName);
-        Files.writeString(testProjectDir.resolve(GDEXTENSION_FILE_NAME), content, StandardCharsets.UTF_8);
+    private void writeGdextensionFile(@NotNull String libraryPath, @NotNull TargetPlatform targetPlatform) throws IOException {
+        Files.writeString(
+                testProjectDir.resolve(GDEXTENSION_FILE_NAME),
+                GdextensionMetadataFile.render(
+                        libraryPath.replace('\\', '/'),
+                        COptimizationLevel.DEBUG,
+                        targetPlatform
+                ),
+                StandardCharsets.UTF_8
+        );
     }
 
     private void writeExtensionListFile() throws IOException {
@@ -303,35 +304,12 @@ public final class GodotGdextensionTestRunner {
         }
     }
 
-    private enum RuntimePlatform {
-        WINDOWS("windows.debug", ".dll"),
-        LINUX("linux.debug", ".so"),
-        MACOS("macos.debug", ".dylib");
-
-        private final @NotNull String gdextensionKey;
-        private final @NotNull String librarySuffix;
-
-        RuntimePlatform(@NotNull String gdextensionKey, @NotNull String librarySuffix) {
-            this.gdextensionKey = gdextensionKey;
-            this.librarySuffix = librarySuffix;
-        }
-
-        public @NotNull String gdextensionKey() {
-            return gdextensionKey;
-        }
-
-        public @NotNull String librarySuffix() {
-            return librarySuffix;
-        }
-
-        public static @NotNull RuntimePlatform detectCurrent() {
-            var osName = System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH);
-            return switch (osName) {
-                case String s when s.contains("win") -> WINDOWS;
-                case String s when s.contains("mac") -> MACOS;
-                default -> LINUX;
-            };
-        }
+    private static @NotNull String librarySuffix(@NotNull TargetPlatform targetPlatform) {
+        return switch (targetPlatform) {
+            case WINDOWS_X86_64, WINDOWS_AARCH64 -> ".dll";
+            case LINUX_X86_64, LINUX_AARCH64, LINUX_RISCV64, ANDROID_X86_64, ANDROID_AARCH64 -> ".so";
+            case WEB_WASM32 -> ".wasm";
+        };
     }
 
     /// Scene node declaration that will be written into main.tscn.
