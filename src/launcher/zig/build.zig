@@ -15,10 +15,6 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{
         .preferred_optimize_mode = .ReleaseSmall,
     });
-    const jar_name = b.option([]const u8, "jar-name", "Name of the gdcc jar next to the launcher bin directory") orelse "gdcc.jar";
-
-    const options = b.addOptions();
-    options.addOption([]const u8, "gdcc_jar_name", jar_name);
 
     const install_step = b.getInstallStep();
     for (default_targets) |launcher_target| {
@@ -29,7 +25,6 @@ pub fn build(b: *std.Build) void {
             .target = b.resolveTargetQuery(target_query),
             .optimize = optimize,
         });
-        root_module.addOptions("build_options", options);
 
         const exe = b.addExecutable(.{
             .name = "gdcc",

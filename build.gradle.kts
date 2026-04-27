@@ -101,18 +101,18 @@ val buildZigLauncher by tasks.registering(Exec::class) {
 
     dependsOn(tasks.jar)
     workingDir = launcherProjectDir.asFile
-    inputs.dir(launcherProjectDir)
-    inputs.property("jarName", tasks.jar.flatMap { it.archiveFileName })
+    inputs.files(fileTree(launcherProjectDir) {
+        exclude(".zig-cache/**", "zig-out/**")
+    })
     outputs.dir(launcherBinDir)
 
-    // Zig owns the native target matrix; Gradle only passes the jar name and install prefix.
+    // Zig owns the native target matrix; Gradle only passes the install prefix.
     doFirst {
         delete(launcherInstallDir)
         commandLine(
             "zig",
             "build",
             "--release=small",
-            "-Djar-name=${tasks.jar.get().archiveFileName.get()}",
             "--prefix",
             launcherInstallDir.get().asFile.absolutePath
         )
