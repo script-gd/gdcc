@@ -75,7 +75,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
         var entrySource = Files.readString(projectDir.resolve("entry.c"));
         var entryHeader = Files.readString(projectDir.resolve("entry.h"));
-        var librarySuffix = projectInfo.getTargetPlatform().sharedLibraryFileName("artifact").replace("artifact", "");
+        var expectedArtifactName = expectedArtifactFileName(projectInfo);
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(Files.exists(projectDir.resolve("entry.c")));
@@ -86,8 +86,8 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertTrue(entryHeader.contains("#include \"engine_method_binds.h\""), entryHeader);
         assertTrue(
                 buildResult.artifacts().stream()
-                        .anyMatch(artifact -> artifact.getFileName().toString().endsWith(librarySuffix)),
-                () -> "Expected a native library artifact with suffix '" + librarySuffix + "', got " + buildResult.artifacts()
+                        .anyMatch(artifact -> artifact.getFileName().toString().equals(expectedArtifactName)),
+                () -> "Expected native library artifact '" + expectedArtifactName + "', got " + buildResult.artifacts()
         );
         assertTrue(buildResult.artifacts().stream().allMatch(Files::exists));
 
@@ -342,7 +342,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
 
         var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
         var entrySource = Files.readString(projectDir.resolve("entry.c"));
-        var librarySuffix = projectInfo.getTargetPlatform().sharedLibraryFileName("artifact").replace("artifact", "");
+        var expectedArtifactName = expectedArtifactFileName(projectInfo);
 
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(Files.exists(projectDir.resolve("entry.c")));
@@ -380,8 +380,8 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertFalse(entrySource.contains("GD_STATIC_SN(u8\"_field_init_ready_flag\")"), entrySource);
         assertTrue(
                 buildResult.artifacts().stream()
-                        .anyMatch(artifact -> artifact.getFileName().toString().endsWith(librarySuffix)),
-                () -> "Expected a native library artifact with suffix '" + librarySuffix + "', got " + buildResult.artifacts()
+                        .anyMatch(artifact -> artifact.getFileName().toString().equals(expectedArtifactName)),
+                () -> "Expected native library artifact '" + expectedArtifactName + "', got " + buildResult.artifacts()
         );
         assertTrue(buildResult.artifacts().stream().allMatch(Files::exists));
 
@@ -1864,6 +1864,13 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                 .toList();
         assertTrue(parseDiagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + parseDiagnostics.snapshot());
         return new FrontendModule(moduleName, units, topLevelCanonicalNameMap);
+    }
+
+    private static @NotNull String expectedArtifactFileName(@NotNull CProjectInfo projectInfo) {
+        var outputBaseName = projectInfo.projectName() + "_"
+                + projectInfo.getOptimizationLevel().name().toLowerCase() + "_"
+                + projectInfo.getTargetPlatform().architecture.name().toLowerCase();
+        return projectInfo.getTargetPlatform().sharedLibraryFileName(outputBaseName);
     }
 
     private static @NotNull String testScript() {

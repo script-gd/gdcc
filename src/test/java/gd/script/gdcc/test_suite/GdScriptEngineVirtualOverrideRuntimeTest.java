@@ -2,6 +2,7 @@ package gd.script.gdcc.test_suite;
 
 import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.ZigUtil;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
@@ -18,8 +19,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdScriptEngineVirtualOverrideRuntimeTest {
+    private static final int PHYSICS_PROCESS_QUIT_AFTER_FRAMES = 60;
+    private static final String PHYSICS_PROCESS_SCRIPT_RESOURCE_PATH =
+            "runtime/virtual/physics_process_called_and_delta_valid.gd";
     private static final List<String> SCRIPT_RESOURCE_PATHS = List.of(
-            "runtime/virtual/physics_process_called_and_delta_valid.gd",
+            PHYSICS_PROCESS_SCRIPT_RESOURCE_PATH,
             "runtime/virtual/process_called_and_delta_valid.gd",
             "runtime/virtual/ready_called_once.gd"
     );
@@ -77,8 +81,19 @@ class GdScriptEngineVirtualOverrideRuntimeTest {
         return SCRIPT_RESOURCE_PATHS.stream()
                 .map(scriptResourcePath -> DynamicTest.dynamicTest(
                         scriptResourcePath,
-                        () -> new GdScriptUnitTestCompileRunner().compileAndValidate(scriptResourcePath)
+                        () -> new GdScriptUnitTestCompileRunner().compileAndValidate(
+                                scriptResourcePath,
+                                runOptionsFor(scriptResourcePath)
+                        )
                 ));
+    }
+
+    private static @NotNull GodotGdextensionTestRunner.RunOptions runOptionsFor(@NotNull String scriptResourcePath) {
+        var runOptions = GodotGdextensionTestRunner.defaultRunOptions(true);
+        if (scriptResourcePath.equals(PHYSICS_PROCESS_SCRIPT_RESOURCE_PATH)) {
+            return runOptions.withQuitAfterFrames(PHYSICS_PROCESS_QUIT_AFTER_FRAMES);
+        }
+        return runOptions;
     }
 
     private static void assertFixtureContains(Path path, String requiredFragment) throws IOException {

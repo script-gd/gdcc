@@ -32,6 +32,8 @@ public final class GodotGdextensionTestRunner {
     public static final Duration DEFAULT_FORCE_KILL_DELAY = Duration.ofSeconds(1);
     public static final Duration DEFAULT_PROCESS_TIMEOUT = Duration.ofSeconds(30);
     public static final int DEFAULT_QUIT_AFTER_FRAMES = 10;
+    private static final String GDEXTENSION_FILE_NAME = "GDExtensionTest.gdextension";
+    private static final String GDEXTENSION_RESOURCE_PATH = "res://" + GDEXTENSION_FILE_NAME;
 
     private final @NotNull Path testProjectDir;
     private final @NotNull Path mainScenePath;
@@ -62,6 +64,7 @@ public final class GodotGdextensionTestRunner {
         var dynamicLibrary = findDynamicLibrary(copiedArtifacts, runtimePlatform.librarySuffix());
 
         writeGdextensionFile(dynamicLibrary.getFileName().toString(), runtimePlatform);
+        writeExtensionListFile();
         if (setup.testScript() != null) {
             writeTestScript(setup.testScript());
         }
@@ -69,7 +72,11 @@ public final class GodotGdextensionTestRunner {
     }
 
     public @NotNull GodotRunResult run(boolean headless) throws IOException, InterruptedException {
-        return run(new RunOptions(DEFAULT_QUIT_AFTER_FRAMES, headless, DEFAULT_PROCESS_TIMEOUT, DEFAULT_FORCE_KILL_DELAY));
+        return run(defaultRunOptions(headless));
+    }
+
+    public static @NotNull RunOptions defaultRunOptions(boolean headless) {
+        return new RunOptions(DEFAULT_QUIT_AFTER_FRAMES, headless, DEFAULT_PROCESS_TIMEOUT, DEFAULT_FORCE_KILL_DELAY);
     }
 
     public @NotNull GodotRunResult run(@NotNull RunOptions options) throws IOException, InterruptedException {
@@ -255,14 +262,21 @@ public final class GodotGdextensionTestRunner {
     private void writeGdextensionFile(@NotNull String libraryFileName, @NotNull RuntimePlatform platform) throws IOException {
         var content = """
                 [configuration]
-
+                
                 entry_symbol = "gdextension_entry"
                 compatibility_minimum = "4.5"
-
+                
                 [libraries]
                 %s = "res://bin/%s"
                 """.formatted(platform.gdextensionKey(), libraryFileName);
-        Files.writeString(testProjectDir.resolve("GDExtensionTest.gdextension"), content, StandardCharsets.UTF_8);
+        Files.writeString(testProjectDir.resolve(GDEXTENSION_FILE_NAME), content, StandardCharsets.UTF_8);
+    }
+
+    private void writeExtensionListFile() throws IOException {
+        var extensionListPath = testProjectDir.resolve(".godot").resolve("extension_list.cfg");
+        Files.createDirectories(extensionListPath.getParent());
+        // Plain runtime launches do not perform the editor filesystem scan that discovers .gdextension files.
+        Files.writeString(extensionListPath, GDEXTENSION_RESOURCE_PATH + "\n", StandardCharsets.UTF_8);
     }
 
     private static @NotNull List<Path> copyArtifacts(@NotNull List<Path> artifacts, @NotNull Path binDir) throws IOException {
@@ -382,6 +396,10 @@ public final class GodotGdextensionTestRunner {
             if (quitAfterFrames <= 0) {
                 throw new IllegalArgumentException("quitAfterFrames must be > 0");
             }
+        }
+
+        public @NotNull RunOptions withQuitAfterFrames(int quitAfterFrames) {
+            return new RunOptions(quitAfterFrames, headless, processTimeout, forceKillDelay);
         }
     }
 

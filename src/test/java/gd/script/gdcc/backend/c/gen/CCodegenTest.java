@@ -205,6 +205,60 @@ public class CCodegenTest {
     }
 
     @Test
+    public void entryTemplateShouldSetMinimumInitializationLevelAndGuardLifecycleLevels() throws Exception {
+        var workerClass = new LirClassDef("GDEntryWorker", "RefCounted");
+        var module = new LirModule("entry_contract_module", List.of(workerClass));
+        var api = ExtensionApiLoader.loadDefault();
+        var classRegistry = new ClassRegistry(api);
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        var entryBody = resolveFunctionBodyByPrefix(cCode, "GDE_EXPORT GDExtensionBool gdextension_entry(");
+        assertContainsAll(
+                entryBody,
+                "r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;",
+                "r_initialization->userdata = NULL;",
+                "r_initialization->initialize = &initialize;",
+                "r_initialization->deinitialize = &deinitialize;"
+        );
+
+        var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
+        assertContainsAll(
+                initializeBody,
+                "(void)userdata;",
+                "if (p_level != GDEXTENSION_INITIALIZATION_SCENE) {",
+                "return;",
+                "gdcc_init();"
+        );
+        assertTrue(
+                initializeBody.indexOf("if (p_level != GDEXTENSION_INITIALIZATION_SCENE)") <
+                        initializeBody.indexOf("gdcc_init();"),
+                initializeBody
+        );
+
+        var deinitializeBody = resolveFunctionBodyByPrefix(cCode, "void deinitialize(void* userdata");
+        assertContainsAll(
+                deinitializeBody,
+                "(void)userdata;",
+                "if (p_level != GDEXTENSION_INITIALIZATION_SCENE) {",
+                "return;",
+                "gdcc_sn_registry_destroy_all();",
+                "gdcc_s_registry_destroy_all();"
+        );
+        assertTrue(
+                deinitializeBody.indexOf("if (p_level != GDEXTENSION_INITIALIZATION_SCENE)") <
+                        deinitializeBody.indexOf("gdcc_sn_registry_destroy_all();"),
+                deinitializeBody
+        );
+    }
+
+    @Test
     public void generateShouldUseGeneratedFilePathsAndCollectExactEngineHelpersOncePerSession() {
         var workerClass = new LirClassDef("EngineUsageWorker", "RefCounted");
         var peerClass = new LirClassDef("EngineUsagePeer", "RefCounted");
