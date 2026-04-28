@@ -45,7 +45,10 @@ bin/
 ### Mac OS ###
 .DS_Store
 /.idea/
-/.github/
+/.github/*
+!/.github/pull_request_template.md
+!/.github/workflows/
+!/.github/workflows/*.yml
 /todo.md
 /.kilocode/
 /.clinerules/

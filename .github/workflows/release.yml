@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  release:
+    name: Build And Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Cache release downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            .tools
+            tmp/zig-downloads
+            tmp/temurin-jre-downloads
+            src/launcher/zig/.zig-cache
+            ~/.cache/zig
+          key: release-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-${{ hashFiles('src/launcher/zig/build.zig', 'src/launcher/zig/build.zig.zon', 'build-script/package-full-distributions.sh') }}
+          restore-keys: |
+            release-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-
+
+      - name: Extract project version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(grep -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[^"]+"' build.gradle.kts | head -n 1 | sed -E 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+          if [[ -z "${version}" ]]; then
+            echo "Failed to extract project version from build.gradle.kts" >&2
+            exit 1
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "TAG=v${version}" >> "${GITHUB_ENV}"
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zig_archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          zig_url="https://zigmirror.com/${zig_archive}"
+          zig_root="${GITHUB_WORKSPACE}/.tools/zig/${ZIG_VERSION}"
+          zig_bin="${zig_root}/bin"
+
+          if [[ ! -x "${zig_bin}/zig" ]]; then
+            rm -rf "${zig_root}"
+            mkdir -p "${zig_root}" "${GITHUB_WORKSPACE}/.tools/downloads"
+            curl -fL --retry 3 --connect-timeout 20 --output "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" "${zig_url}"
+            tar -xJf "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" -C "${zig_root}" --strip-components=1
+            mkdir -p "${zig_bin}"
+            ln -sf "${zig_root}/zig" "${zig_bin}/zig"
+          fi
+
+          "${zig_bin}/zig" version
+          echo "${zig_bin}" >> "${GITHUB_PATH}"
+          echo "ZIG=${zig_bin}/zig" >> "${GITHUB_ENV}"
+
+      - name: Build platform distributions
+        shell: bash
+        run: ./gradlew packageDistribution jar --no-daemon --info --console=plain
+
+      - name: Build full distributions
+        shell: bash
+        run: bash build-script/package-full-distributions.sh
+
+      - name: Package jar and runtime libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -s "build/libs/gdcc-${VERSION}.jar" ]]; then
+            echo "Missing gdcc jar: build/libs/gdcc-${VERSION}.jar" >&2
+            exit 1
+          fi
+
+          if [[ ! -d build/libs/lib ]]; then
+            echo "Missing runtime library directory: build/libs/lib" >&2
+            exit 1
+          fi
+
+          java -jar "build/libs/gdcc-${VERSION}.jar" --version
+
+          cp "build/libs/gdcc-${VERSION}.jar" "build/distributions/gdcc-${VERSION}.jar"
+          rm -f "build/distributions/gdcc-${VERSION}-libs.zip"
+          (
+            cd build/libs
+            zip -qr "../distributions/gdcc-${VERSION}-libs.zip" lib
+          )
+
+      - name: Validate release files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_files=(
+            "build/distributions/gdcc-${VERSION}-linux-x86_64.zip"
+            "build/distributions/gdcc-${VERSION}-windows-x86_64.zip"
+            "build/distributions/gdcc-${VERSION}-linux-aarch64.zip"
+            "build/distributions/gdcc-${VERSION}-linux-x86_64-full.zip"
+            "build/distributions/gdcc-${VERSION}-windows-x86_64-full.zip"
+            "build/distributions/gdcc-${VERSION}-linux-aarch64-full.zip"
+            "build/distributions/gdcc-${VERSION}.jar"
+            "build/distributions/gdcc-${VERSION}-libs.zip"
+          )
+
+          for release_file in "${release_files[@]}"; do
+            if [[ ! -s "${release_file}" ]]; then
+              echo "Missing release file: ${release_file}" >&2
+              exit 1
+            fi
+          done
+
+          printf '%s\n' "${release_files[@]}" > build/distributions/release-files.txt
+          sha256sum "${release_files[@]}"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdcc-${{ steps.version.outputs.version }}-release-files
+          path: |
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-linux-x86_64.zip
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-windows-x86_64.zip
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-linux-aarch64.zip
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-linux-x86_64-full.zip
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-windows-x86_64-full.zip
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-linux-aarch64-full.zip
+            build/distributions/gdcc-${{ steps.version.outputs.version }}.jar
+            build/distributions/gdcc-${{ steps.version.outputs.version }}-libs.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t release_files < build/distributions/release-files.txt
+
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "Release ${TAG} already exists" >&2
+            exit 1
+          fi
+
+          gh release create "${TAG}" "${release_files[@]}" \
+            --target "${GITHUB_SHA}" \
+            --title "gdcc ${VERSION}" \
+            --notes "Automated gdcc ${VERSION} release with platform distributions, full distributions, the gdcc jar, and runtime libraries."
