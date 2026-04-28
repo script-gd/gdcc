@@ -2,13 +2,16 @@
 set -euo pipefail
 
 ZIG_VERSION="0.16.0"
+TEMURIN_FEATURE_VERSION="25"
 ZIG_MIRROR_URL="${ZIG_MIRROR_URL:-https://zigmirror.com}"
+ADOPTIUM_API_URL="${ADOPTIUM_API_URL:-https://api.adoptium.net/v3/binary/latest}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1; pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1; pwd)"
 DIST_DIR="$REPO_ROOT/build/distributions"
 TMP_ROOT="$REPO_ROOT/tmp/full-distribution"
-DOWNLOAD_DIR="$REPO_ROOT/tmp/zig-downloads/$ZIG_VERSION"
+ZIG_DOWNLOAD_DIR="$REPO_ROOT/tmp/zig-downloads/$ZIG_VERSION"
+JRE_DOWNLOAD_DIR="$REPO_ROOT/tmp/temurin-jre-downloads/$TEMURIN_FEATURE_VERSION"
 EXTRACT_ROOT="$TMP_ROOT/extract"
 ZIP_WORK_ROOT="$TMP_ROOT/zip-work"
 
@@ -62,6 +65,70 @@ zig_executable_name() {
     esac
 }
 
+temurin_os() {
+    local platform="$1"
+
+    case "$platform" in
+        linux-*)
+            printf 'linux\n'
+            ;;
+        windows-*)
+            printf 'windows\n'
+            ;;
+        *)
+            printf 'error: unsupported platform: %s\n' "$platform" >&2
+            exit 1
+            ;;
+    esac
+}
+
+temurin_arch() {
+    local platform="$1"
+
+    case "$platform" in
+        linux-x86_64 | windows-x86_64)
+            printf 'x64\n'
+            ;;
+        linux-aarch64)
+            printf 'aarch64\n'
+            ;;
+        *)
+            printf 'error: unsupported platform: %s\n' "$platform" >&2
+            exit 1
+            ;;
+    esac
+}
+
+jre_archive_name() {
+    local platform="$1"
+
+    case "$platform" in
+        linux-*)
+            printf 'temurin-%s-jre-%s.tar.gz\n' "$TEMURIN_FEATURE_VERSION" "$platform"
+            ;;
+        windows-*)
+            printf 'temurin-%s-jre-%s.zip\n' "$TEMURIN_FEATURE_VERSION" "$platform"
+            ;;
+        *)
+            printf 'error: unsupported platform: %s\n' "$platform" >&2
+            exit 1
+            ;;
+    esac
+}
+
+java_executable_name() {
+    local platform="$1"
+
+    case "$platform" in
+        windows-*)
+            printf 'java.exe\n'
+            ;;
+        *)
+            printf 'java\n'
+            ;;
+    esac
+}
+
 find_distribution_zip() {
     local platform="$1"
     local -a matches=()
@@ -97,14 +164,46 @@ download_zig_archive() {
     local url
 
     archive_name="$(zig_archive_name "$platform")"
-    archive_path="$DOWNLOAD_DIR/$archive_name"
+    archive_path="$ZIG_DOWNLOAD_DIR/$archive_name"
     part_path="$archive_path.part"
     url="$ZIG_MIRROR_URL/$archive_name"
 
-    mkdir -p "$DOWNLOAD_DIR"
+    mkdir -p "$ZIG_DOWNLOAD_DIR"
 
     if [[ -s "$archive_path" ]]; then
         printf 'Using cached Zig archive: %s\n' "$archive_path" >&2
+        printf '%s\n' "$archive_path"
+        return 0
+    fi
+
+    printf 'Downloading %s\n' "$url" >&2
+    rm -f "$part_path"
+    curl -fL --retry 3 --connect-timeout 20 --output "$part_path" "$url"
+    mv "$part_path" "$archive_path"
+
+    printf '%s\n' "$archive_path"
+}
+
+download_jre_archive() {
+    local platform="$1"
+    local os
+    local arch
+    local archive_name
+    local archive_path
+    local part_path
+    local url
+
+    os="$(temurin_os "$platform")"
+    arch="$(temurin_arch "$platform")"
+    archive_name="$(jre_archive_name "$platform")"
+    archive_path="$JRE_DOWNLOAD_DIR/$archive_name"
+    part_path="$archive_path.part"
+    url="$ADOPTIUM_API_URL/$TEMURIN_FEATURE_VERSION/ga/$os/$arch/jre/hotspot/normal/eclipse"
+
+    mkdir -p "$JRE_DOWNLOAD_DIR"
+
+    if [[ -s "$archive_path" ]]; then
+        printf 'Using cached Temurin JRE archive: %s\n' "$archive_path" >&2
         printf '%s\n' "$archive_path"
         return 0
     fi
@@ -165,21 +264,65 @@ extract_zig_archive() {
     printf '%s\n' "$zig_dir"
 }
 
-add_zig_to_distribution() {
+extract_jre_archive() {
     local platform="$1"
-    local input_zip="$2"
-    local zig_dir="$3"
-    local output_zip="${input_zip%.zip}-full.zip"
-    local zip_work_dir
+    local archive_path="$2"
+    local extract_dir="$EXTRACT_ROOT/$platform-jre"
+    local jre_dir="$ZIP_WORK_ROOT/$platform/jre"
+    local executable_name
+    local -a roots=()
 
-    zip_work_dir="$(dirname "$zig_dir")"
+    executable_name="$(java_executable_name "$platform")"
+
+    rm -rf "$extract_dir"
+    rm -rf "$jre_dir"
+    mkdir -p "$extract_dir"
+    mkdir -p "$jre_dir"
+
+    case "$archive_path" in
+        *.zip)
+            unzip -q "$archive_path" -d "$extract_dir"
+            ;;
+        *.tar.gz)
+            tar -xzf "$archive_path" -C "$extract_dir"
+            ;;
+        *)
+            printf 'error: unsupported Temurin JRE archive format: %s\n' "$archive_path" >&2
+            exit 1
+            ;;
+    esac
+
+    while IFS= read -r path; do
+        roots+=("$path")
+    done < <(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | sort)
+
+    if [[ "${#roots[@]}" -ne 1 ]]; then
+        printf 'error: expected exactly one top-level directory in Temurin JRE archive for %s, found %s\n' "$platform" "${#roots[@]}" >&2
+        exit 1
+    fi
+
+    cp -R "${roots[0]}"/. "$jre_dir/"
+
+    if [[ ! -f "$jre_dir/bin/$executable_name" ]]; then
+        printf 'error: expected Java executable missing after extraction: %s\n' "$jre_dir/bin/$executable_name" >&2
+        exit 1
+    fi
+
+    chmod +x "$jre_dir/bin/$executable_name"
+    printf '%s\n' "$jre_dir"
+}
+
+write_full_distribution() {
+    local input_zip="$1"
+    local content_root="$2"
+    local output_zip="${input_zip%.zip}-full.zip"
 
     rm -f "$output_zip"
     cp "$input_zip" "$output_zip"
 
     (
-        cd "$zip_work_dir"
-        zip -qr "$output_zip" zig
+        cd "$content_root"
+        zip -qr "$output_zip" zig jre
     )
 
     printf 'Wrote %s\n' "$output_zip"
@@ -200,13 +343,25 @@ main() {
         printf 'Packaging full distribution for %s\n' "$platform"
 
         local input_zip
-        local archive_path
+        local zig_archive_path
+        local jre_archive_path
         local zig_dir
+        local jre_dir
+        local content_root
 
         input_zip="$(find_distribution_zip "$platform")"
-        archive_path="$(download_zig_archive "$platform")"
-        zig_dir="$(extract_zig_archive "$platform" "$archive_path")"
-        add_zig_to_distribution "$platform" "$input_zip" "$zig_dir"
+        zig_archive_path="$(download_zig_archive "$platform")"
+        jre_archive_path="$(download_jre_archive "$platform")"
+        zig_dir="$(extract_zig_archive "$platform" "$zig_archive_path")"
+        jre_dir="$(extract_jre_archive "$platform" "$jre_archive_path")"
+        content_root="$(dirname "$zig_dir")"
+
+        if [[ "$(dirname "$jre_dir")" != "$content_root" ]]; then
+            printf 'error: internal package work directories differ for platform %s\n' "$platform" >&2
+            exit 1
+        fi
+
+        write_full_distribution "$input_zip" "$content_root"
     done
 }
 
