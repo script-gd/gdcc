@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  GODOT_VERSION: 4.5.1
+  GODOT_STATUS: stable
+
+jobs:
+  test:
+    name: Ubuntu Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Cache tool downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            .tools
+            src/launcher/zig/.zig-cache
+            ~/.cache/zig
+          key: ci-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/launcher/zig/build.zig', 'src/launcher/zig/build.zig.zon') }}
+          restore-keys: |
+            ci-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
+
+      - name: Install Zig
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zig_archive="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          zig_url="https://zigmirror.com/${zig_archive}"
+          zig_root="${GITHUB_WORKSPACE}/.tools/zig/${ZIG_VERSION}"
+          zig_bin="${zig_root}/bin"
+
+          if [[ ! -x "${zig_bin}/zig" ]]; then
+            rm -rf "${zig_root}"
+            mkdir -p "${zig_root}" "${GITHUB_WORKSPACE}/.tools/downloads"
+            curl -fL --retry 3 --connect-timeout 20 --output "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" "${zig_url}"
+            tar -xJf "${GITHUB_WORKSPACE}/.tools/downloads/${zig_archive}" -C "${zig_root}" --strip-components=1
+            mkdir -p "${zig_bin}"
+            ln -sf "${zig_root}/zig" "${zig_bin}/zig"
+          fi
+
+          "${zig_bin}/zig" version
+          echo "${zig_bin}" >> "${GITHUB_PATH}"
+          echo "ZIG=${zig_bin}/zig" >> "${GITHUB_ENV}"
+
+      - name: Install Godot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          godot_file="Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64"
+          godot_archive="${godot_file}.zip"
+          godot_url="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_STATUS}/${godot_archive}"
+          godot_dir="${GITHUB_WORKSPACE}/.tools/godot/${GODOT_VERSION}-${GODOT_STATUS}"
+          godot_bin="${godot_dir}/${godot_file}"
+
+          if [[ ! -x "${godot_bin}" ]]; then
+            rm -rf "${godot_dir}"
+            mkdir -p "${godot_dir}" "${GITHUB_WORKSPACE}/.tools/downloads"
+            curl -fL --retry 3 --connect-timeout 20 --output "${GITHUB_WORKSPACE}/.tools/downloads/${godot_archive}" "${godot_url}"
+            unzip -q "${GITHUB_WORKSPACE}/.tools/downloads/${godot_archive}" -d "${godot_dir}"
+            chmod +x "${godot_bin}"
+          fi
+
+          "${godot_bin}" --version
+          echo "GODOT_BIN=${godot_bin}" >> "${GITHUB_ENV}"
+
+      - name: Run unit tests
+        shell: bash
+        run: ./gradlew test jar --no-daemon --info --console=plain
+
+      - name: Package jar and runtime libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(grep -E '^[[:space:]]*version[[:space:]]*=[[:space:]]*"[^"]+"' build.gradle.kts | head -n 1 | sed -E 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+          if [[ -z "${version}" ]]; then
+            echo "Failed to extract project version from build.gradle.kts" >&2
+            exit 1
+          fi
+
+          if [[ ! -s "build/libs/gdcc-${version}.jar" ]]; then
+            echo "Missing gdcc jar: build/libs/gdcc-${version}.jar" >&2
+            exit 1
+          fi
+
+          if [[ ! -d build/libs/lib ]]; then
+            echo "Missing runtime library directory: build/libs/lib" >&2
+            exit 1
+          fi
+
+          rm -f "build/libs/gdcc-${version}-libs.zip"
+          (
+            cd build/libs
+            zip -qr "gdcc-${version}-libs.zip" lib
+          )
+          java -jar "build/libs/gdcc-${version}.jar" --version
+
+      - name: Upload jar and runtime libraries
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdcc-jar-and-libs
+          path: |
+            build/libs/gdcc-*.jar
+            build/libs/gdcc-*-libs.zip
+          if-no-files-found: error
