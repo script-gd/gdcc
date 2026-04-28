@@ -3,7 +3,8 @@ const std = @import("std");
 pub const Result = union(enum) {
     found: []const u8,
     none,
-    multiple: []const []const u8,
+    multiple_jars: []const []const u8,
+    multiple_update_jars: []const []const u8,
 };
 
 const JarCandidate = struct {
@@ -35,7 +36,7 @@ pub fn find(io: std.Io, arena: std.mem.Allocator, exe_dir: []const u8) !Result {
     }
 
     if (update_matches.items.len > 1) {
-        return .{ .multiple = try candidatePaths(arena, update_matches.items) };
+        return .{ .multiple_update_jars = try candidatePaths(arena, update_matches.items) };
     }
     if (update_matches.items.len == 1) {
         return .{ .found = try applyUpdateJar(io, arena, dir, exe_dir, update_matches.items[0], jar_matches.items) };
@@ -44,7 +45,7 @@ pub fn find(io: std.Io, arena: std.mem.Allocator, exe_dir: []const u8) !Result {
     return switch (jar_matches.items.len) {
         0 => .none,
         1 => .{ .found = jar_matches.items[0].path },
-        else => .{ .multiple = try candidatePaths(arena, jar_matches.items) },
+        else => .{ .multiple_jars = try candidatePaths(arena, jar_matches.items) },
     };
 }
 
@@ -171,7 +172,7 @@ test "reports multiple ordinary jars without update jar" {
     defer find_arena.deinit();
     const result = try find(std.testing.io, find_arena.allocator(), exe_dir);
     switch (result) {
-        .multiple => |paths| try std.testing.expectEqual(@as(usize, 2), paths.len),
+        .multiple_jars => |paths| try std.testing.expectEqual(@as(usize, 2), paths.len),
         else => return error.TestUnexpectedResult,
     }
 }
@@ -190,7 +191,7 @@ test "reports multiple update jars" {
     defer find_arena.deinit();
     const result = try find(std.testing.io, find_arena.allocator(), exe_dir);
     switch (result) {
-        .multiple => |paths| try std.testing.expectEqual(@as(usize, 2), paths.len),
+        .multiple_update_jars => |paths| try std.testing.expectEqual(@as(usize, 2), paths.len),
         else => return error.TestUnexpectedResult,
     }
 }

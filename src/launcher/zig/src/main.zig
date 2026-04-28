@@ -25,11 +25,23 @@ pub fn main(init: std.process.Init) !void {
             );
             std.process.exit(1);
         },
-        .multiple => |paths| {
+        .multiple_jars => |paths| {
             translate.printStderr(
                 arena,
                 "{s}: {s} {s}\n",
                 .{ text.launcher_prefix, text.multiple_jars_found, exe_dir },
+            );
+            for (paths) |path| {
+                translate.printStderr(arena, "  {s}\n", .{path});
+            }
+            translate.printStderr(arena, "{s}\n", .{text.delete_extra_jars});
+            std.process.exit(1);
+        },
+        .multiple_update_jars => |paths| {
+            translate.printStderr(
+                arena,
+                "{s}: {s} {s}\n",
+                .{ text.launcher_prefix, text.multiple_update_jars_found, exe_dir },
             );
             for (paths) |path| {
                 translate.printStderr(arena, "  {s}\n", .{path});
