@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const gdparser_resource_dir = try std.fmt.allocPrint(
         arena,
-        "-Dgdparser.gdscript.resourceDir={s}",
+        "-Dgdparser.gdscript.resourceDir={s}/native",
         .{exe_dir},
     );
     const java_path = tool_search.findJava25(init.io, arena, init.environ_map, exe_dir) catch |err| {

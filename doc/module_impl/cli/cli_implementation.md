@@ -161,7 +161,10 @@ build/distributions/gdcc-<version>-linux-aarch64.zip
 
 每个 zip 顶层只包含对应平台的 launcher、主 jar 与 `lib/` 文件夹，不包含其他平台 launcher。launcher 与主 jar 同级，最终仍通过 classpath-style `java -jar gdcc-<version>.jar` 启动；module-path 启动不依赖 manifest `Class-Path`，不属于当前分发合同。
 
-launcher 启动时从自身可执行文件同级目录扫描 `gdcc-*.*.*.jar`，不依赖构建时固定 jar 文件名。若匹配到多个 jar，launcher 以错误退出并要求用户删除多余文件。launcher 传给 JVM 的固定参数包含：
+launcher 启动时从自身可执行文件同级目录扫描 `gdcc-*.*.*.jar`，不依赖构建时固定 jar 文件名。在选择普通 jar 前，
+launcher 会先扫描 `gdcc-*.*.*-update.jar`；若恰好存在一个 update jar，则删除同目录下所有普通 `gdcc-*.*.*.jar`，
+再把该 update jar 重命名为去掉 `-update` 的普通 jar 名称，并启动重命名后的 jar。若存在多个 update jar，或没有 update jar
+但匹配到多个普通 jar，launcher 以错误退出并要求用户删除多余文件。launcher 传给 JVM 的固定参数包含：
 
 ```text
 --enable-native-access=ALL-UNNAMED
