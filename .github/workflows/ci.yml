@@ -1,7 +1,11 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
+    paths:
+      - "src/main/**"
+      - "src/test/**"
 
 permissions:
   contents: read
@@ -39,6 +43,16 @@ jobs:
           key: ci-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/launcher/zig/build.zig', 'src/launcher/zig/build.zig.zon') }}
           restore-keys: |
             ci-tools-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
+
+      - name: Cache native test outputs
+        uses: actions/cache@v5
+        with:
+          path: |
+            tmp/test/**/compiler-cache
+            tmp/test/**/include
+          key: ci-native-test-outputs-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/main/**', 'src/test/**') }}
+          restore-keys: |
+            ci-native-test-outputs-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-
 
       - name: Install Zig
         shell: bash
@@ -117,6 +131,26 @@ jobs:
           )
           java -jar "build/libs/gdcc-${version}.jar" --version
 
+      - name: Package test report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          report_dir="build/reports/test/test"
+          report_zip="build/reports/gdcc-test-report.zip"
+
+          if [[ ! -d "${report_dir}" ]]; then
+            echo "Missing test report directory: ${report_dir}" >&2
+            exit 1
+          fi
+
+          rm -f "${report_zip}"
+          (
+            cd build/reports/test
+            zip -qr ../gdcc-test-report.zip test
+          )
+
       - name: Upload jar and runtime libraries
         uses: actions/upload-artifact@v7
         with:
@@ -124,4 +158,12 @@ jobs:
           path: |
             build/libs/gdcc-*.jar
             build/libs/gdcc-*-libs.zip
+          if-no-files-found: error
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gdcc-test-report
+          path: build/reports/gdcc-test-report.zip
           if-no-files-found: error
