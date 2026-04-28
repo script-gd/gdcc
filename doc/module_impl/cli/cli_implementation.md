@@ -173,6 +173,8 @@ launcher 会先扫描 `gdcc-*.*.*-update.jar`；若恰好存在一个 update jar
 
 launcher 使用自身可执行文件同级目录作为本地工具链优先搜索根，不使用用户当前工作目录作为本地搜索根。启动 Java 前会优先检查同级的 `java`、`java/bin/java`、`jre/bin/java`、`jdk/bin/java`，随后才检查 Java 环境变量、`PATH` 与常见系统位置，并且只接受 `java --version` 报告为 25 或更高版本的运行时。launcher 还会优先检查同级的 `zig`、`zig/zig`、`zig/bin/zig`；若找到 Zig 可执行文件，会在传给 JVM 的环境中设置 `ZIG_HOME=<zig-executable-dir>`，使 Java 侧 `ZigUtil` 可以优先复用分发包旁边的 Zig。若找不到 Java 25+ 或 Zig，launcher 都会以错误退出。launcher 错误文本支持英文与中文，会根据 `LC_ALL`、`LC_MESSAGES`、`LANG`、`LANGUAGE` 中的首个受支持语言环境选择翻译；Windows 在环境变量未命中时会使用系统 UI 语言偏好，再回退到用户 locale。不支持的语言环境回退英文。Windows 控制台错误输出使用 UTF-16 console API，避免非 UTF-8 代码页下中文错误文本乱码；重定向输出仍保留 UTF-8 字节。
 
+Windows Java 常见系统位置包括 `%ProgramW6432%`、`%ProgramFiles%`、`%ProgramFiles(x86)%` 下的常见 JDK vendor 目录，以及 `%USERPROFILE%/.jdks` 和 `%LOCALAPPDATA%/Programs/Java` 下的一层 JDK 目录。
+
 ---
 
 ## 3. 输入与 Module 准备
