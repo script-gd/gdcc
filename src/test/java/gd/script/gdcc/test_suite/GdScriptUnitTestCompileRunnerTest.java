@@ -1,5 +1,6 @@
 package gd.script.gdcc.test_suite;
 
+import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DynamicTest;
@@ -7,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -89,6 +91,10 @@ public class GdScriptUnitTestCompileRunnerTest {
     private static final List<String> SCENE_SCRIPT_PATHS = scriptPathsWithPrefix("scene/");
     private static final List<String> SMOKE_SCRIPT_PATHS = scriptPathsWithPrefix("smoke/");
     private static final List<String> SUBSCRIPT_SCRIPT_PATHS = scriptPathsWithPrefix("subscript/");
+    private static final int PHYSICS_FRAME_QUIT_AFTER_FRAMES = 60;
+    private static final Set<String> PHYSICS_FRAME_SCRIPT_PATHS = Set.of(
+            "runtime/virtual/physics_process_called_and_delta_valid.gd"
+    );
 
     @Test
     void listsExpectedBundledUnitScripts() throws Exception {
@@ -208,8 +214,19 @@ public class GdScriptUnitTestCompileRunnerTest {
         return scriptPaths.stream()
                 .map(scriptResourcePath -> DynamicTest.dynamicTest(
                         scriptResourcePath,
-                        () -> new GdScriptUnitTestCompileRunner().compileAndValidate(scriptResourcePath)
+                        () -> new GdScriptUnitTestCompileRunner().compileAndValidate(
+                                scriptResourcePath,
+                                runOptionsFor(scriptResourcePath)
+                        )
                 ));
+    }
+
+    private static GodotGdextensionTestRunner.RunOptions runOptionsFor(String scriptResourcePath) {
+        var runOptions = GodotGdextensionTestRunner.defaultRunOptions(true);
+        if (PHYSICS_FRAME_SCRIPT_PATHS.contains(scriptResourcePath)) {
+            return runOptions.withQuitAfterFrames(PHYSICS_FRAME_QUIT_AFTER_FRAMES);
+        }
+        return runOptions;
     }
 
     private static List<String> scriptPathsWithPrefix(String prefix) {
