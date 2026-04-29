@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          report_dir="build/reports/test/test"
+          report_dir="build/reports/tests/test"
           report_zip="build/reports/gdcc-test-report.zip"
 
           if [[ ! -d "${report_dir}" ]]; then
@@ -147,7 +147,7 @@ jobs:
 
           rm -f "${report_zip}"
           (
-            cd build/reports/test
+            cd build/reports/tests
             zip -qr ../gdcc-test-report.zip test
           )
 
