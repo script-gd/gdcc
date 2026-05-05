@@ -16,6 +16,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdStringType;
@@ -60,6 +61,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExpressionSemanticSupportTest {
@@ -990,16 +992,25 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
-    void selectCallableOverloadReportsAmbiguousAndEmptyOverloadSets() throws Exception {
+    void selectCallableOverloadRanksFrontendBoundarySpecificityBeforeReportingAmbiguity() throws Exception {
         var support = newBareSupport();
-        var ambiguous = List.of(
-                newCallable("helper", GdIntType.INT, GdIntType.INT),
-                newCallable("helper", GdStringType.STRING, GdIntType.INT)
-        );
+        var directInt = newCallable("helper", GdIntType.INT, GdIntType.INT);
+        var primitiveFloat = newCallable("helper", GdFloatType.FLOAT, GdFloatType.FLOAT);
+        var variantPack = newCallable("helper", GdVariantType.VARIANT, GdVariantType.VARIANT);
 
-        var ambiguousSelection = support.selectCallableOverload(ambiguous, List.of(GdIntType.INT));
-        assertTrue(ambiguousSelection.selected() == null);
-        assertTrue(ambiguousSelection.detailReason().contains("Ambiguous bare call overload"));
+        var directSelection = support.selectCallableOverload(
+                List.of(directInt, primitiveFloat),
+                List.of(GdIntType.INT)
+        );
+        assertSame(directInt, directSelection.selected());
+        assertNull(directSelection.detailReason());
+
+        var primitiveSelection = support.selectCallableOverload(
+                List.of(primitiveFloat, variantPack),
+                List.of(GdIntType.INT)
+        );
+        assertSame(primitiveFloat, primitiveSelection.selected());
+        assertNull(primitiveSelection.detailReason());
 
         var variantAmbiguous = List.of(
                 newCallable("helper", GdIntType.INT, GdIntType.INT),

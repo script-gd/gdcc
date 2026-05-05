@@ -1236,12 +1236,12 @@ public final class FrontendChainReductionHelper {
                     receiverTypeMeta
             );
         }
-        var result = ScopeMethodResolver.resolveStaticMethod(
+        var result = ScopeMethodResolver.resolveStaticMethodWithParameterRank(
                 request.classRegistry(),
                 receiverTypeMeta,
                 step.name(),
                 argumentTypes,
-                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
                         request.classRegistry(),
                         sourceType,
                         targetType
@@ -1422,12 +1422,12 @@ public final class FrontendChainReductionHelper {
             @NotNull List<ReductionNote> notes,
             @NotNull NoteSink noteSink
     ) {
-        var result = ScopeMethodResolver.resolveInstanceMethod(
+        var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
                 classRegistry,
                 Objects.requireNonNull(incomingReceiver.receiverType(), "receiverType must not be null"),
                 step.name(),
                 argumentTypes,
-                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.isFrontendBoundaryCompatible(
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
                         classRegistry,
                         sourceType,
                         targetType

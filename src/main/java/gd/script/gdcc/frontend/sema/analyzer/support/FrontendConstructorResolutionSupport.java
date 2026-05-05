@@ -185,7 +185,15 @@ final class FrontendConstructorResolutionSupport {
             return resolved(applicable.getFirst(), ownerKind);
         }
         if (applicable.size() > 1) {
-            var mostSpecific = selectMostSpecificApplicableConstructor(classRegistry, applicable, argumentTypes);
+            var mostSpecific = FrontendCallableOverloadRankingSupport.selectMostSpecificApplicable(
+                    applicable,
+                    (candidate, baseline) -> isStrictlyMoreSpecific(
+                            classRegistry,
+                            candidate,
+                            baseline,
+                            argumentTypes
+                    )
+            );
             if (mostSpecific != null) {
                 return resolved(mostSpecific, ownerKind);
             }
@@ -203,37 +211,6 @@ final class FrontendConstructorResolutionSupport {
                   + buildCallableMismatchReason(classRegistry, constructors.getFirst(), argumentTypes)
                   + ". candidates: " + renderCallableSignatures(constructors);
         return failed(defaultDeclarationSite(receiverTypeMeta, null), ownerKind, detailReason);
-    }
-
-    /// Constructor overload ranking mirrors the frontend method-call baseline: applicability is only
-    /// the first filter. Among the surviving candidates, a constructor wins only when it is not
-    /// worse on any compared dimension and is strictly better on at least one of them.
-    private static @Nullable FunctionDef selectMostSpecificApplicableConstructor(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull List<? extends FunctionDef> applicable,
-            @NotNull List<GdType> argumentTypes
-    ) {
-        FunctionDef selected = null;
-        for (var candidate : applicable) {
-            var dominated = false;
-            for (var other : applicable) {
-                if (candidate == other) {
-                    continue;
-                }
-                if (isStrictlyMoreSpecific(classRegistry, other, candidate, argumentTypes)) {
-                    dominated = true;
-                    break;
-                }
-            }
-            if (dominated) {
-                continue;
-            }
-            if (selected != null) {
-                return null;
-            }
-            selected = candidate;
-        }
-        return selected;
     }
 
     private static boolean isStrictlyMoreSpecific(
@@ -346,13 +323,7 @@ final class FrontendConstructorResolutionSupport {
     }
 
     private static int decisionSpecificityRank(@NotNull FrontendVariantBoundaryCompatibility.Decision decision) {
-        return switch (Objects.requireNonNull(decision, "decision must not be null")) {
-            case ALLOW_DIRECT -> 4;
-            case ALLOW_WITH_LITERAL_NULL -> 3;
-            case ALLOW_WITH_PRIMITIVE_CAST -> 2;
-            case ALLOW_WITH_UNPACK, ALLOW_WITH_PACK -> 1;
-            case REJECT -> 0;
-        };
+        return FrontendVariantBoundaryCompatibility.decisionSpecificityRank(decision);
     }
 
     private static @Nullable GdType parameterTypeAt(@NotNull FunctionDef callable, int index) {

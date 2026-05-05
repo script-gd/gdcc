@@ -76,4 +76,28 @@ public final class FrontendVariantBoundaryCompatibility {
     ) {
         return determineFrontendBoundaryDecision(classRegistry, sourceType, targetType).allows();
     }
+
+    /// Specificity rank for already-decided frontend ordinary boundaries.
+    ///
+    /// Overload resolution consumes this only after applicability has accepted a candidate:
+    /// direct flow stays more specific than literal null, primitive casts, and Variant
+    /// pack/unpack routes; rejected pairs remain rank 0 so shared resolvers can use the same
+    /// numeric callback for both applicability and tie-breaking.
+    public static int decisionSpecificityRank(@NotNull Decision decision) {
+        return switch (decision) {
+            case ALLOW_DIRECT -> 4;
+            case ALLOW_WITH_LITERAL_NULL -> 3;
+            case ALLOW_WITH_PRIMITIVE_CAST -> 2;
+            case ALLOW_WITH_UNPACK, ALLOW_WITH_PACK -> 1;
+            case REJECT -> 0;
+        };
+    }
+
+    public static int frontendBoundarySpecificityRank(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType
+    ) {
+        return decisionSpecificityRank(determineFrontendBoundaryDecision(classRegistry, sourceType, targetType));
+    }
 }

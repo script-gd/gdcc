@@ -213,6 +213,25 @@ $target = (godot_float)$source;
 
 ### Step 3. 更新 call / method / constructor specificity
 
+状态：Done（2026-05-05）。
+
+产出：
+
+- frontend boundary specificity rank 已收敛到 `FrontendVariantBoundaryCompatibility`，并由 bare call、constructor resolver 与 method resolver frontend path 共同消费。
+- `ScopeMethodResolver` 新增显式命名的 rank-aware 入口，避免用同形态 lambda overload 表达 frontend-only ranking；strict `ClassRegistry.checkAssignable(...)` 和默认 resolver 路径仍不接受 `int -> float`。
+- `FrontendChainReductionHelper` 的 instance/static method frontend path 已改为传入 rank，而不是只传 allow/reject predicate。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTest,ScopeMethodResolverTest,FrontendConstructorResolutionSupportTest`
+- `script/run-gradle-targeted-tests.sh --tests FrontendVariantBoundaryCompatibilityTest,ClassRegistryTest,FrontendChainReductionHelperTest`
+
+维护约束：
+
+- `FrontendCallableOverloadRankingSupport.selectMostSpecificApplicable(...)` 是 frontend callable overload ranking 的 shared dominance-selection 真源，当前由 bare call 与 constructor resolution 共同使用。
+- 后续新增 frontend callable overload path 时，如果语义仍是“唯一非支配候选胜出，多个非支配候选保持 ambiguous”，必须复用该 helper；不得在新 resolver 中再复制一份 `selectMostSpecificApplicable*` 循环。
+- 各调用点仍应保留自己的 argument-specific comparison 规则。该 helper 只承载通用选择结构，不承载 bare call、constructor 或 method resolver 的具体 specificity 语义。
+
 新增或抽出一个 frontend boundary specificity 规则，供 bare call、method resolver frontend path、constructor resolver 共同使用。该规则只比较已经通过 applicability 过滤的候选，不改变默认 strict resolver 的兼容范围。
 
 推荐 decision rank：

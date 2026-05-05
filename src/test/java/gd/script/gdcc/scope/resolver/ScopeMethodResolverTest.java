@@ -14,6 +14,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
@@ -426,6 +427,101 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver frontend rank should prefer exact int over primitive cast")
+    void resolveInstanceMethodFrontendRankShouldPreferExactIntOverPrimitiveCast() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendIntFloatOverloads())), List.of());
+
+        var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdIntType.INT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals(GdIntType.INT, resolved.method().parameters().getFirst().type());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should prefer primitive cast over Variant pack")
+    void resolveInstanceMethodFrontendRankShouldPreferPrimitiveCastOverVariantPack() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendFloatVariantOverloads())), List.of());
+
+        var strictResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdIntType.INT)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdIntType.INT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+        var frontendResolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals(GdFloatType.FLOAT, frontendResolved.method().parameters().getFirst().type());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should keep equally ranked overloads ambiguous")
+    void resolveInstanceMethodFrontendRankShouldKeepEqualRankOverloadsAmbiguous() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendEqualRankOverloads())), List.of());
+
+        var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdVariantType.VARIANT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, result);
+        assertEquals(ScopeMethodResolver.DynamicKind.OBJECT_DYNAMIC, fallback.dynamicKind());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.AMBIGUOUS_OVERLOAD, fallback.reason());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should apply to static methods")
+    void resolveStaticMethodFrontendRankShouldPreferPrimitiveCastOverVariantPack() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendStaticFloatVariantOverloads())), List.of());
+        var nodeTypeMeta = registry.resolveTypeMeta("Node");
+
+        var result = ScopeMethodResolver.resolveStaticMethodWithParameterRank(
+                registry,
+                nodeTypeMeta,
+                "rank_static",
+                List.of(GdIntType.INT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertTrue(resolved.method().isStatic());
+        assertEquals(GdFloatType.FLOAT, resolved.method().parameters().getFirst().type());
+    }
+
+    @Test
     @DisplayName("shared method resolver should keep constructor route out of static method lookup")
     void resolveStaticMethodShouldRejectConstructorRoute() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithStaticFactory())), List.of());
@@ -741,6 +837,63 @@ class ScopeMethodResolverTest {
                 List.of(),
                 List.of(),
                 List.of()
+        );
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendIntFloatOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "int"),
+                nodeMethod("rank", false, "float")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendFloatVariantOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "float"),
+                nodeMethod("rank", false, "Variant")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendEqualRankOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "int"),
+                nodeMethod("rank", false, "String")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendStaticFloatVariantOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank_static", true, "float"),
+                nodeMethod("rank_static", true, "Variant")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithMethods(List<ExtensionGdClass.ClassMethod> methods) {
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                methods,
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static ExtensionGdClass.ClassMethod nodeMethod(String name, boolean isStatic, String parameterType) {
+        return new ExtensionGdClass.ClassMethod(
+                name,
+                false,
+                false,
+                isStatic,
+                false,
+                0L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("value", parameterType, null, null))
         );
     }
 
