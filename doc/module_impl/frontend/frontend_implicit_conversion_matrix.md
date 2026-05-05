@@ -33,7 +33,7 @@
   - 说明自己消费的是哪一类 boundary
   - 引用本文档中的矩阵与维护合同
 - 代码注释同样不得私自扩写“当前支持哪些 implicit conversion”的平行规则表；关键入口只允许引用本文档，并说明自己在整条链路中的职责。
-- 若未来新增 `int -> float`、`String <-> StringName`、packed array widened conversion 等支持面，验收顺序固定为：
+- 若未来新增 `String <-> StringName`、packed array widened conversion 等支持面，验收顺序固定为：
   1. 更新本文档矩阵与摘要
   2. 更新 shared helper / consumer 实现
   3. 更新对应测试
@@ -78,6 +78,7 @@
 - `Array` / `Dictionary` 的有限协变：支持
 - stable `Variant` boundary：支持
 - `Nil -> object`：支持
+- `int -> float`：支持，必须通过 `ALLOW_WITH_PRIMITIVE_CAST` 与显式 lowering materialization 闭合
 - 其余 typed boundary：原则上回退 `ClassRegistry.checkAssignable(...)`
 
 这意味着：
@@ -171,7 +172,7 @@
 | `bool` | `int` | Y | N | Godot scalar family strict convert |
 | `bool` | `float` | Y | N | Godot scalar family strict convert |
 | `int` | `bool` | Y | N | 与 condition truthiness 不是一回事 |
-| `int` | `float` | Y | N | 当前文档与测试已明确锚定 GDCC 拒绝 |
+| `int` | `float` | Y | Y | 由 `ALLOW_WITH_PRIMITIVE_CAST` 表达；lowering 必须生成 `call_intrinsic "c_int_to_float"`，不得当作 direct flow |
 | `float` | `bool` | Y | N | Godot scalar family strict convert |
 | `float` | `int` | Y | N | Godot 会截断；GDCC 当前不支持 |
 | `String` | `StringName` | Y | N | Godot 文档明确说明常见 API 会自动转换 |
@@ -274,8 +275,11 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 
 | 场景 | Godot | GDCC | 备注 |
 | --- | --- | --- | --- |
+| `int` key 用于 `Dictionary[float, V]` | Y | Y | 这是 ordinary typed boundary 中 `int -> float` 的直接结果；lowering 必须先把 key 物化为 `float` slot |
 | `String` key 用于 `StringName` keyed access | Y | N | GDCC subscript 当前只复用 ordinary boundary helper，不单独追加 keyed widened conversion |
 | `float` index 用于 `Array` / packed array | Y | N | 本质上依赖 `float -> int` 兼容 |
+
+`Array` / packed array 的 index target type 仍是 `int`，因此本次只支持已有 ordinary `Variant -> int` boundary，不支持 `float` index 自动收窄。`Array` / `Dictionary` 本身也不做递归 primitive widening，例如 `Array[int] -> Array[float]`、`Dictionary[int, V] -> Dictionary[float, V]`、`Dictionary[K, int] -> Dictionary[K, float]` 仍不属于 supported matrix。
 
 ---
 
@@ -370,7 +374,7 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `Variant` boundary：已支持
 - object hierarchy：已支持
 - `Nil -> object`：已支持
-- builtin strict implicit conversion：除 identity 外基本未支持
+- builtin strict implicit conversion：除 `int -> float` 这一已明确列出的 primitive cast 外基本未支持
 - keyed/index widened compatibility：未支持
 
 因此，若后续要把 GDCC 的 typed boundary 行为推进到接近 Godot，优先级最高的缺口依次是：

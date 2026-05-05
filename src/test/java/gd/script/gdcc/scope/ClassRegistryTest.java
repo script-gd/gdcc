@@ -11,9 +11,11 @@ import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -300,6 +302,18 @@ public class ClassRegistryTest {
                 new GdDictionaryType(GdStringNameType.STRING_NAME, GdFloatType.FLOAT),
                 new GdDictionaryType(GdStringNameType.STRING_NAME, GdIntType.INT)
         ));
+    }
+
+    @Test
+    void checkAssignableRejectsFrontendOnlyBoundaryConversions() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        assertFalse(registry.checkAssignable(GdIntType.INT, GdFloatType.FLOAT));
+        assertFalse(registry.checkAssignable(GdFloatType.FLOAT, GdIntType.INT));
+        assertFalse(registry.checkAssignable(GdBoolType.BOOL, GdFloatType.FLOAT));
+        assertFalse(registry.checkAssignable(GdIntType.INT, GdBoolType.BOOL));
+        assertFalse(registry.checkAssignable(GdStringType.STRING, GdStringNameType.STRING_NAME));
+        assertFalse(registry.checkAssignable(GdVariantType.VARIANT, GdIntType.INT));
+        assertFalse(registry.checkAssignable(GdNilType.NIL, GdObjectType.OBJECT));
     }
 
     @Test

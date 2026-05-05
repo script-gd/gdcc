@@ -34,7 +34,7 @@
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
   - 不在这里转正 `lambda`、`for`、`match`、parameter default、block-local `const`、class `const` 的正式 body 语义
-  - 不在这里实现 property-side inference/backfill，或放宽 `int -> float`、`StringName` / `String` 等当前未支持的更宽隐式兼容
+  - 不在这里实现 property-side inference/backfill，或放宽 `StringName` / `String` 等当前未支持的更宽隐式兼容；`int -> float` 只通过 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 生效，不在 type-check analyzer 内维护平行规则
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义
 
 ---

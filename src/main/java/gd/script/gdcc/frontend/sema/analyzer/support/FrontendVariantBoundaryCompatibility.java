@@ -1,6 +1,8 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
@@ -13,7 +15,7 @@ import java.util.Objects;
 ///
 /// The helper is intentionally narrow:
 /// - it decides only whether a source/target pair is accepted at the frontend semantic boundary
-/// - it distinguishes direct flow from explicit pack/unpack/null-object edges so lowering can reuse the same rule later
+/// - it distinguishes direct flow from explicit pack/unpack/null-object/primitive-cast edges so lowering can reuse the same rule later
 /// - it does not emit diagnostics and does not weaken backend/global `ClassRegistry.checkAssignable(...)`
 /// - the exact allowed matrix is owned by `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`;
 ///   this helper must stay mechanically aligned with that document instead of evolving its own rule list
@@ -25,6 +27,7 @@ public final class FrontendVariantBoundaryCompatibility {
         ALLOW_WITH_PACK,
         ALLOW_WITH_UNPACK,
         ALLOW_WITH_LITERAL_NULL,
+        ALLOW_WITH_PRIMITIVE_CAST,
         REJECT;
 
         public boolean allows() {
@@ -44,6 +47,7 @@ public final class FrontendVariantBoundaryCompatibility {
     /// - `ALLOW_WITH_PACK`
     /// - `ALLOW_WITH_UNPACK`
     /// - `ALLOW_WITH_LITERAL_NULL`
+    /// - `ALLOW_WITH_PRIMITIVE_CAST`
     /// - `ALLOW_DIRECT`
     /// - `REJECT`
     public static @NotNull Decision determineFrontendBoundaryDecision(
@@ -57,13 +61,12 @@ public final class FrontendVariantBoundaryCompatibility {
         if (target instanceof GdVariantType) {
             return source instanceof GdVariantType ? Decision.ALLOW_DIRECT : Decision.ALLOW_WITH_PACK;
         }
-        if (source instanceof GdVariantType) {
-            return Decision.ALLOW_WITH_UNPACK;
-        }
-        if (source instanceof GdNilType && target instanceof GdObjectType) {
-            return Decision.ALLOW_WITH_LITERAL_NULL;
-        }
-        return registry.checkAssignable(source, target) ? Decision.ALLOW_DIRECT : Decision.REJECT;
+        return switch (source) {
+            case GdVariantType _ -> Decision.ALLOW_WITH_UNPACK;
+            case GdNilType _ when target instanceof GdObjectType -> Decision.ALLOW_WITH_LITERAL_NULL;
+            case GdIntType _ when target instanceof GdFloatType -> Decision.ALLOW_WITH_PRIMITIVE_CAST;
+            default -> registry.checkAssignable(source, target) ? Decision.ALLOW_DIRECT : Decision.REJECT;
+        };
     }
 
     public static boolean isFrontendBoundaryCompatible(

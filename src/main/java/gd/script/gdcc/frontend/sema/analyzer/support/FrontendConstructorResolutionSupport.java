@@ -347,8 +347,9 @@ final class FrontendConstructorResolutionSupport {
 
     private static int decisionSpecificityRank(@NotNull FrontendVariantBoundaryCompatibility.Decision decision) {
         return switch (Objects.requireNonNull(decision, "decision must not be null")) {
-            case ALLOW_DIRECT -> 3;
-            case ALLOW_WITH_LITERAL_NULL -> 2;
+            case ALLOW_DIRECT -> 4;
+            case ALLOW_WITH_LITERAL_NULL -> 3;
+            case ALLOW_WITH_PRIMITIVE_CAST -> 2;
             case ALLOW_WITH_UNPACK, ALLOW_WITH_PACK -> 1;
             case REJECT -> 0;
         };

@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
@@ -57,7 +58,7 @@ class FrontendVariantBoundaryCompatibilityTest {
                 )
         );
         assertEquals(
-                FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PRIMITIVE_CAST,
                 FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
                         classRegistry,
                         GdIntType.INT,
@@ -70,6 +71,43 @@ class FrontendVariantBoundaryCompatibilityTest {
                         classRegistry,
                         GdStringType.STRING,
                         GdIntType.INT
+                )
+        );
+    }
+
+    @Test
+    void primitiveCastDecisionIsLimitedToIntToFloatBoundary() throws Exception {
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PRIMITIVE_CAST,
+                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                        classRegistry,
+                        new GdIntType(),
+                        GdFloatType.FLOAT
+                )
+        );
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                        classRegistry,
+                        GdFloatType.FLOAT,
+                        GdIntType.INT
+                )
+        );
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                        classRegistry,
+                        GdBoolType.BOOL,
+                        GdFloatType.FLOAT
+                )
+        );
+        assertEquals(
+                FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                        classRegistry,
+                        GdIntType.INT,
+                        GdBoolType.BOOL
                 )
         );
     }
