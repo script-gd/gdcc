@@ -11,10 +11,13 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
@@ -96,6 +99,37 @@ class FrontendBodyLoweringSessionTest {
     }
 
     @Test
+    void materializeFrontendBoundaryValueCastsIntSourcesForFloatTargetsThroughIntrinsic() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("source_int", GdIntType.INT);
+
+        var materializedSlotId = session.materializeFrontendBoundaryValue(
+                block,
+                "source_int",
+                GdIntType.INT,
+                GdFloatType.FLOAT,
+                "return_value"
+        );
+
+        var instructions = block.getNonTerminatorInstructions();
+        var castInsn = assertInstanceOf(CallIntrinsicInsn.class, instructions.getFirst());
+        var castedVariable = session.targetFunction().getVariableById(materializedSlotId);
+        var castArgument = assertInstanceOf(LirInstruction.VariableOperand.class, castInsn.args().getFirst());
+        assertNotNull(castedVariable);
+
+        assertAll(
+                () -> assertEquals(1, instructions.size()),
+                () -> assertNotEquals("source_int", materializedSlotId),
+                () -> assertEquals(materializedSlotId, castInsn.resultId()),
+                () -> assertEquals("c_int_to_float", castInsn.intrinsicName()),
+                () -> assertEquals(1, castInsn.args().size()),
+                () -> assertEquals("source_int", castArgument.id()),
+                () -> assertEquals(GdFloatType.FLOAT, castedVariable.type())
+        );
+    }
+
+    @Test
     void materializeFrontendBoundaryValueMaterializesObjectNullForNilSources() throws Exception {
         var session = prepareSession();
         var block = new LirBasicBlock("entry");
@@ -127,8 +161,10 @@ class FrontendBodyLoweringSessionTest {
         var session = prepareSession();
         var concreteBlock = new LirBasicBlock("concrete_direct");
         var variantBlock = new LirBasicBlock("variant_direct");
+        var floatBlock = new LirBasicBlock("float_direct");
         session.ensureVariable("source_value", GdIntType.INT);
         session.ensureVariable("source_variant", GdVariantType.VARIANT);
+        session.ensureVariable("source_float", GdFloatType.FLOAT);
 
         var directConcreteSlotId = session.materializeFrontendBoundaryValue(
                 concreteBlock,
@@ -144,12 +180,21 @@ class FrontendBodyLoweringSessionTest {
                 GdVariantType.VARIANT,
                 "local_init"
         );
+        var directFloatSlotId = session.materializeFrontendBoundaryValue(
+                floatBlock,
+                "source_float",
+                GdFloatType.FLOAT,
+                GdFloatType.FLOAT,
+                "local_init"
+        );
 
         assertAll(
                 () -> assertEquals("source_value", directConcreteSlotId),
                 () -> assertEquals("source_variant", directVariantSlotId),
+                () -> assertEquals("source_float", directFloatSlotId),
                 () -> assertTrue(concreteBlock.getNonTerminatorInstructions().isEmpty()),
-                () -> assertTrue(variantBlock.getNonTerminatorInstructions().isEmpty())
+                () -> assertTrue(variantBlock.getNonTerminatorInstructions().isEmpty()),
+                () -> assertTrue(floatBlock.getNonTerminatorInstructions().isEmpty())
         );
     }
 

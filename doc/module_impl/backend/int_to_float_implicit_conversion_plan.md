@@ -265,6 +265,19 @@ $target = (godot_float)$source;
 
 ### Step 4. Lowering 生成 `call_intrinsic`
 
+状态：Done（2026-05-05）。
+
+已完成：
+
+- `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)` 已改为先消费 `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)`，再按 decision 物化 `ALLOW_DIRECT` / pack / unpack / literal-null / primitive-cast / reject。
+- `ALLOW_WITH_PRIMITIVE_CAST` 当前只接受 `int -> float`，并生成 `CallIntrinsicInsn(..., "c_int_to_float", ...)` 到新的 `float` temp；其它 primitive-cast pair 会 fail-fast。
+- writable-route subscript leaf / reverse-commit step 已携带 receiver/key 类型，read/write 发指令前通过同一个 key/index materialization helper 选择最终 access kind。
+- CFG 发布的 writable subscript access kind 已改为按 materialized key/index type 计算，避免 `Variant -> int` array index 在 body lowering 前被误冻成 generic route。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendLoweringBodyInsnPassTest,FrontendSubscriptSemanticSupportTest,FrontendWritableRouteSupportTest,FrontendLoweringBuildCfgPassTest`
+
 修改 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`：
 
 1. 先通过 `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)` 获取 decision，避免 lowering 侧重复手写完整转换矩阵。

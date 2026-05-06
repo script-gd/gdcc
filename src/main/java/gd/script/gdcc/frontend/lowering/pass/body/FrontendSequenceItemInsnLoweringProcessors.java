@@ -3,7 +3,6 @@ package gd.script.gdcc.frontend.lowering.pass.body;
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendCallMutabilitySupport;
-import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.BoolConstantItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
@@ -689,24 +688,20 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var keyValueId = node.argumentValueIds().getFirst();
             var keySlotId = session.slotIdForValue(keyValueId);
             var keyType = session.requireValueType(keyValueId);
-            var accessKind = node.memberNameOrNull() == null
-                    ? FrontendSubscriptAccessSupport.determineAccessKind(
-                    session.requireValueType(node.baseValueId()),
-                    keyType
-            )
-                    : FrontendSubscriptAccessSupport.determineAccessKind(GdVariantType.VARIANT, keyType);
+            var receiverType = session.requireValueType(node.baseValueId());
             var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
                     node.anchor(),
                     new FrontendWritableRouteSupport.FrontendWritableRoot(
                             node.memberNameOrNull() == null ? "subscript base" : "attribute-subscript receiver",
                             baseSlotId,
-                            session.requireValueType(node.baseValueId())
+                            receiverType
                     ),
                     new FrontendWritableRouteSupport.SubscriptLeaf(
                             baseSlotId,
+                            receiverType,
                             node.memberNameOrNull(),
                             keySlotId,
-                            accessKind,
+                            keyType,
                             session.requireValueType(node.resultValueId())
                     ),
                     List.of()

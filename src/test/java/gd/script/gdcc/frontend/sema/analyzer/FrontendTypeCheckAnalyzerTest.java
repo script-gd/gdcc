@@ -453,7 +453,8 @@ class FrontendTypeCheckAnalyzerTest {
                 static func ping(worker):
                     var accepts_variant: Variant = 1
                     var exact_variant_source: int = accepts_variant
-                    var strict_float: float = 1
+                    var accepted_float: float = 1
+                    var strict_int: int = 1.0
                     var dynamic_variant: Variant = worker.ping().length
                     var dynamic_int: int = worker.ping().length
                     var inferred := 1
@@ -474,6 +475,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(
                 FrontendExpressionTypeStatus.RESOLVED,
                 requireInitializerType(pingFunction.body().statements(), "exact_variant_source", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "accepted_float", preparedInput).status()
         );
         assertEquals(
                 FrontendExpressionTypeStatus.DYNAMIC,
@@ -507,9 +512,9 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(1, typeCheckDiagnostics.size());
         var typeCheckDiagnostic = typeCheckDiagnostics.getFirst();
         assertEquals(FrontendDiagnosticSeverity.ERROR, typeCheckDiagnostic.severity());
-        assertTrue(typeCheckDiagnostic.message().contains("strict_float"));
-        assertTrue(typeCheckDiagnostic.message().contains("int"));
+        assertTrue(typeCheckDiagnostic.message().contains("strict_int"));
         assertTrue(typeCheckDiagnostic.message().contains("float"));
+        assertTrue(typeCheckDiagnostic.message().contains("int"));
         assertEquals(
                 FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_local_compatibility.gd")),
                 typeCheckDiagnostic.sourcePath()

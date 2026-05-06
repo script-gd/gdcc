@@ -1,7 +1,6 @@
 package gd.script.gdcc.frontend.lowering.pass.body;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
-import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FrontendLoweringContext;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
@@ -144,9 +143,10 @@ class FrontendWritableRouteSupportTest {
                 ),
                 new FrontendWritableRouteSupport.SubscriptLeaf(
                         "receiver_slot",
+                        GdVariantType.VARIANT,
                         "payloads",
                         "key_slot",
-                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        GdIntType.INT,
                         GdVariantType.VARIANT
                 ),
                 List.of()
@@ -188,9 +188,10 @@ class FrontendWritableRouteSupportTest {
                 ),
                 new FrontendWritableRouteSupport.SubscriptLeaf(
                         "payload_slot",
+                        GdVariantType.VARIANT,
                         null,
                         "key_slot",
-                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        GdIntType.INT,
                         GdVariantType.VARIANT
                 ),
                 List.of(new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "payloads"))
@@ -242,9 +243,10 @@ class FrontendWritableRouteSupportTest {
                         new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
                         new FrontendWritableRouteSupport.SubscriptCommitStep(
                                 "items_slot",
+                                GdVariantType.VARIANT,
                                 null,
                                 "key_slot",
-                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                                GdIntType.INT
                         )
                 )
         );
@@ -293,9 +295,10 @@ class FrontendWritableRouteSupportTest {
                         new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
                         new FrontendWritableRouteSupport.SubscriptCommitStep(
                                 "items_slot",
+                                GdVariantType.VARIANT,
                                 null,
                                 "key_slot",
-                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                                GdIntType.INT
                         )
                 )
         );
@@ -434,9 +437,10 @@ class FrontendWritableRouteSupportTest {
                         new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
                         new FrontendWritableRouteSupport.SubscriptCommitStep(
                                 "items_slot",
+                                GdPackedNumericArrayType.PACKED_INT32_ARRAY,
                                 null,
                                 "key_slot",
-                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                                GdIntType.INT
                         )
                 )
         );
@@ -505,9 +509,10 @@ class FrontendWritableRouteSupportTest {
                         new FrontendWritableRouteSupport.InstancePropertyCommitStep("self", "items"),
                         new FrontendWritableRouteSupport.SubscriptCommitStep(
                                 "items_slot",
+                                GdVariantType.VARIANT,
                                 null,
                                 "key_slot",
-                                FrontendSubscriptAccessSupport.AccessKind.INDEXED
+                                GdIntType.INT
                         )
                 )
         );
@@ -586,9 +591,10 @@ class FrontendWritableRouteSupportTest {
                 IllegalArgumentException.class,
                 () -> new FrontendWritableRouteSupport.SubscriptLeaf(
                         "receiver_slot",
+                        GdVariantType.VARIANT,
                         null,
                         " ",
-                        FrontendSubscriptAccessSupport.AccessKind.INDEXED,
+                        GdIntType.INT,
                         GdVariantType.VARIANT
                 )
         );

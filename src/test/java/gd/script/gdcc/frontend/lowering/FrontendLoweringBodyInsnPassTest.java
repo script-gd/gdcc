@@ -32,6 +32,7 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
@@ -58,6 +59,7 @@ import gd.script.gdcc.lir.insn.VariantSetIndexedInsn;
 import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -887,7 +889,7 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runAllowsPlainDictionaryStringKeysThroughSharedVariantBoundary() throws Exception {
+    void runMaterializesPlainDictionaryStringKeysThroughSharedVariantBoundary() throws Exception {
         var prepared = prepareContext(
                 "body_insn_plain_dictionary_string_key.gd",
                 """
@@ -911,17 +913,101 @@ class FrontendLoweringBodyInsnPassTest {
         new FrontendLoweringBodyInsnPass().run(prepared.context());
 
         var instructions = allInstructions(pingContext.targetFunction());
+        var setInsn = requireOnlyInstruction(pingContext.targetFunction(), VariantSetInsn.class);
+        var getInsn = requireOnlyInstruction(pingContext.targetFunction(), VariantGetInsn.class);
+        var keyPackResultIds = packResultIds(instructions);
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals(1, countInstructions(instructions, VariantSetKeyedInsn.class)),
-                () -> assertEquals(1, countInstructions(instructions, VariantGetKeyedInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, VariantSetInsn.class)),
+                () -> assertEquals(1, countInstructions(instructions, VariantGetInsn.class)),
+                () -> assertTrue(keyPackResultIds.contains(setInsn.keyId())),
+                () -> assertTrue(keyPackResultIds.contains(getInsn.keyId())),
                 () -> assertEquals(0, countInstructions(instructions, VariantSetIndexedInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, VariantGetIndexedInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, VariantSetNamedInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class)),
-                () -> assertFalse(instructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
-                () -> assertFalse(instructions.stream().anyMatch(VariantGetInsn.class::isInstance))
+                () -> assertFalse(instructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
+                () -> assertFalse(instructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance))
+        );
+    }
+
+    @Test
+    void runMaterializesSubscriptKeysBeforeSelectingAccessInstructions() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_subscript_key_materialization.gd",
+                        """
+                        class_name BodyInsnSubscriptKeyMaterialization
+                        extends RefCounted
+
+                        func dictionary_ops(box: Dictionary[float, int], key: int) -> int:
+                            box[key] = 7
+                            return box[key]
+
+                        func array_ops(values: Array[int], key: Variant) -> int:
+                            values[key] = 11
+                            return values[key]
+                        """,
+                Map.of(
+                        "BodyInsnSubscriptKeyMaterialization",
+                        "RuntimeBodyInsnSubscriptKeyMaterialization"
+                ),
+                true
+        );
+        var dictionaryContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSubscriptKeyMaterialization",
+                "dictionary_ops"
+        );
+        var arrayContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSubscriptKeyMaterialization",
+                "array_ops"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var dictionaryInstructions = allInstructions(dictionaryContext.targetFunction());
+        var arrayInstructions = allInstructions(arrayContext.targetFunction());
+        var dictionaryCasts = dictionaryInstructions.stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .toList();
+        var setKeyedInsn = requireOnlyInstruction(dictionaryContext.targetFunction(), VariantSetKeyedInsn.class);
+        var getKeyedInsn = requireOnlyInstruction(dictionaryContext.targetFunction(), VariantGetKeyedInsn.class);
+        var arrayUnpacks = arrayInstructions.stream()
+                .filter(UnpackVariantInsn.class::isInstance)
+                .map(UnpackVariantInsn.class::cast)
+                .toList();
+        var setIndexedInsn = requireOnlyInstruction(arrayContext.targetFunction(), VariantSetIndexedInsn.class);
+        var getIndexedInsn = requireOnlyInstruction(arrayContext.targetFunction(), VariantGetIndexedInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, dictionaryCasts.size()),
+                () -> assertTrue(dictionaryCasts.stream().allMatch(insn -> insn.intrinsicName().equals("c_int_to_float"))),
+                () -> assertTrue(dictionaryCasts.stream().map(CallIntrinsicInsn::resultId).anyMatch(setKeyedInsn.keyId()::equals)),
+                () -> assertTrue(dictionaryCasts.stream().map(CallIntrinsicInsn::resultId).anyMatch(getKeyedInsn.keyId()::equals)),
+                () -> assertEquals(
+                        GdIntType.INT,
+                        dictionaryContext.targetFunction()
+                                .getVariableById(onlyVariableOperandId(dictionaryCasts.getFirst().args()))
+                                .type()
+                ),
+                () -> assertFalse(dictionaryInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(dictionaryInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertEquals(2, arrayUnpacks.size()),
+                () -> assertTrue(arrayUnpacks.stream().map(UnpackVariantInsn::resultId).anyMatch(setIndexedInsn.indexId()::equals)),
+                () -> assertTrue(arrayUnpacks.stream().map(UnpackVariantInsn::resultId).anyMatch(getIndexedInsn.indexId()::equals)),
+                () -> assertTrue(arrayUnpacks.stream().allMatch(insn ->
+                        arrayContext.targetFunction().getVariableById(insn.variantId()).type().equals(GdVariantType.VARIANT)
+                )),
+                () -> assertFalse(arrayInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(arrayInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertFalse(arrayInstructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
+                () -> assertFalse(arrayInstructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance))
         );
     }
 
@@ -1187,6 +1273,93 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(0, countInstructions(varargVariantInstructions, UnpackVariantInsn.class)),
                 () -> assertNotNull(onlyVariableOperandId(callVarargVariantInsn.args())),
                 () -> assertFalse(callVarargVariantContext.targetFunction().getVariables().containsKey("cfg_tmp_v1"))
+        );
+    }
+
+    @Test
+    void runMaterializesPrimitiveCastBoundariesForAssignmentsCallsAndReturns() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_primitive_cast_boundary.gd",
+                        """
+                        class_name BodyInsnPrimitiveCastBoundary
+                        extends RefCounted
+
+                        var ratio: float
+
+                        func take_float(value: float) -> float:
+                            return value
+
+                        func assign(seed: int) -> void:
+                            ratio = seed
+
+                        func call(seed: int) -> float:
+                            return take_float(seed)
+
+                        func ret(seed: int) -> float:
+                            return seed
+                        """,
+                Map.of("BodyInsnPrimitiveCastBoundary", "RuntimeBodyInsnPrimitiveCastBoundary"),
+                true
+        );
+        var assignContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnPrimitiveCastBoundary",
+                "assign"
+        );
+        var callContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnPrimitiveCastBoundary",
+                "call"
+        );
+        var retContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnPrimitiveCastBoundary",
+                "ret"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var assignInstructions = allInstructions(assignContext.targetFunction());
+        var callInstructions = allInstructions(callContext.targetFunction());
+        var retInstructions = allInstructions(retContext.targetFunction());
+        var assignmentCast = requireOnlyInstruction(assignContext.targetFunction(), CallIntrinsicInsn.class);
+        var callCast = requireOnlyInstruction(callContext.targetFunction(), CallIntrinsicInsn.class);
+        var callInsn = requireOnlyInstruction(callContext.targetFunction(), CallMethodInsn.class);
+        var returnCast = requireOnlyInstruction(retContext.targetFunction(), CallIntrinsicInsn.class);
+        var returnInsn = requireOnlyReturnInsn(retContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("c_int_to_float", assignmentCast.intrinsicName()),
+                () -> assertTrue(storeValueIdsForProperty(assignInstructions, "ratio").contains(assignmentCast.resultId())),
+                () -> assertEquals(
+                        GdIntType.INT,
+                        assignContext.targetFunction()
+                                .getVariableById(onlyVariableOperandId(assignmentCast.args()))
+                                .type()
+                ),
+                () -> assertEquals("c_int_to_float", callCast.intrinsicName()),
+                () -> assertEquals(callCast.resultId(), onlyVariableOperandId(callInsn.args())),
+                () -> assertEquals(
+                        GdIntType.INT,
+                        callContext.targetFunction()
+                                .getVariableById(onlyVariableOperandId(callCast.args()))
+                                .type()
+                ),
+                () -> assertEquals("c_int_to_float", returnCast.intrinsicName()),
+                () -> assertEquals(returnCast.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(
+                        GdIntType.INT,
+                        retContext.targetFunction()
+                                .getVariableById(onlyVariableOperandId(returnCast.args()))
+                                .type()
+                ),
+                () -> assertEquals(0, countInstructions(assignInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(callInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(retInstructions, PackVariantInsn.class))
         );
     }
 

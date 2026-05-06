@@ -1,6 +1,5 @@
 package gd.script.gdcc.frontend.lowering.pass.body;
 
-import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FrontendWritableTypeWritebackSupport;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.insn.AssignInsn;
@@ -289,13 +288,21 @@ final class FrontendWritableRouteSupport {
             @NotNull SubscriptLeaf leaf,
             @NotNull String resultSlotId
     ) {
+        var key = session.materializeSubscriptKey(
+                block,
+                leaf.keySlotId(),
+                leaf.keyType(),
+                leaf.receiverType(),
+                leaf.memberNameOrNull(),
+                "subscript_read_key"
+        );
         if (leaf.memberNameOrNull() == null) {
             FrontendSubscriptInsnSupport.appendLoad(
                     block,
                     resultSlotId,
                     leaf.baseOrReceiverSlotId(),
-                    leaf.keySlotId(),
-                    leaf.accessKind()
+                    key.slotId(),
+                    key.accessKind()
             );
             return;
         }
@@ -310,8 +317,8 @@ final class FrontendWritableRouteSupport {
                 block,
                 resultSlotId,
                 scratch.namedBaseSlotId(),
-                leaf.keySlotId(),
-                leaf.accessKind()
+                key.slotId(),
+                key.accessKind()
         );
     }
 
@@ -321,13 +328,21 @@ final class FrontendWritableRouteSupport {
             @NotNull SubscriptLeaf leaf,
             @NotNull String writtenValueSlotId
     ) {
+        var key = session.materializeSubscriptKey(
+                block,
+                leaf.keySlotId(),
+                leaf.keyType(),
+                leaf.receiverType(),
+                leaf.memberNameOrNull(),
+                "subscript_write_key"
+        );
         if (leaf.memberNameOrNull() == null) {
             FrontendSubscriptInsnSupport.appendStore(
                     block,
                     leaf.baseOrReceiverSlotId(),
-                    leaf.keySlotId(),
+                    key.slotId(),
                     writtenValueSlotId,
-                    leaf.accessKind()
+                    key.accessKind()
             );
             return leaf.baseOrReceiverSlotId();
         }
@@ -341,9 +356,9 @@ final class FrontendWritableRouteSupport {
         FrontendSubscriptInsnSupport.appendStore(
                 block,
                 scratch.namedBaseSlotId(),
-                leaf.keySlotId(),
+                key.slotId(),
                 writtenValueSlotId,
-                leaf.accessKind()
+                key.accessKind()
         );
         block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
                 leaf.baseOrReceiverSlotId(),
@@ -393,13 +408,21 @@ final class FrontendWritableRouteSupport {
                 yield writtenBackValueSlotId;
             }
             case SubscriptCommitStep subscriptStep -> {
+                var key = session.materializeSubscriptKey(
+                        block,
+                        subscriptStep.keySlotId(),
+                        subscriptStep.keyType(),
+                        subscriptStep.receiverType(),
+                        subscriptStep.memberNameOrNull(),
+                        "subscript_commit_key"
+                );
                 if (subscriptStep.memberNameOrNull() == null) {
                     FrontendSubscriptInsnSupport.appendStore(
                             block,
                             subscriptStep.baseOrReceiverSlotId(),
-                            subscriptStep.keySlotId(),
+                            key.slotId(),
                             writtenBackValueSlotId,
-                            subscriptStep.accessKind()
+                            key.accessKind()
                     );
                     yield nextOuterCarrierSlotId(subscriptStep, writtenBackValueSlotId, terminalStep);
                 }
@@ -413,9 +436,9 @@ final class FrontendWritableRouteSupport {
                 FrontendSubscriptInsnSupport.appendStore(
                         block,
                         scratch.namedBaseSlotId(),
-                        subscriptStep.keySlotId(),
+                        key.slotId(),
                         writtenBackValueSlotId,
-                        subscriptStep.accessKind()
+                        key.accessKind()
                 );
                 block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
                         subscriptStep.baseOrReceiverSlotId(),
@@ -655,18 +678,20 @@ final class FrontendWritableRouteSupport {
     ///   and write it back into the outer receiver as part of the same leaf operation
     record SubscriptLeaf(
             @NotNull String baseOrReceiverSlotId,
+            @NotNull GdType receiverType,
             @Nullable String memberNameOrNull,
             @NotNull String keySlotId,
-            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind,
+            @NotNull GdType keyType,
             @NotNull GdType valueType
     ) implements FrontendWritableLeaf {
         SubscriptLeaf {
             baseOrReceiverSlotId = StringUtil.requireNonBlank(baseOrReceiverSlotId, "baseOrReceiverSlotId");
+            Objects.requireNonNull(receiverType, "receiverType must not be null");
             if (memberNameOrNull != null) {
                 memberNameOrNull = StringUtil.requireNonBlank(memberNameOrNull, "memberNameOrNull");
             }
             keySlotId = StringUtil.requireNonBlank(keySlotId, "keySlotId");
-            Objects.requireNonNull(accessKind, "accessKind must not be null");
+            Objects.requireNonNull(keyType, "keyType must not be null");
             Objects.requireNonNull(valueType, "valueType must not be null");
         }
     }
@@ -724,17 +749,19 @@ final class FrontendWritableRouteSupport {
     /// always the owning base/receiver slot itself.
     record SubscriptCommitStep(
             @NotNull String baseOrReceiverSlotId,
+            @NotNull GdType receiverType,
             @Nullable String memberNameOrNull,
             @NotNull String keySlotId,
-            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind
+            @NotNull GdType keyType
     ) implements FrontendWritableCommitStep {
         SubscriptCommitStep {
             baseOrReceiverSlotId = StringUtil.requireNonBlank(baseOrReceiverSlotId, "baseOrReceiverSlotId");
+            Objects.requireNonNull(receiverType, "receiverType must not be null");
             if (memberNameOrNull != null) {
                 memberNameOrNull = StringUtil.requireNonBlank(memberNameOrNull, "memberNameOrNull");
             }
             keySlotId = StringUtil.requireNonBlank(keySlotId, "keySlotId");
-            Objects.requireNonNull(accessKind, "accessKind must not be null");
+            Objects.requireNonNull(keyType, "keyType must not be null");
         }
     }
 

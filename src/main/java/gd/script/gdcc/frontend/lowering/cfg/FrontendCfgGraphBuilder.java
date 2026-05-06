@@ -63,6 +63,7 @@ import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
@@ -1823,15 +1824,30 @@ public final class FrontendCfgGraphBuilder {
         };
     }
 
+    /// Freezes the writable-route subscript access family using the key type that body lowering will
+    /// eventually materialize.
+    ///
+    /// Usage:
+    /// - call this while publishing a writable subscript route into `FrontendWritableRoutePayload`
+    /// - pass the receiver type and the original key expression type known at CFG build time
+    ///
+    /// Examples:
+    /// - `Array[T]` with a `Variant` key freezes as `INDEXED`, because body lowering will unpack the
+    ///   key to the container's `int` index type
+    /// - `Dictionary[float, V]` with an `int` key freezes as `KEYED`, because body lowering will cast
+    ///   the key to the dictionary's `float` key type
+    /// - attribute-subscript steps use a `Variant` effective receiver because the named base is
+    ///   materialized from runtime `receiver.member` before the subscript is applied
     private @NotNull FrontendSubscriptAccessSupport.AccessKind determineWritableSubscriptAccessKind(
             @NotNull Node subscriptAnchor,
             @NotNull GdType receiverType,
             @NotNull GdType keyType
     ) {
-        return FrontendSubscriptAccessSupport.determineAccessKind(
-                subscriptAnchor instanceof AttributeSubscriptStep ? GdVariantType.VARIANT : receiverType,
-                keyType
-        );
+        var effectiveReceiverType = subscriptAnchor instanceof AttributeSubscriptStep ? GdVariantType.VARIANT : receiverType;
+        var materializedKeyType = effectiveReceiverType instanceof GdContainerType containerType
+                ? containerType.getKeyType()
+                : keyType;
+        return FrontendSubscriptAccessSupport.determineAccessKind(effectiveReceiverType, materializedKeyType);
     }
 
     private void requireSingleWritableRouteKey(@NotNull Node anchor, @NotNull List<String> keyValueIds) {

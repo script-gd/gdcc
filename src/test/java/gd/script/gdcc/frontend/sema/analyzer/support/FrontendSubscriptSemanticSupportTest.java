@@ -6,6 +6,7 @@ import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdStringType;
@@ -76,6 +77,39 @@ class FrontendSubscriptSemanticSupportTest {
         );
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, variantKeyResult.status());
         assertEquals("int", Objects.requireNonNull(variantKeyResult.publishedType()).getTypeName());
+    }
+
+    @Test
+    void resolveSubscriptTypeAcceptsIntKeysForFloatDictionariesOnlyThroughSharedPrimitiveBoundary() {
+        var support = new FrontendSubscriptSemanticSupport(newRegistry(List.of()));
+
+        var dictionaryResult = support.resolveSubscriptType(
+                new GdDictionaryType(GdFloatType.FLOAT, GdIntType.INT),
+                List.of(GdIntType.INT),
+                "subscript expression"
+        );
+        var arrayFloatIndexResult = support.resolveSubscriptType(
+                new GdArrayType(GdIntType.INT),
+                List.of(GdFloatType.FLOAT),
+                "subscript expression"
+        );
+        var packedFloatIndexResult = support.resolveSubscriptType(
+                GdPackedNumericArrayType.PACKED_INT32_ARRAY,
+                List.of(GdFloatType.FLOAT),
+                "subscript expression"
+        );
+        var arrayVariantIndexResult = support.resolveSubscriptType(
+                new GdArrayType(GdIntType.INT),
+                List.of(GdVariantType.VARIANT),
+                "subscript expression"
+        );
+
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, dictionaryResult.status());
+        assertEquals(GdIntType.INT, dictionaryResult.publishedType());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, arrayFloatIndexResult.status());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, packedFloatIndexResult.status());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayVariantIndexResult.status());
+        assertEquals(GdIntType.INT, arrayVariantIndexResult.publishedType());
     }
 
     @Test

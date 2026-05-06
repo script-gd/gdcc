@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.lowering.pass.body;
 
 import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
+import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
@@ -16,9 +17,11 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendVariantBoundaryCompatibility;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -26,8 +29,9 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
-import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdContainerType;
+import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -314,16 +318,17 @@ public final class FrontendBodyLoweringSession {
                         leafType
                 );
             }
-            case SUBSCRIPT -> new FrontendWritableRouteSupport.SubscriptLeaf(
-                    resolveWritableContainerSlot(root, leaf.containerValueIdOrNull()),
-                    leaf.memberNameOrNull(),
-                    slotIdForValue(leaf.operandValueIds().getFirst()),
-                    Objects.requireNonNull(
-                            leaf.subscriptAccessKindOrNull(),
-                            "SUBSCRIPT leaf must publish subscriptAccessKindOrNull"
-                    ),
-                    leafType
-            );
+            case SUBSCRIPT -> {
+                var keyValueId = leaf.operandValueIds().getFirst();
+                yield new FrontendWritableRouteSupport.SubscriptLeaf(
+                        resolveWritableContainerSlot(root, leaf.containerValueIdOrNull()),
+                        requireWritableContainerType(root, leaf.containerValueIdOrNull()),
+                        leaf.memberNameOrNull(),
+                        slotIdForValue(keyValueId),
+                        requireValueType(keyValueId),
+                        leafType
+                );
+            }
         };
     }
 
@@ -345,15 +350,16 @@ public final class FrontendBodyLoweringSession {
                         propertyName
                 );
             }
-            case SUBSCRIPT -> new FrontendWritableRouteSupport.SubscriptCommitStep(
-                    resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
-                    step.memberNameOrNull(),
-                    slotIdForValue(step.operandValueIds().getFirst()),
-                    Objects.requireNonNull(
-                            step.subscriptAccessKindOrNull(),
-                            "SUBSCRIPT step must publish subscriptAccessKindOrNull"
-                    )
-            );
+            case SUBSCRIPT -> {
+                var keyValueId = step.operandValueIds().getFirst();
+                yield new FrontendWritableRouteSupport.SubscriptCommitStep(
+                        resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
+                        requireWritableContainerType(root, step.containerValueIdOrNull()),
+                        step.memberNameOrNull(),
+                        slotIdForValue(keyValueId),
+                        requireValueType(keyValueId)
+                );
+            }
         };
     }
 
@@ -665,28 +671,144 @@ public final class FrontendBodyLoweringSession {
                             + "' must not materialize into target type void; value-required lowering sites must not request a concrete slot for void"
             );
         }
-        if (target instanceof GdVariantType) {
-            if (source instanceof GdVariantType) {
-                return sourceSlot;
+        return switch (FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                classRegistry,
+                source,
+                target
+        )) {
+            case ALLOW_DIRECT -> sourceSlot;
+            case ALLOW_WITH_PACK -> {
+                var packedSlotId = nextBoundaryMaterializationSlotId(use, "pack");
+                ensureVariable(packedSlotId, GdVariantType.VARIANT);
+                block.appendNonTerminatorInstruction(new PackVariantInsn(packedSlotId, sourceSlot));
+                yield packedSlotId;
             }
-            var packedSlotId = nextBoundaryMaterializationSlotId(use, "pack");
-            ensureVariable(packedSlotId, GdVariantType.VARIANT);
-            block.appendNonTerminatorInstruction(new PackVariantInsn(packedSlotId, sourceSlot));
-            return packedSlotId;
+            case ALLOW_WITH_UNPACK -> {
+                var unpackedSlotId = nextBoundaryMaterializationSlotId(use, "unpack");
+                ensureVariable(unpackedSlotId, target);
+                block.appendNonTerminatorInstruction(new UnpackVariantInsn(unpackedSlotId, sourceSlot));
+                yield unpackedSlotId;
+            }
+            case ALLOW_WITH_LITERAL_NULL -> {
+                var nullSlotId = nextBoundaryMaterializationSlotId(use, "null_object");
+                ensureVariable(nullSlotId, target);
+                block.appendNonTerminatorInstruction(new LiteralNullInsn(nullSlotId));
+                yield nullSlotId;
+            }
+            case ALLOW_WITH_PRIMITIVE_CAST -> materializePrimitiveCast(block, sourceSlot, source, target, use);
+            case REJECT -> throw new IllegalStateException(
+                    "Frontend boundary '"
+                            + use
+                            + "' rejects source type '"
+                            + source.getTypeName()
+                            + "' for target type '"
+                            + target.getTypeName()
+                            + "'"
+            );
+        };
+    }
+
+    /// Materializes one primitive-cast ordinary boundary into a backend-owned intrinsic call.
+    ///
+    /// Usage:
+    /// - only call this from `materializeFrontendBoundaryValue(...)` after the shared frontend
+    ///   boundary decision has returned `ALLOW_WITH_PRIMITIVE_CAST`
+    /// - pass the already-lowered source slot and the published source/target types for that
+    ///   boundary
+    ///
+    /// Current example:
+    /// - source `int` slot from `return seed` in a `-> float` function becomes a new `float` temp
+    ///   filled by `call_intrinsic "c_int_to_float" $seed`
+    ///
+    /// This helper deliberately fail-fast guards the currently supported pair so later primitive
+    /// casts cannot silently reuse the `c_int_to_float` route.
+    private @NotNull String materializePrimitiveCast(
+            @NotNull LirBasicBlock block,
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull String boundaryUse
+    ) {
+        if (!(sourceType instanceof GdIntType) || !(targetType instanceof GdFloatType)) {
+            throw new IllegalStateException(
+                    "Frontend boundary '"
+                            + boundaryUse
+                            + "' requested unsupported primitive cast from '"
+                            + sourceType.getTypeName()
+                            + "' to '"
+                            + targetType.getTypeName()
+                            + "'"
+            );
         }
-        if (source instanceof GdVariantType) {
-            var unpackedSlotId = nextBoundaryMaterializationSlotId(use, "unpack");
-            ensureVariable(unpackedSlotId, target);
-            block.appendNonTerminatorInstruction(new UnpackVariantInsn(unpackedSlotId, sourceSlot));
-            return unpackedSlotId;
+        var castedSlotId = nextBoundaryMaterializationSlotId(boundaryUse, "primitive_cast");
+        ensureVariable(castedSlotId, GdFloatType.FLOAT);
+        block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
+                castedSlotId,
+                "c_int_to_float",
+                List.of(new LirInstruction.VariableOperand(sourceSlotId))
+        ));
+        return castedSlotId;
+    }
+
+    /// Materializes a subscript key/index before body lowering chooses the final access instruction.
+    ///
+    /// Usage:
+    /// - `FrontendWritableRouteSupport` calls this for subscript reads, direct writes, and reverse
+    ///   commits
+    /// - callers pass the evaluated key slot plus the static receiver/key types published by sema
+    /// - the returned slot/access kind must be consumed together; recomputing access kind from the
+    ///   original source key type would reintroduce stale `GENERIC` routes
+    ///
+    /// Examples:
+    /// - `Dictionary[float, V]` with an `int` key returns a fresh `float` key slot and `KEYED`
+    /// - `Array[T]` with a `Variant` index returns an unpacked `int` index slot and `INDEXED`
+    /// - `Dictionary[Variant, V]` with a `String` key returns a packed `Variant` key slot and
+    ///   `GENERIC`
+    @NotNull MaterializedSubscriptKey materializeSubscriptKey(
+            @NotNull LirBasicBlock block,
+            @NotNull String sourceKeySlotId,
+            @NotNull GdType sourceKeyType,
+            @NotNull GdType receiverType,
+            @Nullable String memberNameOrNull,
+            @NotNull String boundaryUse
+    ) {
+        var effectiveReceiverType = memberNameOrNull == null ? receiverType : GdVariantType.VARIANT;
+        if (effectiveReceiverType instanceof GdContainerType containerType) {
+            var materializedSlotId = materializeFrontendBoundaryValue(
+                    block,
+                    sourceKeySlotId,
+                    sourceKeyType,
+                    containerType.getKeyType(),
+                    boundaryUse
+            );
+            return new MaterializedSubscriptKey(
+                    materializedSlotId,
+                    containerType.getKeyType(),
+                    FrontendSubscriptAccessSupport.determineAccessKind(effectiveReceiverType, containerType.getKeyType())
+            );
         }
-        if (source instanceof GdNilType && target instanceof GdObjectType) {
-            var nullSlotId = nextBoundaryMaterializationSlotId(use, "null_object");
-            ensureVariable(nullSlotId, target);
-            block.appendNonTerminatorInstruction(new LiteralNullInsn(nullSlotId));
-            return nullSlotId;
+        return new MaterializedSubscriptKey(
+                sourceKeySlotId,
+                sourceKeyType,
+                FrontendSubscriptAccessSupport.determineAccessKind(effectiveReceiverType, sourceKeyType)
+        );
+    }
+
+    /// Result of subscript key/index materialization.
+    ///
+    /// `slotId` and `type` describe the lowered key that must be passed to the emitted
+    /// `VariantGet*` / `VariantSet*` instruction. `accessKind` is computed from that materialized
+    /// type, not from the original source expression type.
+    record MaterializedSubscriptKey(
+            @NotNull String slotId,
+            @NotNull GdType type,
+            @NotNull FrontendSubscriptAccessSupport.AccessKind accessKind
+    ) {
+        MaterializedSubscriptKey {
+            slotId = StringUtil.requireNonBlank(slotId, "slotId");
+            Objects.requireNonNull(type, "type must not be null");
+            Objects.requireNonNull(accessKind, "accessKind must not be null");
         }
-        return sourceSlot;
     }
 
     /// Materializes call operands against the already-published route contract.

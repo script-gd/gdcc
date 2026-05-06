@@ -438,6 +438,11 @@ class FrontendAssignmentSemanticSupportTest {
         ));
         assertTrue(!FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
                 support,
+                GdIntType.INT,
+                GdFloatType.FLOAT
+        ));
+        assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
                 GdFloatType.FLOAT,
                 GdIntType.INT
         ));
@@ -462,6 +467,8 @@ class FrontendAssignmentSemanticSupportTest {
                             self.field = 3
                             dynamic_value[0] = 4
                             ratio = 1
+                            var count: int = 0
+                            count = 1.0
                         """
         );
 
@@ -497,9 +504,16 @@ class FrontendAssignmentSemanticSupportTest {
                 publishedResolver,
                 false
         );
-        var strictImplicitConversionFailure = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+        var primitiveCastResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
                 support,
                 assignments.get(4),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var reversePrimitiveCastFailure = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(5),
                 FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
                 publishedResolver,
                 false
@@ -509,16 +523,17 @@ class FrontendAssignmentSemanticSupportTest {
                 localVariantResult,
                 bareVariantPropertyResult,
                 attributeVariantPropertyResult,
-                dynamicTargetResult
+                dynamicTargetResult,
+                primitiveCastResult
         )) {
             assertEquals(FrontendExpressionTypeStatus.RESOLVED, successfulResult.expressionType().status());
             assertEquals(GdVoidType.VOID, successfulResult.expressionType().publishedType());
         }
 
-        assertTrue(strictImplicitConversionFailure.rootOwnsOutcome());
-        assertEquals(FrontendExpressionTypeStatus.FAILED, strictImplicitConversionFailure.expressionType().status());
-        assertTrue(strictImplicitConversionFailure.expressionType().detailReason().contains("not assignable"));
-        assertTrue(strictImplicitConversionFailure.expressionType().detailReason().contains("float"));
+        assertTrue(reversePrimitiveCastFailure.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, reversePrimitiveCastFailure.expressionType().status());
+        assertTrue(reversePrimitiveCastFailure.expressionType().detailReason().contains("not assignable"));
+        assertTrue(reversePrimitiveCastFailure.expressionType().detailReason().contains("int"));
     }
 
     @Test
