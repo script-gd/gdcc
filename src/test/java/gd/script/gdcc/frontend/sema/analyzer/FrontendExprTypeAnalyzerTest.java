@@ -1210,6 +1210,8 @@ class FrontendExprTypeAnalyzerTest {
                             var preserved := ints_a + ints_b
                             var widened := ints_a + names
                             var raw_widened := ints_a + raw_array
+                            var mixed_int_float := 1 + 1.0
+                            var mixed_float_int := 1.0 + 1
                             var invalid: int = "hello" & 1
                             var unsupported = 1 not in ints_a
                         """
@@ -1259,6 +1261,16 @@ class FrontendExprTypeAnalyzerTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, rawWidened.status());
         assertEquals("Array", rawWidened.publishedType().getTypeName());
 
+        var mixedIntFloat = analyzed.analysisData().expressionTypes().get(
+                findVariable(statements, "mixed_int_float").value()
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, mixedIntFloat.status());
+
+        var mixedFloatInt = analyzed.analysisData().expressionTypes().get(
+                findVariable(statements, "mixed_float_int").value()
+        );
+        assertEquals(FrontendExpressionTypeStatus.FAILED, mixedFloatInt.status());
+
         var invalid = analyzed.analysisData().expressionTypes().get(findVariable(statements, "invalid").value());
         assertEquals(FrontendExpressionTypeStatus.FAILED, invalid.status());
 
@@ -1267,10 +1279,16 @@ class FrontendExprTypeAnalyzerTest {
         assertTrue(unsupported.detailReason().contains("must not be silently normalized to 'in'"));
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
-        assertEquals(1, expressionDiagnostics.size());
-        assertTrue(expressionDiagnostics.getFirst().message().contains(
+        assertEquals(3, expressionDiagnostics.size());
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+                "Binary operator '+' is not defined for operand types 'int' and 'float'"
+        )));
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
+                "Binary operator '+' is not defined for operand types 'float' and 'int'"
+        )));
+        assertTrue(expressionDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains(
                 "Binary operator '&' is not defined for operand types 'String' and 'int'"
-        ));
+        )));
 
         var unsupportedDiagnostics = diagnosticsByCategory(analyzed, "sema.unsupported_expression_route");
         assertEquals(1, unsupportedDiagnostics.size());
@@ -1610,27 +1628,29 @@ class FrontendExprTypeAnalyzerTest {
                         func ping(dynamic_value):
                             var payload
                             var ratio: float = 0.0
+                            var count: int = 0
                             payload = 1
                             field = 2
                             self.field = 3
                             dynamic_value[0] = 4
                             ratio = 1
+                            count = 1.0
                         """
         );
 
         var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
-        for (var successIndex : List.of(0, 1, 2, 3)) {
+        for (var successIndex : List.of(0, 1, 2, 3, 4)) {
             var assignmentType = analyzed.analysisData().expressionTypes().get(assignments.get(successIndex));
             assertNotNull(assignmentType);
             assertEquals(FrontendExpressionTypeStatus.RESOLVED, assignmentType.status());
             assertEquals(GdVoidType.VOID, assignmentType.publishedType());
         }
 
-        var strictImplicitConversionFailure = analyzed.analysisData().expressionTypes().get(assignments.get(4));
+        var strictImplicitConversionFailure = analyzed.analysisData().expressionTypes().get(assignments.get(5));
         assertNotNull(strictImplicitConversionFailure);
         assertEquals(FrontendExpressionTypeStatus.FAILED, strictImplicitConversionFailure.status());
         assertTrue(strictImplicitConversionFailure.detailReason().contains("not assignable"));
-        assertTrue(strictImplicitConversionFailure.detailReason().contains("float"));
+        assertTrue(strictImplicitConversionFailure.detailReason().contains("int"));
 
         var expressionDiagnostics = diagnosticsByCategory(analyzed, "sema.expression_resolution");
         assertEquals(1, expressionDiagnostics.size());

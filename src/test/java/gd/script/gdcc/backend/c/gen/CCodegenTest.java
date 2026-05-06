@@ -456,7 +456,7 @@ public class CCodegenTest {
         var sessionBodyCalled = new boolean[]{false};
         var codegen = new CCodegen() {
             @Override
-            public String generateFuncBody(@NotNull LirClassDef clazz, @NotNull LirFunctionDef func) {
+            public @NotNull String generateFuncBody(@NotNull LirClassDef clazz, @NotNull LirFunctionDef func) {
                 publicBodyCalled[0] = true;
                 return super.generateFuncBody(clazz, func);
             }

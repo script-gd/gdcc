@@ -714,7 +714,10 @@ class FrontendTypeCheckAnalyzerTest {
                 
                 func accepts_dynamic_variant_source(worker) -> int:
                     return worker.ping().length
-                
+
+                func accepts_primitive_float_boundary() -> float:
+                    return 1
+
                 func rejects_bare() -> int:
                     return
                 
@@ -724,6 +727,9 @@ class FrontendTypeCheckAnalyzerTest {
                 func rejects_type() -> int:
                     return "x"
                 
+                func rejects_primitive_narrowing() -> int:
+                    return 1.0
+
                 func skips_failed() -> int:
                     return Worker
                 
@@ -742,7 +748,7 @@ class FrontendTypeCheckAnalyzerTest {
 
         var diagnostics = preparedInput.diagnosticManager().snapshot();
         var typeCheckDiagnostics = diagnosticsByCategory(diagnostics, "sema.type_check");
-        assertEquals(4, typeCheckDiagnostics.size());
+        assertEquals(5, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
                         && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_return_compatibility.gd"))
@@ -759,6 +765,10 @@ class FrontendTypeCheckAnalyzerTest {
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
                 diagnostic.message().contains("Return value type 'String'")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'float'")
                         && diagnostic.message().contains("int")
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
@@ -780,6 +790,16 @@ class FrontendTypeCheckAnalyzerTest {
                 Objects.requireNonNull(
                         preparedInput.analysisData().expressionTypes().get(
                                 findNode(findFunction(preparedInput.unit().ast(), "accepts_dynamic_variant_source"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        ignored -> true).value()
+                        )
+                ).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "accepts_primitive_float_boundary"),
                                         dev.superice.gdparser.frontend.ast.ReturnStatement.class,
                                         ignored -> true).value()
                         )

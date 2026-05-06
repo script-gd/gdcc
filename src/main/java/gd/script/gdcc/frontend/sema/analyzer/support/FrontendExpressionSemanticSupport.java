@@ -20,6 +20,8 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -485,6 +487,16 @@ public final class FrontendExpressionSemanticSupport {
             return FrontendExpressionType.dynamic(
                     "Runtime-open operand routes binary operator '" + actualOperatorText
                             + "' through Variant semantics"
+            );
+        }
+
+        // Godot metadata exposes mixed int/float operator entries, but this frontend boundary
+        // intentionally does not turn ordinary typed-boundary widening into operator promotion.
+        if (isMixedIntFloatScalarPair(publishedLeftType, publishedRightType)) {
+            return FrontendExpressionType.failed(
+                    "Binary operator '" + actualOperatorText
+                            + "' is not defined for operand types '" + publishedLeftType.getTypeName()
+                            + "' and '" + publishedRightType.getTypeName() + "'"
             );
         }
 
@@ -1124,6 +1136,11 @@ public final class FrontendExpressionSemanticSupport {
     ) {
         return operandType.status() == FrontendExpressionTypeStatus.DYNAMIC
                 || publishedOperandType instanceof GdVariantType;
+    }
+
+    private static boolean isMixedIntFloatScalarPair(@NotNull GdType leftType, @NotNull GdType rightType) {
+        return leftType instanceof GdIntType && rightType instanceof GdFloatType
+                || leftType instanceof GdFloatType && rightType instanceof GdIntType;
     }
 
     private static @Nullable GdType resolveBinaryExactReturnType(

@@ -422,6 +422,29 @@ registerInsnGen(new CallIntrinsicInsnGen());
 
 ### Step 8. 更新必要的 frontend focused tests
 
+状态：Done（2026-05-06）。
+
+执行清单：
+
+- [x] 补充 type-check return boundary 正反例。
+- [x] 补充 bare call AST-level primitive-cast 与 overload ranking 正例。
+- [x] 补充 container recursive primitive widening 负例。
+- [x] 补充 mixed numeric binary expression 负例。
+- [x] 运行 Step 8 frontend targeted tests。
+
+调查记录：
+
+- 2026-05-06 targeted tests 首轮失败：
+  - `FrontendExpressionSemanticSupportTest.resolveCallExpressionTypeUsesPrimitiveCastBoundaryWithoutWeakeningOverloadSpecificity` 使用的 synthetic bare-call scope 未正确模拟真实 class/callable scope 链，需要收窄为 helper-level 或补齐作用域发布。
+  - `FrontendExprTypeAnalyzerTest.analyzePublishesBinaryExpressionTypesWithoutDeferredDiagnostics` 显示 `1 + 1.0` / `1.0 + 1` 当前为 `RESOLVED`。这不是 Step 8 新增测试能直接接受的行为；需按本计划“不得新增 unary / binary numeric promotion”验收点继续调查实现与文档事实源。
+  - `FrontendExprTypeAnalyzerTest.analyzeAcceptsVariantAndDynamicAssignmentTargetsButKeepsImplicitConversionsStrict` 仍把 `ratio = 1` 当成失败断言，需更新为 Step 8 后的合法 assignment boundary，并保留 `float -> int` 负例。
+- 2026-05-06 已修正上述首轮问题：synthetic bare-call 测试补齐 callable expression fact；assignment 测试改为接受 `float <- int` 并拒绝 `int <- float`；binary helper 在 exact metadata lookup 前显式拒绝 mixed `int` / `float` scalar pair，防止 operator numeric promotion 绕过 ordinary typed-boundary 规则。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests FrontendExprTypeAnalyzerTest,FrontendExpressionSemanticSupportTest`
+- `script/run-gradle-targeted-tests.sh --tests FrontendTypeCheckAnalyzerTest,FrontendExpressionSemanticSupportTest,FrontendExprTypeAnalyzerTest,ClassRegistryTest,FrontendVariantBoundaryCompatibilityTest,FrontendAssignmentSemanticSupportTest,FrontendSubscriptSemanticSupportTest,ScopeMethodResolverTest`
+
 只添加能锚定新增语义边界和防止误扩面的 focused tests：
 
 1. `FrontendVariantBoundaryCompatibilityTest`

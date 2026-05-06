@@ -296,6 +296,14 @@ public class ClassRegistryTest {
         ));
         assertFalse(registry.checkAssignable(
                 new GdDictionaryType(GdIntType.INT, GdIntType.INT),
+                new GdDictionaryType(GdFloatType.FLOAT, GdIntType.INT)
+        ));
+        assertFalse(registry.checkAssignable(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdIntType.INT),
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdFloatType.FLOAT)
+        ));
+        assertFalse(registry.checkAssignable(
+                new GdDictionaryType(GdIntType.INT, GdIntType.INT),
                 new GdDictionaryType(GdStringType.STRING, GdIntType.INT)
         ));
         assertFalse(registry.checkAssignable(
