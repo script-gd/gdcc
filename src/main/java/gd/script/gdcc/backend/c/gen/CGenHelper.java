@@ -40,12 +40,14 @@ public final class CGenHelper {
 
     private final @NotNull CodegenContext context;
     private final @NotNull CBuiltinBuilder builtinBuilder;
+    private final @NotNull CIntrinsicManager intrinsicManager;
     private final @NotNull OperatorResolver operatorResolver = new OperatorResolver();
     private final @NotNull Set<BindingData> bindingDataSet = new HashSet<>();
 
     public CGenHelper(@NotNull CodegenContext context, @NotNull List<? extends ClassDef> classDefs) {
         this.context = context;
         this.builtinBuilder = new CBuiltinBuilder(this);
+        this.intrinsicManager = new CIntrinsicManager();
         this.collectBindingData(classDefs);
     }
 
@@ -89,6 +91,10 @@ public final class CGenHelper {
 
     public @NotNull List<BindingData> getBindingDataList() {
         return List.copyOf(bindingDataSet);
+    }
+
+    public @NotNull CIntrinsicManager intrinsicManager() {
+        return intrinsicManager;
     }
 
     public @NotNull List<OperatorEvaluatorHelperSpec> collectOperatorEvaluatorHelperSpecs(@NotNull LirModule module) {

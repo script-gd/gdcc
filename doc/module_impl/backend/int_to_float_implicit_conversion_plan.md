@@ -332,6 +332,27 @@ LIR parser / serializer 已有基础实现。只补必要 focused tests，避免
 
 ### Step 6. 新增 C intrinsic manager 与 intrinsic implementation
 
+状态：Done（2026-05-06）。
+
+执行清单：
+
+- [x] 新增 `CIntrinsicFunction` narrow interface。
+- [x] 新增 `CIntrinsicManager` 白名单注册表。
+- [x] 修改 `CGenHelper` 持有并暴露 intrinsic manager。
+- [x] 新增 `CIntToFloatIntrinsic` 实现。
+- [x] 新增并运行 Step 6 focused tests。
+
+已完成：
+
+- `CIntrinsicFunction` 定义 backend intrinsic 的 narrow codegen contract，由调用方传入已解析的 nullable result slot 和 argument slots。
+- `CIntrinsicManager` 使用 `Map.of(...)` 白名单注册 `c_int_to_float`，unknown intrinsic 保持 nullable lookup，由后续 `CallIntrinsicInsnGen` 结合 instruction context 报错。
+- `CGenHelper` 在构造期创建并通过 `intrinsicManager()` 暴露 manager。
+- `CIntToFloatIntrinsic` 校验 result 存在、非 `ref`、类型为 `float`，并校验 exactly one `int` source，再通过 `valueOfCastedVar(source, GdFloatType.FLOAT)` 与 `assignVar(...)` 生成 C cast 写入。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests CIntrinsicManagerTest,CIntToFloatIntrinsicTest`
+
 新增 `CIntrinsicManager`：
 
 1. 构造时注册 `new CIntToFloatIntrinsic()`。
