@@ -52,6 +52,7 @@ public class CCodegen implements Codegen {
         registerInsnGen(new PackUnpackVariantInsnGen());
         registerInsnGen(new CallGlobalInsnGen());
         registerInsnGen(new CallMethodInsnGen());
+        registerInsnGen(new CallIntrinsicInsnGen());
         registerInsnGen(new ConstructInsnGen());
         registerInsnGen(new OperatorInsnGen());
         registerInsnGen(new LoadStaticInsnGen());

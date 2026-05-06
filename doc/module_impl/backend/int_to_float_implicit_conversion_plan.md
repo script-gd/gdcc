@@ -382,6 +382,25 @@ LIR parser / serializer 已有基础实现。只补必要 focused tests，避免
 
 ### Step 7. 注册 `CALL_INTRINSIC` codegen
 
+状态：Done（2026-05-06）。
+
+执行清单：
+
+- [x] 新增 `CallIntrinsicInsnGen`，解析 intrinsic result 和 variable arguments。
+- [x] 将 `CallIntrinsicInsnGen` 注册到 `CCodegen`。
+- [x] 新增并运行 `CallIntrinsicInsnGenTest` 覆盖正反两面。
+
+已完成：
+
+- `CallIntrinsicInsnGen` 注册 `GdInstruction.CALL_INTRINSIC`，从 `CIntrinsicManager` 白名单查找 intrinsic，并对 unknown intrinsic 通过 `bodyBuilder.invalidInsn(...)` fail-fast。
+- `CallIntrinsicInsnGen` 统一解析 nullable result slot 和 variable-only arguments；result 缺失留给具体 intrinsic 合同处理，result/argument 变量不存在和非 variable operand 在 generator 层报错。
+- `CCodegen` 静态注册块已接入 `CallIntrinsicInsnGen`，`CALL_INTRINSIC` 不再落到 unsupported opcode 路径。
+- `CallIntrinsicInsnGenTest` 覆盖 `c_int_to_float` 成功分派，以及 unknown intrinsic、非变量 operand、缺失变量、absent/ref/wrong-type result、错误参数数量、非 int source 等负向行为。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests CallIntrinsicInsnGenTest,CIntrinsicManagerTest,CIntToFloatIntrinsicTest`
+
 新增 `CallIntrinsicInsnGen`：
 
 1. 放在 `gd.script.gdcc.backend.c.gen.insn`。
