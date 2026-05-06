@@ -304,6 +304,20 @@ Subscript key/index 需要单独补齐 lowering materialization：
 
 ### Step 5. 补齐必要的 LIR `call_intrinsic` 测试
 
+状态：Done（2026-05-06）。
+
+已完成：
+
+- `SimpleLirBlockInsnParserTest` 覆盖 `$f = call_intrinsic "c_int_to_float" $i;` 正向解析，并断言 result、intrinsic name 与变量参数。
+- `SimpleLirBlockInsnParserTest` 覆盖 intrinsic name 未加引号时的解析错误，避免 `c_int_to_float` 被误收为普通 identifier。
+- `SimpleLirBlockInsnParserTest` 覆盖 vararg 使用 literal 而非 `$var` 时的解析错误，锚定 intrinsic arguments 必须是已物化 LIR slot 的合同。
+- `SimpleLirBlockInsnSerializerTest` 覆盖 `CallIntrinsicInsn("f", "c_int_to_float", List.of(new VariableOperand("i")))` 的 simple 文本序列化。
+- 现有 parser / serializer 实现已满足本步骤测试，无需新增 LIR opcode 或修改 DOM 通道。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests SimpleLirBlockInsnParserTest,SimpleLirBlockInsnSerializerTest`
+
 LIR parser / serializer 已有基础实现。只补必要 focused tests，避免为已稳定的通用 simple/DOM 通道重复铺测试：
 
 1. `SimpleLirBlockInsnParserTest`

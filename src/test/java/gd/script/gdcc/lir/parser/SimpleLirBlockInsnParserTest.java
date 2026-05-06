@@ -152,6 +152,36 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_callIntrinsicInstruction() {
+        var insns = parse("$f = call_intrinsic \"c_int_to_float\" $i;");
+        assertEquals(1, insns.size());
+
+        var callInsn = assertInstanceOf(CallIntrinsicInsn.class, insns.getFirst());
+        var arg = assertInstanceOf(LirInstruction.VariableOperand.class, callInsn.args().getFirst());
+        assertAll(
+                () -> assertEquals("f", callInsn.resultId()),
+                () -> assertEquals("c_int_to_float", callInsn.intrinsicName()),
+                () -> assertEquals(1, callInsn.args().size()),
+                () -> assertEquals("i", arg.id())
+        );
+    }
+
+    @Test
+    public void parse_callIntrinsicRequiresQuotedIntrinsicName() {
+        var line = "$f = call_intrinsic c_int_to_float $i;";
+        var col = line.indexOf("c_int_to_float") + 1;
+        assertParseError(line, 1, col, "Expected string operand");
+    }
+
+    @Test
+    public void parse_callIntrinsicVarargsRequireVariables() {
+        // Intrinsic arguments are materialized LIR slots, not literal operands.
+        var line = "$f = call_intrinsic \"c_int_to_float\" 42;";
+        var col = line.indexOf("42") + 1;
+        assertParseError(line, 1, col, "Expected variable operand");
+    }
+
+    @Test
     public void parse_assignInstruction() {
         var input = "$a = assign $b;";
         var insns = parse(input);

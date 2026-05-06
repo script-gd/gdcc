@@ -92,6 +92,20 @@ public class SimpleLirBlockInsnSerializerTest {
     }
 
     @Test
+    public void serialize_callIntrinsicInstruction() throws Exception {
+        var insnList = List.<LirInstruction>of(
+                new CallIntrinsicInsn("f", "c_int_to_float", List.of(new LirInstruction.VariableOperand("i")))
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+        var out = sw.toString();
+
+        assertTrue(out.contains("$f = call_intrinsic \"c_int_to_float\" $i;"), out);
+    }
+
+    @Test
     public void serialize_assignInstruction() throws Exception {
         var insnList = List.<LirInstruction>of(new AssignInsn("a", "b"));
 
