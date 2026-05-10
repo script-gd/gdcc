@@ -16,17 +16,22 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
+import gd.script.gdcc.lir.insn.VariantGetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import gd.script.gdcc.lir.insn.VariantSetIndexedInsn;
+import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
@@ -169,6 +174,65 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("receiver_slot", setNamedInsn.namedVariantId()),
                 () -> assertEquals(nameInsn.resultId(), setNamedInsn.nameId()),
                 () -> assertEquals(getNamedInsn.resultId(), setNamedInsn.valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitReusesSubscriptKeyMaterializedDuringLeafRead() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        session.ensureVariable("box_slot", new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT));
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("rhs_slot", GdVariantType.VARIANT);
+        session.ensureVariable("leaf_result", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("box"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "dictionary receiver",
+                        "box_slot",
+                        new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT)
+                ),
+                new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "box_slot",
+                        new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT),
+                        null,
+                        "key_slot",
+                        GdIntType.INT,
+                        GdVariantType.VARIANT
+                ),
+                List.of(new FrontendWritableRouteSupport.SubscriptCommitStep(
+                        "box_slot",
+                        new GdDictionaryType(GdFloatType.FLOAT, GdVariantType.VARIANT),
+                        null,
+                        "key_slot",
+                        GdIntType.INT
+                ))
+        );
+
+        var leafSlotId = FrontendWritableRouteSupport.materializeLeafReadInto(session, block, chain, "leaf_result");
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                leafSlotId,
+                FrontendWritableRouteSupport.ALWAYS_APPLY
+        );
+
+        var instructions = block.getNonTerminatorInstructions();
+        var castInsn = assertInstanceOf(CallIntrinsicInsn.class, instructions.getFirst());
+        var getKeyedInsn = assertInstanceOf(VariantGetKeyedInsn.class, instructions.get(1));
+        var setKeyedInsn = assertInstanceOf(VariantSetKeyedInsn.class, instructions.get(2));
+
+        assertAll(
+                () -> assertEquals(3, instructions.size()),
+                () -> assertEquals("c_int_to_float", castInsn.intrinsicName()),
+                () -> assertEquals("key_slot", onlyVariableOperandId(castInsn.args())),
+                () -> assertEquals("leaf_result", leafSlotId),
+                () -> assertEquals(castInsn.resultId(), getKeyedInsn.keyId()),
+                () -> assertEquals(castInsn.resultId(), setKeyedInsn.keyId()),
+                () -> assertEquals("box_slot", getKeyedInsn.keyedVariantId()),
+                () -> assertEquals("box_slot", setKeyedInsn.keyedVariantId()),
+                () -> assertEquals("leaf_result", setKeyedInsn.valueId())
         );
     }
 
@@ -714,6 +778,11 @@ class FrontendWritableRouteSupportTest {
 
     private static @NotNull IdentifierExpression identifier(String name) {
         return new IdentifierExpression(name, SYNTHETIC_RANGE);
+    }
+
+    private static @NotNull String onlyVariableOperandId(@NotNull List<LirInstruction.Operand> operands) {
+        assertEquals(1, operands.size(), "Expected exactly one variable operand");
+        return assertInstanceOf(LirInstruction.VariableOperand.class, operands.getFirst()).id();
     }
 
     private record SourceFixture(

@@ -489,6 +489,42 @@ registerInsnGen(new CallIntrinsicInsnGen());
 
 ### Step 9. 更新必要的 frontend lowering focused tests
 
+状态：Done（2026-05-07）。
+
+执行清单：
+
+- [x] 复核并强化 `FrontendBodyLoweringSessionTest` 的 direct materialization coverage。
+- [x] 强化 assignment / call / return primitive-cast consumer 断言，确认 intrinsic result 是 `float` temp 且 consumer 使用该 temp。
+- [x] 补齐 `Dictionary[float, V]`、`Array[T]`、`Packed*Array` key/index materialization lowering 断言。
+- [x] 补齐 writable-route 单链路内 materialized subscript key/index 复用测试。
+- [x] 修复 writable-route lowering，使同一 frozen access chain 内的 leaf read/write 与 reverse commit 复用同一个 materialized key/index slot。
+- [x] 运行 Step 9 focused tests 与相邻 CFG/writable-route tests。
+
+已完成：
+
+- `FrontendBodyLoweringSessionTest` 已直接断言 `int -> float` 通过 `CallIntrinsicInsn("c_int_to_float")` 物化为新 `float` slot；`int -> int`、`float -> float` direct route 继续无指令。
+- `FrontendLoweringBodyInsnPassTest` 已覆盖 assignment、call argument、return 三个 representative consumer，并断言下游 store/call/return 消费 casted temp，不消费原始 `int` source slot。
+- `FrontendLoweringBodyInsnPassTest` 的 subscript lowering 测试已覆盖：
+  - `Dictionary[float, int]` 使用 `int` key 时，read/write 的 keyed instruction 消费 casted `float` key。
+  - `Array[int]` 使用 `Variant` index 时，read/write 先 unpack 到 `int`，再走 indexed instruction。
+  - `PackedInt32Array` 使用 `Variant` index 时，同样先 unpack 到 `int` 并走 indexed instruction。
+  - materialized key/index type 参与 access-kind selection，避免 accepted boundary 退回 generic route。
+- `FrontendWritableRouteSupportTest` 新增单链路复用测试：同一 frozen subscript route 中 leaf read 已生成的 `c_int_to_float` key 被 reverse commit 复用，不再生成第二条 cast。
+- `FrontendWritableRouteSupport` 现在在 `FrontendWritableAccessChain` 内维护 lowering-only subscript materialization cache；该 cache 只服务同一次 leaf/writeback lowering，不跨独立 `SubscriptLoadItem` 复用，避免错误扩大 slot 支配范围。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendLoweringBodyInsnPassTest,FrontendWritableRouteSupportTest`
+- `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBuildCfgPassTest,FrontendWritableRouteSupportTest,FrontendLoweringBodyInsnPassTest,FrontendBodyLoweringSessionTest`
+- `./gradlew classes --no-daemon --info --console=plain`
+
+调查记录：
+
+- 2026-05-07 targeted tests 首轮失败：
+  - `FrontendLoweringBodyInsnPassTest` 新增 helper 误把 JUnit `assertNotNull(value, message)` 当成返回 value 的断言使用；当前 JUnit API 返回 `void`，导致 `compileTestJava` 编译失败。应改为先读取 nullable result，再单独断言非空，最后传入 `requireVariableType(...)`。
+- 2026-05-07 targeted tests 第二轮失败：
+  - 初版 `runReusesMaterializedSubscriptKeyForWritableRouteWriteback` 误把独立 receiver `SubscriptLoadItem` 与 post-call writable-route reverse commit 当成同一链路，要求全函数只生成 1 条 `CallIntrinsicInsn("c_int_to_float")`。实现复核后确认二者是不同 lowering 单元，不能跨单元复用 temp；最终把 body pass 测试收窄为断言 writeback 消费 casted key，同时在 `FrontendWritableRouteSupportTest` 中直接覆盖同一 frozen access chain 内的 key/index 复用。
+
 只添加能证明 materialization 接缝正确的 focused tests：
 
 1. `FrontendBodyLoweringSessionTest`
