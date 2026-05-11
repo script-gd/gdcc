@@ -44,12 +44,15 @@ public class GdScriptUnitTestCompileRunnerTest {
             "collection/dictionary_mutation_and_lookup.gd",
             "constructor/builtin_variant_container_roundtrip.gd",
             "constructor/builtin_variant_scalar_roundtrip.gd",
+            "constructor/int_to_float_builtin_constructor.gd",
             "control_flow/if_elif_truthiness.gd",
             "control_flow/recursive_factorial.gd",
             "initializer/local/arithmetic_chain.gd",
             "initializer/local/constructors_and_constants.gd",
+            "initializer/local/int_to_float_boundaries.gd",
             "initializer/local/object_and_engine_constructor.gd",
             "initializer/local/variant_boundaries.gd",
+            "initializer/property/int_to_float_boundaries.gd",
             "initializer/property/object_and_scalar.gd",
             "member/builtin_property_access.gd",
             "member/builtin_property_writeback_color.gd",
@@ -69,6 +72,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/engine_node_refcounted_workflow.gd",
             "runtime/engine_option_button_default_args.gd",
             "runtime/engine_scene_tree_call_group_flags_exact_vararg.gd",
+            "runtime/int_to_float_engine_class.gd",
             "runtime/string_literal_escape_unicode_surface.gd",
             "runtime/string_literal_internal_surface.gd",
             "runtime/string_literal_utf8_offset_surface.gd",
@@ -78,6 +82,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "scene/nested_node_refcounted_scene.gd",
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
+            "subscript/dictionary_float_key_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd"
     );
     private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");

@@ -2,9 +2,9 @@
 
 ## 文档状态
 
-- 状态：Planned
+- 状态：Done
 - 范围：frontend ordinary typed boundary、LIR `call_intrinsic` 物化、C backend intrinsic codegen
-- 更新时间：2026-05-05
+- 更新时间：2026-05-10
 - 关联文档：
   - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
   - `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
@@ -550,6 +550,25 @@ Subscript lowering 测试必须额外断言：
 
 ### Step 10. 更新 backend codegen 测试
 
+状态：Done（2026-05-10）。
+
+执行清单：
+
+- [x] 复核 `CallIntrinsicInsnGenTest`，确认成功路径覆盖 `c_int_to_float` 的 C codegen 注册分派。
+- [x] 复核 unknown intrinsic、非变量 operand、缺失变量、错误参数数量、缺失/错误 result、非 `int` source 等坏 IR fail-fast 测试。
+- [x] 复核 `CIntToFloatIntrinsicTest` 与 `CIntrinsicManagerTest` 的 intrinsic 级和注册表级补充覆盖。
+- [x] 运行 Step 10 backend focused tests。
+
+已完成：
+
+- `CallIntrinsicInsnGenTest` 已覆盖 `new CallIntrinsicInsn("f", "c_int_to_float", List.of(new VariableOperand("i")))` 通过 `CCodegen` 注册表生成 `$f = (godot_float)$i;`。
+- `CallIntrinsicInsnGenTest` 已覆盖 unknown intrinsic、非 `VariableOperand`、参数变量不存在、result 变量不存在、`resultId == null`、`ref` result、非 `float` result、0/2 个参数、非 `int` source 等负向行为，错误信息包含可定位的 intrinsic/变量信息。
+- `CIntToFloatIntrinsicTest` 直接锚定 intrinsic 的窄签名合同和 casted assignment 输出；`CIntrinsicManagerTest` 锚定 manager 只暴露白名单 intrinsic。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests CallIntrinsicInsnGenTest,CIntToFloatIntrinsicTest,CIntrinsicManagerTest`
+
 新增 `CallIntrinsicInsnGenTest`：
 
 1. 正常路径：
@@ -582,26 +601,59 @@ Subscript lowering 测试必须额外断言：
 
 ### Step 11. `test_suite` 端到端验收
 
-不新增额外 Java integration test；通过 `doc/test_suite.md` 记录并执行一个端到端场景，验证 frontend、lowering、backend 和运行期结果串联正确：
+状态：Done（2026-05-10）。
+
+执行清单：
+
+- [x] 新增 `src/test/test_suite/unit_test/script/initializer/local/int_to_float_boundaries.gd`。
+- [x] 新增 `initializer/property`、`constructor`、`runtime`、`subscript` 下的补充 runtime anchors。
+- [x] 新增同路径 validation scripts，断言运行结果。
+- [x] 将新增资源路径加入 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`。
+- [x] 在 `doc/test_suite.md` 记录这些端到端 runtime anchors。
+- [x] 运行 suite resource discovery 测试。
+- [x] 完整 Godot runtime suite 提权完成运行。
+
+已完成：
+
+- 端到端资源覆盖 `var ratio: float = 1`、`ratio = 2`、`take_float(3)` 与 `return 4`，验证 local initializer、assignment、call argument 和 return 的 ordinary boundary 代表路径。
+- `initializer/property/int_to_float_boundaries.gd` 覆盖 property initializer 与 property assignment。
+- `constructor/int_to_float_builtin_constructor.gd` 覆盖 `Vector3(1, 2, 3)` 这类 builtin constructor argument boundary。
+- `runtime/int_to_float_engine_class.gd` 覆盖 engine class float property assignment。
+- `subscript/dictionary_float_key_roundtrip.gd` 覆盖 `Dictionary[float, V]` 的 `int` key materialization，并覆盖 nested writable subscript writeback。
+- 资源根类使用 `extends Node`，符合 `GdScriptUnitTestCompileRunner` 将编译类挂入 scene tree 的合同；原计划片段中的 `extends RefCounted` 不适合 test_suite runner。
+- `GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts` 已通过，确认资源发现和固定路径列表同步。
+- 提权运行后 `GdScriptUnitTestCompileRunnerTest` 完整通过。未提权运行时的 `Failed to open 'user://logs/godot...log'` 由 sandbox 阻止 Godot 写入 `/home/superice/.local/share/godot/app_userdata/GdccTest/logs` 触发；该目录不在当前 workspace writable roots 中。
+
+验证：
+
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts`
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesSmokeScripts`（提权）
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesInitializerScripts`（提权）
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest`（提权）
+
+不新增额外 Java integration test；通过 `doc/test_suite.md` 记录并执行一组端到端场景，验证 frontend、lowering、backend 和运行期结果串联正确。核心 ordinary-boundary smoke 形态如下：
 
 ```gdscript
 class_name IntToFloatBoundarySmoke
-extends RefCounted
+extends Node
 
 func take_float(v: float) -> float:
     return v
 
+func return_int_as_float() -> float:
+    return 4
+
 func run() -> float:
     var ratio: float = 1
-    ratio = take_float(2)
-    return ratio
+    ratio = 2
+    return ratio + take_float(3) + return_int_as_float()
 ```
 
 验收点：
 
 1. 编译通过，C codegen 不再报 `Unsupported instruction opcode: call_intrinsic`。
-2. 运行结果为 `2.0`。
-3. 该端到端用例只验证最终链路，不替代上面的 focused semantic / lowering / backend tests。
+2. local initializer、assignment、call argument、return、property initializer、engine property、builtin constructor argument、`Dictionary[float, V]` key materialization 都有 runtime anchor。
+3. 端到端用例只验证最终链路，不替代上面的 focused semantic / lowering / backend tests。
 
 ## 验收细则
 

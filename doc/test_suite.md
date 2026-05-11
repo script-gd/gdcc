@@ -43,6 +43,19 @@ src/test/test_suite/unit_test/script/smoke/basic_arithmetic.gd
 src/test/test_suite/unit_test/validation/smoke/basic_arithmetic.gd
 ```
 
+Current focused `int -> float` runtime anchors validate that ordinary typed-boundary
+materialization survives frontend lowering, C codegen, native build, and Godot execution:
+
+- `initializer/local/int_to_float_boundaries.gd` covers local initialization, assignment, call
+  arguments, and return boundaries.
+- `initializer/property/int_to_float_boundaries.gd` covers class property initialization and
+  property assignment.
+- `constructor/int_to_float_builtin_constructor.gd` covers builtin constructor arguments such as
+  `Vector3(1, 2, 3)`.
+- `runtime/int_to_float_engine_class.gd` covers engine-class float property assignment.
+- `subscript/dictionary_float_key_roundtrip.gd` covers `Dictionary[float, V]` key materialization,
+  including nested writable subscript writeback.
+
 ## How Discovery Works
 
 `ResourceExtractor.listResourceFilesRecursively(...)` is used to enumerate all files under `unit_test/script`.
