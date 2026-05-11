@@ -50,8 +50,10 @@ materialization survives frontend lowering, C codegen, native build, and Godot e
   arguments, and return boundaries.
 - `initializer/property/int_to_float_boundaries.gd` covers class property initialization and
   property assignment.
-- `constructor/int_to_float_builtin_constructor.gd` covers builtin constructor arguments such as
-  `Vector3(1, 2, 3)`.
+- `constructor/int_to_float_builtin_constructor.gd` covers builtin constructor arguments across
+  float-component builtin families (`Vector2`, `Vector3`, `Vector4`, `Color`, `Rect2`, `Plane`,
+  `Quaternion`) with mixed integer and float arguments, including non-trivial values beyond
+  `1`, `2`, `3`, and `4`.
 - `runtime/int_to_float_engine_class.gd` covers engine-class float property assignment.
 - `runtime/int_to_float_inbound_dynamic_call.gd` covers Godot-side
   `target.call("take_float", 2)` entering the generated GDExtension `call_func` wrapper, where

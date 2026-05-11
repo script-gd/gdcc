@@ -371,7 +371,17 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - For float and int, generate C literals directly.
 - For `"..."` and `&"..."`, generate `GD_STATIC_S(u8"...")` and `GD_STATIC_SN(u8"...)` respectively.
 - For `null`, generate `NULL`.
-- For non-object type constructor, generate a c constructor function call, see more details in `gdextension-lite.md`.
+- For non-object type constructor, `ConstructInsnGen` delegates builtin/container construction to
+  `CBuiltinBuilder`.
+  - Regular builtin constructors are selected by exact `ExtensionBuiltinClass` constructor metadata
+    after frontend lowering has materialized any accepted argument boundary. The generated symbol is
+    `godot_new_<Type>[_with_<argType>...]`.
+  - `Transform2D`, `Transform3D`, `Basis`, and `Projection` may use backend helper-shim constructor
+    signatures when Godot API metadata has no exact constructor surface but gdextension-lite exposes
+    the helper.
+  - Typed `Array` / `Dictionary` construction first uses the plain container value, then calls the
+    typed constructor with a real nil `Variant` script carrier. Backend must not replace this with a
+    null pointer shortcut.
 - For object constructor route (`construct_object` / frontend `.new(...)` object target), call
   `godot_new_XXX()` directly for engine classes, and call generated `XXX_class_create_instance(...)`
   directly for gdcc classes. For non-`RefCounted` gdcc classes this remains `XXX_class_create_instance(NULL, true)`.

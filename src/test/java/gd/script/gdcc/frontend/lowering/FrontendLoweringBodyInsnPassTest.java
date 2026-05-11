@@ -938,7 +938,7 @@ class FrontendLoweringBodyInsnPassTest {
     void runMaterializesSubscriptKeysBeforeSelectingAccessInstructions() throws Exception {
         var prepared = prepareContext(
                 "body_insn_subscript_key_materialization.gd",
-                        """
+                """
                         class_name BodyInsnSubscriptKeyMaterialization
                         extends RefCounted
 
@@ -1328,7 +1328,7 @@ class FrontendLoweringBodyInsnPassTest {
     void runMaterializesPrimitiveCastBoundariesForAssignmentsCallsAndReturns() throws Exception {
         var prepared = prepareContext(
                 "body_insn_primitive_cast_boundary.gd",
-                        """
+                """
                         class_name BodyInsnPrimitiveCastBoundary
                         extends RefCounted
 
@@ -2656,13 +2656,16 @@ class FrontendLoweringBodyInsnPassTest {
                         
                         func build_vector() -> Vector3i:
                             return Vector3i(1, 2, 3)
-                        
+
+                        func build_float_vector() -> Vector3:
+                            return Vector3(11, -2.5, 7)
+
                         func build_array(source: Array) -> Array:
                             return Array(source)
-                        
+
                         func build_node() -> Node:
                             return Node.new()
-                        
+
                         func build_worker() -> Worker:
                             return Worker.new()
                         """,
@@ -2674,6 +2677,12 @@ class FrontendLoweringBodyInsnPassTest {
                 FunctionLoweringContext.Kind.EXECUTABLE_BODY,
                 "RuntimeBodyInsnConstructorRoutes",
                 "build_vector"
+        );
+        var buildFloatVectorContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnConstructorRoutes",
+                "build_float_vector"
         );
         var buildArrayContext = requireContext(
                 prepared.context().requireFunctionLoweringContexts(),
@@ -2697,11 +2706,23 @@ class FrontendLoweringBodyInsnPassTest {
         new FrontendLoweringBodyInsnPass().run(prepared.context());
 
         var vectorInstructions = allInstructions(buildVectorContext.targetFunction());
+        var floatVectorInstructions = allInstructions(buildFloatVectorContext.targetFunction());
         var arrayInstructions = allInstructions(buildArrayContext.targetFunction());
         var nodeInstructions = allInstructions(buildNodeContext.targetFunction());
         var workerInstructions = allInstructions(buildWorkerContext.targetFunction());
 
         var vectorConstructInsn = requireOnlyInstruction(buildVectorContext.targetFunction(), ConstructBuiltinInsn.class);
+        var floatVectorConstructInsn = requireOnlyInstruction(
+                buildFloatVectorContext.targetFunction(),
+                ConstructBuiltinInsn.class
+        );
+        var floatVectorCasts = floatVectorInstructions.stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .toList();
+        var floatVectorCtorArgIds = floatVectorConstructInsn.args().stream()
+                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                .toList();
         var arrayConstructInsn = requireOnlyInstruction(buildArrayContext.targetFunction(), ConstructBuiltinInsn.class);
         var nodeConstructInsn = requireOnlyInstruction(buildNodeContext.targetFunction(), ConstructObjectInsn.class);
         var workerConstructInsn = requireOnlyInstruction(buildWorkerContext.targetFunction(), ConstructObjectInsn.class);
@@ -2710,6 +2731,15 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertEquals(1, countInstructions(vectorInstructions, ConstructBuiltinInsn.class)),
                 () -> assertEquals(3, vectorConstructInsn.args().size()),
+                () -> assertEquals(1, countInstructions(floatVectorInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(3, floatVectorConstructInsn.args().size()),
+                () -> assertEquals(2, floatVectorCasts.size()),
+                () -> assertTrue(floatVectorCasts.stream().allMatch(insn -> insn.intrinsicName().equals("c_int_to_float"))),
+                () -> assertTrue(floatVectorCasts.stream().map(CallIntrinsicInsn::resultId).allMatch(floatVectorCtorArgIds::contains)),
+                () -> assertTrue(floatVectorCasts.stream().allMatch(insn -> requireIntrinsicResultType(
+                        buildFloatVectorContext.targetFunction(),
+                        insn
+                ).equals(GdFloatType.FLOAT))),
                 () -> assertEquals(1, countInstructions(arrayInstructions, ConstructBuiltinInsn.class)),
                 () -> assertEquals(1, arrayConstructInsn.args().size()),
                 () -> assertEquals(1, countInstructions(nodeInstructions, ConstructObjectInsn.class)),

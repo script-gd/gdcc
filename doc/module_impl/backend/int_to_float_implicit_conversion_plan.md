@@ -4,7 +4,7 @@
 
 - 状态：Done
 - 范围：frontend ordinary typed boundary、LIR `call_intrinsic` 物化、C backend intrinsic codegen
-- 更新时间：2026-05-10
+- 更新时间：2026-05-11
 - 关联文档：
   - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
   - `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
@@ -617,7 +617,9 @@ Subscript lowering 测试必须额外断言：
 
 - 端到端资源覆盖 `var ratio: float = 1`、`ratio = 2`、`take_float(3)` 与 `return 4`，验证 local initializer、assignment、call argument 和 return 的 ordinary boundary 代表路径。
 - `initializer/property/int_to_float_boundaries.gd` 覆盖 property initializer 与 property assignment。
-- `constructor/int_to_float_builtin_constructor.gd` 覆盖 `Vector3(1, 2, 3)` 这类 builtin constructor argument boundary。
+- `constructor/int_to_float_builtin_constructor.gd` 覆盖 `Vector2`、`Vector3`、`Vector4`、`Color`、
+  `Rect2`、`Plane`、`Quaternion` 等 float-component builtin constructor argument boundary，并使用
+  整数/浮点混合与非平凡数值，避免只锚定 `1`、`2`、`3`、`4` 的简单路径。
 - `runtime/int_to_float_engine_class.gd` 覆盖 engine class float property assignment。
 - `subscript/dictionary_float_key_roundtrip.gd` 覆盖 `Dictionary[float, V]` 的 `int` key materialization，并覆盖 nested writable subscript writeback。
 - 资源根类使用 `extends Node`，符合 `GdScriptUnitTestCompileRunner` 将编译类挂入 scene tree 的合同；原计划片段中的 `extends RefCounted` 不适合 test_suite runner。
@@ -652,7 +654,8 @@ func run() -> float:
 验收点：
 
 1. 编译通过，C codegen 不再报 `Unsupported instruction opcode: call_intrinsic`。
-2. local initializer、assignment、call argument、return、property initializer、engine property、builtin constructor argument、`Dictionary[float, V]` key materialization 都有 runtime anchor。
+2. local initializer、assignment、call argument、return、property initializer、engine property、
+   builtin constructor argument、subscript key/index materialization 都有 runtime anchor。
 3. 端到端用例只验证最终链路，不替代上面的 focused semantic / lowering / backend tests。
 
 ### Step 12. GDExtension 入站 `call_func` wrapper 接收 `Variant(INT)` 到 `float` 参数

@@ -1,6 +1,6 @@
 # Frontend Lowering `(un)pack` Implementation
 
-> Updated: 2026-04-14
+> Updated: 2026-05-11
 >
 > 本文档是 frontend ordinary typed-boundary `(un)pack` materialization 的事实源。
 > 它不再记录实施步骤、完成进度或验收流水账；若合同变化，应直接改写当前状态。
@@ -65,6 +65,12 @@ ordinary boundary materialization 当前已经接通：
 - fixed call arguments
 - vararg tail
 - return slot
+- subscript key/index
+
+其中 `subscript key/index` 包括 ordinary subscript read/write、assignment writable-route
+leaf read 与 reverse commit。lowering 必须先物化 key/index，再基于物化后的 slot type 选择
+`INDEXED` / `KEYED` / `NAMED` / `GENERIC` access kind；不得用原始 source key/index type
+选择访问指令后再补 conversion。
 
 ### 2.3 stable `Variant` source 的发布范围
 
@@ -151,7 +157,7 @@ frontend sema 当前不负责：
 
 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)` 当前是 ordinary boundary materialization 的唯一收口点。
 
-local / assignment / call / return consumer 都必须走这条 helper，而不是各自在 processor 内部重写：
+local / assignment / call / return / subscript key/index consumer 都必须走这条 helper，而不是各自在 processor 内部重写：
 
 - `if (target instanceof GdVariantType) ...`
 - `if (source instanceof GdVariantType) ...`

@@ -95,8 +95,6 @@ void ${classDef.name}_class_bind_methods() {
     {
         <#if !property.static>
             <#assign propertyMetadata = helper.renderPropertyMetadata(property)>
-<#--            gdcc_bind_method${helper.renderGetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.getterFunc}"), ${classDef.name}_${property.getterFunc});-->
-<#--            gdcc_bind_method${helper.renderSetterBindName(property)}(class_name, GD_STATIC_SN(u8"${property.setterFunc}"), ${classDef.name}_${property.setterFunc}, GD_STATIC_SN(u8"value"), GDEXTENSION_VARIANT_TYPE_${property.type.gdExtensionType.name()});-->
             <#-- Property outward metadata stays centralized in renderPropertyMetadata(...): it owns type/hint/hint_string/usage
                  for Variant, typed Array and typed Dictionary alike, while property class_name still uses the current owner-class slot. -->
             gdcc_bind_property_full(class_name, GD_STATIC_SN(u8"${property.name}"), ${propertyMetadata.typeEnumLiteral}, ${propertyMetadata.hintEnumLiteral}, ${propertyMetadata.hintStringExpr}, class_name, ${propertyMetadata.usageExpr}, GD_STATIC_SN(u8"${property.getterFunc}"), GD_STATIC_SN(u8"${property.setterFunc}"));

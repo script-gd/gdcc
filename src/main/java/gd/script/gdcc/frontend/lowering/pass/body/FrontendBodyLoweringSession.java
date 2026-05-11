@@ -643,8 +643,9 @@ public final class FrontendBodyLoweringSession {
     /// materialization contract lives in
     /// `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`.
     ///
-    /// Later assignment/call/return processors should route all ordinary boundary writes through
-    /// this helper instead of duplicating ad-hoc boundary branches.
+    /// Local/property initialization, assignment, call, return, and subscript key/index consumers
+    /// should route all ordinary boundary writes through this helper instead of duplicating ad-hoc
+    /// boundary branches.
     @NotNull String materializeFrontendBoundaryValue(
             @NotNull LirBasicBlock block,
             @NotNull String sourceSlotId,
