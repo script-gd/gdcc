@@ -144,7 +144,7 @@ static void call${helper.renderFuncBindName(bindingData)}(
     <#if paramType.typeName != "Variant">
     {
         const GDExtensionVariantType type = godot_variant_get_type(p_args[${paramType_index}]);
-        if (type != GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()}) {
+        if (!${helper.renderCallWrapperVariantTypeGate(paramType, "type")}) {
             r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
             r_error->expected = GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()};
             r_error->argument = ${paramType_index};
@@ -241,9 +241,9 @@ static void call${helper.renderFuncBindName(bindingData)}(
     <#list bindingData.paramTypes as paramType>
         <#assign argCleanupStmt = helper.renderCallWrapperDestroyStmt(paramType, "arg${paramType_index}")>
         <#if argCleanupStmt?has_content>
-        ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderUnpackFunctionName(paramType)}((GDExtensionVariantPtr)p_args[${paramType_index}]);
+        ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]")};
         <#else>
-        const ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderUnpackFunctionName(paramType)}((GDExtensionVariantPtr)p_args[${paramType_index}]);
+        const ${helper.renderGdTypeInC(paramType)} arg${paramType_index} = ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]")};
         </#if>
     </#list>
 

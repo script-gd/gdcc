@@ -73,6 +73,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/engine_option_button_default_args.gd",
             "runtime/engine_scene_tree_call_group_flags_exact_vararg.gd",
             "runtime/int_to_float_engine_class.gd",
+            "runtime/int_to_float_inbound_dynamic_call.gd",
             "runtime/string_literal_escape_unicode_surface.gd",
             "runtime/string_literal_internal_surface.gd",
             "runtime/string_literal_utf8_offset_surface.gd",

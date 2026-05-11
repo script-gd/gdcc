@@ -78,7 +78,8 @@
   - method argument metadata
   - method return metadata
   - property registration metadata
-- non-`Variant` outward slot 继续沿用现有 `gdExtensionType` 与 base usage 行为
+- non-`Variant` outward slot 继续沿用现有 `gdExtensionType` 与 base usage 行为；入站
+  `call_func` wrapper 只在 `float` 参数上额外接受 `Variant(INT)`，不改变 outward metadata
 - 当前 outward ABI 只自定义 `type` / `usage`：
   - `hint`
   - `hint_string`
@@ -91,7 +92,10 @@
 ### 3. `call_func` runtime gate 合同
 
 - 非 `Variant` 参数：
-  - generated `call_func` wrapper 必须继续做精确 `GDExtensionVariantType` 检查
+  - generated `call_func` wrapper 默认必须继续做精确 `GDExtensionVariantType` 检查
+  - 唯一例外是 `float` 参数额外接受 `Variant(INT)`，并在 wrapper-local materialization 中显式转成 `godot_float`
+  - `r_error->expected` 仍保持 `GDEXTENSION_VARIANT_TYPE_FLOAT`，方法参数 metadata 也仍发布 `FLOAT`
+  - `float -> int`、`bool -> float`、`String -> float` 等其它 conversion 仍不得通过这条 gate
 - `Variant` 参数：
   - 不能执行 `actual_type == NIL` 的精确比较
   - 必须允许任意 Godot `Variant` payload 进入 wrapper

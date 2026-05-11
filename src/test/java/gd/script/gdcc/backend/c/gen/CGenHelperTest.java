@@ -3,7 +3,6 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
-import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -31,14 +30,12 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CGenHelperTest {
     private CGenHelper helper;
     private ClassRegistry classRegistry;
-    private LirFunctionDef function;
 
     @BeforeEach
     void setUp() throws IOException {
@@ -56,8 +53,6 @@ class CGenHelperTest {
 
         var context = new CodegenContext(projectInfo, classRegistry);
         helper = new CGenHelper(context, List.of(gdccBase, gdccChild, gdccInner));
-
-        function = new LirFunctionDef("test");
     }
 
     @Test
@@ -118,85 +113,6 @@ class CGenHelperTest {
 
         assertTrue(helper.checkVirtualMethod(shadowChild, concreteProcess));
         assertFalse(helper.checkVirtualMethod(shadowBase, abstractProcess));
-    }
-
-    @Test
-    @DisplayName("renderVarAssignWithGodotReturn should convert Godot object ptr to GDCC ptr for GDCC target")
-    void renderVarAssignWithGodotReturnShouldConvertToGdccPtr() {
-        function.createAndAddVariable("target", new GdObjectType("MyBase"));
-
-        var statement = helper.renderVarAssignWithGodotReturn(
-                function,
-                "target",
-                new GdObjectType("MyChild"),
-                "godot_api_result()"
-        );
-
-        assertEquals("$target = (MyBase*)gdcc_object_from_godot_object_ptr(godot_api_result());", statement);
-    }
-
-    @Test
-    @DisplayName("renderVarAssignWithGodotReturn should convert GDCC source ptr via helper before engine cast")
-    void renderVarAssignWithGodotReturnShouldConvertGdccSourceBeforeEngineCast() {
-        function.createAndAddVariable("target", new GdObjectType("RefCounted"));
-
-        var statement = helper.renderVarAssignWithGodotReturn(
-                function,
-                "target",
-                new GdObjectType("MyChild"),
-                "$child_expr"
-        );
-
-        assertEquals("$target = (godot_RefCounted*)(gdcc_object_to_godot_object_ptr($child_expr, MyChild_object_ptr));", statement);
-    }
-
-    @Test
-    @DisplayName("renderVarAssignWithGodotReturn should keep same-type engine pointer assignment direct")
-    void renderVarAssignWithGodotReturnShouldKeepDirectAssignmentForSameEngineType() {
-        function.createAndAddVariable("target", new GdObjectType("Node"));
-
-        var statement = helper.renderVarAssignWithGodotReturn(
-                function,
-                "target",
-                new GdObjectType("Node"),
-                "godot_make_node()"
-        );
-
-        assertEquals("$target = godot_make_node();", statement);
-    }
-
-    @Test
-    @DisplayName("renderVarAssignWithGodotReturn should reject readonly ref variable")
-    void renderVarAssignWithGodotReturnShouldRejectReadonlyRefVariable() {
-        function.createAndAddRefVariable("target", new GdObjectType("Node"));
-
-        var ex = assertThrows(InvalidInsnException.class, () ->
-                helper.renderVarAssignWithGodotReturn(
-                        function,
-                        "target",
-                        new GdObjectType("Node"),
-                        "godot_make_node()"
-                )
-        );
-
-        assertInstanceOf(InvalidInsnException.class, ex);
-    }
-
-    @Test
-    @DisplayName("renderVarAssignWithGodotReturn should reject incompatible assignment")
-    void renderVarAssignWithGodotReturnShouldRejectIncompatibleAssignment() {
-        function.createAndAddVariable("target", GdIntType.INT);
-
-        var ex = assertThrows(InvalidInsnException.class, () ->
-                helper.renderVarAssignWithGodotReturn(
-                        function,
-                        "target",
-                        new GdObjectType("Node"),
-                        "godot_make_node()"
-                )
-        );
-
-        assertInstanceOf(InvalidInsnException.class, ex);
     }
 
     @Test
@@ -632,13 +548,13 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderPropertyUsageEnum should keep export property visible while marking Variant")
-    void renderPropertyUsageEnumShouldKeepExportVariantVisible() {
+    @DisplayName("renderPropertyMetadata should keep export property visible while marking Variant")
+    void renderPropertyMetadataShouldKeepExportVariantVisible() {
         var property = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, null, Map.of("export", ""));
 
         assertEquals(
                 "godot_PROPERTY_USAGE_DEFAULT | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
-                helper.renderPropertyUsageEnum(property)
+                helper.renderPropertyMetadata(property).usageExpr()
         );
     }
 
@@ -654,30 +570,30 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("renderPropertyUsageEnum should keep non-export Variant property hidden in editor")
-    void renderPropertyUsageEnumShouldKeepNonExportVariantHidden() {
+    @DisplayName("renderPropertyMetadata should keep non-export Variant property hidden in editor")
+    void renderPropertyMetadataShouldKeepNonExportVariantHidden() {
         var property = new LirPropertyDef("payload", GdVariantType.VARIANT, false, null, null, null, Map.of());
 
         assertEquals(
                 "godot_PROPERTY_USAGE_NO_EDITOR | godot_PROPERTY_USAGE_NIL_IS_VARIANT",
-                helper.renderPropertyUsageEnum(property)
+                helper.renderPropertyMetadata(property).usageExpr()
         );
     }
 
     @Test
-    @DisplayName("renderPropertyUsageEnum should preserve export property usage for non-Variant types")
-    void renderPropertyUsageEnumShouldPreserveExportNonVariantUsage() {
+    @DisplayName("renderPropertyMetadata should preserve export property usage for non-Variant types")
+    void renderPropertyMetadataShouldPreserveExportNonVariantUsage() {
         var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of("export", ""));
 
-        assertEquals("godot_PROPERTY_USAGE_DEFAULT", helper.renderPropertyUsageEnum(property));
+        assertEquals("godot_PROPERTY_USAGE_DEFAULT", helper.renderPropertyMetadata(property).usageExpr());
     }
 
     @Test
-    @DisplayName("renderPropertyUsageEnum should preserve non-export property usage for non-Variant types")
-    void renderPropertyUsageEnumShouldPreserveNonExportNonVariantUsage() {
+    @DisplayName("renderPropertyMetadata should preserve non-export property usage for non-Variant types")
+    void renderPropertyMetadataShouldPreserveNonExportNonVariantUsage() {
         var property = new LirPropertyDef("score", GdIntType.INT, false, null, null, null, Map.of());
 
-        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", helper.renderPropertyUsageEnum(property));
+        assertEquals("godot_PROPERTY_USAGE_NO_EDITOR", helper.renderPropertyMetadata(property).usageExpr());
     }
 
     @Test
@@ -703,6 +619,35 @@ class CGenHelperTest {
     void renderCallWrapperDestroyStmtShouldSkipObjectAndPrimitiveLocals() {
         assertEquals("", helper.renderCallWrapperDestroyStmt(new GdObjectType("Node"), "value"));
         assertEquals("", helper.renderCallWrapperDestroyStmt(GdIntType.INT, "value"));
+    }
+
+    @Test
+    @DisplayName("call wrapper type gate should only widen int payloads for float params")
+    void renderCallWrapperVariantTypeGateShouldOnlyWidenIntPayloadsForFloatParams() {
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_FLOAT || type == GDEXTENSION_VARIANT_TYPE_INT)",
+                helper.renderCallWrapperVariantTypeGate(GdFloatType.FLOAT, "type")
+        );
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_INT)",
+                helper.renderCallWrapperVariantTypeGate(GdIntType.INT, "type")
+        );
+        assertFalse(helper.renderCallWrapperVariantTypeGate(GdFloatType.FLOAT, "type").contains("BOOL"));
+    }
+
+    @Test
+    @DisplayName("call wrapper unpack should cast int payloads only for float params")
+    void renderCallWrapperUnpackExprShouldCastIntPayloadsOnlyForFloatParams() {
+        assertEquals(
+                "godot_variant_get_type(value_ptr) == GDEXTENSION_VARIANT_TYPE_INT"
+                        + " ? (godot_float)godot_new_int_with_Variant(value_ptr)"
+                        + " : godot_new_float_with_Variant(value_ptr)",
+                helper.renderCallWrapperUnpackExpr(GdFloatType.FLOAT, "value_ptr")
+        );
+        assertEquals(
+                "godot_new_int_with_Variant(value_ptr)",
+                helper.renderCallWrapperUnpackExpr(GdIntType.INT, "value_ptr")
+        );
     }
 
     @Test

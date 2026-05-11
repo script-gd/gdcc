@@ -655,6 +655,165 @@ func run() -> float:
 2. local initializer、assignment、call argument、return、property initializer、engine property、builtin constructor argument、`Dictionary[float, V]` key materialization 都有 runtime anchor。
 3. 端到端用例只验证最终链路，不替代上面的 focused semantic / lowering / backend tests。
 
+### Step 12. GDExtension 入站 `call_func` wrapper 接收 `Variant(INT)` 到 `float` 参数
+
+状态：Done（2026-05-11）。
+
+执行清单：
+
+- [x] 重新确认 `AGENTS.md` 要求，完成 `doc` / `doc/module_impl` 目录树复核，并用子代理并行探索相关文档、代码、测试与 Godot 上游实现。
+- [x] 新增 `call_func` wrapper 专用 gate / unpack helper。
+- [x] 修改 `entry.h.ftl` 的 runtime type gate 与 wrapper-local 参数 materialization。
+- [x] 新增 Java/template 正反单元测试，锚定 `Variant(INT) -> float` 正例与其它 scalar conversion 负例。
+- [x] 新增 `test_suite` 入站 dynamic-call runtime anchor。
+- [x] 同步 `doc/gdcc_c_backend.md`、`doc/module_impl/backend/variant_abi_contract.md` 与 `doc/test_suite.md`。
+- [x] 运行 targeted tests，并记录验证结果。
+
+调查记录：
+
+- 2026-05-11 文档探索确认 Step 12 只属于 GDExtension 入站 `call_func` wrapper，不改变 ordinary typed boundary、ptrcall ABI、outward metadata 或全局 `Variant` unpack 语义。
+- 2026-05-11 代码探索确认当前 exact gate 位于 `src/main/c/codegen/template_451/entry.h.ftl` 的非 `Variant` 参数检查段，参数 materialization 当前直接使用 `CGenHelper.renderUnpackFunctionName(...)`。
+- 2026-05-11 Godot 上游 `Variant::can_convert_strict(...)` 中目标 `FLOAT` 的 strict source 包含 `INT`，但同表还包含 `BOOL -> FLOAT`、`FLOAT -> INT`、string-like 和几何类型转换；本阶段只采用 `INT -> FLOAT` 这一条窄规则。
+- 2026-05-11 `CGenHelperTest,CCodegenTest` 首轮运行失败：新模板测试误以为 `Variant` 参数局部是 `const`；实际 `Variant` 是 destroyable wrapper-local，必须保持可变局部并在 wrapper epilogue 中销毁。实现未暴露该问题，测试断言需要改为锚定 NIL gate 跳过和 `godot_Variant_destroy(&arg0);` cleanup。
+
+已完成：
+
+- `CGenHelper.renderCallWrapperVariantTypeGate(...)` 默认渲染 exact gate，且只在 `float` 参数上额外接受 `GDEXTENSION_VARIANT_TYPE_INT`。
+- `CGenHelper.renderCallWrapperUnpackExpr(...)` 默认复用现有 unpack function name，且只在 `float` 参数上对 `INT` payload 显式 `(godot_float)godot_new_int_with_Variant(...)`。
+- `entry.h.ftl` 的非 `Variant` 参数 runtime gate 和 wrapper-local argument materialization 已改为消费上述两个 wrapper 专用 helper。
+- `renderUnpackFunctionName(...)` 保持不变，`UnpackVariantInsn`、property/index/operator 等全局 `Variant` unpack 路径未扩大。
+- Java/template tests 覆盖：
+  - `float` 参数 gate 接受 `FLOAT | INT`
+  - `float` 参数 unpack 对 `INT` payload cast 到 `godot_float`
+  - `int` 参数仍只接受 `INT`，不接受 `FLOAT`
+  - `float` 参数仍不接受 `BOOL`
+  - `r_error->expected` 对 `float` 参数仍为 `GDEXTENSION_VARIANT_TYPE_FLOAT`
+  - `Variant` 参数继续跳过 `NIL` exact gate，并保持 wrapper-local cleanup
+- `test_suite` 新增 `runtime/int_to_float_inbound_dynamic_call.gd`，validation 通过 Godot-side `target.call("take_float", 2)` 进入 generated `call_func` wrapper，并断言返回 `2.25`。
+
+验证：
+
+- `JAVA_HOME=/home/superice/.cache/JetBrains/RemoteDev/dist/e5331522c1723_idea-2026.1.1/jbr script/run-gradle-targeted-tests.sh --tests CGenHelperTest,CCodegenTest`
+- `JAVA_HOME=/home/superice/.cache/JetBrains/RemoteDev/dist/e5331522c1723_idea-2026.1.1/jbr script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts`
+- `JAVA_HOME=/home/superice/.cache/JetBrains/RemoteDev/dist/e5331522c1723_idea-2026.1.1/jbr script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`
+- `JAVA_HOME=/home/superice/.cache/JetBrains/RemoteDev/dist/e5331522c1723_idea-2026.1.1/jbr script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest`
+- `JAVA_HOME=/home/superice/.cache/JetBrains/RemoteDev/dist/e5331522c1723_idea-2026.1.1/jbr script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiIntegrationTest,FrontendLoweringToCTypedDictionaryAbiIntegrationTest`
+- `JAVA_HOME=/home/superice/.cache/JetBrains/RemoteDev/dist/e5331522c1723_idea-2026.1.1/jbr script/run-gradle-targeted-tests.sh --gradle-task classes`
+- `git diff --check`
+- IntelliJ `build_project`（incremental build）
+
+背景：
+
+- Step 1-11 已经闭合的是 GDCC 编译期 ordinary typed boundary：source-level `int` value 流入 `float` slot 时，frontend lowering 会显式生成 `call_intrinsic "c_int_to_float"`。
+- Godot / GDExtension 入站动态调用是另一条链路：Godot 运行时通过 `Object.call(...)` 等 Variant-call surface 调用 GDCC 生成的 GDExtension 方法时，会进入 `entry.h.ftl` 生成的 `call<FuncBindName>(...)` wrapper。
+- 这条 wrapper 路径不经过 frontend lowering，因此不会生成 `c_int_to_float`。
+- 当前 `call_func` wrapper 在解包前对每个非 `Variant` 参数做 exact `GDExtensionVariantType` gate。`float` 参数只接受 `GDEXTENSION_VARIANT_TYPE_FLOAT`，因此 `Variant(INT)` 会在到达 `godot_new_float_with_Variant(...)` 前被拒绝。
+
+目标：
+
+1. 让入站动态调用中的 `Variant(INT)` 可以进入 `float` 参数。
+2. 只支持这一条 narrow primitive widened inbound rule。
+3. 保持方法参数 metadata、property metadata、ptrcall ABI、ordinary frontend boundary、`ClassRegistry.checkAssignable(...)` 与 `CALL_METHOD` backend exact route 不变。
+4. 继续拒绝 `bool -> float`、`float -> int`、`int -> bool`、`String -> float` 等其它 Godot strict conversion。
+
+非目标：
+
+1. 不把方法参数 outward metadata 从 `FLOAT` 改成 `Variant`。
+2. 不把 `call_func` wrapper 的非 `Variant` 参数 gate 全部替换成 Godot `can_convert_strict(...)`。
+3. 不修改 `renderUnpackFunctionName(...)` 的全局语义；该 helper 同时服务 `UnpackVariantInsn`、property/index/operator 等路径，本阶段只处理入站 `call_func` wrapper 参数接收面。
+4. 不修改 `CALL_METHOD` / `CALL_GLOBAL` 的 backend strict fixed-argument validation。
+5. 不修改 `gdextension-lite` zip 内的 generated code。
+
+实现方案：
+
+在 `CGenHelper` 中新增两个 template-facing helper，保持逻辑集中，不在 `.ftl` 中散落类型判断：
+
+1. `renderCallWrapperVariantTypeGate(@NotNull GdType paramType, @NotNull String typeExpr)`
+   - 默认返回 exact gate：
+
+```c
+typeExpr == GDEXTENSION_VARIANT_TYPE_<TARGET>
+```
+
+   - 当 `paramType instanceof GdFloatType` 时返回：
+
+```c
+typeExpr == GDEXTENSION_VARIANT_TYPE_FLOAT || typeExpr == GDEXTENSION_VARIANT_TYPE_INT
+```
+
+2. `renderCallWrapperUnpackExpr(@NotNull GdType paramType, @NotNull String variantPtrExpr)`
+   - 默认返回现有解包形态：
+
+```c
+godot_new_<Type>_with_Variant(variantPtrExpr)
+```
+
+   - 当 `paramType instanceof GdFloatType` 时返回显式 int-payload cast：
+
+```c
+godot_variant_get_type(variantPtrExpr) == GDEXTENSION_VARIANT_TYPE_INT
+        ? (godot_float)godot_new_int_with_Variant(variantPtrExpr)
+        : godot_new_float_with_Variant(variantPtrExpr)
+```
+
+修改 `entry.h.ftl` 的两个消费点：
+
+1. Runtime type gate：
+
+```ftl
+const GDExtensionVariantType type = godot_variant_get_type(p_args[${paramType_index}]);
+if (!${helper.renderCallWrapperVariantTypeGate(paramType, "type")}) {
+    r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+    r_error->expected = GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()};
+    r_error->argument = ${paramType_index};
+    return;
+}
+```
+
+2. Wrapper-local argument materialization：
+
+```ftl
+${helper.renderGdTypeInC(paramType)} arg${paramType_index} =
+        ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]")};
+```
+
+`float` 是 primitive，不需要新增 cleanup。Destroyable 非对象参数继续复用 `renderCallWrapperDestroyStmt(...)` 的既有 cleanup 合同。
+
+文档同步：
+
+1. `doc/gdcc_c_backend.md`
+   - 在 `Variant Outward ABI Contract` 或 `call_func Wrapper Local Cleanup Contract` 附近新增 `call_func` inbound primitive compatibility 描述。
+   - 明确默认仍 exact gate，唯一例外是 `Variant(INT) -> float parameter`。
+2. `doc/module_impl/backend/variant_abi_contract.md`
+   - 将“非 `Variant` 参数保留精确 runtime type gate”收窄为“默认精确；`float` 参数额外接受 `INT` 并显式 cast”。
+   - 明确该行为不改变 outward metadata 与 ptrcall ABI。
+
+Focused tests：
+
+1. Java/template 级测试：
+   - 构造一个带 `take_float(v: float)` 与 `take_int(v: int)` 的小类。
+   - 断言生成的 `entry.h` 中，`float` 参数 gate 同时接受 `GDEXTENSION_VARIANT_TYPE_FLOAT` 与 `GDEXTENSION_VARIANT_TYPE_INT`。
+   - 断言 `float` 参数 materialization 包含 `godot_new_int_with_Variant(...)` 与 `(godot_float)`。
+   - 断言 `int` 参数仍只接受 `GDEXTENSION_VARIANT_TYPE_INT`，不接受 `FLOAT`。
+   - 断言 `r_error->expected` 对 `float` 参数仍为 `GDEXTENSION_VARIANT_TYPE_FLOAT`。
+2. `test_suite` runtime anchor：
+   - 新增 `runtime/int_to_float_inbound_dynamic_call.gd` 及对应 validation。
+   - 运行时必须通过 Godot-side `target.call("take_float", 2)` 进入 GDExtension `call_func` wrapper，而不是在 GDCC 源内直接调用 `take_float(2)`。
+   - validation 断言返回值带小数部分，例如 `2.25`，证明 `Variant(INT)` 已被作为 `float` 参数接收。
+3. 负向覆盖：
+   - `int` 参数不接受 `Variant(FLOAT)`。
+   - `float` 参数不接受 `Variant(BOOL)`。
+   - `Variant` 参数继续跳过 exact `NIL` gate，不回归 `PROPERTY_USAGE_NIL_IS_VARIANT` 行为。
+
+建议验证：
+
+```bash
+script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts
+script/run-gradle-targeted-tests.sh --tests "FrontendLoweringToCTypedArrayAbiIntegrationTest,FrontendLoweringToCTypedDictionaryAbiIntegrationTest"
+```
+
 ## 验收细则
 
 实现完成后，以下条件必须全部成立：
@@ -676,6 +835,10 @@ func run() -> float:
 15. Subscript key/index lowering 会物化所有 accepted ordinary key/index boundary：`Dictionary[float, V]` 的 `int` key 物化为 `float` temp，`Array[T]` / packed array 的 `Variant` index 物化为 `int` temp。
 16. `float(1)` constructor route 与 ordinary boundary route 相互独立。
 17. `doc/test_suite.md` 包含一个 `int -> float` 端到端场景，并验证运行结果。
+18. GDExtension 入站 `call_func` wrapper 中，`float` 参数接受 `Variant(INT)` 并显式转换为 `godot_float`。
+19. 入站 wrapper 的 `float` 参数仍发布 `GDEXTENSION_VARIANT_TYPE_FLOAT` metadata，`r_error->expected` 仍为 `GDEXTENSION_VARIANT_TYPE_FLOAT`。
+20. 入站 wrapper 中，`int` 参数仍不接受 `Variant(FLOAT)`，`float` 参数仍不接受 `Variant(BOOL)`。
+21. `Variant` 参数的 outward NIL metadata / `PROPERTY_USAGE_NIL_IS_VARIANT` 行为不因入站 primitive compatibility 回归。
 
 建议最小验证命令：
 
@@ -693,6 +856,14 @@ func run() -> float:
 ```
 
 在 Ubuntu/Linux 上按项目规则优先使用 `script/run-gradle-targeted-tests.sh --tests ...` 运行上述 targeted tests。端到端行为通过 `doc/test_suite.md` 中新增的 test-suite 场景验证。
+
+入站 dynamic-call wrapper 阶段还需要额外运行：
+
+```bash
+script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts
+```
 
 ## 风险与解决方案
 
@@ -791,6 +962,133 @@ func run() -> float:
 - ordinary boundary 只生成 `call_intrinsic "c_int_to_float"`。
 - builtin constructor 相关逻辑只消费 shared helper 的 match decision，不把 `int -> float` materialization 改写成 constructor call。
 
+### 8. 入站 `call_func` wrapper 被误扩成通用 Godot strict conversion
+
+风险：
+
+- Godot `Variant::can_convert_strict(...)` 还包含 `bool -> float`、`float -> int`、几何值类型互转、string-like 互转等转换。
+- 如果 wrapper 直接导入完整 strict conversion 表，会使 GDCC outward method ABI 行为突然大幅放宽，并绕过 frontend conversion matrix 的渐进式支持策略。
+- 如果把方法参数 metadata 改成 `Variant` 来规避 gate，会破坏 editor/API 表面，并掩盖真实方法签名。
+
+解决方案：
+
+- Step 12 只允许 `Variant(INT) -> float parameter`。
+- `float` 参数 metadata 与 `r_error->expected` 继续保持 `GDEXTENSION_VARIANT_TYPE_FLOAT`。
+- `entry.h.ftl` 只消费 `CGenHelper` 的窄 helper，不在模板里复制一套 conversion 表。
+- Java/template 级测试同时锚定正向 `INT -> FLOAT` 与负向 `FLOAT -> INT`、`BOOL -> FLOAT`。
+
+### 9. 入站 wrapper 修复误改全局 `Variant` unpack
+
+风险：
+
+- `renderUnpackFunctionName(...)` 同时服务 `UnpackVariantInsn`、property/index/operator 等路径。
+- 如果把 `godot_new_float_with_Variant(...)` 的使用点全局改成“先判 int 再 cast”，会把本阶段的 inbound-call 规则泄漏到所有 `Variant -> float` 解包路径。
+
+解决方案：
+
+- 新增 `renderCallWrapperUnpackExpr(...)` 作为 `call_func` wrapper 专用 helper。
+- 不修改 `renderUnpackFunctionName(...)` 的合同。
+- `Variant -> float` ordinary boundary 仍通过已有 `UnpackVariantInsn` 路径表达，不借 Step 12 重写。
+
+## 后续扩展隐式转换规则的修改清单
+
+后续如果要添加、删除或调整更多类型隐式转换规则，必须先明确该规则属于哪一条边界。不要只因为 Godot
+`Variant::can_convert_strict(...)` 支持某个 pair，就把它同时放进 frontend、backend、wrapper 和 metadata。
+
+### 1. Frontend ordinary typed boundary
+
+当规则适用于 GDCC 源码中的 ordinary typed boundary，例如 initializer、assignment、return、fixed call
+argument、vararg argument 或 subscript key/index boundary，需要同步修改：
+
+1. `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
+   - 记录 source type、target type、是否支持、物化路线和明确负例。
+   - 如果只支持某个方向，必须写明反方向仍拒绝。
+   - 如果不支持 `Array` / `Dictionary` 递归 primitive covariance，必须继续写明。
+2. `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)`
+   - 新增或调整 shared semantic gate。
+   - 不得在 assignment、return、call、subscript 等 consumer 中复制局部 conversion 表。
+3. `FrontendVariantBoundaryCompatibility.Decision`
+   - 只有现有 decision 无法表达新物化语义时才新增 decision。
+   - 新 decision 必须能让 lowering 区分 direct flow 与需要新 temp 的 materialization。
+4. overload specificity
+   - bare call、constructor resolver、`ScopeMethodResolver` frontend path 必须共享同一套 decision rank。
+   - 需要新增 rank 时，要覆盖 exact-vs-new-conversion、new-conversion-vs-pack/unpack、ambiguous ties。
+5. `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
+   - 所有 accepted non-direct conversion 必须在这里显式物化。
+   - source slot 不能直接流入 target slot，除非 decision 是真正 direct route。
+6. subscript lowering / writable-route lowering
+   - 如果 key/index boundary 也接受新规则，read/write access-kind selection 必须基于 materialized key/index type。
+   - writable-route reverse commit 必须复用同一链路内已 materialized 的 key/index slot。
+7. LIR / backend materialization
+   - 复用已有 `PackVariantInsn`、`UnpackVariantInsn` 或 backend-owned `CallIntrinsicInsn`，除非现有 LIR surface 无法表达。
+   - 新 intrinsic 必须注册进 `CIntrinsicManager` 白名单，并在具体 `CIntrinsicFunction` 中校验 result/argument 类型。
+   - destroyable/object result 的 intrinsic 必须单独审计 ownership，不得照抄 primitive cast direct expression route。
+8. frontend focused tests
+   - semantic helper 正反例。
+   - assignment / return / call / constructor / method resolver / subscript 中受影响的 representative consumer。
+   - overload specificity 正反例。
+   - operator numeric promotion、container covariance、反方向 conversion 等负例。
+9. lowering / backend focused tests
+   - 断言新 temp、具体 LIR instruction、下游 consumer 使用 materialized slot。
+   - backend 断言生成的 C 表达式、坏 IR fail-fast 和错误定位。
+
+### 2. GDExtension 入站 `call_func` wrapper boundary
+
+当规则只适用于 Godot 通过 `Object.call(...)` 等 Variant-call surface 调用 GDCC 生成方法时，需要同步修改：
+
+1. `doc/gdcc_c_backend.md`
+   - 记录 inbound wrapper compatibility 规则。
+   - 明确 metadata、`r_error->expected`、ptrcall ABI 是否保持不变。
+2. `doc/module_impl/backend/variant_abi_contract.md`
+   - 收窄或扩展 `call_func` runtime gate 合同。
+   - 明确 `Variant` 参数的 `NIL + PROPERTY_USAGE_NIL_IS_VARIANT` ABI 不被破坏。
+3. `CGenHelper.renderCallWrapperVariantTypeGate(...)`
+   - 只维护入站 wrapper 的 runtime gate。
+   - 不得把整张 Godot strict conversion 表硬编码进模板。
+4. `CGenHelper.renderCallWrapperUnpackExpr(...)`
+   - 只维护入站 wrapper 的 wrapper-local materialization。
+   - 不得修改 `renderUnpackFunctionName(...)` 来实现 wrapper-only 规则。
+5. `src/main/c/codegen/template_451/entry.h.ftl`
+   - 只能通过 helper 消费规则，不能在 `.ftl` 中散落 source/target pair 判断。
+   - cleanup 顺序继续由 `renderCallWrapperDestroyStmt(...)` 与模板 epilogue 管理。
+6. Java/template tests
+   - 正向断言 gate 接受新 source type。
+   - 负向断言相邻不支持规则仍拒绝。
+   - 断言 `r_error->expected` 与 outward metadata 是否符合设计。
+   - 断言 `Variant` 参数仍跳过 `NIL` exact gate。
+7. `test_suite` runtime anchor
+   - 需要从 validation GDScript 用 Godot-side `target.call(...)` 触发 wrapper。
+   - 不要在 GDCC 源脚本内部直接调用同一方法，否则会测到 frontend ordinary boundary。
+
+### 3. Backend strict call / assignability boundary
+
+当规则试图影响 backend strict call 或 assignability 时，必须先单独成文说明原因。默认要求是：
+
+1. 不修改 `ClassRegistry.checkAssignable(...)` 承载普通 numeric promotion。
+2. 不修改 `CALL_METHOD` / `CALL_GLOBAL` fixed-argument validation 来偷偷接受未物化的 widening。
+3. 不通过把 method/property metadata 改成 `Variant` 来规避 runtime gate。
+4. 不改变 ptrcall ABI，除非计划文档明确说明物理 C ABI 也要变。
+5. 如果确实要放宽 backend strict boundary，必须新增独立风险分析和 focused backend tests，证明不会绕过
+   frontend materialization、ownership、metadata 和 overload specificity。
+
+### 4. 文档与验证要求
+
+每次新增或调整 conversion rule，都必须同步：
+
+1. 计划文档中的目标、非目标、风险、验收细则和完成定义。
+2. frontend conversion matrix 与 lowering 文档。
+3. C backend / Variant ABI 文档，如果规则会影响入站 wrapper、metadata、ptrcall 或 backend codegen。
+4. `doc/test_suite.md`，如果新增 runtime anchor。
+5. targeted test 命令列表。
+
+测试至少要同时包含：
+
+1. 新规则的 happy path。
+2. 反方向 conversion 负例。
+3. 相邻 scalar / container / `Variant` conversion 负例。
+4. overload specificity 或 ambiguity 负例，如果规则参与 callable resolution。
+5. runtime anchor，如果规则跨越 Godot / GDExtension 边界。
+
 ## 建议实施顺序
 
 推荐按以下顺序提交实现，便于定位回归：
@@ -803,7 +1101,10 @@ func run() -> float:
 6. LIR `call_intrinsic` parser/serializer direct tests。
 7. `CIntrinsicManager`、`CIntrinsicFunction`、`CIntToFloatIntrinsic`、`CallIntrinsicInsnGen` 与 backend focused tests。
 8. `doc/test_suite.md` 中新增最小端到端场景。
-9. `./gradlew classes --no-daemon --info --console=plain`。
+9. `call_func` wrapper inbound `Variant(INT) -> float` helper 与 template tests。
+10. `test_suite` 中新增入站 dynamic-call runtime anchor。
+11. 同步 `gdcc_c_backend.md` 与 `variant_abi_contract.md`。
+12. `./gradlew classes --no-daemon --info --console=plain`。
 
 如果任一步出现测试失败，先把失败原因补记到对应实现文档或计划文档的风险段，再运行更小的 focused test。不要一次性修改所有 frontend / backend 测试期望。
 
@@ -819,3 +1120,5 @@ func run() -> float:
 6. operator numeric promotion 仍禁止。
 7. focused semantic、lowering、LIR parser/serializer、C codegen 测试覆盖正向和负向行为。
 8. `test_suite` 端到端场景覆盖 frontend 到运行期的完整链路。
+9. Godot / GDExtension 入站 dynamic-call wrapper 可接收 `Variant(INT)` 到 `float` 参数，并通过 runtime anchor 验证。
+10. 入站 wrapper 的新增兼容面保持窄化，不改变 `Variant` outward ABI、ptrcall ABI、全局 assignability 或其它 scalar conversion。

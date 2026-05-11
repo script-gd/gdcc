@@ -53,6 +53,9 @@ materialization survives frontend lowering, C codegen, native build, and Godot e
 - `constructor/int_to_float_builtin_constructor.gd` covers builtin constructor arguments such as
   `Vector3(1, 2, 3)`.
 - `runtime/int_to_float_engine_class.gd` covers engine-class float property assignment.
+- `runtime/int_to_float_inbound_dynamic_call.gd` covers Godot-side
+  `target.call("take_float", 2)` entering the generated GDExtension `call_func` wrapper, where
+  `Variant(INT)` is accepted for a `float` parameter and materialized as `godot_float`.
 - `subscript/dictionary_float_key_roundtrip.gd` covers `Dictionary[float, V]` key materialization,
   including nested writable subscript writeback.
 
