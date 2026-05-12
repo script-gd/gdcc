@@ -639,14 +639,20 @@ class CGenHelperTest {
     @DisplayName("call wrapper unpack should cast int payloads only for float params")
     void renderCallWrapperUnpackExprShouldCastIntPayloadsOnlyForFloatParams() {
         assertEquals(
+                "value_type == GDEXTENSION_VARIANT_TYPE_INT"
+                        + " ? (godot_float)godot_new_int_with_Variant(value_ptr)"
+                        + " : godot_new_float_with_Variant(value_ptr)",
+                helper.renderCallWrapperUnpackExpr(GdFloatType.FLOAT, "value_ptr", "value_type")
+        );
+        assertEquals(
                 "godot_variant_get_type(value_ptr) == GDEXTENSION_VARIANT_TYPE_INT"
                         + " ? (godot_float)godot_new_int_with_Variant(value_ptr)"
                         + " : godot_new_float_with_Variant(value_ptr)",
-                helper.renderCallWrapperUnpackExpr(GdFloatType.FLOAT, "value_ptr")
+                helper.renderCallWrapperUnpackExpr(GdFloatType.FLOAT, "value_ptr", null)
         );
         assertEquals(
                 "godot_new_int_with_Variant(value_ptr)",
-                helper.renderCallWrapperUnpackExpr(GdIntType.INT, "value_ptr")
+                helper.renderCallWrapperUnpackExpr(GdIntType.INT, "value_ptr", null)
         );
     }
 

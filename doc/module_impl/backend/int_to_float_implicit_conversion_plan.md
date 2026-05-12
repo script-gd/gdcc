@@ -683,6 +683,7 @@ func run() -> float:
 
 - `CGenHelper.renderCallWrapperVariantTypeGate(...)` 默认渲染 exact gate，且只在 `float` 参数上额外接受 `GDEXTENSION_VARIANT_TYPE_INT`。
 - `CGenHelper.renderCallWrapperUnpackExpr(...)` 默认复用现有 unpack function name，且只在 `float` 参数上对 `INT` payload 显式 `(godot_float)godot_new_int_with_Variant(...)`。
+- 2026-05-12 PR review 后修正：`renderCallWrapperUnpackExpr(...)` 接收 nullable cached type expression；模板传入前置 gate 计算出的 `argN_type`，只有 `typeExpr == null` 的 fallback 形态才重新生成 `godot_variant_get_type(...)`。
 - `entry.h.ftl` 的非 `Variant` 参数 runtime gate 和 wrapper-local argument materialization 已改为消费上述两个 wrapper 专用 helper。
 - `renderUnpackFunctionName(...)` 保持不变，`UnpackVariantInsn`、property/index/operator 等全局 `Variant` unpack 路径未扩大。
 - Java/template tests 覆盖：
@@ -744,14 +745,22 @@ typeExpr == GDEXTENSION_VARIANT_TYPE_<TARGET>
 typeExpr == GDEXTENSION_VARIANT_TYPE_FLOAT || typeExpr == GDEXTENSION_VARIANT_TYPE_INT
 ```
 
-2. `renderCallWrapperUnpackExpr(@NotNull GdType paramType, @NotNull String variantPtrExpr)`
+2. `renderCallWrapperUnpackExpr(@NotNull GdType paramType, @NotNull String variantPtrExpr, @Nullable String typeExpr)`
    - 默认返回现有解包形态：
 
 ```c
 godot_new_<Type>_with_Variant(variantPtrExpr)
 ```
 
-   - 当 `paramType instanceof GdFloatType` 时返回显式 int-payload cast：
+   - 当 `paramType instanceof GdFloatType` 时返回显式 int-payload cast，并优先复用前置 gate 的 cached type expression：
+
+```c
+typeExpr == GDEXTENSION_VARIANT_TYPE_INT
+        ? (godot_float)godot_new_int_with_Variant(variantPtrExpr)
+        : godot_new_float_with_Variant(variantPtrExpr)
+```
+
+   - 当 `typeExpr == null` 时，helper 生成兼容 fallback：
 
 ```c
 godot_variant_get_type(variantPtrExpr) == GDEXTENSION_VARIANT_TYPE_INT
@@ -764,8 +773,8 @@ godot_variant_get_type(variantPtrExpr) == GDEXTENSION_VARIANT_TYPE_INT
 1. Runtime type gate：
 
 ```ftl
-const GDExtensionVariantType type = godot_variant_get_type(p_args[${paramType_index}]);
-if (!${helper.renderCallWrapperVariantTypeGate(paramType, "type")}) {
+const GDExtensionVariantType arg${paramType_index}_type = godot_variant_get_type(p_args[${paramType_index}]);
+if (!${helper.renderCallWrapperVariantTypeGate(paramType, "arg${paramType_index}_type")}) {
     r_error->error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
     r_error->expected = GDEXTENSION_VARIANT_TYPE_${paramType.gdExtensionType.name()};
     r_error->argument = ${paramType_index};
@@ -777,7 +786,7 @@ if (!${helper.renderCallWrapperVariantTypeGate(paramType, "type")}) {
 
 ```ftl
 ${helper.renderGdTypeInC(paramType)} arg${paramType_index} =
-        ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]")};
+        ${helper.renderCallWrapperUnpackExpr(paramType, "(GDExtensionVariantPtr)p_args[${paramType_index}]", "arg${paramType_index}_type")};
 ```
 
 `float` 是 primitive，不需要新增 cleanup。Destroyable 非对象参数继续复用 `renderCallWrapperDestroyStmt(...)` 的既有 cleanup 合同。
@@ -1050,6 +1059,7 @@ argument、vararg argument 或 subscript key/index boundary，需要同步修改
    - 不得把整张 Godot strict conversion 表硬编码进模板。
 4. `CGenHelper.renderCallWrapperUnpackExpr(...)`
    - 只维护入站 wrapper 的 wrapper-local materialization。
+   - 优先消费前置 gate 已缓存的 runtime type expression；nullable fallback 只用于没有缓存表达式的调用点。
    - 不得修改 `renderUnpackFunctionName(...)` 来实现 wrapper-only 规则。
 5. `src/main/c/codegen/template_451/entry.h.ftl`
    - 只能通过 helper 消费规则，不能在 `.ftl` 中散落 source/target pair 判断。

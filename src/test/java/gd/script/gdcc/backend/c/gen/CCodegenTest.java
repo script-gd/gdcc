@@ -634,15 +634,21 @@ public class CCodegenTest {
 
         assertContainsAll(
                 takeFloatCallBody,
-                "if (!(type == GDEXTENSION_VARIANT_TYPE_FLOAT || type == GDEXTENSION_VARIANT_TYPE_INT))",
+                "const GDExtensionVariantType arg0_type = godot_variant_get_type(p_args[0]);",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_FLOAT || arg0_type == GDEXTENSION_VARIANT_TYPE_INT))",
                 "expected = GDEXTENSION_VARIANT_TYPE_FLOAT;",
-                "const godot_float arg0 = godot_variant_get_type((GDExtensionVariantPtr)p_args[0]) == GDEXTENSION_VARIANT_TYPE_INT ? (godot_float)godot_new_int_with_Variant((GDExtensionVariantPtr)p_args[0]) : godot_new_float_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+                "const godot_float arg0 = arg0_type == GDEXTENSION_VARIANT_TYPE_INT ? (godot_float)godot_new_int_with_Variant((GDExtensionVariantPtr)p_args[0]) : godot_new_float_with_Variant((GDExtensionVariantPtr)p_args[0]);"
         );
         assertFalse(takeFloatCallBody.contains("GDEXTENSION_VARIANT_TYPE_BOOL"), takeFloatCallBody);
+        assertFalse(
+                takeFloatCallBody.contains("godot_variant_get_type((GDExtensionVariantPtr)p_args[0])"),
+                takeFloatCallBody
+        );
+        assertEquals(1, countOccurrences(takeFloatCallBody, "godot_variant_get_type(p_args[0])"), takeFloatCallBody);
 
         assertContainsAll(
                 takeIntCallBody,
-                "if (!(type == GDEXTENSION_VARIANT_TYPE_INT))",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_INT))",
                 "expected = GDEXTENSION_VARIANT_TYPE_INT;",
                 "const godot_int arg0 = godot_new_int_with_Variant((GDExtensionVariantPtr)p_args[0]);"
         );
@@ -1121,7 +1127,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 typedCallBody,
-                "if (!(type == GDEXTENSION_VARIANT_TYPE_ARRAY))",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_ARRAY))",
                 "godot_Array probe0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);",
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_StringName probe0_class_name = godot_Array_get_typed_class_name(&probe0);",
@@ -1156,7 +1162,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 genericCallBody,
-                "if (!(type == GDEXTENSION_VARIANT_TYPE_ARRAY))",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_ARRAY))",
                 "godot_Array arg0 = godot_new_Array_with_Variant((GDExtensionVariantPtr)p_args[0]);"
         );
         assertEquals(
@@ -1243,7 +1249,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 typedCallBody,
-                "if (!(type == GDEXTENSION_VARIANT_TYPE_DICTIONARY))",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_DICTIONARY))",
                 "godot_Dictionary probe0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);",
                 "godot_bool typed_mismatch = false;",
                 "typed_mismatch = godot_Dictionary_get_typed_key_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_STRING_NAME;",
@@ -1282,7 +1288,7 @@ public class CCodegenTest {
 
         assertContainsAll(
                 genericCallBody,
-                "if (!(type == GDEXTENSION_VARIANT_TYPE_DICTIONARY))",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_DICTIONARY))",
                 "godot_Dictionary arg0 = godot_new_Dictionary_with_Variant((GDExtensionVariantPtr)p_args[0]);"
         );
         assertEquals(

@@ -552,10 +552,15 @@ public final class CGenHelper {
     ///
     /// This is deliberately separate from `renderUnpackFunctionName(...)` because only
     /// Godot-to-GDExtension method calls get the narrow `INT` payload widening for float params.
+    ///
+    /// @param typeExpr cached runtime type expression from the preceding wrapper gate. When this is null, the
+    ///                 generated expression repeats `godot_variant_get_type(...)` against `variantPtrExpr`.
     public @NotNull String renderCallWrapperUnpackExpr(@NotNull GdType paramType,
-                                                       @NotNull String variantPtrExpr) {
+                                                       @NotNull String variantPtrExpr,
+                                                       @Nullable String typeExpr) {
         if (paramType instanceof GdFloatType) {
-            return "godot_variant_get_type(" + variantPtrExpr + ") == GDEXTENSION_VARIANT_TYPE_INT"
+            var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+            return actualTypeExpr + " == GDEXTENSION_VARIANT_TYPE_INT"
                     + " ? (godot_float)godot_new_int_with_Variant(" + variantPtrExpr + ")"
                     + " : godot_new_float_with_Variant(" + variantPtrExpr + ")";
         }
