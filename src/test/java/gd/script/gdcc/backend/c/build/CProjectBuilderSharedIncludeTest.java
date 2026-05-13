@@ -38,6 +38,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         assertFalse(Files.exists(projectDir.resolve("include")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_bind.h")));
+        assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_intrinsic.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdextension-lite/gdextension-lite-one.c")));
         assertNotEquals("BROKEN", Files.readString(sharedIncludeDir.resolve("gdcc/gdcc_helper.h")).trim());
     }
@@ -91,6 +92,7 @@ public class CProjectBuilderSharedIncludeTest {
         builder.initProject(projectInfo);
 
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
         assertFalse(Files.exists(sharedIncludeDir.resolve("gdcc/gdcc_helper.h")));
     }
 
@@ -109,6 +111,7 @@ public class CProjectBuilderSharedIncludeTest {
         builder.initProject(projectInfo);
 
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
         assertFalse(Files.exists(sharedIncludePath.resolve("gdcc/gdcc_helper.h")));
     }
 

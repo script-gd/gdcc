@@ -12,7 +12,7 @@ Its current entry point is `gd.script.gdcc.test_suite.GdScriptUnitTestCompileRun
 4. Launches Godot through `GodotGdextensionTestRunner`.
 5. Executes the paired validation script under `unit_test/validation`.
 
-This suite is intended to verify the whole chain instead of one isolated compiler stage.
+This suite is intended to verify the whole chain instead of one isolated compiler stage, but not what each test file specifically does.
 
 ## Directory Layout
 
@@ -42,24 +42,6 @@ Example pair:
 src/test/test_suite/unit_test/script/smoke/basic_arithmetic.gd
 src/test/test_suite/unit_test/validation/smoke/basic_arithmetic.gd
 ```
-
-Current focused `int -> float` runtime anchors validate that ordinary typed-boundary
-materialization survives frontend lowering, C codegen, native build, and Godot execution:
-
-- `initializer/local/int_to_float_boundaries.gd` covers local initialization, assignment, call
-  arguments, and return boundaries.
-- `initializer/property/int_to_float_boundaries.gd` covers class property initialization and
-  property assignment.
-- `constructor/int_to_float_builtin_constructor.gd` covers builtin constructor arguments across
-  float-component builtin families (`Vector2`, `Vector3`, `Vector4`, `Color`, `Rect2`, `Plane`,
-  `Quaternion`) with mixed integer and float arguments, including non-trivial values beyond
-  `1`, `2`, `3`, and `4`.
-- `runtime/int_to_float_engine_class.gd` covers engine-class float property assignment.
-- `runtime/int_to_float_inbound_dynamic_call.gd` covers Godot-side
-  `target.call("take_float", 2)` entering the generated GDExtension `call_func` wrapper, where
-  `Variant(INT)` is accepted for a `float` parameter and materialized as `godot_float`.
-- `subscript/dictionary_float_key_roundtrip.gd` covers `Dictionary[float, V]` key materialization,
-  including nested writable subscript writeback.
 
 ## How Discovery Works
 

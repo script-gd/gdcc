@@ -193,10 +193,8 @@ target.call("take_vector3", Vector3i(1, 2, 3))
 
 实现建议：
 
-- 在 `CGenHelper` 中新增两个私有 helper：
-  - `vectorWideningSourceVariantType(GdType targetType)`
-  - `renderVectorWideningCallWrapperExpr(GdType targetType, String variantPtrExpr, String typeExpr)`
-- `renderCallWrapperVariantTypeGate(...)` 对 `GdFloatVectorType` 且维度为 2/3/4 时，追加对应
+- `renderCallWrapperVariantTypeGate(...)` 对 `GdFloatVectorType` 先调用
+  `ensureValidBuiltinDim()`，确认是 GDScript 后端可处理的内置向量维度，再追加同维
   `GDEXTENSION_VARIANT_TYPE_VECTORNI`。
 - `renderCallWrapperUnpackExpr(...)` 对命中 `Vector*i` runtime type 的情况，调用新的 C helper：
 
@@ -204,7 +202,8 @@ target.call("take_vector3", Vector3i(1, 2, 3))
 gdcc_new_Vector3_from_call_arg_variant((GDExtensionVariantPtr)p_args[0], arg0_type)
 ```
 
-- 在 `src/main/c/codegen/include_451/gdcc/gdcc_helper.h` 新增三个小 helper：
+- 在 `src/main/c/codegen/include_451/gdcc/gdcc_intrinsic.h` 新增三个小 helper，并由
+  `gdcc_helper.h` 引入：
   - `gdcc_new_Vector2_from_call_arg_variant(...)`
   - `gdcc_new_Vector3_from_call_arg_variant(...)`
   - `gdcc_new_Vector4_from_call_arg_variant(...)`
@@ -425,6 +424,32 @@ helper 内部逻辑固定为：
 - unknown intrinsic 继续由 `CallIntrinsicInsnGen` 报 registry miss。
 
 ### 步骤 7：扩展入站 wrapper
+
+执行状态（2026-05-13）：已完成。
+
+- `CGenHelper.renderCallWrapperVariantTypeGate(...)` 已对 `Vector2` / `Vector3` / `Vector4`
+  参数额外接受同维 `VECTOR2I` / `VECTOR3I` / `VECTOR4I` runtime payload；`Vector*i`、`Rect2`
+  等其它参数仍保持 exact gate。
+- `CGenHelper.renderCallWrapperUnpackExpr(...)` 已对 `Vector*` 参数调用
+  `gdcc_new_VectorN_from_call_arg_variant(...)`，未修改全局 `renderUnpackFunctionName(...)`。
+- `gdcc_intrinsic.h` 已新增三个 wrapper-only helper，并由 `gdcc_helper.h` 引入：exact runtime
+  target type 仍走 `godot_new_VectorN_with_Variant(...)`，widening source 先 unpack `VectorNi`
+  再调用 `godot_new_VectorN_with_VectorNi(...)`。
+- `CGenHelper` 已先通过 `paramType instanceof GdFloatVectorType vectorType` 进入特定 vector wrapper
+  生成路径，再调用 `ensureValidBuiltinDim()` 确认维度有效；同维 source runtime type 由
+  `new GdIntVectorType(vectorType.getDimension()).getGdExtensionType()` 取得。后续 C 代码生成不再依赖
+  nullable source type 查询结果或额外 `needs...` helper 来分支。
+- `entry.h.ftl` 模板结构未修改；`r_error->expected` 与 method metadata 仍发布目标 `Vector*`。
+- 已扩展 `CGenHelperTest` 与 `CCodegenTest`，覆盖 gate/unpack、生成的 wrapper body、反向
+  `Vector* -> Vector*i` 不放宽、`Rect2i -> Rect2` 不放宽、以及 cached runtime type 只读取一次。
+- 已新增 test_suite runtime anchors：
+  `runtime/vectori_to_vector_inbound_dynamic_call.gd`、
+  `runtime/vectori_to_vector_reverse_guard.gd`、
+  `runtime/rect2i_to_rect2_call_guard.gd`。
+- 已运行
+  `script/run-gradle-targeted-tests.sh --tests CGenHelperTest,CCodegenTest`。
+- 已运行
+  `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest`。
 
 修改：
 

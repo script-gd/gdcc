@@ -11,10 +11,13 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdRect2Type;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
@@ -622,8 +625,8 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("call wrapper type gate should only widen int payloads for float params")
-    void renderCallWrapperVariantTypeGateShouldOnlyWidenIntPayloadsForFloatParams() {
+    @DisplayName("call wrapper type gate should keep narrow primitive widening rules")
+    void renderCallWrapperVariantTypeGateShouldKeepNarrowPrimitiveWideningRules() {
         assertEquals(
                 "(type == GDEXTENSION_VARIANT_TYPE_FLOAT || type == GDEXTENSION_VARIANT_TYPE_INT)",
                 helper.renderCallWrapperVariantTypeGate(GdFloatType.FLOAT, "type")
@@ -633,6 +636,42 @@ class CGenHelperTest {
                 helper.renderCallWrapperVariantTypeGate(GdIntType.INT, "type")
         );
         assertFalse(helper.renderCallWrapperVariantTypeGate(GdFloatType.FLOAT, "type").contains("BOOL"));
+    }
+
+    @Test
+    @DisplayName("call wrapper type gate should accept matching vectori payloads only for vector params")
+    void renderCallWrapperVariantTypeGateShouldAcceptMatchingVectorIPayloadsOnlyForVectorParams() {
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_VECTOR2 || type == GDEXTENSION_VARIANT_TYPE_VECTOR2I)",
+                helper.renderCallWrapperVariantTypeGate(GdFloatVectorType.VECTOR2, "type")
+        );
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_VECTOR3 || type == GDEXTENSION_VARIANT_TYPE_VECTOR3I)",
+                helper.renderCallWrapperVariantTypeGate(GdFloatVectorType.VECTOR3, "type")
+        );
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_VECTOR4 || type == GDEXTENSION_VARIANT_TYPE_VECTOR4I)",
+                helper.renderCallWrapperVariantTypeGate(GdFloatVectorType.VECTOR4, "type")
+        );
+
+        var vector3iGate = helper.renderCallWrapperVariantTypeGate(GdIntVectorType.VECTOR3I, "type");
+        assertEquals("(type == GDEXTENSION_VARIANT_TYPE_VECTOR3I)", vector3iGate);
+        assertFalse(vector3iGate.contains("VECTOR3 ||"), vector3iGate);
+
+        var rect2Gate = helper.renderCallWrapperVariantTypeGate(GdRect2Type.RECT2, "type");
+        assertEquals("(type == GDEXTENSION_VARIANT_TYPE_RECT2)", rect2Gate);
+        assertFalse(rect2Gate.contains("RECT2I"), rect2Gate);
+    }
+
+    @Test
+    @DisplayName("call wrapper vector widening should reject non builtin vector dimensions")
+    void renderCallWrapperVectorWideningShouldRejectNonBuiltinVectorDimensions() {
+        var invalidVector = new GdFloatVectorType(5);
+
+        assertThrows(IllegalStateException.class,
+                () -> helper.renderCallWrapperVariantTypeGate(invalidVector, "type"));
+        assertThrows(IllegalStateException.class,
+                () -> helper.renderCallWrapperUnpackExpr(invalidVector, "value_ptr", "value_type"));
     }
 
     @Test
@@ -653,6 +692,35 @@ class CGenHelperTest {
         assertEquals(
                 "godot_new_int_with_Variant(value_ptr)",
                 helper.renderCallWrapperUnpackExpr(GdIntType.INT, "value_ptr", null)
+        );
+    }
+
+    @Test
+    @DisplayName("call wrapper unpack should route vector params through vector widening helper only")
+    void renderCallWrapperUnpackExprShouldRouteVectorParamsThroughVectorWideningHelperOnly() {
+        assertEquals(
+                "gdcc_new_Vector2_from_call_arg_variant(value_ptr, value_type)",
+                helper.renderCallWrapperUnpackExpr(GdFloatVectorType.VECTOR2, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "gdcc_new_Vector3_from_call_arg_variant(value_ptr, value_type)",
+                helper.renderCallWrapperUnpackExpr(GdFloatVectorType.VECTOR3, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "gdcc_new_Vector4_from_call_arg_variant(value_ptr, value_type)",
+                helper.renderCallWrapperUnpackExpr(GdFloatVectorType.VECTOR4, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "gdcc_new_Vector3_from_call_arg_variant(value_ptr, godot_variant_get_type(value_ptr))",
+                helper.renderCallWrapperUnpackExpr(GdFloatVectorType.VECTOR3, "value_ptr", null)
+        );
+        assertEquals(
+                "godot_new_Vector3i_with_Variant(value_ptr)",
+                helper.renderCallWrapperUnpackExpr(GdIntVectorType.VECTOR3I, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "godot_new_Rect2_with_Variant(value_ptr)",
+                helper.renderCallWrapperUnpackExpr(GdRect2Type.RECT2, "value_ptr", "value_type")
         );
     }
 

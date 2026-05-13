@@ -33,10 +33,13 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdRect2Type;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdType;
@@ -658,6 +661,64 @@ public class CCodegenTest {
         assertFalse(echoVariantCallBody.contains("expected = GDEXTENSION_VARIANT_TYPE_NIL;"), echoVariantCallBody);
         assertTrue(echoVariantCallBody.contains("godot_Variant arg0 = godot_new_Variant_with_Variant((GDExtensionVariantPtr)p_args[0]);"), echoVariantCallBody);
         assertTrue(echoVariantCallBody.contains("godot_Variant_destroy(&arg0);"), echoVariantCallBody);
+    }
+
+    @Test
+    public void generatesCallWrapperInboundVectorIToVectorCompatibilityWithoutWeakeningOtherParams() throws Exception {
+        var workerClass = new LirClassDef("InboundVectorCallWorker", "Node");
+        addSingleParamReturnFunction(workerClass, "InboundVectorCallWorker", "take_vector2", GdFloatVectorType.VECTOR2);
+        addSingleParamReturnFunction(workerClass, "InboundVectorCallWorker", "take_vector3", GdFloatVectorType.VECTOR3);
+        addSingleParamReturnFunction(workerClass, "InboundVectorCallWorker", "take_vector4", GdFloatVectorType.VECTOR4);
+        addSingleParamReturnFunction(workerClass, "InboundVectorCallWorker", "take_vector3i", GdIntVectorType.VECTOR3I);
+        addSingleParamReturnFunction(workerClass, "InboundVectorCallWorker", "take_rect2", GdRect2Type.RECT2);
+
+        var module = new LirModule("inbound_vector_call_module", List.of(workerClass));
+        var hCode = generateHeader(module);
+
+        var takeVector2CallBody = resolveCallWrapperBody(hCode, "_1_arg_Vector2_ret_Vector2");
+        var takeVector3CallBody = resolveCallWrapperBody(hCode, "_1_arg_Vector3_ret_Vector3");
+        var takeVector4CallBody = resolveCallWrapperBody(hCode, "_1_arg_Vector4_ret_Vector4");
+        var takeVector3iCallBody = resolveCallWrapperBody(hCode, "_1_arg_Vector3i_ret_Vector3i");
+        var takeRect2CallBody = resolveCallWrapperBody(hCode, "_1_arg_Rect2_ret_Rect2");
+
+        assertContainsAll(
+                takeVector2CallBody,
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR2 || arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR2I))",
+                "expected = GDEXTENSION_VARIANT_TYPE_VECTOR2;",
+                "const godot_Vector2 arg0 = gdcc_new_Vector2_from_call_arg_variant((GDExtensionVariantPtr)p_args[0], arg0_type);"
+        );
+        assertContainsAll(
+                takeVector3CallBody,
+                "const GDExtensionVariantType arg0_type = godot_variant_get_type(p_args[0]);",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR3 || arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR3I))",
+                "expected = GDEXTENSION_VARIANT_TYPE_VECTOR3;",
+                "const godot_Vector3 arg0 = gdcc_new_Vector3_from_call_arg_variant((GDExtensionVariantPtr)p_args[0], arg0_type);"
+        );
+        assertContainsAll(
+                takeVector4CallBody,
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR4 || arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR4I))",
+                "expected = GDEXTENSION_VARIANT_TYPE_VECTOR4;",
+                "const godot_Vector4 arg0 = gdcc_new_Vector4_from_call_arg_variant((GDExtensionVariantPtr)p_args[0], arg0_type);"
+        );
+        assertEquals(1, countOccurrences(takeVector3CallBody, "godot_variant_get_type(p_args[0])"), takeVector3CallBody);
+
+        assertContainsAll(
+                takeVector3iCallBody,
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_VECTOR3I))",
+                "expected = GDEXTENSION_VARIANT_TYPE_VECTOR3I;",
+                "const godot_Vector3i arg0 = godot_new_Vector3i_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertFalse(takeVector3iCallBody.contains("GDEXTENSION_VARIANT_TYPE_VECTOR3 ||"), takeVector3iCallBody);
+        assertFalse(takeVector3iCallBody.contains("gdcc_new_Vector3_from_call_arg_variant"), takeVector3iCallBody);
+
+        assertContainsAll(
+                takeRect2CallBody,
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_RECT2))",
+                "expected = GDEXTENSION_VARIANT_TYPE_RECT2;",
+                "godot_Rect2 arg0 = godot_new_Rect2_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertFalse(takeRect2CallBody.contains("GDEXTENSION_VARIANT_TYPE_RECT2I"), takeRect2CallBody);
+        assertFalse(takeRect2CallBody.contains("gdcc_new_Rect2_from_call_arg_variant"), takeRect2CallBody);
     }
 
     @Test
@@ -2114,6 +2175,21 @@ public class CCodegenTest {
         assertTrue(openBraceIndex >= 0, "Missing opening brace for " + signaturePrefix);
         var closeBraceIndex = findMatchingBrace(code, openBraceIndex);
         return code.substring(openBraceIndex + 1, closeBraceIndex);
+    }
+
+    private static void addSingleParamReturnFunction(@NotNull LirClassDef clazz,
+                                                     @NotNull String className,
+                                                     @NotNull String functionName,
+                                                     @NotNull GdType type) {
+        var func = new LirFunctionDef(functionName);
+        func.setReturnType(type);
+        func.addParameter(new LirParameterDef("self", new GdObjectType(className), null, func));
+        func.addParameter(new LirParameterDef("value", type, null, func));
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn("value"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        clazz.addFunction(func);
     }
 
     private static int findMatchingBrace(String text, int openBraceIndex) {

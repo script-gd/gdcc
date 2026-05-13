@@ -536,22 +536,30 @@ public final class CGenHelper {
 
     /// Render the inbound `call_func` runtime gate for one non-Variant wrapper argument.
     ///
-    /// The wrapper keeps exact runtime checks by default. The only widened inbound rule is
-    /// `Variant(INT) -> float parameter`, matching the frontend matrix without importing
-    /// Godot's full `can_convert_strict(...)` table into this ABI surface.
+    /// The wrapper keeps exact runtime checks by default. Widening is limited to the same narrow
+    /// inbound rules the frontend ordinary-boundary matrix already owns: `INT -> float` and
+    /// same-dimension `Vector*i -> Vector*`.
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
         if (paramType instanceof GdFloatType) {
             return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_FLOAT || "
                     + typeExpr + " == GDEXTENSION_VARIANT_TYPE_INT)";
         }
-        return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + requireBoundMetadataType(paramType).name() + ")";
+        if (paramType instanceof GdFloatVectorType vectorType) {
+            vectorType.ensureValidBuiltinDim();
+            var targetType = requireBoundMetadataType(paramType);
+            var vectorSourceType = new GdIntVectorType(vectorType.getDimension()).getGdExtensionType();
+            return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + " || "
+                    + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + vectorSourceType.name() + ")";
+        }
+        var targetType = requireBoundMetadataType(paramType);
+        return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + ")";
     }
 
     /// Render the inbound `call_func` local materialization expression for one wrapper argument.
     ///
     /// This is deliberately separate from `renderUnpackFunctionName(...)` because only
-    /// Godot-to-GDExtension method calls get the narrow `INT` payload widening for float params.
+    /// Godot-to-GDExtension method calls get narrow inbound widening for selected typed params.
     ///
     /// @param typeExpr cached runtime type expression from the preceding wrapper gate. When this is null, the
     ///                 generated expression repeats `godot_variant_get_type(...)` against `variantPtrExpr`.
@@ -563,6 +571,12 @@ public final class CGenHelper {
             return actualTypeExpr + " == GDEXTENSION_VARIANT_TYPE_INT"
                     + " ? (godot_float)godot_new_int_with_Variant(" + variantPtrExpr + ")"
                     + " : godot_new_float_with_Variant(" + variantPtrExpr + ")";
+        }
+        if (paramType instanceof GdFloatVectorType vectorType) {
+            vectorType.ensureValidBuiltinDim();
+            var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
+            return "gdcc_new_" + renderGdTypeName(paramType) + "_from_call_arg_variant(" +
+                    variantPtrExpr + ", " + actualTypeExpr + ")";
         }
         return renderUnpackFunctionName(paramType) + "(" + variantPtrExpr + ")";
     }
