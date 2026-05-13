@@ -56,7 +56,7 @@ C backend 当前通过以下类承接 intrinsic：
 - 不要在 intrinsic 中复制通用 slot 查找、operand parsing 或 registry lookup。
 - 不要手写目标槽位生命周期逻辑；优先复用 `CBodyBuilder.assignVar(...)`、
   `CBodyBuilder.callAssign(...)` 等统一写入 API。
-- destroyable 或 object result 的新 intrinsic 必须单独审计 ownership，不得照抄 primitive
+- destroyable 或 object result 的新 intrinsic 必须单独审计 ownership，不得照抄 scalar
   cast 的 direct expression route。
 - 新增 intrinsic 必须同步更新本文档 catalog、parser / serializer focused tests，以及
   backend registry / codegen focused tests。

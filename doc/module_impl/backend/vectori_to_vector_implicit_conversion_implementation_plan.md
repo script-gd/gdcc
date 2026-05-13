@@ -6,7 +6,7 @@
 ## 1. 背景与目标
 
 GDCC 当前已经支持 source-level ordinary typed boundary 上的 `int -> float` 隐式转换，
-并通过 `ALLOW_WITH_PRIMITIVE_CAST`、`call_intrinsic "c_int_to_float"`、C backend intrinsic
+并通过 `ALLOW_WITH_INTRINSIC_CAST`、`call_intrinsic "c_int_to_float"`、C backend intrinsic
 以及入站 `call_func` wrapper 窄兼容规则闭合。
 
 本次计划要支持同一类 ordinary typed boundary 上的 int-vector 到 float-vector widening：
@@ -76,8 +76,9 @@ Godot 的 `Variant::can_convert_strict(...)` 同时支持反向 `Vector* -> Vect
 
 ### 3.3 现有代码事实
 
-- `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)` 当前只把
-  `GdIntType -> GdFloatType` 判定为 `ALLOW_WITH_PRIMITIVE_CAST`。
+- `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)` 已把
+  `GdIntType -> GdFloatType` 与同维度 `GdIntVectorType -> GdFloatVectorType` 判定为
+  `ALLOW_WITH_INTRINSIC_CAST`。
 - `FrontendBodyLoweringSession.materializePrimitiveCast(...)` 当前 fail-fast 限定
   `int -> float`，并生成 `call_intrinsic "c_int_to_float"`。
 - `CIntrinsicManager` 当前只注册 `CIntToFloatIntrinsic`。
@@ -95,8 +96,7 @@ Godot 的 `Variant::can_convert_strict(...)` 同时支持反向 `Vector* -> Vect
 
 ### 4.1 Conversion decision 命名
 
-现有 `ALLOW_WITH_PRIMITIVE_CAST` 名称已经准确表达 `int -> float`，但对
-`Vector*i -> Vector*` 不再准确。实施时建议把 decision 重命名为：
+source-level boundary 显式物化统一使用以下 decision：
 
 ```text
 ALLOW_WITH_INTRINSIC_CAST
@@ -221,6 +221,13 @@ helper 内部逻辑固定为：
 
 ### 步骤 1：更新事实源文档
 
+执行状态（2026-05-13）：已完成。
+
+- `frontend_implicit_conversion_matrix.md` 已把同维度 `Vector*i -> Vector*` 标为 GDCC 支持，并保留反向、错维度、`Rect2i -> Rect2`、容器递归 widening 与 operator promotion 为非目标。
+- `frontend_lowering_(un)pack_implementation.md` 与 `frontend_rules.md` 已同步到 ordinary typed-boundary intrinsic materialization 表述。
+- `int_to_float_implicit_conversion_implementation.md` 已把 shared decision 名称同步为 `ALLOW_WITH_INTRINSIC_CAST`，并继续只维护 `int -> float` 自身合同。
+- `gdcc_lir_intrinsic.md` 已作为 intrinsic catalog 事实源保留 vector intrinsic 规划状态；在 backend registry 尚未实施前，catalog 不提前标记为 `Implemented`，以保持与实际 registry 一致。
+
 修改：
 
 - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
@@ -234,7 +241,7 @@ helper 内部逻辑固定为：
 - 将 `Vector2i -> Vector2`、`Vector3i -> Vector3`、`Vector4i -> Vector4` 的 GDCC 列改为 `Y`。
 - 明确它们是 ordinary typed-boundary intrinsic materialization，不是 constructor special route。
 - 明确反向 `Vector* -> Vector*i` 与 `Rect2i -> Rect2` 仍是 `N`。
-- 把 `ALLOW_WITH_PRIMITIVE_CAST` 的文档表述同步为 `ALLOW_WITH_INTRINSIC_CAST`。
+- 把 intrinsic materialization decision 的文档表述统一为 `ALLOW_WITH_INTRINSIC_CAST`。
 - 在 `doc/gdcc_lir_intrinsic.md` 中登记新增 vector intrinsic 的最终状态。
 
 验收：
@@ -244,6 +251,12 @@ helper 内部逻辑固定为：
 - `doc/gdcc_lir_intrinsic.md` 的 catalog 与实际 `CIntrinsicManager` registry 一致。
 
 ### 步骤 2：建立并维护 LIR intrinsic 事实源
+
+执行状态（2026-05-13）：已完成。
+
+- `doc/gdcc_lir_intrinsic.md` 已保持为 `call_intrinsic` surface、registry 合同和 catalog 的统一事实源。
+- `doc/gdcc_low_ir.md` 的 `call_intrinsic` 段落已保持为 textual shape + 链接，不维护重复 catalog。
+- `c_int_to_float` 当前为 `Implemented`；三个 vector intrinsic 在 backend registry 尚未实施前保持 `Planned`，以避免 catalog 与 `CIntrinsicManager` 不一致。
 
 修改：
 
@@ -269,6 +282,13 @@ helper 内部逻辑固定为：
 
 ### 步骤 3：扩展 frontend boundary decision
 
+执行状态（2026-05-13）：已完成。
+
+- `FrontendVariantBoundaryCompatibility.Decision` 已使用 `ALLOW_WITH_INTRINSIC_CAST`。
+- `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)` 已接受同维度且维度为 2/3/4 的 `GdIntVectorType -> GdFloatVectorType`。
+- 反向、错维度、非法维度、`Variant` pack/unpack 与 global `ClassRegistry.checkAssignable(...)` strict 边界均已用 focused tests 锚定。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendVariantBoundaryCompatibilityTest,ClassRegistryTest,ScopeMethodResolverTest`。
+
 修改：
 
 - `FrontendVariantBoundaryCompatibility`
@@ -276,7 +296,7 @@ helper 内部逻辑固定为：
 
 要求：
 
-- 将 `ALLOW_WITH_PRIMITIVE_CAST` 重命名为 `ALLOW_WITH_INTRINSIC_CAST`。
+- 使用 `ALLOW_WITH_INTRINSIC_CAST` 表达所有 backend-owned intrinsic materialization boundary。
 - 新增判定：
   - source 是 `GdIntVectorType`，target 是 `GdFloatVectorType`
   - source / target 维度相同

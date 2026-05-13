@@ -73,7 +73,7 @@
 - builtin instance property access 与 builtin keyed access 必须继续严格区分：`vector.x`、`Color(...).r`、`Basis.IDENTITY.x` 当前属于 compile-ready ordinary property route；`vector["x"]` 仍保持 unsupported。
 - builtin keyed access 即使在 extension metadata 中声明了 `isKeyed`，当前也不属于 MVP 支持面；frontend 必须发出显式 `UNSUPPORTED`，而不是猜测 `String` / `Vector*` / `Color` / `Basis` / `Transform*` / `Object` 等 builtin keyed route 的结果类型。
 - `DYNAMIC` target 的 runtime-open 处理仍属于 assignment semantic helper 的内聚语义；其他 frontend 路径若只需要 concrete slot 兼容判断，必须调用 `checkAssignmentCompatible(...)`，不要各自硬编码 `Variant` 分支。
-- 除 `DYNAMIC` target 的 runtime-open 语义外，frontend 若需要调整 typed boundary compatibility，必须先更新 `frontend_implicit_conversion_matrix.md`，再改 shared helper、测试与下游 materialization；不得直接在某个 consumer 中偷偷放宽 `int -> float`、`StringName` / `String` 等 widened conversion。
+- 除 `DYNAMIC` target 的 runtime-open 语义外，frontend 若需要调整 typed boundary compatibility，必须先更新 `frontend_implicit_conversion_matrix.md`，再改 shared helper、测试与下游 materialization；不得直接在某个 consumer 中偷偷放宽 `int -> float`、同维度 `Vector*i -> Vector*`、`StringName` / `String` 等 widened conversion。
 - builtin 单参数 stable `Variant` constructor 是一条并列的 constructor 合同：shared sema 通过 builtin-only shortcut 接受，body lowering 直接 lower 为 `UnpackVariantInsn`；它不属于 `frontend_implicit_conversion_matrix.md` 的 ordinary typed-boundary widened conversion，也不得再要求 callable signature metadata。
 - 上述 builtin unary-`Variant` constructor special route 在 sema 上必须保持“resolved route + warning 并存”：
   - `resolvedCalls()` 继续发布 `RESOLVED(CONSTRUCTOR)`，供 lowering/compile-check 消费

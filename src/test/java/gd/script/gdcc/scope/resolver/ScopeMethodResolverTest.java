@@ -15,7 +15,9 @@ import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -427,8 +429,8 @@ class ScopeMethodResolverTest {
     }
 
     @Test
-    @DisplayName("shared method resolver frontend rank should prefer exact int over primitive cast")
-    void resolveInstanceMethodFrontendRankShouldPreferExactIntOverPrimitiveCast() {
+    @DisplayName("shared method resolver frontend rank should prefer exact int over intrinsic cast")
+    void resolveInstanceMethodFrontendRankShouldPreferExactIntOverIntrinsicCast() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendIntFloatOverloads())), List.of());
 
         var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
@@ -448,8 +450,8 @@ class ScopeMethodResolverTest {
     }
 
     @Test
-    @DisplayName("shared method resolver frontend rank should prefer primitive cast over Variant pack")
-    void resolveInstanceMethodFrontendRankShouldPreferPrimitiveCastOverVariantPack() {
+    @DisplayName("shared method resolver frontend rank should prefer intrinsic cast over Variant pack")
+    void resolveInstanceMethodFrontendRankShouldPreferIntrinsicCastOverVariantPack() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendFloatVariantOverloads())), List.of());
 
         var strictResult = ScopeMethodResolver.resolveInstanceMethod(
@@ -477,6 +479,57 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver frontend rank should prefer exact vector over vector widening")
+    void resolveInstanceMethodFrontendRankShouldPreferExactVectorOverVectorWidening() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendVector3iVector3Overloads())), List.of());
+
+        var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdIntVectorType.VECTOR3I),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertEquals(GdIntVectorType.VECTOR3I, resolved.method().parameters().getFirst().type());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should prefer vector widening over Variant pack")
+    void resolveInstanceMethodFrontendRankShouldPreferVectorWideningOverVariantPack() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendVector3VariantOverloads())), List.of());
+
+        var strictResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdIntVectorType.VECTOR3I)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdIntVectorType.VECTOR3I),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals(GdFloatVectorType.VECTOR3, resolved.method().parameters().getFirst().type());
+    }
+
+    @Test
     @DisplayName("shared method resolver frontend rank should keep equally ranked overloads ambiguous")
     void resolveInstanceMethodFrontendRankShouldKeepEqualRankOverloadsAmbiguous() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendEqualRankOverloads())), List.of());
@@ -500,7 +553,7 @@ class ScopeMethodResolverTest {
 
     @Test
     @DisplayName("shared method resolver frontend rank should apply to static methods")
-    void resolveStaticMethodFrontendRankShouldPreferPrimitiveCastOverVariantPack() {
+    void resolveStaticMethodFrontendRankShouldPreferIntrinsicCastOverVariantPack() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendStaticFloatVariantOverloads())), List.of());
         var nodeTypeMeta = registry.resolveTypeMeta("Node");
 
@@ -850,6 +903,20 @@ class ScopeMethodResolverTest {
     private static ExtensionGdClass nodeClassWithFrontendFloatVariantOverloads() {
         return nodeClassWithMethods(List.of(
                 nodeMethod("rank", false, "float"),
+                nodeMethod("rank", false, "Variant")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendVector3iVector3Overloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "Vector3i"),
+                nodeMethod("rank", false, "Vector3")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendVector3VariantOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "Vector3"),
                 nodeMethod("rank", false, "Variant")
         ));
     }

@@ -696,7 +696,7 @@ public final class FrontendBodyLoweringSession {
                 block.appendNonTerminatorInstruction(new LiteralNullInsn(nullSlotId));
                 yield nullSlotId;
             }
-            case ALLOW_WITH_PRIMITIVE_CAST -> materializePrimitiveCast(block, sourceSlot, source, target, use);
+            case ALLOW_WITH_INTRINSIC_CAST -> materializePrimitiveCast(block, sourceSlot, source, target, use);
             case REJECT -> throw new IllegalStateException(
                     "Frontend boundary '"
                             + use
@@ -709,11 +709,11 @@ public final class FrontendBodyLoweringSession {
         };
     }
 
-    /// Materializes one primitive-cast ordinary boundary into a backend-owned intrinsic call.
+    /// Materializes the currently implemented scalar intrinsic-cast ordinary boundary into a backend-owned intrinsic call.
     ///
     /// Usage:
     /// - only call this from `materializeFrontendBoundaryValue(...)` after the shared frontend
-    ///   boundary decision has returned `ALLOW_WITH_PRIMITIVE_CAST`
+    ///   boundary decision has returned `ALLOW_WITH_INTRINSIC_CAST`
     /// - pass the already-lowered source slot and the published source/target types for that
     ///   boundary
     ///
@@ -721,7 +721,7 @@ public final class FrontendBodyLoweringSession {
     /// - source `int` slot from `return seed` in a `-> float` function becomes a new `float` temp
     ///   filled by `call_intrinsic "c_int_to_float" $seed`
     ///
-    /// This helper deliberately fail-fast guards the currently supported pair so later primitive
+    /// This helper deliberately fail-fast guards the currently lowered pair so later intrinsic
     /// casts cannot silently reuse the `c_int_to_float` route.
     private @NotNull String materializePrimitiveCast(
             @NotNull LirBasicBlock block,
@@ -734,7 +734,7 @@ public final class FrontendBodyLoweringSession {
             throw new IllegalStateException(
                     "Frontend boundary '"
                             + boundaryUse
-                            + "' requested unsupported primitive cast from '"
+                            + "' requested unsupported intrinsic cast from '"
                             + sourceType.getTypeName()
                             + "' to '"
                             + targetType.getTypeName()

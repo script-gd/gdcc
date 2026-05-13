@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（Godot 规则已梳理，GDCC 当前支持面已对齐到现有实现）
-- 更新时间：2026-04-21
+- 更新时间：2026-05-13
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -78,7 +78,8 @@
 - `Array` / `Dictionary` 的有限协变：支持
 - stable `Variant` boundary：支持
 - `Nil -> object`：支持
-- `int -> float`：支持，必须通过 `ALLOW_WITH_PRIMITIVE_CAST` 与显式 lowering materialization 闭合
+- `int -> float`：支持，必须通过 `ALLOW_WITH_INTRINSIC_CAST` 与显式 lowering materialization 闭合
+- 同维度 `Vector*i -> Vector*`：支持，必须通过 `ALLOW_WITH_INTRINSIC_CAST` 与显式 lowering materialization 闭合
 - 其余 typed boundary：原则上回退 `ClassRegistry.checkAssignable(...)`
 
 这意味着：
@@ -172,7 +173,7 @@
 | `bool` | `int` | Y | N | Godot scalar family strict convert |
 | `bool` | `float` | Y | N | Godot scalar family strict convert |
 | `int` | `bool` | Y | N | 与 condition truthiness 不是一回事 |
-| `int` | `float` | Y | Y | 由 `ALLOW_WITH_PRIMITIVE_CAST` 表达；lowering 必须生成 `call_intrinsic "c_int_to_float"`，不得当作 direct flow |
+| `int` | `float` | Y | Y | 由 `ALLOW_WITH_INTRINSIC_CAST` 表达；lowering 必须生成 `call_intrinsic "c_int_to_float"`，不得当作 direct flow |
 | `float` | `bool` | Y | N | Godot scalar family strict convert |
 | `float` | `int` | Y | N | Godot 会截断；GDCC 当前不支持 |
 | `String` | `StringName` | Y | N | Godot 文档明确说明常见 API 会自动转换 |
@@ -205,14 +206,14 @@
 
 | Source | Target | Godot | GDCC | 备注 |
 | --- | --- | --- | --- | --- |
-| `Vector2i` | `Vector2` | Y | N | int-vector / float-vector 互转 |
-| `Vector2` | `Vector2i` | Y | N | 反向也支持 |
+| `Vector2i` | `Vector2` | Y | Y | ordinary typed-boundary intrinsic materialization；不是 constructor special route |
+| `Vector2` | `Vector2i` | Y | N | Godot strict convert 支持反向；GDCC 本轮仍拒绝 |
 | `Rect2i` | `Rect2` | Y | N | rect family 互转 |
 | `Rect2` | `Rect2i` | Y | N | 反向也支持 |
-| `Vector3i` | `Vector3` | Y | N | int-vector / float-vector 互转 |
-| `Vector3` | `Vector3i` | Y | N | 反向也支持 |
-| `Vector4i` | `Vector4` | Y | N | int-vector / float-vector 互转 |
-| `Vector4` | `Vector4i` | Y | N | 反向也支持 |
+| `Vector3i` | `Vector3` | Y | Y | ordinary typed-boundary intrinsic materialization；不是 constructor special route |
+| `Vector3` | `Vector3i` | Y | N | Godot strict convert 支持反向；GDCC 本轮仍拒绝 |
+| `Vector4i` | `Vector4` | Y | Y | ordinary typed-boundary intrinsic materialization；不是 constructor special route |
+| `Vector4` | `Vector4i` | Y | N | Godot strict convert 支持反向；GDCC 本轮仍拒绝 |
 | `Transform3D` | `Transform2D` | Y | N | Godot strict convert table 支持 |
 | `Transform2D` | `Transform3D` | Y | N | Godot strict convert table 支持 |
 | `Basis` | `Quaternion` | Y | N | 旋转表示互转 |
@@ -374,7 +375,7 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `Variant` boundary：已支持
 - object hierarchy：已支持
 - `Nil -> object`：已支持
-- builtin strict implicit conversion：除 `int -> float` 这一已明确列出的 primitive cast 外基本未支持
+- builtin strict implicit conversion：已支持 `int -> float` 与同维度 `Vector*i -> Vector*` 这两类显式 intrinsic materialization；其它 builtin strict conversion 仍未支持
 - keyed/index widened compatibility：未支持
 
 因此，若后续要把 GDCC 的 typed boundary 行为推进到接近 Godot，优先级最高的缺口依次是：

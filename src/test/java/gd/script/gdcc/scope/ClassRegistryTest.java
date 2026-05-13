@@ -14,7 +14,9 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -322,6 +324,11 @@ public class ClassRegistryTest {
         assertFalse(registry.checkAssignable(GdStringType.STRING, GdStringNameType.STRING_NAME));
         assertFalse(registry.checkAssignable(GdVariantType.VARIANT, GdIntType.INT));
         assertFalse(registry.checkAssignable(GdNilType.NIL, GdObjectType.OBJECT));
+        assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR2I, GdFloatVectorType.VECTOR2));
+        assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR3I, GdFloatVectorType.VECTOR3));
+        assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR4I, GdFloatVectorType.VECTOR4));
+        assertFalse(registry.checkAssignable(GdFloatVectorType.VECTOR3, GdIntVectorType.VECTOR3I));
+        assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR2I, GdFloatVectorType.VECTOR3));
     }
 
     @Test

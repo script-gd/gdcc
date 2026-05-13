@@ -4,7 +4,9 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
@@ -12,6 +14,7 @@ import gd.script.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 class FrontendVariantBoundaryCompatibilityTest {
     @Test
@@ -58,7 +61,7 @@ class FrontendVariantBoundaryCompatibilityTest {
                 )
         );
         assertEquals(
-                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PRIMITIVE_CAST,
+                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
                 FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
                         classRegistry,
                         GdIntType.INT,
@@ -76,38 +79,111 @@ class FrontendVariantBoundaryCompatibilityTest {
     }
 
     @Test
-    void primitiveCastDecisionIsLimitedToIntToFloatBoundary() throws Exception {
+    void intrinsicCastDecisionAllowsOnlyDocumentedScalarAndVectorWidening() throws Exception {
         var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        assertEquals(
-                FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PRIMITIVE_CAST,
-                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
-                        classRegistry,
-                        new GdIntType(),
-                        GdFloatType.FLOAT
+        assertAll(
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                new GdIntType(),
+                                GdFloatType.FLOAT
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdIntVectorType.VECTOR2I,
+                                GdFloatVectorType.VECTOR2
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdIntVectorType.VECTOR3I,
+                                GdFloatVectorType.VECTOR3
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_INTRINSIC_CAST,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdIntVectorType.VECTOR4I,
+                                GdFloatVectorType.VECTOR4
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdFloatType.FLOAT,
+                                GdIntType.INT
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdBoolType.BOOL,
+                                GdFloatType.FLOAT
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdIntType.INT,
+                                GdBoolType.BOOL
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdFloatVectorType.VECTOR3,
+                                GdIntVectorType.VECTOR3I
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdIntVectorType.VECTOR2I,
+                                GdFloatVectorType.VECTOR3
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                new GdIntVectorType(5),
+                                new GdFloatVectorType(5)
+                        )
                 )
         );
-        assertEquals(
-                FrontendVariantBoundaryCompatibility.Decision.REJECT,
-                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
-                        classRegistry,
-                        GdFloatType.FLOAT,
-                        GdIntType.INT
-                )
-        );
-        assertEquals(
-                FrontendVariantBoundaryCompatibility.Decision.REJECT,
-                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
-                        classRegistry,
-                        GdBoolType.BOOL,
-                        GdFloatType.FLOAT
-                )
-        );
-        assertEquals(
-                FrontendVariantBoundaryCompatibility.Decision.REJECT,
-                FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
-                        classRegistry,
-                        GdIntType.INT,
-                        GdBoolType.BOOL
+    }
+
+    @Test
+    void vectorWideningDoesNotReplaceVariantBoundaryDecisions() throws Exception {
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        assertAll(
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_PACK,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdIntVectorType.VECTOR3I,
+                                GdVariantType.VARIANT
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.ALLOW_WITH_UNPACK,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdVariantType.VARIANT,
+                                GdFloatVectorType.VECTOR3
+                        )
                 )
         );
     }
