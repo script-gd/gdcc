@@ -79,8 +79,8 @@ Godot 的 `Variant::can_convert_strict(...)` 同时支持反向 `Vector* -> Vect
 - `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)` 已把
   `GdIntType -> GdFloatType` 与同维度 `GdIntVectorType -> GdFloatVectorType` 判定为
   `ALLOW_WITH_INTRINSIC_CAST`。
-- `FrontendBodyLoweringSession.materializePrimitiveCast(...)` 当前 fail-fast 限定
-  `int -> float`，并生成 `call_intrinsic "c_int_to_float"`。
+- `FrontendBodyLoweringSession.materializeIntrinsicCast(...)` 当前 fail-fast 限定
+  `int -> float` 与同维度 `Vector*i -> Vector*`，并生成对应 `call_intrinsic`。
 - `CIntrinsicManager` 当前只注册 `CIntToFloatIntrinsic`。
 - `CBodyBuilder.valueOfCastedVar(...)` 对非 object 类型使用 C cast 形态，例如
   `(godot_Vector3)$source`；这不适合 `Vector3i -> Vector3`，因为它是不同 struct 类型之间的
@@ -314,6 +314,24 @@ helper 内部逻辑固定为：
 
 ### 步骤 4：扩展 frontend lowering materialization
 
+执行状态（2026-05-13）：已完成。
+
+- `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)` 已把
+  `ALLOW_WITH_INTRINSIC_CAST` 分派到统一的 `materializeIntrinsicCast(...)`。
+- `materializeIntrinsicCast(...)` 继续为 target type 分配新 temp，并发出 backend-owned
+  `CallIntrinsicInsn`；source slot 不会直接流入 target consumer。
+- intrinsic 名称选择已覆盖：
+  - `int -> float`：`c_int_to_float`
+  - `Vector2i -> Vector2`：`c_vector2i_to_vector2`
+  - `Vector3i -> Vector3`：`c_vector3i_to_vector3`
+  - `Vector4i -> Vector4`：`c_vector4i_to_vector4`
+- focused session tests 覆盖 2/3/4 维 vector widening 正例，并覆盖反向与错维度拒绝。
+- lowering body tests 覆盖 local initializer、assignment、fixed call argument、return，以及
+  `Dictionary[Vector3, Vector3]` subscript key/value boundary 均生成 target-typed temp 与
+  `c_vector3i_to_vector3`。
+- 已运行
+  `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendLoweringBodyInsnPassTest`。
+
 修改：
 
 - `FrontendBodyLoweringSession`
@@ -336,6 +354,19 @@ helper 内部逻辑固定为：
 - 不在各 consumer 里出现局部 `Vector3i -> Vector3` 判断。
 
 ### 步骤 5：扩展 LIR parser / serializer 测试
+
+执行状态（2026-05-13）：已完成。
+
+- parser / serializer 数据结构无需修改；`call_intrinsic` 名称继续作为字符串 operand 保留。
+- `SimpleLirBlockInsnParserTest` 已覆盖三个 vector intrinsic 名称解析，并断言 argument 仍是变量操作数。
+- `SimpleLirBlockInsnParserTest` 已增加
+  `$v = call_intrinsic "c_vector3i_to_vector3" $vi;` 的 parse -> serialize -> reparse
+  roundtrip。
+- `SimpleLirBlockInsnSerializerTest` 已增加 `c_vector3i_to_vector3` 的精确文本输出断言。
+- literal argument 负例已改用 vector intrinsic 名称，继续证明坏 operand 被 parser 拒绝。
+- unknown intrinsic 仍不在 parser 层判错；该失败点继续属于 backend intrinsic registry。
+- 已运行
+  `script/run-gradle-targeted-tests.sh --tests SimpleLirBlockInsnParserTest,SimpleLirBlockInsnSerializerTest`。
 
 实现本身无需修改 parser / serializer 数据结构，因为 `call_intrinsic` 名称是字符串。
 

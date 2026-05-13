@@ -60,8 +60,10 @@ import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -941,15 +943,15 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnSubscriptKeyMaterialization
                         extends RefCounted
-
+                        
                         func dictionary_ops(box: Dictionary[float, int], key: int) -> int:
                             box[key] = 7
                             return box[key]
-
+                        
                         func array_ops(values: Array[int], key: Variant) -> int:
                             values[key] = 11
                             return values[key]
-
+                        
                         func packed_ops(values: PackedInt32Array, key: Variant) -> int:
                             values[key] = 13
                             return values[key]
@@ -1056,6 +1058,63 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertFalse(packedInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
                 () -> assertFalse(packedInstructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
                 () -> assertFalse(packedInstructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance))
+        );
+    }
+
+    @Test
+    void runMaterializesVectorIntrinsicCastsForSubscriptKeyAndValueBoundaries() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_vector_subscript_boundary.gd",
+                """
+                        class_name BodyInsnVectorSubscriptBoundary
+                        extends RefCounted
+                        
+                        func dictionary_ops(box: Dictionary[Vector3, Vector3], key: Vector3i, value: Vector3i) -> Vector3:
+                            box[key] = value
+                            return box[key]
+                        """,
+                Map.of("BodyInsnVectorSubscriptBoundary", "RuntimeBodyInsnVectorSubscriptBoundary"),
+                true
+        );
+        var dictionaryContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVectorSubscriptBoundary",
+                "dictionary_ops"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(dictionaryContext.targetFunction());
+        var vectorCasts = instructions.stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .toList();
+        var setKeyedInsn = requireOnlyInstruction(dictionaryContext.targetFunction(), VariantSetKeyedInsn.class);
+        var getKeyedInsn = requireOnlyInstruction(dictionaryContext.targetFunction(), VariantGetKeyedInsn.class);
+        var castResultIds = vectorCasts.stream()
+                .map(CallIntrinsicInsn::resultId)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(3, vectorCasts.size()),
+                () -> assertTrue(vectorCasts.stream().allMatch(insn -> insn.intrinsicName().equals("c_vector3i_to_vector3"))),
+                () -> assertTrue(castResultIds.contains(setKeyedInsn.keyId())),
+                () -> assertTrue(castResultIds.contains(setKeyedInsn.valueId())),
+                () -> assertTrue(castResultIds.contains(getKeyedInsn.keyId())),
+                () -> assertTrue(vectorCasts.stream().allMatch(insn -> requireIntrinsicResultType(
+                        dictionaryContext.targetFunction(),
+                        insn
+                ).equals(GdFloatVectorType.VECTOR3))),
+                () -> assertTrue(vectorCasts.stream().allMatch(insn -> requireVariableType(
+                        dictionaryContext.targetFunction(),
+                        onlyVariableOperandId(insn.args())
+                ).equals(GdIntVectorType.VECTOR3I))),
+                () -> assertFalse(instructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(instructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
         );
     }
 
@@ -1331,18 +1390,18 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnPrimitiveCastBoundary
                         extends RefCounted
-
+                        
                         var ratio: float
-
+                        
                         func take_float(value: float) -> float:
                             return value
-
+                        
                         func assign(seed: int) -> void:
                             ratio = seed
-
+                        
                         func call(seed: int) -> float:
                             return take_float(seed)
-
+                        
                         func ret(seed: int) -> float:
                             return seed
                         """,
@@ -1414,6 +1473,127 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(0, countInstructions(assignInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(callInstructions, PackVariantInsn.class)),
                 () -> assertEquals(0, countInstructions(retInstructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runMaterializesVectorIntrinsicCastBoundariesForLocalAssignmentsCallsAndReturns() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_vector_intrinsic_cast_boundary.gd",
+                """
+                        class_name BodyInsnVectorIntrinsicCastBoundary
+                        extends RefCounted
+                        
+                        var position: Vector3
+                        
+                        func take_vector(value: Vector3) -> Vector3:
+                            return value
+                        
+                        func local(seed: Vector3i) -> Vector3:
+                            var value: Vector3 = seed
+                            return value
+                        
+                        func assign(seed: Vector3i) -> void:
+                            position = seed
+                        
+                        func call(seed: Vector3i) -> Vector3:
+                            return take_vector(seed)
+                        
+                        func ret(seed: Vector3i) -> Vector3:
+                            return seed
+                        """,
+                Map.of("BodyInsnVectorIntrinsicCastBoundary", "RuntimeBodyInsnVectorIntrinsicCastBoundary"),
+                true
+        );
+        var localContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVectorIntrinsicCastBoundary",
+                "local"
+        );
+        var assignContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVectorIntrinsicCastBoundary",
+                "assign"
+        );
+        var callContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVectorIntrinsicCastBoundary",
+                "call"
+        );
+        var retContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVectorIntrinsicCastBoundary",
+                "ret"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var localInstructions = allInstructions(localContext.targetFunction());
+        var assignInstructions = allInstructions(assignContext.targetFunction());
+        var callInstructions = allInstructions(callContext.targetFunction());
+        var retInstructions = allInstructions(retContext.targetFunction());
+        var localCast = requireOnlyInstruction(localContext.targetFunction(), CallIntrinsicInsn.class);
+        var assignmentCast = requireOnlyInstruction(assignContext.targetFunction(), CallIntrinsicInsn.class);
+        var callCast = requireOnlyInstruction(callContext.targetFunction(), CallIntrinsicInsn.class);
+        var callInsn = requireOnlyInstruction(callContext.targetFunction(), CallMethodInsn.class);
+        var returnCast = requireOnlyInstruction(retContext.targetFunction(), CallIntrinsicInsn.class);
+        var returnInsn = requireOnlyReturnInsn(retContext.targetFunction());
+        var localAssignSources = assignSourcesByTarget(localInstructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("c_vector3i_to_vector3", localCast.intrinsicName()),
+                () -> assertEquals(localCast.resultId(), localAssignSources.get("value")),
+                () -> assertEquals(GdFloatVectorType.VECTOR3, requireIntrinsicResultType(localContext.targetFunction(), localCast)),
+                () -> assertEquals(
+                        GdIntVectorType.VECTOR3I,
+                        requireVariableType(
+                                localContext.targetFunction(),
+                                onlyVariableOperandId(localCast.args())
+                        )
+                ),
+                () -> assertEquals("c_vector3i_to_vector3", assignmentCast.intrinsicName()),
+                () -> assertTrue(storeValueIdsForProperty(assignInstructions, "position").contains(assignmentCast.resultId())),
+                () -> assertEquals(GdFloatVectorType.VECTOR3, requireIntrinsicResultType(assignContext.targetFunction(), assignmentCast)),
+                () -> assertEquals(
+                        GdIntVectorType.VECTOR3I,
+                        requireVariableType(
+                                assignContext.targetFunction(),
+                                onlyVariableOperandId(assignmentCast.args())
+                        )
+                ),
+                () -> assertEquals("c_vector3i_to_vector3", callCast.intrinsicName()),
+                () -> assertEquals(callCast.resultId(), onlyVariableOperandId(callInsn.args())),
+                () -> assertEquals(GdFloatVectorType.VECTOR3, requireIntrinsicResultType(callContext.targetFunction(), callCast)),
+                () -> assertEquals(
+                        GdIntVectorType.VECTOR3I,
+                        requireVariableType(
+                                callContext.targetFunction(),
+                                onlyVariableOperandId(callCast.args())
+                        )
+                ),
+                () -> assertEquals("c_vector3i_to_vector3", returnCast.intrinsicName()),
+                () -> assertEquals(returnCast.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(GdFloatVectorType.VECTOR3, requireIntrinsicResultType(retContext.targetFunction(), returnCast)),
+                () -> assertEquals(
+                        GdIntVectorType.VECTOR3I,
+                        requireVariableType(
+                                retContext.targetFunction(),
+                                onlyVariableOperandId(returnCast.args())
+                        )
+                ),
+                () -> assertEquals(0, countInstructions(localInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(assignInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(callInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(retInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(localInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(assignInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(callInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(retInstructions, UnpackVariantInsn.class))
         );
     }
 
@@ -1709,9 +1889,9 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnMaterializedSubscriptWriteback
                         extends RefCounted
-
+                        
                         var payloads: Dictionary[float, PackedInt32Array]
-
+                        
                         func ping(index: int, seed: int) -> void:
                             payloads[index].push_back(seed)
                         """,
@@ -2656,16 +2836,16 @@ class FrontendLoweringBodyInsnPassTest {
                         
                         func build_vector() -> Vector3i:
                             return Vector3i(1, 2, 3)
-
+                        
                         func build_float_vector() -> Vector3:
                             return Vector3(11, -2.5, 7)
-
+                        
                         func build_array(source: Array) -> Array:
                             return Array(source)
-
+                        
                         func build_node() -> Node:
                             return Node.new()
-
+                        
                         func build_worker() -> Worker:
                             return Worker.new()
                         """,

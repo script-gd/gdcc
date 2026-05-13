@@ -106,6 +106,19 @@ public class SimpleLirBlockInsnSerializerTest {
     }
 
     @Test
+    public void serialize_callIntrinsicVectorInstructionMatchesTextShape() throws Exception {
+        var insnList = List.<LirInstruction>of(
+                new CallIntrinsicInsn("v", "c_vector3i_to_vector3", List.of(new LirInstruction.VariableOperand("vi")))
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+
+        assertEquals("$v = call_intrinsic \"c_vector3i_to_vector3\" $vi;\n", sw.toString());
+    }
+
+    @Test
     public void serialize_assignInstruction() throws Exception {
         var insnList = List.<LirInstruction>of(new AssignInsn("a", "b"));
 

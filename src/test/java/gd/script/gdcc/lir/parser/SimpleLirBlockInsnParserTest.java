@@ -8,6 +8,7 @@ import gd.script.gdcc.lir.insn.*;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
+import java.io.StringWriter;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,6 +19,22 @@ public class SimpleLirBlockInsnParserTest {
     private static List<LirInstruction> parse(String input) {
         var parser = new SimpleLirBlockInsnParser();
         return parser.parse(new StringReader(input));
+    }
+
+    private static void assertCallIntrinsic(
+            LirInstruction insn,
+            String resultId,
+            String intrinsicName,
+            String argumentId
+    ) {
+        var callInsn = assertInstanceOf(CallIntrinsicInsn.class, insn);
+        var arg = assertInstanceOf(LirInstruction.VariableOperand.class, callInsn.args().getFirst());
+        assertAll(
+                () -> assertEquals(resultId, callInsn.resultId()),
+                () -> assertEquals(intrinsicName, callInsn.intrinsicName()),
+                () -> assertEquals(1, callInsn.args().size()),
+                () -> assertEquals(argumentId, arg.id())
+        );
     }
 
     @SuppressWarnings("SameParameterValue")
@@ -167,6 +184,37 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_callIntrinsicVectorInstructionsPreservesNamesAndVariableArgs() {
+        var insns = parse("""
+                $v2 = call_intrinsic "c_vector2i_to_vector2" $v2i;
+                $v3 = call_intrinsic "c_vector3i_to_vector3" $v3i;
+                $v4 = call_intrinsic "c_vector4i_to_vector4" $v4i;
+                """);
+        assertEquals(3, insns.size());
+
+        assertCallIntrinsic(insns.get(0), "v2", "c_vector2i_to_vector2", "v2i");
+        assertCallIntrinsic(insns.get(1), "v3", "c_vector3i_to_vector3", "v3i");
+        assertCallIntrinsic(insns.get(2), "v4", "c_vector4i_to_vector4", "v4i");
+    }
+
+    @Test
+    public void parse_callIntrinsicVectorInstructionRoundTripsThroughSerializer() throws Exception {
+        var input = "$v = call_intrinsic \"c_vector3i_to_vector3\" $vi;\n";
+        var parsed = parse(input);
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var out = new StringWriter();
+
+        serializer.serialize(parsed, out);
+        var reparsed = parse(out.toString());
+
+        assertAll(
+                () -> assertEquals(input, out.toString()),
+                () -> assertEquals(1, reparsed.size()),
+                () -> assertCallIntrinsic(reparsed.getFirst(), "v", "c_vector3i_to_vector3", "vi")
+        );
+    }
+
+    @Test
     public void parse_callIntrinsicRequiresQuotedIntrinsicName() {
         var line = "$f = call_intrinsic c_int_to_float $i;";
         var col = line.indexOf("c_int_to_float") + 1;
@@ -176,7 +224,7 @@ public class SimpleLirBlockInsnParserTest {
     @Test
     public void parse_callIntrinsicVarargsRequireVariables() {
         // Intrinsic arguments are materialized LIR slots, not literal operands.
-        var line = "$f = call_intrinsic \"c_int_to_float\" 42;";
+        var line = "$v = call_intrinsic \"c_vector3i_to_vector3\" 42;";
         var col = line.indexOf("42") + 1;
         assertParseError(line, 1, col, "Expected variable operand");
     }

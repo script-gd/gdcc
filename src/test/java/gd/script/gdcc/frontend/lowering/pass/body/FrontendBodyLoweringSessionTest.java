@@ -18,9 +18,12 @@ import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
@@ -126,6 +129,100 @@ class FrontendBodyLoweringSessionTest {
                 () -> assertEquals(1, castInsn.args().size()),
                 () -> assertEquals("source_int", castArgument.id()),
                 () -> assertEquals(GdFloatType.FLOAT, castedVariable.type())
+        );
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueCastsVectoriSourcesForVectorTargetsThroughIntrinsic() throws Exception {
+        var cases = List.of(
+                new IntrinsicCastCase(
+                        "source_vector2i",
+                        GdIntVectorType.VECTOR2I,
+                        GdFloatVectorType.VECTOR2,
+                        "c_vector2i_to_vector2"
+                ),
+                new IntrinsicCastCase(
+                        "source_vector3i",
+                        GdIntVectorType.VECTOR3I,
+                        GdFloatVectorType.VECTOR3,
+                        "c_vector3i_to_vector3"
+                ),
+                new IntrinsicCastCase(
+                        "source_vector4i",
+                        GdIntVectorType.VECTOR4I,
+                        GdFloatVectorType.VECTOR4,
+                        "c_vector4i_to_vector4"
+                )
+        );
+
+        for (var testCase : cases) {
+            var session = prepareSession();
+            var block = new LirBasicBlock("entry_" + testCase.sourceSlotId());
+            session.ensureVariable(testCase.sourceSlotId(), testCase.sourceType());
+
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    testCase.sourceSlotId(),
+                    testCase.sourceType(),
+                    testCase.targetType(),
+                    "vector_boundary"
+            );
+
+            var instructions = block.getNonTerminatorInstructions();
+            var castInsn = assertInstanceOf(CallIntrinsicInsn.class, instructions.getFirst());
+            var castedVariable = session.targetFunction().getVariableById(materializedSlotId);
+            var castArgument = assertInstanceOf(LirInstruction.VariableOperand.class, castInsn.args().getFirst());
+            assertNotNull(castedVariable);
+
+            assertAll(
+                    testCase.intrinsicName(),
+                    () -> assertEquals(1, instructions.size()),
+                    () -> assertNotEquals(testCase.sourceSlotId(), materializedSlotId),
+                    () -> assertEquals(materializedSlotId, castInsn.resultId()),
+                    () -> assertEquals(testCase.intrinsicName(), castInsn.intrinsicName()),
+                    () -> assertEquals(1, castInsn.args().size()),
+                    () -> assertEquals(testCase.sourceSlotId(), castArgument.id()),
+                    () -> assertEquals(testCase.targetType(), castedVariable.type())
+            );
+        }
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueRejectsUnsupportedVectorIntrinsicCastBoundaries() throws Exception {
+        var session = prepareSession();
+        var reverseBlock = new LirBasicBlock("reverse_vector");
+        var wrongDimensionBlock = new LirBasicBlock("wrong_dimension_vector");
+        session.ensureVariable("source_vector3", GdFloatVectorType.VECTOR3);
+        session.ensureVariable("source_vector2i", GdIntVectorType.VECTOR2I);
+
+        var reverseException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        reverseBlock,
+                        "source_vector3",
+                        GdFloatVectorType.VECTOR3,
+                        GdIntVectorType.VECTOR3I,
+                        "reverse_vector_boundary"
+                )
+        );
+        var wrongDimensionException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        wrongDimensionBlock,
+                        "source_vector2i",
+                        GdIntVectorType.VECTOR2I,
+                        GdFloatVectorType.VECTOR3,
+                        "wrong_dimension_vector_boundary"
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(reverseException.getMessage().contains("reverse_vector_boundary"), reverseException.getMessage()),
+                () -> assertTrue(reverseException.getMessage().contains("rejects source type 'Vector3'"), reverseException.getMessage()),
+                () -> assertTrue(wrongDimensionException.getMessage().contains("wrong_dimension_vector_boundary"), wrongDimensionException.getMessage()),
+                () -> assertTrue(wrongDimensionException.getMessage().contains("rejects source type 'Vector2i'"), wrongDimensionException.getMessage()),
+                () -> assertTrue(reverseBlock.getNonTerminatorInstructions().isEmpty()),
+                () -> assertTrue(wrongDimensionBlock.getNonTerminatorInstructions().isEmpty())
         );
     }
 
@@ -358,6 +455,14 @@ class FrontendBodyLoweringSessionTest {
     private record SourceFixture(
             @NotNull String fileName,
             @NotNull String source
+    ) {
+    }
+
+    private record IntrinsicCastCase(
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull String intrinsicName
     ) {
     }
 

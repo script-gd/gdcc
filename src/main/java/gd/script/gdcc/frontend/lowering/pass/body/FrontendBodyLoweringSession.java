@@ -31,7 +31,9 @@ import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -696,7 +698,7 @@ public final class FrontendBodyLoweringSession {
                 block.appendNonTerminatorInstruction(new LiteralNullInsn(nullSlotId));
                 yield nullSlotId;
             }
-            case ALLOW_WITH_INTRINSIC_CAST -> materializePrimitiveCast(block, sourceSlot, source, target, use);
+            case ALLOW_WITH_INTRINSIC_CAST -> materializeIntrinsicCast(block, sourceSlot, source, target, use);
             case REJECT -> throw new IllegalStateException(
                     "Frontend boundary '"
                             + use
@@ -709,7 +711,7 @@ public final class FrontendBodyLoweringSession {
         };
     }
 
-    /// Materializes the currently implemented scalar intrinsic-cast ordinary boundary into a backend-owned intrinsic call.
+    /// Materializes an intrinsic-cast ordinary boundary into a backend-owned intrinsic call.
     ///
     /// Usage:
     /// - only call this from `materializeFrontendBoundaryValue(...)` after the shared frontend
@@ -717,38 +719,67 @@ public final class FrontendBodyLoweringSession {
     /// - pass the already-lowered source slot and the published source/target types for that
     ///   boundary
     ///
-    /// Current example:
-    /// - source `int` slot from `return seed` in a `-> float` function becomes a new `float` temp
-    ///   filled by `call_intrinsic "c_int_to_float" $seed`
+    /// Current examples:
+    /// - `int -> float` becomes `call_intrinsic "c_int_to_float" $seed`
+    /// - `Vector3i -> Vector3` becomes `call_intrinsic "c_vector3i_to_vector3" $seed`
     ///
-    /// This helper deliberately fail-fast guards the currently lowered pair so later intrinsic
-    /// casts cannot silently reuse the `c_int_to_float` route.
-    private @NotNull String materializePrimitiveCast(
+    /// This helper deliberately fail-fast guards the lowered pairs so later intrinsic casts cannot
+    /// silently reuse an existing route.
+    private @NotNull String materializeIntrinsicCast(
             @NotNull LirBasicBlock block,
             @NotNull String sourceSlotId,
             @NotNull GdType sourceType,
             @NotNull GdType targetType,
             @NotNull String boundaryUse
     ) {
-        if (!(sourceType instanceof GdIntType) || !(targetType instanceof GdFloatType)) {
-            throw new IllegalStateException(
-                    "Frontend boundary '"
-                            + boundaryUse
-                            + "' requested unsupported intrinsic cast from '"
-                            + sourceType.getTypeName()
-                            + "' to '"
-                            + targetType.getTypeName()
-                            + "'"
-            );
-        }
-        var castedSlotId = nextBoundaryMaterializationSlotId(boundaryUse, "primitive_cast");
-        ensureVariable(castedSlotId, GdFloatType.FLOAT);
+        var intrinsicName = requireIntrinsicCastName(sourceType, targetType, boundaryUse);
+        var castedSlotId = nextBoundaryMaterializationSlotId(boundaryUse, "intrinsic_cast");
+        ensureVariable(castedSlotId, targetType);
         block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
                 castedSlotId,
-                "c_int_to_float",
+                intrinsicName,
                 List.of(new LirInstruction.VariableOperand(sourceSlotId))
         ));
         return castedSlotId;
+    }
+
+    private static @NotNull String requireIntrinsicCastName(
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull String boundaryUse
+    ) {
+        if (sourceType instanceof GdIntType && targetType instanceof GdFloatType) {
+            return "c_int_to_float";
+        }
+        if (
+                sourceType instanceof GdIntVectorType sourceVector
+                        && targetType instanceof GdFloatVectorType targetVector
+                        && sourceVector.getDimension() == targetVector.getDimension()
+        ) {
+            return switch (sourceVector.getDimension()) {
+                case 2 -> "c_vector2i_to_vector2";
+                case 3 -> "c_vector3i_to_vector3";
+                case 4 -> "c_vector4i_to_vector4";
+                default -> throw unsupportedIntrinsicCast(sourceType, targetType, boundaryUse);
+            };
+        }
+        throw unsupportedIntrinsicCast(sourceType, targetType, boundaryUse);
+    }
+
+    private static @NotNull IllegalStateException unsupportedIntrinsicCast(
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType,
+            @NotNull String boundaryUse
+    ) {
+        return new IllegalStateException(
+                "Frontend boundary '"
+                        + boundaryUse
+                        + "' requested unsupported intrinsic cast from '"
+                        + sourceType.getTypeName()
+                        + "' to '"
+                        + targetType.getTypeName()
+                        + "'"
+        );
     }
 
     /// Materializes a subscript key/index before body lowering chooses the final access instruction.
