@@ -537,6 +537,62 @@ class FrontendAssignmentSemanticSupportTest {
     }
 
     @Test
+    void resolveAssignmentExpressionTypeAcceptsOnlySameDimensionVectoriToVectorWidening() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_vector_widening.gd",
+                """
+                        class_name AssignmentSemanticSupportVectorWidening
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            var vector: Vector3 = Vector3(0.0, 0.0, 0.0)
+                            var vector_i: Vector3i = Vector3i(0, 0, 0)
+                            var vector2: Vector2 = Vector2(0.0, 0.0)
+                            vector = Vector3i(1, 2, 3)
+                            vector_i = Vector3(1.0, 2.0, 3.0)
+                            vector2 = Vector3i(1, 2, 3)
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+
+        var wideningResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(0),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var reverseResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(1),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var wrongDimensionResult = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(2),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, wideningResult.expressionType().status());
+        assertEquals(GdVoidType.VOID, wideningResult.expressionType().publishedType());
+        assertTrue(reverseResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, reverseResult.expressionType().status());
+        assertTrue(reverseResult.expressionType().detailReason().contains("Vector3"));
+        assertTrue(reverseResult.expressionType().detailReason().contains("Vector3i"));
+        assertTrue(wrongDimensionResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, wrongDimensionResult.expressionType().status());
+        assertTrue(wrongDimensionResult.expressionType().detailReason().contains("Vector3i"));
+        assertTrue(wrongDimensionResult.expressionType().detailReason().contains("Vector2"));
+    }
+
+    @Test
     void resolveAssignmentExpressionTypeAcceptsStableVariantSourcesForConcreteTargets() throws Exception {
         var analyzed = analyze(
                 "assignment_semantic_support_variant_source.gd",

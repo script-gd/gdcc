@@ -52,6 +52,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "initializer/local/int_to_float_boundaries.gd",
             "initializer/local/object_and_engine_constructor.gd",
             "initializer/local/variant_boundaries.gd",
+            "initializer/local/vectori_to_vector_boundaries.gd",
             "initializer/property/int_to_float_boundaries.gd",
             "initializer/property/object_and_scalar.gd",
             "member/builtin_property_access.gd",

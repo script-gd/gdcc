@@ -645,6 +645,71 @@ class FrontendTypeCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeAcceptsOnlySameDimensionVectoriToVectorInitializerBoundaries() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_vector_initializer_compatibility.gd", """
+                class_name TypeCheckVectorInitializerCompatibility
+                extends RefCounted
+                
+                var accepted_property: Vector3 = Vector3i(1, 2, 3)
+                var rejected_property_reverse: Vector3i = Vector3(1.0, 2.0, 3.0)
+                var rejected_property_dimension: Vector2 = Vector3i(1, 2, 3)
+                
+                func ping() -> void:
+                    var accepted_local: Vector3 = Vector3i(4, 5, 6)
+                    var rejected_local_reverse: Vector3i = Vector3(4.0, 5.0, 6.0)
+                    var rejected_local_dimension: Vector2 = Vector3i(4, 5, 6)
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(preparedInput.unit().ast(), "accepted_property", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "accepted_local", preparedInput).status()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(4, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_vector_initializer_compatibility.gd"))
+                        .equals(diagnostic.sourcePath())
+                        && diagnostic.range() != null
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("rejected_property_reverse")
+                        && diagnostic.message().contains("Vector3")
+                        && diagnostic.message().contains("Vector3i")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("rejected_property_dimension")
+                        && diagnostic.message().contains("Vector3i")
+                        && diagnostic.message().contains("Vector2")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("rejected_local_reverse")
+                        && diagnostic.message().contains("Vector3")
+                        && diagnostic.message().contains("Vector3i")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("rejected_local_dimension")
+                        && diagnostic.message().contains("Vector3i")
+                        && diagnostic.message().contains("Vector2")
+        ));
+    }
+
+    @Test
     void analyzeSkipsInheritedPropertyInitializerBoundaryDiagnosticsOwnedByUpstreamPhases()
             throws Exception {
         var preparedInput = prepareTypeCheckInput(
@@ -714,10 +779,10 @@ class FrontendTypeCheckAnalyzerTest {
                 
                 func accepts_dynamic_variant_source(worker) -> int:
                     return worker.ping().length
-
+                
                 func accepts_primitive_float_boundary() -> float:
                     return 1
-
+                
                 func rejects_bare() -> int:
                     return
                 
@@ -729,7 +794,7 @@ class FrontendTypeCheckAnalyzerTest {
                 
                 func rejects_primitive_narrowing() -> int:
                     return 1.0
-
+                
                 func skips_failed() -> int:
                     return Worker
                 
@@ -826,6 +891,60 @@ class FrontendTypeCheckAnalyzerTest {
                         )
                 ).status()
         );
+    }
+
+    @Test
+    void analyzeAcceptsOnlySameDimensionVectoriToVectorReturnBoundaries() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_vector_return_compatibility.gd", """
+                class_name TypeCheckVectorReturnCompatibility
+                extends RefCounted
+                
+                func accepts_vector_widening(value: Vector3i) -> Vector3:
+                    return value
+                
+                func rejects_reverse(value: Vector3) -> Vector3i:
+                    return value
+                
+                func rejects_wrong_dimension(value: Vector2i) -> Vector3:
+                    return value
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                Objects.requireNonNull(
+                        preparedInput.analysisData().expressionTypes().get(
+                                findNode(findFunction(preparedInput.unit().ast(), "accepts_vector_widening"),
+                                        dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                                        _ -> true).value()
+                        )
+                ).status()
+        );
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(2, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_vector_return_compatibility.gd"))
+                        .equals(diagnostic.sourcePath())
+                        && diagnostic.range() != null
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'Vector3'")
+                        && diagnostic.message().contains("Vector3i")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'Vector2i'")
+                        && diagnostic.message().contains("Vector3")
+        ));
     }
 
     @Test

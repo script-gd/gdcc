@@ -35,6 +35,8 @@ Rules:
 - `unit_test/validation` contains the Godot-side validation scripts.
 - Each compiled script must have a validation script with the same relative path.
 - Resource discovery is recursive, so nested directories are allowed and encouraged for grouping.
+- `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS` must be updated whenever a resource
+  pair is added or removed, so accidental fixture drift is caught before runtime execution.
 
 Example pair:
 

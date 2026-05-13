@@ -129,6 +129,101 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerVectorIToVectorBoundariesBuildConstructorIntrinsicAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping Vector*i-to-Vector integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_vectori_to_vector_boundary_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name VectorIToVectorBoundarySmoke
+                extends Node
+                
+                var assigned: Vector3 = Vector3(0.0, 0.0, 0.0)
+                
+                func take_vector(value: Vector3) -> float:
+                    return value.x + value.y + value.z
+                
+                func return_vector(value: Vector3i) -> Vector3:
+                    return value
+                
+                func local_sum() -> float:
+                    var value: Vector3 = Vector3i(1, 2, 3)
+                    return value.x + value.y + value.z
+                
+                func assignment_sum(value: Vector3i) -> float:
+                    assigned = value
+                    return assigned.x + assigned.y + assigned.z
+                
+                func fixed_arg_sum(value: Vector3i) -> float:
+                    return take_vector(value)
+                """;
+        var module = parseModule(
+                tempDir.resolve("vectori_to_vector_boundary_smoke.gd"),
+                source,
+                Map.of("VectorIToVectorBoundarySmoke", "RuntimeVectorIToVectorBoundarySmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_vectori_to_vector_boundary_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entrySource = Files.readString(projectDir.resolve("entry.c"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(
+                entrySource.contains("godot_new_Vector3_with_Vector3i"),
+                () -> "Vector3i-to-Vector3 ordinary boundary should use the gdextension-lite constructor.\nSource:\n" + entrySource
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "VectorIToVectorBoundaryNode",
+                        "RuntimeVectorIToVectorBoundarySmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(vectorIToVectorBoundaryTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend Vector*i-to-Vector source boundary check passed."),
+                () -> "Godot output should confirm ordinary source-boundary results.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend Vector*i-to-Vector source boundary check failed."),
+                () -> "Ordinary source-boundary runtime check should not fail.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendBuiltinChainedPropertyWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping builtin chained writeback integration test");
@@ -2352,6 +2447,29 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend builtin property abi runtime class check passed.")
                     else:
                         push_error("frontend builtin property abi runtime class check failed.")
+                """;
+    }
+
+    private static @NotNull String vectorIToVectorBoundaryTestScript() {
+        return """
+                extends Node
+                
+                const TARGET_NODE_NAME = "VectorIToVectorBoundaryNode"
+                
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+                
+                    var local_sum = float(target.call("local_sum"))
+                    var assignment_sum = float(target.call("assignment_sum", Vector3i(4, 5, 6)))
+                    var fixed_arg_sum = float(target.call("fixed_arg_sum", Vector3i(7, 8, 9)))
+                    var returned = target.call("return_vector", Vector3i(10, 11, 12))
+                    if is_equal_approx(local_sum, 6.0) and is_equal_approx(assignment_sum, 15.0) and is_equal_approx(fixed_arg_sum, 24.0) and typeof(returned) == TYPE_VECTOR3 and returned == Vector3(10.0, 11.0, 12.0):
+                        print("frontend Vector*i-to-Vector source boundary check passed.")
+                    else:
+                        push_error("frontend Vector*i-to-Vector source boundary check failed.")
                 """;
     }
 

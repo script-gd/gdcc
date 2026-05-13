@@ -21,7 +21,9 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -473,7 +475,7 @@ class FrontendExpressionSemanticSupportTest {
                 """
                         class_name ExpressionSemanticSupportPrimitiveCastCalls
                         extends RefCounted
-
+                        
                         func ping() -> void:
                             take_float(1)
                             pick_exact(1)
@@ -522,6 +524,81 @@ class FrontendExpressionSemanticSupportTest {
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, primitivePreferredCall.expressionType().status()),
                 () -> assertEquals(GdFloatType.FLOAT, primitivePreferredCall.publishedCallOrNull().returnType()),
                 () -> assertEquals(List.of(GdIntType.INT), primitivePreferredCall.publishedCallOrNull().argumentTypes())
+        );
+    }
+
+    @Test
+    void resolveCallExpressionTypeUsesVectorIntrinsicBoundaryWithoutWeakeningOverloadSpecificity()
+            throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_vector_cast_calls.gd",
+                """
+                        class_name ExpressionSemanticSupportVectorCastCalls
+                        extends RefCounted
+                        
+                        func ping() -> void:
+                            take_vector(Vector3i(1, 2, 3))
+                            pick_exact(Vector3i(1, 2, 3))
+                            pick_vector(Vector3i(1, 2, 3))
+                            reject_reverse(Vector3(1.0, 2.0, 3.0))
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var takeVectorCall = findBareCall(pingFunction, "take_vector");
+        var pickExactCall = findBareCall(pingFunction, "pick_exact");
+        var pickVectorCall = findBareCall(pingFunction, "pick_vector");
+        var rejectReverseCall = findBareCall(pingFunction, "reject_reverse");
+        publishSyntheticBareCallOverloads(
+                analyzed,
+                takeVectorCall,
+                GdIntVectorType.VECTOR3I,
+                newCallable("take_vector", GdFloatVectorType.VECTOR3, GdFloatVectorType.VECTOR3)
+        );
+        publishSyntheticBareCallOverloads(
+                analyzed,
+                pickExactCall,
+                GdIntVectorType.VECTOR3I,
+                newCallable("pick_exact", GdIntVectorType.VECTOR3I, GdIntVectorType.VECTOR3I),
+                newCallable("pick_exact", GdFloatVectorType.VECTOR3, GdFloatVectorType.VECTOR3)
+        );
+        publishSyntheticBareCallOverloads(
+                analyzed,
+                pickVectorCall,
+                GdIntVectorType.VECTOR3I,
+                newCallable("pick_vector", GdFloatVectorType.VECTOR3, GdFloatVectorType.VECTOR3),
+                newCallable("pick_vector", GdVariantType.VARIANT, GdVariantType.VARIANT)
+        );
+        publishSyntheticBareCallOverloads(
+                analyzed,
+                rejectReverseCall,
+                GdFloatVectorType.VECTOR3,
+                newCallable("reject_reverse", GdIntVectorType.VECTOR3I, GdIntVectorType.VECTOR3I)
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var vectorCastCall = support.resolveCallExpressionType(takeVectorCall, publishedResolver, true, false);
+        var exactPreferredCall = support.resolveCallExpressionType(pickExactCall, publishedResolver, true, false);
+        var vectorPreferredCall = support.resolveCallExpressionType(pickVectorCall, publishedResolver, true, false);
+        var reverseRejectedCall = support.resolveCallExpressionType(rejectReverseCall, publishedResolver, true, false);
+
+        assertAll(
+                () -> assertTrue(vectorCastCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, vectorCastCall.expressionType().status()),
+                () -> assertEquals(GdFloatVectorType.VECTOR3, vectorCastCall.publishedCallOrNull().returnType()),
+                () -> assertEquals(List.of(GdIntVectorType.VECTOR3I), vectorCastCall.publishedCallOrNull().argumentTypes()),
+                () -> assertTrue(exactPreferredCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, exactPreferredCall.expressionType().status()),
+                () -> assertEquals(GdIntVectorType.VECTOR3I, exactPreferredCall.publishedCallOrNull().returnType()),
+                () -> assertEquals(List.of(GdIntVectorType.VECTOR3I), exactPreferredCall.publishedCallOrNull().argumentTypes()),
+                () -> assertTrue(vectorPreferredCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, vectorPreferredCall.expressionType().status()),
+                () -> assertEquals(GdFloatVectorType.VECTOR3, vectorPreferredCall.publishedCallOrNull().returnType()),
+                () -> assertEquals(List.of(GdIntVectorType.VECTOR3I), vectorPreferredCall.publishedCallOrNull().argumentTypes()),
+                () -> assertTrue(reverseRejectedCall.rootOwnsOutcome()),
+                () -> assertEquals(FrontendExpressionTypeStatus.FAILED, reverseRejectedCall.expressionType().status()),
+                () -> assertTrue(reverseRejectedCall.expressionType().detailReason().contains("No applicable overload"))
         );
     }
 
@@ -1202,6 +1279,15 @@ class FrontendExpressionSemanticSupportTest {
             @NotNull CallExpression call,
             @NotNull LirFunctionDef... overloads
     ) {
+        publishSyntheticBareCallOverloads(analyzed, call, GdIntType.INT, overloads);
+    }
+
+    private static void publishSyntheticBareCallOverloads(
+            @NotNull AnalyzedScript analyzed,
+            @NotNull CallExpression call,
+            @NotNull GdType argumentType,
+            @NotNull LirFunctionDef... overloads
+    ) {
         var bareCallee = assertInstanceOf(IdentifierExpression.class, call.callee());
         var owner = new LirClassDef("Synthetic" + bareCallee.name(), "RefCounted");
         var scope = new ClassScope(analyzed.classRegistry(), analyzed.classRegistry(), owner);
@@ -1215,8 +1301,17 @@ class FrontendExpressionSemanticSupportTest {
         );
         analyzed.analysisData().expressionTypes().put(bareCallee, FrontendExpressionType.resolved(new GdCallableType()));
         for (var argument : call.arguments()) {
-            analyzed.analysisData().expressionTypes().put(argument, FrontendExpressionType.resolved(GdIntType.INT));
+            analyzed.analysisData().expressionTypes().put(argument, FrontendExpressionType.resolved(argumentType));
         }
+    }
+
+    private static @NotNull CallExpression findBareCall(@NotNull Node root, @NotNull String calleeName) {
+        return findNode(
+                root,
+                CallExpression.class,
+                call -> call.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals(calleeName)
+        );
     }
 
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String name) {

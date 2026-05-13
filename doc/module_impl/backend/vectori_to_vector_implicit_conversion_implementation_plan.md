@@ -477,6 +477,21 @@ helper 内部逻辑固定为：
 
 ### 步骤 8：补齐 frontend sema 与 overload 测试
 
+执行状态（2026-05-13）：已完成。
+
+- `FrontendVariantBoundaryCompatibilityTest` 已覆盖 shared decision 的正向、反向、错维、非法维度与
+  `Variant` pack/unpack 非回归。
+- `FrontendAssignmentSemanticSupportTest` 已补齐 assignment 真实消费点：同维
+  `Vector3i -> Vector3` 接受，`Vector3 -> Vector3i` 与 `Vector3i -> Vector2` 拒绝。
+- `FrontendTypeCheckAnalyzerTest` 已补齐 local initializer、class property initializer 与 return
+  boundary 的正反测试，确保同维正向接受，反向和错维仍报 `sema.type_check`。
+- `FrontendExpressionSemanticSupportTest` 已补齐 fixed bare-call argument 与 overload specificity：
+  单一 `Vector3` 参数接收 `Vector3i`，`Vector3i` exact 优先于 `Vector3` widening，
+  `Vector3` widening 优先于 `Variant` pack，且 `Vector3` 不反向匹配 `Vector3i` 参数。
+- `ScopeMethodResolverTest` 既有 shared resolver vector specificity 覆盖继续保留。
+- 已运行
+  `script/run-gradle-targeted-tests.sh --tests FrontendAssignmentSemanticSupportTest,FrontendTypeCheckAnalyzerTest,FrontendExpressionSemanticSupportTest,ScopeMethodResolverTest`。
+
 修改测试：
 
 - `FrontendVariantBoundaryCompatibilityTest`
@@ -499,6 +514,23 @@ helper 内部逻辑固定为：
 - 只有 `take(Vector3i)` 时，`take(Vector3(...))` 不因本次改动反向匹配。
 
 ### 步骤 9：补齐 lowering 与 C 集成测试
+
+执行状态（2026-05-13）：已完成。
+
+- `FrontendBodyLoweringSessionTest` 与 `FrontendLoweringBodyInsnPassTest` 既有 vector intrinsic
+  lowering 覆盖已复跑，继续锚定 local initializer、assignment、fixed call argument、return 与
+  dictionary subscript key/value 都生成 `c_vector3i_to_vector3`。
+- 新增 `initializer/local/vectori_to_vector_boundaries.gd` test-suite runtime anchor，端到端覆盖普通
+  source-level local initializer、assignment、fixed argument 和 return boundary 的 Godot 可观察结果。
+- `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS` 已登记新增 resource pair；
+  `doc/test_suite.md` 已补充 ordinary boundary 与 inbound wrapper anchor 的放置约定。
+- `FrontendLoweringToCProjectBuilderIntegrationTest` 已新增 build/runtime integration，断言 lowering 后
+  C 代码包含 `godot_new_Vector3_with_Vector3i(...)` constructor conversion，并在 Godot runtime
+  观察到正确结果。
+- 已运行：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest.lowerVectorIToVectorBoundariesBuildConstructorIntrinsicAndRunInGodot,GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts,GdScriptUnitTestCompileRunnerTest.compilesAndValidatesInitializerScripts`
+  - `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendLoweringBodyInsnPassTest,CCodegenTest,GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`
+- 已通过 IntelliJ build 检查本步骤修改过的 Java/test 文件。
 
 修改测试：
 
