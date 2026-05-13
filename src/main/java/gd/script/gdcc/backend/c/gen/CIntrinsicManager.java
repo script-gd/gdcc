@@ -1,6 +1,7 @@
 package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.c.gen.intrinsic.CIntToFloatIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CVectorIToVectorIntrinsic;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -15,7 +16,15 @@ public final class CIntrinsicManager {
 
     public CIntrinsicManager() {
         var intToFloat = new CIntToFloatIntrinsic();
-        this.functions = Map.of(intToFloat.name(), intToFloat);
+        var vector2iToVector2 = CVectorIToVectorIntrinsic.vector2();
+        var vector3iToVector3 = CVectorIToVectorIntrinsic.vector3();
+        var vector4iToVector4 = CVectorIToVectorIntrinsic.vector4();
+        this.functions = Map.of(
+                intToFloat.name(), intToFloat,
+                vector2iToVector2.name(), vector2iToVector2,
+                vector3iToVector3.name(), vector3iToVector3,
+                vector4iToVector4.name(), vector4iToVector4
+        );
     }
 
     public @Nullable CIntrinsicFunction find(@NotNull String name) {

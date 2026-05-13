@@ -3,9 +3,11 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.backend.c.gen.intrinsic.CIntToFloatIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CVectorIToVectorIntrinsic;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -14,7 +16,9 @@ import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
@@ -22,6 +26,7 @@ import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +52,25 @@ class CallIntrinsicInsnGenTest {
         );
 
         assertTrue(body.contains("$f = (godot_float)$i;"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_INTRINSIC should dispatch vector widening through CCodegen registry")
+    void callIntrinsicShouldDispatchVectorWideningThroughCodegenRegistry() {
+        var body = generateBody(
+                new CallIntrinsicInsn(
+                        "v",
+                        CVectorIToVectorIntrinsic.VECTOR3I_TO_VECTOR3_NAME,
+                        List.of(new LirInstruction.VariableOperand("vi"))
+                ),
+                List.of(
+                        new VariableSpec("vi", GdIntVectorType.VECTOR3I, false),
+                        new VariableSpec("v", GdFloatVectorType.VECTOR3, false)
+                )
+        );
+
+        assertTrue(body.contains("$v = godot_new_Vector3_with_Vector3i(&$vi);"), body);
+        assertTrue(body.contains("godot_new_Vector3_with_Vector3i"), body);
     }
 
     @Test
@@ -84,6 +108,25 @@ class CallIntrinsicInsnGenTest {
 
         assertMessageContains(ex, "Argument #1 of intrinsic '" + CIntToFloatIntrinsic.NAME +
                 "' must be a variable operand");
+    }
+
+    @Test
+    @DisplayName("CALL_INTRINSIC should reject non-variable operands for vector intrinsics")
+    void callIntrinsicShouldRejectNonVariableOperandsForVectorIntrinsics() {
+        var ex = assertInvalidInsn(
+                new CallIntrinsicInsn(
+                        "v",
+                        CVectorIToVectorIntrinsic.VECTOR3I_TO_VECTOR3_NAME,
+                        List.of(new LirInstruction.StringOperand("not_a_var"))
+                ),
+                List.of(
+                        new VariableSpec("vi", GdIntVectorType.VECTOR3I, false),
+                        new VariableSpec("v", GdFloatVectorType.VECTOR3, false)
+                )
+        );
+
+        assertMessageContains(ex, "Argument #1 of intrinsic '" +
+                CVectorIToVectorIntrinsic.VECTOR3I_TO_VECTOR3_NAME + "' must be a variable operand");
     }
 
     @Test
@@ -255,8 +298,12 @@ class CallIntrinsicInsnGenTest {
 
     private static @NotNull CCodegen newCodegen(@NotNull LirModule module,
                                                 @NotNull List<LirClassDef> gdccClasses) {
-        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(),
-                List.of(), List.of(), List.of());
+        ExtensionAPI api;
+        try {
+            api = ExtensionApiLoader.loadDefault();
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to load default extension API for call_intrinsic tests", ex);
+        }
         var classRegistry = new ClassRegistry(api);
         for (var gdccClass : gdccClasses) {
             classRegistry.addGdccClass(gdccClass);

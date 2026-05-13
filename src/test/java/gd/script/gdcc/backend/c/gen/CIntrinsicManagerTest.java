@@ -3,6 +3,7 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.backend.c.gen.intrinsic.CIntToFloatIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CVectorIToVectorIntrinsic;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.lir.LirClassDef;
@@ -24,6 +25,12 @@ class CIntrinsicManagerTest {
         var manager = new CIntrinsicManager();
 
         assertInstanceOf(CIntToFloatIntrinsic.class, manager.find(CIntToFloatIntrinsic.NAME));
+        assertInstanceOf(CVectorIToVectorIntrinsic.class,
+                manager.find(CVectorIToVectorIntrinsic.VECTOR2I_TO_VECTOR2_NAME));
+        assertInstanceOf(CVectorIToVectorIntrinsic.class,
+                manager.find(CVectorIToVectorIntrinsic.VECTOR3I_TO_VECTOR3_NAME));
+        assertInstanceOf(CVectorIToVectorIntrinsic.class,
+                manager.find(CVectorIToVectorIntrinsic.VECTOR4I_TO_VECTOR4_NAME));
         assertNull(manager.find("unknown"));
     }
 
@@ -41,5 +48,7 @@ class CIntrinsicManagerTest {
         var helper = new CGenHelper(new CodegenContext(projectInfo, classRegistry), List.of(workerClass));
 
         assertInstanceOf(CIntToFloatIntrinsic.class, helper.intrinsicManager().find(CIntToFloatIntrinsic.NAME));
+        assertInstanceOf(CVectorIToVectorIntrinsic.class,
+                helper.intrinsicManager().find(CVectorIToVectorIntrinsic.VECTOR3I_TO_VECTOR3_NAME));
     }
 }

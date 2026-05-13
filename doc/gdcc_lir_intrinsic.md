@@ -92,7 +92,7 @@ $target = (godot_float)$source;
 
 ### `c_vector2i_to_vector2`
 
-状态：Planned
+状态：Implemented
 
 形态：
 
@@ -113,13 +113,13 @@ C backend 语义：
 $target = godot_new_Vector2_with_Vector2i(&$source);
 ```
 
-计划事实源：
+长期事实源：
 
 - `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
 
 ### `c_vector3i_to_vector3`
 
-状态：Planned
+状态：Implemented
 
 形态：
 
@@ -140,13 +140,13 @@ C backend 语义：
 $target = godot_new_Vector3_with_Vector3i(&$source);
 ```
 
-计划事实源：
+长期事实源：
 
 - `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
 
 ### `c_vector4i_to_vector4`
 
-状态：Planned
+状态：Implemented
 
 形态：
 
@@ -167,7 +167,7 @@ C backend 语义：
 $target = godot_new_Vector4_with_Vector4i(&$source);
 ```
 
-计划事实源：
+长期事实源：
 
 - `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
 

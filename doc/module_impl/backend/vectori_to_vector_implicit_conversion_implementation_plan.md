@@ -383,6 +383,23 @@ helper 内部逻辑固定为：
 
 ### 步骤 6：实现 C backend intrinsic
 
+执行状态（2026-05-13）：已完成。
+
+- 已新增 `CVectorIToVectorIntrinsic`，用固定 spec 承接三个 backend-owned intrinsic：
+  `c_vector2i_to_vector2`、`c_vector3i_to_vector3`、`c_vector4i_to_vector4`。
+- `CIntrinsicManager` 已注册三个 vector intrinsic；unknown intrinsic 仍由 registry miss fail-fast。
+- intrinsic 已校验 result 存在、result 非 `ref`、result/argument 精确类型与维度、以及 exactly one
+  argument。
+- codegen 已通过 `CBuiltinBuilder.validateConstructor(...)` 与
+  `renderConstructorFunctionNameByTypes(...)` 使用 gdextension-lite constructor，并通过
+  `CBodyBuilder.callAssign(...)` 写入目标 slot；未使用 `valueOfCastedVar(...)`。
+- 已新增 `CVectorIToVectorIntrinsicTest`，并扩展 `CIntrinsicManagerTest` 与
+  `CallIntrinsicInsnGenTest`，覆盖 constructor 输出、non-ref source 取地址、ref source 直传、
+  registry 注册、非变量 operand、反向/错维度/错类型/错 arity 等正反行为。
+- 已运行
+  `script/run-gradle-targeted-tests.sh --tests CallIntrinsicInsnGenTest,CIntrinsicManagerTest,CVectorIToVectorIntrinsicTest`。
+- 已通过 IntelliJ build 检查本步骤修改过的 Java/test 文件。
+
 修改：
 
 - `src/main/java/gd/script/gdcc/backend/c/gen/intrinsic/CVectorIToVectorIntrinsic.java`
