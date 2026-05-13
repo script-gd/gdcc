@@ -388,7 +388,8 @@ $<result_id>? = call_static_method "<class_name>" "<method_name>" $<arg1_id> $<a
 ```
 
 #### call_intrinsic
-Calls an intrinsic function by name.
+Calls a backend-owned intrinsic function by name. The full surface, registry contract, and
+intrinsic catalog are maintained in [GDCC LIR Intrinsic](gdcc_lir_intrinsic.md).
 ```
 $<result_id>? = call_intrinsic "<intrinsic_name>" $<arg1_id> $<arg2_id> ...
 ```

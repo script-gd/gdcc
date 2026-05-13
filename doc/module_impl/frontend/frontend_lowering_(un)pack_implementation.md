@@ -215,7 +215,8 @@ stop-node lowering 当前必须按当前函数 return slot type 走同一套 ord
 - `var x: float = 1`、assignment、return、call fixed argument、vararg 与 subscript key/index 都必须消费 shared helper 的 `ALLOW_WITH_PRIMITIVE_CAST` decision
 - lowering 不得在各 consumer 中硬编码 `int -> float`；唯一物化入口仍是 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
 - `float(1)` 继续属于 constructor route，不能反向替代 ordinary boundary materialization
-- `c_int_to_float` 是 C backend-owned intrinsic 名称；其它 backend 若未来出现，必须显式决定复用该名称还是映射到自己的 backend intrinsic
+- `c_int_to_float` 是 C backend-owned intrinsic 名称；通用 LIR intrinsic surface 与 catalog 由
+  `doc/gdcc_lir_intrinsic.md` 维护
 
 ---
 

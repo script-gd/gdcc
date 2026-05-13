@@ -20,6 +20,7 @@
   - `doc/module_impl/backend/variant_abi_contract.md`
   - `doc/gdcc_type_system.md`
   - `doc/gdcc_low_ir.md`
+  - `doc/gdcc_lir_intrinsic.md`
   - `doc/gdcc_c_backend.md`
   - `doc/test_suite.md`
 
