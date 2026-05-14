@@ -149,6 +149,10 @@ The Java-side success contract has three layers:
 2. Combined Godot output must contain the injected `UNIT_TEST_PASS::<resource path>` marker.
 3. Any `# gdcc-test:` output directives are checked after the pass marker contract; directives do not replace the marker.
 
+After `Test stop.` is observed, the Java runner returns without waiting for full Godot
+process exit. A background virtual thread still gives the process the configured
+force-kill delay, one second by default, before forcing termination.
+
 `GdScriptUnitTestCompileRunner` uses the default runner options unless a test passes explicit `GodotGdextensionTestRunner.RunOptions`: headless mode, `--quit-after 10`, and no resource-level quit-frame directive. Tests that need a larger runtime budget should call `GodotGdextensionTestRunner.defaultRunOptions(...).withQuitAfterFrames(...)` from Java instead of adding fixture-side directives.
 
 ## Runtime and Build Prerequisites
