@@ -16,8 +16,17 @@ public final class ZigUtil {
     private ZigUtil() {
     }
 
-    @SuppressWarnings("DuplicateExpressions")
+    private static Path ZigPath = null;
+
     public static @Nullable Path findZig() {
+        if (ZigPath == null) {
+            ZigPath = findZigInternal();
+        }
+        return ZigPath;
+    }
+
+    @SuppressWarnings("DuplicateExpressions")
+    public static @Nullable Path findZigInternal() {
         var os = System.getProperty("os.name", "").toLowerCase(Locale.ENGLISH);
         var exeName = os.contains("win") ? "zig.exe" : "zig";
 
