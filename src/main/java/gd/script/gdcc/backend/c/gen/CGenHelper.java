@@ -560,6 +560,8 @@ public final class CGenHelper {
     ///
     /// This is deliberately separate from `renderUnpackFunctionName(...)` because only
     /// Godot-to-GDExtension method calls get narrow inbound widening for selected typed params.
+    /// The generated wrapper is responsible for running the runtime gate before evaluating this
+    /// expression; wrapper-only vector helpers are materializers, not validators.
     ///
     /// @param typeExpr cached runtime type expression from the preceding wrapper gate. When this is null, the
     ///                 generated expression repeats `godot_variant_get_type(...)` against `variantPtrExpr`.

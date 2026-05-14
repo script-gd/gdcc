@@ -5,6 +5,8 @@
 
 /// Wrapper-only inbound constructors for call_func arguments whose Variant payload may use
 /// a narrower Godot runtime type than the published method metadata.
+/// The generated wrapper must run its runtime type gate first; these helpers materialize the
+/// already-accepted payload and do not set r_error themselves.
 static inline godot_Vector2 gdcc_new_Vector2_from_call_arg_variant(
     GDExtensionVariantPtr value,
     GDExtensionVariantType type

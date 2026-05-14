@@ -1,7 +1,7 @@
 # GDCC LIR Intrinsic
 
 > 本文档是 LIR `call_intrinsic` surface 与 backend-owned intrinsic catalog 的事实源。
-> 单个 feature 的实施文档可以保留该 feature 的上下文、语义边界与测试计划，但通用
+> 单个 feature 的实现文档可以保留该 feature 的上下文、语义边界与维护规则，但通用
 > intrinsic 形态、注册规则和已知 intrinsic 清单应维护在本文档中。
 
 ## 文档状态
@@ -10,12 +10,11 @@
 - 范围：
   - LIR `call_intrinsic` 指令文本形态
   - backend-owned intrinsic registry 合同
-  - 当前已实现和已规划的 intrinsic catalog
+  - 当前已实现 intrinsic catalog
 - 关联文档：
   - `doc/gdcc_low_ir.md`
   - `doc/gdcc_c_backend.md`
-  - `doc/module_impl/backend/int_to_float_implicit_conversion_implementation.md`
-  - `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
+  - `doc/module_impl/backend/implicit_conversion_implementation.md`
   - `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
 
 ## LIR Surface
@@ -88,7 +87,7 @@ $target = (godot_float)$source;
 
 长期事实源：
 
-- `doc/module_impl/backend/int_to_float_implicit_conversion_implementation.md`
+- `doc/module_impl/backend/implicit_conversion_implementation.md`
 
 ### `c_vector2i_to_vector2`
 
@@ -115,7 +114,7 @@ $target = godot_new_Vector2_with_Vector2i(&$source);
 
 长期事实源：
 
-- `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
+- `doc/module_impl/backend/implicit_conversion_implementation.md`
 
 ### `c_vector3i_to_vector3`
 
@@ -142,7 +141,7 @@ $target = godot_new_Vector3_with_Vector3i(&$source);
 
 长期事实源：
 
-- `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
+- `doc/module_impl/backend/implicit_conversion_implementation.md`
 
 ### `c_vector4i_to_vector4`
 
@@ -169,14 +168,14 @@ $target = godot_new_Vector4_with_Vector4i(&$source);
 
 长期事实源：
 
-- `doc/module_impl/backend/vectori_to_vector_implicit_conversion_implementation_plan.md`
+- `doc/module_impl/backend/implicit_conversion_implementation.md`
 
 ## 新增 Intrinsic Checklist
 
 新增 intrinsic 时按以下顺序维护：
 
 1. 更新本文档的 catalog，记录 intrinsic 名称、状态、LIR 形态、result / argument 合同和 C backend 语义。
-2. 在 feature-specific 文档中只保留该 feature 的语义上下文、实施步骤和测试计划，并链接回本文档。
+2. 在 feature-specific 文档中只保留该 feature 的当前语义边界、实现合同、测试锚点与维护规则，并链接回本文档。
 3. 更新 lowering materialization，确保 accepted non-direct boundary 显式生成对应 `CallIntrinsicInsn`。
 4. 更新 `CIntrinsicManager` registry。
 5. 增加 parser / serializer focused tests，确认 textual shape 稳定。

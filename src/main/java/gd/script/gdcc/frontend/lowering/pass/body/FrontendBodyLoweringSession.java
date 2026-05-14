@@ -719,7 +719,7 @@ public final class FrontendBodyLoweringSession {
     /// - pass the already-lowered source slot and the published source/target types for that
     ///   boundary
     ///
-    /// Current examples:
+    /// Supported routes:
     /// - `int -> float` becomes `call_intrinsic "c_int_to_float" $seed`
     /// - `Vector3i -> Vector3` becomes `call_intrinsic "c_vector3i_to_vector3" $seed`
     ///
