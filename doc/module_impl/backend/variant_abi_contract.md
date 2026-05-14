@@ -93,9 +93,13 @@
 
 - 非 `Variant` 参数：
   - generated `call_func` wrapper 默认必须继续做精确 `GDExtensionVariantType` 检查
-  - 唯一例外是 `float` 参数额外接受 `Variant(INT)`，并在 wrapper-local materialization 中显式转成 `godot_float`
-  - `r_error->expected` 仍保持 `GDEXTENSION_VARIANT_TYPE_FLOAT`，方法参数 metadata 也仍发布 `FLOAT`
-  - `float -> int`、`bool -> float`、`String -> float` 等其它 conversion 仍不得通过这条 gate
+  - 窄兼容例外只允许当前 frontend ordinary-boundary matrix 已拥有的 inbound widening：
+    - `float` 参数额外接受 `Variant(INT)`，并在 wrapper-local materialization 中显式转成 `godot_float`
+    - `Vector2` / `Vector3` / `Vector4` 参数额外接受同维 `Variant(Vector2i)` / `Variant(Vector3i)` / `Variant(Vector4i)`
+  - `r_error->expected` 仍保持目标参数类型，方法参数 metadata 也仍发布目标参数类型：
+    - `float` 仍发布 `GDEXTENSION_VARIANT_TYPE_FLOAT`
+    - `Vector*` 仍发布对应 `GDEXTENSION_VARIANT_TYPE_VECTOR*`
+  - `float -> int`、`Vector* -> Vector*i`、错维 `Vector*i -> Vector*`、`Rect2i -> Rect2`、`bool -> float`、`String -> float` 等其它 conversion 仍不得通过这条 gate
 - `Variant` 参数：
   - 不能执行 `actual_type == NIL` 的精确比较
   - 必须允许任意 Godot `Variant` payload 进入 wrapper
@@ -103,6 +107,11 @@
 - `ptrcall` ABI 不参与这条 runtime gate 合同：
   - 它继续保持当前的物理 C ABI 形状
   - 不因为 ordinary `Variant` outward ABI 调整而改变
+- wrapper-only inbound materialization helper 不是独立校验边界：
+  - `gdcc_new_Vector2_from_call_arg_variant(...)`、`gdcc_new_Vector3_from_call_arg_variant(...)`、`gdcc_new_Vector4_from_call_arg_variant(...)` 只根据已经通过 gate 的 cached runtime type 选择 exact `Vector*` unpack 或同维 `Vector*i -> Vector*` constructor materialization
+  - helper 本身不重新验证 runtime type，也不负责设置 `r_error`
+  - generated `call_func` 模板必须先计算并缓存 `argN_type`，执行 `renderCallWrapperVariantTypeGate(...)` 失败分支和 typed-container preflight，之后才允许调用 `renderCallWrapperUnpackExpr(...)` 物化 wrapper-owned 参数局部
+  - 后续新增 wrapper-only helper 时也必须遵守同一顺序：runtime gate 是唯一错误边界，helper 只能是 gate 之后的 materializer
 
 ### 4. `call_func` wrapper 局部 cleanup 合同
 
@@ -139,9 +148,12 @@
 - outward ABI 相关逻辑必须继续收口在少数固定触点：
   - `CGenHelper.renderBoundMetadata(...)`
   - `CGenHelper.renderPropertyMetadata(...)`
+  - `CGenHelper.renderCallWrapperVariantTypeGate(...)`
+  - `CGenHelper.renderCallWrapperUnpackExpr(...)`
   - `CGenHelper.renderCallWrapperDestroyStmt(...)`
   - `gdcc_make_property_full(...)`
   - `gdcc_bind_property_full(...)`
+  - `include_451/gdcc/gdcc_intrinsic.h` 中的 wrapper-only inbound materialization helper
   - `template_451/entry.h.ftl`
   - `template_451/entry.c.ftl`
 - 不允许在新的 generator/template 中再次散落硬编码分支去“顺手修 `Variant` ABI”
