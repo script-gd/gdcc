@@ -19,17 +19,21 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.util.ResourceExtractor;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
+import static java.time.Duration.ofNanos;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -85,22 +89,43 @@ public final class GdScriptUnitTestCompileRunner {
         Objects.requireNonNull(scriptResourcePath);
         Objects.requireNonNull(runOptions);
 
+        var totalStart = System.nanoTime();
+        var sourceResourceReadStart = System.nanoTime();
         var source = readRequiredResourceText(SCRIPT_RESOURCE_ROOT + "/" + scriptResourcePath);
+        var sourceResourceReadDuration = elapsedSince(sourceResourceReadStart);
+
+        var validationResourceReadStart = System.nanoTime();
+        var validationTemplate = readRequiredResourceText(VALIDATION_RESOURCE_ROOT + "/" + scriptResourcePath);
+        var validationResourceReadDuration = elapsedSince(validationResourceReadStart);
+
+        var validationPrepareStart = System.nanoTime();
         var validation = prepareValidation(
                 scriptResourcePath,
-                readRequiredResourceText(VALIDATION_RESOURCE_ROOT + "/" + scriptResourcePath)
+                validationTemplate
         );
+        var validationPrepareDuration = elapsedSince(validationPrepareStart);
+
         var caseName = sanitizeCaseName(stripExtension(scriptResourcePath));
         var sourcePath = WORK_ROOT.resolve("sources").resolve(scriptResourcePath);
         var projectDir = WORK_ROOT.resolve("build").resolve(caseName);
+        var workDirectoryPrepareStart = System.nanoTime();
         Files.createDirectories(projectDir);
+        var workDirectoryPrepareDuration = elapsedSince(workDirectoryPrepareStart);
 
+        var frontendLoweringStart = System.nanoTime();
         var lowered = lowerModule(sourcePath, source, caseName);
+        var frontendLoweringDuration = elapsedSince(frontendLoweringStart);
+
+        var runtimeClassValidationStart = System.nanoTime();
         var runtimeClassName = requireRuntimeClassName(lowered, scriptResourcePath);
-        var buildResult = buildNativeLibrary(lowered.module(), lowered.classRegistry(), projectDir, caseName);
+        var runtimeClassValidationDuration = elapsedSince(runtimeClassValidationStart);
+
+        var nativeBuild = buildNativeLibrary(lowered.module(), lowered.classRegistry(), projectDir, caseName);
+        var buildResult = nativeBuild.result();
         assertTrue(buildResult.success(), () -> "Native build failed for " + scriptResourcePath + ".\nBuild log:\n" + buildResult.buildLog());
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        var projectPrepareStart = System.nanoTime();
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
                 buildResult.artifacts(),
                 List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
@@ -111,8 +136,10 @@ public final class GdScriptUnitTestCompileRunner {
                 )),
                 new GodotGdextensionTestRunner.TestScriptSpec(validation.script())
         ));
+        var projectPrepareDuration = elapsedSince(projectPrepareStart);
 
         var runResult = runner.run(runOptions);
+        var outputValidationStart = System.nanoTime();
         var combinedOutput = runResult.combinedOutput();
         var passMarker = expectedPassMarker(scriptResourcePath);
         assertTrue(
@@ -124,8 +151,22 @@ public final class GdScriptUnitTestCompileRunner {
                 () -> "Validation script for " + scriptResourcePath + " did not report success marker \"" + passMarker + "\".\nOutput:\n" + combinedOutput
         );
         validation.expectations().assertSatisfied(scriptResourcePath, combinedOutput);
+        var outputValidationDuration = elapsedSince(outputValidationStart);
 
-        return new CaseResult(scriptResourcePath, runtimeClassName, buildResult.artifacts(), runResult);
+        var timing = new CaseResult.Timing(
+                sourceResourceReadDuration,
+                validationResourceReadDuration,
+                validationPrepareDuration,
+                workDirectoryPrepareDuration,
+                frontendLoweringDuration,
+                runtimeClassValidationDuration,
+                nativeBuild.timing(),
+                projectPrepareDuration,
+                runResult.timing(),
+                outputValidationDuration,
+                elapsedSince(totalStart)
+        );
+        return new CaseResult(scriptResourcePath, runtimeClassName, buildResult.artifacts(), runResult, timing);
     }
 
     private @NotNull LoweredCase lowerModule(@NotNull Path sourcePath, @NotNull String source, @NotNull String moduleName) throws IOException {
@@ -160,22 +201,58 @@ public final class GdScriptUnitTestCompileRunner {
         return runtimeRootClass.getName();
     }
 
-    private @NotNull CBuildResult buildNativeLibrary(
+    private @NotNull NativeBuild buildNativeLibrary(
             @NotNull LirModule lowered,
             @NotNull ClassRegistry classRegistry,
             @NotNull Path projectDir,
             @NotNull String caseName
     ) throws IOException {
+        var totalStart = System.nanoTime();
+        var targetPlatformStart = System.nanoTime();
+        var targetPlatform = TargetPlatform.getNativePlatform();
+        var targetPlatformDuration = elapsedSince(targetPlatformStart);
+
+        var projectInfoStart = System.nanoTime();
         var projectInfo = new CProjectInfo(
                 caseName,
                 GodotVersion.V451,
                 projectDir,
                 COptimizationLevel.DEBUG,
-                TargetPlatform.getNativePlatform()
+                targetPlatform
         );
+        var projectInfoDuration = elapsedSince(projectInfoStart);
+
+        var codegenCreateStart = System.nanoTime();
         var codegen = new CCodegen();
-        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
-        return new CProjectBuilder().buildProject(projectInfo, codegen);
+        var codegenCreateDuration = elapsedSince(codegenCreateStart);
+
+        var contextCreateStart = System.nanoTime();
+        var context = new CodegenContext(projectInfo, classRegistry);
+        var contextCreateDuration = elapsedSince(contextCreateStart);
+
+        var codegenPrepareStart = System.nanoTime();
+        codegen.prepare(context, lowered);
+        var codegenPrepareDuration = elapsedSince(codegenPrepareStart);
+
+        var builderCreateStart = System.nanoTime();
+        var builder = new CProjectBuilder();
+        var builderCreateDuration = elapsedSince(builderCreateStart);
+
+        var projectBuildStart = System.nanoTime();
+        var result = builder.buildProject(projectInfo, codegen);
+        var projectBuildDuration = elapsedSince(projectBuildStart);
+        var timing = new CaseResult.NativeBuildTiming(
+                targetPlatformDuration,
+                projectInfoDuration,
+                codegenCreateDuration,
+                contextCreateDuration,
+                codegenPrepareDuration,
+                builderCreateDuration,
+                projectBuildDuration,
+                result.timing(),
+                elapsedSince(totalStart)
+        );
+        return new NativeBuild(result, timing);
     }
 
     private @NotNull String readRequiredResourceText(@NotNull String resourcePath) throws IOException {
@@ -220,21 +297,168 @@ public final class GdScriptUnitTestCompileRunner {
         return value;
     }
 
+    private static @NotNull Duration elapsedSince(long startNanos) {
+        return ofNanos(System.nanoTime() - startNanos);
+    }
+
+    private static @NotNull String formatNullableDuration(@Nullable Duration duration) {
+        return duration == null ? "n/a" : formatDuration(duration);
+    }
+
+    private static @NotNull String formatDuration(@NotNull Duration duration) {
+        return String.format(Locale.ROOT, "%.3fms", duration.toNanos() / 1_000_000.0);
+    }
+
     public record CaseResult(
             @NotNull String scriptResourcePath,
             @NotNull String runtimeClassName,
             @NotNull List<Path> artifacts,
-            @NotNull GodotGdextensionTestRunner.GodotRunResult runResult
+            @NotNull GodotGdextensionTestRunner.GodotRunResult runResult,
+            @NotNull Timing timing
     ) {
         public CaseResult {
             scriptResourcePath = Objects.requireNonNull(scriptResourcePath);
             runtimeClassName = Objects.requireNonNull(runtimeClassName);
             artifacts = List.copyOf(artifacts);
             Objects.requireNonNull(runResult);
+            Objects.requireNonNull(timing);
+        }
+
+        public CaseResult(
+                @NotNull String scriptResourcePath,
+                @NotNull String runtimeClassName,
+                @NotNull List<Path> artifacts,
+                @NotNull GodotGdextensionTestRunner.GodotRunResult runResult
+        ) {
+            this(scriptResourcePath, runtimeClassName, artifacts, runResult, Timing.zero());
+        }
+
+        public record Timing(
+                @NotNull Duration sourceResourceRead,
+                @NotNull Duration validationResourceRead,
+                @NotNull Duration validationPrepare,
+                @NotNull Duration workDirectoryPrepare,
+                @NotNull Duration frontendLowering,
+                @NotNull Duration runtimeClassValidation,
+                @NotNull NativeBuildTiming nativeBuild,
+                @NotNull Duration godotProjectPrepare,
+                @NotNull GodotGdextensionTestRunner.GodotRunResult.Timing godotRun,
+                @NotNull Duration outputValidation,
+                @NotNull Duration total
+        ) {
+            public Timing {
+                Objects.requireNonNull(sourceResourceRead);
+                Objects.requireNonNull(validationResourceRead);
+                Objects.requireNonNull(validationPrepare);
+                Objects.requireNonNull(workDirectoryPrepare);
+                Objects.requireNonNull(frontendLowering);
+                Objects.requireNonNull(runtimeClassValidation);
+                Objects.requireNonNull(nativeBuild);
+                Objects.requireNonNull(godotProjectPrepare);
+                Objects.requireNonNull(godotRun);
+                Objects.requireNonNull(outputValidation);
+                Objects.requireNonNull(total);
+            }
+
+            public static @NotNull Timing zero() {
+                return new Timing(
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        NativeBuildTiming.zero(),
+                        Duration.ZERO,
+                        GodotGdextensionTestRunner.GodotRunResult.Timing.zero(),
+                        Duration.ZERO,
+                        Duration.ZERO
+                );
+            }
+
+            public @NotNull String summaryLine(@NotNull String scriptResourcePath) {
+                return "[gdcc-test-timing] case=" + scriptResourcePath
+                        + " total=" + formatDuration(total)
+                        + " resources.source=" + formatDuration(sourceResourceRead)
+                        + " resources.validation=" + formatDuration(validationResourceRead)
+                        + " validation.prepare=" + formatDuration(validationPrepare)
+                        + " workdir.prepare=" + formatDuration(workDirectoryPrepare)
+                        + " frontend.lower=" + formatDuration(frontendLowering)
+                        + " runtime_class.check=" + formatDuration(runtimeClassValidation)
+                        + " build.full=" + formatDuration(nativeBuild.total())
+                        + " build.target_platform=" + formatDuration(nativeBuild.targetPlatform())
+                        + " build.project_info=" + formatDuration(nativeBuild.projectInfo())
+                        + " build.codegen_create=" + formatDuration(nativeBuild.codegenCreate())
+                        + " build.context_create=" + formatDuration(nativeBuild.contextCreate())
+                        + " build.prepare=" + formatDuration(nativeBuild.codegenPrepare())
+                        + " build.builder_create=" + formatDuration(nativeBuild.builderCreate())
+                        + " build.project_build=" + formatDuration(nativeBuild.projectBuild())
+                        + " build.total=" + formatDuration(nativeBuild.projectBuildDetails().total())
+                        + " build.include=" + formatDuration(nativeBuild.projectBuildDetails().includeExtraction())
+                        + " build.codegen=" + formatDuration(nativeBuild.projectBuildDetails().codeGeneration())
+                        + " build.write=" + formatDuration(nativeBuild.projectBuildDetails().generatedFileWrite())
+                        + " build.inputs=" + formatDuration(nativeBuild.projectBuildDetails().compileInputCollection())
+                        + " build.native_compile=" + formatDuration(nativeBuild.projectBuildDetails().nativeCompile())
+                        + " godot_project.prepare=" + formatDuration(godotProjectPrepare)
+                        + " godot.total=" + formatDuration(godotRun.total())
+                        + " godot.binary_lookup=" + formatDuration(godotRun.binaryLookup())
+                        + " godot.process_start=" + formatDuration(godotRun.processStart())
+                        + " godot.first_output=" + formatNullableDuration(godotRun.firstOutputLatency())
+                        + " godot.run_until_stop=" + formatNullableDuration(godotRun.stopSignalLatency())
+                        + " godot.process_wait=" + formatDuration(godotRun.processWait())
+                        + " godot.stream_collect=" + formatDuration(godotRun.streamCollection())
+                        + " godot.executor_close=" + formatDuration(godotRun.executorClose())
+                        + " output.assert=" + formatDuration(outputValidation);
+            }
+        }
+
+        public record NativeBuildTiming(
+                @NotNull Duration targetPlatform,
+                @NotNull Duration projectInfo,
+                @NotNull Duration codegenCreate,
+                @NotNull Duration contextCreate,
+                @NotNull Duration codegenPrepare,
+                @NotNull Duration builderCreate,
+                @NotNull Duration projectBuild,
+                @NotNull CBuildResult.Timing projectBuildDetails,
+                @NotNull Duration total
+        ) {
+            public NativeBuildTiming {
+                Objects.requireNonNull(targetPlatform);
+                Objects.requireNonNull(projectInfo);
+                Objects.requireNonNull(codegenCreate);
+                Objects.requireNonNull(contextCreate);
+                Objects.requireNonNull(codegenPrepare);
+                Objects.requireNonNull(builderCreate);
+                Objects.requireNonNull(projectBuild);
+                Objects.requireNonNull(projectBuildDetails);
+                Objects.requireNonNull(total);
+            }
+
+            public static @NotNull NativeBuildTiming zero() {
+                return new NativeBuildTiming(
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        CBuildResult.Timing.zero(),
+                        Duration.ZERO
+                );
+            }
         }
     }
 
     private record LoweredCase(@NotNull LirModule module, @NotNull ClassRegistry classRegistry) {
+    }
+
+    private record NativeBuild(@NotNull CBuildResult result, @NotNull CaseResult.NativeBuildTiming timing) {
+        private NativeBuild {
+            Objects.requireNonNull(result);
+            Objects.requireNonNull(timing);
+        }
     }
 
     private record PreparedValidation(@NotNull String script, @NotNull OutputExpectations expectations) {

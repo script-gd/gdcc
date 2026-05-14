@@ -8,8 +8,11 @@ import org.jetbrains.annotations.NotNull;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+
+import static java.time.Duration.ofNanos;
 
 public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, CBuildResult> {
     private static final String INCLUDE_RESOURCE_DIR = "include_451";
@@ -55,16 +58,25 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
 
     @Override
     public CBuildResult buildProject(@NotNull CProjectInfo projectInfo, @NotNull CCodegen codegen) throws IOException {
+        var totalStart = System.nanoTime();
         var projectPath = projectInfo.projectPath();
         var includeRoot = resolveIncludeRoot(projectPath);
+        var includeStart = System.nanoTime();
         ResourceExtractor.extract(INCLUDE_RESOURCE_DIR, includeRoot, getClass().getClassLoader());
+        var includeDuration = elapsedSince(includeStart);
 
+        var codegenStart = System.nanoTime();
         var generated = codegen.generate();
+        var codegenDuration = elapsedSince(codegenStart);
+
+        var generatedFileWriteStart = System.nanoTime();
         var generatedFiles = new ArrayList<Path>(generated.size());
         for (var gf : generated) {
             generatedFiles.add(gf.saveTo(projectPath));
         }
+        var generatedFileWriteDuration = elapsedSince(generatedFileWriteStart);
 
+        var compileInputStart = System.nanoTime();
         // Native compiler inputs are exactly the C files written by this codegen pass plus the
         // extracted gdextension-lite amalgamation; callers must not infer them by scanning projectPath.
         var cFiles = new ArrayList<Path>();
@@ -94,8 +106,19 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         var opt = projectInfo.getOptimizationLevel();
         var tp = projectInfo.getTargetPlatform();
 
+        var compileInputCollectionDuration = elapsedSince(compileInputStart);
+        var nativeCompileStart = System.nanoTime();
         var compileResult = cCompiler.compile(projectPath, includeDirs, cFiles, outputName, opt, tp);
-        return new CBuildResult(compileResult, generatedFiles);
+        var nativeCompileDuration = elapsedSince(nativeCompileStart);
+        var timing = new CBuildResult.Timing(
+                includeDuration,
+                codegenDuration,
+                generatedFileWriteDuration,
+                compileInputCollectionDuration,
+                nativeCompileDuration,
+                elapsedSince(totalStart)
+        );
+        return new CBuildResult(compileResult, generatedFiles, timing);
     }
 
     private @NotNull Path resolveIncludeRoot(@NotNull Path projectPath) {
@@ -114,5 +137,9 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
             return sharedInclude;
         }
         return normalizedProjectPath.resolve(PROJECT_INCLUDE_DIR_NAME);
+    }
+
+    private static @NotNull Duration elapsedSince(long startNanos) {
+        return ofNanos(System.nanoTime() - startNanos);
     }
 }

@@ -21,14 +21,19 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+
+import static java.time.Duration.ofNanos;
 
 public final class GodotGdextensionTestRunner {
     public static final String TEST_STOP_SIGNAL = "Test stop.";
-    public static final Duration DEFAULT_FORCE_KILL_DELAY = Duration.ofSeconds(1);
+    public static final Duration DEFAULT_FORCE_KILL_DELAY = Duration.ofMillis(100);
     public static final Duration DEFAULT_PROCESS_TIMEOUT = Duration.ofSeconds(30);
     public static final int DEFAULT_QUIT_AFTER_FRAMES = 10;
     private static final String GDEXTENSION_FILE_NAME = "GDExtensionTest.gdextension";
@@ -81,7 +86,10 @@ public final class GodotGdextensionTestRunner {
     public @NotNull GodotRunResult run(@NotNull RunOptions options) throws IOException, InterruptedException {
         Objects.requireNonNull(options);
 
+        var totalStart = System.nanoTime();
+        var binaryLookupStart = System.nanoTime();
         var godotBinary = requireGodotBinaryOrAbort();
+        var binaryLookupDuration = elapsedSince(binaryLookupStart);
         var command = List.of(
                 godotBinary.toString(),
                 "--upwards",
@@ -93,47 +101,89 @@ public final class GodotGdextensionTestRunner {
 
         var processBuilder = new ProcessBuilder(command);
         processBuilder.directory(testProjectDir.toFile());
+        var processStart = System.nanoTime();
         var process = processBuilder.start();
+        var processStartDuration = elapsedSince(processStart);
+        var processStartedAt = System.nanoTime();
 
         var stopSignalSeen = new AtomicBoolean(false);
         var forceKillScheduled = new AtomicBoolean(false);
         var forceKilled = new AtomicBoolean(false);
+        var firstOutputAt = new AtomicLong(-1);
+        var stopSignalAt = new AtomicLong(-1);
+        var forceKillFuture = new AtomicReference<ScheduledFuture<?>>();
 
-        try (var streamExecutor = Executors.newVirtualThreadPerTaskExecutor();
-             var killer = Executors.newSingleThreadScheduledExecutor()) {
+        int exitCode;
+        boolean timedOut;
+        String stdout;
+        String stderr;
+        Duration processWaitDuration;
+        Duration streamCollectionDuration;
+        Duration executorCloseDuration;
+        var streamExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        var killer = Executors.newSingleThreadScheduledExecutor();
+        try {
             Consumer<String> onLine = line -> {
+                firstOutputAt.compareAndSet(-1, System.nanoTime());
                 if (!line.contains(TEST_STOP_SIGNAL)) {
                     return;
                 }
                 stopSignalSeen.set(true);
+                stopSignalAt.compareAndSet(-1, System.nanoTime());
                 if (!forceKillScheduled.compareAndSet(false, true)) {
                     return;
                 }
-                killer.schedule(() -> {
+                var scheduled = killer.schedule(() -> {
                     if (!process.isAlive()) {
                         return;
                     }
                     forceKilled.set(true);
                     process.destroyForcibly();
                 }, options.forceKillDelay().toMillis(), TimeUnit.MILLISECONDS);
+                forceKillFuture.set(scheduled);
             };
 
             var stdoutFuture = streamExecutor.submit(() -> readAllLines(process.getInputStream(), onLine));
             var stderrFuture = streamExecutor.submit(() -> readAllLines(process.getErrorStream(), onLine));
 
+            var processWaitStart = System.nanoTime();
             var exited = process.waitFor(options.processTimeout().toMillis(), TimeUnit.MILLISECONDS);
-            var timedOut = !exited;
+            processWaitDuration = elapsedSince(processWaitStart);
+            timedOut = !exited;
             if (timedOut) {
                 forceKilled.set(true);
                 process.destroyForcibly();
                 process.waitFor(5, TimeUnit.SECONDS);
             }
 
-            var exitCode = process.isAlive() ? -1 : process.exitValue();
-            var stdout = getFutureText(stdoutFuture, "stdout");
-            var stderr = getFutureText(stderrFuture, "stderr");
-            return new GodotRunResult(exitCode, stopSignalSeen.get(), forceKilled.get(), timedOut, stdout, stderr, command);
+            exitCode = process.isAlive() ? -1 : process.exitValue();
+            var streamCollectionStart = System.nanoTime();
+            stdout = getFutureText(stdoutFuture, "stdout");
+            stderr = getFutureText(stderrFuture, "stderr");
+            streamCollectionDuration = elapsedSince(streamCollectionStart);
+            cancelScheduledForceKill(forceKillFuture);
+        } finally {
+            cancelScheduledForceKill(forceKillFuture);
+            var executorCloseStart = System.nanoTime();
+            try {
+                streamExecutor.close();
+            } finally {
+                killer.close();
+            }
+            executorCloseDuration = elapsedSince(executorCloseStart);
         }
+
+        var timing = new GodotRunResult.Timing(
+                binaryLookupDuration,
+                processStartDuration,
+                durationBetween(processStartedAt, firstOutputAt.get()),
+                durationBetween(processStartedAt, stopSignalAt.get()),
+                processWaitDuration,
+                streamCollectionDuration,
+                executorCloseDuration,
+                elapsedSince(totalStart)
+        );
+        return new GodotRunResult(exitCode, stopSignalSeen.get(), forceKilled.get(), timedOut, stdout, stderr, command, timing);
     }
 
     private static @NotNull Path requireGodotBinaryOrAbort() {
@@ -388,12 +438,26 @@ public final class GodotGdextensionTestRunner {
             boolean timedOut,
             @NotNull String stdout,
             @NotNull String stderr,
-            @NotNull List<String> command
+            @NotNull List<String> command,
+            @NotNull Timing timing
     ) {
         public GodotRunResult {
             stdout = Objects.requireNonNull(stdout);
             stderr = Objects.requireNonNull(stderr);
             command = List.copyOf(command);
+            Objects.requireNonNull(timing);
+        }
+
+        public GodotRunResult(
+                int exitCode,
+                boolean stopSignalSeen,
+                boolean forceKilled,
+                boolean timedOut,
+                @NotNull String stdout,
+                @NotNull String stderr,
+                @NotNull List<String> command
+        ) {
+            this(exitCode, stopSignalSeen, forceKilled, timedOut, stdout, stderr, command, Timing.zero());
         }
 
         public @NotNull String combinedOutput() {
@@ -405,6 +469,39 @@ public final class GodotGdextensionTestRunner {
             }
             return stdout + System.lineSeparator() + stderr;
         }
+
+        public record Timing(
+                @NotNull Duration binaryLookup,
+                @NotNull Duration processStart,
+                @Nullable Duration firstOutputLatency,
+                @Nullable Duration stopSignalLatency,
+                @NotNull Duration processWait,
+                @NotNull Duration streamCollection,
+                @NotNull Duration executorClose,
+                @NotNull Duration total
+        ) {
+            public Timing {
+                Objects.requireNonNull(binaryLookup);
+                Objects.requireNonNull(processStart);
+                Objects.requireNonNull(processWait);
+                Objects.requireNonNull(streamCollection);
+                Objects.requireNonNull(executorClose);
+                Objects.requireNonNull(total);
+            }
+
+            public static @NotNull Timing zero() {
+                return new Timing(
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        null,
+                        null,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO,
+                        Duration.ZERO
+                );
+            }
+        }
     }
 
     private static @NotNull String requireNotBlank(@Nullable String value, @NotNull String fieldName) {
@@ -412,5 +509,20 @@ public final class GodotGdextensionTestRunner {
             throw new IllegalArgumentException(fieldName + " must not be blank");
         }
         return value;
+    }
+
+    private static @NotNull Duration elapsedSince(long startNanos) {
+        return ofNanos(System.nanoTime() - startNanos);
+    }
+
+    private static @Nullable Duration durationBetween(long startNanos, long endNanos) {
+        return endNanos < 0 ? null : ofNanos(endNanos - startNanos);
+    }
+
+    private static void cancelScheduledForceKill(@NotNull AtomicReference<ScheduledFuture<?>> forceKillFuture) {
+        var scheduled = forceKillFuture.getAndSet(null);
+        if (scheduled != null) {
+            scheduled.cancel(false);
+        }
     }
 }

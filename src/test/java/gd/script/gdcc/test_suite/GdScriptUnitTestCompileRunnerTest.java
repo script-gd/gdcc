@@ -7,14 +7,18 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static java.time.Duration.ofNanos;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class GdScriptUnitTestCompileRunnerTest {
+    private static final String TIMING_ENV = "GDCC_TEST_TIMING";
     private static final List<String> EXPECTED_SCRIPT_PATHS = List.of(
             "abi/array/plain_surface_roundtrip.gd",
             "abi/typed_array/array_leaf_return_roundtrip.gd",
@@ -210,24 +214,43 @@ public class GdScriptUnitTestCompileRunnerTest {
             List<String> scriptPaths,
             String skipMessage
     ) throws Exception {
-        Assumptions.assumeTrue(ZigUtil.findZig() != null, skipMessage);
+        var timingEnabled = timingEnabled();
+        var zigLookupStart = System.nanoTime();
+        var zig = ZigUtil.findZig();
+        var zigLookupDuration = elapsedSince(zigLookupStart);
+        Assumptions.assumeTrue(zig != null, skipMessage);
 
         var runner = new GdScriptUnitTestCompileRunner();
+        var resourceDiscoveryStart = System.nanoTime();
         var discoveredScriptPaths = runner.listScriptResourcePaths();
+        var resourceDiscoveryDuration = elapsedSince(resourceDiscoveryStart);
+        var resourceSetValidationStart = System.nanoTime();
         assertFalse(discoveredScriptPaths.isEmpty(), "Expected at least one bundled unit-test case");
         assertEquals(
                 EXPECTED_SCRIPT_PATHS,
                 discoveredScriptPaths,
                 () -> "Unexpected bundled unit-test script set: " + discoveredScriptPaths
         );
+        var resourceSetValidationDuration = elapsedSince(resourceSetValidationStart);
+        if (timingEnabled) {
+            System.out.println("[gdcc-test-timing] factory scripts=" + scriptPaths.size()
+                    + " zig.lookup=" + formatDuration(zigLookupDuration)
+                    + " resources.discover=" + formatDuration(resourceDiscoveryDuration)
+                    + " resources.validate_set=" + formatDuration(resourceSetValidationDuration));
+        }
 
         return scriptPaths.stream()
                 .map(scriptResourcePath -> DynamicTest.dynamicTest(
                         scriptResourcePath,
-                        () -> new GdScriptUnitTestCompileRunner().compileAndValidate(
-                                scriptResourcePath,
-                                runOptionsFor(scriptResourcePath)
-                        )
+                        () -> {
+                            var result = new GdScriptUnitTestCompileRunner().compileAndValidate(
+                                    scriptResourcePath,
+                                    runOptionsFor(scriptResourcePath)
+                            );
+                            if (timingEnabled) {
+                                System.out.println(result.timing().summaryLine(scriptResourcePath));
+                            }
+                        }
                 ));
     }
 
@@ -243,5 +266,18 @@ public class GdScriptUnitTestCompileRunnerTest {
         return EXPECTED_SCRIPT_PATHS.stream()
                 .filter(scriptPath -> scriptPath.startsWith(prefix))
                 .toList();
+    }
+
+    private static Duration elapsedSince(long startNanos) {
+        return ofNanos(System.nanoTime() - startNanos);
+    }
+
+    private static String formatDuration(Duration duration) {
+        return String.format(Locale.ROOT, "%.3fms", duration.toNanos() / 1_000_000.0);
+    }
+
+    private static boolean timingEnabled() {
+        var value = System.getenv(TIMING_ENV);
+        return value != null && Set.of("1", "true", "yes", "on").contains(value.toLowerCase(Locale.ROOT));
     }
 }

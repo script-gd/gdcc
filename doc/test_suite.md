@@ -181,6 +181,9 @@ rtk powershell -ExecutionPolicy Bypass -File script/run-gradle-targeted-tests.ps
 During normal development, prefer targeted execution instead of running the full test suite.
 When one generated case fails, JUnit reports the failing resource path directly.
 
+Timing output is disabled by default so CI logs stay focused. Set `GDCC_TEST_TIMING=1`
+when profiling the suite; accepted enabled values are `1`, `true`, `yes`, and `on`.
+
 ## Adding a New Test Case
 
 To add a new end-to-end unit case:
