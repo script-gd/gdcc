@@ -129,6 +129,14 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_literalIntShouldPreserveGodotInt64Width() {
+        var insns = parse("$wide = literal_int 4294967296;");
+        var literal = assertInstanceOf(LiteralIntInsn.class, insns.getFirst());
+
+        assertEquals(4_294_967_296L, literal.value());
+    }
+
+    @Test
     public void parse_indexedInstructionsUseVariableIndexOperand() {
         var input = """
                 $result = variant_get_indexed $arr $idx;

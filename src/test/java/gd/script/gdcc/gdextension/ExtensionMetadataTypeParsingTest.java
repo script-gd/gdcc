@@ -113,6 +113,9 @@ class ExtensionMetadataTypeParsingTest {
                 "typeddictionary::int;String",
                 true,
                 true,
+                null,
+                "get_type_names",
+                "set_type_names",
                 null
         );
         var signalInfo = new ExtensionGdClass.SignalInfo("changed", List.of());

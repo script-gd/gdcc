@@ -1035,7 +1035,7 @@ public final class FrontendCfgGraphBuilder {
             case IdentifierExpression identifierExpression -> new AssignmentTargetBuild(
                     cursor,
                     List.of(),
-                    buildIdentifierWritableRoute(identifierExpression)
+                    requireIdentifierWritableRoute(identifierExpression)
             );
             case AttributeExpression attributeExpression -> buildAttributeTargetOperands(cursor, attributeExpression);
             case SubscriptExpression subscriptExpression -> {
@@ -1420,11 +1420,13 @@ public final class FrontendCfgGraphBuilder {
     ) {
         var resultValueId = chooseResultValueId(preferredResultValueId);
         cursor.currentSequence().items().add(new OpaqueExprValueItem(expression, operandValueIds, resultValueId));
+        var route = routePayloadForOpaqueExpression(expression);
         return new ValueBuild(
                 cursor,
                 expression,
                 resultValueId,
-                routePayloadForOpaqueExpression(expression)
+                route.writableRoutePayloadOrNull(),
+                route.bindingOrNull()
         );
     }
 
@@ -1438,46 +1440,86 @@ public final class FrontendCfgGraphBuilder {
     ) {
         var resultValueId = chooseResultValueId(preferredResultValueId);
         cursor.currentSequence().items().add(new DirectSlotAliasValueItem(expression, resultValueId));
+        var route = routePayloadForOpaqueExpression(expression);
         return new ValueBuild(
                 cursor,
                 expression,
                 resultValueId,
-                routePayloadForOpaqueExpression(expression)
+                route.writableRoutePayloadOrNull(),
+                route.bindingOrNull()
         );
     }
 
     /// Ordinary value publication and writable-route publication are deliberately kept separate:
     /// CFG items still own evaluation order, while the route payload only freezes how a later
     /// mutation on the published value could be written back into its owner chain.
-    private @Nullable FrontendWritableRoutePayload routePayloadForOpaqueExpression(@NotNull Expression expression) {
+    /// Returns a non-null carrier so "no writable route" stays distinct from "route analysis did not run".
+    ///
+    /// `bindingOrNull` is intentionally preserved for identifier/self value roots whose binding affects
+    /// later direct-slot alias eligibility, while `writableRoutePayloadOrNull` remains nullable because
+    /// constants and non-root opaque expressions are readable values without writable provenance.
+    private @NotNull OpaqueExpressionRoute routePayloadForOpaqueExpression(@NotNull Expression expression) {
         return switch (expression) {
-            case IdentifierExpression identifierExpression -> buildIdentifierWritableRoute(identifierExpression);
-            case SelfExpression selfExpression -> new FrontendWritableRoutePayload(
-                    selfExpression,
-                    new FrontendWritableRoutePayload.RootDescriptor(
-                            FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
-                            selfExpression,
-                            null
-                    ),
-                    new FrontendWritableRoutePayload.LeafDescriptor(
-                            FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
-                            selfExpression,
-                            null,
-                            List.of(),
-                            null,
-                            null
-                    ),
-                    List.of()
-            );
-            default -> null;
+            case IdentifierExpression identifierExpression -> buildIdentifierOpaqueRoute(identifierExpression);
+            case SelfExpression selfExpression -> {
+                var binding = requirePublishedBinding(selfExpression);
+                if (binding.kind() != FrontendBindingKind.SELF) {
+                    throw new IllegalStateException(
+                            "SelfExpression writable-route publication requires binding kind SELF, but got "
+                                    + binding.kind()
+                    );
+                }
+                yield new OpaqueExpressionRoute(
+                        new FrontendWritableRoutePayload(
+                                selfExpression,
+                                new FrontendWritableRoutePayload.RootDescriptor(
+                                        FrontendWritableRoutePayload.RootKind.DIRECT_SLOT,
+                                        selfExpression,
+                                        null
+                                ),
+                                new FrontendWritableRoutePayload.LeafDescriptor(
+                                        FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT,
+                                        selfExpression,
+                                        null,
+                                        List.of(),
+                                        null,
+                                        null
+                                ),
+                                List.of()
+                        ),
+                        binding
+                );
+            }
+            default -> OpaqueExpressionRoute.empty();
         };
     }
 
-    private @NotNull FrontendWritableRoutePayload buildIdentifierWritableRoute(
+    private @NotNull FrontendWritableRoutePayload requireIdentifierWritableRoute(
+            @NotNull IdentifierExpression identifierExpression
+    ) {
+        var route = buildIdentifierOpaqueRoute(identifierExpression);
+        var payload = route.writableRoutePayloadOrNull();
+        if (payload != null) {
+            return payload;
+        }
+        var binding = Objects.requireNonNull(
+                route.bindingOrNull(),
+                "identifier route must publish bindingOrNull"
+        );
+        throw new IllegalStateException(
+                "Identifier assignment target '"
+                        + identifierExpression.name()
+                        + "' with binding kind "
+                        + binding.kind()
+                        + " cannot publish a writable route"
+        );
+    }
+
+    private @NotNull OpaqueExpressionRoute buildIdentifierOpaqueRoute(
             @NotNull IdentifierExpression identifierExpression
     ) {
         var binding = requirePublishedBinding(identifierExpression);
-        return switch (binding.kind()) {
+        var payload = switch (binding.kind()) {
             case LOCAL_VAR, PARAMETER, CAPTURE -> new FrontendWritableRoutePayload(
                     identifierExpression,
                     new FrontendWritableRoutePayload.RootDescriptor(
@@ -1517,10 +1559,12 @@ public final class FrontendCfgGraphBuilder {
                     ),
                     List.of()
             );
+            case CONSTANT -> null;
             default -> throw new IllegalStateException(
                     "Identifier writable-route publication is not supported for binding kind " + binding.kind()
             );
         };
+        return new OpaqueExpressionRoute(payload, binding);
     }
 
     private @NotNull FrontendWritableRoutePayload routePayloadOrValueRoot(@NotNull ValueBuild valueBuild) {
@@ -1561,7 +1605,7 @@ public final class FrontendCfgGraphBuilder {
                 || opaqueValueItem.expression() != receiverBuild.valueAnchor()) {
             return receiverBuild;
         }
-        var aliasRoot = requireDirectSlotAliasRoot((Expression) receiverBuild.valueAnchor());
+        var aliasRoot = requireDirectSlotAliasRoot(receiverBuild);
         if (!shouldPublishDirectSlotAlias(aliasRoot, arguments)) {
             return receiverBuild;
         }
@@ -1579,14 +1623,17 @@ public final class FrontendCfgGraphBuilder {
     ///   no-rebinding subset
     /// - anything effect-open or future/unknown falls back to the existing ordinary temp snapshot so
     ///   newly added rebinding forms cannot silently tunnel through alias publication
-    private @NotNull DirectSlotAliasRoot requireDirectSlotAliasRoot(@NotNull Expression expression) {
+    private @NotNull DirectSlotAliasRoot requireDirectSlotAliasRoot(@NotNull ValueBuild receiverBuild) {
+        var expression = (Expression) receiverBuild.valueAnchor();
         return switch (expression) {
             case SelfExpression selfExpression -> new DirectSlotAliasRoot(
                     selfExpression,
                     DirectSlotAliasRootKind.EXPLICIT_SELF
             );
             case IdentifierExpression identifierExpression -> {
-                var binding = requirePublishedBinding(identifierExpression);
+                var binding = receiverBuild.bindingOrNull() != null
+                        ? receiverBuild.bindingOrNull()
+                        : requirePublishedBinding(identifierExpression);
                 yield switch (binding.kind()) {
                     case LOCAL_VAR -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.LOCAL_VAR);
                     case PARAMETER -> new DirectSlotAliasRoot(identifierExpression, DirectSlotAliasRootKind.PARAMETER);
@@ -2472,12 +2519,31 @@ public final class FrontendCfgGraphBuilder {
         }
     }
 
+    private record OpaqueExpressionRoute(
+            @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull,
+            @Nullable FrontendBinding bindingOrNull
+    ) {
+        private static @NotNull OpaqueExpressionRoute empty() {
+            return new OpaqueExpressionRoute(null, null);
+        }
+    }
+
     private record ValueBuild(
             @NotNull BuildCursor cursor,
             @NotNull Node valueAnchor,
             @NotNull String resultValueId,
-            @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
+            @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull,
+            @Nullable FrontendBinding bindingOrNull
     ) {
+        private ValueBuild(
+                @NotNull BuildCursor cursor,
+                @NotNull Node valueAnchor,
+                @NotNull String resultValueId,
+                @Nullable FrontendWritableRoutePayload writableRoutePayloadOrNull
+        ) {
+            this(cursor, valueAnchor, resultValueId, writableRoutePayloadOrNull, null);
+        }
+
         private ValueBuild {
             Objects.requireNonNull(cursor, "cursor must not be null");
             Objects.requireNonNull(valueAnchor, "valueAnchor must not be null");

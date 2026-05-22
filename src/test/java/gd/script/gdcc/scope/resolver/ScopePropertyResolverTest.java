@@ -8,6 +8,7 @@ import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirPropertyDef;
+import gd.script.gdcc.gdextension.ExtensionBuiltinClassMemberOffsets;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -101,7 +102,7 @@ class ScopePropertyResolverTest {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
                 List.of(), List.of(), List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "", "get_name", "set_name", null)),
                 List.of()
         );
         var userClass = new LirClassDef("MyClass", "Node", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -165,6 +166,49 @@ class ScopePropertyResolverTest {
         assertEquals(ScopePropertyResolver.FailureKind.BUILTIN_PROPERTY_MISSING, failed.kind());
         assertEquals("Vector3", failed.ownerClassName());
         assertEquals("missing_axis", failed.propertyName());
+    }
+
+    @Test
+    @DisplayName("shared builtin property resolver should not synthesize properties from layout offsets")
+    void resolveBuiltinPropertyShouldIgnoreLayoutOnlyMemberOffsets() {
+        var vector3Class = new ExtensionBuiltinClass(
+                "Vector3",
+                false,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var vector3Layout = new ExtensionBuiltinClassMemberOffsets(
+                "float_32",
+                List.of(new ExtensionBuiltinClassMemberOffsets.ClassMemberData(
+                        "Vector3",
+                        List.of(new ExtensionBuiltinClassMemberOffsets.MemberOffsetData("x", 0, "float"))
+                ))
+        );
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(vector3Layout),
+                List.of(),
+                List.of(),
+                List.of(vector3Class),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(api, List.of());
+        var vector3Type = registry.findType("Vector3");
+        assertNotNull(vector3Type);
+
+        var result = ScopePropertyResolver.resolveBuiltinProperty(registry, vector3Type, "x");
+        var failed = assertInstanceOf(ScopePropertyResolver.Failed.class, result);
+
+        assertEquals(ScopePropertyResolver.FailureKind.BUILTIN_PROPERTY_MISSING, failed.kind());
+        assertEquals("Vector3", failed.ownerClassName());
+        assertEquals("x", failed.propertyName());
     }
 
     @Test

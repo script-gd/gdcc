@@ -37,6 +37,7 @@ public final class ClassRegistry implements Scope {
     /// Global utility functions.
     private final Map<String, ExtensionUtilityFunction> utilityByName = new HashMap<>();
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
+    private final Map<String, ExtensionGlobalConstant> globalConstantByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
     /// User-defined classes keyed strictly by canonical registration name.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
@@ -64,6 +65,11 @@ public final class ClassRegistry implements Scope {
         }
         for (var ge : api.globalEnums()) {
             if (ge != null && ge.name() != null) globalEnumByName.put(ge.name(), ge);
+        }
+        for (var globalConstant : api.globalConstants()) {
+            if (globalConstant != null && globalConstant.name() != null) {
+                globalConstantByName.put(globalConstant.name(), globalConstant);
+            }
         }
         for (var s : api.singletons()) {
             if (s != null && s.name() != null) singletonByName.put(s.name(), s);
@@ -93,6 +99,11 @@ public final class ClassRegistry implements Scope {
     /// Check whether a name refers to a global enum.
     public boolean isGlobalEnum(@NotNull String name) {
         return globalEnumByName.containsKey(name);
+    }
+
+    /// Check whether a name refers to a top-level Godot global constant.
+    public boolean isGlobalConstant(@NotNull String name) {
+        return globalConstantByName.containsKey(name);
     }
 
     /// Check whether a name refers to a singleton.
@@ -184,6 +195,13 @@ public final class ClassRegistry implements Scope {
         if (globalEnum != null) {
             return ScopeLookupResult.foundAllowed(
                     new ScopeValue(name, GdIntType.INT, ScopeValueKind.GLOBAL_ENUM, globalEnum, true, false, false)
+            );
+        }
+
+        var globalConstant = globalConstantByName.get(name);
+        if (globalConstant != null) {
+            return ScopeLookupResult.foundAllowed(
+                    new ScopeValue(name, GdIntType.INT, ScopeValueKind.CONSTANT, globalConstant, true, false, false)
             );
         }
 
@@ -302,7 +320,7 @@ public final class ClassRegistry implements Scope {
         }
 
         // These names live in other namespaces and must not degrade into fake object types.
-        if (isGlobalEnum(trimmed) || isUtilityFunction(trimmed) || isSingleton(trimmed)) {
+        if (isGlobalEnum(trimmed) || isGlobalConstant(trimmed) || isUtilityFunction(trimmed) || isSingleton(trimmed)) {
             return null;
         }
         var strictType = ScopeTypeResolver.tryResolveDeclaredType(this, trimmed);
@@ -595,7 +613,7 @@ public final class ClassRegistry implements Scope {
             @NotNull Scope ignoredScope,
             @NotNull String unresolvedTypeText
     ) {
-        if (isGlobalEnum(unresolvedTypeText) || isUtilityFunction(unresolvedTypeText) || isSingleton(unresolvedTypeText)) {
+        if (isGlobalEnum(unresolvedTypeText) || isGlobalConstant(unresolvedTypeText) || isUtilityFunction(unresolvedTypeText) || isSingleton(unresolvedTypeText)) {
             return null;
         }
         return guessObjectTypeIfValidIdentifier(unresolvedTypeText);
@@ -640,6 +658,11 @@ public final class ClassRegistry implements Scope {
     /// Return the ExtensionGlobalEnum object for a global enum name.
     public @Nullable ExtensionGlobalEnum findGlobalEnum(@NotNull String name) {
         return globalEnumByName.get(name);
+    }
+
+    /// Return the top-level ExtensionGlobalConstant object for a global constant name.
+    public @Nullable ExtensionGlobalConstant findGlobalConstant(@NotNull String name) {
+        return globalConstantByName.get(name);
     }
 
     /// Return the singleton's object type for a singleton name.

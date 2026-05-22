@@ -2,16 +2,22 @@ package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.scope.resolver.ScopeMethodResolver;
+import gd.script.gdcc.scope.resolver.ScopeResolvedMethod;
 import gd.script.gdcc.scope.resolver.ScopePropertyResolver;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 
 /// Backend adapter for the shared property metadata resolver.
@@ -37,6 +43,11 @@ public final class BackendPropertyAccessResolver {
         ENGINE
     }
 
+    enum PropertyAccessorKind {
+        READ,
+        WRITE
+    }
+
     record ObjectPropertyLookup(@NotNull ClassDef ownerClass,
                                 @NotNull PropertyDef property,
                                 @NotNull PropertyOwnerDispatchMode ownerDispatchMode) {
@@ -44,6 +55,50 @@ public final class BackendPropertyAccessResolver {
             Objects.requireNonNull(ownerClass);
             Objects.requireNonNull(property);
             Objects.requireNonNull(ownerDispatchMode);
+        }
+    }
+
+    /// Fully resolved exact-engine property accessor material.
+    ///
+    /// The fixed `index` is part of the wrapper call identity for indexed Godot properties.
+    /// Keeping it nullable preserves the distinction between "no index" and `index = 0`.
+    record EnginePropertyAccessor(@NotNull ExtensionGdClass propertyOwnerClass,
+                                  @NotNull ExtensionGdClass methodOwnerClass,
+                                  @NotNull ExtensionGdClass.PropertyInfo property,
+                                  @NotNull ExtensionGdClass.ClassMethod method,
+                                  @NotNull PropertyAccessorKind kind,
+                                  @NotNull GdType propertyType,
+                                  @NotNull GdType returnType,
+                                  @NotNull List<BackendMethodCallResolver.MethodParamSpec> parameters,
+                                  @Nullable Integer index,
+                                  @NotNull BackendMethodCallResolver.EngineMethodBindSpec methodBindSpec,
+                                  @NotNull String cFunctionName) {
+        EnginePropertyAccessor {
+            Objects.requireNonNull(propertyOwnerClass);
+            Objects.requireNonNull(methodOwnerClass);
+            Objects.requireNonNull(property);
+            Objects.requireNonNull(method);
+            Objects.requireNonNull(kind);
+            Objects.requireNonNull(propertyType);
+            Objects.requireNonNull(returnType);
+            parameters = List.copyOf(parameters);
+            Objects.requireNonNull(methodBindSpec);
+            Objects.requireNonNull(cFunctionName);
+        }
+
+        @NotNull BackendMethodCallResolver.ResolvedMethodCall toResolvedMethodCall() {
+            return new BackendMethodCallResolver.ResolvedMethodCall(
+                    BackendMethodCallResolver.DispatchMode.ENGINE,
+                    method.getName(),
+                    methodOwnerClass.getName(),
+                    new GdObjectType(methodOwnerClass.getName()),
+                    cFunctionName,
+                    returnType,
+                    parameters,
+                    methodBindSpec,
+                    method.isVararg(),
+                    method.isStatic()
+            );
         }
     }
 
@@ -63,6 +118,18 @@ public final class BackendPropertyAccessResolver {
                     renderObjectFailureMessage(failed, insnName)
             );
         };
+    }
+
+    static @NotNull EnginePropertyAccessor resolveEnginePropertyReadAccessor(@NotNull CBodyBuilder bodyBuilder,
+                                                                             @NotNull ObjectPropertyLookup lookup,
+                                                                             @NotNull String insnName) {
+        return resolveEnginePropertyAccessor(bodyBuilder, lookup, insnName, PropertyAccessorKind.READ);
+    }
+
+    static @NotNull EnginePropertyAccessor resolveEnginePropertyWriteAccessor(@NotNull CBodyBuilder bodyBuilder,
+                                                                              @NotNull ObjectPropertyLookup lookup,
+                                                                              @NotNull String insnName) {
+        return resolveEnginePropertyAccessor(bodyBuilder, lookup, insnName, PropertyAccessorKind.WRITE);
     }
 
     /// Convert resolved property owner metadata to object type used by cast/upcast rendering.
@@ -136,6 +203,232 @@ public final class BackendPropertyAccessResolver {
             case ScopePropertyResolver.Failed failed -> throw bodyBuilder.invalidInsn(
                     renderBuiltinFailureMessage(failed)
             );
+        };
+    }
+
+    private static @NotNull EnginePropertyAccessor resolveEnginePropertyAccessor(@NotNull CBodyBuilder bodyBuilder,
+                                                                                 @NotNull ObjectPropertyLookup lookup,
+                                                                                 @NotNull String insnName,
+                                                                                 @NotNull PropertyAccessorKind kind) {
+        var propertyOwnerClass = requireEnginePropertyOwner(bodyBuilder, lookup, insnName);
+        var property = requireEngineProperty(bodyBuilder, lookup, propertyOwnerClass, insnName);
+        var accessorName = requireAccessorName(bodyBuilder, propertyOwnerClass, property, insnName, kind);
+        var propertyType = property.getType();
+        var resolved = requireAccessorMethod(
+                bodyBuilder,
+                propertyOwnerClass,
+                property,
+                accessorName,
+                accessorArgTypes(property, propertyType, kind),
+                insnName,
+                kind
+        );
+        var methodOwnerClass = requireEngineMethodOwner(bodyBuilder, propertyOwnerClass, property, resolved, insnName);
+        var method = requireEngineMethodMetadata(bodyBuilder, propertyOwnerClass, property, resolved, insnName);
+        validateAccessorShape(bodyBuilder, propertyOwnerClass, property, resolved, propertyType, insnName, kind);
+        var methodBindSpec = requireMethodBindSpec(bodyBuilder, propertyOwnerClass, property, method, insnName, kind);
+        var parameters = BackendMethodCallResolver.toMethodParamSpecs(resolved);
+        var cFunctionName = BackendMethodCallResolver.renderEngineMethodCFunctionName(
+                methodOwnerClass.getName(),
+                resolved.methodName(),
+                parameters,
+                resolved.returnType(),
+                methodBindSpec,
+                resolved.isVararg(),
+                resolved.isStatic()
+        );
+        return new EnginePropertyAccessor(
+                propertyOwnerClass,
+                methodOwnerClass,
+                property,
+                method,
+                kind,
+                propertyType,
+                resolved.returnType(),
+                parameters,
+                property.index(),
+                methodBindSpec,
+                cFunctionName
+        );
+    }
+
+    private static @NotNull ExtensionGdClass requireEnginePropertyOwner(@NotNull CBodyBuilder bodyBuilder,
+                                                                        @NotNull ObjectPropertyLookup lookup,
+                                                                        @NotNull String insnName) {
+        if (lookup.ownerDispatchMode() != PropertyOwnerDispatchMode.ENGINE ||
+                !(lookup.ownerClass() instanceof ExtensionGdClass propertyOwnerClass)) {
+            throw bodyBuilder.invalidInsn("Property '" + lookup.property().getName() +
+                    "' in " + insnName + " is not owned by an exact engine class");
+        }
+        return propertyOwnerClass;
+    }
+
+    private static @NotNull ExtensionGdClass.PropertyInfo requireEngineProperty(@NotNull CBodyBuilder bodyBuilder,
+                                                                                @NotNull ObjectPropertyLookup lookup,
+                                                                                @NotNull ExtensionGdClass propertyOwnerClass,
+                                                                                @NotNull String insnName) {
+        if (!(lookup.property() instanceof ExtensionGdClass.PropertyInfo property)) {
+            throw bodyBuilder.invalidInsn("Property '" + lookup.property().getName() +
+                    "' on engine class '" + propertyOwnerClass.getName() +
+                    "' in " + insnName + " does not carry extension property metadata");
+        }
+        return property;
+    }
+
+    private static @NotNull String requireAccessorName(@NotNull CBodyBuilder bodyBuilder,
+                                                       @NotNull ExtensionGdClass ownerClass,
+                                                       @NotNull ExtensionGdClass.PropertyInfo property,
+                                                       @NotNull String insnName,
+                                                       @NotNull PropertyAccessorKind kind) {
+        var accessorName = switch (kind) {
+            case READ -> property.getGetterFunc();
+            case WRITE -> property.getSetterFunc();
+        };
+        if (accessorName == null || accessorName.isBlank()) {
+            throw bodyBuilder.invalidInsn("Engine property '" + ownerClass.getName() + "." +
+                    property.getName() + "' has no raw " + accessorLabel(kind) +
+                    " accessor in " + insnName);
+        }
+        return accessorName;
+    }
+
+    private static @NotNull List<GdType> accessorArgTypes(@NotNull ExtensionGdClass.PropertyInfo property,
+                                                          @NotNull GdType propertyType,
+                                                          @NotNull PropertyAccessorKind kind) {
+        var indexType = property.index() == null ? List.<GdType>of() : List.<GdType>of(GdIntType.INT);
+        return switch (kind) {
+            case READ -> indexType;
+            case WRITE -> property.index() == null
+                    ? List.of(propertyType)
+                    : List.of(GdIntType.INT, propertyType);
+        };
+    }
+
+    private static @NotNull ScopeResolvedMethod requireAccessorMethod(@NotNull CBodyBuilder bodyBuilder,
+                                                                      @NotNull ExtensionGdClass ownerClass,
+                                                                      @NotNull ExtensionGdClass.PropertyInfo property,
+                                                                      @NotNull String accessorName,
+                                                                      @NotNull List<GdType> argTypes,
+                                                                      @NotNull String insnName,
+                                                                      @NotNull PropertyAccessorKind kind) {
+        var result = ScopeMethodResolver.resolveInstanceMethod(
+                bodyBuilder.classRegistry(),
+                new GdObjectType(ownerClass.getName()),
+                accessorName,
+                argTypes
+        );
+        return switch (result) {
+            case ScopeMethodResolver.Resolved resolved -> resolved.method();
+            case ScopeMethodResolver.DynamicFallback dynamicFallback -> throw bodyBuilder.invalidInsn(
+                    "Engine property '" + ownerClass.getName() + "." + property.getName() +
+                            "' raw " + accessorLabel(kind) + " accessor '" + accessorName +
+                            "' could not be resolved in " + insnName + ": " + dynamicFallback.reason()
+            );
+            case ScopeMethodResolver.Failed failed -> throw bodyBuilder.invalidInsn(
+                    "Engine property '" + ownerClass.getName() + "." + property.getName() +
+                            "' raw " + accessorLabel(kind) + " accessor '" + accessorName +
+                            "' is invalid in " + insnName + ": " + failed.message()
+            );
+        };
+    }
+
+    private static @NotNull ExtensionGdClass requireEngineMethodOwner(@NotNull CBodyBuilder bodyBuilder,
+                                                                      @NotNull ExtensionGdClass propertyOwnerClass,
+                                                                      @NotNull ExtensionGdClass.PropertyInfo property,
+                                                                      @NotNull ScopeResolvedMethod resolved,
+                                                                      @NotNull String insnName) {
+        if (resolved.ownerKind() != ScopeOwnerKind.ENGINE ||
+                !(resolved.ownerClass() instanceof ExtensionGdClass methodOwnerClass)) {
+            throw bodyBuilder.invalidInsn("Accessor method '" + resolved.methodName() +
+                    "' for engine property '" + propertyOwnerClass.getName() + "." +
+                    property.getName() + "' in " + insnName +
+                    " resolved to non-engine owner '" + resolved.ownerClass().getName() + "'");
+        }
+        return methodOwnerClass;
+    }
+
+    private static @NotNull ExtensionGdClass.ClassMethod requireEngineMethodMetadata(@NotNull CBodyBuilder bodyBuilder,
+                                                                                     @NotNull ExtensionGdClass ownerClass,
+                                                                                     @NotNull ExtensionGdClass.PropertyInfo property,
+                                                                                     @NotNull ScopeResolvedMethod resolved,
+                                                                                     @NotNull String insnName) {
+        if (!(resolved.function() instanceof ExtensionGdClass.ClassMethod method)) {
+            throw bodyBuilder.invalidInsn("Accessor method '" + resolved.methodName() +
+                    "' for engine property '" + ownerClass.getName() + "." +
+                    property.getName() + "' in " + insnName +
+                    " does not carry extension method metadata");
+        }
+        return method;
+    }
+
+    private static void validateAccessorShape(@NotNull CBodyBuilder bodyBuilder,
+                                              @NotNull ExtensionGdClass ownerClass,
+                                              @NotNull ExtensionGdClass.PropertyInfo property,
+                                              @NotNull ScopeResolvedMethod resolved,
+                                              @NotNull GdType propertyType,
+                                              @NotNull String insnName,
+                                              @NotNull PropertyAccessorKind kind) {
+        var expectedCount = switch (kind) {
+            case READ -> property.index() == null ? 0 : 1;
+            case WRITE -> property.index() == null ? 1 : 2;
+        };
+        if (resolved.isVararg() || resolved.parameters().size() != expectedCount) {
+            throw bodyBuilder.invalidInsn("Engine property '" + ownerClass.getName() + "." +
+                    property.getName() + "' raw " + accessorLabel(kind) + " accessor '" +
+                    resolved.methodName() + "' has incompatible parameter shape in " + insnName +
+                    ": expected " + expectedCount + " fixed parameter(s), got " +
+                    resolved.parameters().size());
+        }
+        if (property.index() != null &&
+                !bodyBuilder.classRegistry().checkAssignable(GdIntType.INT, resolved.parameters().getFirst().type())) {
+            throw bodyBuilder.invalidInsn("Engine indexed property '" + ownerClass.getName() + "." +
+                    property.getName() + "' raw " + accessorLabel(kind) + " accessor '" +
+                    resolved.methodName() + "' must accept int-compatible fixed index as the first parameter");
+        }
+        if (kind == PropertyAccessorKind.WRITE) {
+            var valueParameter = resolved.parameters().getLast();
+            if (!bodyBuilder.classRegistry().checkAssignable(propertyType, valueParameter.type())) {
+                throw bodyBuilder.invalidInsn("Engine property '" + ownerClass.getName() + "." +
+                        property.getName() + "' raw setter accessor '" + resolved.methodName() +
+                        "' cannot accept property value type '" + propertyType.getTypeName() +
+                        "' as parameter type '" + valueParameter.type().getTypeName() + "'");
+            }
+            if (!(resolved.returnType() instanceof GdVoidType)) {
+                throw bodyBuilder.invalidInsn("Engine property '" + ownerClass.getName() + "." +
+                        property.getName() + "' raw setter accessor '" + resolved.methodName() +
+                        "' must return void, got '" + resolved.returnType().getTypeName() + "'");
+            }
+            return;
+        }
+        if (!bodyBuilder.classRegistry().checkAssignable(resolved.returnType(), propertyType)) {
+            throw bodyBuilder.invalidInsn("Engine property '" + ownerClass.getName() + "." +
+                    property.getName() + "' raw getter accessor '" + resolved.methodName() +
+                    "' returns '" + resolved.returnType().getTypeName() +
+                    "', which is not assignable to property type '" + propertyType.getTypeName() + "'");
+        }
+    }
+
+    private static @NotNull BackendMethodCallResolver.EngineMethodBindSpec requireMethodBindSpec(
+            @NotNull CBodyBuilder bodyBuilder,
+            @NotNull ExtensionGdClass ownerClass,
+            @NotNull ExtensionGdClass.PropertyInfo property,
+            @NotNull ExtensionGdClass.ClassMethod method,
+            @NotNull String insnName,
+            @NotNull PropertyAccessorKind kind
+    ) {
+        if (method.hash() == 0L) {
+            throw bodyBuilder.invalidInsn("Engine property '" + ownerClass.getName() + "." +
+                    property.getName() + "' raw " + accessorLabel(kind) + " accessor '" +
+                    method.getName() + "' is missing method-bind hash in extension metadata for " + insnName);
+        }
+        var hashCompatibility = method.hashCompatibility() == null ? List.<Long>of() : method.hashCompatibility();
+        return new BackendMethodCallResolver.EngineMethodBindSpec(method.hash(), hashCompatibility);
+    }
+
+    private static @NotNull String accessorLabel(@NotNull PropertyAccessorKind kind) {
+        return switch (kind) {
+            case READ -> "getter";
+            case WRITE -> "setter";
         };
     }
 

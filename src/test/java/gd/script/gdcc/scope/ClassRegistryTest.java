@@ -536,7 +536,10 @@ public class ClassRegistryTest {
                         "Array[FutureEnemy]",
                         true,
                         true,
-                        ""
+                        "",
+                        "get_queue",
+                        "set_queue",
+                        null
                 )),
                 List.of()
         );

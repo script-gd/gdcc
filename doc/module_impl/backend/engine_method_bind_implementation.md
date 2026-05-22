@@ -153,7 +153,8 @@
   - 不允许在 helper 边界前重做 wrapper-era pointer shaping
 - helper 内部 slot materialization 规则：
   - object：以 normalized pointer variable 进入 helper，并向 `ptrcall` 提交 `&argN`
-  - enum / bitfield：helper 内部本地物化 raw slot，再提交 `&local_slot`
+  - enum / bitfield：helper 内部本地物化 raw `godot_int` slot，再提交 `&local_slot`；这只是调用 ABI slot
+    规则，不允许把 extension API metadata 的 enum value 窄化成 Java `int`
   - value-semantic wrapper：由 helper slot mode 决定最终是 `argN` 还是 `&local_slot`
 - static helper 合同保持不变：
   - call site 继续输出 warning

@@ -24,7 +24,9 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
+import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
@@ -77,6 +79,7 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -3634,6 +3637,40 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersGlobalConstantIdentifierIntoInt64Literal() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_global_constant.gd",
+                """
+                        class_name BodyInsnGlobalConstant
+                        extends RefCounted
+
+                        func ping() -> int:
+                            return GDCC_TEST_BIG_FLAG
+                        """,
+                Map.of("BodyInsnGlobalConstant", "RuntimeBodyInsnGlobalConstant"),
+                true,
+                new ClassRegistry(createGlobalConstantFixtureApi())
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnGlobalConstant",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var literalInsn = requireOnlyInstruction(pingContext.targetFunction(), LiteralIntInsn.class);
+        var returnInsn = requireOnlyReturnInsn(pingContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(4_294_967_296L, literalInsn.value()),
+                () -> assertEquals(literalInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
     void runLowersStringLiteralPropertyInitializerIntoNormalizedPayloadWhileAstKeepsRawLexeme() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_string_literal.gd",
@@ -4019,11 +4056,27 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull Map<String, String> topLevelCanonicalNameMap,
             boolean buildCfg
     ) throws Exception {
+        return prepareContext(
+                fileName,
+                source,
+                topLevelCanonicalNameMap,
+                buildCfg,
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+    }
+
+    private static @NotNull PreparedContext prepareContext(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            boolean buildCfg,
+            @NotNull ClassRegistry classRegistry
+    ) {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(List.of(new SourceFixture(fileName, source)), topLevelCanonicalNameMap);
         var context = new FrontendLoweringContext(
                 module,
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                classRegistry,
                 diagnostics
         );
         new FrontendLoweringAnalysisPass().run(context);
@@ -4033,6 +4086,22 @@ class FrontendLoweringBodyInsnPassTest {
             new FrontendLoweringBuildCfgPass().run(context);
         }
         return new PreparedContext(context, diagnostics, module);
+    }
+
+    private static @NotNull ExtensionAPI createGlobalConstantFixtureApi() throws IOException {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                defaultApi.classes(),
+                defaultApi.singletons(),
+                defaultApi.nativeStructures()
+        );
     }
 
     private static @NotNull FrontendModule parseModule(

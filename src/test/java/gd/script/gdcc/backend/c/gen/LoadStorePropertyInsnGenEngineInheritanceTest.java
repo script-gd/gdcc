@@ -57,11 +57,11 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Node_get_process_mode((godot_Node*)$control);"),
+                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI((godot_Node*)$control);"),
                 "ENGINE child receiver should be cast to ENGINE parent owner type."
         );
         assertFalse(
-                entrySource.contains("godot_Control_get_process_mode("),
+                entrySource.contains("gdcc_engine_call_control_get_process_mode_"),
                 "Getter owner symbol should be resolved to nearest parent owner."
         );
 
@@ -94,11 +94,11 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Node_set_process_mode((godot_Node*)$control, $value);"),
+                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV((godot_Node*)$control, $value);"),
                 "ENGINE child receiver should be cast to ENGINE parent owner type."
         );
         assertFalse(
-                entrySource.contains("godot_Control_set_process_mode("),
+                entrySource.contains("gdcc_engine_call_control_set_process_mode_"),
                 "Setter owner symbol should be resolved to nearest parent owner."
         );
 
@@ -132,11 +132,11 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Node_get_process_mode((godot_Node*)gdcc_object_to_godot_object_ptr($obj, GDGdccEnginePropertyBridgeChild_object_ptr));"),
+                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI((godot_Node*)gdcc_object_to_godot_object_ptr($obj, GDGdccEnginePropertyBridgeChild_object_ptr));"),
                 "GDCC receiver should be converted with helper before ENGINE owner cast."
         );
         assertFalse(
-                entrySource.contains("godot_Node_get_process_mode((godot_Node*)$obj);"),
+                entrySource.contains("gdcc_engine_call_node_get_process_mode_P_RI((godot_Node*)$obj);"),
                 "GDCC wrapper pointer must not be cast directly to engine owner type."
         );
 
@@ -170,11 +170,11 @@ class LoadStorePropertyInsnGenEngineInheritanceTest {
 
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
-                entrySource.contains("godot_Node_set_process_mode((godot_Node*)gdcc_object_to_godot_object_ptr($obj, GDGdccEnginePropertyBridgeChild_object_ptr), $value);"),
+                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV((godot_Node*)gdcc_object_to_godot_object_ptr($obj, GDGdccEnginePropertyBridgeChild_object_ptr), $value);"),
                 "GDCC receiver should be converted with helper before ENGINE owner cast."
         );
         assertFalse(
-                entrySource.contains("godot_Node_set_process_mode((godot_Node*)$obj, $value);"),
+                entrySource.contains("gdcc_engine_call_node_set_process_mode_PI_RV((godot_Node*)$obj, $value);"),
                 "GDCC wrapper pointer must not be cast directly to engine owner type."
         );
 

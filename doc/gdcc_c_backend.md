@@ -407,11 +407,16 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
 - `parseExtensionType` is now a thin backend wrapper over the shared scope-layer parser.
 - Resolver/generator code that only needs current shared-normalized extension metadata must reuse `CGenHelper.parseExtensionType(...)` instead of defining local parsing forks.
 - Required normalization behavior remains:
-  - `enum::...` / `bitfield::...` -> `int`
+  - `enum::...` / `bitfield::...` -> `int` as the shared-normalized script type
   - `typedarray::Packed*Array` -> `GdPacked*ArrayType`
   - non-packed `typedarray::T` -> `GdArrayType(T)`
   - `typeddictionary::K;V` -> `GdDictionaryType(K, V)` when both leaves stay flat
   - malformed or unsupported text -> fail fast
+- This type normalization does not narrow extension API enum values. Metadata `values[].value` fields stay Godot int64
+  (`long` in Java) and backend static loads emit decimal `godot_int` literals without Java `int` truncation.
+- Top-level `global_constants[]` follows the same int64 carrier rule. It is consumed as Godot `@GlobalScope`
+  value metadata through `ExtensionAPI.globalConstants()` / `ClassRegistry`, not by re-reading JSON or by
+  treating the constant name as a type-meta owner.
 - shared parsing `typeddictionary::K;V` does not collapse the dedicated backend contract:
   - nested typed leaves still fail fast
   - outward `hint / hint_string / runtime gate` rules still belong to the typed-dictionary ABI contract

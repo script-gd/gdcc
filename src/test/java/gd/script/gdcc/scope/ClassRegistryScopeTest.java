@@ -3,6 +3,7 @@ package gd.script.gdcc.scope;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.gdextension.ExtensionHeader;
 import gd.script.gdcc.gdextension.ExtensionSingleton;
@@ -60,6 +61,15 @@ public class ClassRegistryScopeTest {
         assertFalse(enumValue.writable());
         assertInstanceOf(ExtensionGlobalEnum.class, enumValue.declaration());
 
+        var globalConstantValue = registry.resolveValue("GDCC_TEST_BIG_FLAG");
+        assertNotNull(globalConstantValue);
+        assertEquals(ScopeValueKind.CONSTANT, globalConstantValue.kind());
+        assertEquals(GdIntType.INT, globalConstantValue.type());
+        assertTrue(globalConstantValue.constant());
+        assertFalse(globalConstantValue.writable());
+        var globalConstant = assertInstanceOf(ExtensionGlobalConstant.class, globalConstantValue.declaration());
+        assertEquals(4_294_967_296L, globalConstant.value());
+
         var utilityFunctions = registry.resolveFunctions("print_line");
         assertEquals(1, utilityFunctions.size());
         var utilityFunction = assertInstanceOf(ExtensionUtilityFunction.class, utilityFunctions.getFirst());
@@ -69,6 +79,8 @@ public class ClassRegistryScopeTest {
         assertNull(registry.resolveValue("print_line"));
         assertTrue(registry.resolveFunctions("GameSingleton").isEmpty());
         assertNull(registry.resolveTypeMeta("print_line"));
+        assertNull(registry.resolveTypeMeta("GDCC_TEST_BIG_FLAG"));
+        assertNull(registry.findType("GDCC_TEST_BIG_FLAG"));
     }
 
     @Test
@@ -169,6 +181,7 @@ public class ClassRegistryScopeTest {
                 new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
                 List.of(),
                 List.of(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
                 List.of(new ExtensionGlobalEnum("GameFlags", false, List.of(new ExtensionEnumValue("READY", 1)))),
                 List.of(new ExtensionUtilityFunction("print_line", "String", "debug", false, 1, List.of())),
                 List.of(),

@@ -16,7 +16,9 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.StorePropertyInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdIntType;
@@ -120,6 +122,38 @@ class CCodegenEngineMethodUsageSessionTest {
                 spec("Probe", "touch", false, "P_RV"),
                 spec("Probe", "touch", true, "PT_RV"),
                 spec("Probe", "touch", false, "PI_RV_Xv")
+        ));
+    }
+
+    @Test
+    @DisplayName("module session should record exact engine property accessors once")
+    void moduleSessionShouldRecordExactEnginePropertyAccessorsOnce() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var propertyAccess = newVoidFunction("access_property");
+        propertyAccess.createAndAddVariable("window", new GdObjectType("Window"));
+        propertyAccess.createAndAddVariable("tmp", GdStringType.STRING);
+        propertyAccess.createAndAddVariable("value", GdStringType.STRING);
+        entry(propertyAccess).appendInstruction(new LoadPropertyInsn("tmp", "window_title", "window"));
+        entry(propertyAccess).appendInstruction(new LoadPropertyInsn("tmp", "window_title", "window"));
+        entry(propertyAccess).appendInstruction(new StorePropertyInsn("window_title", "window", "value"));
+        entry(propertyAccess).appendInstruction(new StorePropertyInsn("window_title", "window", "value"));
+        entry(propertyAccess).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(propertyAccess);
+
+        var module = new LirModule("engine_property_usage_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(windowClassWithRawPropertyAccessors())),
+                List.of(hostClass)
+        );
+        var session = new EngineMethodUsageSession();
+
+        codegen.generateFuncBody(hostClass, propertyAccess, session);
+
+        assertSnapshot(session, List.of(
+                spec("Window", "get_title_override", false, "P_RT"),
+                spec("Window", "set_title_override", false, "PT_RV")
         ));
     }
 
@@ -369,6 +403,52 @@ class CCodegenEngineMethodUsageSessionTest {
                 List.of(instanceTouch, staticTouch, varargTouch),
                 List.of(),
                 List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass windowClassWithRawPropertyAccessors() {
+        var getTitle = new ExtensionGdClass.ClassMethod(
+                "get_title_override",
+                false,
+                false,
+                false,
+                false,
+                81L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("String"),
+                List.of()
+        );
+        var setTitle = new ExtensionGdClass.ClassMethod(
+                "set_title_override",
+                false,
+                false,
+                false,
+                false,
+                82L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("title", "String", null, null))
+        );
+        return new ExtensionGdClass(
+                "Window",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(getTitle, setTitle),
+                List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo(
+                        "window_title",
+                        "String",
+                        true,
+                        true,
+                        "",
+                        "get_title_override",
+                        "set_title_override",
+                        null
+                )),
                 List.of()
         );
     }

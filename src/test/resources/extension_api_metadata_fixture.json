@@ -1,0 +1,80 @@
+{
+  "global_constants": [
+    {
+      "name": "GDCC_TEST_BIG_FLAG",
+      "value": 4294967296,
+      "is_bitfield": true
+    }
+  ],
+  "global_enums": [
+    {
+      "name": "GdccWideGlobalFlags",
+      "is_bitfield": true,
+      "values": [
+        {
+          "name": "GDCC_WIDE_GLOBAL_FLAG",
+          "value": 34359738368
+        },
+        {
+          "name": "GDCC_NEGATIVE_INT_BOUNDARY",
+          "value": -2147483648
+        }
+      ]
+    }
+  ],
+  "builtin_classes": [
+    {
+      "name": "GdccWideBuiltin",
+      "is_keyed": false,
+      "has_destructor": false,
+      "enums": [
+        {
+          "name": "WideBuiltinFlags",
+          "is_bitfield": true,
+          "values": [
+            {
+              "name": "GDCC_WIDE_BUILTIN_FLAG",
+              "value": 4294967296
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "classes": [
+    {
+      "name": "FixtureNode",
+      "is_refcounted": false,
+      "is_instantiable": true,
+      "inherits": "Object",
+      "api_type": "core",
+      "enums": [
+        {
+          "name": "WideNodeFlags",
+          "is_bitfield": true,
+          "values": [
+            {
+              "name": "FIXTURE_NODE_WIDE_FLAG",
+              "value": 34359738368
+            }
+          ]
+        }
+      ],
+      "properties": [
+        {
+          "type": "int",
+          "name": "raw_count",
+          "getter": "get_raw_count",
+          "setter": "set_raw_count"
+        },
+        {
+          "type": "int",
+          "name": "forced_count",
+          "is_readable": false,
+          "is_writable": true,
+          "getter": "get_forced_count"
+        }
+      ]
+    }
+  ]
+}

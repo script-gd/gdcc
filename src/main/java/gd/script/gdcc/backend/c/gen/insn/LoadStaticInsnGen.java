@@ -15,6 +15,7 @@ import java.util.EnumSet;
 import java.util.regex.Pattern;
 
 public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
+    public static final @NotNull String GLOBAL_SCOPE_RECEIVER = "@GlobalScope";
     private static final @NotNull Pattern INTEGER_LITERAL_PATTERN = Pattern.compile("[+-]?\\d+");
 
     @Override
@@ -42,6 +43,17 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
         var classRegistry = bodyBuilder.classRegistry();
         var className = insn.className();
         var staticName = insn.staticName();
+
+        if (GLOBAL_SCOPE_RECEIVER.equals(className)) {
+            if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
+                throw bodyBuilder.invalidInsn(
+                        "Static load target type '" + resultVar.type().getTypeName() +
+                                "' is not assignable from global constant"
+                );
+            }
+            bodyBuilder.assignGlobalConstant(target, staticName);
+            return;
+        }
 
         if (classRegistry.findGlobalEnum(className) != null) {
             bodyBuilder.assignGlobalConst(target, className, staticName);
@@ -104,7 +116,7 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
 
         throw bodyBuilder.invalidInsn(
                 "Static load target '" + className + "." + staticName +
-                        "' is unsupported; only global enums, builtin constants, and engine class integer constants are allowed"
+                        "' is unsupported; only @GlobalScope global constants, global enums, builtin constants, and engine class integer constants are allowed"
         );
     }
 

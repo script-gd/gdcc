@@ -249,6 +249,11 @@
 - analyzer 必须优先发布 `TYPE_META`
 - 这样 `EnumType.VALUE` 才能进入后续 static-load route，而不会被 ordinary value binding 永久吃掉
 
+顶层 `global_constants[]` 不使用这个例外：
+
+- 它们是 Godot `@GlobalScope` 的 ordinary value constants，不是 type-meta receiver
+- analyzer 必须按普通 `CONSTANT` value binding 发布，不能把常量名提升成 `TYPE_META`
+
 若 ordinary value 赢了，且同名受支持 `TYPE_META` 同时可见：
 
 - 只有当 winning value 属于 `LOCAL` / `PARAMETER` / `CAPTURE`

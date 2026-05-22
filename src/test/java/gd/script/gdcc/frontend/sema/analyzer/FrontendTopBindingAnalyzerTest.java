@@ -12,7 +12,9 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeTypeMeta;
@@ -33,6 +35,7 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,8 +45,8 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -213,6 +216,34 @@ class FrontendTopBindingAnalyzerTest {
                 FrontendBindingKind.SELF
         );
         assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty());
+    }
+
+    @Test
+    void analyzeBindsGlobalConstantsAsOrdinaryConstantValues() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "global_constant_value.gd",
+                """
+                        class_name GlobalConstantValue
+                        extends Node
+
+                        func ping():
+                            print(GDCC_TEST_BIG_FLAG)
+                        """,
+                new ClassRegistry(createGlobalConstantFixtureApi())
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var useSite = findIdentifierExpression(pingFunction.body(), "GDCC_TEST_BIG_FLAG");
+        var binding = assertBinding(preparedInput.analysisData(), useSite, FrontendBindingKind.CONSTANT);
+
+        assertAll(
+                () -> assertInstanceOf(ExtensionGlobalConstant.class, binding.declarationSite()),
+                () -> assertNull(preparedInput.classRegistry().resolveTypeMeta("GDCC_TEST_BIG_FLAG")),
+                () -> assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty())
+        );
     }
 
     @Test
@@ -1358,13 +1389,14 @@ class FrontendTopBindingAnalyzerTest {
         return function;
     }
 
-    private static void assertBinding(
+    private static @NotNull FrontendBinding assertBinding(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull Node useSite,
             @NotNull FrontendBindingKind expectedKind
     ) {
         var binding = analysisData.symbolBindings().get(useSite);
         assertEquals(expectedKind, Objects.requireNonNull(binding, "binding must not be null").kind());
+        return binding;
     }
 
     private static void assertBindingsForName(
@@ -1390,6 +1422,22 @@ class FrontendTopBindingAnalyzerTest {
             @NotNull String source
     ) throws Exception {
         return prepareBindingInput(fileName, source, new ClassRegistry(ExtensionApiLoader.loadDefault()), Map.of());
+    }
+
+    private static @NotNull ExtensionAPI createGlobalConstantFixtureApi() throws IOException {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                defaultApi.classes(),
+                defaultApi.singletons(),
+                defaultApi.nativeStructures()
+        );
     }
 
     private static @NotNull PreparedBindingInput prepareBindingInput(

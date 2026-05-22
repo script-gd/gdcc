@@ -213,7 +213,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 
 - parameter 只在 executable callable body 内按“始终可见”处理
 - ordinary local `var` 只有在 declaration 结束位置早于 use-site 起始位置时才视为可见
-- class property / signal / class const / global enum / singleton 等 non-callable-local binding 不受 statement-order 过滤影响
+- class property / signal / class const / global enum / global constant / singleton 等 non-callable-local binding 不受 statement-order 过滤影响
 
 ### 5.2 initializer 自引用
 

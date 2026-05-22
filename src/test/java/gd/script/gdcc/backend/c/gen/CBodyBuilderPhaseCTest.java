@@ -7,6 +7,7 @@ import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
@@ -65,10 +66,14 @@ public class CBodyBuilderPhaseCTest {
                 null,
                 Collections.emptyList(),
                 Collections.emptyList(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
                 List.of(new ExtensionGlobalEnum(
                         "TestEnum",
                         false,
-                        List.of(new ExtensionEnumValue("VALUE_A", 42))
+                        List.of(
+                                new ExtensionEnumValue("VALUE_A", 42),
+                                new ExtensionEnumValue("VALUE_WIDE", 34_359_738_368L)
+                        )
                 )),
                 List.of(
                         new ExtensionUtilityFunction(
@@ -268,6 +273,16 @@ public class CBodyBuilderPhaseCTest {
                     builder.assignGlobalConst(targetRef, "TestEnum", "MISSING")
             );
         }
+
+        @Test
+        @DisplayName("assignGlobalConstant should fail for missing constant")
+        void testAssignGlobalConstantMissingValue() {
+            var target = new LirVariable("x", GdIntType.INT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+            assertThrows(RuntimeException.class, () ->
+                    builder.assignGlobalConstant(targetRef, "MISSING")
+            );
+        }
     }
 
     @Nested
@@ -326,6 +341,28 @@ public class CBodyBuilderPhaseCTest {
             builder.assignGlobalConst(targetRef, "TestEnum", "VALUE_A");
 
             assertEquals("$x = 42;\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("assignGlobalConst should preserve int64 enum literals")
+        void testAssignGlobalConstWithInt64Value() {
+            var target = new LirVariable("x", GdIntType.INT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.assignGlobalConst(targetRef, "TestEnum", "VALUE_WIDE");
+
+            assertEquals("$x = 34359738368;\n", builder.build());
+        }
+
+        @Test
+        @DisplayName("assignGlobalConstant should resolve top-level global constant")
+        void testAssignGlobalConstant() {
+            var target = new LirVariable("x", GdIntType.INT, lirFunctionDef);
+            var targetRef = builder.targetOfVar(target);
+
+            builder.assignGlobalConstant(targetRef, "GDCC_TEST_BIG_FLAG");
+
+            assertEquals("$x = 4294967296;\n", builder.build());
         }
 
         @Test

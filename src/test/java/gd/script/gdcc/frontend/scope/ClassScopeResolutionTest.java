@@ -90,7 +90,7 @@ public class ClassScopeResolutionTest {
                 java.util.List.of(),
                 java.util.List.of(),
                 java.util.List.of(),
-                java.util.List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0")),
+                java.util.List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0", "get_locked", "set_locked", null)),
                 java.util.List.of()
         );
         var registry = FrontendScopeTestSupport.createRegistry(java.util.List.of(readonlyBase));

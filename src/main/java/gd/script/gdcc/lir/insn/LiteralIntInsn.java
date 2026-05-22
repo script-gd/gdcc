@@ -6,7 +6,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-public record LiteralIntInsn(@Nullable String resultId, int value) implements NewDataInstruction {
+public record LiteralIntInsn(@Nullable String resultId, long value) implements NewDataInstruction {
 
     @Override
     public GdInstruction opcode() {
@@ -18,4 +18,3 @@ public record LiteralIntInsn(@Nullable String resultId, int value) implements Ne
         return List.of(new IntOperand(value));
     }
 }
-

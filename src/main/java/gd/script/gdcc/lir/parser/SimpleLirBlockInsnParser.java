@@ -123,7 +123,8 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                 } else if (lastFixed == GdInstruction.OperandKind.STRING) {
                     // In some instructions (call-like, construct_lambda) the varargs are variables
                     switch (instr) {
-                        case CALL_GLOBAL, CALL_INTRINSIC, CONSTRUCT_LAMBDA, CALL_STATIC_METHOD -> varargElemKind = GdInstruction.OperandKind.VARIABLE;
+                        case CALL_GLOBAL, CALL_INTRINSIC, CONSTRUCT_LAMBDA, CALL_STATIC_METHOD ->
+                                varargElemKind = GdInstruction.OperandKind.VARIABLE;
                     }
                 }
                 // otherwise keep GENERIC
@@ -166,7 +167,7 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                 }
                 case INT -> {
                     if (token.kind == TokenKind.INT) {
-                        return new IntOperand(Integer.parseInt(token.text));
+                        return new IntOperand(Long.parseLong(token.text));
                     }
                     throw new LirInsnParsingException(lineNo, token.column, line, "Expected integer operand");
                 }
@@ -205,13 +206,14 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
                     return switch (token.kind) {
                         case VARIABLE -> new VariableOperand(token.text);
                         case STRING -> new StringOperand(token.text);
-                        case INT -> new IntOperand(Integer.parseInt(token.text));
+                        case INT -> new IntOperand(Long.parseLong(token.text));
                         case FLOAT -> new FloatOperand(Float.parseFloat(token.text));
                         case BOOL -> new BooleanOperand(Boolean.parseBoolean(token.text));
                         case IDENT -> new BasicBlockOperand(token.text);
                     };
                 }
-                default -> throw new LirInsnParsingException(lineNo, token.column, line, "Unsupported operand kind: " + expected);
+                default ->
+                        throw new LirInsnParsingException(lineNo, token.column, line, "Unsupported operand kind: " + expected);
             }
         } catch (NumberFormatException e) {
             throw new LirInsnParsingException(lineNo, token.column, line, "Invalid numeric literal: " + token.text);
@@ -245,7 +247,9 @@ public final class SimpleLirBlockInsnParser implements LirBlockInsnParser {
             }
         }
 
-        int column() { return col; }
+        int column() {
+            return col;
+        }
 
         void skipWhitespace() {
             while (!eof() && Character.isWhitespace(peek())) consume();

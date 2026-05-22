@@ -55,7 +55,7 @@ public interface LirInstruction {
         }
     }
 
-    record IntOperand(int value) implements Operand {
+    record IntOperand(long value) implements Operand {
         @Override
         public OperandKind operandKind() {
             return OperandKind.INT;

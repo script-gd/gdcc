@@ -8,6 +8,7 @@ import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -49,6 +51,52 @@ class CLoadStaticInsnGenTest {
         );
         var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Side", "SIDE_LEFT")));
         assertTrue(body.contains("$out = 0;"));
+    }
+
+    @Test
+    @DisplayName("load_static should preserve int64 global enum values")
+    void shouldLoadInt64GlobalEnumValue() {
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalEnum(
+                        "WideFlags",
+                        true,
+                        List.of(new ExtensionEnumValue("WIDE_FLAG", 34_359_738_368L))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "WideFlags", "WIDE_FLAG")));
+        assertTrue(body.contains("$out = 34359738368;"));
+        assertFalse(body.contains("$out = 0;"));
+    }
+
+    @Test
+    @DisplayName("load_static should load @GlobalScope global constant values")
+    void shouldLoadGlobalScopeGlobalConstantValue() {
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var body = generateBody(
+                api,
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "@GlobalScope", "GDCC_TEST_BIG_FLAG"))
+        );
+        assertTrue(body.contains("$out = 4294967296;"));
+        assertFalse(body.contains("$out = 0;"));
     }
 
     @Test
@@ -125,6 +173,27 @@ class CLoadStaticInsnGenTest {
                 setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Vector3", "BACK"))));
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("not assignable"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject missing @GlobalScope global constant")
+    void shouldRejectMissingGlobalScopeGlobalConstant() {
+        var api = new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "@GlobalScope", "MISSING"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("Global constant 'MISSING' not found"));
     }
 
     @Test

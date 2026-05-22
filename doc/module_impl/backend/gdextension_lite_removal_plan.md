@@ -843,6 +843,10 @@ Godot 上游字段语义：
 - `global_constants[]` 是 Godot API dump 的顶层数组，来自 `CoreConstants` 中没有归入某个 global enum 的常量；
   每项至少包含 `name`、`value`、`is_bitfield`，可选 `description`。Godot 4.5.1 当前资源中的数组为空，
   但字段仍是目标版本 metadata contract 的一部分，GDCC 必须完整建模和生成稳定空输出。
+- `global_enums[].values[].value`、`classes[].enums[].values[].value` 同样来自 Godot 的 64-bit integer 常量面；
+  Java 模型必须用 `long` 保真。`builtin_classes[].enums[].values[].value` 当前上游来源较窄，但为了统一
+  `ExtensionEnumValue` contract 也按 `long` 建模。`builtin_classes[].constants[].value` 仍是 Godot construct string，
+  不能为了统一数字宽度改成数值 carrier。
 
 前置修改：
 
@@ -855,6 +859,8 @@ Godot 上游字段语义：
   - 解析 builtin class 的 `has_destructor`、`indexing_return_type`，并保留 raw Godot 字段语义。
   - 新增并解析 `global_constants[]` 模型，字段至少保留 `name`、`value`、`is_bitfield` 和可选 description；
     `value` 必须能承载 Godot int64 常量，不能按 Java `int` 截断。
+  - 解析 global enum、builtin enum 和 engine class enum 的 `values[].value` 时使用 `long` / `getAsLong()`；
+    这些字段是 metadata value carrier，不改变 `enum::...` / `bitfield::...` 归一化为脚本 `int` 的类型规则。
   - `loadFromResource(...)` 必须把 `global_constants[]` 传入 `new ExtensionAPI(...)`；字段缺失时可以是空集合，
     但不能让 generator 绕过 Java 模型重读 JSON。
   - 解析时保留 Godot JSON 原始字段语义，不把缺失 size/offset 静默填成可用值；缺失关键字段应在 generator 或测试中 fail-fast。
@@ -865,11 +871,15 @@ Godot 上游字段语义：
 - `ExtensionBuiltinClassSizes`
   - 继续作为 build-configuration 到 builtin size list 的模型。
   - 后续 `godot_builtin_sizes.h` generator 只读取该模型，不重新扫描 JSON。
+  - builtin size 查询由 `ExtensionAPI.findBuiltinClassSize(...)` /
+    `requireBuiltinClassSize(...)` 集中暴露；调用方不应在 generator/test 中重复扫描原始列表。
 - `ExtensionBuiltinClassMemberOffsets`
   - 继续作为 build-configuration 到 builtin member offset/meta 的模型。
   - 若阶段 1A 的 builtin struct 声明或阶段 2 全量 builtin wrapper 需要 member ABI meta，应从这里读取。
   - 必须提供按 `(buildConfiguration, builtinClass, member)` 查询 layout 的路径；generator 不应在每次使用时线性扫描
     全量列表，也不应按 `ExtensionBuiltinClass.members[]` 的顺序自行累加 offset。
+  - member layout 查询由 `ExtensionAPI.findBuiltinClassMemberLayout(...)` /
+    `requireBuiltinClassMemberLayout(...)` 集中暴露；`find` 缺失返回 `null`，`require` 缺失 fail-fast 并报告完整 lookup key。
   - 查询结果必须同时返回 `offset` 和 `meta`；只有 offset 没有 meta 不能作为字段访问材料。
   - `ExtensionBuiltinClass.members[]` 只提供语言层 property surface 和类型名；`builtin_class_member_offsets[]`
     只提供 ABI layout。两者必须能交叉校验同一 member 名，但不能互相替代。
@@ -1113,6 +1123,32 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 
 0A：metadata 模型和 loader 结构补全。
 
+状态（2026-05-19）：Done。
+
+- `ExtensionApiLoader` 已把 `builtin_class_sizes`、`builtin_class_member_offsets`、`global_constants[]`、
+  builtin `has_destructor` / `indexing_return_type` 和 engine property raw `getter/setter/index` 接入 `ExtensionAPI`
+  Java 模型；`global_constants[]` 在 4.5.1 为空时保留稳定空集合，非空 fixture 使用 `long` 保存 value。
+- global enum、builtin enum 与 engine class enum 的 `values[].value` 使用 `long` 保存 Godot int64 metadata；
+  脚本可见类型仍归一化为 `int`，但 loader / 后端 literal 输出不得按 Java `int` 截断。
+- engine `PropertyInfo.getGetterFunc()` / `getSetterFunc()` 现在返回 raw Godot method name；`index = 0`
+  作为有效 indexed property 值保留为 `Integer 0`，缺失时为 `null`。
+- 定向测试已覆盖 4 个 builtin ABI build configuration、`Vector3.z` / `Color.r` offset/meta 差异、
+  `String` / `Array` / `Dictionary` constructor index、global constant 大数值、普通 / indexed / getter-only engine property
+  以及显式 readable/writable 覆盖规则；补充回归覆盖 Godot 4.5.1 `RenderingServer.ArrayFormat` 的 int64 enum value。
+
+0A.1：global constants 语义边界补齐。
+
+状态（2026-05-20）：Done。
+
+- `ClassRegistry` 已把 `ExtensionAPI.globalConstants()` 接入全局 value namespace，暴露为不可写 `CONSTANT`，
+  类型为脚本 `int`，declaration 保留 `ExtensionGlobalConstant`，并明确不进入 type-meta namespace。
+- 顶层 global constant 按 Godot `@GlobalScope.<NAME>` 语义进入 backend static-load 边界：
+  `LoadStaticInsn("@GlobalScope", name)` 只读取 `ClassRegistry.findGlobalConstant(...)`，不重新扫描 JSON。
+- `LiteralIntInsn` / `IntOperand` 的数值载体改为 `long`，裸全局常量在 frontend lowering 中直接物化为
+  int64 宽度的 `literal_int`，后端输出十进制 `godot_int` literal。
+- 回归测试覆盖 registry 正向可见性、type namespace 负向隔离、frontend 绑定/lowering、`@GlobalScope`
+  static-load 正负路径、builder 物化和 LIR parser / C backend int64 literal 输出。
+
 - `ExtensionApiLoader.loadFromResource(...)`
   - 从 `builtin_class_sizes` 解析 `List<ExtensionBuiltinClassSizes>`。
   - 从 `builtin_class_member_offsets` 解析 `List<ExtensionBuiltinClassMemberOffsets>`。
@@ -1123,6 +1159,12 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
   - 同步解析顶层 `global_constants[]` 并传入 `ExtensionAPI.globalConstants()`；当前 4.5.1 数组为空也必须保留这个空集合，
     因为 `godot_global_constants.h`、scope global constant resolver 和后续 `LoadStaticInsnGen` 都要以 Java 模型为事实源。
   - 非空 `global_constants[]` fixture 必须验证 `name/value/is_bitfield` 保留，`value` 不按 Java `int` 截断。
+- `ClassRegistry`
+  - 全局常量是 value namespace 符号，不是 class-like / enum type-meta head。
+  - `findType(...)` 不能把全局常量名猜成 `GdObjectType`；`resolveTypeMeta(...)` 对全局常量名保持未命中。
+- `LoadStaticInsnGen`
+  - `@GlobalScope` 是 backend IR 中顶层 global constant 的显式 receiver。
+  - 该路径只接受 `GdIntType.INT` 兼容目标，并用 `ExtensionGlobalConstant.value()` 的 `long` 值输出 decimal literal。
 - `ExtensionGdClass.PropertyInfo`
   - 新增 raw `getter`、`setter`、nullable `index` 字段。
   - `getGetterFunc()` / `getSetterFunc()` 返回 raw Godot method name。
@@ -1130,7 +1172,31 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
     `is_readable` / `is_writable` 字段存在时按显式字段覆盖。
   - 测试 fixture 中手写 `new ExtensionGdClass.PropertyInfo(...)` 的调用点必须同步更新，不能让旧构造器默认值掩盖 raw accessor 缺失。
 
+0A.2：builtin layout metadata 集中查询 API。
+
+状态（2026-05-22）：Done。
+
+- `ExtensionAPI` 已提供 builtin layout metadata 的统一查询入口：
+  `findBuiltinClassSize(...)`、`requireBuiltinClassSize(...)`、
+  `findBuiltinClassMemberLayout(...)`、`requireBuiltinClassMemberLayout(...)`。
+- 查询 key 显式保留 Godot `build_configuration` 维度；缺失 build configuration、builtin class 或 member 时，
+  `find` 返回 `null`，`require` fail-fast，并在异常信息中保留完整 lookup key。
+- member layout 查询结果同时携带 `offset` 与 `meta`，避免后续 generator 只复制 offset 查询后丢掉 ABI meta。
+- 该 API 只服务 ABI/layout-sensitive generator 和校验；builtin property surface 仍来自
+  `ExtensionBuiltinClass.members -> synthetic PropertyInfo`，不能从 `builtin_class_member_offsets` 合成属性。
+- `ExtensionApiLoaderMetadataTest` 已改用集中查询 API 验证 size 与 member layout，并补充缺失 build configuration、
+  缺失 class、缺失 member 和空 metadata 的负向测试。
+
 0B：shared property semantic normalization。
+
+状态（2026-05-19）：Done。
+
+- `ScopePropertyResolver` 继续保持 shared resolver 边界：known hierarchy resolved / missing property failure /
+  metadata unknown fallback 不变；builtin property surface 仍只消费 `ExtensionBuiltinClass.members -> synthetic PropertyInfo`。
+- `PropertyDefAccessSupport` 已有直接测试锁住 engine/builtin/GDCC 三类属性可写性：raw getter/setter 存在不能覆盖
+  normalized `isWritable=false`，GDCC 属性仍保持保守可写。
+- 回归测试补齐 layout-only `builtin_class_member_offsets` 不会合成 builtin property、engine raw getter/setter 不能覆盖显式
+  unreadable / non-writable flag，以及 frontend assignment、scope publication、load/store backend 分支的现有行为。
 
 - `ScopePropertyResolver` 继续决定 resolved property、metadata unknown fallback 和 missing property failure；阶段 0 不改变
   `MetadataUnknown -> godot_Object_get/set` 的 fallback 边界。
@@ -1143,6 +1209,16 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 
 0C：engine property accessor resolver。
 
+状态（2026-05-19）：Done。
+
+- `BackendPropertyAccessResolver` 新增 exact-engine property accessor resolver；read/write helper 从 raw
+  getter/setter method name 出发，返回 property owner、method owner、method metadata、nullable fixed index、
+  property type、method bind hash / compatibility hash、normalized 参数材料和后续 wrapper helper 名称。
+- indexed property 的 `index = 0` 作为有效 `Integer 0` 保留并进入 resolver 输出；resolver 不再允许从 property name
+  反推 accessor method。
+- fail-fast 测试已覆盖 raw accessor method metadata 缺失、setter 缺失、method-bind hash 为 0、indexed 参数形态不匹配、
+  getter return type 与 property type 不匹配。
+
 - 新增或扩展查询 helper：给定 owner class、property、read/write，返回 raw getter/setter method metadata、nullable index、
   property type、lookup hash/compatibility hash 和最终 wrapper 调用材料。
 - 普通 property 示例应覆盖 `Node.name -> get_name/set_name`；indexed property 示例应覆盖 `Window.unresizable -> get_flag/set_flag, index=0`。
@@ -1150,14 +1226,54 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 - getter/setter method metadata 缺失、hash 为 0、参数形态和 indexed property 不匹配时 fail-fast。
 - `index` 不单独定义 property 身份；若生成的 property helper 把 index 内联为固定调用参数，它必须进入 wrapper key 和生成材料。
 
-0D：现有 consumer 回归与迁移边界。
+0D：Load/Store Property consumer 接入 raw engine property accessor resolver。
+
+状态（2026-05-19）：Done。
+
+- 文档方案：Done。`LoadPropertyInsnGen` / `StorePropertyInsnGen` 的 ENGINE owner 分支必须直接消费 0C
+  `EnginePropertyAccessor` 输出，不再从 property name 拼 `godot_<Owner>_get/set_<property>`。
+- 生产代码接线：Done。ENGINE load/store 调用使用 raw getter/setter 对应的 exact engine helper name，并把
+  accessor 转成 `BackendMethodCallResolver.ResolvedMethodCall` 记录到 `EngineMethodUsageSession`，确保
+  `engine_method_binds.h` 同步生成 helper/bind lookup。
+- 单元测试：Done。新增 consumer 级测试覆盖 raw accessor name 与 property name 不一致、indexed `index = 0`
+  固定参数传递、缺失 raw accessor metadata fail-fast，并补齐 exact engine usage session 与
+  `engine_method_binds.h` 生成回归。
+- 验证：Done。已运行
+  `script/run-gradle-targeted-tests.sh --tests BackendPropertyAccessResolverTest,CLoadPropertyInsnGenTest,CStorePropertyInsnGenTest,CCodegenEngineMethodUsageSessionTest,CCodegenEngineMethodBindHeaderTest`
+  和 `script/run-gradle-targeted-tests.sh --tests LoadStorePropertyInsnGenEngineInheritanceTest`，两组均通过。
+
+- `LoadPropertyInsnGen`：
+  - resolved ENGINE property 调用 `resolveEnginePropertyReadAccessor(...)`。
+  - 调用参数顺序为 `receiver` 或 `receiver, fixedIndex`；`index = 0` 必须作为有效固定实参发出。
+  - result assignment 继续走 `CBodyBuilder.callAssign(...)`，保持现有返回值/生命周期路径。
+- `StorePropertyInsnGen`：
+  - resolved ENGINE property 调用 `resolveEnginePropertyWriteAccessor(...)`。
+  - 调用参数顺序为 `receiver, value` 或 `receiver, fixedIndex, value`。
+  - value 仍来自 `bodyBuilder.valueOfVar(valueVar)`，不在生成器里手写生命周期逻辑。
+- `EnginePropertyAccessor` 到 exact engine helper usage 的转换必须使用 method owner 作为 helper owner；
+  property owner 只保留为 property 语义和错误上下文，不参与 `EngineMethodSymbolKey` 身份。
+- 本阶段不能改变 unknown object runtime fallback、GDCC getter/setter-self fast path、builtin member-backed property、
+  以及 `LOAD_PROPERTY` / `STORE_PROPERTY` 的类型检查方向。
+
+0E：现有 fallback 与迁移边界回归。
+
+状态（2026-05-19）：Done。
+
+- `LoadPropertyInsnGen` / `StorePropertyInsnGen` 的非 exact-engine 边界保持不变：unknown object runtime fallback、
+  GDCC getter/setter-self fast path、builtin member-backed property 都由现有测试继续保护。
+- 0E 新增入口 fail-fast 回归：缺失 object/result/value variable 和 `Nil` receiver 不会落入 runtime fallback 或 property lookup。
+- `BackendPropertyAccessResolverTest` 新增迁移边界样本：当 property name 与 raw accessor name 不一致时，Stage 4
+  可消费的 helper/material 只跟随 0C resolver 的 raw getter/setter metadata；同时补齐 indexed setter 参数形态不匹配的
+  写侧 fail-fast。
+- 旧 ENGINE direct wrapper 的 property-name 拼接路径不再作为长期边界；0D 接线后，consumer 与 Stage 4 module-local
+  wrapper 生成都必须以 0C resolver 输出为事实源。
 
 - `LoadPropertyInsnGen` / `StorePropertyInsnGen` 的现有分支必须有测试保护：
   - unknown object 仍走 `godot_Object_get/set`。
-  - ENGINE owner 仍走 engine direct wrapper 路径，但后续阶段 4 的 wrapper lookup 材料必须来自 0C resolver，而不是从 property name 猜 getter/setter。
+  - ENGINE owner 走 exact engine helper 路径；helper lookup 材料必须来自 0C resolver，而不是从 property name 猜 getter/setter。
   - GDCC owner 的 getter-self / setter-self fast path 继续只用于 GDCC property。
   - builtin property 仍走 `godot_<Builtin>_get/set_<member>`。
-- 阶段 0 完成后，后续阶段 4 接入 module-local property wrapper 时，只需要消费 0C 的 resolver 输出，不再重新解释 Godot JSON。
+- 阶段 0 完成后，后续阶段 4 接入 module-local property wrapper 时，只需要复用 0D 的 consumer/usage 材料，不再重新解释 Godot JSON。
 
 验收：
 
@@ -1168,12 +1284,15 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 - `ExtensionApiLoaderMetadataTest` 验证 member offset/meta 的 build configuration 差异：
   `Vector3.z` 在 `float_32` 或 `float_64` 下为 `offset=8/meta=float`，在 `double_32` 或 `double_64`
   下为 `offset=16/meta=double`；`Color.r` 在 `double_64` 下仍为 `offset=0/meta=float`。
+- `ExtensionApiLoaderMetadataTest` 通过 `ExtensionAPI` 集中查询 API 验证 layout metadata，且覆盖缺失
+  build configuration、缺失 class、缺失 member 和空 metadata 的负向查询。
 - `ScopePropertyResolverTest` 或 `ClassRegistryTest` 验证 layout metadata 不改变 builtin property surface：
   `Vector3.x`、`Color.r` 仍来自 `ExtensionBuiltinClass.members`，而不是从 `builtin_class_member_offsets` 合成。
 - `ExtensionApiLoaderMetadataTest` 验证 `String`、`Array`、`Dictionary` constructor index 不丢失。
 - `ExtensionApiLoaderMetadataTest` 验证 `globalConstants()` 字段存在；Godot 4.5.1 当前为空时返回空集合，
   非空 fixture 能保留 `name/value/is_bitfield`，且 `value` 不被截断。
-- `ClassRegistryTest` / `CLoadStaticInsnGenTest` 验证后续脚本若引用 global constant，走同一 Java 模型和 literal
+- `ClassRegistryScopeTest` / `FrontendTopBindingAnalyzerTest` / `FrontendLoweringBodyInsnPassTest` /
+  `CLoadStaticInsnGenTest` 验证脚本或 IR 引用 global constant 时，走同一 Java 模型和 int64 literal
   materialization，不通过 wrapper 或 JSON 回扫补生成。
 - `ExtensionBuiltinClassMetadataTest` 验证 `has_destructor`、nullable `indexing_return_type` 和 `is_keyed` 被加载。
 - `ExtensionGdClassPropertyMetadataTest` 验证 ordinary engine property 的 getter/setter/type 保留，例如 `Node.name`。
@@ -1993,6 +2112,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - 验证 offset/meta 的真实布局差异，而不是只验证列表非空：
     `Vector3.z` 在 float 配置下为 `offset=8/meta=float`，在 double 配置下为 `offset=16/meta=double`；
     `Color.r` 在 double 配置下仍为 `offset=0/meta=float`。
+  - 验证 layout 查询统一走 `ExtensionAPI.find/requireBuiltinClassSize(...)` 和
+    `find/requireBuiltinClassMemberLayout(...)`，负向覆盖缺失 build configuration、缺失 class、缺失 member 和空 metadata。
   - 验证 `ExtensionBuiltinClass.members[]` 与 `ExtensionBuiltinClassMemberOffsets` 能按 member 名交叉校验，
     但不会把 offset 表当成 property surface。
   - 验证 builtin constructor index 在模型中保留；builtin method hash、utility function hash、engine method hash 作为 lookup metadata 保留。
@@ -2267,7 +2388,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   已被删除；阶段 5 的窄范围清理会移除已知旧 `<includeRoot>/gdextension-lite` 子树。
 - `entry.c`、`entry.h`、`engine_method_binds.h` 能只依赖 `gdcc/**` 与 `godot/**` 编译。
 - `ExtensionApiLoader` 不再丢弃 `builtin_class_sizes`、`builtin_class_member_offsets`。
-- `ExtensionAPI` 承载顶层 `global_constants[]`；`godot_global_constants.h` 从该模型全量预生成，当前 4.5.1 为空时也稳定输出空 header。
+- `ExtensionAPI` 承载顶层 `global_constants[]`；`ClassRegistry`、裸常量 lowering 和 `@GlobalScope` static-load
+  都从该模型读取；`godot_global_constants.h` 从该模型全量预生成，当前 4.5.1 为空时也稳定输出空 header。
 - builtin layout metadata 能按 `float_32`、`float_64`、`double_32`、`double_64` 查询 size、member offset 和 member meta；
   `Vector3.z` 的 float/double offset/meta 差异、`Color.r` 的 double-build `float` meta 都有回归测试覆盖。
 - `ExtensionGdClass.PropertyInfo` 保留 engine property `getter`、`setter`、nullable `index`，且

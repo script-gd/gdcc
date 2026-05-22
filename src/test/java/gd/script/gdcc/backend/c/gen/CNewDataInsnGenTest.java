@@ -55,6 +55,13 @@ public class CNewDataInsnGenTest {
     }
 
     @Test
+    @DisplayName("literal_int should preserve godot_int64-width values")
+    void literalIntShouldPreserveInt64Width() {
+        var body = generateBody("i", GdIntType.INT, false, new LiteralIntInsn("i", 4_294_967_296L));
+        assertTrue(body.contains("$i = 4294967296;"));
+    }
+
+    @Test
     @DisplayName("literal_float should use assignExpr")
     void literalFloatShouldAssignExpr() {
         var body = generateBody("f", GdFloatType.FLOAT, false, new LiteralFloatInsn("f", 1.5));

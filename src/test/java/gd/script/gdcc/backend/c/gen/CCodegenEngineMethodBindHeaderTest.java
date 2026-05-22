@@ -14,9 +14,12 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
+import gd.script.gdcc.lir.insn.StorePropertyInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
@@ -154,6 +157,59 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         assertFalse(entrySource.contains("gdcc_engine_method_bind_probe_touch_P_RV("), entrySource);
         assertFalse(entrySource.contains("godot_Probe_touch("), entrySource);
+    }
+
+    @Test
+    @DisplayName("generate should emit bind header for exact engine property accessors")
+    void generateShouldEmitBindHeaderForExactEnginePropertyAccessors() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var accessProperties = newVoidFunction("access_window_properties");
+        accessProperties.createAndAddVariable("window", new GdObjectType("Window"));
+        accessProperties.createAndAddVariable("title", GdStringType.STRING);
+        accessProperties.createAndAddVariable("flag", GdBoolType.BOOL);
+        accessProperties.createAndAddVariable("flag_value", GdBoolType.BOOL);
+        entry(accessProperties).appendInstruction(new LoadPropertyInsn("title", "window_title", "window"));
+        entry(accessProperties).appendInstruction(new StorePropertyInsn("window_title", "window", "title"));
+        entry(accessProperties).appendInstruction(new LoadPropertyInsn("flag", "unresizable", "window"));
+        entry(accessProperties).appendInstruction(new StorePropertyInsn("unresizable", "window", "flag_value"));
+        entry(accessProperties).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(accessProperties);
+
+        var module = new LirModule("engine_property_bind_header_module", List.of(hostClass));
+        var codegen = newCodegen(
+                module,
+                apiWith(List.of(), List.of(windowClassWithPropertyAccessors())),
+                List.of(hostClass)
+        );
+        var renderedFiles = renderFiles(codegen.generate());
+        var entrySource = renderedFiles.get("entry.c");
+        var bindHeader = renderedFiles.get("engine_method_binds.h");
+
+        assertContainsAll(
+                entrySource,
+                "gdcc_engine_call_window_get_title_override_P_RT($window)",
+                "gdcc_engine_call_window_set_title_override_PT_RV($window, &$title);",
+                "gdcc_engine_call_window_get_flag_PI_RZ($window, 0)",
+                "gdcc_engine_call_window_set_flag_PIZ_RV($window, 0, $flag_value);"
+        );
+        assertContainsAll(
+                bindHeader,
+                "gdcc_engine_method_bind_window_get_title_override_P_RT(",
+                "gdcc_engine_method_bind_window_set_title_override_PT_RV(",
+                "gdcc_engine_method_bind_window_get_flag_PI_RZ(",
+                "gdcc_engine_method_bind_window_set_flag_PIZ_RV(",
+                "gdcc_engine_call_window_get_title_override_P_RT(",
+                "gdcc_engine_call_window_set_title_override_PT_RV(",
+                "gdcc_engine_call_window_get_flag_PI_RZ(",
+                "gdcc_engine_call_window_set_flag_PIZ_RV("
+        );
+        assertFalse(entrySource.contains("window_get_window_title"), entrySource);
+        assertFalse(entrySource.contains("window_set_window_title"), entrySource);
+        assertFalse(entrySource.contains("godot_Window_get_window_title"), entrySource);
+        assertFalse(entrySource.contains("godot_Window_set_window_title"), entrySource);
+        assertFalse(bindHeader.contains("window_get_window_title"), bindHeader);
+        assertFalse(bindHeader.contains("window_set_window_title"), bindHeader);
     }
 
     @Test
@@ -780,6 +836,89 @@ class CCodegenEngineMethodBindHeaderTest {
                 List.of(),
                 List.of(),
                 List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass windowClassWithPropertyAccessors() {
+        var getTitle = new ExtensionGdClass.ClassMethod(
+                "get_title_override",
+                false,
+                false,
+                false,
+                false,
+                81L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("String"),
+                List.of()
+        );
+        var setTitle = new ExtensionGdClass.ClassMethod(
+                "set_title_override",
+                false,
+                false,
+                false,
+                false,
+                82L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(new ExtensionFunctionArgument("title", "String", null, null))
+        );
+        var getFlag = new ExtensionGdClass.ClassMethod(
+                "get_flag",
+                false,
+                false,
+                false,
+                false,
+                83L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("bool"),
+                List.of(new ExtensionFunctionArgument("flag", "enum::Window.Flags", null, null))
+        );
+        var setFlag = new ExtensionGdClass.ClassMethod(
+                "set_flag",
+                false,
+                false,
+                false,
+                false,
+                84L,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
+                List.of(
+                        new ExtensionFunctionArgument("flag", "enum::Window.Flags", null, null),
+                        new ExtensionFunctionArgument("enabled", "bool", null, null)
+                )
+        );
+        return new ExtensionGdClass(
+                "Window",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(getTitle, setTitle, getFlag, setFlag),
+                List.of(),
+                List.of(
+                        new ExtensionGdClass.PropertyInfo(
+                                "window_title",
+                                "String",
+                                true,
+                                true,
+                                "",
+                                "get_title_override",
+                                "set_title_override",
+                                null
+                        ),
+                        new ExtensionGdClass.PropertyInfo(
+                                "unresizable",
+                                "bool",
+                                true,
+                                true,
+                                "",
+                                "get_flag",
+                                "set_flag",
+                                0
+                        )
+                ),
                 List.of()
         );
     }

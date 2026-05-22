@@ -219,14 +219,7 @@ public final class BackendMethodCallResolver {
                                                                     @NotNull ScopeResolvedMethod resolved) {
         var mode = toDispatchMode(resolved.ownerKind());
         var ownerClassName = resolved.ownerClass().getName();
-        var sourceParameters = resolved.function().getParameters();
-        var parameters = new java.util.ArrayList<MethodParamSpec>(resolved.parameters().size());
-        for (var i = 0; i < resolved.parameters().size(); i++) {
-            var sourceParameter = isExtensionMethodMetadata(resolved)
-                    ? sourceParameters.get(i)
-                    : null;
-            parameters.add(toMethodParamSpec(resolved.parameters().get(i), sourceParameter));
-        }
+        var parameters = toMethodParamSpecs(resolved);
         var engineMethodBindSpec = resolveEngineMethodBindSpec(bodyBuilder, resolved, mode);
         return new ResolvedMethodCall(
                 mode,
@@ -249,6 +242,18 @@ public final class BackendMethodCallResolver {
                 resolved.isVararg(),
                 resolved.isStatic()
         );
+    }
+
+    static @NotNull List<MethodParamSpec> toMethodParamSpecs(@NotNull ScopeResolvedMethod resolved) {
+        var sourceParameters = resolved.function().getParameters();
+        var parameters = new java.util.ArrayList<MethodParamSpec>(resolved.parameters().size());
+        for (var i = 0; i < resolved.parameters().size(); i++) {
+            var sourceParameter = isExtensionMethodMetadata(resolved)
+                    ? sourceParameters.get(i)
+                    : null;
+            parameters.add(toMethodParamSpec(resolved.parameters().get(i), sourceParameter));
+        }
+        return List.copyOf(parameters);
     }
 
     /// Only exact engine class metadata contributes method-bind identity.
@@ -376,13 +381,13 @@ public final class BackendMethodCallResolver {
     }
 
     /// Exact engine helper naming assumes bind lookup identity has already been validated.
-    private static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
-                                                                   @NotNull String methodName,
-                                                                   @NotNull List<MethodParamSpec> parameters,
-                                                                   @NotNull GdType returnType,
-                                                                   @Nullable EngineMethodBindSpec engineMethodBindSpec,
-                                                                   boolean isVararg,
-                                                                   boolean isStatic) {
+    static @NotNull String renderEngineMethodCFunctionName(@NotNull String ownerClassName,
+                                                           @NotNull String methodName,
+                                                           @NotNull List<MethodParamSpec> parameters,
+                                                           @NotNull GdType returnType,
+                                                           @Nullable EngineMethodBindSpec engineMethodBindSpec,
+                                                           boolean isVararg,
+                                                           boolean isStatic) {
         Objects.requireNonNull(engineMethodBindSpec, "Exact engine route requires method bind spec");
         return new EngineMethodSymbolKey(
                 ownerClassName,

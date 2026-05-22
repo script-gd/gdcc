@@ -497,7 +497,17 @@ public final class CBodyBuilder {
         if (matchedValue == null) {
             throw invalidInsn("Global enum value '" + valueName + "' not found in enum '" + enumName + "'");
         }
-        return assignVar(target, valueOfExpr(Integer.toString(matchedValue.value()), GdIntType.INT));
+        return assignVar(target, valueOfExpr(Long.toString(matchedValue.value()), GdIntType.INT));
+    }
+
+    /// Assigns a top-level Godot global constant to a target variable.
+    public @NotNull CBodyBuilder assignGlobalConstant(@NotNull TargetRef target,
+                                                      @NotNull String constantName) {
+        var globalConstant = classRegistry().findGlobalConstant(constantName);
+        if (globalConstant == null) {
+            throw invalidInsn("Global constant '" + constantName + "' not found");
+        }
+        return assignVar(target, valueOfExpr(Long.toString(globalConstant.value()), GdIntType.INT));
     }
 
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName, @NotNull List<ValueRef> args) {

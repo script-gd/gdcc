@@ -78,6 +78,12 @@ writable-route payload 只负责冻结“如何把 leaf mutation 写回 owner ch
 
 这条边界不能被打破。若 payload 开始承载求值解释，或 lowering 重新解释 AST target / receiver，最终一定会重新形成双账本漂移。
 
+CFG builder 内部的 opaque route helper 可以返回非空 carrier record，用来同时保留“是否存在 writable
+route payload”和当前 identifier/self 的 published binding。这个 carrier 不是 payload 本身：`FrontendBinding`
+只作为 builder 局部 provenance，`FrontendWritableRoutePayload` 仍然是唯一可交给 `CallItem` /
+`AssignmentItem` 的写回合同。`CONSTANT` 等 read-only binding 可以有 binding provenance，但其 payload 必须为
+`null`，表示普通值可读但没有 writable provenance。
+
 ### 1.2 payload shape
 
 当前 payload 冻结为：

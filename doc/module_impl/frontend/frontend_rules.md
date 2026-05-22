@@ -97,6 +97,9 @@
   - `IdentifierExpression + SELF` 不是合法 alias/input surface；当前 analyzer 只会对 explicit `SelfExpression` 发布 `SELF`，所以 builder 与 body lowering 都必须 fail-fast，不能把它静默恢复成 `"self"`
   - `receiverValueIdOrNull == null` 的 implicit self fallback 仍是另一条 call execution 路径，不能和 explicit `SelfExpression` 或非法 `IdentifierExpression + SELF` 混为一谈
   - nested `CallExpression`、`AttributeCallStep`、以及其它 effect-open / 未分类 argument surface 必须回退 ordinary temp snapshot，避免 future rebinding form 静默穿透 alias
+- `frontend.lowering.cfg` 中用于 opaque value 的 route helper 必须返回非空 carrier；carrier 内的 nullable
+  payload 才表达“这个 ordinary value 没有 writable route”。`FrontendBinding` 可作为 builder 内部 provenance
+  保留，但 binding kind 不等于完整读写语义，不能直接扩散到 `FrontendWritableRoutePayload` 或 CFG public item。
 - value-context `and` / `or` 的 LIR 形态必须保持为“branch + branch-local bool constant + merge slot assign”；不得生成 `BinaryOpInsn(AND/OR)`。
 - `FrontendTopBindingAnalyzer` 当前只发布 symbol category，不区分 read / write / call 等 usage 语义；assignment 左值链头等 use-site 也可能进入 `symbolBindings()`。
 - 若后续 frontend 需要记录完整用法，必须扩展 `FrontendBinding` 模型，不要依赖当前 binding kind 反推读写调用语义。

@@ -14,6 +14,7 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.util.StringUtil;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
@@ -85,6 +86,16 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     session.requireSelfSlot();
                     block.appendNonTerminatorInstruction(new LoadPropertyInsn(resultSlotId, binding.symbolName(), "self"));
                 }
+                case CONSTANT -> {
+                    if (binding.declarationSite() instanceof ExtensionGlobalConstant globalConstant) {
+                        block.appendNonTerminatorInstruction(new LiteralIntInsn(resultSlotId, globalConstant.value()));
+                        return block;
+                    }
+                    throw session.unsupportedSequenceItem(
+                            item,
+                            "constant binding is not supported by frontend body lowering: " + binding.symbolName()
+                    );
+                }
                 default -> throw session.unsupportedSequenceItem(
                         item,
                         "identifier binding kind is not supported by frontend body lowering: " + binding.kind()
@@ -119,7 +130,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
             switch (node.kind()) {
                 case "integer" -> block.appendNonTerminatorInstruction(new LiteralIntInsn(
                         resultSlotId,
-                        Integer.parseInt(sourceText)
+                        Long.parseLong(sourceText)
                 ));
                 case "number" -> {
                     if (sourceText.contains(".")) {
@@ -131,7 +142,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     }
                     block.appendNonTerminatorInstruction(new LiteralIntInsn(
                             resultSlotId,
-                            Integer.parseInt(sourceText)
+                            Long.parseLong(sourceText)
                     ));
                 }
                 case "float" -> block.appendNonTerminatorInstruction(new LiteralFloatInsn(

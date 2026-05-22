@@ -26,7 +26,9 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.ClassRegistry;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
@@ -916,6 +918,43 @@ class FrontendCfgGraphBuilderTest {
     }
 
     @Test
+    void buildExecutableBodyKeepsGlobalConstantIdentifierOnOpaqueValueSurface() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_global_constant_read_surface.gd",
+                """
+                        class_name CfgBuilderGlobalConstantReadSurface
+                        extends RefCounted
+                        
+                        func ping() -> int:
+                            return GDCC_TEST_BIG_FLAG
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderGlobalConstantReadSurface",
+                        "RuntimeCfgBuilderGlobalConstantReadSurface"
+                ),
+                new ClassRegistry(createGlobalConstantFixtureApi())
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var stopNode = assertInstanceOf(FrontendCfgGraph.StopNode.class, build.graph().requireNode("stop_1"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var constant = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        var valueItem = assertInstanceOf(OpaqueExprValueItem.class, entryNode.items().getFirst());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(1, entryNode.items().size()),
+                () -> assertSame(constant, valueItem.expression()),
+                () -> assertEquals(List.of(), valueItem.operandValueIds()),
+                () -> assertEquals(valueItem.resultValueId(), stopNode.returnValueIdOrNull()),
+                () -> assertTrue(entryNode.items().stream().noneMatch(DirectSlotAliasValueItem.class::isInstance))
+        );
+    }
+
+    @Test
     void buildExecutableBodyKeepsOrdinarySelfReadOnOpaqueValueSurface() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_builder_self_read_surface.gd",
@@ -1043,6 +1082,55 @@ class FrontendCfgGraphBuilderTest {
                         exception.getMessage()
                 ),
                 () -> assertTrue(exception.getMessage().contains("binding kind SELF"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenConstantIdentifierIsUsedAsAssignmentTarget() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_identifier_constant_writable_route.gd",
+                """
+                        class_name CfgBuilderIdentifierConstantWritableRoute
+                        extends RefCounted
+                        
+                        func ping(seed: int) -> int:
+                            var value := seed
+                            value = seed + 1
+                            return value
+                        """,
+                "ping",
+                Map.of(
+                        "CfgBuilderIdentifierConstantWritableRoute",
+                        "RuntimeCfgBuilderIdentifierConstantWritableRoute"
+                )
+        );
+
+        var rootBlock = analyzed.function().body();
+        var assignmentStatement = assertInstanceOf(ExpressionStatement.class, rootBlock.statements().get(1));
+        var assignmentExpression = assertInstanceOf(AssignmentExpression.class, assignmentStatement.expression());
+        var target = assertInstanceOf(IdentifierExpression.class, assignmentExpression.left());
+        var originalBinding = analyzed.analysisData().symbolBindings().get(target);
+        analyzed.analysisData().symbolBindings().put(
+                target,
+                new FrontendBinding(
+                        "value",
+                        FrontendBindingKind.CONSTANT,
+                        originalBinding == null ? target : originalBinding.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertTrue(
+                        exception.getMessage().contains("cannot publish a writable route"),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(exception.getMessage().contains("binding kind CONSTANT"), exception.getMessage())
         );
     }
 
@@ -2527,11 +2615,27 @@ class FrontendCfgGraphBuilderTest {
             @NotNull String functionName,
             @NotNull Map<String, String> topLevelCanonicalNameMap
     ) throws Exception {
+        return analyzeFunction(
+                fileName,
+                source,
+                functionName,
+                topLevelCanonicalNameMap,
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        );
+    }
+
+    private static @NotNull AnalyzedFunction analyzeFunction(
+            @NotNull String fileName,
+            @NotNull String source,
+            @NotNull String functionName,
+            @NotNull Map<String, String> topLevelCanonicalNameMap,
+            @NotNull ClassRegistry classRegistry
+    ) {
         var module = parseModule(fileName, source, topLevelCanonicalNameMap);
         var diagnostics = new DiagnosticManager();
         var analysisData = new FrontendSemanticAnalyzer().analyzeForCompile(
                 module,
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                classRegistry,
                 diagnostics
         );
         return new AnalyzedFunction(
@@ -2539,6 +2643,22 @@ class FrontendCfgGraphBuilderTest {
                 diagnostics,
                 analysisData,
                 requireFunctionDeclaration(module.units().getFirst().ast(), functionName)
+        );
+    }
+
+    private static @NotNull ExtensionAPI createGlobalConstantFixtureApi() throws Exception {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                List.of(new ExtensionGlobalConstant("GDCC_TEST_BIG_FLAG", 4_294_967_296L, true)),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                defaultApi.classes(),
+                defaultApi.singletons(),
+                defaultApi.nativeStructures()
         );
     }
 

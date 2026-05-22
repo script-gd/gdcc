@@ -7,6 +7,7 @@ import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
@@ -18,9 +19,11 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdColorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
+import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
@@ -145,8 +148,8 @@ public class CLoadPropertyInsnGenTest {
     void enginePropertyUsesEngineGetter() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
-                List.of(), List.of(), List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of(), List.of(engineMethod("get_name", 101L, "String", List.of())), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "", "get_name", "set_name", null)),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
@@ -171,7 +174,119 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(gdccClass, func);
-        assertTrue(body.contains("godot_Node_get_name($node)"));
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT($node)"), body);
+        assertFalse(body.contains("godot_Node_get_name("), body);
+    }
+
+    @Test
+    @DisplayName("Engine property getter should follow raw accessor name instead of property name")
+    void enginePropertyGetterShouldUseRawAccessorName() {
+        var windowClass = new ExtensionGdClass(
+                "Window", false, true, "Object", "core",
+                List.of(), List.of(engineMethod("get_title_override", 201L, "String", List.of())), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("window_title", "String", true, true, "", "get_title_override", "set_title_override", null)),
+                List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(windowClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("use_window");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("window", new GdObjectType("Window"), null, func));
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "window_title", "window"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("gdcc_engine_call_window_get_title_override_P_RT($window)"), body);
+        assertFalse(body.contains("get_window_title"), body);
+        assertFalse(body.contains("godot_Window_get_window_title("), body);
+    }
+
+    @Test
+    @DisplayName("Indexed engine property getter should pass fixed index 0")
+    void indexedEnginePropertyGetterShouldPassFixedIndexZero() {
+        var windowClass = new ExtensionGdClass(
+                "Window", false, true, "Object", "core",
+                List.of(), List.of(engineMethod(
+                "get_flag",
+                301L,
+                "bool",
+                List.of(arg("flag", "enum::Window.Flags"))
+        )), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("unresizable", "bool", true, true, "", "get_flag", "set_flag", 0)),
+                List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(windowClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("use_window_flag");
+        func.setReturnType(GdBoolType.BOOL);
+        func.addParameter(new LirParameterDef("window", new GdObjectType("Window"), null, func));
+        func.createAndAddVariable("tmp", GdBoolType.BOOL);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "unresizable", "window"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var body = codegen.generateFuncBody(gdccClass, func);
+        assertTrue(body.contains("gdcc_engine_call_window_get_flag_PI_RZ($window, 0)"), body);
+        assertFalse(body.contains("get_unresizable"), body);
+    }
+
+    @Test
+    @DisplayName("Readable engine property should fail-fast when raw getter method metadata is missing")
+    void enginePropertyGetterShouldFailWhenRawMethodMetadataMissing() {
+        var nodeClass = new ExtensionGdClass(
+                "Node", false, true, "Object", "core",
+                List.of(), List.of(), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "", "get_name", "set_name", null)),
+                List.of()
+        );
+        var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
+
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("use_node");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("node", new GdObjectType("Node"), null, func));
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "node"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(api, List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("get_name"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("METHOD_MISSING"), ex.getMessage());
     }
 
     @Test
@@ -180,7 +295,7 @@ public class CLoadPropertyInsnGenTest {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
                 List.of(), List.of(), List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("name", "String", false, true, "")),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", false, true, "", "get_name", "set_name", null)),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
@@ -396,6 +511,86 @@ public class CLoadPropertyInsnGenTest {
     }
 
     @Test
+    @DisplayName("LOAD_PROPERTY should reject missing object variable before resolver fallback")
+    void loadPropertyShouldRejectMissingObjectVariable() {
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("load_missing_object");
+        func.setReturnType(GdStringType.STRING);
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "missing_obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Object variable ID missing_obj does not exist"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("LOAD_PROPERTY should reject missing result variable before property lookup")
+    void loadPropertyShouldRejectMissingResultVariable() {
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("load_missing_result");
+        func.setReturnType(GdStringType.STRING);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("UnknownType"), null, func));
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("missing_tmp", "name", "obj"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("Result variable ID missing_tmp does not exist"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("LOAD_PROPERTY should reject Nil receiver instead of runtime object fallback")
+    void loadPropertyShouldRejectNilReceiver() {
+        var gdccClass = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("load_nil_receiver");
+        func.setReturnType(GdStringType.STRING);
+        func.createAndAddVariable("obj", GdNilType.NIL);
+        func.createAndAddVariable("tmp", GdStringType.STRING);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "name", "obj"));
+        entry.appendInstruction(new ReturnInsn("tmp"));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertTrue(ex.getMessage().contains("not a valid property target type"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Nil"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("GDCC getter call should apply assignment semantics for destroyable targets")
     void gdccGetterUsesAssignmentSemantics() {
         var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
@@ -498,9 +693,9 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var vectorBody = codegen.generateFuncBody(gdccClass, vectorFunc);
-        /// Unit-level body generation sees the builtin parameter as an already-usable ref slot.
-        /// The end-to-end ABI contract is covered separately by the integration test, where the
-        /// generated method wrapper passes a builtin-value pointer into the user method.
+        // Unit-level body generation sees the builtin parameter as an already-usable ref slot.
+        // The end-to-end ABI contract is covered separately by the integration test, where the
+        // generated method wrapper passes a builtin-value pointer into the user method.
         assertTrue(vectorBody.contains("godot_Vector3_get_x($vector)"), vectorBody);
         assertFalse(vectorBody.contains("godot_Object_get"), vectorBody);
 
@@ -717,8 +912,8 @@ public class CLoadPropertyInsnGenTest {
     void gdccReceiverShouldCallEngineOwnerGetterWithConversion() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
-                List.of(), List.of(), List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of(), List.of(engineMethod("get_name", 801L, "String", List.of())), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "", "get_name", "set_name", null)),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
@@ -744,8 +939,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("godot_Node_get_name((godot_Node*)gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr));"), body);
-        assertFalse(body.contains("godot_Node_get_name((godot_Node*)$obj);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)gdcc_object_to_godot_object_ptr($obj, MyClass_object_ptr));"), body);
+        assertFalse(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)$obj);"), body);
     }
 
     @Test
@@ -753,8 +948,8 @@ public class CLoadPropertyInsnGenTest {
     void engineChildReceiverShouldCallEngineParentGetterWithOwnerCast() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
-                List.of(), List.of(), List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of(), List.of(engineMethod("get_name", 901L, "String", List.of())), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "", "get_name", "set_name", null)),
                 List.of()
         );
         var controlClass = new ExtensionGdClass(
@@ -795,8 +990,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("godot_Node_get_name((godot_Node*)$control);"), body);
-        assertFalse(body.contains("godot_Control_get_name("), body);
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)$control);"), body);
+        assertFalse(body.contains("gdcc_engine_call_control_get_name_"), body);
     }
 
     @Test
@@ -804,8 +999,8 @@ public class CLoadPropertyInsnGenTest {
     void threeLevelGdccToEngineChainShouldResolveEngineOwnerGetter() {
         var nodeClass = new ExtensionGdClass(
                 "Node", false, true, "Object", "core",
-                List.of(), List.of(), List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "")),
+                List.of(), List.of(engineMethod("get_name", 1001L, "String", List.of())), List.of(),
+                List.of(new ExtensionGdClass.PropertyInfo("name", "String", true, true, "", "get_name", "set_name", null)),
                 List.of()
         );
         var api = new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(nodeClass), List.of(), List.of());
@@ -832,8 +1027,8 @@ public class CLoadPropertyInsnGenTest {
         codegen.prepare(ctx, module);
 
         var body = codegen.generateFuncBody(hostClass, func);
-        assertTrue(body.contains("godot_Node_get_name((godot_Node*)gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr));"), body);
-        assertFalse(body.contains("godot_Node_get_name((godot_Node*)$grand);"), body);
+        assertTrue(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)gdcc_object_to_godot_object_ptr($grand, GrandChildClass_object_ptr));"), body);
+        assertFalse(body.contains("gdcc_engine_call_node_get_name_P_RT((godot_Node*)$grand);"), body);
     }
 
     @Test
@@ -911,5 +1106,25 @@ public class CLoadPropertyInsnGenTest {
         };
         return new CodegenContext(projectInfo, classRegistry);
     }
-}
 
+    private static ExtensionGdClass.ClassMethod engineMethod(String name,
+                                                             long hash,
+                                                             String returnType,
+                                                             List<ExtensionFunctionArgument> arguments) {
+        return new ExtensionGdClass.ClassMethod(
+                name,
+                false,
+                false,
+                false,
+                false,
+                hash,
+                List.of(),
+                new ExtensionGdClass.ClassMethod.ClassMethodReturn(returnType),
+                arguments
+        );
+    }
+
+    private static ExtensionFunctionArgument arg(String name, String type) {
+        return new ExtensionFunctionArgument(name, type, null, null);
+    }
+}

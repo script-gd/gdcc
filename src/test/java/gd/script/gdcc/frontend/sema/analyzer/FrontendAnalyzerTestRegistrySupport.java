@@ -48,7 +48,7 @@ final class FrontendAnalyzerTestRegistrySupport {
                         )
                 ),
                 List.of(new ExtensionGdClass.SignalInfo("changed", List.of())),
-                List.of(new ExtensionGdClass.PropertyInfo("payload", "int", true, true, "0")),
+                List.of(new ExtensionGdClass.PropertyInfo("payload", "int", true, true, "0", "get_payload", "set_payload", null)),
                 List.of()
         ));
         return new ClassRegistry(new ExtensionAPI(

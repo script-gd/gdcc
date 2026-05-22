@@ -252,8 +252,16 @@ public record ExtensionGdClass(
         }
     }
 
-    public record PropertyInfo(String name, String type, boolean isReadable, boolean isWritable,
-                               String defaultValue) implements PropertyDef {
+    /// Engine property metadata keeps raw Godot accessors for later wrapper generation.
+    /// `index = 0` is a valid indexed property value, so absence is represented by `null`.
+    public record PropertyInfo(String name,
+                               String type,
+                               boolean isReadable,
+                               boolean isWritable,
+                               String defaultValue,
+                               @Nullable String getter,
+                               @Nullable String setter,
+                               @Nullable Integer index) implements PropertyDef {
         @Override
         public @NotNull String getName() {
             return name;
@@ -279,12 +287,12 @@ public record ExtensionGdClass(
 
         @Override
         public @Nullable String getGetterFunc() {
-            return null;
+            return getter;
         }
 
         @Override
         public @Nullable String getSetterFunc() {
-            return null;
+            return setter;
         }
 
         @Override

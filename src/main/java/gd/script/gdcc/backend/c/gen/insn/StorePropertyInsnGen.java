@@ -6,6 +6,7 @@ import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
@@ -14,6 +15,7 @@ import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 
@@ -73,9 +75,19 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
                                 List.of(receiverValue, bodyBuilder.valueOfVar(valueVar)));
                     }
                     case ENGINE -> {
-                        var setterName = "godot_" + objectLookup.ownerClass().getName() + "_set_" + insn.propertyName();
-                        bodyBuilder.callVoid(setterName,
-                                List.of(receiverValue, bodyBuilder.valueOfVar(valueVar)));
+                        var accessor = BackendPropertyAccessResolver.resolveEnginePropertyWriteAccessor(
+                                bodyBuilder,
+                                objectLookup,
+                                "STORE_PROPERTY"
+                        );
+                        var args = new ArrayList<CBodyBuilder.ValueRef>(accessor.index() == null ? 2 : 3);
+                        args.add(receiverValue);
+                        if (accessor.index() != null) {
+                            args.add(bodyBuilder.valueOfExpr(Integer.toString(accessor.index()), GdIntType.INT));
+                        }
+                        args.add(bodyBuilder.valueOfVar(valueVar));
+                        bodyBuilder.callVoid(accessor.cFunctionName(), args);
+                        bodyBuilder.recordUsedEngineMethodCall(accessor.toResolvedMethodCall());
                     }
                 }
             } else {

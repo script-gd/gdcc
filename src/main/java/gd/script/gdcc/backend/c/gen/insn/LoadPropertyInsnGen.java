@@ -9,11 +9,13 @@ import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Objects;
@@ -91,8 +93,18 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                         bodyBuilder.callAssign(target, getterCall, propertyType, List.of(receiverValue));
                     }
                     case ENGINE -> {
-                        var getterName = "godot_" + lookup.ownerClass().getName() + "_get_" + insn.propertyName();
-                        bodyBuilder.callAssign(target, getterName, propertyType, List.of(receiverValue));
+                        var accessor = BackendPropertyAccessResolver.resolveEnginePropertyReadAccessor(
+                                bodyBuilder,
+                                lookup,
+                                "LOAD_PROPERTY"
+                        );
+                        var args = new ArrayList<CBodyBuilder.ValueRef>(accessor.index() == null ? 1 : 2);
+                        args.add(receiverValue);
+                        if (accessor.index() != null) {
+                            args.add(bodyBuilder.valueOfExpr(Integer.toString(accessor.index()), GdIntType.INT));
+                        }
+                        bodyBuilder.callAssign(target, accessor.cFunctionName(), accessor.returnType(), args);
+                        bodyBuilder.recordUsedEngineMethodCall(accessor.toResolvedMethodCall());
                     }
                 }
             } else {

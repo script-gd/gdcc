@@ -54,7 +54,7 @@ public final class NewDataInsnGen implements CInsnGen<NewDataInstruction> {
             case LiteralBoolInsn(_, var value) ->
                     bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Boolean.toString(value), GdBoolType.BOOL);
             case LiteralIntInsn(_, var value) ->
-                    bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Integer.toString(value), GdIntType.INT);
+                    bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), Long.toString(value), GdIntType.INT);
             case LiteralNullInsn _ ->
                     bodyBuilder.assignExpr(requireWritableTarget(bodyBuilder, resultVar), "NULL", resultVar.type());
             case LiteralNilInsn _ -> emitNilLiteral(bodyBuilder, resultVar);

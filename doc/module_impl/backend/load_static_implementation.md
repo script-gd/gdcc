@@ -17,11 +17,12 @@
 
 `$r = load_static "<class_name>" "<static_name>"`
 
-当前后端只支持三类静态读取：
+当前后端只支持四类静态读取：
 
-1. global enum 项
-2. builtin class constants
-3. engine class integer constants
+1. `@GlobalScope` 顶层 global constants
+2. global enum 项
+3. builtin class constants
+4. engine class integer constants
 
 不支持：
 
@@ -36,7 +37,7 @@
 理由：
 
 - 与 GDScript 语义对齐：不开放脚本静态字段写入
-- builtin constants / global enums 均为只读语义
+- builtin constants / global enums / global constants 均为只读语义
 
 ---
 
@@ -46,7 +47,7 @@
 
 - `LoadStaticInsnGen`：
   - 做 IR 层校验（result 存在、可写、非 ref）
-  - 完成三路分发（enum / builtin / engine-int）
+  - 完成四路分发（global constant / enum / builtin / engine-int）
   - 调用 `CBodyBuilder` 与 `CBuiltinBuilder` 发射代码
 - `StoreStaticInsnGen`：
   - 对 `STORE_STATIC` 统一抛 `InvalidInsnException`
@@ -60,7 +61,23 @@
 
 ## 3. 元数据契约（ExtensionAPI）
 
-### 3.1 builtin constants
+### 3.0 global constants
+
+- 从顶层 `global_constants[]` 读取，进入 `ExtensionAPI.globalConstants()` 后由 `ClassRegistry` 建立按名索引。
+- `global_constants[]` 是 Godot `@GlobalScope` 的扁平常量表，不是 global enum 的 owner/member 分组。
+- Backend IR 使用 `load_static "@GlobalScope" "<NAME>"` 显式表示这一路径；裸脚本常量 lowering 可直接发
+  `literal_int`。
+- `ExtensionGlobalConstant.value` 使用 Java `long` 保存 Godot int64 metadata；后端输出十进制 `godot_int`
+  literal，不按 Java `int` 截断。
+
+### 3.1 global enum values
+
+- 从 `global_enums[].values[]` 读取。
+- `ExtensionEnumValue.value` 使用 Java `long` 保存 Godot int64 metadata；`load_static` 输出十进制
+  `godot_int` literal，不按 Java `int` 截断。
+- 静态类型仍是 `GdIntType.INT`。这里的 `long` 只是 metadata/literal carrier 宽度，不引入新的脚本整数类型。
+
+### 3.2 builtin constants
 
 `ExtensionBuiltinClass.ConstantInfo` 采用：
 
@@ -73,10 +90,12 @@
 - 在 codegen 阶段做“常量声明类型 -> 目标变量类型”兼容校验
 - 错误信息可定位到“常量声明类型”而不是仅凭 literal 推断
 
-### 3.2 engine class constants
+### 3.3 engine class constants
 
 - 从 `classes[].constants[]` 读取
 - 当前只接受可解析为整数的 `value`
+- 该值在模型中保持 Godot 原始字符串 literal；不要为了统一 enum value 宽度把 builtin / engine class
+  constant 的 construct string 改成数值 carrier。
 - 非整数常量直接 `InvalidInsnException`
 
 ---
@@ -122,13 +141,14 @@
 
 建议长期保留以下测试关注点：
 
-1. global enum 成功/失败
-2. builtin constant 成功（普通值 + `INF`）
-3. engine class integer constant 成功
-4. engine class non-integer constant 失败
-5. result 变量非法（缺失 / ref）
-6. `store_static` 统一拒绝
-7. builtin constant `type` 元数据解析正确
+1. `@GlobalScope` global constant 成功/失败
+2. global enum 成功/失败
+3. builtin constant 成功（普通值 + `INF`）
+4. engine class integer constant 成功
+5. engine class non-integer constant 失败
+6. result 变量非法（缺失 / ref）
+7. `store_static` 统一拒绝
+8. builtin constant `type` 元数据解析正确
 
 建议命令（按需 targeted）：
 

@@ -194,6 +194,10 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - child subtree 先产出 value id
 - parent item 只消费 operand value ids
 - body lowering 不允许回到原 AST 子树重做第二套递归 lower
+- opaque value publication 中的 writable-route helper 返回非空 carrier，但 carrier 内部的
+  `writableRoutePayloadOrNull` 仍可为空；这表示该 ordinary value 没有可写回来源，而不是 publication
+  helper 没有运行。identifier/self 的 `bindingOrNull` 只服务 CFG builder 内部 alias / fail-fast 判断，
+  不扩散到 `CallItem` / `AssignmentItem` 的 public payload surface。
 
 plain assignment、compound assignment 与 constructor materialization 当前各自冻结为：
 

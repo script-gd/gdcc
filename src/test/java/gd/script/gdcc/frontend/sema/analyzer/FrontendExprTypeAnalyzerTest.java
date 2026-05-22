@@ -2484,7 +2484,7 @@ class FrontendExprTypeAnalyzerTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0")),
+                List.of(new ExtensionGdClass.PropertyInfo("locked", "int", true, false, "0", "get_locked", "set_locked", null)),
                 List.of()
         ));
         return new ClassRegistry(new ExtensionAPI(

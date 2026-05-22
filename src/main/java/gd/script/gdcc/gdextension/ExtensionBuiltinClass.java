@@ -4,7 +4,6 @@ import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.scope.*;
-import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.resolver.ScopeTypeParsers;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
@@ -19,6 +18,8 @@ import java.util.Objects;
 public record ExtensionBuiltinClass(
         @SerializedName("name") String name,
         @SerializedName("is_keyed") boolean isKeyed,
+        @SerializedName("has_destructor") boolean hasDestructor,
+        @SerializedName("indexing_return_type") @Nullable String indexingReturnType,
         @SerializedName("operators") List<ClassOperator> operators,
         @SerializedName("methods") List<ClassMethod> methods,
         @SerializedName("enums") List<ClassEnum> enums,
@@ -26,6 +27,17 @@ public record ExtensionBuiltinClass(
         @SerializedName("members") List<MemberInfo> members,
         @SerializedName("constants") List<ConstantInfo> constants
 ) implements ClassDef {
+    public ExtensionBuiltinClass(String name,
+                                 boolean isKeyed,
+                                 List<ClassOperator> operators,
+                                 List<ClassMethod> methods,
+                                 List<ClassEnum> enums,
+                                 List<ConstructorInfo> constructors,
+                                 List<MemberInfo> members,
+                                 List<ConstantInfo> constants) {
+        this(name, isKeyed, false, null, operators, methods, enums, constructors, members, constants);
+    }
+
     @Override
     public @NotNull String getName() {
         return name;
