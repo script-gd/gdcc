@@ -34,6 +34,9 @@
   - 阶段 4 引入可选 `godot_module_bindings.h/.c` 时，才反向更新 API / CLI 层 generated file、output link 和
     `/generated` 目录列表断言。
 - 目标 Godot ABI：`GodotVersion.V451` / Godot 4.5.1
+- 目标 Godot ABI 配置：仅支持 `float_64`，也就是 64-bit pointer + single-precision `real_t`。
+  `REAL_T_IS_DOUBLE` 和 32-bit Godot build configuration 不在 GDCC C backend 支持范围内，生成的 ABI support
+  header 必须在这些配置下 fail-fast。
 - 重点参考：
   - `doc/module_impl/backend/engine_method_bind_implementation.md`
   - `doc/gdcc_c_backend.md`
@@ -183,11 +186,12 @@ class method wrapper 和 singleton getter 等符号。
   - 覆盖当前 `generated/native_structures.h` 中的 audio、physics、glyph、object id、script profiling 等结构体。
 - `src/main/c/codegen/include_451/godot/godot_builtin_sizes.h`
   - 替代 `generated/variant/sizes.h`。
-  - 提供 `GDCC_GODOT_SIZE_*` 或等价自有命名的 builtin ABI 尺寸表，并覆盖 pointer width 与 `REAL_T_IS_DOUBLE` 组合。
+  - 提供 `GDCC_GODOT_SIZE_*` 或等价自有命名的 builtin ABI 尺寸表，只生成 `float_64` 配置。
+  - 32-bit pointer 或 `REAL_T_IS_DOUBLE` 配置不是支持目标；该 header 必须用预处理错误直接拒绝。
   - builtin struct 声明处必须继续做 size assert，避免手写 builtin include 和 Godot ABI 漂移。
 - `src/main/c/codegen/include_451/godot/godot_builtin_layout.h`
   - 从 `builtin_class_member_offsets` 生成 builtin member layout 常量或 private assert 输入。
-  - 覆盖同一套 `float_32`、`float_64`、`double_32`、`double_64` build configuration。
+  - 只输出 `float_64` build configuration 的 `GDCC_GODOT_OFFSET_*` / `GDCC_GODOT_META_*`。
   - 每个成员必须保留 `member/offset/meta` 原始语义；`meta` 不是注释，它决定字段访问时应按 `float`、`double`、
     `int32`、`Vector2`、`Vector3` 等 ABI 形态解释内存。
   - 任何直接字段访问、未来 builtin scalar replacement、字段级优化或手写 builtin struct 声明都必须以该 layout
@@ -826,7 +830,8 @@ Godot 上游字段语义：
 - `builtin_class_member_offsets` 来自 Godot 的 builtin member offset/meta 表；它描述 `Vector2.x`、`Vector3.z`
   这类 builtin 复合值成员布局，也不属于 engine property 系统。
 - 上游对 size 和 member offset/meta 使用同一组 build configuration：
-  `float_32`、`float_64`、`double_32`、`double_64`。GDCC 模型必须保留这个维度，不能只读取当前宿主机配置。
+  `float_32`、`float_64`、`double_32`、`double_64`。GDCC metadata 模型必须保留这个维度，不能只读取当前宿主机配置；
+  但 C backend 生成物和运行时 ABI 只支持 `float_64`，其余配置只作为上游 metadata 完整性事实保留。
 - member offset/meta 是字段级 layout ABI，不是整体 size 的派生物：
   - `Vector3.z` 在 `float_32` / `float_64` 下是 `offset=8, meta=float`，在 `double_32` / `double_64`
     下是 `offset=16, meta=double`。
@@ -907,6 +912,8 @@ Godot 上游字段语义：
   - `Vector3.z` 在 `float_32` 或 `float_64` 下是 `offset=8, meta=float`。
   - `Vector3.z` 在 `double_32` 或 `double_64` 下是 `offset=16, meta=double`。
   - `Color.r` 在 `double_64` 下仍是 `offset=0, meta=float`。
+- 以上 build configuration 差异只约束 `ExtensionAPI` metadata 读取完整性；阶段 1A 之后的 C ABI support
+  只消费 `float_64`，不为 `double_*` 或 `*_32` 生成可用分支。
 - builtin member-backed property 的现有语义不能因为 layout metadata 进入模型而改变：
   `Vector3.x`、`Color.r` 仍通过 `ExtensionBuiltinClass.members -> synthetic PropertyInfo` 进入 shared property route；
   `builtin_class_member_offsets` 只参与 ABI/layout 生成与校验。
@@ -1284,6 +1291,8 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 - `ExtensionApiLoaderMetadataTest` 验证 member offset/meta 的 build configuration 差异：
   `Vector3.z` 在 `float_32` 或 `float_64` 下为 `offset=8/meta=float`，在 `double_32` 或 `double_64`
   下为 `offset=16/meta=double`；`Color.r` 在 `double_64` 下仍为 `offset=0/meta=float`。
+- 这些差异测试只证明 loader 没有丢弃 Godot 上游 metadata；C backend ABI support 的可编译目标仍只有
+  `float_64`。
 - `ExtensionApiLoaderMetadataTest` 通过 `ExtensionAPI` 集中查询 API 验证 layout metadata，且覆盖缺失
   build configuration、缺失 class、缺失 member 和空 metadata 的负向查询。
 - `ScopePropertyResolverTest` 或 `ClassRegistryTest` 验证 layout metadata 不改变 builtin property surface：
@@ -1307,6 +1316,24 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
   Stage 4 wrapper 不能从 property name 猜 accessor method。
 
 ### 阶段 1A：建立 Godot ABI 声明头
+
+状态同步（2026-05-22）：
+
+- [x] 重新确认 AGENTS、阶段 1A 边界和阶段 0 metadata 前置状态。
+- [x] 并行调研相关文档、metadata 模型、C include/template 依赖和测试现状。
+- [x] 新增 `GodotBindingTool generate-abi-support`，并确保只消费 `ExtensionAPI` 模型。
+- [x] 生成并提交 `include_451/godot` ABI header 集合。
+- [x] 补充正反向单元测试和 `<godot_abi.h>` include-only 编译 smoke。
+- [x] 运行定向测试并记录验证结果：
+  `script/run-gradle-targeted-tests.sh --tests ExtensionApiLoaderMetadataTest,GodotBindingToolAbiSupportTest,GodotAbiHeaderCompileTest,EngineMethodAbiCodecTest,EngineMethodSymbolKeyTest`。
+- [x] 根据支持范围收窄 ABI support：`godot_builtin_sizes.h` / `godot_builtin_layout.h` 只输出 `float_64`，
+  并在 `REAL_T_IS_DOUBLE` 或 32-bit target 下编译期拒绝。
+- [x] 测试迭代记录：新增 `float_64`-only generator 测试时，`ExtensionApiLoader.loadDefault()` 的
+  `IOException` 必须显式进入测试方法签名，避免测试编译阶段先于 ABI 行为验证失败。
+- [x] `float_64` 收窄后重新运行定向测试并通过：
+  `script/run-gradle-targeted-tests.sh --tests ExtensionApiLoaderMetadataTest,GodotBindingToolAbiSupportTest,GodotAbiHeaderCompileTest,EngineMethodAbiCodecTest,EngineMethodSymbolKeyTest`。
+- [x] 重新运行 `GodotBindingTool generate-abi-support` 到 `/tmp/gdcc-godot-abi-check`，逐个比对 ABI support header，
+  确认 checked-in 输出与当前生成器一致。
 
 阶段 0 验收通过后，新增 `include_451/godot` 目录，只处理可以独立编译验证的 ABI 声明，不切换模板和构建输入。
 本阶段交付的是“能被 GDCC helper 和后续 wrapper include 的头文件集合”：
@@ -1332,12 +1359,12 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
     physics extension result、script profiling info 等类型。
 - `godot/godot_builtin_sizes.h`
   - 从 Godot builtin size metadata 生成 `GDCC_GODOT_SIZE_*` 或等价自有命名。
-  - 覆盖 pointer width 与 `REAL_T_IS_DOUBLE` 分支。
+  - 只生成 `float_64`；32-bit pointer 与 `REAL_T_IS_DOUBLE` 配置不在支持范围内，必须 fail-fast。
 - `godot/godot_builtin_layout.h`
   - 从 Godot builtin member offset metadata 生成 `GDCC_GODOT_OFFSET_*`、`GDCC_GODOT_META_*` 或等价自有命名。
-  - 覆盖与 size 表相同的 4 个 build configuration。
-  - 能表达 `Vector3.z` 这类 scalar member、`Transform2D.origin` 这类复合 member，以及 `Color` 在 double build
-    下仍使用 `float` meta 的特殊布局。
+  - 只生成与 size 表相同的 `float_64` build configuration。
+  - 能表达 `Vector3.z` 这类 scalar member、`Transform2D.origin` 这类复合 member，以及 `Color` 使用 `float`
+    meta 的固定布局。
 - `godot/godot_builtin_types.h`
   - 手写或生成 builtin struct typedef，统一由 `godot_abi.h` 聚合。
   - 每个 builtin struct 必须用 `godot_builtin_sizes.h` 做 size assert，并用 `godot_builtin_layout.h`
@@ -2391,7 +2418,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
 - `ExtensionAPI` 承载顶层 `global_constants[]`；`ClassRegistry`、裸常量 lowering 和 `@GlobalScope` static-load
   都从该模型读取；`godot_global_constants.h` 从该模型全量预生成，当前 4.5.1 为空时也稳定输出空 header。
 - builtin layout metadata 能按 `float_32`、`float_64`、`double_32`、`double_64` 查询 size、member offset 和 member meta；
-  `Vector3.z` 的 float/double offset/meta 差异、`Color.r` 的 double-build `float` meta 都有回归测试覆盖。
+  这些查询只作为上游 metadata 完整性验证。C backend ABI support 只支持 `float_64`，`REAL_T_IS_DOUBLE` 与 32-bit
+  target 都必须在 generated header 层 fail-fast。
 - `ExtensionGdClass.PropertyInfo` 保留 engine property `getter`、`setter`、nullable `index`，且
   `getGetterFunc()` / `getSetterFunc()` 返回 raw Godot method name。
 - engine property resolver 使用 raw getter/setter method metadata 和 nullable index 生成调用材料；ordinary、indexed、

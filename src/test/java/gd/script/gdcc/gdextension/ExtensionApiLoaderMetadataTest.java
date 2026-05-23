@@ -201,6 +201,24 @@ class ExtensionApiLoaderMetadataTest {
     }
 
     @Test
+    void nativeStructureMetadataShouldKeepRepresentativeRawFormats() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+
+        assertAll(
+                () -> assertEquals("float left;float right", nativeStructure(api, "AudioFrame").format()),
+                () -> assertEquals("uint64_t id = 0", nativeStructure(api, "ObjectID").format()),
+                () -> assertTrue(
+                        nativeStructure(api, "Glyph").format().contains("uint16_t flags = 0"),
+                        "Glyph should keep primitive fields and default literals"
+                ),
+                () -> assertTrue(
+                        nativeStructure(api, "CaretInfo").format().contains("TextServer::Direction leading_direction"),
+                        "CaretInfo should keep scoped enum references for C header generation"
+                )
+        );
+    }
+
+    @Test
     void enginePropertyMetadataShouldKeepRawAccessorsIndexesAndExplicitFlags() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
         var nodeName = propertyOf(api, "Node", "name");
@@ -238,6 +256,13 @@ class ExtensionApiLoaderMetadataTest {
                 .filter(builtinClass -> className.equals(builtinClass.name()))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Missing builtin class " + className));
+    }
+
+    private static ExtensionNativeStructure nativeStructure(ExtensionAPI api, String name) {
+        return api.nativeStructures().stream()
+                .filter(structure -> name.equals(structure.name()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing native structure " + name));
     }
 
     private static List<Integer> constructorIndexes(ExtensionBuiltinClass builtinClass) {

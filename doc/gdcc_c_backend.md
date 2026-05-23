@@ -15,6 +15,8 @@
     - `gdcc_new_Variant_with_gdcc_Object(obj)` receives a raw GDCC wrapper pointer, selects the generated `<Class>_object_ptr` helper with `_Generic`, and performs the GDCC -> Godot pointer conversion internally.
     - Do not pre-convert the argument with `gdcc_object_to_godot_object_ptr(...)` before passing it to this macro.
 - `godot_float` is usually a typedef for `double`, but it should always be used as `godot_float` for compatibility.
+- The C backend supports only Godot `float_64` ABI: 64-bit pointers with single-precision `real_t`.
+  `REAL_T_IS_DOUBLE` and 32-bit Godot builds are outside the supported target matrix.
 - Any Object, including engine object and GDCC objects, are always passed as pointers, and the pointers are passed as values, usually we do not use pointers to pointers.
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
 - Engine types and GDCC types are all Objects, built-in types are not Objects.
