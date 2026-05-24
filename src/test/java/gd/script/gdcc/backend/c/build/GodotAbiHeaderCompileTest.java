@@ -75,6 +75,64 @@ class GodotAbiHeaderCompileTest {
         assertUnsupported(target32Bit, "does not support 32-bit Godot builtin ABI");
     }
 
+    @Test
+    void godotBindingHeaderAndAggregateSourceShouldCompile(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        var zig = ZigUtil.findZig();
+        Assumptions.assumeTrue(zig != null, "Zig executable is required for godot_binding compile smoke");
+        var source = tempDir.resolve("godot_binding_probe.c");
+        Files.writeString(source, """
+                #include <godot_binding.h>
+                static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
+                    (void)p_function_name;
+                    return NULL;
+                }
+                void gdcc_probe_lookup_fail_context(void) {
+                    const GDExtensionInt compatibility_hashes[] = {456, 789};
+                    gdcc_binding_lookup_context context = {
+                            .kind = "class_method_bind",
+                            .function_name = "godot_Node_add_child",
+                            .lookup_name = "add_child",
+                            .owner = "Node",
+                            .type = NULL,
+                            .has_primary_hash = (GDExtensionBool)1,
+                            .primary_hash = 123,
+                            .compatibility_hashes = compatibility_hashes,
+                            .compatibility_hash_count = 2,
+                    };
+                    gdcc_binding_lookup_fail(&context);
+                }
+                int gdcc_probe(void) {
+                    GDExtensionBool initialized = godot_initialize_interface(gdcc_fake_get_proc_address);
+                    GDExtensionVariantType type = godot_variant_get_type((GDExtensionConstVariantPtr)0);
+                    (void)type;
+                    return initialized != 0;
+                }
+                """);
+
+        var headerProbe = compileObject(zig, source, List.of(), tempDir.resolve("godot_binding_probe.o"));
+        assertEquals(0, headerProbe.exitCode(), headerProbe::diagnostic);
+
+        var oldSignatureSource = tempDir.resolve("godot_binding_old_lookup_probe.c");
+        Files.writeString(oldSignatureSource, """
+                #include <godot_binding.h>
+                void gdcc_probe_old_lookup_fail(void) {
+                    gdcc_binding_lookup_fail("interface", "mem_alloc");
+                }
+                """);
+        var oldSignatureProbe = compileObject(
+                zig,
+                oldSignatureSource,
+                List.of(),
+                tempDir.resolve("godot_binding_old_lookup_probe.o")
+        );
+        assertNotEquals(0, oldSignatureProbe.exitCode(), oldSignatureProbe::diagnostic);
+
+        var aggregateSource = Path.of("src/main/c/codegen/include_451/godot/godot_binding.c");
+        var aggregate = compileObject(zig, aggregateSource, List.of(), tempDir.resolve("godot_binding.o"));
+        assertEquals(0, aggregate.exitCode(), aggregate::diagnostic);
+    }
+
     private static CompileResult compileObject(
             Path zig,
             Path source,

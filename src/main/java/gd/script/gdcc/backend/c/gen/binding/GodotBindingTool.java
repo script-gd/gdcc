@@ -73,6 +73,17 @@ public final class GodotBindingTool {
                         : ExtensionApiLoader.loadVersion(parseGodotVersion(options.get("--gde")));
                 generateAbiSupport(api, out);
             }
+            case "generate-interface" -> {
+                var out = requirePathOption(options, "--out");
+                var header = requirePathOption(options, "--header");
+                checkGodotVersionOption(options.get("--gde"), "interface generation");
+                GodotInterfaceGenerator.generateInterfaceSupport(header, out);
+            }
+            case "generate-binding" -> {
+                var out = requirePathOption(options, "--out");
+                checkGodotVersionOption(options.get("--gde"), "binding aggregation");
+                GodotInterfaceGenerator.generateBindingSupport(out);
+            }
             default -> throw usage();
         }
     }
@@ -131,11 +142,20 @@ public final class GodotBindingTool {
         throw new IllegalArgumentException("Unsupported Godot version for ABI support generation: " + value);
     }
 
+    private static void checkGodotVersionOption(@Nullable String value, @NotNull String commandName) {
+        if (value == null || value.isBlank() || value.equals(GodotVersion.V451.version)) {
+            return;
+        }
+        throw new IllegalArgumentException("Unsupported Godot version for " + commandName + ": " + value);
+    }
+
     private static @NotNull IllegalArgumentException usage() {
         return new IllegalArgumentException("""
                 Usage:
                   GodotBindingTool generate-abi-support --gde 4.5.1 --out <dir>
                   GodotBindingTool generate-abi-support --api-resource /extension_api_451.json --out <dir>
+                  GodotBindingTool generate-interface --gde 4.5.1 --header <gdextension_interface.h> --out <dir>
+                  GodotBindingTool generate-binding --gde 4.5.1 --out <dir>
                 """.strip());
     }
 
