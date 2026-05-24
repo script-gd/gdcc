@@ -11,9 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class GodotAbiHeaderCompileTest {
     @Test
@@ -25,7 +23,7 @@ class GodotAbiHeaderCompileTest {
         Files.writeString(source, """
                 #include <godot_abi.h>
                 #include <stddef.h>
-                
+
                 static_assert(GDEXTENSION_VARIANT_TYPE_VECTOR3 == 9, "variant enum should come from gdextension_interface.h");
                 static_assert(GDEXTENSION_VARIANT_OP_ADD == 6, "operator enum should come from gdextension_interface.h");
                 static_assert(GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS == 4, "call error enum should be visible");
@@ -43,12 +41,12 @@ class GodotAbiHeaderCompileTest {
                 static_assert(sizeof(GDCC_GODOT_META_Color_r) == sizeof(float), "Color.r meta should stay float");
                 static_assert(sizeof(GDCC_GODOT_META_Vector3_z) == sizeof(float), "Vector3.z should be float-backed");
                 static_assert(GDCC_GODOT_OFFSET_Vector3_z == 8, "Vector3.z float_64 offset should be preserved");
-                
+
                 static godot_AudioFrame audio_frame;
                 static godot_Glyph glyph;
                 static godot_ObjectID object_id;
                 static godot_CaretInfo caret_info;
-                
+
                 int gdcc_probe(void) {
                     return (int)(audio_frame.left + glyph.advance + (float)object_id.id)
                             + (int)caret_info.leading_direction;
@@ -87,7 +85,7 @@ class GodotAbiHeaderCompileTest {
                     (void)p_function_name;
                     return NULL;
                 }
-                void gdcc_probe_lookup_fail_context(void) {
+                int gdcc_probe_lookup_fail_context(void) {
                     const GDExtensionInt compatibility_hashes[] = {456, 789};
                     gdcc_binding_lookup_context context = {
                             .kind = "class_method_bind",
@@ -95,23 +93,35 @@ class GodotAbiHeaderCompileTest {
                             .lookup_name = "add_child",
                             .owner = "Node",
                             .type = NULL,
-                            .has_primary_hash = (GDExtensionBool)1,
+                            .has_primary_hash = true,
                             .primary_hash = 123,
                             .compatibility_hashes = compatibility_hashes,
                             .compatibility_hash_count = 2,
+                            .suppress_internal_error = true,
                     };
-                    gdcc_binding_lookup_fail(&context);
+                    return !gdcc_binding_lookup_fail(&context);
                 }
                 int gdcc_probe(void) {
                     GDExtensionBool initialized = godot_initialize_interface(gdcc_fake_get_proc_address);
                     GDExtensionVariantType type = godot_variant_get_type((GDExtensionConstVariantPtr)0);
                     (void)type;
-                    return initialized != 0;
+                    return initialized;
                 }
                 """);
 
         var headerProbe = compileObject(zig, source, List.of(), tempDir.resolve("godot_binding_probe.o"));
         assertEquals(0, headerProbe.exitCode(), headerProbe::diagnostic);
+
+        var cxxSource = tempDir.resolve("godot_binding_cpp_probe.cpp");
+        Files.writeString(cxxSource, """
+                #include <godot_binding.h>
+
+                extern "C" int gdcc_probe_cpp(void) {
+                    return !godot_initialize_interface(nullptr);
+                }
+                """);
+        var cxxProbe = compileObject(zig, "c++", "-std=c++23", cxxSource, List.of(), tempDir.resolve("godot_binding_cpp_probe.o"));
+        assertEquals(0, cxxProbe.exitCode(), cxxProbe::diagnostic);
 
         var oldSignatureSource = tempDir.resolve("godot_binding_old_lookup_probe.c");
         Files.writeString(oldSignatureSource, """
@@ -133,8 +143,261 @@ class GodotAbiHeaderCompileTest {
         assertEquals(0, aggregate.exitCode(), aggregate::diagnostic);
     }
 
+    @Test
+    void bindingLookupFailShouldReturnFalseAndRespectInternalReportFlag(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        var zig = ZigUtil.findZig();
+        Assumptions.assumeTrue(zig != null, "Zig executable is required for lookup failure runtime smoke");
+        var source = tempDir.resolve("lookup_fail_probe.c");
+        Files.writeString(source, """
+                #include <godot_binding.h>
+
+                int main(void) {
+                    gdcc_binding_lookup_context default_context = {
+                            .kind = "utility",
+                            .function_name = "godot_utility_default",
+                            .lookup_name = "default_lookup",
+                            .owner = "Global",
+                            .type = "void",
+                    };
+                    if (gdcc_binding_lookup_fail(&default_context)) {
+                        return 10;
+                    }
+
+                    gdcc_binding_lookup_context suppressed_context = {
+                            .kind = "utility",
+                            .function_name = "godot_utility_suppressed",
+                            .lookup_name = "suppressed_lookup",
+                            .suppress_internal_error = true,
+                    };
+                    if (gdcc_binding_lookup_fail(&suppressed_context)) {
+                        return 20;
+                    }
+                    return 0;
+                }
+                """);
+
+        var probeObject = compileObject(zig, source, List.of(), tempDir.resolve("lookup_fail_probe.o"));
+        assertEquals(0, probeObject.exitCode(), probeObject::diagnostic);
+        var bindingObject = compileObject(
+                zig,
+                Path.of("src/main/c/codegen/include_451/godot/godot_binding.c"),
+                List.of(),
+                tempDir.resolve("godot_binding.o")
+        );
+        assertEquals(0, bindingObject.exitCode(), bindingObject::diagnostic);
+
+        var executable = tempDir.resolve("lookup_fail_probe");
+        var linked = linkExecutable(zig, List.of(probeObject.outputPath(), bindingObject.outputPath()), executable);
+        assertEquals(0, linked.exitCode(), linked::diagnostic);
+
+        var execution = runExecutable(executable);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+        assertTrue(execution.output().contains("lookup=default_lookup"), execution::diagnostic);
+        assertFalse(execution.output().contains("suppressed_lookup"), execution::diagnostic);
+    }
+
+    @Test
+    void godotInitializeInterfaceShouldReturnFalseAndClearPartialPointersOnLookupMiss(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        var zig = ZigUtil.findZig();
+        Assumptions.assumeTrue(zig != null, "Zig executable is required for interface lookup failure runtime smoke");
+        var source = tempDir.resolve("interface_lookup_fail_probe.c");
+        Files.writeString(source, """
+                #include <godot_binding.h>
+
+                #include <string.h>
+
+                static void gdcc_fake_print_error_with_message(
+                        const char *p_description,
+                        const char *p_message,
+                        const char *p_function,
+                        const char *p_file,
+                        int32_t p_line,
+                        GDExtensionBool p_editor_notify
+                ) {
+                    (void)p_description;
+                    (void)p_message;
+                    (void)p_function;
+                    (void)p_file;
+                    (void)p_line;
+                    (void)p_editor_notify;
+                }
+
+                static void gdcc_fake_print_error(
+                        const char *p_description,
+                        const char *p_function,
+                        const char *p_file,
+                        int32_t p_line,
+                        GDExtensionBool p_editor_notify
+                ) {
+                    (void)p_description;
+                    (void)p_function;
+                    (void)p_file;
+                    (void)p_line;
+                    (void)p_editor_notify;
+                }
+
+                static void gdcc_fake_unused_interface(void) {
+                }
+
+                static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
+                    if (strcmp(p_function_name, "print_error_with_message") == 0) {
+                        return (GDExtensionInterfaceFunctionPtr)gdcc_fake_print_error_with_message;
+                    }
+                    if (strcmp(p_function_name, "print_error") == 0) {
+                        return (GDExtensionInterfaceFunctionPtr)gdcc_fake_print_error;
+                    }
+                    if (strcmp(p_function_name, "mem_realloc") == 0) {
+                        return NULL;
+                    }
+                    return (GDExtensionInterfaceFunctionPtr)gdcc_fake_unused_interface;
+                }
+
+                int main(void) {
+                    if (godot_initialize_interface(gdcc_fake_get_proc_address)) {
+                        return 10;
+                    }
+                    if (gdcc_interface_get_godot_version != NULL || gdcc_interface_mem_alloc != NULL) {
+                        return 20;
+                    }
+                    return 0;
+                }
+                """);
+
+        var probeObject = compileObject(zig, source, List.of(), tempDir.resolve("interface_lookup_fail_probe.o"));
+        assertEquals(0, probeObject.exitCode(), probeObject::diagnostic);
+        var bindingObject = compileObject(
+                zig,
+                Path.of("src/main/c/codegen/include_451/godot/godot_binding.c"),
+                List.of(),
+                tempDir.resolve("godot_binding.o")
+        );
+        assertEquals(0, bindingObject.exitCode(), bindingObject::diagnostic);
+
+        var executable = tempDir.resolve("interface_lookup_fail_probe");
+        var linked = linkExecutable(zig, List.of(probeObject.outputPath(), bindingObject.outputPath()), executable);
+        assertEquals(0, linked.exitCode(), linked::diagnostic);
+
+        var execution = runExecutable(executable);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+    }
+
+    @Test
+    void godotInterfaceInlineWrappersShouldShareOnePointerTableAcrossTranslationUnits(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        var zig = ZigUtil.findZig();
+        Assumptions.assumeTrue(zig != null, "Zig executable is required for godot_interface multi-TU smoke");
+        var mainSource = tempDir.resolve("interface_probe_main.c");
+        Files.writeString(mainSource, """
+                #include <godot_binding.h>
+
+                #include <stdint.h>
+                #include <string.h>
+
+                int gdcc_mem_alloc_calls = 0;
+                int gdcc_variant_destroy_calls = 0;
+
+                int gdcc_call_mem_alloc_from_other_tu(void);
+                void gdcc_call_variant_destroy_from_other_tu(void);
+
+                static void *gdcc_fake_mem_alloc(size_t p_bytes) {
+                    gdcc_mem_alloc_calls += (int)p_bytes;
+                    return (void *)(uintptr_t)0x1;
+                }
+
+                static void gdcc_fake_variant_destroy(GDExtensionVariantPtr p_self) {
+                    if (p_self == NULL) {
+                        gdcc_variant_destroy_calls++;
+                    }
+                }
+
+                static void gdcc_fake_unused_interface(void) {
+                }
+
+                static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
+                    if (strcmp(p_function_name, "mem_alloc") == 0) {
+                        return (GDExtensionInterfaceFunctionPtr)gdcc_fake_mem_alloc;
+                    }
+                    if (strcmp(p_function_name, "variant_destroy") == 0) {
+                        return (GDExtensionInterfaceFunctionPtr)gdcc_fake_variant_destroy;
+                    }
+                    return (GDExtensionInterfaceFunctionPtr)gdcc_fake_unused_interface;
+                }
+
+                int main(void) {
+                    if (!godot_initialize_interface(gdcc_fake_get_proc_address)) {
+                        return 10;
+                    }
+                    if (gdcc_call_mem_alloc_from_other_tu() != 8) {
+                        return 20;
+                    }
+                    gdcc_call_variant_destroy_from_other_tu();
+                    if (gdcc_mem_alloc_calls != 8 || gdcc_variant_destroy_calls != 1) {
+                        return 30;
+                    }
+                    return 0;
+                }
+                """);
+        var memAllocTu = tempDir.resolve("interface_probe_mem_alloc.c");
+        Files.writeString(memAllocTu, """
+                #include <godot_binding.h>
+
+                extern int gdcc_mem_alloc_calls;
+
+                int gdcc_call_mem_alloc_from_other_tu(void) {
+                    void *result = godot_mem_alloc(8);
+                    return result != NULL ? gdcc_mem_alloc_calls : -1;
+                }
+                """);
+        var variantTu = tempDir.resolve("interface_probe_variant.c");
+        Files.writeString(variantTu, """
+                #include <godot_interface.h>
+
+                void gdcc_call_variant_destroy_from_other_tu(void) {
+                    godot_variant_destroy((GDExtensionVariantPtr)0);
+                }
+                """);
+
+        var mainObject = compileObject(zig, mainSource, List.of(), tempDir.resolve("interface_probe_main.o"));
+        assertEquals(0, mainObject.exitCode(), mainObject::diagnostic);
+        var memAllocObject = compileObject(zig, memAllocTu, List.of(), tempDir.resolve("interface_probe_mem_alloc.o"));
+        assertEquals(0, memAllocObject.exitCode(), memAllocObject::diagnostic);
+        var variantObject = compileObject(zig, variantTu, List.of(), tempDir.resolve("interface_probe_variant.o"));
+        assertEquals(0, variantObject.exitCode(), variantObject::diagnostic);
+        var bindingObject = compileObject(
+                zig,
+                Path.of("src/main/c/codegen/include_451/godot/godot_binding.c"),
+                List.of(),
+                tempDir.resolve("godot_binding.o")
+        );
+        assertEquals(0, bindingObject.exitCode(), bindingObject::diagnostic);
+
+        var executable = tempDir.resolve("interface_probe");
+        var linked = linkExecutable(
+                zig,
+                List.of(mainObject.outputPath(), memAllocObject.outputPath(), variantObject.outputPath(), bindingObject.outputPath()),
+                executable
+        );
+        assertEquals(0, linked.exitCode(), linked::diagnostic);
+
+        var execution = runExecutable(executable);
+        assertEquals(0, execution.exitCode(), execution::diagnostic);
+    }
+
     private static CompileResult compileObject(
             Path zig,
+            Path source,
+            List<String> extraArgs,
+            Path output
+    ) throws IOException, InterruptedException {
+        return compileObject(zig, "cc", "-std=c23", source, extraArgs, output);
+    }
+
+    private static CompileResult compileObject(
+            Path zig,
+            String compiler,
+            String standard,
             Path source,
             List<String> extraArgs,
             Path output
@@ -142,8 +405,8 @@ class GodotAbiHeaderCompileTest {
         var includeDir = Path.of("src/main/c/codegen/include_451/godot").toAbsolutePath().normalize();
         var command = new ArrayList<String>();
         command.add(zig.toString());
-        command.add("cc");
-        command.add("-std=c23");
+        command.add(compiler);
+        command.add(standard);
         command.add("-I" + includeDir);
         command.addAll(extraArgs);
         command.add("-c");
@@ -157,7 +420,41 @@ class GodotAbiHeaderCompileTest {
         var processOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         var exitCode = process.waitFor();
 
-        return new CompileResult(command, exitCode, processOutput);
+        return new CompileResult(command, exitCode, processOutput, output);
+    }
+
+    private static CompileResult linkExecutable(
+            Path zig,
+            List<Path> objects,
+            Path output
+    ) throws IOException, InterruptedException {
+        var command = new ArrayList<String>();
+        command.add(zig.toString());
+        command.add("cc");
+        for (var object : objects) {
+            command.add(object.toString());
+        }
+        command.add("-o");
+        command.add(output.toString());
+
+        var process = new ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start();
+        var processOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        var exitCode = process.waitFor();
+
+        return new CompileResult(command, exitCode, processOutput, output);
+    }
+
+    private static CompileResult runExecutable(Path executable) throws IOException, InterruptedException {
+        var command = List.of(executable.toString());
+        var process = new ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start();
+        var processOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        var exitCode = process.waitFor();
+
+        return new CompileResult(command, exitCode, processOutput, executable);
     }
 
     private static void assertUnsupported(CompileResult result, String expectedMessage) {
@@ -168,7 +465,8 @@ class GodotAbiHeaderCompileTest {
     private record CompileResult(
             List<String> command,
             int exitCode,
-            String output
+            String output,
+            Path outputPath
     ) {
         String diagnostic() {
             return String.join(" ", command) + "\n" + output;

@@ -44,43 +44,71 @@ class GodotInterfaceGeneratorTest {
 
         assertAll(
                 () -> assertTrue(generatedHeader.contains(
-                        "GDExtensionBool godot_initialize_interface(GDExtensionInterfaceGetProcAddress get_proc_address);"
+                        "GDCC_GODOT_DECL GDExtensionBool godot_initialize_interface("
+                                + "GDExtensionInterfaceGetProcAddress get_proc_address);"
                 )),
                 () -> assertTrue(generatedHeader.contains("typedef struct gdcc_binding_lookup_context {")),
                 () -> assertTrue(generatedHeader.contains("const char *function_name;")),
                 () -> assertTrue(generatedHeader.contains("GDExtensionBool has_primary_hash;")),
                 () -> assertTrue(generatedHeader.contains("const GDExtensionInt *compatibility_hashes;")),
+                () -> assertTrue(generatedHeader.contains("GDExtensionBool suppress_internal_error;")),
                 () -> assertTrue(generatedHeader.contains(
-                        "GDCC_NORETURN void gdcc_binding_lookup_fail(const gdcc_binding_lookup_context *context);"
+                        "GDCC_GODOT_DECL GDExtensionBool gdcc_binding_lookup_fail("
+                                + "\n        const gdcc_binding_lookup_context *context);"
                 )),
+                () -> assertFalse(generatedHeader.contains("GDCC_NORETURN")),
                 () -> assertFalse(generatedHeader.contains("void gdcc_binding_lookup_fail(const char *kind")),
-                () -> assertTrue(generatedHeader.contains("void *godot_mem_alloc(size_t p_bytes);")),
+                () -> assertTrue(generatedHeader.contains("GDCC_GODOT_INLINE void *godot_mem_alloc(size_t p_bytes)")),
                 () -> assertTrue(generatedHeader.contains(
-                        "void godot_variant_new_nil(GDExtensionUninitializedVariantPtr r_dest);"
+                        "GDCC_GODOT_DECL extern GDExtensionInterfaceMemAlloc gdcc_interface_mem_alloc;"
+                )),
+                () -> assertFalse(generatedHeader.contains("static GDExtensionInterfaceMemAlloc")),
+                () -> assertTrue(generatedHeader.contains("""
+                        GDCC_GODOT_INLINE void *godot_mem_alloc(size_t p_bytes) {
+                            return gdcc_interface_mem_alloc(p_bytes);
+                        }
+                        """)),
+                () -> assertFalse(generatedHeader.contains("void *godot_mem_alloc(size_t p_bytes);\n")),
+                () -> assertTrue(generatedHeader.contains(
+                        "GDCC_GODOT_INLINE void godot_variant_new_nil(GDExtensionUninitializedVariantPtr r_dest)"
+                )),
+                () -> assertTrue(generatedHeader.contains("""
+                        GDCC_GODOT_INLINE void godot_variant_new_nil(GDExtensionUninitializedVariantPtr r_dest) {
+                            gdcc_interface_variant_new_nil(r_dest);
+                        }
+                        """)),
+                () -> assertTrue(generatedHeader.contains(
+                        "GDCC_GODOT_INLINE void godot_string_new_with_utf8_chars("
+                                + "GDExtensionUninitializedStringPtr r_dest, const char *p_contents)"
                 )),
                 () -> assertTrue(generatedHeader.contains(
-                        "void godot_string_new_with_utf8_chars(GDExtensionUninitializedStringPtr r_dest, const char *p_contents);"
-                )),
-                () -> assertTrue(generatedHeader.contains(
-                        "void godot_object_method_bind_call(GDExtensionMethodBindPtr p_method_bind, "
+                        "GDCC_GODOT_INLINE void godot_object_method_bind_call(GDExtensionMethodBindPtr p_method_bind, "
                                 + "GDExtensionObjectPtr p_instance, const GDExtensionConstVariantPtr *p_args, "
                                 + "GDExtensionInt p_arg_count, GDExtensionUninitializedVariantPtr r_ret, "
-                                + "GDExtensionCallError *r_error);"
+                                + "GDExtensionCallError *r_error)"
                 )),
                 () -> assertTrue(generatedHeader.contains(
-                        "void godot_editor_help_load_xml_from_utf8_chars(const char *p_data);"
+                        "GDCC_GODOT_INLINE void godot_editor_help_load_xml_from_utf8_chars(const char *p_data)"
                 )),
                 () -> assertTrue(generatedHeader.contains(
-                        "void godot_editor_register_get_classes_used_callback("
+                        "GDCC_GODOT_INLINE void godot_editor_register_get_classes_used_callback("
                                 + "GDExtensionClassLibraryPtr p_library, "
-                                + "GDExtensionEditorGetClassesUsedCallback p_callback);"
+                                + "GDExtensionEditorGetClassesUsedCallback p_callback)"
                 )),
                 () -> assertTrue(generatedHeader.contains(
-                        "void godot_register_main_loop_callbacks("
+                        "GDCC_GODOT_INLINE void godot_register_main_loop_callbacks("
                                 + "GDExtensionClassLibraryPtr p_library, "
-                                + "const GDExtensionMainLoopCallbacks *p_callbacks);"
+                                + "const GDExtensionMainLoopCallbacks *p_callbacks)"
                 )),
                 () -> assertFalse(generatedHeader.contains("godot_get_proc_address")),
+                () -> assertFalse(generatedHeader.contains("get_proc_address(")),
+                () -> assertFalse(generatedHeader.contains("if (gdcc_interface_mem_alloc == NULL)")),
+                () -> assertTrue(generatedSource.contains(
+                        "GDCC_GODOT_DECL GDExtensionInterfaceMemAlloc gdcc_interface_mem_alloc = NULL;"
+                )),
+                () -> assertFalse(generatedSource.contains(
+                        "static GDExtensionInterfaceMemAlloc gdcc_interface_mem_alloc = NULL;"
+                )),
                 () -> assertTrue(generatedSource.contains(
                         "GDCC_RESOLVE_INTERFACE(gdcc_interface_mem_alloc, "
                                 + "GDExtensionInterfaceMemAlloc, \"godot_mem_alloc\", \"mem_alloc\");"
@@ -94,18 +122,37 @@ class GodotInterfaceGeneratorTest {
                 () -> assertTrue(generatedSource.contains("GDExtensionInterfacePrintErrorWithMessage")),
                 () -> assertTrue(generatedSource.contains("primary_hash=%lld")),
                 () -> assertTrue(generatedSource.contains("compatibility_hashes=[")),
-                () -> assertTrue(generatedSource.contains("gdcc_interface_lookup_fail(function_name, lookup_name);")),
+                () -> assertTrue(generatedSource.contains("context->suppress_internal_error")),
                 () -> assertTrue(generatedSource.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){")),
+                () -> assertTrue(generatedSource.contains("goto gdcc_initialize_interface_failed;")),
+                () -> assertTrue(generatedSource.contains("gdcc_initialize_interface_failed:")),
+                () -> assertTrue(generatedSource.contains(
+                        "return gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"
+                )),
+                () -> assertTrue(generatedSource.contains(".function_name = \"godot_initialize_interface\"")),
+                () -> assertTrue(generatedSource.contains(".lookup_name = \"get_proc_address\"")),
                 () -> assertFalse(generatedSource.contains("gdcc_binding_lookup_fail(\"interface\"")),
+                () -> assertFalse(generatedSource.contains("GDCC_NORETURN")),
+                () -> assertFalse(generatedSource.contains("abort();")),
+                () -> assertFalse(generatedSource.contains("gdcc_interface_lookup_fail")),
                 () -> assertTrue(generatedSource.contains("gdcc_clear_interface_pointers();")),
                 () -> assertTrue(generatedSource.contains("gdcc_prepare_lookup_diagnostics(get_proc_address);")),
-                () -> assertTrue(generatedSource.contains("return (GDExtensionBool)1;")),
+                () -> assertTrue(generatedSource.contains("return true;")),
+                () -> assertTrue(generatedSource.contains("return false;")),
+                () -> assertTrue(generatedSource.contains("lookup_name,\n                0,\n                true);")),
+                () -> assertFalse(generatedSource.contains("(GDExtensionBool)1")),
+                () -> assertFalse(generatedSource.contains("(GDExtensionBool)0")),
                 () -> assertFalse(generatedSource.contains("gdcc_get_proc_address")),
                 () -> assertFalse(generatedSource.contains("gdcc_reset_interface_cache")),
                 () -> assertFalse(generatedSource.contains("if (gdcc_interface_mem_alloc == NULL)")),
-                () -> assertTrue(generatedSource.contains("""
+                () -> assertFalse(generatedSource.contains("""
                         void *godot_mem_alloc(size_t p_bytes) {
                             return gdcc_interface_mem_alloc(p_bytes);
+                        }
+                        """)),
+                () -> assertFalse(generatedSource.contains("""
+                        void godot_variant_new_nil(GDExtensionUninitializedVariantPtr r_dest) {
+                            gdcc_interface_variant_new_nil(r_dest);
                         }
                         """))
         );
@@ -145,11 +192,17 @@ class GodotInterfaceGeneratorTest {
 
         assertAll(
                 () -> assertTrue(generatedHeader.contains(
-                        "void godot_strange_lookup_name(GDExtensionUninitializedVariantPtr r_dest);"
+                        "GDCC_GODOT_DECL extern GDExtensionsInterfaceUnexpectedTypedefName "
+                                + "gdcc_interface_strange_lookup_name;"
+                )),
+                () -> assertTrue(generatedHeader.contains(
+                        "GDCC_GODOT_INLINE void godot_strange_lookup_name("
+                                + "GDExtensionUninitializedVariantPtr r_dest)"
                 )),
                 () -> assertFalse(generatedHeader.contains("godot_unexpected_typedef_name")),
                 () -> assertTrue(generatedSource.contains(
-                        "static GDExtensionsInterfaceUnexpectedTypedefName gdcc_interface_strange_lookup_name = NULL;"
+                        "GDCC_GODOT_DECL GDExtensionsInterfaceUnexpectedTypedefName "
+                                + "gdcc_interface_strange_lookup_name = NULL;"
                 )),
                 () -> assertTrue(generatedSource.contains(
                         "GDCC_RESOLVE_INTERFACE(gdcc_interface_strange_lookup_name, "
@@ -196,6 +249,7 @@ class GodotInterfaceGeneratorTest {
                 typedef int (*GDExtensionInterfaceEagerValue)(int p_value);
                 """);
 
+        var generatedHeader = files.get("godot_interface.h");
         var generatedSource = files.get("godot_interface.c");
 
         assertAll(
@@ -207,19 +261,30 @@ class GodotInterfaceGeneratorTest {
                         "GDCC_RESOLVE_INTERFACE(gdcc_interface_eager_value, "
                                 + "GDExtensionInterfaceEagerValue, \"godot_eager_value\", \"eager_value\");"
                 )),
-                () -> assertTrue(generatedSource.contains("""
+                () -> assertTrue(generatedHeader.contains("""
+                        GDCC_GODOT_INLINE void godot_eager_void(void) {
+                            gdcc_interface_eager_void();
+                        }
+                        """)),
+                () -> assertTrue(generatedHeader.contains("""
+                        GDCC_GODOT_INLINE int godot_eager_value(int p_value) {
+                            return gdcc_interface_eager_value(p_value);
+                        }
+                        """)),
+                () -> assertFalse(generatedHeader.contains("get_proc_address(")),
+                () -> assertFalse(generatedSource.contains("gdcc_get_proc_address")),
+                () -> assertFalse(generatedSource.contains("if (gdcc_interface_eager_void == NULL)")),
+                () -> assertFalse(generatedSource.contains("if (gdcc_interface_eager_value == NULL)")),
+                () -> assertFalse(generatedSource.contains("""
                         void godot_eager_void(void) {
                             gdcc_interface_eager_void();
                         }
                         """)),
-                () -> assertTrue(generatedSource.contains("""
+                () -> assertFalse(generatedSource.contains("""
                         int godot_eager_value(int p_value) {
                             return gdcc_interface_eager_value(p_value);
                         }
-                        """)),
-                () -> assertFalse(generatedSource.contains("gdcc_get_proc_address")),
-                () -> assertFalse(generatedSource.contains("if (gdcc_interface_eager_void == NULL)")),
-                () -> assertFalse(generatedSource.contains("if (gdcc_interface_eager_value == NULL)"))
+                        """))
         );
     }
 

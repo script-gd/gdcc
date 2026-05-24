@@ -32,7 +32,8 @@ The generated backend may call GDCC-owned helpers next to gdextension-lite bindi
 - `gdcc_new_Variant_with_gdcc_Object(obj)` packs a raw GDCC wrapper pointer into a `Variant` and performs the object-pointer conversion internally.
 - `gdcc_ref_counted_init_raw(obj, initialize)` handles explicit generated-code initialization for freshly constructed GDCC `RefCounted` wrappers.
 
-Current generated `entry.c` initializes GDCC's project-owned interface wrapper table by calling
-`godot_initialize_interface(...)` from the GDExtension entry point. That initialization resolves every
-bundled Godot 4.5.1 interface function pointer before any runtime `godot_*` wrapper can execute; the
-old `gdextension_lite_initialize(...)` path remains only historical context in this document.
+The migration replaces `gdextension_lite_initialize(...)` with GDCC's project-owned
+`godot_initialize_interface(...)` entry path. That initialization resolves every bundled Godot 4.5.1
+interface function pointer before any runtime `godot_*` wrapper can execute. If a required interface
+lookup fails, GDCC reports the lookup context and returns `false` from initialization so Godot rejects
+the extension load; the binding layer must not abort the editor process.

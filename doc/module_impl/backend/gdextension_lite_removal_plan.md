@@ -201,7 +201,7 @@ class method wrapper 和 singleton getter 等符号。
   - 覆盖 `godot_Variant`、`godot_String`、`godot_StringName`、`godot_Array`、`godot_Dictionary`、`godot_Object`、所有 vector/rect/transform/packed array 等 builtin 类型。
 - `src/main/c/codegen/include_451/godot/godot_interface.h`
   - 声明 `GDExtensionBool godot_initialize_interface(GDExtensionInterfaceGetProcAddress get_proc_address)`。
-  - 声明统一的 lookup fail-fast helper，例如带 `gdcc_binding_lookup_context` 的
+  - 声明统一的 lookup failure helper，例如带 `gdcc_binding_lookup_context` 的
     `gdcc_binding_lookup_fail(...)`，供 interface、builtin、utility、fixed 和 module-local generated wrapper
     在 Godot lookup 返回空指针时复用。
   - 声明从 `gdextension_interface.h` 的 interface 注释/typedef 配对解析出的全部 GDExtension interface function wrapper，
@@ -211,8 +211,9 @@ class method wrapper 和 singleton getter 等符号。
   - 保存 `get_proc_address`，并实现 `godot_initialize_interface(...)`。
   - 为 header 中每个可解析 interface function 生成 wrapper 实现；`godot_initialize_interface(...)`
     在入口初始化期一次性解析全部 Godot function pointer，运行期 wrapper 只调用已解析指针。
-  - lookup fail-fast helper 先尽量通过已解析的 `print_error` interface 输出 wrapper kind、lookup name、owner/type 和 hash 候选，
-    `print_error` 不可用时退回 `stderr`；随后以 no-return 方式终止。它本身不能依赖正在失败的 wrapper。
+  - lookup failure helper 先尽量通过已解析的 `print_error` interface 输出 wrapper kind、lookup name、owner/type 和 hash 候选，
+    `print_error` 不可用时退回 `stderr`；随后返回 `false`，由调用者拒绝注册、走 cleanup 或忽略返回值。它永远不能
+    `abort()` / trap 整个宿主进程，也不能依赖正在失败的 wrapper。
   - 该层固定全量生成，因为 interface wrapper 是集中、轻量、稳定的 ABI lookup 层，能降低后续 backend 开发时遗漏 interface function 的成本。
 - `src/main/c/codegen/include_451/godot/godot_builtin.h`
   - 声明按 Godot 版本全量预生成的 GDCC builtin wrapper contract：经过过滤的 raw metadata wrapper 加上兼容旧 ABI 的合成 helper。
@@ -329,7 +330,7 @@ interface generator 必须把 header 事实拆成两个字段，而不是从 typ
 - interface wrapper 不再做首次调用 lazy lookup；这避免并发首次调用时写入裸静态全局状态，
   并让高频 wrapper 的运行期 hot path 保持为一次已解析函数指针调用。
 - eager resolve 要求目标 Godot 暴露 bundled header 中的 interface entry。自定义 `DISABLE_DEPRECATED`
-  或裁剪 interface 表的 Godot 构建不在当前支持范围内；缺失 entry 按 lookup miss fail-fast。
+  或裁剪 interface 表的 Godot 构建不在当前支持范围内；缺失 entry 按 lookup miss 报告并返回 `false`。
 
 ## 宏、枚举、常量与 ABI 声明
 
@@ -381,7 +382,7 @@ Godot 4.5.1 `gdextension_interface.h` 明确把指针 ABI 分成 initialized、c
   `godot_object_get_class_name`、`godot_get_library_path` 这类返回值 out-param 也按 uninitialized destination 处理。
   现有 `CBodyBuilder.declareUninitializedTempVar(...)`、`IndexLoadInsnGen`、`OperatorInsnGen` 的思路需要保留并扩展到
   新 generated wrapper，而不是被新的统一 wrapper 层抹平。
-- destructor 只能作用于已初始化 carrier / slot。若 lookup fail-fast、constructor 失败、call error 或 valid flag 表明结果不可用，
+- destructor 只能作用于已初始化 carrier / slot。若 lookup failure、constructor 失败、call error 或 valid flag 表明结果不可用，
   cleanup path 不能销毁仍处于 uninitialized 状态的存储。
 - `String`、`StringName`、`Variant`、typed `Array` / `Dictionary`、new object 路径是优先保护面；这些路径一旦把
   uninitialized destination 当成 initialized value，会产生双初始化、漏初始化、未初始化析构、内存泄漏或跨扩展 ptrcall 崩溃。
@@ -972,7 +973,7 @@ wrapper 身份与 lookup metadata 必须分层：
 - singleton：从 `singletons[]` 解析 name/type；实现使用全量 interface wrapper `godot_global_get_singleton(...)`。
 - class constants：从 `classes[].constants[]` / `classes[].enums[]` 解析 literal value；可生成 inline constant helper，或在 Java 侧直接 literal 化，但同一策略必须统一。
 
-runtime lookup fail-fast 规则：
+runtime lookup failure 规则：
 
 - Godot 的 lookup 失败语义必须作为 generated wrapper 硬约束，而不是只作为测试说明：
   - Godot 4.5.1 `gdextension_variant_get_ptr_builtin_method(...)` 在 builtin method hash 不匹配时打印错误并返回 `nullptr`。
@@ -981,21 +982,26 @@ runtime lookup fail-fast 规则：
     没有 compatibility fallback。
   - `gdextension_classdb_get_method_bind(...)` 先查当前 method hash，再查 ClassDB compatibility method，并在非
     `DISABLE_DEPRECATED` Godot 中应用 `GDExtensionSpecialCompatHashes` 历史坏 hash 修正；仍失败时返回 `nullptr`。
-- 所有 generated lookup wrapper 都必须在 lookup 返回 `NULL` / `nullptr` 时立即 fail-fast，不能把 `NULL`
+- 所有 generated lookup wrapper 都必须在 lookup 返回 `NULL` / `nullptr` 时立即停止当前 lookup 路径，不能把 `NULL`
   缓存为“已解析”状态，也不能继续调用函数指针。
-- fail-fast 必须通过一个统一的 C helper 或宏实现，例如 `gdcc_binding_lookup_fail(...)` / `GDCC_BINDING_LOOKUP_FAIL(...)`：
+- lookup miss 必须通过一个统一的 C helper 或宏实现，例如 `gdcc_binding_lookup_fail(...)` / `GDCC_BINDING_LOOKUP_FAIL(...)`：
   - 诊断信息至少包含 wrapper kind、C function name、Godot lookup name、owner/type、primary hash、candidate compatibility hashes。
-  - 如果 `godot_print_error` 已可用，先输出可读错误；随后以不返回的方式终止当前调用路径，例如 `abort()`、`__builtin_trap()` 或等价实现。
-  - helper 必须声明为 no-return 或在生成代码中显式处理不可返回路径，避免调用方继续执行并触发空函数指针崩溃。
+  - `gdcc_binding_lookup_fail(...)` 必须返回 `GDExtensionBool`，lookup miss 返回 `false`；调用者需要传播失败时检查返回值，
+    不需要传播时可以忽略返回值。
+  - context 中的 `suppress_internal_error` 为 false/零值时，helper 默认通过 Godot `print_error*` 或 `stderr` 报错；
+    调用者需要自己汇总诊断时才显式置 true。
+  - helper 永远不能 `abort()`、`__builtin_trap()` 或等价地终止 Godot/editor 进程；调用方必须显式处理 `false`，
+    避免继续执行并触发空函数指针崩溃。
 - generated lookup 只能发布非空函数指针或 method bind：
   - interface wrapper 在 `godot_initialize_interface(...)` 中 eagerly 调用 `get_proc_address("@name")`；
-    任一 required interface entry 返回空时 fail-fast，运行期 wrapper 不再执行 lazy lookup 或写入 cache。
-  - builtin method wrapper 的 `godot_variant_get_ptr_builtin_method(type, method, hash)` 返回空时 fail-fast；
-    如果目标 Godot metadata 提供 builtin `hash_compatibility`，生成器可以按候选 hash 顺序尝试，但最后仍必须 fail-fast。
-  - utility wrapper 的 `godot_variant_get_ptr_utility_function(name, hash)` 返回空时 fail-fast；不允许尝试无 hash 调用或猜测兼容 hash。
+    任一 required interface entry 返回空时报告 lookup miss、清空已解析 pointer table 并返回 `false`，运行期 wrapper
+    不再执行 lazy lookup 或写入 cache。
+  - builtin method wrapper 的 `godot_variant_get_ptr_builtin_method(type, method, hash)` 返回空时调用 lookup failure helper；
+    如果目标 Godot metadata 提供 builtin `hash_compatibility`，生成器可以按候选 hash 顺序尝试，但最后仍必须停止当前 lookup 路径。
+  - utility wrapper 的 `godot_variant_get_ptr_utility_function(name, hash)` 返回空时调用 lookup failure helper；不允许尝试无 hash 调用或猜测兼容 hash。
   - exact engine method bind accessor 必须按 primary hash、metadata `hash_compatibility` 去重顺序调用
-    `godot_classdb_get_method_bind(...)`，全部失败后 fail-fast；调用 helper 不再用默认返回值掩盖 bind lookup miss。
-  - module-local engine property / public method wrapper 使用 method bind 时，必须复用同一候选 hash 与 fail-fast 规则。
+    `godot_classdb_get_method_bind(...)`，全部失败后调用 lookup failure helper；调用 helper 不再用默认返回值掩盖 bind lookup miss。
+  - module-local engine property / public method wrapper 使用 method bind 时，必须复用同一候选 hash 与 lookup failure 规则。
 - `hash_compatibility` 的职责是让 lookup 候选集合覆盖 Godot 的兼容修正逻辑；它仍然不能进入 canonical symbol。
   对 class method，`ExtensionAPI.classes[].methods[].hash_compatibility` 已包含 Godot `ClassDB::get_method_compatibility_hashes(...)`
   和非 `DISABLE_DEPRECATED` 构建下 `GDExtensionSpecialCompatHashes::get_legacy_hashes(...)` 输出的历史 hash；
@@ -1430,8 +1436,8 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 - [x] interface wrapper 继续只填真实存在的 interface lookup 信息：`kind = "interface"`、C wrapper
   function name 和 Godot `@name` lookup name；`owner/type/hash` 用 `NULL`、`has_primary_hash = false`、
   `NULL + count=0` 表达“不适用”，不伪造 owner/type 或把缺失 type 混成 `GDEXTENSION_VARIANT_TYPE_NIL`。
-- [x] lookup fail-fast 诊断优先使用 `print_error_with_message` 输出完整上下文，缺失时退回 `print_error`
-  和 `stderr`；之后仍以 no-return helper 终止，避免调用方继续执行空函数指针。
+- [x] lookup failure 诊断优先使用 `print_error_with_message` 输出完整上下文，缺失时退回 `print_error`
+  和 `stderr`；helper 返回 `false`，调用方必须在需要传播失败的路径上显式停止，避免继续执行空函数指针。
 - [x] 补充测试锁定新公共 API、旧两参调用不再出现在生成产物中，并通过 C compile probe 验证富上下文调用可编译、
   旧两参调用会被编译器拒绝。
 - [x] 将 interface wrapper 从首次调用 lazy lookup 改为 `godot_initialize_interface(...)` 初始化期 eager resolve：
@@ -1448,6 +1454,19 @@ backend direct/fallback 分支和后续 wrapper generator 的输入语义整理�
 - [x] 重新运行 `generate-interface` 到 `/tmp/gdcc-godot-interface-eager-check`，逐个比对
   `godot_interface.h/.c`，确认 checked-in 输出与当前生成器一致。
 
+状态同步（2026-05-24，lookup failure 不崩溃修正）：
+
+- [x] 将 `gdcc_binding_lookup_fail(...)` 从 `GDCC_NORETURN void` 调整为 `GDExtensionBool` 返回值；
+  lookup miss 始终返回 `false`，不再 `abort()` / trap 宿主进程。
+- [x] 在 `gdcc_binding_lookup_context` 中新增 `suppress_internal_error`；零值保持默认内部报错，
+  需要由调用方自行汇总诊断时才显式关闭 helper 内部报错。
+- [x] `godot_initialize_interface(...)` 在 `get_proc_address == NULL` 或任一 interface entry 缺失时通过统一
+  `gdcc_binding_lookup_fail(...)` 报告，随后返回 `false`；中途失败会清空已解析 pointer table，避免留下半初始化状态。
+- [x] 删除 interface 专用 lookup fail adapter，interface lookup miss 直接填充 `gdcc_binding_lookup_context`
+  并调用统一 helper，保证后续 builtin/method-bind/utility lookup 使用同一诊断合同。
+- [x] 补充 generator 和 C runtime smoke 测试，锁定 no-`abort`、no-`noreturn`、默认报错、显式 suppression
+  不报错，以及初始化期 lookup miss 返回 `false` 并清理已解析指针。
+
 在阶段 1A 的 ABI header 可独立 include 后，实现固定 interface generator。它只处理
 Godot 4.5.1 `gdextension_interface.h` 中的 interface function，不接入模块级使用集。该阶段不解析 Godot C++ 源码，
 避免把 wrapper 生成绑定到 `gdextension_interface.cpp` 内部实现细节。
@@ -1463,8 +1482,8 @@ Godot 4.5.1 `gdextension_interface.h` 中的 interface function，不接入模�
   - 输出 `godot_interface.h` 和 `godot_interface.c`。
 - `godot_interface.h`
   - 声明 `GDExtensionBool godot_initialize_interface(GDExtensionInterfaceGetProcAddress get_proc_address)`。
-  - 声明 `gdcc_binding_lookup_context` 和 no-return `gdcc_binding_lookup_fail(...)`；该公共 helper
-    必须能表达 kind、C function name、Godot lookup name、owner/type、primary hash 和 compatibility hash 候选。
+  - 声明 `gdcc_binding_lookup_context` 和返回 `GDExtensionBool` 的 `gdcc_binding_lookup_fail(...)`；该公共 helper
+    必须能表达 kind、C function name、Godot lookup name、owner/type、primary hash、compatibility hash 候选和内部报错开关。
   - 声明 header 中所有可解析 `@name` / typedef 配对对应的 `godot_<interface_name>(...)` wrapper。
 - `godot_interface.c`
   - 保存 `get_proc_address`。
@@ -1472,8 +1491,8 @@ Godot 4.5.1 `gdextension_interface.h` 中的 interface function，不接入模�
   - `godot_initialize_interface(...)` 内 eagerly 解析每个 `GDExtensionInterface<Name>` function pointer；
     wrapper 内不再做 lazy lookup。
   - `godot_initialize_interface(...)` 只初始化 lookup 层，不注册类、不调用 `gdcc_init()`。
-  - interface lookup miss 通过私有 adapter 填充上下文后调用统一 fail-fast helper；不要恢复只传
-    `kind/name` 的公共签名。
+  - interface lookup miss 直接填充上下文后调用统一 lookup failure helper；不要恢复只传
+    `kind/name` 的公共签名，也不要重新引入 no-return / abort 行为。
 
 本阶段明确改变之前“只导出 runtime 和模板必须 interface function”的策略：interface wrapper 总是全量导出。
 原因是 Godot interface 函数数量可控、集中、轻量，全量发布能降低后续 backend 开发时遗漏 interface function 的维护成本。
@@ -1509,7 +1528,7 @@ Godot 4.5.1 `gdextension_interface.h` 中的 interface function，不接入模�
   - `godot_classdb_register_extension_class5`
 - `godot_interface.c` 中的 proc address 字符串和 header `@name` 名称一致。
 - `gdcc_binding_lookup_fail(...)` 的公共签名使用上下文结构而不是旧 `kind/name` 两参；诊断文本保留
-  owner/type/hash 候选槽位，即使 interface wrapper 当前没有这些值。
+  owner/type/hash 候选槽位，即使 interface wrapper 当前没有这些值；默认内部报错，可通过 context 显式关闭。
 - `godot_interface.h/.c` 生成结果重复执行稳定。
 
 ### 阶段 1C：准备 binding 聚合入口
@@ -1549,6 +1568,85 @@ Godot 4.5.1 `gdextension_interface.h` 中的 interface function，不接入模�
 - `entry.c.ftl` 仍保留旧 vendor 初始化和 include，`CProjectBuilder` 仍保留旧 vendor include dir / `gdextension-lite-one.c` 输入；
   本阶段不是切换点。
 
+### 阶段 1D：收口 interface wrapper 符号并内联 hot path
+
+状态同步：
+
+- [x] 将 `godot_interface` wrapper 从 out-of-line default-visible C 函数改为 header-level `static inline`
+  转发函数，避免 `godot_variant_*`、`godot_classdb_*`、`godot_mem_*` 等内部 binding wrapper 在默认 shared library
+  构建下进入动态符号表。
+- [x] 保留单定义的 hidden interface pointer table：每个 `gdcc_interface_*` function pointer 只在
+  `godot_interface.c` 中定义一次，并在 `godot_interface.h` 中以 hidden `extern` 形式声明，所有 inline wrapper
+  都读取同一份由 `godot_initialize_interface(...)` eager resolve 填充的指针表。
+- [x] `godot_initialize_interface(...)`、`gdcc_binding_lookup_fail(...)` 和 lookup message/failure 实现继续作为
+  `godot_interface.c` 中的 out-of-line hidden 函数；它们不是 hot path，不做 `static inline`，也不能复制到每个
+  translation unit。
+- [x] `gdextension_entry(...)` 仍是唯一需要默认导出的 GDCC/Godot 入口符号；`godot_interface` support 符号默认应为
+  hidden，除非后续明确引入跨动态库公共 ABI。
+- [x] 补充多 translation unit C compile/link smoke test，证明两个不同 `.c` 文件 include `<godot_binding.h>` /
+  `<godot_interface.h>` 后调用同一批 inline wrapper，最终共享同一份 `gdcc_interface_*` 指针表，不会产生每个
+  translation unit 各自未初始化 cache 的错误。
+- [x] 阶段完成后手动构建一次最小 shared object，并用平台符号表工具查看默认导出符号；
+  只把这一步作为人工验收记录，不把 `nm`、`readelf`、`objdump` 等工具调用写入单元测试。
+
+验证记录：
+
+- `script/run-gradle-targeted-tests.sh --tests GodotInterfaceGeneratorTest,GodotAbiHeaderCompileTest,GodotBindingToolAbiSupportTest`
+  通过；其中 `GodotAbiHeaderCompileTest` 覆盖 C/C++ header include、多 translation unit include/link/execute，
+  验证 inline wrapper 共享 `godot_binding.c` 中的单一定义指针表。
+- 手动构建含 `GDE_EXPORT gdextension_entry(...)` 和 `godot_binding.c` 的最小 shared object，并执行
+  `nm -D --defined-only`；默认动态符号表仅包含 `gdextension_entry`，未导出 `godot_*` wrapper、
+  `gdcc_interface_*` 指针表、`godot_initialize_interface(...)` 或 `gdcc_binding_lookup_fail(...)`。
+
+本阶段只处理阶段 1B / 1C 产物的链接可见性和 wrapper hot path 形态，不切换模板 include、不接入 builtin/utility/fixed
+wrapper，也不改变 `godot_initialize_interface(...)` 的 eager resolve 合同。
+
+设计约束：
+
+- 不能简单把当前 `godot_interface.c` 中的 wrapper 定义改成 `static inline`。`godot_interface.h` 仍有外部声明时会造成
+  链接属性冲突；只改 `.c` 也无法让调用方获得 inline 函数体。
+- 不能把 `gdcc_interface_*` cache 作为 header-local `static` 变量放进 `godot_interface.h`。那会让每个 translation unit
+  拥有独立指针表，`godot_initialize_interface(...)` 只初始化其中一个 TU 的状态，其他 TU 的 inline wrapper 可能读到
+  未初始化的 `NULL` cache。
+- 正确形态是：header 生成 `static inline godot_*` wrapper，source 生成单定义 hidden `gdcc_interface_*` 指针表和
+  hidden 初始化 / 诊断函数。这样 hot path 只剩一次对共享函数指针的间接调用，同时不扩大动态库默认导出面。
+- hidden 可见性应复用 `godot_macros.h` 中的 `GDCC_GODOT_DECL` 或等价项目宏；不要为 interface generator 引入第二套
+  platform visibility 分支。
+- C++ include 仍要保持 `extern "C"` 边界正确：hidden `extern` 指针声明和 out-of-line 初始化 / fail helper 使用 C linkage，
+  header-level `static inline` wrapper 不引入 C++ name mangling 依赖。
+
+修改：
+
+- `GodotInterfaceGenerator`
+  - `godot_interface.h` 生成每个 `gdcc_interface_*` 指针的 hidden `extern` 声明。
+  - `godot_interface.h` 生成每个 `godot_*` wrapper 的 `static inline` 函数体，函数体只调用对应
+    `gdcc_interface_*` 指针，不做 lookup、不做 lazy branch。
+  - `godot_interface.c` 只定义共享指针表、`godot_initialize_interface(...)`、lookup 诊断 helper 和 failure helper；
+    不再生成 out-of-line `godot_*` wrapper 定义。
+  - `godot_binding.c` 继续聚合 `godot_interface.c`，保证静态 runtime support 只有一个指针表定义。
+- `GodotInterfaceGeneratorTest`
+  - 验证 header 中存在 `static inline` wrapper 函数体，source 中不存在 out-of-line `godot_*` wrapper 定义。
+  - 验证 header 中 `gdcc_interface_*` 是 `extern` + hidden 声明，source 中是唯一非 `extern` 定义。
+  - 验证 wrapper hot path 无 `get_proc_address`、无 lazy `NULL` 检查、无 fallback 默认返回。
+  - 验证 `godot_initialize_interface(...)` 仍 eagerly resolve 全部 interface pointer。
+- `GodotAbiHeaderCompileTest` 或新增 build smoke test
+  - 编译两个 include `<godot_binding.h>` / `<godot_interface.h>` 的 translation unit，再和 `godot_binding.c`
+    一起链接最小 shared object。
+  - 该测试只证明多 translation unit 共享同一份 `gdcc_interface_*` 指针表；默认导出符号检查留给阶段完成后的
+    一次性人工验收。
+
+验收：
+
+- `godot_interface.h` 中每个 interface wrapper 都是 header-level `static inline`，且只通过共享
+  `gdcc_interface_*` 指针表转发。
+- `godot_interface.c` 中不存在 out-of-line `godot_*` wrapper 定义。
+- `godot_initialize_interface(...)` 对同一份 shared pointer table 做 eager resolve；多 translation unit 调用不会复制
+  cache 状态。
+- 阶段完成后的人工符号表检查确认：最小 shared object 的默认动态符号表只暴露 Godot 需要的 entry symbol 和平台运行时符号，
+  不暴露 GDCC internal interface support 符号。
+- targeted tests 通过：
+  `script/run-gradle-targeted-tests.sh --tests GodotInterfaceGeneratorTest,GodotAbiHeaderCompileTest,GodotBindingToolAbiSupportTest`。
+
 ### 阶段 2：预生成 builtin / utility 并迁移固定 runtime wrapper
 
 本阶段前移 runtime wrapper 迁移，作为 include/build 输入切换的硬前置。先不要接入模块级使用集生成，
@@ -1564,7 +1662,7 @@ Godot 4.5.1 `gdextension_interface.h` 中的 interface function，不接入模�
     其中 hash-sensitive builtin method lookup miss 必须走统一 fail-fast 诊断；
   - constructor、copy、from-variant、to-variant、nil `Variant`、`String` / `StringName` char helper 必须使用
     `GDExtensionUninitialized*Ptr` destination 语义；不允许把本地结果先零初始化后当 initialized pointer 调用；
-  - 生成的 cleanup 路径必须知道 carrier 是否已初始化，lookup fail-fast 或构造失败路径不能 destroy uninitialized storage；
+  - 生成的 cleanup 路径必须知道 carrier 是否已初始化，lookup failure 或构造失败路径不能 destroy uninitialized storage；
   - constructor/operator atomic/non-struct 过滤；
   - 单 `String` 参数 constructor 的 char / UTF convenience wrapper；
   - builtin member getter/setter 与 method `get_*` / `set_*` 重名过滤；
@@ -1668,7 +1766,7 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 - `engine_method_binds.h.ftl`
   - method bind accessor 不再在所有 hash 候选失败后返回 `NULL` 给调用 helper。
   - accessor 必须按 primary hash、去重后的 `hash_compatibility` 顺序调用 `godot_classdb_get_method_bind(...)`；
-    每次非空立即缓存并返回，全部失败后调用统一 binding lookup fail-fast helper。
+    每次非空立即缓存并返回，全部失败后调用统一 binding lookup failure helper。
   - exact instance/static/vararg helper 不再通过默认返回值吞掉 bind lookup miss；只有 Godot method call 本身返回
     `GDExtensionCallError` 时，才继续走现有 call error 诊断和安全返回。
 - `gdcc/*.h`
@@ -1715,7 +1813,7 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 - `godot_initialize_interface(...)` 发生在任何 `godot_*` wrapper 调用前。
 - `initialize(...)` / `deinitialize(...)` 的 scene-level guard 和 `gdcc_init()` 调用位置不变。
 - `CCodegenEngineMethodBindHeaderTest` 反向更新：旧断言中“bind lookup 失败后打印 runtime error 并返回默认值”的形状必须删除；
-  新断言应确认生成代码包含 primary + compatibility hash 候选、空 bind fail-fast helper 调用、以及调用 helper 不再直接处理
+  新断言应确认生成代码包含 primary + compatibility hash 候选、空 bind failure helper 调用、以及调用 helper 不再直接处理
   `bind == NULL` 分支。
 - `CProjectBuilderSharedIncludeTest` 改为断言：
   - `shared-include/gdcc/gdcc_helper.h`
@@ -2184,7 +2282,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     “generated builtin constructor” 或直接描述 `godot_new_*` wrapper。
   - `src/test/java/gd/script/gdcc/backend/c/gen/CCodegenEngineMethodBindHeaderTest.java`
     - 旧的 `bind == NULL` 分支、`GDCC_PRINT_RUNTIME_ERROR(...)` 后返回 `0` / `NULL` / 默认值的断言必须反向更新。
-    - 新断言检查 accessor 输出 primary hash 与 `hashCompatibility` 候选、lookup miss fail-fast helper、以及调用 helper
+    - 新断言检查 accessor 输出 primary hash 与 `hashCompatibility` 候选、lookup miss failure helper、以及调用 helper
       不再吞掉 bind lookup miss。
 - 阶段 4：反向更新 generated file 精确列表断言：
   - `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 不应继续无条件断言文件集合恰好为
@@ -2258,13 +2356,13 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     `Transform2D.get_origin`。
   - 验证 typed Array/Dictionary helper、indexed/keyed helper 的生成只依赖 `ExtensionAPI` 模型和版本化 override。
   - 验证 builtin method lookup 生成 primary hash 和可用 compatibility hash 候选，并在 lookup 返回 `NULL` 时调用
-    binding lookup fail-fast helper；生成代码不能缓存 `NULL` 或继续 ptrcall。
+    binding lookup failure helper；生成代码不能缓存 `NULL` 或继续 ptrcall。
   - 验证同一 C function name 映射到不同 canonical key / ABI 时 fail-fast。
   - 验证生成 symbol 集与 `ExtensionAPI.builtin_classes[]` 经 GDCC contract 投影后的结果一致，重复执行输出稳定。
 - `GodotUtilityGeneratorTest`
   - 验证 `ExtensionAPI.utility_functions[]` 中所有 utility wrapper 全量生成。
   - 验证 vararg / void return utility 的 lookup hash 和调用 ABI 正确进入生成代码。
-  - 验证 utility lookup 返回 `NULL` 时调用 binding lookup fail-fast helper；utility hash 冲突不能通过
+  - 验证 utility lookup 返回 `NULL` 时调用 binding lookup failure helper；utility hash 冲突不能通过
     compatibility hash、无 hash lookup 或默认返回值绕过。
   - 验证 `godot_print` 等模板固定路径需要的 utility 不再依赖 module-local session。
 - `FixedGodotBindings451Test`
@@ -2317,7 +2415,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - 验证固定模板依赖的 `godot_mem_alloc`、`godot_variant_new_nil`、`godot_classdb_get_method_bind`、`godot_object_method_bind_ptrcall`、`godot_object_method_bind_call` 均来自全量 interface 输出。
   - 验证 interface wrapper function pointer 都在 `godot_initialize_interface(...)` 中 eager resolve；运行期 wrapper
     不再调用 `get_proc_address`、不检查 lazy cache。
-  - 验证 `get_proc_address` 返回 `NULL` 时通过 binding lookup fail-fast helper 报告缺失 interface entry。
+  - 验证 `get_proc_address` 返回 `NULL` 时通过 binding lookup failure helper 报告缺失 interface entry。
 - `GodotAbiSupportHeaderTest`
   - 验证 `godot_PROPERTY_HINT_*`、`godot_PROPERTY_USAGE_*`、`GDEXTENSION_*` 常量族、`godot_global_constants.h`、
     native struct、builtin size assert header、builtin member offset/meta assert header 都能被一个最小 C translation unit include。
@@ -2343,17 +2441,20 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
 3. 提交阶段 1B，全量生成 `godot_interface.h/.c`，验证 wrapper name 集合和 `gdextension_interface.h`
    中可解析的 `@name` / typedef 配对集合完全一致。
 4. 提交阶段 1C，只建立 `godot_binding.h/.c` 聚合入口并聚合全量 interface support；不切换模板 include 或构建输入。
-5. 提交阶段 2，按 GDCC builtin contract 全量生成 `godot_builtin.h/.c`，全量生成 `godot_utility.h/.c`，
+5. 提交阶段 1D，将 interface wrapper hot path 改为 header-level `static inline`，并把共享 function pointer table
+   保留为 `godot_interface.c` 中的 hidden 单定义状态；用多 translation unit 测试证明 wrapper 不复制 cache，
+   并在阶段完成后手动查看一次动态符号表，确认内部符号不默认导出。
+6. 提交阶段 2，按 GDCC builtin contract 全量生成 `godot_builtin.h/.c`，全量生成 `godot_utility.h/.c`，
    并从 `FixedGodotBindings451` 源码清单生成 `godot_fixed_binding.h/.c`；`check-fixed` 只做对账，不做发现或补写。
-6. 提交阶段 3，原子切换 `entry.c` 初始化、`entry.h` / `gdcc/*.h` include、`CProjectBuilder` include dir 和 native 编译输入；
+7. 提交阶段 3，原子切换 `entry.c` 初始化、`entry.h` / `gdcc/*.h` include、`CProjectBuilder` include dir 和 native 编译输入；
    这个阶段完成后生成项目不再编译 `gdextension-lite-one.c`，相关测试同步断言 `godot_binding.c` 和 `godot` include root；
    同时加入 stale vendor 回归场景，证明旧 `shared-include/gdextension-lite/gdextension-lite-one.c` 残留不会进入 `cFiles`；
    同提交更新活动文档和被触及源码注释，不能继续公开宣称旧初始化模型。
-7. 提交阶段 4，把 provided set 之外残余的具体 engine public/property/singleton/class constant wrapper 接入 module-local session，
+8. 提交阶段 4，把 provided set 之外残余的具体 engine public/property/singleton/class constant wrapper 接入 module-local session，
    并用 interface/builtin/utility/fixed provided set 防止脚本重复生成 runtime 已提供的 wrapper。
    该阶段生成可选 `godot_module_bindings.h/.c`，由 `entry.h` 同目录 include，并由 generated `.c` 收集规则进入 native compiler input；
    同阶段更新 `CCodegen*`、API、CLI 和 build 层断言，不再无条件锁死 3 个 generated files。
-8. 最后提交阶段 5，删除 vendor zip，清理已知旧 `<includeRoot>/gdextension-lite` 子树，并对 `doc/module_impl`
+9. 最后提交阶段 5，删除 vendor zip，清理已知旧 `<includeRoot>/gdextension-lite` 子树，并对 `doc/module_impl`
    每一份文档做 `current-contract` / `updated-contract` / `historical-reference` 归类；同提交完成源码注释、
    模板注释、测试 display name、failure message 和旧断言的全仓清理。
 
@@ -2417,7 +2518,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     uninitialized destination 三态；不能因为 C typedef 底层都是 `void *` 就合并。
   - `Variant`、`String`、`StringName`、typed container、`object_method_bind_call`、`object_get_class_name`
     和 new object/callable 路径必须有代表性测试；现有 `declareUninitializedTempVar(...)` 相关路径不能被新 wrapper 层替换成普通初始化变量。
-  - cleanup 测试必须证明只 destroy initialized carrier / slot；lookup fail-fast、constructor failure、invalid return path 不销毁 raw storage。
+  - cleanup 测试必须证明只 destroy initialized carrier / slot；lookup failure、constructor failure、invalid return path 不销毁 raw storage。
 - wrapper 生成遗漏：
   - interface function wrapper 必须全部来自目标 Godot 版本 `gdextension_interface.h` 的固定全量生成。
   - 不能靠 typedef 名推导 wrapper：lookup key 必须来自 `@name`。entry callback typedef 没有 `@name`，不能进入 wrapper；
@@ -2507,7 +2608,10 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
 - `godot_utility.h/.c` 从 `ExtensionAPI.utility_functions[]` 全量预生成 utility function wrapper，且不按模块使用集裁剪。
 - interface wrapper 的 function pointer 在 `godot_initialize_interface(...)` 中 eager resolve；builtin method、utility function、
   exact engine method bind、module-local engine method/property wrapper 的 lazy lookup 都只缓存非空结果。任何 lookup
-  返回空时统一 fail-fast，并输出包含 owner/name/hash 候选的诊断。
+  返回空时统一走 lookup failure helper，并输出包含 owner/name/hash 候选的诊断。
+- interface wrapper hot path 使用 header-level `static inline` 转发到单定义 hidden `gdcc_interface_*` pointer table；
+  阶段 1D 完成后的人工符号表检查确认 generated shared library 不默认导出 `godot_*` interface wrapper、
+  `gdcc_interface_*` 指针表、`godot_initialize_interface(...)` 或 `gdcc_binding_lookup_fail(...)`。
 - class method bind lookup 覆盖 primary hash 与 `hash_compatibility` 候选；utility hash 冲突没有兼容路径，必须 fail-fast。
 - 固定 helper 所需且不被 interface/builtin/utility 覆盖的非 interface wrapper 由 `FixedGodotBindings451` 源码清单生成到 `godot_fixed_binding.h/.c`，不是手写散落在多个 C 文件中。
 - `GodotBindingTool` 提供可命令行调用的 `main`，支持 `generate-interface`、`generate-builtin`、`generate-utility`、
