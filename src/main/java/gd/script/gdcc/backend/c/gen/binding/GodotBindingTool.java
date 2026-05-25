@@ -84,6 +84,36 @@ public final class GodotBindingTool {
                 checkGodotVersionOption(options.get("--gde"), "binding aggregation");
                 GodotInterfaceGenerator.generateBindingSupport(out);
             }
+            case "generate-builtin" -> {
+                var out = requirePathOption(options, "--out");
+                var api = loadApi(options, "builtin generation");
+                GodotBuiltinGenerator.generateBuiltinSupport(api, out);
+            }
+            case "generate-utility" -> {
+                var out = requirePathOption(options, "--out");
+                var api = loadApi(options, "utility generation");
+                GodotUtilityGenerator.generateUtilitySupport(api, out);
+            }
+            case "generate-fixed" -> {
+                var out = requirePathOption(options, "--out");
+                var api = loadApi(options, "fixed binding generation");
+                FixedGodotBindings.generateFixedSupport(api, out);
+            }
+            case "check-fixed" -> {
+                var helperRoot = requirePathOption(options, "--helper-root");
+                var templateRoot = requirePathOption(options, "--template-root");
+                var api = loadApi(options, "fixed binding check");
+                GdccHelperBindingScanner.checkFixedCoverage(
+                        helperRoot,
+                        templateRoot,
+                        providedSymbols(api, requireInterfaceHeader(options, helperRoot))
+                );
+            }
+            case "dump-fixed-manifest" -> {
+                var out = requirePathOption(options, "--out");
+                var api = loadApi(options, "fixed manifest dump");
+                GodotBindingSymbolHelper.writeSnapshot(FixedGodotBindings.symbols(api), out);
+            }
             default -> throw usage();
         }
     }
@@ -142,6 +172,61 @@ public final class GodotBindingTool {
         throw new IllegalArgumentException("Unsupported Godot version for ABI support generation: " + value);
     }
 
+    private static @NotNull ExtensionAPI loadApi(
+            @NotNull Map<String, String> options,
+            @NotNull String commandName
+    ) throws IOException {
+        return options.containsKey("--api-resource")
+                ? ExtensionApiLoader.loadFromResource(options.get("--api-resource"))
+                : ExtensionApiLoader.loadVersion(parseGodotVersionForCommand(options.get("--gde"), commandName));
+    }
+
+    private static @NotNull GodotVersion parseGodotVersionForCommand(
+            @Nullable String value,
+            @NotNull String commandName
+    ) {
+        if (value == null || value.isBlank() || value.equals(GodotVersion.V451.version)) {
+            return GodotVersion.V451;
+        }
+        throw new IllegalArgumentException("Unsupported Godot version for " + commandName + ": " + value);
+    }
+
+    private static @NotNull Path requireInterfaceHeader(
+            @NotNull Map<String, String> options,
+            @NotNull Path helperRoot
+    ) {
+        if (options.containsKey("--header")) {
+            return Path.of(options.get("--header"));
+        }
+        var includeRoot = helperRoot.getParent();
+        if (includeRoot != null) {
+            var inferred = includeRoot.resolve("godot").resolve("gdextension").resolve("gdextension_interface.h");
+            if (Files.isRegularFile(inferred)) {
+                return inferred;
+            }
+        }
+        throw new IllegalArgumentException(
+                "Missing required option --header and cannot infer godot/gdextension/gdextension_interface.h"
+        );
+    }
+
+    private static @NotNull Set<String> providedSymbols(
+            @NotNull ExtensionAPI api,
+            @NotNull Path interfaceHeader
+    ) throws IOException {
+        var provided = new LinkedHashSet<>(GodotInterfaceGenerator.collectWrapperNames(interfaceHeader));
+        GodotBuiltinGenerator.collectSymbols(api).stream()
+                .map(GodotBindingSymbol::cFunctionName)
+                .forEach(provided::add);
+        GodotUtilityGenerator.collectSymbols(api).stream()
+                .map(GodotBindingSymbol::cFunctionName)
+                .forEach(provided::add);
+        FixedGodotBindings.symbols(api).stream()
+                .map(GodotBindingSymbol::cFunctionName)
+                .forEach(provided::add);
+        return Set.copyOf(provided);
+    }
+
     private static void checkGodotVersionOption(@Nullable String value, @NotNull String commandName) {
         if (value == null || value.isBlank() || value.equals(GodotVersion.V451.version)) {
             return;
@@ -156,6 +241,11 @@ public final class GodotBindingTool {
                   GodotBindingTool generate-abi-support --api-resource /extension_api_451.json --out <dir>
                   GodotBindingTool generate-interface --gde 4.5.1 --header <gdextension_interface.h> --out <dir>
                   GodotBindingTool generate-binding --gde 4.5.1 --out <dir>
+                  GodotBindingTool generate-builtin --gde 4.5.1 --out <dir>
+                  GodotBindingTool generate-utility --gde 4.5.1 --out <dir>
+                  GodotBindingTool generate-fixed --gde 4.5.1 --out <dir>
+                  GodotBindingTool check-fixed --gde 4.5.1 --helper-root <dir> --template-root <dir> [--header <gdextension_interface.h>]
+                  GodotBindingTool dump-fixed-manifest --gde 4.5.1 --out <file>
                 """.strip());
     }
 
@@ -282,7 +372,7 @@ public final class GodotBindingTool {
             out.append("#ifdef ").append(buildMacro(buildConfiguration)).append('\n');
             for (var size : sizesByConfiguration.get(buildConfiguration)) {
                 out.append("#define GDCC_GODOT_SIZE_")
-                        .append(cIdentifier(size.name()))
+                        .append(GodotBindingSupport.cIdentifier(size.name()))
                         .append(' ')
                         .append(size.size())
                         .append('\n');
@@ -304,10 +394,10 @@ public final class GodotBindingTool {
         for (var buildConfiguration : SUPPORTED_BUILD_CONFIGURATIONS) {
             out.append("#ifdef ").append(buildMacro(buildConfiguration)).append('\n');
             for (var classData : offsetsByConfiguration.get(buildConfiguration)) {
-                var className = cIdentifier(classData.name());
+                var className = GodotBindingSupport.cIdentifier(classData.name());
                 var seenMembers = new LinkedHashSet<String>();
                 for (var member : classData.members()) {
-                    var memberName = cIdentifier(member.member());
+                    var memberName = GodotBindingSupport.cIdentifier(member.member());
                     if (!seenMembers.add(memberName)) {
                         throw new IllegalStateException(
                                 "Duplicate builtin member layout metadata: buildConfiguration='"
@@ -539,18 +629,18 @@ public final class GodotBindingTool {
         appendNativeScopedEnums(api, out);
         for (var structure : api.nativeStructures()) {
             out.append("typedef struct godot_")
-                    .append(cIdentifier(structure.name()))
+                    .append(GodotBindingSupport.cIdentifier(structure.name()))
                     .append(" {\n");
             for (var field : parseNativeFields(structure)) {
                 out.append("    ")
                         .append(renderNativeType(field.type()))
                         .append(' ')
-                        .append(cIdentifier(field.name()))
+                        .append(GodotBindingSupport.cIdentifier(field.name()))
                         .append(field.arraySuffix() == null ? "" : field.arraySuffix())
                         .append(";\n");
             }
             out.append("} godot_")
-                    .append(cIdentifier(structure.name()))
+                    .append(GodotBindingSupport.cIdentifier(structure.name()))
                     .append(";\n\n");
         }
         out.append("""
@@ -586,7 +676,7 @@ public final class GodotBindingTool {
             if (name.equals("Nil") || name.equals("Object")) {
                 continue;
             }
-            out.append("GDCC_GODOT_ASSERT_SIZE(").append(cIdentifier(name)).append(");\n");
+            out.append("GDCC_GODOT_ASSERT_SIZE(").append(GodotBindingSupport.cIdentifier(name)).append(");\n");
         }
     }
 
@@ -600,9 +690,9 @@ public final class GodotBindingTool {
                     continue;
                 }
                 out.append("GDCC_GODOT_ASSERT_LAYOUT(")
-                        .append(cIdentifier(classData.name()))
+                        .append(GodotBindingSupport.cIdentifier(classData.name()))
                         .append(", ")
-                        .append(cIdentifier(member.member()))
+                        .append(GodotBindingSupport.cIdentifier(member.member()))
                         .append(");\n");
             }
         }
@@ -630,13 +720,16 @@ public final class GodotBindingTool {
                     .orElseThrow(() -> new IllegalStateException(
                             "Missing native structure enum metadata: " + ref.owner() + "::" + ref.enumName()
                     ));
-            var typeName = "godot_" + cIdentifier(ref.owner()) + "_" + cIdentifier(ref.enumName());
+            var typeName = "godot_"
+                    + GodotBindingSupport.cIdentifier(ref.owner())
+                    + "_"
+                    + GodotBindingSupport.cIdentifier(ref.enumName());
             out.append("typedef enum ").append(typeName).append(" {\n");
             for (var value : enumData.values()) {
                 out.append("    godot_")
-                        .append(cIdentifier(ref.owner()))
+                        .append(GodotBindingSupport.cIdentifier(ref.owner()))
                         .append("_")
-                        .append(cIdentifier(value.name()))
+                        .append(GodotBindingSupport.cIdentifier(value.name()))
                         .append(" = ")
                         .append(value.value())
                         .append(",\n");
@@ -688,12 +781,15 @@ public final class GodotBindingTool {
         }
         if (type.contains("::")) {
             var parts = type.split("::", 2);
-            return "godot_" + cIdentifier(parts[0]) + "_" + cIdentifier(parts[1]);
+            return "godot_"
+                    + GodotBindingSupport.cIdentifier(parts[0])
+                    + "_"
+                    + GodotBindingSupport.cIdentifier(parts[1]);
         }
         if (PRIMITIVE_NATIVE_TYPES.contains(type)) {
             return type;
         }
-        return "godot_" + cIdentifier(type);
+        return "godot_" + GodotBindingSupport.cIdentifier(type);
     }
 
     private static @NotNull LinkedHashMap<String, List<ExtensionBuiltinClassSizes.ClassSizeInfo>>
@@ -776,7 +872,7 @@ public final class GodotBindingTool {
             case "int64" -> "int64_t";
             case "uint32" -> "uint32_t";
             case "uint64" -> "uint64_t";
-            default -> "godot_" + cIdentifier(meta);
+            default -> "godot_" + GodotBindingSupport.cIdentifier(meta);
         };
     }
 
@@ -785,18 +881,7 @@ public final class GodotBindingTool {
     }
 
     private static @NotNull String godotSymbol(@NotNull String raw) {
-        return "godot_" + cIdentifier(raw);
-    }
-
-    private static @NotNull String cIdentifier(@NotNull String raw) {
-        var identifier = raw.replaceAll("[^A-Za-z0-9_]", "_").replaceAll("_+", "_");
-        if (identifier.isBlank()) {
-            throw new IllegalArgumentException("Cannot render blank C identifier from '" + raw + "'");
-        }
-        if (Character.isDigit(identifier.charAt(0))) {
-            identifier = "_" + identifier;
-        }
-        return identifier;
+        return "godot_" + GodotBindingSupport.cIdentifier(raw);
     }
 
     private static @NotNull String renderLongLiteral(long value) {

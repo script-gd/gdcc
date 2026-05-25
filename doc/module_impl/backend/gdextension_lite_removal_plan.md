@@ -245,10 +245,12 @@ class method wrapper 和 singleton getter 等符号。
 - `src/main/c/codegen/include_451/godot/godot_fixed_binding.c`
   - 实现 `godot_fixed_binding.h` 声明的固定 wrapper。
   - 由 `godot_binding.c` 聚合编译，作为 runtime support 的一部分，避免每个模块重复生成这些 helper 依赖。
-- `src/main/java/gd/script/gdcc/backend/c/gen/binding/FixedGodotBindings451.java`
-  - 固定 helper wrapper 的版本化源码清单。
-  - 只列出当前 Godot 4.5.1 runtime/helper/template 需要、且不由 interface / builtin / utility 全量输出覆盖的 wrapper。
-  - 作为后续模块级使用集的 provided set 输入。
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/FixedGodotBindings`
+  - 固定 helper wrapper 的版本化抽象入口，负责生成骨架、manifest symbol 投影和版本门禁。
+  - 当前 Godot 4.5.1 的具体数据集由 `Godot451FixedBindings` 提供；后续版本只应新增数据子类，不应把 4.5.1
+    类名扩散为长期调用入口。
+  - 只列出当前 runtime/helper/template 需要、且不由 interface / builtin / utility 全量输出覆盖的 wrapper，
+    并作为后续模块级使用集的 provided set 输入。
 
 模块级 generated binding 不放在 `include_451/godot` 下，而是和 `entry.c`、`entry.h`、`engine_method_binds.h`
 一样由 `CCodegen.generate()` 作为 `GeneratedFile` 输出到生成项目目录：
@@ -342,7 +344,7 @@ interface generator 必须把 header 事实拆成两个字段，而不是从 typ
 - 顶层 `global_constants[]` 来自 `godot_global_constants.h`，按目标 Godot metadata 全量生成。Godot 4.5.1 当前
   `extension_api_451.json` 中该数组为空，也必须生成稳定空 header、loader 字段和 generator snapshot，防止后续 Godot
   版本或手写 helper 需要全局常量时重新引入按需解析或旧 vendor 头。
-- `godot_Object_NOTIFICATION_*`、engine class enum/int constant、`godot_Engine_singleton()`、`godot_ClassDB_singleton()` 属于 engine class wrapper 面；固定 helper 依赖由 `FixedGodotBindings451` 提供，脚本路径中的残余 engine wrapper 再由 `GodotBindingUsageSession` 按需生成。
+- `godot_Object_NOTIFICATION_*`、engine class enum/int constant、`godot_Engine_singleton()`、`godot_ClassDB_singleton()` 属于 engine class wrapper 面；固定 helper 依赖由 `FixedGodotBindings` 当前版本数据提供，脚本路径中的残余 engine wrapper 再由 `GodotBindingUsageSession` 按需生成。
 - `godot_String`、`godot_StringName`、`godot_Array`、`godot_Dictionary`、`godot_Variant` 等 builtin struct typedef 由 `godot_builtin_types.h` 提供。
 - builtin ABI size 表由 `godot_builtin_sizes.h` 提供，命名不再使用 `GDEXTENSION_LITE_SIZE_*` 作为 public contract。
 - builtin member layout 表由 `godot_builtin_layout.h` 或等价 generator snapshot 提供，至少包含
@@ -520,8 +522,9 @@ typed container 和 GDCC-owned helper 边界：
 因此固定 helper 依赖的事实源必须改为版本化源码清单。扫描器只做验收对账，不负责写入清单、不负责补生成。
 建议增加：
 
-- `src/main/java/gd/script/gdcc/backend/c/gen/binding/FixedGodotBindings451.java`
-  - 源码维护 Godot 4.5.1 固定 wrapper 清单。
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/FixedGodotBindings`
+  - 源码维护固定 wrapper 清单的抽象生成骨架，按 `GodotVersion` 分派到具体版本数据集。
+  - `Godot451FixedBindings` 只维护 Godot 4.5.1 固定 wrapper 清单；新版本应添加新的数据子类。
   - 使用 `List.of(...)` / record literal 描述 `GodotBindingSymbol` 或 `GodotBindingSpec`，保持 review 可读。
   - 只包含不由全量 interface、全量 builtin、全量 utility 覆盖的固定 runtime/helper/template wrapper。
   - 对 `_Generic`、宏拼接、FreeMarker 拼接和 Java helper 生成的固定调用，必须在这里显式列出。
@@ -529,10 +532,10 @@ typed container 和 GDCC-owned helper 边界：
   - 扫描 `src/main/c/codegen/include_451/gdcc/*.h` 与固定模板，只做对账。
   - 报告“扫描可见但不在 interface/builtin/utility/fixed 清单/module-local 白名单中的 `godot_*`”。
   - 报告“固定清单中已经不再被固定 helper 使用且没有文档解释的 symbol”，由维护者决定是否移除。
-  - 不修改 `FixedGodotBindings451.java`，不把扫描结果写回事实源。
-- `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingManifest.java`
-  - 可以保留为 generated manifest / snapshot 读写工具，但不再作为固定 helper 的事实源。
-  - 从 `FixedGodotBindings451.java` 生成规范化 snapshot，用于测试、对账和 module-local provided set。
+  - 不修改 `FixedGodotBindings` 版本数据，不把扫描结果写回事实源。
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingSymbolHelper.java`
+  - 可以保留为 generated snapshot 校验与写出工具，但不再作为固定 helper 的事实源。
+  - 从 `FixedGodotBindings` 当前版本数据生成规范化 snapshot，用于测试、对账和 module-local provided set。
   - 读入时按 canonical key 去重，遇到同一 C function name 映射到不同结构性签名/ABI 时直接报错。
   - 对同一 canonical symbol，只允许合并兼容的 lookup hash metadata。
 - `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingTool.java`
@@ -558,19 +561,16 @@ java -cp "build/classes/java/main:build/resources/main:build/libs/lib/*" gd.scri
   check-fixed \
   --gde 4.5.1 \
   --helper-root src/main/c/codegen/include_451/gdcc \
-  --template-root src/main/c/codegen/template_451 \
-  --fixed-list gd.script.gdcc.backend.c.gen.binding.FixedGodotBindings451
+  --template-root src/main/c/codegen
 
 java -cp "build/classes/java/main:build/resources/main:build/libs/lib/*" gd.script.gdcc.backend.c.gen.binding.GodotBindingTool \
   generate-fixed \
   --gde 4.5.1 \
-  --fixed-list gd.script.gdcc.backend.c.gen.binding.FixedGodotBindings451 \
   --out src/main/c/codegen/include_451/godot
 
 java -cp "build/classes/java/main:build/resources/main:build/libs/lib/*" gd.script.gdcc.backend.c.gen.binding.GodotBindingTool \
   dump-fixed-manifest \
   --gde 4.5.1 \
-  --fixed-list gd.script.gdcc.backend.c.gen.binding.FixedGodotBindings451 \
   --out src/main/c/codegen/binding_451/godot_fixed_bindings.snapshot.json
 ```
 
@@ -585,13 +585,15 @@ java -cp "build/classes/java/main:build/resources/main:build/libs/lib/*" gd.scri
   `godot_native_structures.h`、`godot_builtin_sizes.h`、`godot_builtin_layout.h` 等 ABI support header；
   `global_constants[]` 为空时也写出稳定空 header。
 - `check-fixed`：读取版本化固定清单，校验所有 symbol 都可由当前 Godot 4.5.1 metadata 解析，没有 C function name 冲突；
-  同时扫描固定 helper/template 做对账，发现清单外 `godot_*` 只报错，不自动写入。
+  同时扫描固定 helper/template 做对账，发现清单外 `godot_*` 只报错，不自动写入。interface wrapper
+  provided set 来自 `--header`，若未传入则从 `--helper-root` 的 sibling `godot/gdextension/gdextension_interface.h`
+  推断。
 - `generate-fixed`：从版本化固定清单生成 `godot_fixed_binding.h/.c`，并更新 `godot_binding.h/.c` 的聚合 include。
 - `dump-fixed-manifest`：从版本化固定清单导出规范化 snapshot，方便 review、测试和 generated C 扫描使用。
 
-`FixedGodotBindings451.java` 是固定 helper wrapper 的事实来源。修改 `gdcc/*.h` 或固定模板后，流程必须是：
+`FixedGodotBindings` 的版本数据是固定 helper wrapper 的事实来源。修改 `gdcc/*.h` 或固定模板后，流程必须是：
 
-1. 手动维护 `FixedGodotBindings451.java` 中的固定 wrapper 清单。
+1. 手动维护目标 Godot 版本对应的数据子类，例如当前 4.5.1 的 `Godot451FixedBindings`。
 2. 运行 `check-fixed`，让扫描器只做对账和 fail-fast。
 3. 运行 `generate-fixed` 写回 `godot_fixed_binding.h/.c`。
 4. 可选运行 `dump-fixed-manifest` 更新 snapshot。
@@ -608,7 +610,7 @@ wrapper 来源按层分离：
   全量生成到 `godot_interface.h/.c`。
 - builtin wrapper：按 Godot 版本从 `ExtensionAPI.builtin_classes[]` 经 GDCC builtin contract 投影后全量生成到 `godot_builtin.h/.c`。
 - utility wrapper：按 Godot 版本从 `ExtensionAPI.utility_functions[]` 全量生成到 `godot_utility.h/.c`。
-- fixed runtime wrapper：只包含 `FixedGodotBindings451.java` 源码清单列出的具体符号，生成到
+- fixed runtime wrapper：只包含 `FixedGodotBindings` 当前版本数据列出的具体符号，生成到
   `godot_fixed_binding.h/.c`；它不按 singleton、class constant、engine class 这类大类拥有符号。
 - module-local wrapper：只管理经过 interface/builtin/utility/fixed provided set 过滤后仍随模块变化的具体符号，
   例如未 provided 的 engine constructor、engine public method/property helper、singleton getter、class constant helper。
@@ -1105,12 +1107,12 @@ runtime lookup failure 规则：
 - `GodotUtilityGenerator`
   - 从 `ExtensionAPI.utility_functions[]` 全量生成 `godot_utility.h/.c`。
   - 这是版本级预生成器，不读取 module usage session。
-- `FixedGodotBindings451`
+- `FixedGodotBindings` / `Godot451FixedBindings`
   - 维护固定 helper/template 需要但不属于 interface/builtin/utility 全量集合的 wrapper 清单。
 - `GdccHelperBindingScanner`
   - 扫描固定 `gdcc/*.h` 与固定模板，只做对账和 fail-fast。
   - 不生成或更新 fixed 清单，不直接写 C wrapper。
-- `GodotBindingManifest`
+- `GodotBindingSymbolHelper`
   - 可读写 generated snapshot，负责 canonical key 去重和 C function name 冲突检测。
 - `GodotBindingTool`
   - 提供 `public static void main(String[] args)`。
@@ -1653,7 +1655,32 @@ wrapper，也不改变 `godot_initialize_interface(...)` 的 eager resolve 合�
 也不要修改模板 include 或 `CProjectBuilder`；先让命令行工具全量生成 builtin / utility wrapper，并从版本化固定清单生成 fixed wrapper，
 让 `godot_binding.h/.c` 在新 Godot support 内部完整聚合 interface + builtin + utility + fixed support。
 
-- 实现 `GodotBindingSymbol`、`GodotBindingManifest`、`FixedGodotBindings451`、`GdccHelperBindingScanner`、`GodotBindingTool` 的最小版本。
+状态同步（2026-05-25）：
+
+- [x] 已重新确认 `AGENTS.md` 并完成 doc / code / test 的并行只读调研；阶段边界确认：本阶段不修改模板 include、不切换 `CProjectBuilder` 输入、不移除 `gdextension-lite-one.c`。
+- [x] 已实现 `generate-builtin`、`generate-utility`、`generate-fixed`、`check-fixed`、`dump-fixed-manifest`，并生成 `godot_builtin.*`、`godot_utility.*`、`godot_fixed_binding.*` 与阶段 2 聚合版 `godot_binding.*`。
+- [x] 已将固定 runtime wrapper 从单一 `FixedGodotBindings451` 入口改为 `FixedGodotBindings` 抽象骨架 + `Godot451FixedBindings` 版本数据集；
+  工具入口不再直接绑定 4.5.1 类名，后续 Godot 版本可新增数据子类接入。
+- [x] 已把重复 C wrapper 形状收敛到共享宏：`GDCC_RESOLVE_*` 负责 lazy lookup / fail-fast / non-null cache，
+  `GDCC_DEFINE_VARIANT_*` 和 fixed singleton/constant 宏负责纯形状重复；宏不承载生命周期分派或 fallback 语义。
+- [x] 已将 builtin method wrapper 的函数指针解析、兼容 hash fallback、参数数组声明、返回 carrier 声明和 ptrcall/return
+  收敛到 `GDCC_RESOLVE_BUILTIN_METHOD_CACHE` 与 `GDCC_BUILTIN_METHOD_*` 宏；method wrapper 本体不再重复展开 lookup/call boilerplate。
+- [x] 已运行 `check-fixed` 对账；现有 `gdcc` helper / 模板没有发现清单外固定 wrapper 依赖。
+- [x] 已运行 `GodotAbiHeaderCompileTest`，聚合后的 `godot_binding.c` 最小 C smoke 通过。
+- [x] 已补齐正反向单元测试，覆盖 lookup fail-fast、hash contract、过滤规则、utility vararg / strict hash、fixed 清单对账和 scanner 缺失 wrapper fail-fast。
+- [x] 已根据只读审查补修 `godot_Object_call` 的失败路径：`GDExtensionUninitializedVariantPtr` 返回槽在调用失败时不再被销毁；
+  同时补充测试锁定该生命周期合同。
+- [x] `check-fixed` 的 provided set 已包含从 `gdextension_interface.h` 解析出的 interface wrapper，并移除
+  `godot_variant_*` / `godot_object_*` 等宽泛前缀放行；新增负向测试锁定 interface wrapper typo 必须 fail-fast。
+- [x] `GodotBindingSymbolHelper` 对完全重复的 canonical symbol 改为 fail-fast，避免固定事实源被静默去重。
+- [x] 已重新运行阶段 2 定向测试并通过：
+  - `script/run-gradle-targeted-tests.sh --tests GodotInterfaceGeneratorTest,GodotBindingToolAbiSupportTest,GodotBuiltinGeneratorTest,GodotUtilityGeneratorTest,FixedGodotBindingsTest,EngineMethodAbiCodecTest,GodotAbiHeaderCompileTest`
+  - `script/run-gradle-targeted-tests.sh --tests "CCodegenTest,CGenHelperTest,CBodyBuilderPhaseBTest,CBodyBuilderPhaseCTest,CConstructInsnGenTest,CPackUnpackVariantInsnGenTest"`
+- [x] 已重新执行 `generate-builtin`、`generate-utility`、`generate-fixed`、`generate-binding` 和 `check-fixed`，确认静态 runtime support 生成物与当前生成器一致。
+- [x] 生成物规模已复核：`godot_builtin.c` 15608 行、`godot_utility.c` 1355 行、`godot_fixed_binding.c` 334 行；
+  `git diff --check` 通过。
+
+- 实现 `GodotBindingSymbol`、`GodotBindingSymbolHelper`、`FixedGodotBindings` / `Godot451FixedBindings`、`GdccHelperBindingScanner`、`GodotBindingTool` 的最小版本。
 - 实现 `GodotBuiltinGenerator`，全量生成 `godot_builtin.h/.c`：
   - 按 GDCC builtin wrapper contract 生成 filtered raw metadata wrapper，而不是简单映射全部 JSON；
   - builtin constructors、destructors、methods、members、operators；
@@ -1670,9 +1697,12 @@ wrapper，也不改变 `godot_initialize_interface(...)` 的 eager resolve 合�
   - indexed/keyed helper 和 typed Array/Dictionary helper。
 - 实现 `GodotUtilityGenerator`，全量生成 `godot_utility.h/.c`；utility function lookup 只接受 metadata primary hash，
   返回空时立即 fail-fast，不做兼容 hash 猜测。
-- `FixedGodotBindings451` 源码清单列出当前 `gdcc/*.h` 和固定模板仍需要、且不由 interface/builtin/utility 覆盖的 wrapper。
+- `Godot451FixedBindings` 源码清单列出当前 `gdcc/*.h` 和固定模板仍需要、且不由 interface/builtin/utility 覆盖的 wrapper；
+  `FixedGodotBindings` 负责通用生成骨架和版本门禁。
 - `check-fixed` 扫描 `gdcc/*.h`、`entry.c.ftl`、`entry.h.ftl`、`engine_method_binds.h.ftl` 只做对账，不自动写清单。
-- `generate-fixed` 从 `FixedGodotBindings451` 生成 `godot_fixed_binding.h/.c`，并让 `godot_binding.h/.c` 聚合它。
+  扫描器不能用 `godot_variant_*` / `godot_object_*` 这类前缀白名单替代 interface provided set；
+  interface wrapper typo 必须 fail-fast。
+- `generate-fixed` 从 `FixedGodotBindings` 当前版本数据生成 `godot_fixed_binding.h/.c`，并让 `godot_binding.h/.c` 聚合它。
 
 全量 builtin / utility 覆盖当前大多数固定 helper 依赖：
 
@@ -1729,9 +1759,11 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 - utility 预生成 symbol 集与 `ExtensionAPI.utility_functions[]` 一致，包含 vararg / void return utility。
 - utility wrapper 的生成文本必须包含严格 hash lookup 和空指针 fail-fast；测试覆盖 utility hash 冲突路径，
   并确认没有 `hash_compatibility` 或无 hash fallback。
-- `FixedGodotBindings451` 中没有重复 canonical symbol，且没有同名不同签名冲突。
+- `FixedGodotBindings` 当前版本数据中没有重复 canonical symbol，且没有同名不同签名冲突。
 - `check-fixed` 发现清单外固定 `godot_*` 调用时 fail-fast，但不自动修改源码清单。
 - `godot_fixed_binding.c` 只包含 fixed source-list 需要且不被 interface/builtin/utility 覆盖的 wrapper。
+- `godot_builtin.c`、`godot_utility.c`、`godot_fixed_binding.c` 中重复 lookup / cache / fail-fast 形状必须通过共享 C 宏表达；
+  测试应锚定宏调用、non-null cache 和失败路径，而不是重新锁死大段展开文本。
 - `godot_binding.h` 聚合 `godot_abi.h`、`godot_interface.h`、`godot_builtin.h`、`godot_utility.h`、`godot_fixed_binding.h`。
 - `godot_binding.c` 聚合 `godot_interface.c`、`godot_builtin.c`、`godot_utility.c`、`godot_fixed_binding.c`，并可在只包含 `<includeRoot>/godot` 的最小 C smoke test 中编译。
 - 固定 wrapper 阶段完成前，`entry.c.ftl`、`entry.h.ftl`、`gdcc/*.h` 仍不切换 include，`CProjectBuilder` 仍不移除 `gdextension-lite-one.c`。
@@ -1943,7 +1975,7 @@ module-local 登记位置必须按类型明确落点：
     `hash` / `hash_compatibility` 只进 lookup metadata。
   - 约束：exact `ENGINE` route 只进入 `EngineMethodUsageSession`，不得登记 `godot_<Owner>_<method>` public wrapper。
 - singleton getter
-  - 使用点：未来 `LoadStaticInsnGen` 或 global access path；固定 helper 使用的 singleton 必须走 `FixedGodotBindings451`。
+  - 使用点：未来 `LoadStaticInsnGen` 或 global access path；固定 helper 使用的 singleton 必须走 `FixedGodotBindings` 当前版本数据。
   - 登记方式：脚本路径使用时由 `LoadStaticInsnGen` 或 resolver 显式登记。
   - metadata：`singletons[]`。
 - class enum/int constant helper
@@ -2261,7 +2293,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
 
 现有测试反向更新规则：
 
-- 阶段 2：只新增 `GodotBuiltinGenerator`、`GodotUtilityGenerator`、`FixedGodotBindings451`、`GodotBindingTool`
+- 阶段 2：只新增 `GodotBuiltinGenerator`、`GodotUtilityGenerator`、`FixedGodotBindings` / `Godot451FixedBindings`、`GodotBindingTool`
   等生成器 contract 测试。此时旧 runtime 仍可编译 `gdextension-lite-one.c`，不要提前修改
   `ApiCompilePipelineTest` 和 `CProjectBuilderSharedIncludeTest` 的 vendor 输入断言。
 - 阶段 3：一次性反向更新构建输入和 include root 相关旧断言：
@@ -2365,14 +2397,18 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - 验证 utility lookup 返回 `NULL` 时调用 binding lookup failure helper；utility hash 冲突不能通过
     compatibility hash、无 hash lookup 或默认返回值绕过。
   - 验证 `godot_print` 等模板固定路径需要的 utility 不再依赖 module-local session。
-- `FixedGodotBindings451Test`
+- `FixedGodotBindingsTest`
   - 验证源码清单没有重复 canonical symbol。
+  - 验证 `FixedGodotBindings.forVersion(GodotVersion.V451)` 选择 `Godot451FixedBindings`，并拒绝未支持的 API 版本。
+  - 验证 `godot_Object_call` 失败路径不会 destroy 可能未初始化的 return storage，而是返回 initialized nil
+    `Variant`。
   - 验证清单内每个 wrapper 都不被 interface/builtin/utility 全量集合覆盖，否则 fail-fast。
   - 验证同一 C function name 映射到不同结构性 signature/ABI 时 fail-fast。
 - `GodotBindingToolTest`
   - 验证 `generate-abi-support` 从 `ExtensionAPI` 模型生成 global enum、global constants、native struct、
     builtin size/layout header，重复执行输出稳定。
-  - 验证 `check-fixed` 只读取 `FixedGodotBindings451` 并做 helper/template 对账，不修改源码清单或生成物。
+  - 验证 `check-fixed` 只读取 `FixedGodotBindings` 当前版本数据并做 helper/template 对账，不修改源码清单或生成物。
+  - 验证 `check-fixed` 使用 interface provided set，能接受真实 interface wrapper 并拒绝 prefix-looking typo。
   - 验证 `generate-fixed` 从源码清单输出 `godot_fixed_binding.h/.c`，重复执行输出稳定。
   - 验证 `dump-fixed-manifest` 只导出 snapshot，snapshot 不是固定 wrapper 的事实来源。
 - `GdccHelperBindingScannerTest`
@@ -2445,7 +2481,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
    保留为 `godot_interface.c` 中的 hidden 单定义状态；用多 translation unit 测试证明 wrapper 不复制 cache，
    并在阶段完成后手动查看一次动态符号表，确认内部符号不默认导出。
 6. 提交阶段 2，按 GDCC builtin contract 全量生成 `godot_builtin.h/.c`，全量生成 `godot_utility.h/.c`，
-   并从 `FixedGodotBindings451` 源码清单生成 `godot_fixed_binding.h/.c`；`check-fixed` 只做对账，不做发现或补写。
+   并从 `FixedGodotBindings` 当前版本数据生成 `godot_fixed_binding.h/.c`；`check-fixed` 只做对账，不做发现或补写。
 7. 提交阶段 3，原子切换 `entry.c` 初始化、`entry.h` / `gdcc/*.h` include、`CProjectBuilder` include dir 和 native 编译输入；
    这个阶段完成后生成项目不再编译 `gdextension-lite-one.c`，相关测试同步断言 `godot_binding.c` 和 `godot` include root；
    同时加入 stale vendor 回归场景，证明旧 `shared-include/gdextension-lite/gdextension-lite-one.c` 残留不会进入 `cFiles`；
@@ -2501,7 +2537,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     只替换旧 vendor 路径和旧文件数量假设。
 - builtin struct ABI layout 不匹配：
   - `godot_abi.h` 必须和 Godot 4.5.1 导出的 `gdextension_interface.h` / extension API 对齐。
-  - 若 builtin 类型声明采用手写 include，必须作为 4.5.1 目标版本 ABI 文件维护，并由 size assert 覆盖；这不适用于 fixed wrapper，fixed wrapper 必须由 `FixedGodotBindings451` 源码清单 + tool 生成。
+  - 若 builtin 类型声明采用手写 include，必须作为 4.5.1 目标版本 ABI 文件维护，并由 size assert 覆盖；这不适用于 fixed wrapper，fixed wrapper 必须由 `FixedGodotBindings` 当前版本数据 + tool 生成。
 - builtin member layout 漂移：
   - 只验证 `sizeof(godot_Vector3)` 不足以证明 `Vector3.z`、`Transform2D.origin`、`Basis.x` 等字段访问正确。
     offset 或 meta 错误会让字段访问、未来 scalar replacement、字段级优化在看似编译通过后读写错误内存。
@@ -2526,7 +2562,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - 不解析 Godot C++ 注册源码；若某个 header 中存在的 interface 在特定 runtime 中 lookup 失败，应作为 runtime 兼容性或
     Godot 版本不匹配问题处理。
   - builtin callable wrapper 与 utility function wrapper 必须全部来自 Godot 版本级全量预生成集合。
-  - 固定 runtime/helper/template 依赖必须来自 `FixedGodotBindings451` 源码清单。
+  - 固定 runtime/helper/template 依赖必须来自 `FixedGodotBindings` 当前版本数据。
   - 只有经过 provided set 过滤后仍残余的具体 engine public wrapper、engine property helper、singleton getter、
     class constant helper 来自 `GodotBindingUsageSession`。
   - generated C 扫描只做 fail-fast 验收；新增生成器路径时必须明确落入 provided set 或显式登记 module-local wrapper。
@@ -2547,7 +2583,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     对 GDCC 额外合成的 helper，要标明来源是 GDCC-owned compatibility wrapper。
   - C function name 冲突必须 fail-fast，不能靠“后生成覆盖先生成”得到看似通过的 ABI。
 - fixed wrapper 重复生成：
-  - `FixedGodotBindings451` 是固定 helper wrapper 的唯一事实来源；snapshot JSON 只能作为对账和测试产物。
+  - `FixedGodotBindings` 当前版本数据是固定 helper wrapper 的唯一事实来源；snapshot JSON 只能作为对账和测试产物。
   - `GodotBindingUsageSession` 必须把 interface/builtin/utility/fixed snapshot 作为 provided set 预加载；module-local generator 只输出不在 provided set 中的 wrapper。
   - 同名不同签名必须报错，不能靠 include 顺序或链接顺序掩盖。
 - fixed helper 扫描遗漏：
@@ -2613,7 +2649,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   阶段 1D 完成后的人工符号表检查确认 generated shared library 不默认导出 `godot_*` interface wrapper、
   `gdcc_interface_*` 指针表、`godot_initialize_interface(...)` 或 `gdcc_binding_lookup_fail(...)`。
 - class method bind lookup 覆盖 primary hash 与 `hash_compatibility` 候选；utility hash 冲突没有兼容路径，必须 fail-fast。
-- 固定 helper 所需且不被 interface/builtin/utility 覆盖的非 interface wrapper 由 `FixedGodotBindings451` 源码清单生成到 `godot_fixed_binding.h/.c`，不是手写散落在多个 C 文件中。
+- 固定 helper 所需且不被 interface/builtin/utility 覆盖的非 interface wrapper 由 `FixedGodotBindings` 当前版本数据生成到 `godot_fixed_binding.h/.c`，不是手写散落在多个 C 文件中。
 - `GodotBindingTool` 提供可命令行调用的 `main`，支持 `generate-interface`、`generate-builtin`、`generate-utility`、
   `generate-abi-support`、`check-fixed`、`generate-fixed`、`dump-fixed-manifest`。
 - `check-fixed` 与 generated C 扫描只做 fail-fast 验收，不负责发现 wrapper、不负责补登记、不负责生成。

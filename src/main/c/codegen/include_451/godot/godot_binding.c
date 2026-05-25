@@ -2,3 +2,6 @@
 /* Do not edit by hand. */
 #include "godot_binding.h"
 #include "godot_interface.c"
+#include "godot_builtin.c"
+#include "godot_utility.c"
+#include "godot_fixed_binding.c"

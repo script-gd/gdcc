@@ -5,5 +5,8 @@
 
 #include <godot_abi.h>
 #include <godot_interface.h>
+#include <godot_builtin.h>
+#include <godot_utility.h>
+#include <godot_fixed_binding.h>
 
 #endif

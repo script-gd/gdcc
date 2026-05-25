@@ -317,7 +317,7 @@ class GodotInterfaceGeneratorTest {
     }
 
     @Test
-    void renderBindingSupportShouldStayThinUntilLaterStages() {
+    void renderBindingSupportShouldAggregateStage2RuntimeSupport() {
         var files = GodotInterfaceGenerator.renderBindingSupport();
         var generatedHeader = files.get("godot_binding.h");
         var generatedSource = files.get("godot_binding.c");
@@ -326,11 +326,14 @@ class GodotInterfaceGeneratorTest {
                 () -> assertEquals(2, files.size()),
                 () -> assertTrue(generatedHeader.contains("#include <godot_abi.h>")),
                 () -> assertTrue(generatedHeader.contains("#include <godot_interface.h>")),
+                () -> assertTrue(generatedHeader.contains("#include <godot_builtin.h>")),
+                () -> assertTrue(generatedHeader.contains("#include <godot_utility.h>")),
+                () -> assertTrue(generatedHeader.contains("#include <godot_fixed_binding.h>")),
                 () -> assertTrue(generatedSource.contains("#include \"godot_binding.h\"")),
                 () -> assertTrue(generatedSource.contains("#include \"godot_interface.c\"")),
-                () -> assertFalse(generatedHeader.contains("godot_builtin")),
-                () -> assertFalse(generatedHeader.contains("godot_utility")),
-                () -> assertFalse(generatedHeader.contains("godot_fixed_binding")),
+                () -> assertTrue(generatedSource.contains("#include \"godot_builtin.c\"")),
+                () -> assertTrue(generatedSource.contains("#include \"godot_utility.c\"")),
+                () -> assertTrue(generatedSource.contains("#include \"godot_fixed_binding.c\"")),
                 () -> assertFalse(generatedHeader.contains("godot_module_bindings")),
                 () -> assertFalse(generatedSource.contains("godot_module_bindings")),
                 () -> assertFalse(generatedSource.contains("gdextension-lite"))

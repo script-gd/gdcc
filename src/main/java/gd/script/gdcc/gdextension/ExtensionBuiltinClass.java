@@ -111,7 +111,7 @@ public record ExtensionBuiltinClass(
         return false;
     }
 
-    public record ClassOperator(String name, @NotNull String rightType, String returnType) {
+    public record ClassOperator(String name, String rightType, String returnType) {
         public GodotOperator operator() {
             return GodotOperator.fromMetadataName(name);
         }

@@ -12,6 +12,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /// Generates the fixed Godot interface lookup layer from Godot's exported C ABI header.
@@ -61,6 +62,15 @@ final class GodotInterfaceGenerator {
         files.put("godot_interface.h", renderInterfaceHeader(functions));
         files.put("godot_interface.c", renderInterfaceSource(functions));
         return files;
+    }
+
+    static @NotNull Set<String> collectWrapperNames(@NotNull Path header) throws IOException {
+        Objects.requireNonNull(header);
+        var names = new LinkedHashSet<String>();
+        for (var function : parseInterfaceFunctions(Files.readString(header))) {
+            names.add(function.wrapperName());
+        }
+        return Set.copyOf(names);
     }
 
     static void generateBindingSupport(@NotNull Path out) throws IOException {
@@ -496,6 +506,9 @@ final class GodotInterfaceGenerator {
 
                 #include <godot_abi.h>
                 #include <godot_interface.h>
+                #include <godot_builtin.h>
+                #include <godot_utility.h>
+                #include <godot_fixed_binding.h>
 
                 #endif
                 """;
@@ -507,6 +520,9 @@ final class GodotInterfaceGenerator {
                 /* Do not edit by hand. */
                 #include "godot_binding.h"
                 #include "godot_interface.c"
+                #include "godot_builtin.c"
+                #include "godot_utility.c"
+                #include "godot_fixed_binding.c"
                 """;
     }
 
