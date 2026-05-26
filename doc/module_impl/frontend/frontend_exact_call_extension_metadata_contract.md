@@ -191,7 +191,8 @@ Godot extension API JSON 中的 `enum::...`、`bitfield::...`、`typedarray::...
 
 ### 5.1 runtime object-parameter `ptrcall` ABI 不属于本文档负责范围
 
-`Node.add_child(...)` 目前在真引擎 `test_suite` 中仍不适合作为正向 runtime anchor，并不是因为 exact metadata contract 仍未闭环，而是因为 gdextension-lite 的 class-method object-parameter `ptrcall` wrapper 仍有独立 ABI 缺口。
+`Node.add_child(...)` 曾因迁移前 public wrapper 的 class-method object-parameter `ptrcall` ABI 缺口不适合作为正向 runtime anchor。
+exact engine route 迁移到 backend-owned helper 后，runtime anchor 的当前事实源应回到 backend exact-call 文档。
 
 这条问题的事实源在：
 

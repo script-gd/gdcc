@@ -5,14 +5,15 @@
 <#include "trim.ftl">
 
 #include "entry.h"
-#include <implementation-macros.h>
 
 GDE_EXPORT GDExtensionBool gdextension_entry(
     GDExtensionInterfaceGetProcAddress p_get_proc_address,
     GDExtensionClassLibraryPtr p_library,
     GDExtensionInitialization* r_initialization
 ) {
-    gdextension_lite_initialize(p_get_proc_address);
+    if (!godot_initialize_interface(p_get_proc_address)) {
+        return false;
+    }
     class_library = p_library;
 
     r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;

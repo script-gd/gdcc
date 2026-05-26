@@ -1,7 +1,7 @@
 #ifndef GDCC_INTRINSIC_H
 #define GDCC_INTRINSIC_H
 
-#include <gdextension-lite.h>
+#include <godot_binding.h>
 
 /// Wrapper-only inbound constructors for call_func arguments whose Variant payload may use
 /// a narrower Godot runtime type than the published method metadata.

@@ -74,6 +74,38 @@ class GodotUtilityGeneratorTest {
     }
 
     @Test
+    void renderUtilityPtrcallResultCarriersShouldBeInitialized() throws IOException {
+        var source = GodotUtilityGenerator.renderUtilitySupport(ExtensionApiLoader.loadDefault())
+                .get("godot_utility.c");
+
+        var sinBody = functionBody(source, "godot_float godot_sin(");
+        var lerpBody = functionBody(source, "godot_Variant godot_lerp(");
+        var strBody = functionBody(source, "godot_String godot_str(");
+        var instanceFromIdBody = functionBody(source, "godot_Object * godot_instance_from_id(");
+        var printBody = functionBody(source, "void godot_print(");
+
+        assertAll(
+                () -> assertInitializedResultCarrier(sinBody, "godot_float"),
+                () -> assertInitializedResultCarrier(lerpBody, "godot_Variant"),
+                () -> assertInitializedResultCarrier(strBody, "godot_String"),
+                () -> assertInitializedResultCarrier(instanceFromIdBody, "godot_Object *"),
+                () -> assertTrue(lerpBody.contains(
+                        "GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_lerp, \"lerp\", "
+                                + "3389874542LL, \"godot_lerp\", return godot_new_Variant_nil());"
+                )),
+                () -> assertTrue(strBody.contains(
+                        "GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_str, \"str\", "
+                                + "32569176LL, \"godot_str\", return (godot_String){ 0 });"
+                )),
+                () -> assertFalse(source.contains("godot_Variant result;\n"), source),
+                () -> assertFalse(source.contains("godot_String result;\n"), source),
+                () -> assertFalse(printBody.contains(" result"), printBody),
+                () -> assertTrue(printBody.contains("gdcc_utility_print(NULL, args, (int)(1 + argc));"),
+                        printBody)
+        );
+    }
+
+    @Test
     void bindingToolShouldRejectUnsupportedUtilityGenerationVersion() {
         var failure = assertThrows(IllegalArgumentException.class, () -> GodotBindingTool.run(new String[]{
                 "generate-utility",
@@ -104,6 +136,19 @@ class GodotUtilityGeneratorTest {
                 () -> assertTrue(missCheck > macroDefinition, "macro must check resolved pointer before cache assignment"),
                 () -> assertTrue(cacheAssignment > missCheck, "cache assignment must follow NULL check"),
                 () -> assertTrue(cachedCall > resolveMacro, "cached pointer must be resolved before call")
+        );
+    }
+
+    private static void assertInitializedResultCarrier(
+            @NotNull String body,
+            @NotNull String cType
+    ) {
+        assertAll(
+                () -> assertTrue(body.contains(cType + " result = { 0 };"), body),
+                () -> assertTrue(body.contains("(GDExtensionTypePtr)&result"), body),
+                () -> assertTrue(body.contains("return result;"), body),
+                () -> assertFalse(body.contains(cType + " result;\n"), body),
+                () -> assertFalse(body.contains("GDExtensionUninitialized"), body)
         );
     }
 

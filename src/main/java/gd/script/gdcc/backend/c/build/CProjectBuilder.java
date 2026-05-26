@@ -18,6 +18,9 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
     private static final String INCLUDE_RESOURCE_DIR = "include_451";
     private static final String PROJECT_INCLUDE_DIR_NAME = "include";
     private static final String SHARED_INCLUDE_DIR_NAME = "shared-include";
+    private static final String GDCC_INCLUDE_DIR_NAME = "gdcc";
+    private static final String GODOT_INCLUDE_DIR_NAME = "godot";
+    private static final String GODOT_RUNTIME_SOURCE_PATH = GODOT_INCLUDE_DIR_NAME + "/godot_binding.c";
 
     private CCompiler cCompiler;
     private boolean ignoreSharedInclude;
@@ -53,7 +56,7 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
     public void initProject(@NotNull CProjectInfo projectInfo) throws IOException {
         var projectPath = projectInfo.projectPath();
         var includeRoot = resolveIncludeRoot(projectPath);
-        ResourceExtractor.extract(INCLUDE_RESOURCE_DIR, includeRoot, getClass().getClassLoader());
+        extractRuntimeIncludes(includeRoot);
     }
 
     @Override
@@ -62,7 +65,7 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         var projectPath = projectInfo.projectPath();
         var includeRoot = resolveIncludeRoot(projectPath);
         var includeStart = System.nanoTime();
-        ResourceExtractor.extract(INCLUDE_RESOURCE_DIR, includeRoot, getClass().getClassLoader());
+        extractRuntimeIncludes(includeRoot);
         var includeDuration = elapsedSince(includeStart);
 
         var codegenStart = System.nanoTime();
@@ -77,8 +80,8 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
         var generatedFileWriteDuration = elapsedSince(generatedFileWriteStart);
 
         var compileInputStart = System.nanoTime();
-        // Native compiler inputs are exactly the C files written by this codegen pass plus the
-        // extracted gdextension-lite amalgamation; callers must not infer them by scanning projectPath.
+        // Native compiler inputs are exactly this codegen pass plus the fixed GDCC runtime source.
+        // ResourceExtractor intentionally leaves stale files alone, so old vendor files are never scanned.
         var cFiles = new ArrayList<Path>();
         for (var generatedFile : generatedFiles) {
             if (generatedFile.getFileName().toString().endsWith(".c")) {
@@ -86,16 +89,16 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
             }
         }
 
-        // gdextension-lite-one.c should be under <includeRoot>/gdextension-lite/gdextension-lite-one.c
-        var gdextOne = includeRoot.resolve("gdextension-lite").resolve("gdextension-lite-one.c");
-        if (Files.exists(gdextOne)) {
-            cFiles.add(gdextOne);
+        var godotRuntimeSource = includeRoot.resolve(GODOT_RUNTIME_SOURCE_PATH);
+        if (!Files.isRegularFile(godotRuntimeSource)) {
+            throw new IOException("Required Godot runtime binding source is missing: " + godotRuntimeSource);
         }
+        cFiles.add(godotRuntimeSource);
 
         // include dir
         var includeDirs = List.of(
-                includeRoot.resolve("gdcc"),
-                includeRoot.resolve("gdextension-lite")
+                includeRoot.resolve(GDCC_INCLUDE_DIR_NAME),
+                includeRoot.resolve(GODOT_INCLUDE_DIR_NAME)
         );
 
         // output name: projectName
@@ -137,6 +140,15 @@ public class CProjectBuilder implements ProjectBuilder<CProjectInfo, CCodegen, C
             return sharedInclude;
         }
         return normalizedProjectPath.resolve(PROJECT_INCLUDE_DIR_NAME);
+    }
+
+    private void extractRuntimeIncludes(@NotNull Path includeRoot) throws IOException {
+        var loader = getClass().getClassLoader();
+        var resources = ResourceExtractor.listResourceFilesRecursively(INCLUDE_RESOURCE_DIR, loader).stream()
+                .filter(resource -> resource.startsWith(GDCC_INCLUDE_DIR_NAME + "/")
+                        || resource.startsWith(GODOT_INCLUDE_DIR_NAME + "/"))
+                .toList();
+        ResourceExtractor.extractSpecific(INCLUDE_RESOURCE_DIR, resources, includeRoot, loader);
     }
 
     private static @NotNull Duration elapsedSince(long startNanos) {

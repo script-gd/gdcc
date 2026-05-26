@@ -37,7 +37,7 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 
 ---
 
-## 2. 外部 API 契约（gdextension-lite）
+## 2. 外部 API 契约（GDCC Godot binding support）
 
 ### 2.1 GET API 要点
 
@@ -243,7 +243,7 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 | 参考实现（Operator） | `src/main/java/gd/script/gdcc/backend/c/gen/insn/OperatorInsnGen.java` |
 | 参考实现（Construct） | `src/main/java/gd/script/gdcc/backend/c/gen/insn/ConstructInsnGen.java` |
 | C Helper 头文件 | `src/main/c/codegen/include_451/gdcc/gdcc_helper.h` |
-| GDExtension 声明 | `tmp/inspect_gdlite/generated/extension_interface.h` |
+| GDExtension 声明 | `src/main/c/codegen/include_451/godot/gdextension/gdextension_interface.h` |
 
 ---
 
@@ -251,7 +251,7 @@ LIR 侧统一标记接口：`IndexingInstruction extends LirInstruction`。
 
 1. 不新增或重构除 indexing 指令外的其他 LIR record。
 2. 不改动 `IndexingInstruction` 接口与 unrelated 枚举语义。
-3. 不在 `gdcc_helper.h` 新增 index 专用 C helper 包装（保持直接调用 gdextension-lite API）。
+3. 不在 `gdcc_helper.h` 新增 index 专用 C helper 包装（保持直接调用 GDCC Godot interface wrapper）。
 4. 不在本轮扩展到 indexed/named 失败分支（`r_valid=false`/`r_oob=true`）的引擎级故障注入测试。
 5. 不引入 variant_get/set 结果类型的额外编译期强类型约束（依赖运行时 `r_valid` 与类型检查链路）。
 

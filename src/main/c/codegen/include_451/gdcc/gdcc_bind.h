@@ -1,7 +1,54 @@
 #ifndef GDCC_BIND_METHOD_H
 #define GDCC_BIND_METHOD_H
 
-#include <gdextension-lite.h>
+#include <godot_binding.h>
+#include <gdcc_string.h>
+#include <gdcc_string_name.h>
+
+#ifndef GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR
+#define GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(                                             \
+        accessor_name,                                                                        \
+        owner_u8_literal,                                                                     \
+        method_u8_literal,                                                                    \
+        owner_text_literal,                                                                   \
+        method_text_literal,                                                                  \
+        primary_hash_value,                                                                   \
+        compatibility_hash_count_value,                                                       \
+        ...)                                                                                  \
+static inline GDExtensionBool accessor_name(GDExtensionMethodBindPtr* r_bind) {              \
+    static GDExtensionMethodBindPtr bind = NULL;                                              \
+    static const GDExtensionInt compatibility_hashes[] = { __VA_ARGS__ };                     \
+    if (bind != NULL) {                                                                       \
+        *r_bind = bind;                                                                       \
+        return true;                                                                          \
+    }                                                                                         \
+    bind = godot_classdb_get_method_bind(                                                     \
+            GD_STATIC_SN(owner_u8_literal),                                                   \
+            GD_STATIC_SN(method_u8_literal),                                                  \
+            primary_hash_value);                                                              \
+    for (GDExtensionInt i = 0; bind == NULL && i < (compatibility_hash_count_value); ++i) {   \
+        bind = godot_classdb_get_method_bind(                                                 \
+                GD_STATIC_SN(owner_u8_literal),                                               \
+                GD_STATIC_SN(method_u8_literal),                                              \
+                compatibility_hashes[i]);                                                     \
+    }                                                                                         \
+    if (bind != NULL) {                                                                       \
+        *r_bind = bind;                                                                       \
+        return true;                                                                          \
+    }                                                                                         \
+    return gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){                           \
+            .kind = "engine_method",                                                         \
+            .function_name = #accessor_name,                                                  \
+            .lookup_name = method_text_literal,                                               \
+            .owner = owner_text_literal,                                                      \
+            .has_primary_hash = true,                                                         \
+            .primary_hash = primary_hash_value,                                               \
+            .compatibility_hashes = (compatibility_hash_count_value) > 0                      \
+                    ? compatibility_hashes : NULL,                                            \
+            .compatibility_hash_count = compatibility_hash_count_value,                       \
+    });                                                                                       \
+}
+#endif
 
 static GDExtensionPropertyInfo gdcc_make_property_full(
     const GDExtensionVariantType type,

@@ -302,7 +302,7 @@ class CConstructInsnGenTest {
     }
 
     @Test
-    @DisplayName("construct_object should emit direct gdextension-lite constructor call for engine object targets")
+    @DisplayName("construct_object should emit runtime Godot constructor wrapper call for engine object targets")
     void constructObjectShouldEmitEngineConstructCall() {
         var clazz = newTestClass();
         var func = newFunction("construct_engine_object");

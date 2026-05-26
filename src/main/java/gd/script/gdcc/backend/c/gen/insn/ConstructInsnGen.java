@@ -85,6 +85,9 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
                 }
                 case ConstructObjectInsn(_, var className) -> {
                     var objectTarget = validateConstructObjectTarget(bodyBuilder, resultVar, className);
+                    if (objectTarget.classDef() instanceof ExtensionGdClass) {
+                        bodyBuilder.recordUsedEngineConstructor(objectTarget.constructedType());
+                    }
                     var constructCall = renderObjectConstructCall(objectTarget);
                     bodyBuilder.assignVar(
                             target,
@@ -235,7 +238,7 @@ public final class ConstructInsnGen implements CInsnGen<ConstructionInstruction>
     }
 
     /// Render the direct constructor expression for `construct_object`.
-    /// Engine classes use gdextension-lite `godot_new_XXX()`, while GDCC classes reuse generated
+    /// Engine classes use GDCC's runtime `godot_new_<EngineClass>()` wrappers, while GDCC classes reuse generated
     /// `*_class_create_instance(...)`. Explicit GDCC `RefCounted` construction suppresses the shared
     /// postinitialize notification first, then replays it from `gdcc_ref_counted_init_raw(..., true)`
     /// after the raw reference count has been initialized.

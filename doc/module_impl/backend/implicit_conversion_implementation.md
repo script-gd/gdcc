@@ -201,7 +201,7 @@ $<result_id> = call_intrinsic "<intrinsic_name>" $<arg1_id> ...
   - 通过 `CBodyBuilder.valueOfCastedVar(source, GdFloatType.FLOAT)` 与 `assignVar(...)` 发射
 - `CVectorIToVectorIntrinsic`
   - 校验 result / argument 合同
-  - 通过 `CBuiltinBuilder.validateConstructor(...)` 与 `renderConstructorFunctionNameByTypes(...)` 选择 gdextension-lite constructor
+  - 通过 `CBuiltinBuilder.validateConstructor(...)` 与 `renderConstructorFunctionNameByTypes(...)` 选择 generated builtin constructor
   - 通过 `CBodyBuilder.callAssign(...)` 写入 target slot
 - `CallIntrinsicInsnGen`
   - 注册 `GdInstruction.CALL_INTRINSIC`
@@ -214,7 +214,7 @@ $<result_id> = call_intrinsic "<intrinsic_name>" $<arg1_id> ...
 $target = (godot_float)$source;
 ```
 
-`Vector*i -> Vector*` 必须使用 gdextension-lite constructor conversion，不得使用 C cast：
+`Vector*i -> Vector*` 必须使用 generated builtin constructor conversion，不得使用 C cast：
 
 ```c
 $target = godot_new_Vector3_with_Vector3i(&$source);

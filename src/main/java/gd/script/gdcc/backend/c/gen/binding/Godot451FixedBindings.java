@@ -59,10 +59,7 @@ final class Godot451FixedBindings extends FixedGodotBindings {
             new FixedFunction("RefCounted", "unreference", "godot_RefCounted_unreference", "godot_bool",
                     List.of(new FixedParam("self", "godot_RefCounted *", GodotBindingSymbol.Abi.MUTABLE_TYPE_PTR))),
             new FixedFunction("RefCounted", "init_ref", "godot_RefCounted_init_ref", "godot_bool",
-                    List.of(new FixedParam("self", "godot_RefCounted *", GodotBindingSymbol.Abi.MUTABLE_TYPE_PTR))),
-            new FixedFunction("Object", "gdcc_from_variant", "godot_new_gdcc_Object_with_Variant",
-                    "GDExtensionClassInstancePtr",
-                    List.of(new FixedParam("value", "const godot_Variant *", GodotBindingSymbol.Abi.CONST_TYPE_PTR)))
+                    List.of(new FixedParam("self", "godot_RefCounted *", GodotBindingSymbol.Abi.MUTABLE_TYPE_PTR)))
     );
 
     private Godot451FixedBindings() {
@@ -111,10 +108,5 @@ final class Godot451FixedBindings extends FixedGodotBindings {
                 "godot_bool", "godot_RefCounted *self", List.of(), "self");
         renderer.appendClassMethodDefinition(out, "RefCounted", "init_ref", "godot_RefCounted_init_ref",
                 "godot_bool", "godot_RefCounted *self", List.of(), "self");
-        out.append("""
-                GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant *value) {
-                    return (GDExtensionClassInstancePtr)godot_new_Object_with_Variant(value);
-                }
-                """);
     }
 }

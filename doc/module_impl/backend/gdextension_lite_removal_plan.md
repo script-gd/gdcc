@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：Planned
+- 状态：阶段 3.1/3.2 已完成；阶段 4/5 待实施
 - 范围（整份计划的真实触点，具体阶段仍按后文分批提交）：
   - `src/main/java/gd/script/gdcc/gdextension/**`
   - `src/main/java/gd/script/gdcc/scope/**`
@@ -694,7 +694,9 @@ wrapper 来源按层分离：
   - 统一检查函数体中经 builder 发出的 `godot_*` 调用是否属于 provided set 或 module-local set。
   - `CallGlobalInsnGen` 的 utility wrapper、`NewDataInsnGen` 的 String/StringName/Variant constructor、`PackUnpackVariantInsnGen`、
     `CBuiltinBuilder`、builtin property/operator/index/key 路径均由全量 builtin/utility 提供，不驱动 module-local 生成。
-  - `CallMethodInsnGen` dynamic fallback、engine property、engine class constructor / constant 等残余路径仍可登记 module-local wrapper。
+  - `CallMethodInsnGen` dynamic fallback、engine property、class constant 等残余路径仍可登记 module-local wrapper。
+  - engine class constructor 已由阶段 3.2 的 constructor usage snapshot 按需生成；阶段 4 默认不再把它作为
+    `GodotBindingUsageSession` 的新增 wrapper kind。
 - `CBodyBuilder.emitDestroy(...)`
   - `godot_object_destroy` 是 interface wrapper。
   - `godot_<Builtin>_destroy` 来自全量 builtin wrapper，不进入 module-local usage set。
@@ -1734,7 +1736,9 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 - `godot_RefCounted_reference`
 - `godot_RefCounted_unreference`
 - `godot_RefCounted_init_ref`
-- `godot_new_gdcc_Object_with_Variant`
+
+`godot_new_gdcc_Object_with_Variant` 保持为 `gdcc_helper.h` 本地 helper，因为它依赖 entry translation unit
+中的 `class_library` 从 Godot object pointer 取回已绑定的 GDCC instance；它不能移入独立编译的 fixed runtime support。
 
 验收：
 
@@ -1782,6 +1786,47 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 本阶段是唯一的 gdextension-lite 编译输入切换点。必须在阶段 2 的 fixed runtime wrapper 验收通过后执行，
 并把模板 include 替换、entry 初始化替换、`gdcc/*.h` include 替换、`CProjectBuilder` include dir / cFiles 切换放在同一个可编译边界。
 不允许先移除 `gdextension-lite-one.c` 再补 fixed wrapper，也不允许先让模板 include `<godot_binding.h>` 但构建仍看不到 `<includeRoot>/godot`。
+
+状态同步（2026-05-25）：
+
+- [x] 已重新确认 `AGENTS.md`，并使用 `gpt-5.4-mini` 子代理并行完成阶段 3 相关文档、后端代码、测试和 Godot ABI 调研。
+- [x] 已切换 `entry.c.ftl` / `entry.h.ftl` 与 `gdcc/*.h` 的 runtime include 边界：
+  `entry.c` 不再 include `<implementation-macros.h>` 或调用 `gdextension_lite_initialize(...)`，入口初始化改为
+  `godot_initialize_interface(p_get_proc_address)` 失败即返回 `false`；`entry.h` 和固定 helper 头改为消费 `<godot_binding.h>`。
+- [x] 已切换 `CProjectBuilder` 的 include 抽取和 native 编译输入：只抽取 `gdcc/**` 与 `godot/**` runtime support，
+  include dirs 改为 `<includeRoot>/gdcc` 与 `<includeRoot>/godot`，编译输入显式追加并要求
+  `<includeRoot>/godot/godot_binding.c` 存在；旧 `gdextension-lite-one.c` 残留不再被扫描或加入 `cFiles`。
+- [x] 已更新阶段 3 测试锚点：`CProjectBuilderSharedIncludeTest` 覆盖 `godot_binding.c` 正向输入和 stale vendor
+  负向输入，`ApiCompilePipelineTest` 保持核心 3 个 generated files 契约并断言 include/native 输入已切到 `godot`；
+  `CCodegenTest` 锁定 `godot_initialize_interface(...)` 的入口初始化顺序，`CCodegenEngineMethodBindHeaderTest`
+  锁定 exact engine method bind lookup 统一失败诊断与 primary / compatibility hash 候选。
+- [x] 已清理被触及源码注释、test display name、failure message 和后端文档中的当前 `gdextension-lite`
+  事实表述；旧名称仅保留为历史命名来源或 stale vendor 负向测试材料。
+- [x] 集成烟测发现 `godot_new_gdcc_Object_with_Variant` 不能作为 fixed runtime wrapper 独立编译：它必须读取
+  entry translation unit 的 `class_library` 才能通过 instance binding 取回 GDCC wrapper；因此已将它保留为
+  `gdcc_helper.h` 本地 helper，并从 `Godot451FixedBindings` / `godot_fixed_binding.*` 中移除，避免声明冲突和语义回退。
+- [x] 集成烟测继续暴露旧 `<gdextension-lite.h>` 曾隐式提供的 engine class 声明面：生成 C 会使用
+  `godot_Node` / `godot_Node2D` 这类 opaque pointer 类型，以及 `godot_Node_InternalMode` 这类 class-scoped enum。
+  已改为由 `GodotBindingTool` 从 `ExtensionAPI.classes[]` 生成到 `godot_abi.h`；native structure 已承载的 scoped enum
+  会被跳过，避免和 `godot_native_structures.h` 重复定义。
+- [x] 已重新分析 engine constructor 语义并纠正错误方向：`godot_new_<Class>()` 不能替换为
+  `godot_classdb_construct_object2(...)`，因为二者 postinitialize 语义不同。阶段 3 保持 `ConstructInsnGen` 输出
+  `godot_new_<Class>()`，并由 `godot_fixed_binding.*` 从 `ExtensionAPI.classes[]` 为可实例化 engine class 生成
+  constructor wrapper；wrapper 内部当前使用 `godot_classdb_construct_object(...)`，锚定迁移前 public wrapper contract。
+  测试只锁定 `construct_object` 继续经过 `godot_new_<Class>()` wrapper 边界和真实运行行为，不添加
+  `godot_classdb_construct_object2(...)` 字符串级负向断言，以免阻塞后续用显式 API 组合替换旧隐式行为。
+- [x] 已完成阶段 3 验证：
+  - `script/run-gradle-targeted-tests.sh --tests CConstructInsnGenTest,CConstructInsnGenEngineTest,FixedGodotBindingsTest,GodotAbiHeaderCompileTest`
+  - `script/run-gradle-targeted-tests.sh --tests ApiCompilePipelineTest,CProjectBuilderSharedIncludeTest,CCodegenTest,CCodegenEngineMethodBindHeaderTest,GodotAbiHeaderCompileTest,FixedGodotBindingsTest,GodotBindingToolAbiSupportTest`
+  - `script/run-gradle-targeted-tests.sh --tests CProjectBuilderIntegrationTest,FrontendLoweringToCProjectBuilderIntegrationTest,FrontendVoidReturnCallIntegrationTest`
+  - `rg -n "gdextension-lite|gdextension_lite|gdextension-lite-one|implementation-macros|<gdextension-lite.h>|shared-include/gdextension-lite|tmp/inspect_gdlite" src/main src/test doc`
+    确认 `src/main` 中不再存在当前 vendor include / init / native input 依赖；剩余命中是历史命名文档、迁移计划说明或 stale vendor 负向测试材料。
+  - IntelliJ inspections 已检查 `FixedGodotBindings.java`、`GodotBindingTool.java`、`ConstructInsnGen.java`、`CProjectBuilder.java`
+    和相关 test 文件；未发现 error，仅保留既有未使用、恒定参数或长方法类 warning。
+  - `git diff --check` 已通过；清理 trailing whitespace 后重新运行
+    `script/run-gradle-targeted-tests.sh --tests GodotAbiHeaderCompileTest,FixedGodotBindingsTest` 并通过。
+  - 移除旧的 engine RefCounted `classdb_construct_object2` 字符串负向断言后，重新运行
+    `script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest` 并通过。
 
 修改：
 
@@ -1874,11 +1919,390 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 - `CProjectBuilderIntegrationTest` 不再检查 `gdextension-lite` 路径。
 - 空 module 和至少一个使用固定 helper 的最小 module 能完成 C 编译；若 Zig 不可用，测试必须明确 skip 而不是静默放过。
 
+### 阶段 3.1：修复 builtin ptrcall 返回 carrier 初始化回归
+
+本阶段是阶段 3 切换到新 generated Godot binding 后的回归修复闸口，必须先于阶段 4 的 module-local binding
+使用集接入。阶段 3 已经完成编译输入切换；阶段 3.1 只修复新 binding 内部的 ptrcall 返回槽语义，不回退到
+gdextension-lite，不改变 `CProjectBuilder` 的 native input 规则，也不提前引入 `godot_module_bindings.h/.c`。
+
+实施状态：
+
+- [x] 修复 builtin method / operator / getter / indexed getter / keyed getter 的 ptrcall return carrier 初始化。
+- [x] 修复模块 `entry.h` operator evaluator helper 和 fixed runtime `object_method_bind_ptrcall` wrapper 的 return carrier 初始化。
+- [x] 补充正反向单元测试，锚定 initialized carrier 与 `GDExtensionUninitialized*Ptr` destination 的边界。
+- [x] 更新 `doc/gdcc_c_backend.md` 中的 ptrcall return carrier contract。
+- [x] 运行 targeted 单元测试和 `GdScriptUnitTestCompileRunnerTest` ABI/runtime 回归。
+
+追加修复状态（2026-05-26）：
+
+- [x] 将全量预生成 `godot_utility.c` 的非 void utility wrapper 纳入 initialized carrier 规则。
+- [x] 补充 `GodotUtilityGeneratorTest` 正反向断言，覆盖 `Variant` / `String` / primitive / object pointer
+  返回 carrier、void utility `NULL` destination、lookup failure zero-return 边界。
+- [x] 重新执行 `generate-utility`，同步 `src/main/c/codegen/include_451/godot/godot_utility.c/.h`。
+- [x] 运行 utility generator targeted 单元测试和
+  `CallGlobalInsnGenEngineTest#callGlobalUtilitiesShouldRunInRealGodot` 真实 Godot 回归。
+
+验证记录（2026-05-25）：
+
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests GodotBuiltinGeneratorTest,FixedGodotBindingsTest,CCodegenTest,CCodegenEngineMethodBindHeaderTest`。
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest.compilesAndValidatesAbiScripts`。
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`。
+- [x] 运行 `rg -n "return_type result;|godot_String result;|godot_Array result;|godot_Dictionary result;|godot_float value;|uint64_t result;" ...`
+  审计 generated builtin/fixed/template return carrier；未发现裸 ptrcall return carrier。
+- [x] 运行 `git diff --check`。
+- [x] IntelliJ inspections 已检查 `GodotBindingSupport.java`、`GodotBuiltinGenerator.java`、`FixedGodotBindings.java`
+  和 `GodotBuiltinGeneratorTest.java`；未发现 error，仅保留既有 warning / weak warning。
+
+追加验证记录（2026-05-26）：
+
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.backend.c.gen.binding.GodotUtilityGeneratorTest`。
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.backend.c.gen.binding.GodotUtilityGeneratorTest,gd.script.gdcc.backend.c.gen.binding.GodotBuiltinGeneratorTest`。
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.backend.c.gen.CallGlobalInsnGenEngineTest.callGlobalUtilitiesShouldRunInRealGodot`。
+- [x] 运行 `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.backend.c.gen.CallGlobalInsnGenEngineTest`。
+- [x] 运行 `rg -n "godot_(Variant|String|Array|Dictionary|Object \\*) result;|godot_float result;|godot_int result;|godot_bool result;" ...`
+  审计 generated utility return carrier；未发现裸 `result;`。
+- [x] 运行 `git diff --check`。
+- [x] IntelliJ inspections 已检查 `GodotUtilityGenerator.java`、`GodotUtilityGeneratorTest.java` 和
+  `FixedGodotBindings.java`；未发现 error，仅保留既有或无害 warning / weak warning。
+
+回归现象（2026-05-25）：
+
+- 重新运行 `GdScriptUnitTestCompileRunnerTest` 后，`abi/typed_array`、`abi/typed_dictionary`、
+  `runtime/string_literal` 中部分 case 在 Godot runtime 阶段触发 SIGSEGV。
+- 典型 `addr2line` 定位：
+  - `runtime/string_literal_internal_surface` 崩在 generated `godot_String_substr(...)`；
+  - `abi/typed_array/*` 崩在 generated `godot_Array_get_typed_script(...)`；
+  - `abi/typed_dictionary/*` 崩在 generated `godot_Dictionary_get_typed_*_script(...)` 或相邻 typed metadata getter。
+- 这些崩溃发生在 generated builtin wrapper 内部，早于用户方法体执行；typed container guard 的 `Variant == nil`
+  null-script 判断、字符串 literal UTF-8 materialization、以及 engine method bind lookup 不是本次 SIGSEGV 的直接原因。
+
+根因：
+
+- `GDExtensionPtrBuiltInMethod`、`GDExtensionPtrOperatorEvaluator`、`GDExtensionPtrGetter`、
+  `GDExtensionPtrIndexedGetter`、`GDExtensionPtrKeyedGetter` 的返回/result 参数类型是 `GDExtensionTypePtr`。
+  这些 ptrcall 路径的返回槽是 initialized carrier / assignment target，不是
+  `GDExtensionUninitializedTypePtr`。
+- Godot 上游 builtin ptrcall 通过 `PtrToArg<R>::encode(..., r_ret)` 写返回值；对 `String`、`StringName`、
+  `Array`、`Dictionary`、`Variant` 等 value-semantic wrapper，`encode` 会对 `r_ret` 指向的对象执行赋值。
+  因此目标必须已经是有效 carrier；不能是未初始化栈内存。
+- 当前 `GodotBindingSupport.builtinMethodMacros()` 生成的 `GDCC_BUILTIN_METHOD_RETURN` 使用：
+
+  ```c
+  return_type result;
+  cache(..., (GDExtensionTypePtr)&result, ...);
+  return result;
+  ```
+
+  这对 primitive return 通常不稳定但不一定立刻崩；对 `godot_String`、`godot_Variant` 等 destroyable value
+  wrapper 会在赋值路径读取随机内部状态，触发未定义行为和 SIGSEGV。
+- `appendOperatorDefinitions(...)`、builtin member getter、indexed/keyed getter、以及模块内直接生成的 operator evaluator
+  helper 若也声明裸 `result;`，属于同一类风险。`runtime/string_literal` 中字符串拼接 helper 已暴露同形代码，只是当前
+  更稳定地在 `String.substr()` 处崩溃。
+- 追加回归：`CallGlobalInsnGenEngineTest#callGlobalUtilitiesShouldRunInRealGodot` 在 `call_lerp` 处触发 SIGSEGV；
+  `addr2line` 指向 generated `godot_lerp(...)` 的 `gdcc_utility_lerp((GDExtensionTypePtr)&result, args, 3)`。
+  `godot_lerp` / `godot_max` 这类 utility wrapper 仍生成裸 `godot_Variant result;`，`godot_str` /
+  `godot_error_string` 这类 `String` 返回 wrapper 也同形。`GDExtensionPtrUtilityFunction` 的返回槽同样是
+  `GDExtensionTypePtr`，Godot 侧通过 `PtrToArg<R>::encode(...)` 写回，属于 initialized carrier 规则，
+  不属于 `GDExtensionUninitialized*Ptr` raw storage 规则。
+
+硬性边界：
+
+- 不要把这次修复理解为“所有 Godot out-param 都要先初始化”。
+- 下列路径仍然是 uninitialized destination，必须继续传 raw storage：
+  - builtin constructor；
+  - `Variant <-> Type` conversion；
+  - `String` / `StringName` convenience constructor；
+  - `godot_variant_call`、`godot_variant_call_static`、`godot_variant_evaluate`、`godot_variant_get*`；
+  - `godot_object_method_bind_call`，包括 `engine_method_binds.h` 中 exact engine vararg helper 的本地
+    `Variant` 返回槽；
+  - 其他 interface typedef 明确写成 `GDExtensionUninitialized*Ptr` 的函数。
+- 下列 ptrcall/result 路径必须先准备 initialized carrier，再传 `GDExtensionTypePtr`：
+  - `GDExtensionPtrBuiltInMethod`；
+  - `GDExtensionPtrOperatorEvaluator`；
+  - `GDExtensionPtrGetter` / `GDExtensionPtrIndexedGetter` / `GDExtensionPtrKeyedGetter`；
+  - `GDExtensionPtrUtilityFunction`；
+  - `godot_object_method_bind_ptrcall(...)`；该路径已有 exact engine helper contract，本阶段只防止新 builtin
+    wrapper 偏离同一规则。
+- typed array / typed dictionary 的 object leaf script metadata 仍按 null-object 处理：
+  - runtime preflight 继续读取 `typed_builtin` / `typed_class_name` / `typed_script` 三元组；
+  - script 位继续通过 `Variant == nil` 判断；
+  - 不允许为绕过崩溃删除 `get_typed_script()`，也不允许把 object leaf 降级成 plain object 或跳过 preflight。
+
+修改计划：
+
+- `GodotBindingSupport.builtinMethodMacros()`：
+  - `GDCC_BUILTIN_METHOD_RETURN` / `RETURN0` 的本地返回 carrier 改为 initialized carrier，例如
+    `return_type result = { 0 };`。
+  - void 路径保持不变。
+  - lookup failure 的默认返回仍使用现有 `zeroReturn(...)`，不能在 lookup failure 后 destroy 未初始化值。
+- `GodotBuiltinGenerator`：
+  - builtin method wrapper 继续只通过宏调用 ptrcall，避免把 lookup、参数数组和 ptrcall 重新内联到每个方法。
+  - `appendOperatorDefinitions(...)` 中所有非 void operator result carrier 改为 initialized carrier。
+  - member getter、indexed getter、keyed getter 的 non-void result carrier 同步改为 initialized carrier。
+  - constructor、destructor、`Variant` conversion、`String` codec helper 不参与这次 carrier 初始化替换。
+- 直接生成 operator evaluator helper 的后端路径：
+  - 扫描 `COperatorInsnGen` / `OperatorResolver` / `CGenHelper` 中直接调用
+    `godot_variant_get_ptr_operator_evaluator(...)` 后声明 `result;` 的 helper。
+  - 这些 helper 的 result carrier 也必须使用 initialized carrier，与 generated builtin operator wrapper 一致。
+- 固定 runtime wrapper：
+  - 复核 `FixedGodotBindings` 中 `godot_object_method_bind_ptrcall(...)` 的返回 carrier；若仍存在裸 destroyable wrapper
+    `result;`，按 `engine_method_binds.h.ftl` 的规则补齐 initialized carrier。
+  - 已经使用 `godot_object_method_bind_call(...)` 的 `Variant` 返回路径保持 uninitialized destination，不要误改。
+  - `engine_method_binds.h.ftl` 的 vararg helper 同样必须保持 raw `Variant` 返回槽，成功后才能 unpack/destroy；
+    `GDEXTENSION_CALL_ERROR_*` 路径不得销毁未构造的返回槽。
+- utility wrapper：
+  - `GodotUtilityGenerator.appendDefinition(...)` 中所有非 void utility return carrier 改为 initialized carrier，
+    复用 `GodotBindingSupport.initializedCarrierDeclaration(...)`，不要新增 utility 专用 helper。
+  - `void` utility 继续传 `NULL` return slot，继续使用 `return;` 作为 lookup failure fallback，不生成 result carrier。
+  - lookup failure 的 zero-return 继续使用 `GodotBindingSupport.zeroReturn(...)`，不要为了初始化 carrier 改变
+    `godot_new_Variant_nil()`、`(godot_String){ 0 }`、`NULL`、primitive zero 等 fallback 语义。
+  - `godot_lerp` / `godot_max` 等 `Variant` 返回、`godot_str` / `godot_error_string` 等 `String` 返回、
+    `godot_sin` 等 primitive 返回、`godot_instance_from_id` 等 object pointer 返回都应在生成文本中表现为
+    `return_type result = { 0 };` 后再调用 `GDExtensionPtrUtilityFunction`。
+- 文档同步：
+  - 在 `doc/gdcc_c_backend.md` 的 ptrcall return carrier contract 中补充：同一规则也适用于 builtin method、
+    builtin operator、builtin getter wrapper 和 utility wrapper。
+  - 在本计划的阶段 2/3 完成记录中保留“已迁移到新 binding”的事实，但追加本阶段修复记录，避免阶段 3 被误读成
+    runtime ABI 已完全稳定。
+
+测试计划：
+
+- `GodotBuiltinGeneratorTest`
+  - 增加 builtin method 返回 `String` 的文本断言，例如 `godot_String_substr(...)` 的 wrapper 使用 initialized carrier。
+  - 增加 builtin method 返回 `Variant` 的文本断言，例如 `godot_Array_get_typed_script(...)` 或
+    `godot_Dictionary_get_typed_value_script(...)`。
+  - 增加 operator 返回 `String` 的文本断言，例如 `godot_String_op_add_String(...)`。
+  - 增加 getter/indexed/keyed getter 中 destroyable return carrier 的断言；如果 fixture metadata 不覆盖这类 getter，
+    使用最小 fake API fixture 补齐。
+- 后端 operator helper 测试：
+  - 覆盖 `String + String -> String` 或等价 destroyable wrapper operator helper，确认 direct evaluator helper
+    不再生成裸 `godot_String result;`。
+- 固定 wrapper / exact engine helper 测试：
+  - 保留 `CCodegenEngineMethodBindHeaderTest` 现有 “zero initialize destroyable ptrcall return carriers” 断言。
+  - 若 `FixedGodotBindings` 发生改动，补充对应 generator test。
+- 集成回归：
+  - `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest.compilesAndValidatesAbiScripts`
+  - `script/run-gradle-targeted-tests.sh --tests gd.script.gdcc.test_suite.GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`
+  - 重点确认 `abi/typed_array`、`abi/typed_dictionary`、`runtime/string_literal_internal_surface` 不再出现 signal 11。
+
+验收：
+
+- generated `godot_builtin.c` 中 `godot_String_substr(...)`、`godot_Array_get_typed_script(...)`、
+  `godot_Dictionary_get_typed_value_script(...)` 不再把未初始化本地变量作为 ptrcall return carrier。
+- generated string operator helper 不再把未初始化 `godot_String result;` 传给 `GDExtensionPtrOperatorEvaluator`。
+- typed container runtime preflight 逻辑保持完整，仍检查 typed builtin、class name 和 script metadata。
+- `runtime/string_literal_internal_surface.gd` 的 `substr_internal()` 能返回 `"cde"`；`concat_internal()` 的字符串拼接也不依赖
+  未定义行为。
+- 本阶段不改变 `CompileResult.generatedFiles()`、`outputLinks()`、`CProjectBuilder` include dirs 或 native input 集合。
+
+### 阶段 3.2：按需生成 engine constructor 并修复 fixed StringName 缓存
+
+本阶段是阶段 3 runtime support 切换完成后的第二个收尾闸口，必须先于阶段 4 的通用 module-local binding
+使用集接入。阶段 3.1 已修复新 binding 的 ptrcall return carrier；阶段 3.2 只处理 engine class
+constructor wrapper 的生成范围和构造名缓存问题，不扩展 engine method/property/singleton/class constant 的 module-local
+wrapper 面。
+
+阶段 3.2 的目标是：
+
+- 停止把 `ExtensionAPI.classes[]` 中所有 `isInstantiable()` engine class constructor wrapper 全量预生成进
+  `godot_fixed_binding.h/.c`。
+- 保留 `construct_object` 的 public wrapper 边界：engine object construction 继续由 `ConstructInsnGen` 输出
+  `godot_new_<EngineClass>()`，而不是直接输出 `godot_classdb_construct_object2(...)` 或其它 ClassDB fallback。
+- 让实际用到的 `godot_new_<EngineClass>()` 由模块 codegen 按需生成，且生成点必须使用 `GD_STATIC_SN(...)`
+  或等价静态缓存，不能在热路径里每次构造/销毁 `godot_StringName`。
+- 修复 `FixedGodotBindings.symbols(api)` / fixed manifest / helper scanner 只覆盖 `functions()` 清单、却漏掉当前全量
+  engine constructor 输出的事实源缺口；阶段 3.2 之后 fixed manifest 不应再隐式包含全量 constructor。
+- 同步把 `engine_method_binds.h` 中重复的 `gdcc_engine_method_bind*` accessor 函数体收束到 `gdcc_bind.h`
+  的宏封装中；这是模板可读性整理，不改变 exact engine method route 的 lookup 和调用语义。
+
+当前问题：
+
+- `FixedGodotBindings.FixedRenderer.renderHeader()` 和 `appendEngineConstructorDefinitions(...)` 会遍历所有
+  `api.classes()`，对每个可实例化 engine class 输出 `godot_new_<Class>()` 声明和实现。这个集合很大，且多数模块根本不会使用。
+- `FixedGodotBindings.collectSymbols(...)` 只收集 `Godot451FixedBindings.functions()` 中的固定 helper，
+  不收集这些额外生成出来的 constructor wrapper。因此 `GodotBindingTool.providedSymbols(...)`、fixed manifest
+  和 `GdccHelperBindingScanner` 的视角里并没有这批 wrapper；它们既全量生成，又不在 fixed source-list 事实源里。
+- 当前 generated `gdcc_fixed_construct_object(const char *class_name_text)` 每次调用都会：
+  1. `godot_new_StringName_with_latin1_chars(class_name_text)`；
+  2. `godot_classdb_construct_object(&class_name)`；
+  3. `godot_StringName_destroy(&class_name)`。
+  这会把每次 engine object construction 都变成一次 `StringName` 分配/注册/销毁路径，偏离当前 runtime
+  已经在模板和 helper 中使用的 `GD_STATIC_SN(...)` 静态缓存规则。
+- 不能通过把 `gdcc_fixed_construct_object(...)` 改成 `godot_classdb_construct_object2(...)` 来规避旧 helper。
+  Godot 上游 `gdextension_interface.cpp` 中：
+  - `classdb_construct_object` 对应 `ClassDB::instantiate_no_placeholders(...)`；
+  - `classdb_construct_object2` 对应 `ClassDB::instantiate_without_postinitialization(...)`；
+  - `gdextension_interface.json` 对 `classdb_construct_object2` 明确要求构造后还必须发送
+    `NOTIFICATION_POSTINITIALIZE`。
+  因此 `construct_object2` 是 GDCC `*_class_create_instance(...)` 这种“先创建 raw object、再绑定 extension instance、
+  再按需要手动 postinitialize”的协议入口，不是 engine class public constructor wrapper 的等价替代。
+
+硬性边界：
+
+- `ConstructInsnGen` 的 engine object 分支继续生成 `godot_new_<Class>()`，并继续用
+  `valueOfOwnedExpr(..., PtrKind.GODOT_PTR)` 标记 fresh object producer。destination slot 必须消费该 `OWNED`
+  结果，不能重新 retain。
+- `ConstructInsnGen` 的 GDCC class 分支继续生成 `<Class>_class_create_instance(NULL, notify_postinitialize)`；
+  GDCC `RefCounted` 的显式构造继续在需要时包 `gdcc_ref_counted_init_raw(...)`。本阶段不改变 GDCC class
+  create/bind/postinitialize 协议。
+- `entry.c.ftl` 中 `*_class_create_instance(...)` 继续使用最近 native ancestor 调
+  `godot_classdb_construct_object2(GD_STATIC_SN(u8"..."))`，再执行 `godot_object_set_instance(...)`、
+  `godot_object_set_instance_binding(...)` 和可选 `godot_Object_notification(...POSTINITIALIZE...)`。
+- exact engine `CALL_METHOD` / engine property route 继续只进入 `EngineMethodUsageSession` 和
+  `engine_method_binds.h` 中的 `gdcc_engine_call*` helper，不回退到 `godot_<Owner>_<method>` public wrapper。
+- 本阶段不恢复 `gdextension-lite`，不改变 `CProjectBuilder` 的 include dir / native input 规则，不把
+  `godot_binding.c` 或 stale vendor 处理规则重新打开。
+- 本阶段优先不改变 `CompileResult.generatedFiles()`、`outputLinks()` 和 API/CLI 的核心 generated file 契约。
+  engine constructor 的按需 wrapper 应先作为 `engine_method_binds.h` 中的模块局部 `static inline` 生成物出现。
+  该 header 已由 `entry.h` 无条件 include，当前角色实际是 module-local exact engine helper header，不只是
+  method-bind helper 容器。阶段 4 若要迁移到 `godot_module_bindings.h/.c`，必须作为后续显式重构处理。
+
+实现计划：
+
+实施状态：
+
+- [x] 已新增 constructor usage buffer/session，并把 `ConstructInsnGen` 的 engine object 分支接入按需登记；
+  函数体 render 失败时仍通过函数级 buffer 丢弃未提交的 constructor 使用项。
+- [x] 已将 `engine_method_binds.h.ftl` 扩展为同时输出模块实际使用的 constructor wrapper；
+  wrapper 使用 `godot_classdb_construct_object(GD_STATIC_SN(...))`，失败时走统一 binding lookup 诊断并返回 `NULL`。
+- [x] 已从 `FixedGodotBindings` 移除全量 engine constructor 声明、定义以及每次构造/销毁 `StringName`
+  的 `gdcc_fixed_construct_object(...)` 热路径，fixed manifest 继续只来自版本化 `functions()` 清单。
+- [x] 已在 `gdcc_bind.h` 增加 `GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(...)`，让
+  `engine_method_binds.h.ftl` 用宏生成 accessor 并保留每个 accessor 独立 static cache、primary hash 优先和
+  compatibility hash 顺序 fallback；compatibility hash 数组声明也由宏内部持有，模板只传 fallback hash 字面量。
+- [x] 已补充阶段 3.2 正反向单元测试、重新生成 checked-in fixed support，并运行 targeted 验证；
+  集成测试捕获的 `GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(...)` 宏参数与 `.function_name` 字段名冲突已修复。
+  已覆盖 `FixedGodotBindingsTest`、`CConstructInsnGenTest`、`CCodegenTest`、
+  `CCodegenEngineMethodUsageSessionTest`、`CCodegenEngineMethodBindHeaderTest`、
+  `CProjectBuilderSharedIncludeTest`、`ApiCompilePipelineTest`、`CConstructInsnGenEngineTest`、
+  `FrontendLoweringToCProjectBuilderIntegrationTest` 和 `GodotAbiHeaderCompileTest`。
+
+- 新增一个 narrow constructor usage snapshot，复用现有 exact engine method 使用集的函数级 buffer + 成功后
+  commit 模式：
+  - `CCodegen.generate()` 在渲染 `entry.c.ftl` 前创建 constructor usage session。
+  - `generateFuncBody(...)` 为每个函数创建 constructor buffer；函数体完整 render 成功后才 commit。
+  - `ConstructInsnGen` 在确认 `classDef instanceof ExtensionGdClass` 且 class 可实例化后登记 `ENGINE_CONSTRUCTOR`
+    使用项；不要通过 generated C 文本扫描倒推 constructor 使用。
+  - render 失败的函数不得污染 constructor snapshot；顺序使用 `LinkedHashMap` / `LinkedHashSet` 保持首次出现顺序。
+- `engine_method_binds.h.ftl` 接收 `usedEngineConstructors`，在 exact engine method helper 之前输出本模块实际需要的
+  `static inline godot_<Class> *godot_new_<Class>(void)`：
+  - wrapper 内部直接调用 `godot_classdb_construct_object(GD_STATIC_SN(u8"<Class>"))`；
+  - lookup / construction 返回 `NULL` 时调用 `gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){ ... })`
+    并返回 `NULL`，不能缓存 `NULL`，不能吞掉失败；
+  - 不复用 `GodotBindingSupport.sourceBindingMacros()` 中只在 generated runtime `.c` 内可见的
+    `GDCC_BINDING_LOOKUP_FAIL_*` 宏；header-level static inline code 应直接使用 `gdcc_binding_lookup_fail(...)`
+    或新增同等 header-visible helper；
+  - wrapper 名继续是 `godot_new_<Class>()`，使 `ConstructInsnGen` 的调用形状和已有测试锚点保持稳定。
+- 同步清理 exact engine method bind accessor 的模板噪声，但不改变调用语义：
+  - 在 `gdcc_bind.h` 增加 header-visible 宏，例如 `GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(...)`，
+    用来生成 `engine_method_binds.h` 中的 `gdcc_engine_method_bind*` accessor 函数；
+  - 宏内部保留每个 accessor 自己的 static `GDExtensionMethodBindPtr` cache，并按 primary hash 后接
+    `hash_compatibility` 候选的顺序调用 `godot_classdb_get_method_bind(...)`；
+  - `GD_STATIC_SN(...)` 必须在宏展开出的每个 accessor call site 内直接包 owner/method 字面量，不能下沉到
+    接收 `const char *owner_text` / `method_text` 的通用 C helper，否则不同 accessor 会共享同一个 macro-static
+    `StringName` 槽位并缓存错误名称；
+  - lookup miss 仍走 `gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){ ... })`，诊断字段、primary hash 和
+    compatibility hash 数组语义与当前模板保持一致；
+  - `engine_method_binds.h.ftl` 后续只输出宏调用和 fallback hash 字面量，`gdcc_engine_call*` helper
+    继续保留在模板中，以减少大量重复 accessor 函数体对阅读的干扰。
+- 从 `FixedGodotBindings` 中移除全量 engine constructor 输出：
+  - 删除或停用 `renderHeader()` 中对所有 `api.classes().isInstantiable()` 的 constructor 声明循环；
+  - 删除或停用 `appendEngineConstructorDefinitions(...)`；
+  - 删除 generated `gdcc_fixed_construct_object(const char *class_name_text)`，或者把它降级为不再被 fixed support 使用的私有实现时同步删除；
+  - `FixedGodotBindings.symbols(api)` 继续只代表版本化固定 helper source-list，不再和 engine constructor 全量输出混在一起。
+- 保护 `GD_STATIC_SN` 生命周期：
+  - 阶段 3.2 的 constructor wrapper 放在 `engine_method_binds.h`，由 `entry.h` include，再由 `entry.c` include 后
+    在同一个 translation unit 内使用 `gdcc_string_name.h` 的 header-static registry；`entry.c` 现有
+    `deinitialize(...)` 调用 `gdcc_sn_registry_destroy_all()` 能销毁这些 constructor wrapper 初始化过的 static
+    `StringName`。
+  - `entry.h` 当前 include 顺序是先 `<gdcc_helper.h>`、后 `"engine_method_binds.h"`。现有 `gdcc_helper.h`
+    只使用 builtin constructor、Variant/Object conversion、singleton 和 fixed helper，不直接依赖 engine class
+    public constructor wrapper；若未来某个 `gdcc/*.h` helper 需要调用 `godot_new_<EngineClass>()`，不能只把该
+    wrapper 放在 `engine_method_binds.h`，必须改为 fixed/runtime provided wrapper 或调整 include 边界。
+  - 不要在独立 `godot_module_bindings.c` 中直接使用 `GD_STATIC_SN(...)`，除非同时引入该 translation unit 自己的
+    deinitialize hook 或把 `gdcc_string_name.h` 的 registry 改成单一外部定义。当前 header-static registry 是
+    per-translation-unit 状态，不能假设 `entry.c` 的 cleanup 会销毁其它 `.c` 文件里的静态缓存。
+  - 如果阶段 4 后续迁移 constructor wrapper 到 `godot_module_bindings.c`，必须先解决上面的 cleanup 边界。
+- 更新工具和扫描器语义：
+  - `generate-fixed` 输出的 `godot_fixed_binding.h/.c` 不再包含 `godot_new_Node()` / `godot_new_RefCounted()` 这类
+    engine constructor wrapper。
+  - `dump-fixed-manifest` 不再出现 engine constructor symbol。
+  - `check-fixed` 只检查固定 helper/template 对 fixed source-list 的覆盖，不把“全量 constructor wrapper”当作 provided set。
+  - generated C scan（若本阶段新增或扩展）必须把 `engine_method_binds.h` 中的 on-demand constructor wrapper 纳入允许集合，
+    确保 `ConstructInsnGen` 生成的每个 `godot_new_<Class>()` 都有同模块 wrapper 定义。
+
+测试计划：
+
+- `FixedGodotBindingsTest`
+  - 反向更新 `renderFixedSupportShouldUseFixedRuntimeWrappersAndEngineConstructors()`：
+    - 不再期待 `godot_fixed_binding.h/.c` 含有 `godot_new_Node()` / `godot_new_RefCounted()`；
+    - 明确断言 generated fixed support 不含 `gdcc_fixed_construct_object`；
+    - 保留 `godot_Engine_singleton`、`godot_Object_get/set/call`、`godot_RefCounted_*` 等固定 helper 断言；
+    - 保留无 `gdextension-lite` 断言。
+  - 增加或调整 manifest 断言，证明 fixed symbol set 只等于版本化 `functions()` 清单。
+- `CConstructInsnGenTest`
+  - 保留 engine `construct_object` 生成 `godot_new_<Class>()` 的断言；
+  - 增加断言证明 fresh engine constructor result 仍按 `OWNED` 路径写入，不发生额外 own；
+  - 保留未知类、abstract、not instantiable、类型不匹配和 trimmed class name 负例。
+- `CCodegenTest`
+  - 增加 generated header 形状断言：
+    - 使用 `Node.new()` 的 fixture 在 `engine_method_binds.h` 中生成
+      `static inline godot_Node *godot_new_Node(void)`；
+    - 未使用的可实例化 engine class 不出现在 `engine_method_binds.h` 中；
+    - constructor wrapper 使用 `GD_STATIC_SN(u8"Node")`，不出现
+      `godot_new_StringName_with_latin1_chars("Node")` / per-call destroy；
+    - engine constructor wrapper 不出现 `godot_classdb_construct_object2(...)`；
+    - GDCC `*_class_create_instance(...)` 仍出现 `godot_classdb_construct_object2(GD_STATIC_SN(...))`。
+  - 增加失败隔离断言：某个函数 render 失败时，不把该函数中登记的 engine constructor 泄漏到最终
+    `engine_method_binds.h`。
+  - 保留 `gdextension_entry` / `initialize` / `deinitialize` 顺序断言，尤其是 `gdcc_sn_registry_destroy_all()` 的卸载位置。
+- `CConstructInsnGenEngineTest`
+  - 保留真实 Godot runtime 构造回归，确认 `construct_object` 的 engine/GDCC/RefCounted 路径都仍能运行。
+- `CCodegenEngineMethodUsageSessionTest` / `CCodegenEngineMethodBindHeaderTest`
+  - 保留 exact engine method/property 按需生成断言，确认 constructor usage snapshot 不污染 exact method usage
+    snapshot，只是在同一个 `engine_method_binds.h` 中新增独立 constructor wrapper 区块。
+  - 增加 `gdcc_bind.h` accessor 宏使用断言：generated `engine_method_binds.h` 不再展开大段重复的
+    `gdcc_engine_method_bind*` lookup 函数体，而是输出 compatibility hash 数据和宏调用；运行时 lookup 行为、
+    failure 诊断和 compatibility hash 顺序保持不变。
+- `CProjectBuilderSharedIncludeTest` / API compile pipeline tests
+  - 若本阶段保持 constructor wrapper in `engine_method_binds.h`，这些测试不应因为阶段 3.2 改动而改变 generated file 数量、
+    output links、include dirs 或 native input。
+  - 只需保留阶段 3 的 `godot_binding.c` / `godot` include root / stale vendor 负向断言。
+
+建议 targeted 验证：
+
+```bash
+script/run-gradle-targeted-tests.sh --tests FixedGodotBindingsTest,CConstructInsnGenTest,CCodegenTest
+script/run-gradle-targeted-tests.sh --tests CCodegenEngineMethodUsageSessionTest,CCodegenEngineMethodBindHeaderTest
+script/run-gradle-targeted-tests.sh --tests CProjectBuilderSharedIncludeTest
+script/run-gradle-targeted-tests.sh --tests CConstructInsnGenEngineTest
+script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest
+```
+
+验收：
+
+- `godot_fixed_binding.h/.c` 不再全量包含 engine class constructor wrapper。
+- 使用 engine constructor 的模块仍生成并调用 `godot_new_<Class>()`，但该 wrapper 只在实际使用的模块中出现。
+- `godot_new_<Class>()` wrapper 内部使用 `godot_classdb_construct_object(GD_STATIC_SN(u8"<Class>"))` 或等价 cached
+  `StringName`，不再每次调用构造/销毁 `StringName`。
+- `godot_new_<Class>()` wrapper 内部不使用 `godot_classdb_construct_object2(...)`；`construct_object2` 仍只属于
+  GDCC `*_class_create_instance(...)` 协议。
+- constructor wrapper lookup / construction failure 走统一 binding lookup failure 诊断，不继续调用空指针、不用默认对象掩盖失败。
+- `engine_method_binds.h` 中的 `gdcc_engine_method_bind*` accessor 由 `gdcc_bind.h` 的宏生成；宏展开后仍保留每个
+  accessor 独立 static cache、primary hash 优先 lookup、compatibility hash 顺序 fallback 和统一 failure 诊断。
+- `ConstructInsnGen` 的 engine/GDCC/RefCounted 分支和 ownership 语义不变。
+- 本阶段不改变 runtime include / native input，不恢复 vendor binding，不改变无 constructor module 的核心 3 个 generated file 契约。
+
 ### 阶段 4：接入模块级 Godot wrapper 使用集
 
 本阶段只把仍随模块变化的非 interface `godot_*` 调用纳入可验证的使用集生成。interface、builtin、utility、fixed
 runtime wrapper 已在前置阶段作为 provided set 发布，不再由模块使用集决定是否生成。module-local session 必须复用
 `EngineMethodUsageSession` 的函数级 buffer + 成功后 commit 模式，不能用全局单例或 generated C 扫描自动补 wrapper。
+
+阶段 3.2 已把 engine class constructor wrapper 从 fixed runtime 全量预生成中移出，并通过 constructor usage snapshot
+在 `engine_method_binds.h` 中按需生成 `static inline godot_new_<Class>()`。本阶段默认不重新处理 engine constructor；若后续决定把
+constructor wrapper 迁移到 `godot_module_bindings.h/.c`，必须先解决 `GD_STATIC_SN` header-static registry 在独立
+translation unit 中的 cleanup 边界，并同步更新阶段 3.2 的验收。
 
 新增类型：
 
@@ -1963,9 +2387,13 @@ provided wrapper 不登记生成：
 module-local 登记位置必须按类型明确落点：
 
 - engine class constructor
-  - 使用点：`ConstructInsnGen` 的 engine object constructor 分支当前直接拼 `valueOfOwnedExpr("godot_new_<Class>()", ...)`。
-  - 登记方式：该分支必须在返回 value expr 前显式登记 `ENGINE_CONSTRUCTOR`。
-  - metadata：`classes[]` 中可 construct 的 class name；实现通常走 `godot_classdb_construct_object2` interface wrapper。
+  - 阶段 3.2 已先行处理：`ConstructInsnGen` 的 engine object constructor 分支登记 constructor usage snapshot，
+    `engine_method_binds.h` 按需输出 `static inline godot_new_<Class>()`。
+  - 阶段 4 默认不再为 constructor 生成 `godot_module_bindings.h/.c` wrapper，也不把 constructor 重新纳入
+    generic `GodotBindingUsageSession`；除非后续明确执行“constructor wrapper 从 `engine_method_binds.h`
+    迁移到 module binding 文件”的重构。
+  - 若执行该重构，必须保留阶段 3.2 的语义：public constructor wrapper 使用 `godot_classdb_construct_object(...)`
+    和 cached `StringName`，不得用 `godot_classdb_construct_object2(...)` 直接替换。
 - engine class method/property public wrapper
   - 使用点：exact engine route 之外仍需要 engine public wrapper 的 dynamic/object bridge，
     `LoadPropertyInsnGen` / `StorePropertyInsnGen` 的 engine property helper。
@@ -2023,8 +2451,11 @@ module-local 登记位置必须按类型明确落点：
 - lookup hash 同样来自 `ExtensionAPI` metadata，但只存入 `GodotBindingSpec` / generated lookup 代码，不参与 `GodotBindingSymbol` key。
 - generated wrapper 的参数和返回 carrier 生成必须保留 initialized / const / uninitialized destination 区别；
   module-local engine method/property wrapper 调用 `godot_object_method_bind_call` 时，返回 `Variant` carrier 也按
-  `GDExtensionUninitializedVariantPtr` out-param 处理。
+  `GDExtensionUninitializedVariantPtr` out-param 处理；不得先构造 nil `Variant` 再把同一地址作为返回槽传入。
 - 使用 `GD_STATIC_SN` / `GD_STATIC_S` 或等价静态缓存，避免每次调用重复构造 name carrier。
+  如果缓存点位于独立 `godot_module_bindings.c`，必须同步提供该 translation unit 的 cleanup hook，
+  或先把 `gdcc_string_name.h` / `gdcc_string.h` 的 registry 改为共享单定义状态；不能假设 `entry.c`
+  的 header-static registry cleanup 会清理其它 `.c` 中的缓存。
 - 对缺失 metadata 的 wrapper fail-fast，不静默发空实现。
 - 对 lookup 返回空指针的 wrapper fail-fast，不缓存 `NULL`，不继续调用，不通过返回默认值掩盖 metadata/hash 冲突。
 - class method bind lookup 候选必须由 primary hash + `hash_compatibility` 组成；utility function 没有候选集合，
@@ -2486,11 +2917,21 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
    这个阶段完成后生成项目不再编译 `gdextension-lite-one.c`，相关测试同步断言 `godot_binding.c` 和 `godot` include root；
    同时加入 stale vendor 回归场景，证明旧 `shared-include/gdextension-lite/gdextension-lite-one.c` 残留不会进入 `cFiles`；
    同提交更新活动文档和被触及源码注释，不能继续公开宣称旧初始化模型。
-8. 提交阶段 4，把 provided set 之外残余的具体 engine public/property/singleton/class constant wrapper 接入 module-local session，
+8. 提交阶段 3.1，修复新 generated Godot binding 暴露出的 ptrcall return carrier 初始化回归；该阶段只收口
+   builtin / utility / fixed / template 中的 initialized carrier 规则，不改变 runtime input 或 generated file 契约。
+9. 提交阶段 3.2，把 engine class constructor wrapper 从 `godot_fixed_binding.h/.c` 的全量预生成中移出，
+   由 `ConstructInsnGen` 登记 constructor usage snapshot，并在 `engine_method_binds.h` 中按需生成使用
+   `GD_STATIC_SN(...)` 的 `static inline godot_new_<Class>()`。同阶段在 `gdcc_bind.h` 增加宏封装
+   `engine_method_binds.h` 中的 `gdcc_engine_method_bind*` accessor 生成，让模板只输出 compatibility hash 数据和宏调用。
+   本阶段必须保留 `godot_classdb_construct_object(...)` 的 public constructor 语义，不能回退到
+   `godot_classdb_construct_object2(...)`；同时固定 `FixedGodotBindings.symbols(api)` / fixed manifest 不再隐式漏算
+   全量 constructor wrapper。
+10. 提交阶段 4，把 provided set 之外残余的具体 engine public/property/singleton/class constant wrapper 接入 module-local session，
    并用 interface/builtin/utility/fixed provided set 防止脚本重复生成 runtime 已提供的 wrapper。
    该阶段生成可选 `godot_module_bindings.h/.c`，由 `entry.h` 同目录 include，并由 generated `.c` 收集规则进入 native compiler input；
-   同阶段更新 `CCodegen*`、API、CLI 和 build 层断言，不再无条件锁死 3 个 generated files。
-9. 最后提交阶段 5，删除 vendor zip，清理已知旧 `<includeRoot>/gdextension-lite` 子树，并对 `doc/module_impl`
+   同阶段更新 `CCodegen*`、API、CLI 和 build 层断言，不再无条件锁死 3 个 generated files；engine constructor
+   默认沿用阶段 3.2 的 `engine_method_binds.h` 按需生成，不在本阶段重复迁移。
+11. 最后提交阶段 5，删除 vendor zip，清理已知旧 `<includeRoot>/gdextension-lite` 子树，并对 `doc/module_impl`
    每一份文档做 `current-contract` / `updated-contract` / `historical-reference` 归类；同提交完成源码注释、
    模板注释、测试 display name、failure message 和旧断言的全仓清理。
 

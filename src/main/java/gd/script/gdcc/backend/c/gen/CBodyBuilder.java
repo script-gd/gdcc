@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.gen;
 
+import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageBuffer;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.exception.InvalidInsnException;
@@ -33,6 +34,7 @@ public final class CBodyBuilder {
     private final @NotNull LirClassDef clazz;
     private final @NotNull LirFunctionDef func;
     private final @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer;
+    private final @NotNull EngineConstructorUsageBuffer engineConstructorUsageBuffer;
     private final @NotNull StringBuilder out = new StringBuilder();
 
     private @Nullable LirBasicBlock currentBlock;
@@ -51,10 +53,19 @@ public final class CBodyBuilder {
                  @NotNull LirClassDef clazz,
                  @NotNull LirFunctionDef func,
                  @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer) {
+        this(helper, clazz, func, engineMethodUsageBuffer, EngineConstructorUsageBuffer.noOp());
+    }
+
+    CBodyBuilder(@NotNull CGenHelper helper,
+                 @NotNull LirClassDef clazz,
+                 @NotNull LirFunctionDef func,
+                 @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer,
+                 @NotNull EngineConstructorUsageBuffer engineConstructorUsageBuffer) {
         this.helper = Objects.requireNonNull(helper);
         this.clazz = Objects.requireNonNull(clazz);
         this.func = Objects.requireNonNull(func);
         this.engineMethodUsageBuffer = Objects.requireNonNull(engineMethodUsageBuffer);
+        this.engineConstructorUsageBuffer = Objects.requireNonNull(engineConstructorUsageBuffer);
     }
 
     public @NotNull CBodyBuilder setCurrentPosition(@NotNull LirBasicBlock block,
@@ -221,6 +232,12 @@ public final class CBodyBuilder {
     /// The buffer stays isolated from module session state until the caller commits after a successful render.
     public void recordUsedEngineMethodCall(@NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
         engineMethodUsageBuffer.record(resolved);
+    }
+
+    /// Engine constructors keep their public `godot_new_<Class>()` call shape in generated bodies.
+    /// Recording here only decides which module-local wrapper definitions are emitted later.
+    public void recordUsedEngineConstructor(@NotNull GdObjectType constructedType) {
+        engineConstructorUsageBuffer.record(constructedType);
     }
 
     /// Resolves the PtrKind for a given GdType based on the class registry.

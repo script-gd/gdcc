@@ -2,9 +2,11 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageSession;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
@@ -16,6 +18,8 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.BinaryOpInsn;
+import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
@@ -213,6 +217,46 @@ class CCodegenEngineMethodUsageSessionTest {
     }
 
     @Test
+    @DisplayName("failed render should not leak engine constructor usage into later successful renders")
+    void failedRenderShouldNotLeakEngineConstructorUsageIntoLaterSuccessfulRenders() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var invalid = newVoidFunction("construct_then_fail");
+        invalid.createAndAddVariable("node", new GdObjectType("Node"));
+        invalid.createAndAddVariable("left", GdIntType.INT);
+        invalid.createAndAddVariable("right", GdIntType.INT);
+        invalid.createAndAddVariable("sum", GdIntType.INT);
+        entry(invalid).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(invalid).appendInstruction(new BinaryOpInsn("sum", GodotOperator.ADD, "left", "right"));
+        entry(invalid).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(invalid);
+
+        var valid = newVoidFunction("construct_node");
+        valid.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(valid).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(valid).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(valid);
+
+        var module = new LirModule("engine_constructor_usage_failure_module", List.of(hostClass));
+        var codegen = newCodegen(module, apiWith(List.of(), List.of(nodeClass())), List.of(hostClass));
+        var methodSession = new EngineMethodUsageSession();
+        var constructorSession = new EngineConstructorUsageSession();
+
+        assertThrows(
+                InvalidInsnException.class,
+                () -> codegen.generateFuncBody(hostClass, invalid, methodSession, constructorSession)
+        );
+        assertTrue(methodSession.snapshot().isEmpty());
+        assertTrue(constructorSession.snapshot().isEmpty(), "Failed function renders must not commit constructor usage.");
+
+        var validBody = codegen.generateFuncBody(hostClass, valid, methodSession, constructorSession);
+        assertTrue(validBody.contains("godot_new_Node()"), validBody);
+        assertTrue(methodSession.snapshot().isEmpty());
+        assertEquals(1, constructorSession.snapshot().size(), constructorSession.snapshot().toString());
+        assertEquals("Node", constructorSession.snapshot().getFirst().className());
+    }
+
+    @Test
     @DisplayName("public generateFuncBody should stay deterministic and side-effect free")
     void publicGenerateFuncBodyShouldStayDeterministicAndSideEffectFree() {
         var hostClass = newClass("Worker", "RefCounted");
@@ -401,6 +445,21 @@ class CCodegenEngineMethodUsageSessionTest {
                 "core",
                 List.of(),
                 List.of(instanceTouch, staticTouch, varargTouch),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass nodeClass() {
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
                 List.of(),
                 List.of(),
                 List.of()

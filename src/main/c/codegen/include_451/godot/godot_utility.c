@@ -194,7 +194,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_sin = NULL;
 godot_float godot_sin(godot_float angle_rad) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_sin, "sin", 2140049587LL, "godot_sin", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&angle_rad };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_sin((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -204,7 +204,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_cos = NULL;
 godot_float godot_cos(godot_float angle_rad) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_cos, "cos", 2140049587LL, "godot_cos", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&angle_rad };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_cos((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -214,7 +214,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_tan = NULL;
 godot_float godot_tan(godot_float angle_rad) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_tan, "tan", 2140049587LL, "godot_tan", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&angle_rad };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_tan((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -224,7 +224,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_sinh = NULL;
 godot_float godot_sinh(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_sinh, "sinh", 2140049587LL, "godot_sinh", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_sinh((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -234,7 +234,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_cosh = NULL;
 godot_float godot_cosh(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_cosh, "cosh", 2140049587LL, "godot_cosh", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_cosh((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -244,7 +244,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_tanh = NULL;
 godot_float godot_tanh(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_tanh, "tanh", 2140049587LL, "godot_tanh", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_tanh((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -254,7 +254,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_asin = NULL;
 godot_float godot_asin(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_asin, "asin", 2140049587LL, "godot_asin", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_asin((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -264,7 +264,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_acos = NULL;
 godot_float godot_acos(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_acos, "acos", 2140049587LL, "godot_acos", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_acos((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -274,7 +274,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_atan = NULL;
 godot_float godot_atan(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_atan, "atan", 2140049587LL, "godot_atan", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_atan((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -284,7 +284,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_atan2 = NULL;
 godot_float godot_atan2(godot_float y, godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_atan2, "atan2", 92296394LL, "godot_atan2", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&y, (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_atan2((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -294,7 +294,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_asinh = NULL;
 godot_float godot_asinh(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_asinh, "asinh", 2140049587LL, "godot_asinh", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_asinh((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -304,7 +304,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_acosh = NULL;
 godot_float godot_acosh(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_acosh, "acosh", 2140049587LL, "godot_acosh", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_acosh((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -314,7 +314,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_atanh = NULL;
 godot_float godot_atanh(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_atanh, "atanh", 2140049587LL, "godot_atanh", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_atanh((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -324,7 +324,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_sqrt = NULL;
 godot_float godot_sqrt(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_sqrt, "sqrt", 2140049587LL, "godot_sqrt", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_sqrt((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -334,7 +334,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_fmod = NULL;
 godot_float godot_fmod(godot_float x, godot_float y) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_fmod, "fmod", 92296394LL, "godot_fmod", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x, (GDExtensionConstTypePtr)&y };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_fmod((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -344,7 +344,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_fposmod = NULL;
 godot_float godot_fposmod(godot_float x, godot_float y) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_fposmod, "fposmod", 92296394LL, "godot_fposmod", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x, (GDExtensionConstTypePtr)&y };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_fposmod((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -354,7 +354,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_posmod = NULL;
 godot_int godot_posmod(godot_int x, godot_int y) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_posmod, "posmod", 3133453818LL, "godot_posmod", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x, (GDExtensionConstTypePtr)&y };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_posmod((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -364,7 +364,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_floor = NULL;
 godot_Variant godot_floor(const godot_Variant * x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_floor, "floor", 4776452LL, "godot_floor", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)x };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_floor((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -374,7 +374,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_floorf = NULL;
 godot_float godot_floorf(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_floorf, "floorf", 2140049587LL, "godot_floorf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_floorf((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -384,7 +384,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_floori = NULL;
 godot_int godot_floori(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_floori, "floori", 2780425386LL, "godot_floori", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_floori((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -394,7 +394,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_ceil = NULL;
 godot_Variant godot_ceil(const godot_Variant * x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_ceil, "ceil", 4776452LL, "godot_ceil", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)x };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_ceil((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -404,7 +404,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_ceilf = NULL;
 godot_float godot_ceilf(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_ceilf, "ceilf", 2140049587LL, "godot_ceilf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_ceilf((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -414,7 +414,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_ceili = NULL;
 godot_int godot_ceili(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_ceili, "ceili", 2780425386LL, "godot_ceili", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_ceili((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -424,7 +424,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_round = NULL;
 godot_Variant godot_round(const godot_Variant * x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_round, "round", 4776452LL, "godot_round", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)x };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_round((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -434,7 +434,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_roundf = NULL;
 godot_float godot_roundf(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_roundf, "roundf", 2140049587LL, "godot_roundf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_roundf((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -444,7 +444,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_roundi = NULL;
 godot_int godot_roundi(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_roundi, "roundi", 2780425386LL, "godot_roundi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_roundi((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -454,7 +454,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_abs = NULL;
 godot_Variant godot_abs(const godot_Variant * x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_abs, "abs", 4776452LL, "godot_abs", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)x };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_abs((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -464,7 +464,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_absf = NULL;
 godot_float godot_absf(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_absf, "absf", 2140049587LL, "godot_absf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_absf((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -474,7 +474,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_absi = NULL;
 godot_int godot_absi(godot_int x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_absi, "absi", 2157319888LL, "godot_absi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_absi((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -484,7 +484,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_sign = NULL;
 godot_Variant godot_sign(const godot_Variant * x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_sign, "sign", 4776452LL, "godot_sign", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)x };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_sign((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -494,7 +494,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_signf = NULL;
 godot_float godot_signf(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_signf, "signf", 2140049587LL, "godot_signf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_signf((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -504,7 +504,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_signi = NULL;
 godot_int godot_signi(godot_int x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_signi, "signi", 2157319888LL, "godot_signi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_signi((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -514,7 +514,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_snapped = NULL;
 godot_Variant godot_snapped(const godot_Variant * x, const godot_Variant * step) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_snapped, "snapped", 459914704LL, "godot_snapped", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)x, (GDExtensionConstTypePtr)step };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_snapped((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -524,7 +524,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_snappedf = NULL;
 godot_float godot_snappedf(godot_float x, godot_float step) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_snappedf, "snappedf", 92296394LL, "godot_snappedf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x, (GDExtensionConstTypePtr)&step };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_snappedf((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -534,7 +534,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_snappedi = NULL;
 godot_int godot_snappedi(godot_float x, godot_int step) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_snappedi, "snappedi", 3570758393LL, "godot_snappedi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x, (GDExtensionConstTypePtr)&step };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_snappedi((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -544,7 +544,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_pow = NULL;
 godot_float godot_pow(godot_float base, godot_float exp) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_pow, "pow", 92296394LL, "godot_pow", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&base, (GDExtensionConstTypePtr)&exp };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_pow((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -554,7 +554,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_log = NULL;
 godot_float godot_log(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_log, "log", 2140049587LL, "godot_log", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_log((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -564,7 +564,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_exp = NULL;
 godot_float godot_exp(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_exp, "exp", 2140049587LL, "godot_exp", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_exp((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -574,7 +574,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_nan = NULL;
 godot_bool godot_is_nan(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_nan, "is_nan", 3569215213LL, "godot_is_nan", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_nan((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -584,7 +584,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_inf = NULL;
 godot_bool godot_is_inf(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_inf, "is_inf", 3569215213LL, "godot_is_inf", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_inf((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -594,7 +594,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_equal_approx = NULL;
 godot_bool godot_is_equal_approx(godot_float a, godot_float b) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_equal_approx, "is_equal_approx", 1400789633LL, "godot_is_equal_approx", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&a, (GDExtensionConstTypePtr)&b };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_equal_approx((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -604,7 +604,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_zero_approx = NULL;
 godot_bool godot_is_zero_approx(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_zero_approx, "is_zero_approx", 3569215213LL, "godot_is_zero_approx", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_zero_approx((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -614,7 +614,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_finite = NULL;
 godot_bool godot_is_finite(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_finite, "is_finite", 3569215213LL, "godot_is_finite", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_finite((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -624,7 +624,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_ease = NULL;
 godot_float godot_ease(godot_float x, godot_float curve) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_ease, "ease", 92296394LL, "godot_ease", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x, (GDExtensionConstTypePtr)&curve };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_ease((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -634,7 +634,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_step_decimals = NULL;
 godot_int godot_step_decimals(godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_step_decimals, "step_decimals", 2780425386LL, "godot_step_decimals", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&x };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_step_decimals((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -644,7 +644,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_lerp = NULL;
 godot_Variant godot_lerp(const godot_Variant * from, const godot_Variant * to, const godot_Variant * weight) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_lerp, "lerp", 3389874542LL, "godot_lerp", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)from, (GDExtensionConstTypePtr)to, (GDExtensionConstTypePtr)weight };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_lerp((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -654,7 +654,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_lerpf = NULL;
 godot_float godot_lerpf(godot_float from, godot_float to, godot_float weight) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_lerpf, "lerpf", 998901048LL, "godot_lerpf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&weight };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_lerpf((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -664,7 +664,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_cubic_interpolate = NULL;
 godot_float godot_cubic_interpolate(godot_float from, godot_float to, godot_float pre, godot_float post, godot_float weight) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_cubic_interpolate, "cubic_interpolate", 1090965791LL, "godot_cubic_interpolate", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&pre, (GDExtensionConstTypePtr)&post, (GDExtensionConstTypePtr)&weight };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_cubic_interpolate((GDExtensionTypePtr)&result, args, 5);
     return result;
 }
@@ -674,7 +674,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_cubic_interpolate_angle = NULL
 godot_float godot_cubic_interpolate_angle(godot_float from, godot_float to, godot_float pre, godot_float post, godot_float weight) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_cubic_interpolate_angle, "cubic_interpolate_angle", 1090965791LL, "godot_cubic_interpolate_angle", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&pre, (GDExtensionConstTypePtr)&post, (GDExtensionConstTypePtr)&weight };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_cubic_interpolate_angle((GDExtensionTypePtr)&result, args, 5);
     return result;
 }
@@ -684,7 +684,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_cubic_interpolate_in_time = NU
 godot_float godot_cubic_interpolate_in_time(godot_float from, godot_float to, godot_float pre, godot_float post, godot_float weight, godot_float to_t, godot_float pre_t, godot_float post_t) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_cubic_interpolate_in_time, "cubic_interpolate_in_time", 388121036LL, "godot_cubic_interpolate_in_time", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&pre, (GDExtensionConstTypePtr)&post, (GDExtensionConstTypePtr)&weight, (GDExtensionConstTypePtr)&to_t, (GDExtensionConstTypePtr)&pre_t, (GDExtensionConstTypePtr)&post_t };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_cubic_interpolate_in_time((GDExtensionTypePtr)&result, args, 8);
     return result;
 }
@@ -694,7 +694,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_cubic_interpolate_angle_in_tim
 godot_float godot_cubic_interpolate_angle_in_time(godot_float from, godot_float to, godot_float pre, godot_float post, godot_float weight, godot_float to_t, godot_float pre_t, godot_float post_t) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_cubic_interpolate_angle_in_time, "cubic_interpolate_angle_in_time", 388121036LL, "godot_cubic_interpolate_angle_in_time", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&pre, (GDExtensionConstTypePtr)&post, (GDExtensionConstTypePtr)&weight, (GDExtensionConstTypePtr)&to_t, (GDExtensionConstTypePtr)&pre_t, (GDExtensionConstTypePtr)&post_t };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_cubic_interpolate_angle_in_time((GDExtensionTypePtr)&result, args, 8);
     return result;
 }
@@ -704,7 +704,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_bezier_interpolate = NULL;
 godot_float godot_bezier_interpolate(godot_float start, godot_float control_1, godot_float control_2, godot_float end, godot_float t) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_bezier_interpolate, "bezier_interpolate", 1090965791LL, "godot_bezier_interpolate", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&start, (GDExtensionConstTypePtr)&control_1, (GDExtensionConstTypePtr)&control_2, (GDExtensionConstTypePtr)&end, (GDExtensionConstTypePtr)&t };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_bezier_interpolate((GDExtensionTypePtr)&result, args, 5);
     return result;
 }
@@ -714,7 +714,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_bezier_derivative = NULL;
 godot_float godot_bezier_derivative(godot_float start, godot_float control_1, godot_float control_2, godot_float end, godot_float t) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_bezier_derivative, "bezier_derivative", 1090965791LL, "godot_bezier_derivative", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&start, (GDExtensionConstTypePtr)&control_1, (GDExtensionConstTypePtr)&control_2, (GDExtensionConstTypePtr)&end, (GDExtensionConstTypePtr)&t };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_bezier_derivative((GDExtensionTypePtr)&result, args, 5);
     return result;
 }
@@ -724,7 +724,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_angle_difference = NULL;
 godot_float godot_angle_difference(godot_float from, godot_float to) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_angle_difference, "angle_difference", 92296394LL, "godot_angle_difference", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_angle_difference((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -734,7 +734,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_lerp_angle = NULL;
 godot_float godot_lerp_angle(godot_float from, godot_float to, godot_float weight) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_lerp_angle, "lerp_angle", 998901048LL, "godot_lerp_angle", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&weight };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_lerp_angle((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -744,7 +744,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_inverse_lerp = NULL;
 godot_float godot_inverse_lerp(godot_float from, godot_float to, godot_float weight) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_inverse_lerp, "inverse_lerp", 998901048LL, "godot_inverse_lerp", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&weight };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_inverse_lerp((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -754,7 +754,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_remap = NULL;
 godot_float godot_remap(godot_float value, godot_float istart, godot_float istop, godot_float ostart, godot_float ostop) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_remap, "remap", 1090965791LL, "godot_remap", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value, (GDExtensionConstTypePtr)&istart, (GDExtensionConstTypePtr)&istop, (GDExtensionConstTypePtr)&ostart, (GDExtensionConstTypePtr)&ostop };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_remap((GDExtensionTypePtr)&result, args, 5);
     return result;
 }
@@ -764,7 +764,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_smoothstep = NULL;
 godot_float godot_smoothstep(godot_float from, godot_float to, godot_float x) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_smoothstep, "smoothstep", 998901048LL, "godot_smoothstep", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&x };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_smoothstep((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -774,7 +774,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_move_toward = NULL;
 godot_float godot_move_toward(godot_float from, godot_float to, godot_float delta) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_move_toward, "move_toward", 998901048LL, "godot_move_toward", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&delta };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_move_toward((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -784,7 +784,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_rotate_toward = NULL;
 godot_float godot_rotate_toward(godot_float from, godot_float to, godot_float delta) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_rotate_toward, "rotate_toward", 998901048LL, "godot_rotate_toward", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to, (GDExtensionConstTypePtr)&delta };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_rotate_toward((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -794,7 +794,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_deg_to_rad = NULL;
 godot_float godot_deg_to_rad(godot_float deg) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_deg_to_rad, "deg_to_rad", 2140049587LL, "godot_deg_to_rad", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&deg };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_deg_to_rad((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -804,7 +804,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_rad_to_deg = NULL;
 godot_float godot_rad_to_deg(godot_float rad) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_rad_to_deg, "rad_to_deg", 2140049587LL, "godot_rad_to_deg", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&rad };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_rad_to_deg((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -814,7 +814,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_linear_to_db = NULL;
 godot_float godot_linear_to_db(godot_float lin) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_linear_to_db, "linear_to_db", 2140049587LL, "godot_linear_to_db", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&lin };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_linear_to_db((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -824,7 +824,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_db_to_linear = NULL;
 godot_float godot_db_to_linear(godot_float db) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_db_to_linear, "db_to_linear", 2140049587LL, "godot_db_to_linear", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&db };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_db_to_linear((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -834,7 +834,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_wrap = NULL;
 godot_Variant godot_wrap(const godot_Variant * value, const godot_Variant * min, const godot_Variant * max) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_wrap, "wrap", 3389874542LL, "godot_wrap", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)value, (GDExtensionConstTypePtr)min, (GDExtensionConstTypePtr)max };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_wrap((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -844,7 +844,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_wrapi = NULL;
 godot_int godot_wrapi(godot_int value, godot_int min, godot_int max) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_wrapi, "wrapi", 650295447LL, "godot_wrapi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value, (GDExtensionConstTypePtr)&min, (GDExtensionConstTypePtr)&max };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_wrapi((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -854,7 +854,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_wrapf = NULL;
 godot_float godot_wrapf(godot_float value, godot_float min, godot_float max) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_wrapf, "wrapf", 998901048LL, "godot_wrapf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value, (GDExtensionConstTypePtr)&min, (GDExtensionConstTypePtr)&max };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_wrapf((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -869,7 +869,7 @@ godot_Variant godot_max(const godot_Variant * arg1, const godot_Variant * arg2, 
     for (godot_int index = 0; index < argc; index++) {
         args[2 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_max((GDExtensionTypePtr)&result, args, (int)(2 + argc));
     return result;
 }
@@ -879,7 +879,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_maxi = NULL;
 godot_int godot_maxi(godot_int a, godot_int b) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_maxi, "maxi", 3133453818LL, "godot_maxi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&a, (GDExtensionConstTypePtr)&b };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_maxi((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -889,7 +889,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_maxf = NULL;
 godot_float godot_maxf(godot_float a, godot_float b) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_maxf, "maxf", 92296394LL, "godot_maxf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&a, (GDExtensionConstTypePtr)&b };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_maxf((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -904,7 +904,7 @@ godot_Variant godot_min(const godot_Variant * arg1, const godot_Variant * arg2, 
     for (godot_int index = 0; index < argc; index++) {
         args[2 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_min((GDExtensionTypePtr)&result, args, (int)(2 + argc));
     return result;
 }
@@ -914,7 +914,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_mini = NULL;
 godot_int godot_mini(godot_int a, godot_int b) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_mini, "mini", 3133453818LL, "godot_mini", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&a, (GDExtensionConstTypePtr)&b };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_mini((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -924,7 +924,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_minf = NULL;
 godot_float godot_minf(godot_float a, godot_float b) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_minf, "minf", 92296394LL, "godot_minf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&a, (GDExtensionConstTypePtr)&b };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_minf((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -934,7 +934,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_clamp = NULL;
 godot_Variant godot_clamp(const godot_Variant * value, const godot_Variant * min, const godot_Variant * max) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_clamp, "clamp", 3389874542LL, "godot_clamp", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)value, (GDExtensionConstTypePtr)min, (GDExtensionConstTypePtr)max };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_clamp((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -944,7 +944,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_clampi = NULL;
 godot_int godot_clampi(godot_int value, godot_int min, godot_int max) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_clampi, "clampi", 650295447LL, "godot_clampi", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value, (GDExtensionConstTypePtr)&min, (GDExtensionConstTypePtr)&max };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_clampi((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -954,7 +954,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_clampf = NULL;
 godot_float godot_clampf(godot_float value, godot_float min, godot_float max) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_clampf, "clampf", 998901048LL, "godot_clampf", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value, (GDExtensionConstTypePtr)&min, (GDExtensionConstTypePtr)&max };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_clampf((GDExtensionTypePtr)&result, args, 3);
     return result;
 }
@@ -964,7 +964,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_nearest_po2 = NULL;
 godot_int godot_nearest_po2(godot_int value) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_nearest_po2, "nearest_po2", 2157319888LL, "godot_nearest_po2", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_nearest_po2((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -974,7 +974,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_pingpong = NULL;
 godot_float godot_pingpong(godot_float value, godot_float length) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_pingpong, "pingpong", 92296394LL, "godot_pingpong", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&value, (GDExtensionConstTypePtr)&length };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_pingpong((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -990,7 +990,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_randi = NULL;
 
 godot_int godot_randi(void) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_randi, "randi", 701202648LL, "godot_randi", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_randi((GDExtensionTypePtr)&result, NULL, 0);
     return result;
 }
@@ -999,7 +999,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_randf = NULL;
 
 godot_float godot_randf(void) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_randf, "randf", 2086227845LL, "godot_randf", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_randf((GDExtensionTypePtr)&result, NULL, 0);
     return result;
 }
@@ -1009,7 +1009,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_randi_range = NULL;
 godot_int godot_randi_range(godot_int from, godot_int to) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_randi_range, "randi_range", 3133453818LL, "godot_randi_range", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_randi_range((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -1019,7 +1019,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_randf_range = NULL;
 godot_float godot_randf_range(godot_float from, godot_float to) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_randf_range, "randf_range", 92296394LL, "godot_randf_range", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&from, (GDExtensionConstTypePtr)&to };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_randf_range((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -1029,7 +1029,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_randfn = NULL;
 godot_float godot_randfn(godot_float mean, godot_float deviation) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_randfn, "randfn", 92296394LL, "godot_randfn", return (godot_float)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&mean, (GDExtensionConstTypePtr)&deviation };
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_utility_randfn((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -1047,7 +1047,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_rand_from_seed = NULL;
 godot_PackedInt64Array godot_rand_from_seed(godot_int seed) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_rand_from_seed, "rand_from_seed", 1391063685LL, "godot_rand_from_seed", return (godot_PackedInt64Array){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&seed };
-    godot_PackedInt64Array result;
+    godot_PackedInt64Array result = { 0 };
     gdcc_utility_rand_from_seed((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1057,7 +1057,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_weakref = NULL;
 godot_Variant godot_weakref(const godot_Variant * obj) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_weakref, "weakref", 4776452LL, "godot_weakref", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)obj };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_weakref((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1067,7 +1067,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_typeof = NULL;
 godot_int godot_typeof(const godot_Variant * variable) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_typeof, "typeof", 326422594LL, "godot_typeof", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)variable };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_typeof((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1077,7 +1077,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_type_convert = NULL;
 godot_Variant godot_type_convert(const godot_Variant * variant, godot_int type) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_type_convert, "type_convert", 2453062746LL, "godot_type_convert", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)variant, (GDExtensionConstTypePtr)&type };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_type_convert((GDExtensionTypePtr)&result, args, 2);
     return result;
 }
@@ -1091,7 +1091,7 @@ godot_String godot_str(const godot_Variant * arg1, const godot_Variant **argv, g
     for (godot_int index = 0; index < argc; index++) {
         args[1 + index] = (GDExtensionConstTypePtr)argv[index];
     }
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_utility_str((GDExtensionTypePtr)&result, args, (int)(1 + argc));
     return result;
 }
@@ -1101,7 +1101,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_error_string = NULL;
 godot_String godot_error_string(godot_int error) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_error_string, "error_string", 942708242LL, "godot_error_string", return (godot_String){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&error };
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_utility_error_string((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1111,7 +1111,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_type_string = NULL;
 godot_String godot_type_string(godot_int type) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_type_string, "type_string", 942708242LL, "godot_type_string", return (godot_String){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&type };
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_utility_type_string((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1229,7 +1229,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_var_to_str = NULL;
 godot_String godot_var_to_str(const godot_Variant * variable) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_var_to_str, "var_to_str", 866625479LL, "godot_var_to_str", return (godot_String){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)variable };
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_utility_var_to_str((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1239,7 +1239,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_str_to_var = NULL;
 godot_Variant godot_str_to_var(const godot_String * string) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_str_to_var, "str_to_var", 1891498491LL, "godot_str_to_var", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)string };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_str_to_var((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1249,7 +1249,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_var_to_bytes = NULL;
 godot_PackedByteArray godot_var_to_bytes(const godot_Variant * variable) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_var_to_bytes, "var_to_bytes", 2947269930LL, "godot_var_to_bytes", return (godot_PackedByteArray){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)variable };
-    godot_PackedByteArray result;
+    godot_PackedByteArray result = { 0 };
     gdcc_utility_var_to_bytes((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1259,7 +1259,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_bytes_to_var = NULL;
 godot_Variant godot_bytes_to_var(const godot_PackedByteArray * bytes) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_bytes_to_var, "bytes_to_var", 4249819452LL, "godot_bytes_to_var", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)bytes };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_bytes_to_var((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1269,7 +1269,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_var_to_bytes_with_objects = NU
 godot_PackedByteArray godot_var_to_bytes_with_objects(const godot_Variant * variable) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_var_to_bytes_with_objects, "var_to_bytes_with_objects", 2947269930LL, "godot_var_to_bytes_with_objects", return (godot_PackedByteArray){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)variable };
-    godot_PackedByteArray result;
+    godot_PackedByteArray result = { 0 };
     gdcc_utility_var_to_bytes_with_objects((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1279,7 +1279,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_bytes_to_var_with_objects = NU
 godot_Variant godot_bytes_to_var_with_objects(const godot_PackedByteArray * bytes) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_bytes_to_var_with_objects, "bytes_to_var_with_objects", 4249819452LL, "godot_bytes_to_var_with_objects", return godot_new_Variant_nil());
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)bytes };
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_utility_bytes_to_var_with_objects((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1289,7 +1289,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_hash = NULL;
 godot_int godot_hash(const godot_Variant * variable) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_hash, "hash", 326422594LL, "godot_hash", return (godot_int)0);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)variable };
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_hash((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1299,7 +1299,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_instance_from_id = NULL;
 godot_Object * godot_instance_from_id(godot_int instance_id) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_instance_from_id, "instance_from_id", 1156694636LL, "godot_instance_from_id", return NULL);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&instance_id };
-    godot_Object * result;
+    godot_Object * result = { 0 };
     gdcc_utility_instance_from_id((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1309,7 +1309,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_instance_id_valid = NULL;
 godot_bool godot_is_instance_id_valid(godot_int id) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_instance_id_valid, "is_instance_id_valid", 2232439758LL, "godot_is_instance_id_valid", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&id };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_instance_id_valid((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1319,7 +1319,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_instance_valid = NULL;
 godot_bool godot_is_instance_valid(const godot_Variant * instance) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_instance_valid, "is_instance_valid", 996128841LL, "godot_is_instance_valid", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)instance };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_instance_valid((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1328,7 +1328,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_rid_allocate_id = NULL;
 
 godot_int godot_rid_allocate_id(void) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_rid_allocate_id, "rid_allocate_id", 701202648LL, "godot_rid_allocate_id", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_utility_rid_allocate_id((GDExtensionTypePtr)&result, NULL, 0);
     return result;
 }
@@ -1338,7 +1338,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_rid_from_int64 = NULL;
 godot_RID godot_rid_from_int64(godot_int base) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_rid_from_int64, "rid_from_int64", 3426892196LL, "godot_rid_from_int64", return (godot_RID){ 0 });
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)&base };
-    godot_RID result;
+    godot_RID result = { 0 };
     gdcc_utility_rid_from_int64((GDExtensionTypePtr)&result, args, 1);
     return result;
 }
@@ -1348,7 +1348,7 @@ static GDExtensionPtrUtilityFunction gdcc_utility_is_same = NULL;
 godot_bool godot_is_same(const godot_Variant * a, const godot_Variant * b) {
     GDCC_RESOLVE_UTILITY_CACHE(gdcc_utility_is_same, "is_same", 1409423524LL, "godot_is_same", return false);
     const GDExtensionConstTypePtr args[] = { (GDExtensionConstTypePtr)a, (GDExtensionConstTypePtr)b };
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_utility_is_same((GDExtensionTypePtr)&result, args, 2);
     return result;
 }

@@ -337,7 +337,7 @@ public final class CGenHelper {
         };
     }
 
-    /// Engine bind accessor symbols must stay backend-owned and collision-free relative to gdextension-lite.
+    /// Engine bind accessor symbols must stay backend-owned and collision-free relative to public Godot wrappers.
     /// Static and vararg markers remain explicit because later helper surfaces diverge even when bind lookup
     /// still uses the same owner/method/hash triple.
     public @NotNull String renderEngineMethodBindAccessorName(
@@ -366,7 +366,7 @@ public final class CGenHelper {
     }
 
     /// Direct exact-engine helpers must stay in a backend-owned namespace so later route switches
-    /// never collide with gdextension-lite public wrappers.
+    /// never collide with public Godot wrappers.
     public @NotNull String renderEngineMethodCallHelperName(
             @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
     ) {
@@ -426,13 +426,6 @@ public final class CGenHelper {
         }
         return "const " + param.slotCType() + " " + renderEngineMethodHelperLocalSlotName(param) +
                 " = (" + param.slotCType() + ")" + param.name() + ";";
-    }
-
-    public @NotNull String renderEngineMethodBindLookupErrorDescription(
-            @NotNull BackendMethodCallResolver.ResolvedMethodCall resolved
-    ) {
-        return "engine method bind lookup failed: " +
-                escapeStringLiteral(resolved.ownerClassName() + "." + resolved.methodName());
     }
 
     public @NotNull String renderFuncBindName(@NotNull BindingData bindingData) {

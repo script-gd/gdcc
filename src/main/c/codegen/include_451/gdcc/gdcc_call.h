@@ -1,7 +1,7 @@
 #ifndef GDCC_CALL_H
 #define GDCC_CALL_H
 
-#include <gdextension-lite.h>
+#include <godot_binding.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdbool.h>

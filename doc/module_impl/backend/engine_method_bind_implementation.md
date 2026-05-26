@@ -69,7 +69,8 @@
 - 这条上游语义直接约束 gdcc 的 exact engine helper 分层：
   - caller 必须继续保持 normalized callable surface
   - helper 才是唯一允许把 normalized 参数落实成 `ptrcall` 槽位表达式的一层
-- `gdextension-lite` 仍保留自己的 wrapper ABI 责任面，但它已经不是 migrated exact engine route 的事实来源
+- 迁移前 public wrapper 的 ABI 责任面已经由 GDCC 自有 `godot/**` binding support 接管；
+  它不是 exact engine route 的事实来源，后续 public wrapper 问题应按各自 GDCC binding contract 处理。
 
 ## 架构与职责边界
 
@@ -163,7 +164,7 @@
 
 ### Vararg helper
 
-- helper 只拥有 fixed prefix packed `Variant` 与本地 return `Variant`
+- helper 只拥有 fixed prefix packed `Variant` 与本地 raw return `Variant` storage
 - caller 继续拥有：
   - extra `const godot_Variant **argv`
   - `godot_int argc`
@@ -171,7 +172,11 @@
   - call-site temp
 - helper 只 pack fixed prefix，不重新 pack caller-owned vararg tail
 - `_error.error` 检查必须先于 typed unpack
-- helper-owned temps 在 success / error 两条路径都必须完整清理
+- helper-owned fixed prefix temps 在 success / error 两条路径都必须完整清理
+- `godot_object_method_bind_call(...)` 的 return slot 是 `GDExtensionUninitializedVariantPtr`：
+  - helper 传入 raw `godot_Variant` storage，不能预先构造 nil `Variant`
+  - 只有 `_error.error == GDEXTENSION_CALL_OK` 后才允许 unpack 和 destroy 本地 return `Variant`
+  - error 路径不得 destroy 未构造的本地 return storage
 - `void` helper 不允许把 `NULL r_ret` 传给 `godot_object_method_bind_call(...)`
 
 ## 命名与兼容性约定
@@ -185,7 +190,7 @@
   - ABI descriptor 可读且可逆
 - 不允许：
   - 回退为 `godot_<Owner>_<method>`
-  - 与 `gdextension-lite` public wrapper 同名
+  - 与 legacy public wrapper 同名
   - 用 metadata 主 `hash` 作为 helper/accessor 身份后缀
 
 ### 兼容性来源
@@ -231,7 +236,7 @@
 ## 已知边界
 
 - 本文档只覆盖 migrated exact engine `CALL_METHOD` route
-- 仍消费 `gdextension-lite` wrapper 的其他路径，其 ABI debt 继续按各自事实面处理
+- exact route 之外的 public wrapper ABI debt 继续按各自 GDCC binding contract 处理
 - stock runtime API 目前仍缺少稳定、非 editor-only 的“object 位于 fixed prefix 的 vararg method”样本
   - 当前由 focused header regression 补足该类 helper surface 的覆盖
 - 与回归脚本、test suite 暴露出的剩余不足相关的记录，统一留在：

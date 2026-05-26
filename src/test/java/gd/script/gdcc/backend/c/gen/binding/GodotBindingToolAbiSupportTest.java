@@ -57,6 +57,10 @@ class GodotBindingToolAbiSupportTest {
 
         assertAll(
                 () -> assertTrue(abi.contains("#include <gdextension/gdextension_interface.h>")),
+                () -> assertTrue(abi.contains("typedef struct godot_Node godot_Node;")),
+                () -> assertTrue(abi.contains("typedef struct godot_Node2D godot_Node2D;")),
+                () -> assertTrue(abi.contains("typedef enum godot_Node_InternalMode")),
+                () -> assertTrue(abi.contains("godot_Node_INTERNAL_MODE_BACK = 2")),
                 () -> assertTrue(enums.contains("godot_PROPERTY_HINT_ARRAY_TYPE = 31")),
                 () -> assertTrue(enums.contains("godot_METHOD_FLAG_STATIC = 32")),
                 () -> assertTrue(constants.contains("Godot 4.5.1 exports no standalone global constants")),

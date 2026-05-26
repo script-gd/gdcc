@@ -229,11 +229,11 @@ class CConstructInsnGenEngineTest {
         var entrySource = Files.readString(tempDir.resolve("entry.c"));
         assertTrue(
                 entrySource.contains("godot_new_Node()"),
-                "Engine non-refcounted object constructor call should be generated."
+                "Engine non-refcounted object constructor wrapper call should be generated."
         );
         assertTrue(
                 entrySource.contains("godot_new_RefCounted()"),
-                "Engine RefCounted constructor call should be generated."
+                "Engine RefCounted constructor wrapper call should be generated."
         );
         assertTrue(
                 entrySource.contains(
@@ -249,6 +249,14 @@ class CConstructInsnGenEngineTest {
         );
         var plainCreateInstanceBody = resolveCreateInstanceBody(entrySource, "GDConstructRuntimePlainObject");
         var countedCreateInstanceBody = resolveCreateInstanceBody(entrySource, "GDConstructRuntimeCountedWorker");
+        var engineNodeConstructorBody = resolveFunctionBody(
+                entrySource,
+                "GDConstructObjectEngineNode_make_engine_node_class_name"
+        );
+        var engineRefConstructorBody = resolveFunctionBody(
+                entrySource,
+                "GDConstructObjectEngineNode_measure_engine_ref_counted_reference_count"
+        );
         assertFalse(
                 plainCreateInstanceBody.contains("gdcc_ref_counted_init_raw("),
                 "Non-refcounted GDCC create_instance should not initialize RefCounted state.\n" + plainCreateInstanceBody
@@ -258,13 +266,11 @@ class CConstructInsnGenEngineTest {
                 "RefCounted GDCC create_instance itself should remain raw; external C callers own init.\n" + countedCreateInstanceBody
         );
         assertFalse(
-                resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_make_engine_node_class_name")
-                        .contains("try_destroy_object($node);"),
+                engineNodeConstructorBody.contains("try_destroy_object($node);"),
                 "Engine non-ref local should not be auto-destroyed."
         );
         assertTrue(
-                resolveFunctionBody(entrySource, "GDConstructObjectEngineNode_measure_engine_ref_counted_reference_count")
-                        .contains("release_object($ref_counted);"),
+                engineRefConstructorBody.contains("release_object($ref_counted);"),
                 "Engine RefCounted local release path should be emitted."
         );
         assertFalse(

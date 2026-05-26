@@ -5,10 +5,6 @@
 
 #include <godot_utility.h>
 
-typedef struct godot_Engine godot_Engine;
-typedef struct godot_ClassDB godot_ClassDB;
-typedef struct godot_RefCounted godot_RefCounted;
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -27,7 +23,6 @@ GDCC_GODOT_DECL godot_int godot_Object_NOTIFICATION_PREDELETE(void);
 GDCC_GODOT_DECL godot_bool godot_RefCounted_reference(godot_RefCounted * self);
 GDCC_GODOT_DECL godot_bool godot_RefCounted_unreference(godot_RefCounted * self);
 GDCC_GODOT_DECL godot_bool godot_RefCounted_init_ref(godot_RefCounted * self);
-GDCC_GODOT_DECL GDExtensionClassInstancePtr godot_new_gdcc_Object_with_Variant(const godot_Variant * value);
 
 #ifdef __cplusplus
 }

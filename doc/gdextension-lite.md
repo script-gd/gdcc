@@ -26,7 +26,7 @@ gdextension-lite bindings.
 
 ## GDCC helper boundary
 
-The generated backend may call GDCC-owned helpers next to gdextension-lite bindings. These helpers are intentionally outside the `godot_*` naming rules above:
+The generated backend may call GDCC-owned helpers next to `godot_*` bindings that keep the historical naming shape. These helpers are intentionally outside the `godot_*` naming rules above:
 
 - `gdcc_object_to_godot_object_ptr(obj, Class_object_ptr)` converts a GDCC wrapper pointer to the backing Godot object pointer through the generated class helper.
 - `gdcc_new_Variant_with_gdcc_Object(obj)` packs a raw GDCC wrapper pointer into a `Variant` and performs the object-pointer conversion internally.

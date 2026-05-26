@@ -39,7 +39,10 @@ public class CProjectBuilderSharedIncludeTest {
         assertFalse(Files.exists(projectDir.resolve("include")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_bind.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_intrinsic.h")));
-        assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdextension-lite/gdextension-lite-one.c")));
+        assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_interface.h")));
+        assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_fixed_binding.h")));
+        assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_binding.c")));
+        assertFalse(Files.exists(sharedIncludeDir.resolve("gdextension-lite")));
         assertNotEquals("BROKEN", Files.readString(sharedIncludeDir.resolve("gdcc/gdcc_helper.h")).trim());
     }
 
@@ -56,11 +59,14 @@ public class CProjectBuilderSharedIncludeTest {
         var builder = new CProjectBuilder(compiler);
 
         builder.initProject(projectInfo);
+        var staleVendorFile = sharedIncludeDir.resolve("gdextension-lite/gdextension-lite-one.c");
+        Files.createDirectories(staleVendorFile.getParent());
+        Files.writeString(staleVendorFile, "stale vendor runtime");
         Files.writeString(projectDir.resolve("stale.c"), "stale");
         var result = builder.buildProject(projectInfo, prepareCodegen(projectInfo));
 
         var expectedGdcc = sharedIncludeDir.toAbsolutePath().normalize().resolve("gdcc");
-        var expectedGdextensionLite = sharedIncludeDir.toAbsolutePath().normalize().resolve("gdextension-lite");
+        var expectedGodot = sharedIncludeDir.toAbsolutePath().normalize().resolve("godot");
         var expectedGeneratedFiles = List.of(
                 projectDir.resolve("entry.c").toAbsolutePath().normalize(),
                 projectDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
@@ -71,10 +77,12 @@ public class CProjectBuilderSharedIncludeTest {
         assertEquals(expectedGeneratedFiles, result.generatedFiles().stream()
                 .map(path -> path.toAbsolutePath().normalize())
                 .toList());
-        assertEquals(List.of(expectedGdcc, expectedGdextensionLite), compiler.includeDirs());
+        assertEquals(List.of(expectedGdcc, expectedGodot), compiler.includeDirs());
         assertTrue(compiler.cFiles().contains(projectDir.resolve("entry.c").toAbsolutePath().normalize()));
-        assertTrue(compiler.cFiles().contains(expectedGdextensionLite.resolve("gdextension-lite-one.c")));
+        assertTrue(compiler.cFiles().contains(expectedGodot.resolve("godot_binding.c")));
+        assertFalse(compiler.cFiles().contains(staleVendorFile.toAbsolutePath().normalize()));
         assertFalse(compiler.cFiles().contains(projectDir.resolve("stale.c").toAbsolutePath().normalize()));
+        assertFalse(compiler.includeDirs().contains(projectDir.toAbsolutePath().normalize()));
     }
 
     @Test
@@ -93,6 +101,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/godot/godot_binding.c")));
         assertFalse(Files.exists(sharedIncludeDir.resolve("gdcc/gdcc_helper.h")));
     }
 
@@ -112,6 +121,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/godot/godot_binding.c")));
         assertFalse(Files.exists(sharedIncludePath.resolve("gdcc/gdcc_helper.h")));
     }
 

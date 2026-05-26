@@ -229,7 +229,8 @@
 #ifndef GDCC_BUILTIN_METHOD_RETURN
 #define GDCC_BUILTIN_METHOD_RETURN(cache, self_value, args_value, return_type, argument_count) \
     do { \
-        return_type result; \
+        /* Builtin ptrcall return slots are assignment targets, not construction destinations. */ \
+        return_type result = { 0 }; \
         (cache)((GDExtensionTypePtr)(self_value), args_value, (GDExtensionTypePtr)&result, argument_count); \
         return result; \
     } while (false)
@@ -268,6 +269,42 @@ godot_Variant godot_new_Variant_with_Variant(const godot_Variant *value) {
 void godot_Variant_destroy(godot_Variant *self) {
     godot_variant_destroy((GDExtensionVariantPtr)self);
 }
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Quaternion, godot_Quaternion, GDEXTENSION_VARIANT_TYPE_QUATERNION, (godot_Quaternion){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Quaternion, const godot_Quaternion *, GDEXTENSION_VARIANT_TYPE_QUATERNION)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Plane, godot_Plane, GDEXTENSION_VARIANT_TYPE_PLANE, (godot_Plane){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Plane, const godot_Plane *, GDEXTENSION_VARIANT_TYPE_PLANE)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Transform3D, godot_Transform3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, (godot_Transform3D){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform3D, const godot_Transform3D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Array, godot_Array, GDEXTENSION_VARIANT_TYPE_ARRAY, (godot_Array){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Array, const godot_Array *, GDEXTENSION_VARIANT_TYPE_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(RID, godot_RID, GDEXTENSION_VARIANT_TYPE_RID, (godot_RID){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(RID, const godot_RID *, GDEXTENSION_VARIANT_TYPE_RID)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(PackedColorArray, godot_PackedColorArray, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, (godot_PackedColorArray){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedColorArray, const godot_PackedColorArray *, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Rect2, godot_Rect2, GDEXTENSION_VARIANT_TYPE_RECT2, (godot_Rect2){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2, const godot_Rect2 *, GDEXTENSION_VARIANT_TYPE_RECT2)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector4, godot_Vector4, GDEXTENSION_VARIANT_TYPE_VECTOR4, (godot_Vector4){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4, const godot_Vector4 *, GDEXTENSION_VARIANT_TYPE_VECTOR4)
+
+GDCC_DEFINE_VARIANT_TO_TYPE(Vector3, godot_Vector3, GDEXTENSION_VARIANT_TYPE_VECTOR3, (godot_Vector3){ 0 })
+
+GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3, const godot_Vector3 *, GDEXTENSION_VARIANT_TYPE_VECTOR3)
 
 GDCC_DEFINE_VARIANT_TO_TYPE(Vector2i, godot_Vector2i, GDEXTENSION_VARIANT_TYPE_VECTOR2I, (godot_Vector2i){ 0 })
 
@@ -385,47 +422,11 @@ GDCC_DEFINE_VARIANT_TO_TYPE(PackedFloat64Array, godot_PackedFloat64Array, GDEXTE
 
 GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedFloat64Array, const godot_PackedFloat64Array *, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY)
 
-GDCC_DEFINE_VARIANT_TO_TYPE(Quaternion, godot_Quaternion, GDEXTENSION_VARIANT_TYPE_QUATERNION, (godot_Quaternion){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Quaternion, const godot_Quaternion *, GDEXTENSION_VARIANT_TYPE_QUATERNION)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Plane, godot_Plane, GDEXTENSION_VARIANT_TYPE_PLANE, (godot_Plane){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Plane, const godot_Plane *, GDEXTENSION_VARIANT_TYPE_PLANE)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Transform3D, godot_Transform3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, (godot_Transform3D){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Transform3D, const godot_Transform3D *, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Array, godot_Array, GDEXTENSION_VARIANT_TYPE_ARRAY, (godot_Array){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Array, const godot_Array *, GDEXTENSION_VARIANT_TYPE_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(RID, godot_RID, GDEXTENSION_VARIANT_TYPE_RID, (godot_RID){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(RID, const godot_RID *, GDEXTENSION_VARIANT_TYPE_RID)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(PackedColorArray, godot_PackedColorArray, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, (godot_PackedColorArray){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(PackedColorArray, const godot_PackedColorArray *, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Rect2, godot_Rect2, GDEXTENSION_VARIANT_TYPE_RECT2, (godot_Rect2){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Rect2, const godot_Rect2 *, GDEXTENSION_VARIANT_TYPE_RECT2)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector4, godot_Vector4, GDEXTENSION_VARIANT_TYPE_VECTOR4, (godot_Vector4){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector4, const godot_Vector4 *, GDEXTENSION_VARIANT_TYPE_VECTOR4)
-
-GDCC_DEFINE_VARIANT_TO_TYPE(Vector3, godot_Vector3, GDEXTENSION_VARIANT_TYPE_VECTOR3, (godot_Vector3){ 0 })
-
-GDCC_DEFINE_VARIANT_FROM_TYPE_PTR(Vector3, const godot_Vector3 *, GDEXTENSION_VARIANT_TYPE_VECTOR3)
-
 static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_AND_Object = NULL;
 
 godot_bool godot_bool_op_and_Object(godot_bool left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_bool_AND_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_AND, GDEXTENSION_VARIANT_TYPE_BOOL, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_bool_op_and_Object", "and", "bool", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_bool_AND_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -434,7 +435,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_OR_Object = NU
 
 godot_bool godot_bool_op_or_Object(godot_bool left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_bool_OR_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_OR, GDEXTENSION_VARIANT_TYPE_BOOL, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_bool_op_or_Object", "or", "bool", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_bool_OR_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -443,7 +444,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_XOR_Object = N
 
 godot_bool godot_bool_op_xor_Object(godot_bool left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_bool_XOR_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_XOR, GDEXTENSION_VARIANT_TYPE_BOOL, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_bool_op_xor_Object", "xor", "bool", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_bool_XOR_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -452,7 +453,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_IN_Dictionary 
 
 godot_bool godot_bool_op_in_Dictionary(godot_bool left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_bool_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_BOOL, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_bool_op_in_Dictionary", "in", "bool", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_bool_IN_Dictionary((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -461,7 +462,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_bool_IN_Array = NUL
 
 godot_bool godot_bool_op_in_Array(godot_bool left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_bool_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_BOOL, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_bool_op_in_Array", "in", "bool", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_bool_IN_Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -550,7 +551,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Vector
 
 godot_Vector2 godot_int_op_multiply_Vector2(godot_int left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_int_op_multiply_Vector2", "*", "int", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Vector2((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -559,7 +560,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Vector
 
 godot_Vector2i godot_int_op_multiply_Vector2i(godot_int left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_int_op_multiply_Vector2i", "*", "int", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Vector2i((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -568,7 +569,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Vector
 
 godot_Vector3 godot_int_op_multiply_Vector3(godot_int left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_int_op_multiply_Vector3", "*", "int", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Vector3((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -577,7 +578,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Vector
 
 godot_Vector3i godot_int_op_multiply_Vector3i(godot_int left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_int_op_multiply_Vector3i", "*", "int", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Vector3i((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -586,7 +587,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Vector
 
 godot_Vector4 godot_int_op_multiply_Vector4(godot_int left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_int_op_multiply_Vector4", "*", "int", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Vector4((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -595,7 +596,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Vector
 
 godot_Vector4i godot_int_op_multiply_Vector4i(godot_int left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_int_op_multiply_Vector4i", "*", "int", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Vector4i((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -604,7 +605,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Quater
 
 godot_Quaternion godot_int_op_multiply_Quaternion(godot_int left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_int_op_multiply_Quaternion", "*", "int", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Quaternion((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -613,7 +614,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_MULTIPLY_Color 
 
 godot_Color godot_int_op_multiply_Color(godot_int left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_MULTIPLY_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_int_op_multiply_Color", "*", "int", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_int_MULTIPLY_Color((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -622,7 +623,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_AND_Object = NU
 
 godot_bool godot_int_op_and_Object(godot_int left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_AND_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_AND, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_int_op_and_Object", "and", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_AND_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -631,7 +632,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_OR_Object = NUL
 
 godot_bool godot_int_op_or_Object(godot_int left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_OR_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_OR, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_int_op_or_Object", "or", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_OR_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -640,7 +641,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_XOR_Object = NU
 
 godot_bool godot_int_op_xor_Object(godot_int left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_XOR_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_XOR, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_int_op_xor_Object", "xor", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_XOR_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -649,7 +650,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_Dictionary =
 
 godot_bool godot_int_op_in_Dictionary(godot_int left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_int_op_in_Dictionary", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_Dictionary((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -658,7 +659,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_Array = NULL
 
 godot_bool godot_int_op_in_Array(godot_int left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_int_op_in_Array", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -667,7 +668,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_PackedByteAr
 
 godot_bool godot_int_op_in_PackedByteArray(godot_int left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_int_op_in_PackedByteArray", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_PackedByteArray((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -676,7 +677,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_PackedInt32A
 
 godot_bool godot_int_op_in_PackedInt32Array(godot_int left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_int_op_in_PackedInt32Array", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_PackedInt32Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -685,7 +686,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_PackedInt64A
 
 godot_bool godot_int_op_in_PackedInt64Array(godot_int left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_int_op_in_PackedInt64Array", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_PackedInt64Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -694,7 +695,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_PackedFloat3
 
 godot_bool godot_int_op_in_PackedFloat32Array(godot_int left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_int_op_in_PackedFloat32Array", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_PackedFloat32Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -703,7 +704,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_int_IN_PackedFloat6
 
 godot_bool godot_int_op_in_PackedFloat64Array(godot_int left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_int_IN_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_INT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_int_op_in_PackedFloat64Array", "in", "int", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_int_IN_PackedFloat64Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -792,7 +793,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Vect
 
 godot_Vector2 godot_float_op_multiply_Vector2(godot_float left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_float_op_multiply_Vector2", "*", "float", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Vector2((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -801,7 +802,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Vect
 
 godot_Vector2 godot_float_op_multiply_Vector2i(godot_float left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_float_op_multiply_Vector2i", "*", "float", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Vector2i((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -810,7 +811,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Vect
 
 godot_Vector3 godot_float_op_multiply_Vector3(godot_float left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_float_op_multiply_Vector3", "*", "float", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Vector3((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -819,7 +820,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Vect
 
 godot_Vector3 godot_float_op_multiply_Vector3i(godot_float left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_float_op_multiply_Vector3i", "*", "float", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Vector3i((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -828,7 +829,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Vect
 
 godot_Vector4 godot_float_op_multiply_Vector4(godot_float left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_float_op_multiply_Vector4", "*", "float", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Vector4((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -837,7 +838,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Vect
 
 godot_Vector4 godot_float_op_multiply_Vector4i(godot_float left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_float_op_multiply_Vector4i", "*", "float", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Vector4i((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -846,7 +847,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Quat
 
 godot_Quaternion godot_float_op_multiply_Quaternion(godot_float left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_float_op_multiply_Quaternion", "*", "float", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Quaternion((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -855,7 +856,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_MULTIPLY_Colo
 
 godot_Color godot_float_op_multiply_Color(godot_float left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_MULTIPLY_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_float_op_multiply_Color", "*", "float", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_float_MULTIPLY_Color((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -864,7 +865,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_AND_Object = 
 
 godot_bool godot_float_op_and_Object(godot_float left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_AND_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_AND, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_float_op_and_Object", "and", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_AND_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -873,7 +874,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_OR_Object = N
 
 godot_bool godot_float_op_or_Object(godot_float left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_OR_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_OR, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_float_op_or_Object", "or", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_OR_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -882,7 +883,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_XOR_Object = 
 
 godot_bool godot_float_op_xor_Object(godot_float left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_XOR_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_XOR, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_float_op_xor_Object", "xor", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_XOR_Object((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -891,7 +892,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_Dictionary
 
 godot_bool godot_float_op_in_Dictionary(godot_float left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_float_op_in_Dictionary", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_Dictionary((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -900,7 +901,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_Array = NU
 
 godot_bool godot_float_op_in_Array(godot_float left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_float_op_in_Array", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -909,7 +910,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_PackedByte
 
 godot_bool godot_float_op_in_PackedByteArray(godot_float left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_float_op_in_PackedByteArray", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_PackedByteArray((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -918,7 +919,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_PackedInt3
 
 godot_bool godot_float_op_in_PackedInt32Array(godot_float left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_float_op_in_PackedInt32Array", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_PackedInt32Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -927,7 +928,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_PackedInt6
 
 godot_bool godot_float_op_in_PackedInt64Array(godot_float left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_float_op_in_PackedInt64Array", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_PackedInt64Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -936,7 +937,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_PackedFloa
 
 godot_bool godot_float_op_in_PackedFloat32Array(godot_float left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_float_op_in_PackedFloat32Array", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_PackedFloat32Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -945,7 +946,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_float_IN_PackedFloa
 
 godot_bool godot_float_op_in_PackedFloat64Array(godot_float left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_float_IN_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_FLOAT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_float_op_in_PackedFloat64Array", "in", "float", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_float_IN_PackedFloat64Array((GDExtensionConstTypePtr)&left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1934,7 +1935,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_NOT = NULL;
 
 godot_bool godot_String_op_not(const godot_String * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_NIL), "godot_String_op_not", "not", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1943,7 +1944,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_bool 
 
 godot_String godot_String_op_module_bool(const godot_String * left, godot_bool right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_bool, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_BOOL), "godot_String_op_module_bool", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_bool((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1952,7 +1953,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_int =
 
 godot_String godot_String_op_module_int(const godot_String * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_INT), "godot_String_op_module_int", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1961,7 +1962,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_float
 
 godot_String godot_String_op_module_float(const godot_String * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_String_op_module_float", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1970,7 +1971,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_EQUAL_String
 
 godot_bool godot_String_op_equal_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_EQUAL_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_equal_String", "==", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_EQUAL_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1979,7 +1980,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_NOT_EQUAL_St
 
 godot_bool godot_String_op_not_equal_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_NOT_EQUAL_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_not_equal_String", "!=", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_NOT_EQUAL_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1988,7 +1989,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_LESS_String 
 
 godot_bool godot_String_op_less_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_LESS_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_less_String", "<", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_LESS_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -1997,7 +1998,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_LESS_EQUAL_S
 
 godot_bool godot_String_op_less_equal_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_LESS_EQUAL_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_less_equal_String", "<=", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_LESS_EQUAL_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2006,7 +2007,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_GREATER_Stri
 
 godot_bool godot_String_op_greater_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_GREATER_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_greater_String", ">", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_GREATER_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2015,7 +2016,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_GREATER_EQUA
 
 godot_bool godot_String_op_greater_equal_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_GREATER_EQUAL_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_greater_equal_String", ">=", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_GREATER_EQUAL_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2024,7 +2025,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_ADD_String =
 
 godot_String godot_String_op_add_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_ADD_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_add_String", "+", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_ADD_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2033,7 +2034,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Strin
 
 godot_String godot_String_op_module_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_module_String", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2042,7 +2043,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_IN_String = 
 
 godot_bool godot_String_op_in_String(const godot_String * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_IN_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_op_in_String", "in", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_IN_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2051,7 +2052,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Vecto
 
 godot_String godot_String_op_module_Vector2(const godot_String * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_String_op_module_Vector2", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2060,7 +2061,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Vecto
 
 godot_String godot_String_op_module_Vector2i(const godot_String * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_String_op_module_Vector2i", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2069,7 +2070,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Rect2
 
 godot_String godot_String_op_module_Rect2(const godot_String * left, const godot_Rect2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Rect2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_RECT2), "godot_String_op_module_Rect2", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Rect2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2078,7 +2079,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Rect2
 
 godot_String godot_String_op_module_Rect2i(const godot_String * left, const godot_Rect2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Rect2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_RECT2I), "godot_String_op_module_Rect2i", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Rect2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2087,7 +2088,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Vecto
 
 godot_String godot_String_op_module_Vector3(const godot_String * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_String_op_module_Vector3", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2096,7 +2097,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Vecto
 
 godot_String godot_String_op_module_Vector3i(const godot_String * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_String_op_module_Vector3i", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2105,7 +2106,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Trans
 
 godot_String godot_String_op_module_Transform2D(const godot_String * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_String_op_module_Transform2D", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2114,7 +2115,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Vecto
 
 godot_String godot_String_op_module_Vector4(const godot_String * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_String_op_module_Vector4", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2123,7 +2124,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Vecto
 
 godot_String godot_String_op_module_Vector4i(const godot_String * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_String_op_module_Vector4i", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2132,7 +2133,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Plane
 
 godot_String godot_String_op_module_Plane(const godot_String * left, const godot_Plane * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Plane, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PLANE), "godot_String_op_module_Plane", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Plane((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2141,7 +2142,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Quate
 
 godot_String godot_String_op_module_Quaternion(const godot_String * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_String_op_module_Quaternion", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2150,7 +2151,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_AABB 
 
 godot_String godot_String_op_module_AABB(const godot_String * left, const godot_AABB * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_AABB, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_AABB), "godot_String_op_module_AABB", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_AABB((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2159,7 +2160,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Basis
 
 godot_String godot_String_op_module_Basis(const godot_String * left, const godot_Basis * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Basis, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_BASIS), "godot_String_op_module_Basis", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Basis((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2168,7 +2169,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Trans
 
 godot_String godot_String_op_module_Transform3D(const godot_String * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_String_op_module_Transform3D", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2177,7 +2178,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Proje
 
 godot_String godot_String_op_module_Projection(const godot_String * left, const godot_Projection * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Projection, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_String_op_module_Projection", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Projection((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2186,7 +2187,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Color
 
 godot_String godot_String_op_module_Color(const godot_String * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_String_op_module_Color", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2195,7 +2196,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_EQUAL_String
 
 godot_bool godot_String_op_equal_StringName(const godot_String * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_EQUAL_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_String_op_equal_StringName", "==", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_EQUAL_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2204,7 +2205,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_NOT_EQUAL_St
 
 godot_bool godot_String_op_not_equal_StringName(const godot_String * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_NOT_EQUAL_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_String_op_not_equal_StringName", "!=", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_NOT_EQUAL_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2213,7 +2214,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_ADD_StringNa
 
 godot_String godot_String_op_add_StringName(const godot_String * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_ADD_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_String_op_add_StringName", "+", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_ADD_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2222,7 +2223,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Strin
 
 godot_String godot_String_op_module_StringName(const godot_String * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_String_op_module_StringName", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2231,7 +2232,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_IN_StringNam
 
 godot_bool godot_String_op_in_StringName(const godot_String * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_IN_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_String_op_in_StringName", "in", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_IN_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2240,7 +2241,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_NodeP
 
 godot_String godot_String_op_module_NodePath(const godot_String * left, const godot_NodePath * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_NodePath, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_NODE_PATH), "godot_String_op_module_NodePath", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_NodePath((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2249,7 +2250,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_RID =
 
 godot_String godot_String_op_module_RID(const godot_String * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_RID), "godot_String_op_module_RID", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2258,7 +2259,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Objec
 
 godot_String godot_String_op_module_Object(const godot_String * left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_String_op_module_Object", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Object((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2267,7 +2268,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_IN_Object = 
 
 godot_bool godot_String_op_in_Object(const godot_String * left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_IN_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_String_op_in_Object", "in", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_IN_Object((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2276,7 +2277,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Calla
 
 godot_String godot_String_op_module_Callable(const godot_String * left, const godot_Callable * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Callable, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_CALLABLE), "godot_String_op_module_Callable", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Callable((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2285,7 +2286,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Signa
 
 godot_String godot_String_op_module_Signal(const godot_String * left, const godot_Signal * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Signal, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_SIGNAL), "godot_String_op_module_Signal", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Signal((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2294,7 +2295,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Dicti
 
 godot_String godot_String_op_module_Dictionary(const godot_String * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_String_op_module_Dictionary", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2303,7 +2304,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_IN_Dictionar
 
 godot_bool godot_String_op_in_Dictionary(const godot_String * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_String_op_in_Dictionary", "in", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2312,7 +2313,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Array
 
 godot_String godot_String_op_module_Array(const godot_String * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_String_op_module_Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2321,7 +2322,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_IN_Array = N
 
 godot_bool godot_String_op_in_Array(const godot_String * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_String_op_in_Array", "in", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2330,7 +2331,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedByteArray(const godot_String * left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_String_op_module_PackedByteArray", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedByteArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2339,7 +2340,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedInt32Array(const godot_String * left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_String_op_module_PackedInt32Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedInt32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2348,7 +2349,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedInt64Array(const godot_String * left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_String_op_module_PackedInt64Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedInt64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2357,7 +2358,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedFloat32Array(const godot_String * left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_String_op_module_PackedFloat32Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedFloat32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2366,7 +2367,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedFloat64Array(const godot_String * left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_String_op_module_PackedFloat64Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedFloat64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2375,7 +2376,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedStringArray(const godot_String * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_String_op_module_PackedStringArray", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2384,7 +2385,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_IN_PackedStr
 
 godot_bool godot_String_op_in_PackedStringArray(const godot_String * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_IN_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_String_op_in_PackedStringArray", "in", "String", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_String_IN_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2393,7 +2394,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedVector2Array(const godot_String * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_String_op_module_PackedVector2Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2402,7 +2403,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedVector3Array(const godot_String * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_String_op_module_PackedVector3Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2411,7 +2412,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedColorArray(const godot_String * left, const godot_PackedColorArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedColorArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_String_op_module_PackedColorArray", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedColorArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2420,7 +2421,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_String_MODULE_Packe
 
 godot_String godot_String_op_module_PackedVector4Array(const godot_String * left, const godot_PackedVector4Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_String_MODULE_PackedVector4Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_String_op_module_PackedVector4Array", "%", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_String_MODULE_PackedVector4Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2435,7 +2436,7 @@ void godot_String_indexed_set(godot_String *self, godot_int index, const godot_S
 
 godot_String godot_String_indexed_get(const godot_String *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_String, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_STRING), "godot_String_indexed_get", "variant_get_ptr_indexed_getter", "String", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_indexed_get_String((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2483,7 +2484,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector2_x = NULL;
 
 godot_float godot_Vector2_get_x(const godot_Vector2 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector2_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR2, &member_name), "godot_Vector2_get_x", "x", "Vector2", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector2_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -2499,7 +2500,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector2_y = NULL;
 
 godot_float godot_Vector2_get_y(const godot_Vector2 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector2_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR2, &member_name), "godot_Vector2_get_y", "y", "Vector2", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector2_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -2883,7 +2884,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_NEGATE = NU
 
 godot_Vector2 godot_Vector2_op_negate(const godot_Vector2 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector2_op_negate", "unary-", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2892,7 +2893,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_POSITIVE = 
 
 godot_Vector2 godot_Vector2_op_positive(const godot_Vector2 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector2_op_positive", "unary+", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2901,7 +2902,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_NOT = NULL;
 
 godot_bool godot_Vector2_op_not(const godot_Vector2 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector2_op_not", "not", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2910,7 +2911,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_MULTIPLY_in
 
 godot_Vector2 godot_Vector2_op_multiply_int(const godot_Vector2 * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector2_op_multiply_int", "*", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2919,7 +2920,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_DIVIDE_int 
 
 godot_Vector2 godot_Vector2_op_divide_int(const godot_Vector2 * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector2_op_divide_int", "/", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2928,7 +2929,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_MULTIPLY_fl
 
 godot_Vector2 godot_Vector2_op_multiply_float(const godot_Vector2 * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector2_op_multiply_float", "*", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2937,7 +2938,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_DIVIDE_floa
 
 godot_Vector2 godot_Vector2_op_divide_float(const godot_Vector2 * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector2_op_divide_float", "/", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2946,7 +2947,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_EQUAL_Vecto
 
 godot_bool godot_Vector2_op_equal_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_EQUAL_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_equal_Vector2", "==", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_EQUAL_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2955,7 +2956,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_NOT_EQUAL_V
 
 godot_bool godot_Vector2_op_not_equal_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_NOT_EQUAL_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_not_equal_Vector2", "!=", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_NOT_EQUAL_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2964,7 +2965,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_LESS_Vector
 
 godot_bool godot_Vector2_op_less_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_LESS_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_less_Vector2", "<", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_LESS_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2973,7 +2974,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_LESS_EQUAL_
 
 godot_bool godot_Vector2_op_less_equal_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_LESS_EQUAL_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_less_equal_Vector2", "<=", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_LESS_EQUAL_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2982,7 +2983,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_GREATER_Vec
 
 godot_bool godot_Vector2_op_greater_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_GREATER_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_greater_Vector2", ">", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_GREATER_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -2991,7 +2992,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_GREATER_EQU
 
 godot_bool godot_Vector2_op_greater_equal_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_GREATER_EQUAL_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_greater_equal_Vector2", ">=", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_GREATER_EQUAL_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3000,7 +3001,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_ADD_Vector2
 
 godot_Vector2 godot_Vector2_op_add_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_ADD_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_add_Vector2", "+", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_ADD_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3009,7 +3010,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_SUBTRACT_Ve
 
 godot_Vector2 godot_Vector2_op_subtract_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_SUBTRACT_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_subtract_Vector2", "-", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_SUBTRACT_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3018,7 +3019,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_MULTIPLY_Ve
 
 godot_Vector2 godot_Vector2_op_multiply_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_MULTIPLY_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_multiply_Vector2", "*", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_MULTIPLY_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3027,7 +3028,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_DIVIDE_Vect
 
 godot_Vector2 godot_Vector2_op_divide_Vector2(const godot_Vector2 * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_DIVIDE_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_op_divide_Vector2", "/", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_DIVIDE_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3036,7 +3037,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_MULTIPLY_Tr
 
 godot_Vector2 godot_Vector2_op_multiply_Transform2D(const godot_Vector2 * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_MULTIPLY_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_Vector2_op_multiply_Transform2D", "*", "Vector2", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2_MULTIPLY_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3045,7 +3046,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_IN_Dictiona
 
 godot_bool godot_Vector2_op_in_Dictionary(const godot_Vector2 * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Vector2_op_in_Dictionary", "in", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3054,7 +3055,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_IN_Array = 
 
 godot_bool godot_Vector2_op_in_Array(const godot_Vector2 * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Vector2_op_in_Array", "in", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3063,7 +3064,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2_IN_PackedVe
 
 godot_bool godot_Vector2_op_in_PackedVector2Array(const godot_Vector2 * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2_IN_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR2, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_Vector2_op_in_PackedVector2Array", "in", "Vector2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2_IN_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3078,7 +3079,7 @@ void godot_Vector2_indexed_set(godot_Vector2 *self, godot_int index, godot_float
 
 godot_float godot_Vector2_indexed_get(const godot_Vector2 *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Vector2, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Vector2_indexed_get", "variant_get_ptr_indexed_getter", "Vector2", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_Vector2((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3126,7 +3127,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector2i_x = NULL;
 
 godot_int godot_Vector2i_get_x(const godot_Vector2i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector2i_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR2I, &member_name), "godot_Vector2i_get_x", "x", "Vector2i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector2i_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3142,7 +3143,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector2i_y = NULL;
 
 godot_int godot_Vector2i_get_y(const godot_Vector2i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector2i_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR2I, &member_name), "godot_Vector2i_get_y", "y", "Vector2i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector2i_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3287,7 +3288,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_NEGATE = N
 
 godot_Vector2i godot_Vector2i_op_negate(const godot_Vector2i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector2i_op_negate", "unary-", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3296,7 +3297,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_POSITIVE =
 
 godot_Vector2i godot_Vector2i_op_positive(const godot_Vector2i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector2i_op_positive", "unary+", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3305,7 +3306,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_NOT = NULL
 
 godot_bool godot_Vector2i_op_not(const godot_Vector2i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector2i_op_not", "not", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3314,7 +3315,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_MULTIPLY_i
 
 godot_Vector2i godot_Vector2i_op_multiply_int(const godot_Vector2i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector2i_op_multiply_int", "*", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3323,7 +3324,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_DIVIDE_int
 
 godot_Vector2i godot_Vector2i_op_divide_int(const godot_Vector2i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector2i_op_divide_int", "/", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3332,7 +3333,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_MODULE_int
 
 godot_Vector2i godot_Vector2i_op_module_int(const godot_Vector2i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_MODULE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector2i_op_module_int", "%", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_MODULE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3341,7 +3342,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_MULTIPLY_f
 
 godot_Vector2 godot_Vector2i_op_multiply_float(const godot_Vector2i * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector2i_op_multiply_float", "*", "Vector2i", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2i_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3350,7 +3351,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_DIVIDE_flo
 
 godot_Vector2 godot_Vector2i_op_divide_float(const godot_Vector2i * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector2i_op_divide_float", "/", "Vector2i", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Vector2i_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3359,7 +3360,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_EQUAL_Vect
 
 godot_bool godot_Vector2i_op_equal_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_EQUAL_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_equal_Vector2i", "==", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_EQUAL_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3368,7 +3369,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_NOT_EQUAL_
 
 godot_bool godot_Vector2i_op_not_equal_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_NOT_EQUAL_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_not_equal_Vector2i", "!=", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_NOT_EQUAL_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3377,7 +3378,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_LESS_Vecto
 
 godot_bool godot_Vector2i_op_less_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_LESS_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_less_Vector2i", "<", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_LESS_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3386,7 +3387,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_LESS_EQUAL
 
 godot_bool godot_Vector2i_op_less_equal_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_LESS_EQUAL_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_less_equal_Vector2i", "<=", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_LESS_EQUAL_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3395,7 +3396,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_GREATER_Ve
 
 godot_bool godot_Vector2i_op_greater_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_GREATER_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_greater_Vector2i", ">", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_GREATER_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3404,7 +3405,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_GREATER_EQ
 
 godot_bool godot_Vector2i_op_greater_equal_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_GREATER_EQUAL_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_greater_equal_Vector2i", ">=", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_GREATER_EQUAL_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3413,7 +3414,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_ADD_Vector
 
 godot_Vector2i godot_Vector2i_op_add_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_ADD_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_add_Vector2i", "+", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_ADD_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3422,7 +3423,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_SUBTRACT_V
 
 godot_Vector2i godot_Vector2i_op_subtract_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_SUBTRACT_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_subtract_Vector2i", "-", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_SUBTRACT_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3431,7 +3432,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_MULTIPLY_V
 
 godot_Vector2i godot_Vector2i_op_multiply_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_MULTIPLY_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_multiply_Vector2i", "*", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_MULTIPLY_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3440,7 +3441,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_DIVIDE_Vec
 
 godot_Vector2i godot_Vector2i_op_divide_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_DIVIDE_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_divide_Vector2i", "/", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_DIVIDE_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3449,7 +3450,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_MODULE_Vec
 
 godot_Vector2i godot_Vector2i_op_module_Vector2i(const godot_Vector2i * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_MODULE_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_op_module_Vector2i", "%", "Vector2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i result;
+    godot_Vector2i result = { 0 };
     gdcc_builtin_operator_Vector2i_MODULE_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3458,7 +3459,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_IN_Diction
 
 godot_bool godot_Vector2i_op_in_Dictionary(const godot_Vector2i * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Vector2i_op_in_Dictionary", "in", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3467,7 +3468,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector2i_IN_Array =
 
 godot_bool godot_Vector2i_op_in_Array(const godot_Vector2i * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector2i_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR2I, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Vector2i_op_in_Array", "in", "Vector2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector2i_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3482,7 +3483,7 @@ void godot_Vector2i_indexed_set(godot_Vector2i *self, godot_int index, godot_int
 
 godot_int godot_Vector2i_indexed_get(const godot_Vector2i *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Vector2i, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_Vector2i_indexed_get", "variant_get_ptr_indexed_getter", "Vector2i", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_builtin_indexed_get_Vector2i((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3540,7 +3541,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Rect2_position = NULL;
 
 godot_Vector2 godot_Rect2_get_position(const godot_Rect2 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Rect2_position, GDExtensionPtrGetter, member_name, "position", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_RECT2, &member_name), "godot_Rect2_get_position", "position", "Rect2", return (godot_Vector2){ 0 });
-    godot_Vector2 value;
+    godot_Vector2 value = { 0 };
     gdcc_builtin_get_Rect2_position((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3556,7 +3557,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Rect2_size = NULL;
 
 godot_Vector2 godot_Rect2_get_size(const godot_Rect2 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Rect2_size, GDExtensionPtrGetter, member_name, "size", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_RECT2, &member_name), "godot_Rect2_get_size", "size", "Rect2", return (godot_Vector2){ 0 });
-    godot_Vector2 value;
+    godot_Vector2 value = { 0 };
     gdcc_builtin_get_Rect2_size((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3572,7 +3573,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Rect2_end = NULL;
 
 godot_Vector2 godot_Rect2_get_end(const godot_Rect2 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Rect2_end, GDExtensionPtrGetter, member_name, "end", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_RECT2, &member_name), "godot_Rect2_get_end", "end", "Rect2", return (godot_Vector2){ 0 });
-    godot_Vector2 value;
+    godot_Vector2 value = { 0 };
     gdcc_builtin_get_Rect2_end((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3711,7 +3712,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2_NOT = NULL;
 
 godot_bool godot_Rect2_op_not(const godot_Rect2 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_RECT2, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Rect2_op_not", "not", "Rect2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3720,7 +3721,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2_EQUAL_Rect2 =
 
 godot_bool godot_Rect2_op_equal_Rect2(const godot_Rect2 * left, const godot_Rect2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2_EQUAL_Rect2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_RECT2, GDEXTENSION_VARIANT_TYPE_RECT2), "godot_Rect2_op_equal_Rect2", "==", "Rect2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2_EQUAL_Rect2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3729,7 +3730,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2_NOT_EQUAL_Rec
 
 godot_bool godot_Rect2_op_not_equal_Rect2(const godot_Rect2 * left, const godot_Rect2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2_NOT_EQUAL_Rect2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_RECT2, GDEXTENSION_VARIANT_TYPE_RECT2), "godot_Rect2_op_not_equal_Rect2", "!=", "Rect2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2_NOT_EQUAL_Rect2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3738,7 +3739,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2_MULTIPLY_Tran
 
 godot_Rect2 godot_Rect2_op_multiply_Transform2D(const godot_Rect2 * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2_MULTIPLY_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_RECT2, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_Rect2_op_multiply_Transform2D", "*", "Rect2", return (godot_Rect2){ 0 });
-    godot_Rect2 result;
+    godot_Rect2 result = { 0 };
     gdcc_builtin_operator_Rect2_MULTIPLY_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3747,7 +3748,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2_IN_Dictionary
 
 godot_bool godot_Rect2_op_in_Dictionary(const godot_Rect2 * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_RECT2, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Rect2_op_in_Dictionary", "in", "Rect2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3756,7 +3757,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2_IN_Array = NU
 
 godot_bool godot_Rect2_op_in_Array(const godot_Rect2 * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_RECT2, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Rect2_op_in_Array", "in", "Rect2", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3814,7 +3815,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Rect2i_position = NULL;
 
 godot_Vector2i godot_Rect2i_get_position(const godot_Rect2i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Rect2i_position, GDExtensionPtrGetter, member_name, "position", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_RECT2I, &member_name), "godot_Rect2i_get_position", "position", "Rect2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i value;
+    godot_Vector2i value = { 0 };
     gdcc_builtin_get_Rect2i_position((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3830,7 +3831,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Rect2i_size = NULL;
 
 godot_Vector2i godot_Rect2i_get_size(const godot_Rect2i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Rect2i_size, GDExtensionPtrGetter, member_name, "size", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_RECT2I, &member_name), "godot_Rect2i_get_size", "size", "Rect2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i value;
+    godot_Vector2i value = { 0 };
     gdcc_builtin_get_Rect2i_size((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3846,7 +3847,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Rect2i_end = NULL;
 
 godot_Vector2i godot_Rect2i_get_end(const godot_Rect2i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Rect2i_end, GDExtensionPtrGetter, member_name, "end", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_RECT2I, &member_name), "godot_Rect2i_get_end", "end", "Rect2i", return (godot_Vector2i){ 0 });
-    godot_Vector2i value;
+    godot_Vector2i value = { 0 };
     gdcc_builtin_get_Rect2i_end((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -3962,7 +3963,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2i_NOT = NULL;
 
 godot_bool godot_Rect2i_op_not(const godot_Rect2i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2i_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_RECT2I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Rect2i_op_not", "not", "Rect2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2i_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3971,7 +3972,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2i_EQUAL_Rect2i
 
 godot_bool godot_Rect2i_op_equal_Rect2i(const godot_Rect2i * left, const godot_Rect2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2i_EQUAL_Rect2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_RECT2I, GDEXTENSION_VARIANT_TYPE_RECT2I), "godot_Rect2i_op_equal_Rect2i", "==", "Rect2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2i_EQUAL_Rect2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3980,7 +3981,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2i_NOT_EQUAL_Re
 
 godot_bool godot_Rect2i_op_not_equal_Rect2i(const godot_Rect2i * left, const godot_Rect2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2i_NOT_EQUAL_Rect2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_RECT2I, GDEXTENSION_VARIANT_TYPE_RECT2I), "godot_Rect2i_op_not_equal_Rect2i", "!=", "Rect2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2i_NOT_EQUAL_Rect2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3989,7 +3990,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2i_IN_Dictionar
 
 godot_bool godot_Rect2i_op_in_Dictionary(const godot_Rect2i * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2i_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_RECT2I, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Rect2i_op_in_Dictionary", "in", "Rect2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2i_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -3998,7 +3999,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Rect2i_IN_Array = N
 
 godot_bool godot_Rect2i_op_in_Array(const godot_Rect2i * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Rect2i_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_RECT2I, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Rect2i_op_in_Array", "in", "Rect2i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Rect2i_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4046,7 +4047,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector3_x = NULL;
 
 godot_float godot_Vector3_get_x(const godot_Vector3 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector3_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3, &member_name), "godot_Vector3_get_x", "x", "Vector3", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector3_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -4062,7 +4063,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector3_y = NULL;
 
 godot_float godot_Vector3_get_y(const godot_Vector3 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector3_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3, &member_name), "godot_Vector3_get_y", "y", "Vector3", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector3_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -4078,7 +4079,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector3_z = NULL;
 
 godot_float godot_Vector3_get_z(const godot_Vector3 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector3_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3, &member_name), "godot_Vector3_get_z", "z", "Vector3", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector3_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -4463,7 +4464,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_NEGATE = NU
 
 godot_Vector3 godot_Vector3_op_negate(const godot_Vector3 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector3_op_negate", "unary-", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4472,7 +4473,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_POSITIVE = 
 
 godot_Vector3 godot_Vector3_op_positive(const godot_Vector3 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector3_op_positive", "unary+", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4481,7 +4482,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_NOT = NULL;
 
 godot_bool godot_Vector3_op_not(const godot_Vector3 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector3_op_not", "not", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4490,7 +4491,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_MULTIPLY_in
 
 godot_Vector3 godot_Vector3_op_multiply_int(const godot_Vector3 * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector3_op_multiply_int", "*", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4499,7 +4500,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_DIVIDE_int 
 
 godot_Vector3 godot_Vector3_op_divide_int(const godot_Vector3 * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector3_op_divide_int", "/", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4508,7 +4509,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_MULTIPLY_fl
 
 godot_Vector3 godot_Vector3_op_multiply_float(const godot_Vector3 * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector3_op_multiply_float", "*", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4517,7 +4518,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_DIVIDE_floa
 
 godot_Vector3 godot_Vector3_op_divide_float(const godot_Vector3 * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector3_op_divide_float", "/", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4526,7 +4527,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_EQUAL_Vecto
 
 godot_bool godot_Vector3_op_equal_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_EQUAL_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_equal_Vector3", "==", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_EQUAL_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4535,7 +4536,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_NOT_EQUAL_V
 
 godot_bool godot_Vector3_op_not_equal_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_NOT_EQUAL_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_not_equal_Vector3", "!=", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_NOT_EQUAL_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4544,7 +4545,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_LESS_Vector
 
 godot_bool godot_Vector3_op_less_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_LESS_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_less_Vector3", "<", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_LESS_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4553,7 +4554,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_LESS_EQUAL_
 
 godot_bool godot_Vector3_op_less_equal_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_LESS_EQUAL_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_less_equal_Vector3", "<=", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_LESS_EQUAL_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4562,7 +4563,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_GREATER_Vec
 
 godot_bool godot_Vector3_op_greater_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_GREATER_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_greater_Vector3", ">", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_GREATER_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4571,7 +4572,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_GREATER_EQU
 
 godot_bool godot_Vector3_op_greater_equal_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_GREATER_EQUAL_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_greater_equal_Vector3", ">=", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_GREATER_EQUAL_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4580,7 +4581,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_ADD_Vector3
 
 godot_Vector3 godot_Vector3_op_add_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_ADD_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_add_Vector3", "+", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_ADD_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4589,7 +4590,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_SUBTRACT_Ve
 
 godot_Vector3 godot_Vector3_op_subtract_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_SUBTRACT_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_subtract_Vector3", "-", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_SUBTRACT_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4598,7 +4599,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_MULTIPLY_Ve
 
 godot_Vector3 godot_Vector3_op_multiply_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_MULTIPLY_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_multiply_Vector3", "*", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_MULTIPLY_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4607,7 +4608,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_DIVIDE_Vect
 
 godot_Vector3 godot_Vector3_op_divide_Vector3(const godot_Vector3 * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_DIVIDE_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_op_divide_Vector3", "/", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_DIVIDE_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4616,7 +4617,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_MULTIPLY_Qu
 
 godot_Vector3 godot_Vector3_op_multiply_Quaternion(const godot_Vector3 * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_MULTIPLY_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Vector3_op_multiply_Quaternion", "*", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_MULTIPLY_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4625,7 +4626,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_MULTIPLY_Ba
 
 godot_Vector3 godot_Vector3_op_multiply_Basis(const godot_Vector3 * left, const godot_Basis * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_MULTIPLY_Basis, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_BASIS), "godot_Vector3_op_multiply_Basis", "*", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_MULTIPLY_Basis((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4634,7 +4635,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_MULTIPLY_Tr
 
 godot_Vector3 godot_Vector3_op_multiply_Transform3D(const godot_Vector3 * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_MULTIPLY_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_Vector3_op_multiply_Transform3D", "*", "Vector3", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3_MULTIPLY_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4643,7 +4644,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_IN_Dictiona
 
 godot_bool godot_Vector3_op_in_Dictionary(const godot_Vector3 * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Vector3_op_in_Dictionary", "in", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4652,7 +4653,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_IN_Array = 
 
 godot_bool godot_Vector3_op_in_Array(const godot_Vector3 * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Vector3_op_in_Array", "in", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4661,7 +4662,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3_IN_PackedVe
 
 godot_bool godot_Vector3_op_in_PackedVector3Array(const godot_Vector3 * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3_IN_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR3, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_Vector3_op_in_PackedVector3Array", "in", "Vector3", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3_IN_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4676,7 +4677,7 @@ void godot_Vector3_indexed_set(godot_Vector3 *self, godot_int index, godot_float
 
 godot_float godot_Vector3_indexed_get(const godot_Vector3 *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Vector3, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Vector3_indexed_get", "variant_get_ptr_indexed_getter", "Vector3", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_Vector3((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4724,7 +4725,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector3i_x = NULL;
 
 godot_int godot_Vector3i_get_x(const godot_Vector3i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector3i_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3I, &member_name), "godot_Vector3i_get_x", "x", "Vector3i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector3i_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -4740,7 +4741,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector3i_y = NULL;
 
 godot_int godot_Vector3i_get_y(const godot_Vector3i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector3i_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3I, &member_name), "godot_Vector3i_get_y", "y", "Vector3i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector3i_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -4756,7 +4757,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector3i_z = NULL;
 
 godot_int godot_Vector3i_get_z(const godot_Vector3i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector3i_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3I, &member_name), "godot_Vector3i_get_z", "z", "Vector3i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector3i_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -4894,7 +4895,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_NEGATE = N
 
 godot_Vector3i godot_Vector3i_op_negate(const godot_Vector3i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector3i_op_negate", "unary-", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4903,7 +4904,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_POSITIVE =
 
 godot_Vector3i godot_Vector3i_op_positive(const godot_Vector3i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector3i_op_positive", "unary+", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4912,7 +4913,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_NOT = NULL
 
 godot_bool godot_Vector3i_op_not(const godot_Vector3i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector3i_op_not", "not", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4921,7 +4922,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_MULTIPLY_i
 
 godot_Vector3i godot_Vector3i_op_multiply_int(const godot_Vector3i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector3i_op_multiply_int", "*", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4930,7 +4931,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_DIVIDE_int
 
 godot_Vector3i godot_Vector3i_op_divide_int(const godot_Vector3i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector3i_op_divide_int", "/", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4939,7 +4940,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_MODULE_int
 
 godot_Vector3i godot_Vector3i_op_module_int(const godot_Vector3i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_MODULE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector3i_op_module_int", "%", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_MODULE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4948,7 +4949,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_MULTIPLY_f
 
 godot_Vector3 godot_Vector3i_op_multiply_float(const godot_Vector3i * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector3i_op_multiply_float", "*", "Vector3i", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3i_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4957,7 +4958,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_DIVIDE_flo
 
 godot_Vector3 godot_Vector3i_op_divide_float(const godot_Vector3i * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector3i_op_divide_float", "/", "Vector3i", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Vector3i_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4966,7 +4967,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_EQUAL_Vect
 
 godot_bool godot_Vector3i_op_equal_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_EQUAL_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_equal_Vector3i", "==", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_EQUAL_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4975,7 +4976,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_NOT_EQUAL_
 
 godot_bool godot_Vector3i_op_not_equal_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_NOT_EQUAL_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_not_equal_Vector3i", "!=", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_NOT_EQUAL_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4984,7 +4985,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_LESS_Vecto
 
 godot_bool godot_Vector3i_op_less_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_LESS_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_less_Vector3i", "<", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_LESS_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -4993,7 +4994,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_LESS_EQUAL
 
 godot_bool godot_Vector3i_op_less_equal_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_LESS_EQUAL_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_less_equal_Vector3i", "<=", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_LESS_EQUAL_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5002,7 +5003,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_GREATER_Ve
 
 godot_bool godot_Vector3i_op_greater_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_GREATER_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_greater_Vector3i", ">", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_GREATER_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5011,7 +5012,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_GREATER_EQ
 
 godot_bool godot_Vector3i_op_greater_equal_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_GREATER_EQUAL_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_greater_equal_Vector3i", ">=", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_GREATER_EQUAL_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5020,7 +5021,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_ADD_Vector
 
 godot_Vector3i godot_Vector3i_op_add_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_ADD_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_add_Vector3i", "+", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_ADD_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5029,7 +5030,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_SUBTRACT_V
 
 godot_Vector3i godot_Vector3i_op_subtract_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_SUBTRACT_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_subtract_Vector3i", "-", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_SUBTRACT_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5038,7 +5039,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_MULTIPLY_V
 
 godot_Vector3i godot_Vector3i_op_multiply_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_MULTIPLY_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_multiply_Vector3i", "*", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_MULTIPLY_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5047,7 +5048,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_DIVIDE_Vec
 
 godot_Vector3i godot_Vector3i_op_divide_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_DIVIDE_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_divide_Vector3i", "/", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_DIVIDE_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5056,7 +5057,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_MODULE_Vec
 
 godot_Vector3i godot_Vector3i_op_module_Vector3i(const godot_Vector3i * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_MODULE_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_op_module_Vector3i", "%", "Vector3i", return (godot_Vector3i){ 0 });
-    godot_Vector3i result;
+    godot_Vector3i result = { 0 };
     gdcc_builtin_operator_Vector3i_MODULE_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5065,7 +5066,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_IN_Diction
 
 godot_bool godot_Vector3i_op_in_Dictionary(const godot_Vector3i * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Vector3i_op_in_Dictionary", "in", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5074,7 +5075,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector3i_IN_Array =
 
 godot_bool godot_Vector3i_op_in_Array(const godot_Vector3i * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector3i_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR3I, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Vector3i_op_in_Array", "in", "Vector3i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector3i_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5089,7 +5090,7 @@ void godot_Vector3i_indexed_set(godot_Vector3i *self, godot_int index, godot_int
 
 godot_int godot_Vector3i_indexed_get(const godot_Vector3i *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Vector3i, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_Vector3i_indexed_get", "variant_get_ptr_indexed_getter", "Vector3i", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_builtin_indexed_get_Vector3i((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5147,7 +5148,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Transform2D_x = NULL;
 
 godot_Vector2 godot_Transform2D_get_x(const godot_Transform2D *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Transform2D_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, &member_name), "godot_Transform2D_get_x", "x", "Transform2D", return (godot_Vector2){ 0 });
-    godot_Vector2 value;
+    godot_Vector2 value = { 0 };
     gdcc_builtin_get_Transform2D_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5163,7 +5164,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Transform2D_y = NULL;
 
 godot_Vector2 godot_Transform2D_get_y(const godot_Transform2D *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Transform2D_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, &member_name), "godot_Transform2D_get_y", "y", "Transform2D", return (godot_Vector2){ 0 });
-    godot_Vector2 value;
+    godot_Vector2 value = { 0 };
     gdcc_builtin_get_Transform2D_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5179,7 +5180,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Transform2D_origin = NULL;
 
 godot_Vector2 godot_Transform2D_get_origin(const godot_Transform2D *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Transform2D_origin, GDExtensionPtrGetter, member_name, "origin", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, &member_name), "godot_Transform2D_get_origin", "origin", "Transform2D", return (godot_Vector2){ 0 });
-    godot_Vector2 value;
+    godot_Vector2 value = { 0 };
     gdcc_builtin_get_Transform2D_origin((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5346,7 +5347,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_NOT = N
 
 godot_bool godot_Transform2D_op_not(const godot_Transform2D * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Transform2D_op_not", "not", "Transform2D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform2D_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5355,7 +5356,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_MULTIPL
 
 godot_Transform2D godot_Transform2D_op_multiply_int(const godot_Transform2D * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_INT), "godot_Transform2D_op_multiply_int", "*", "Transform2D", return (godot_Transform2D){ 0 });
-    godot_Transform2D result;
+    godot_Transform2D result = { 0 };
     gdcc_builtin_operator_Transform2D_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5364,7 +5365,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_DIVIDE_
 
 godot_Transform2D godot_Transform2D_op_divide_int(const godot_Transform2D * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_INT), "godot_Transform2D_op_divide_int", "/", "Transform2D", return (godot_Transform2D){ 0 });
-    godot_Transform2D result;
+    godot_Transform2D result = { 0 };
     gdcc_builtin_operator_Transform2D_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5373,7 +5374,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_MULTIPL
 
 godot_Transform2D godot_Transform2D_op_multiply_float(const godot_Transform2D * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Transform2D_op_multiply_float", "*", "Transform2D", return (godot_Transform2D){ 0 });
-    godot_Transform2D result;
+    godot_Transform2D result = { 0 };
     gdcc_builtin_operator_Transform2D_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5382,7 +5383,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_DIVIDE_
 
 godot_Transform2D godot_Transform2D_op_divide_float(const godot_Transform2D * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Transform2D_op_divide_float", "/", "Transform2D", return (godot_Transform2D){ 0 });
-    godot_Transform2D result;
+    godot_Transform2D result = { 0 };
     gdcc_builtin_operator_Transform2D_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5391,7 +5392,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_MULTIPL
 
 godot_Vector2 godot_Transform2D_op_multiply_Vector2(const godot_Transform2D * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_MULTIPLY_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_Transform2D_op_multiply_Vector2", "*", "Transform2D", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_operator_Transform2D_MULTIPLY_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5400,7 +5401,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_MULTIPL
 
 godot_Rect2 godot_Transform2D_op_multiply_Rect2(const godot_Transform2D * left, const godot_Rect2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_MULTIPLY_Rect2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_RECT2), "godot_Transform2D_op_multiply_Rect2", "*", "Transform2D", return (godot_Rect2){ 0 });
-    godot_Rect2 result;
+    godot_Rect2 result = { 0 };
     gdcc_builtin_operator_Transform2D_MULTIPLY_Rect2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5409,7 +5410,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_EQUAL_T
 
 godot_bool godot_Transform2D_op_equal_Transform2D(const godot_Transform2D * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_EQUAL_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_Transform2D_op_equal_Transform2D", "==", "Transform2D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform2D_EQUAL_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5418,7 +5419,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_NOT_EQU
 
 godot_bool godot_Transform2D_op_not_equal_Transform2D(const godot_Transform2D * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_NOT_EQUAL_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_Transform2D_op_not_equal_Transform2D", "!=", "Transform2D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform2D_NOT_EQUAL_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5427,7 +5428,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_MULTIPL
 
 godot_Transform2D godot_Transform2D_op_multiply_Transform2D(const godot_Transform2D * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_MULTIPLY_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_Transform2D_op_multiply_Transform2D", "*", "Transform2D", return (godot_Transform2D){ 0 });
-    godot_Transform2D result;
+    godot_Transform2D result = { 0 };
     gdcc_builtin_operator_Transform2D_MULTIPLY_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5436,7 +5437,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_IN_Dict
 
 godot_bool godot_Transform2D_op_in_Dictionary(const godot_Transform2D * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Transform2D_op_in_Dictionary", "in", "Transform2D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform2D_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5445,7 +5446,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_IN_Arra
 
 godot_bool godot_Transform2D_op_in_Array(const godot_Transform2D * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Transform2D_op_in_Array", "in", "Transform2D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform2D_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5454,7 +5455,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform2D_MULTIPL
 
 godot_PackedVector2Array godot_Transform2D_op_multiply_PackedVector2Array(const godot_Transform2D * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform2D_MULTIPLY_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_Transform2D_op_multiply_PackedVector2Array", "*", "Transform2D", return (godot_PackedVector2Array){ 0 });
-    godot_PackedVector2Array result;
+    godot_PackedVector2Array result = { 0 };
     gdcc_builtin_operator_Transform2D_MULTIPLY_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5469,7 +5470,7 @@ void godot_Transform2D_indexed_set(godot_Transform2D *self, godot_int index, con
 
 godot_Vector2 godot_Transform2D_indexed_get(const godot_Transform2D *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Transform2D, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_Transform2D_indexed_get", "variant_get_ptr_indexed_getter", "Transform2D", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_indexed_get_Transform2D((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5517,7 +5518,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4_x = NULL;
 
 godot_float godot_Vector4_get_x(const godot_Vector4 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4, &member_name), "godot_Vector4_get_x", "x", "Vector4", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector4_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5533,7 +5534,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4_y = NULL;
 
 godot_float godot_Vector4_get_y(const godot_Vector4 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4, &member_name), "godot_Vector4_get_y", "y", "Vector4", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector4_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5549,7 +5550,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4_z = NULL;
 
 godot_float godot_Vector4_get_z(const godot_Vector4 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4, &member_name), "godot_Vector4_get_z", "z", "Vector4", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector4_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5565,7 +5566,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4_w = NULL;
 
 godot_float godot_Vector4_get_w(const godot_Vector4 *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4_w, GDExtensionPtrGetter, member_name, "w", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4, &member_name), "godot_Vector4_get_w", "w", "Vector4", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Vector4_w((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -5823,7 +5824,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_NEGATE = NU
 
 godot_Vector4 godot_Vector4_op_negate(const godot_Vector4 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector4_op_negate", "unary-", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5832,7 +5833,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_POSITIVE = 
 
 godot_Vector4 godot_Vector4_op_positive(const godot_Vector4 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector4_op_positive", "unary+", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5841,7 +5842,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_NOT = NULL;
 
 godot_bool godot_Vector4_op_not(const godot_Vector4 * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector4_op_not", "not", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5850,7 +5851,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_MULTIPLY_in
 
 godot_Vector4 godot_Vector4_op_multiply_int(const godot_Vector4 * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector4_op_multiply_int", "*", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5859,7 +5860,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_DIVIDE_int 
 
 godot_Vector4 godot_Vector4_op_divide_int(const godot_Vector4 * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector4_op_divide_int", "/", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5868,7 +5869,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_MULTIPLY_fl
 
 godot_Vector4 godot_Vector4_op_multiply_float(const godot_Vector4 * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector4_op_multiply_float", "*", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5877,7 +5878,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_DIVIDE_floa
 
 godot_Vector4 godot_Vector4_op_divide_float(const godot_Vector4 * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector4_op_divide_float", "/", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5886,7 +5887,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_EQUAL_Vecto
 
 godot_bool godot_Vector4_op_equal_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_EQUAL_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_equal_Vector4", "==", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_EQUAL_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5895,7 +5896,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_NOT_EQUAL_V
 
 godot_bool godot_Vector4_op_not_equal_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_NOT_EQUAL_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_not_equal_Vector4", "!=", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_NOT_EQUAL_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5904,7 +5905,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_LESS_Vector
 
 godot_bool godot_Vector4_op_less_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_LESS_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_less_Vector4", "<", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_LESS_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5913,7 +5914,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_LESS_EQUAL_
 
 godot_bool godot_Vector4_op_less_equal_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_LESS_EQUAL_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_less_equal_Vector4", "<=", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_LESS_EQUAL_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5922,7 +5923,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_GREATER_Vec
 
 godot_bool godot_Vector4_op_greater_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_GREATER_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_greater_Vector4", ">", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_GREATER_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5931,7 +5932,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_GREATER_EQU
 
 godot_bool godot_Vector4_op_greater_equal_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_GREATER_EQUAL_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_greater_equal_Vector4", ">=", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_GREATER_EQUAL_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5940,7 +5941,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_ADD_Vector4
 
 godot_Vector4 godot_Vector4_op_add_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_ADD_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_add_Vector4", "+", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_ADD_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5949,7 +5950,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_SUBTRACT_Ve
 
 godot_Vector4 godot_Vector4_op_subtract_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_SUBTRACT_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_subtract_Vector4", "-", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_SUBTRACT_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5958,7 +5959,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_MULTIPLY_Ve
 
 godot_Vector4 godot_Vector4_op_multiply_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_MULTIPLY_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_multiply_Vector4", "*", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_MULTIPLY_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5967,7 +5968,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_DIVIDE_Vect
 
 godot_Vector4 godot_Vector4_op_divide_Vector4(const godot_Vector4 * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_DIVIDE_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_op_divide_Vector4", "/", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_DIVIDE_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5976,7 +5977,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_MULTIPLY_Pr
 
 godot_Vector4 godot_Vector4_op_multiply_Projection(const godot_Vector4 * left, const godot_Projection * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_MULTIPLY_Projection, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_Vector4_op_multiply_Projection", "*", "Vector4", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4_MULTIPLY_Projection((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5985,7 +5986,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_IN_Dictiona
 
 godot_bool godot_Vector4_op_in_Dictionary(const godot_Vector4 * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Vector4_op_in_Dictionary", "in", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -5994,7 +5995,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_IN_Array = 
 
 godot_bool godot_Vector4_op_in_Array(const godot_Vector4 * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Vector4_op_in_Array", "in", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6003,7 +6004,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4_IN_PackedVe
 
 godot_bool godot_Vector4_op_in_PackedVector4Array(const godot_Vector4 * left, const godot_PackedVector4Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4_IN_PackedVector4Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR4, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_Vector4_op_in_PackedVector4Array", "in", "Vector4", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4_IN_PackedVector4Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6018,7 +6019,7 @@ void godot_Vector4_indexed_set(godot_Vector4 *self, godot_int index, godot_float
 
 godot_float godot_Vector4_indexed_get(const godot_Vector4 *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Vector4, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Vector4_indexed_get", "variant_get_ptr_indexed_getter", "Vector4", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_Vector4((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6066,7 +6067,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4i_x = NULL;
 
 godot_int godot_Vector4i_get_x(const godot_Vector4i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4i_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4I, &member_name), "godot_Vector4i_get_x", "x", "Vector4i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector4i_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6082,7 +6083,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4i_y = NULL;
 
 godot_int godot_Vector4i_get_y(const godot_Vector4i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4i_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4I, &member_name), "godot_Vector4i_get_y", "y", "Vector4i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector4i_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6098,7 +6099,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4i_z = NULL;
 
 godot_int godot_Vector4i_get_z(const godot_Vector4i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4i_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4I, &member_name), "godot_Vector4i_get_z", "z", "Vector4i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector4i_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6114,7 +6115,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Vector4i_w = NULL;
 
 godot_int godot_Vector4i_get_w(const godot_Vector4i *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Vector4i_w, GDExtensionPtrGetter, member_name, "w", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4I, &member_name), "godot_Vector4i_get_w", "w", "Vector4i", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Vector4i_w((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6252,7 +6253,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_NEGATE = N
 
 godot_Vector4i godot_Vector4i_op_negate(const godot_Vector4i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector4i_op_negate", "unary-", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6261,7 +6262,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_POSITIVE =
 
 godot_Vector4i godot_Vector4i_op_positive(const godot_Vector4i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector4i_op_positive", "unary+", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6270,7 +6271,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_NOT = NULL
 
 godot_bool godot_Vector4i_op_not(const godot_Vector4i * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Vector4i_op_not", "not", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6279,7 +6280,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_MULTIPLY_i
 
 godot_Vector4i godot_Vector4i_op_multiply_int(const godot_Vector4i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector4i_op_multiply_int", "*", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6288,7 +6289,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_DIVIDE_int
 
 godot_Vector4i godot_Vector4i_op_divide_int(const godot_Vector4i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector4i_op_divide_int", "/", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6297,7 +6298,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_MODULE_int
 
 godot_Vector4i godot_Vector4i_op_module_int(const godot_Vector4i * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_MODULE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_INT), "godot_Vector4i_op_module_int", "%", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_MODULE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6306,7 +6307,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_MULTIPLY_f
 
 godot_Vector4 godot_Vector4i_op_multiply_float(const godot_Vector4i * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector4i_op_multiply_float", "*", "Vector4i", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4i_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6315,7 +6316,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_DIVIDE_flo
 
 godot_Vector4 godot_Vector4i_op_divide_float(const godot_Vector4i * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Vector4i_op_divide_float", "/", "Vector4i", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Vector4i_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6324,7 +6325,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_EQUAL_Vect
 
 godot_bool godot_Vector4i_op_equal_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_EQUAL_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_equal_Vector4i", "==", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_EQUAL_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6333,7 +6334,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_NOT_EQUAL_
 
 godot_bool godot_Vector4i_op_not_equal_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_NOT_EQUAL_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_not_equal_Vector4i", "!=", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_NOT_EQUAL_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6342,7 +6343,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_LESS_Vecto
 
 godot_bool godot_Vector4i_op_less_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_LESS_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_less_Vector4i", "<", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_LESS_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6351,7 +6352,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_LESS_EQUAL
 
 godot_bool godot_Vector4i_op_less_equal_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_LESS_EQUAL_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_less_equal_Vector4i", "<=", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_LESS_EQUAL_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6360,7 +6361,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_GREATER_Ve
 
 godot_bool godot_Vector4i_op_greater_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_GREATER_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_greater_Vector4i", ">", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_GREATER_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6369,7 +6370,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_GREATER_EQ
 
 godot_bool godot_Vector4i_op_greater_equal_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_GREATER_EQUAL_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_greater_equal_Vector4i", ">=", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_GREATER_EQUAL_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6378,7 +6379,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_ADD_Vector
 
 godot_Vector4i godot_Vector4i_op_add_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_ADD_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_add_Vector4i", "+", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_ADD_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6387,7 +6388,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_SUBTRACT_V
 
 godot_Vector4i godot_Vector4i_op_subtract_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_SUBTRACT_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_subtract_Vector4i", "-", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_SUBTRACT_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6396,7 +6397,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_MULTIPLY_V
 
 godot_Vector4i godot_Vector4i_op_multiply_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_MULTIPLY_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_multiply_Vector4i", "*", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_MULTIPLY_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6405,7 +6406,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_DIVIDE_Vec
 
 godot_Vector4i godot_Vector4i_op_divide_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_DIVIDE_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_divide_Vector4i", "/", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_DIVIDE_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6414,7 +6415,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_MODULE_Vec
 
 godot_Vector4i godot_Vector4i_op_module_Vector4i(const godot_Vector4i * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_MODULE_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_op_module_Vector4i", "%", "Vector4i", return (godot_Vector4i){ 0 });
-    godot_Vector4i result;
+    godot_Vector4i result = { 0 };
     gdcc_builtin_operator_Vector4i_MODULE_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6423,7 +6424,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_IN_Diction
 
 godot_bool godot_Vector4i_op_in_Dictionary(const godot_Vector4i * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Vector4i_op_in_Dictionary", "in", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6432,7 +6433,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Vector4i_IN_Array =
 
 godot_bool godot_Vector4i_op_in_Array(const godot_Vector4i * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Vector4i_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_VECTOR4I, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Vector4i_op_in_Array", "in", "Vector4i", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Vector4i_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6447,7 +6448,7 @@ void godot_Vector4i_indexed_set(godot_Vector4i *self, godot_int index, godot_int
 
 godot_int godot_Vector4i_indexed_get(const godot_Vector4i *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Vector4i, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_Vector4i_indexed_get", "variant_get_ptr_indexed_getter", "Vector4i", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_builtin_indexed_get_Vector4i((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6525,7 +6526,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Plane_x = NULL;
 
 godot_float godot_Plane_get_x(const godot_Plane *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Plane_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PLANE, &member_name), "godot_Plane_get_x", "x", "Plane", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Plane_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6541,7 +6542,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Plane_y = NULL;
 
 godot_float godot_Plane_get_y(const godot_Plane *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Plane_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PLANE, &member_name), "godot_Plane_get_y", "y", "Plane", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Plane_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6557,7 +6558,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Plane_z = NULL;
 
 godot_float godot_Plane_get_z(const godot_Plane *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Plane_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PLANE, &member_name), "godot_Plane_get_z", "z", "Plane", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Plane_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6573,7 +6574,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Plane_d = NULL;
 
 godot_float godot_Plane_get_d(const godot_Plane *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Plane_d, GDExtensionPtrGetter, member_name, "d", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PLANE, &member_name), "godot_Plane_get_d", "d", "Plane", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Plane_d((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6589,7 +6590,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Plane_normal = NULL;
 
 godot_Vector3 godot_Plane_get_normal(const godot_Plane *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Plane_normal, GDExtensionPtrGetter, member_name, "normal", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PLANE, &member_name), "godot_Plane_get_normal", "normal", "Plane", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_Plane_normal((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6690,7 +6691,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_NEGATE = NULL
 
 godot_Plane godot_Plane_op_negate(const godot_Plane * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Plane_op_negate", "unary-", "Plane", return (godot_Plane){ 0 });
-    godot_Plane result;
+    godot_Plane result = { 0 };
     gdcc_builtin_operator_Plane_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6699,7 +6700,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_POSITIVE = NU
 
 godot_Plane godot_Plane_op_positive(const godot_Plane * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Plane_op_positive", "unary+", "Plane", return (godot_Plane){ 0 });
-    godot_Plane result;
+    godot_Plane result = { 0 };
     gdcc_builtin_operator_Plane_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6708,7 +6709,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_NOT = NULL;
 
 godot_bool godot_Plane_op_not(const godot_Plane * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Plane_op_not", "not", "Plane", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Plane_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6717,7 +6718,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_EQUAL_Plane =
 
 godot_bool godot_Plane_op_equal_Plane(const godot_Plane * left, const godot_Plane * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_EQUAL_Plane, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_PLANE), "godot_Plane_op_equal_Plane", "==", "Plane", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Plane_EQUAL_Plane((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6726,7 +6727,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_NOT_EQUAL_Pla
 
 godot_bool godot_Plane_op_not_equal_Plane(const godot_Plane * left, const godot_Plane * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_NOT_EQUAL_Plane, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_PLANE), "godot_Plane_op_not_equal_Plane", "!=", "Plane", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Plane_NOT_EQUAL_Plane((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6735,7 +6736,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_MULTIPLY_Tran
 
 godot_Plane godot_Plane_op_multiply_Transform3D(const godot_Plane * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_MULTIPLY_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_Plane_op_multiply_Transform3D", "*", "Plane", return (godot_Plane){ 0 });
-    godot_Plane result;
+    godot_Plane result = { 0 };
     gdcc_builtin_operator_Plane_MULTIPLY_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6744,7 +6745,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_IN_Dictionary
 
 godot_bool godot_Plane_op_in_Dictionary(const godot_Plane * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Plane_op_in_Dictionary", "in", "Plane", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Plane_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6753,7 +6754,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Plane_IN_Array = NU
 
 godot_bool godot_Plane_op_in_Array(const godot_Plane * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Plane_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PLANE, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Plane_op_in_Array", "in", "Plane", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Plane_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -6821,7 +6822,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Quaternion_x = NULL;
 
 godot_float godot_Quaternion_get_x(const godot_Quaternion *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Quaternion_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_QUATERNION, &member_name), "godot_Quaternion_get_x", "x", "Quaternion", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Quaternion_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6837,7 +6838,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Quaternion_y = NULL;
 
 godot_float godot_Quaternion_get_y(const godot_Quaternion *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Quaternion_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_QUATERNION, &member_name), "godot_Quaternion_get_y", "y", "Quaternion", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Quaternion_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6853,7 +6854,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Quaternion_z = NULL;
 
 godot_float godot_Quaternion_get_z(const godot_Quaternion *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Quaternion_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_QUATERNION, &member_name), "godot_Quaternion_get_z", "z", "Quaternion", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Quaternion_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -6869,7 +6870,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Quaternion_w = NULL;
 
 godot_float godot_Quaternion_get_w(const godot_Quaternion *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Quaternion_w, GDExtensionPtrGetter, member_name, "w", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_QUATERNION, &member_name), "godot_Quaternion_get_w", "w", "Quaternion", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Quaternion_w((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7027,7 +7028,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_NEGATE =
 
 godot_Quaternion godot_Quaternion_op_negate(const godot_Quaternion * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Quaternion_op_negate", "unary-", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7036,7 +7037,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_POSITIVE
 
 godot_Quaternion godot_Quaternion_op_positive(const godot_Quaternion * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Quaternion_op_positive", "unary+", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7045,7 +7046,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_NOT = NU
 
 godot_bool godot_Quaternion_op_not(const godot_Quaternion * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Quaternion_op_not", "not", "Quaternion", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Quaternion_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7054,7 +7055,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_MULTIPLY
 
 godot_Quaternion godot_Quaternion_op_multiply_int(const godot_Quaternion * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_INT), "godot_Quaternion_op_multiply_int", "*", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7063,7 +7064,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_DIVIDE_i
 
 godot_Quaternion godot_Quaternion_op_divide_int(const godot_Quaternion * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_INT), "godot_Quaternion_op_divide_int", "/", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7072,7 +7073,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_MULTIPLY
 
 godot_Quaternion godot_Quaternion_op_multiply_float(const godot_Quaternion * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Quaternion_op_multiply_float", "*", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7081,7 +7082,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_DIVIDE_f
 
 godot_Quaternion godot_Quaternion_op_divide_float(const godot_Quaternion * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Quaternion_op_divide_float", "/", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7090,7 +7091,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_MULTIPLY
 
 godot_Vector3 godot_Quaternion_op_multiply_Vector3(const godot_Quaternion * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_MULTIPLY_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Quaternion_op_multiply_Vector3", "*", "Quaternion", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Quaternion_MULTIPLY_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7099,7 +7100,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_EQUAL_Qu
 
 godot_bool godot_Quaternion_op_equal_Quaternion(const godot_Quaternion * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_EQUAL_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Quaternion_op_equal_Quaternion", "==", "Quaternion", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Quaternion_EQUAL_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7108,7 +7109,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_NOT_EQUA
 
 godot_bool godot_Quaternion_op_not_equal_Quaternion(const godot_Quaternion * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_NOT_EQUAL_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Quaternion_op_not_equal_Quaternion", "!=", "Quaternion", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Quaternion_NOT_EQUAL_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7117,7 +7118,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_ADD_Quat
 
 godot_Quaternion godot_Quaternion_op_add_Quaternion(const godot_Quaternion * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_ADD_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Quaternion_op_add_Quaternion", "+", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_ADD_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7126,7 +7127,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_SUBTRACT
 
 godot_Quaternion godot_Quaternion_op_subtract_Quaternion(const godot_Quaternion * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_SUBTRACT_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Quaternion_op_subtract_Quaternion", "-", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_SUBTRACT_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7135,7 +7136,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_MULTIPLY
 
 godot_Quaternion godot_Quaternion_op_multiply_Quaternion(const godot_Quaternion * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_MULTIPLY_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Quaternion_op_multiply_Quaternion", "*", "Quaternion", return (godot_Quaternion){ 0 });
-    godot_Quaternion result;
+    godot_Quaternion result = { 0 };
     gdcc_builtin_operator_Quaternion_MULTIPLY_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7144,7 +7145,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_IN_Dicti
 
 godot_bool godot_Quaternion_op_in_Dictionary(const godot_Quaternion * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Quaternion_op_in_Dictionary", "in", "Quaternion", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Quaternion_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7153,7 +7154,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Quaternion_IN_Array
 
 godot_bool godot_Quaternion_op_in_Array(const godot_Quaternion * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Quaternion_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_QUATERNION, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Quaternion_op_in_Array", "in", "Quaternion", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Quaternion_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7168,7 +7169,7 @@ void godot_Quaternion_indexed_set(godot_Quaternion *self, godot_int index, godot
 
 godot_float godot_Quaternion_indexed_get(const godot_Quaternion *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Quaternion, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_Quaternion_indexed_get", "variant_get_ptr_indexed_getter", "Quaternion", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_Quaternion((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7206,7 +7207,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_AABB_position = NULL;
 
 godot_Vector3 godot_AABB_get_position(const godot_AABB *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_AABB_position, GDExtensionPtrGetter, member_name, "position", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_AABB, &member_name), "godot_AABB_get_position", "position", "AABB", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_AABB_position((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7222,7 +7223,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_AABB_size = NULL;
 
 godot_Vector3 godot_AABB_get_size(const godot_AABB *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_AABB_size, GDExtensionPtrGetter, member_name, "size", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_AABB, &member_name), "godot_AABB_get_size", "size", "AABB", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_AABB_size((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7238,7 +7239,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_AABB_end = NULL;
 
 godot_Vector3 godot_AABB_get_end(const godot_AABB *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_AABB_end, GDExtensionPtrGetter, member_name, "end", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_AABB, &member_name), "godot_AABB_get_end", "end", "AABB", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_AABB_end((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7442,7 +7443,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_AABB_NOT = NULL;
 
 godot_bool godot_AABB_op_not(const godot_AABB * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_AABB_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_AABB, GDEXTENSION_VARIANT_TYPE_NIL), "godot_AABB_op_not", "not", "AABB", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_AABB_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7451,7 +7452,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_AABB_EQUAL_AABB = N
 
 godot_bool godot_AABB_op_equal_AABB(const godot_AABB * left, const godot_AABB * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_AABB_EQUAL_AABB, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_AABB, GDEXTENSION_VARIANT_TYPE_AABB), "godot_AABB_op_equal_AABB", "==", "AABB", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_AABB_EQUAL_AABB((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7460,7 +7461,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_AABB_NOT_EQUAL_AABB
 
 godot_bool godot_AABB_op_not_equal_AABB(const godot_AABB * left, const godot_AABB * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_AABB_NOT_EQUAL_AABB, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_AABB, GDEXTENSION_VARIANT_TYPE_AABB), "godot_AABB_op_not_equal_AABB", "!=", "AABB", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_AABB_NOT_EQUAL_AABB((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7469,7 +7470,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_AABB_MULTIPLY_Trans
 
 godot_AABB godot_AABB_op_multiply_Transform3D(const godot_AABB * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_AABB_MULTIPLY_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_AABB, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_AABB_op_multiply_Transform3D", "*", "AABB", return (godot_AABB){ 0 });
-    godot_AABB result;
+    godot_AABB result = { 0 };
     gdcc_builtin_operator_AABB_MULTIPLY_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7478,7 +7479,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_AABB_IN_Dictionary 
 
 godot_bool godot_AABB_op_in_Dictionary(const godot_AABB * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_AABB_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_AABB, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_AABB_op_in_Dictionary", "in", "AABB", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_AABB_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7487,7 +7488,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_AABB_IN_Array = NUL
 
 godot_bool godot_AABB_op_in_Array(const godot_AABB * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_AABB_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_AABB, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_AABB_op_in_Array", "in", "AABB", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_AABB_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7545,7 +7546,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Basis_x = NULL;
 
 godot_Vector3 godot_Basis_get_x(const godot_Basis *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Basis_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_BASIS, &member_name), "godot_Basis_get_x", "x", "Basis", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_Basis_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7561,7 +7562,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Basis_y = NULL;
 
 godot_Vector3 godot_Basis_get_y(const godot_Basis *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Basis_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_BASIS, &member_name), "godot_Basis_get_y", "y", "Basis", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_Basis_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7577,7 +7578,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Basis_z = NULL;
 
 godot_Vector3 godot_Basis_get_z(const godot_Basis *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Basis_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_BASIS, &member_name), "godot_Basis_get_z", "z", "Basis", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_Basis_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7745,7 +7746,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_NOT = NULL;
 
 godot_bool godot_Basis_op_not(const godot_Basis * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Basis_op_not", "not", "Basis", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Basis_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7754,7 +7755,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_MULTIPLY_int 
 
 godot_Basis godot_Basis_op_multiply_int(const godot_Basis * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_INT), "godot_Basis_op_multiply_int", "*", "Basis", return (godot_Basis){ 0 });
-    godot_Basis result;
+    godot_Basis result = { 0 };
     gdcc_builtin_operator_Basis_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7763,7 +7764,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_DIVIDE_int = 
 
 godot_Basis godot_Basis_op_divide_int(const godot_Basis * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_INT), "godot_Basis_op_divide_int", "/", "Basis", return (godot_Basis){ 0 });
-    godot_Basis result;
+    godot_Basis result = { 0 };
     gdcc_builtin_operator_Basis_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7772,7 +7773,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_MULTIPLY_floa
 
 godot_Basis godot_Basis_op_multiply_float(const godot_Basis * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Basis_op_multiply_float", "*", "Basis", return (godot_Basis){ 0 });
-    godot_Basis result;
+    godot_Basis result = { 0 };
     gdcc_builtin_operator_Basis_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7781,7 +7782,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_DIVIDE_float 
 
 godot_Basis godot_Basis_op_divide_float(const godot_Basis * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Basis_op_divide_float", "/", "Basis", return (godot_Basis){ 0 });
-    godot_Basis result;
+    godot_Basis result = { 0 };
     gdcc_builtin_operator_Basis_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7790,7 +7791,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_MULTIPLY_Vect
 
 godot_Vector3 godot_Basis_op_multiply_Vector3(const godot_Basis * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_MULTIPLY_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Basis_op_multiply_Vector3", "*", "Basis", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Basis_MULTIPLY_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7799,7 +7800,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_EQUAL_Basis =
 
 godot_bool godot_Basis_op_equal_Basis(const godot_Basis * left, const godot_Basis * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_EQUAL_Basis, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_BASIS), "godot_Basis_op_equal_Basis", "==", "Basis", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Basis_EQUAL_Basis((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7808,7 +7809,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_NOT_EQUAL_Bas
 
 godot_bool godot_Basis_op_not_equal_Basis(const godot_Basis * left, const godot_Basis * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_NOT_EQUAL_Basis, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_BASIS), "godot_Basis_op_not_equal_Basis", "!=", "Basis", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Basis_NOT_EQUAL_Basis((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7817,7 +7818,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_MULTIPLY_Basi
 
 godot_Basis godot_Basis_op_multiply_Basis(const godot_Basis * left, const godot_Basis * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_MULTIPLY_Basis, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_BASIS), "godot_Basis_op_multiply_Basis", "*", "Basis", return (godot_Basis){ 0 });
-    godot_Basis result;
+    godot_Basis result = { 0 };
     gdcc_builtin_operator_Basis_MULTIPLY_Basis((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7826,7 +7827,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_IN_Dictionary
 
 godot_bool godot_Basis_op_in_Dictionary(const godot_Basis * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Basis_op_in_Dictionary", "in", "Basis", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Basis_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7835,7 +7836,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Basis_IN_Array = NU
 
 godot_bool godot_Basis_op_in_Array(const godot_Basis * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Basis_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_BASIS, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Basis_op_in_Array", "in", "Basis", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Basis_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7850,7 +7851,7 @@ void godot_Basis_indexed_set(godot_Basis *self, godot_int index, const godot_Vec
 
 godot_Vector3 godot_Basis_indexed_get(const godot_Basis *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Basis, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_BASIS), "godot_Basis_indexed_get", "variant_get_ptr_indexed_getter", "Basis", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_indexed_get_Basis((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -7908,7 +7909,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Transform3D_basis = NULL;
 
 godot_Basis godot_Transform3D_get_basis(const godot_Transform3D *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Transform3D_basis, GDExtensionPtrGetter, member_name, "basis", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, &member_name), "godot_Transform3D_get_basis", "basis", "Transform3D", return (godot_Basis){ 0 });
-    godot_Basis value;
+    godot_Basis value = { 0 };
     gdcc_builtin_get_Transform3D_basis((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -7924,7 +7925,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Transform3D_origin = NULL;
 
 godot_Vector3 godot_Transform3D_get_origin(const godot_Transform3D *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Transform3D_origin, GDExtensionPtrGetter, member_name, "origin", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, &member_name), "godot_Transform3D_get_origin", "origin", "Transform3D", return (godot_Vector3){ 0 });
-    godot_Vector3 value;
+    godot_Vector3 value = { 0 };
     gdcc_builtin_get_Transform3D_origin((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8040,7 +8041,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_NOT = N
 
 godot_bool godot_Transform3D_op_not(const godot_Transform3D * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Transform3D_op_not", "not", "Transform3D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform3D_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8049,7 +8050,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_Transform3D godot_Transform3D_op_multiply_int(const godot_Transform3D * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_INT), "godot_Transform3D_op_multiply_int", "*", "Transform3D", return (godot_Transform3D){ 0 });
-    godot_Transform3D result;
+    godot_Transform3D result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8058,7 +8059,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_DIVIDE_
 
 godot_Transform3D godot_Transform3D_op_divide_int(const godot_Transform3D * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_INT), "godot_Transform3D_op_divide_int", "/", "Transform3D", return (godot_Transform3D){ 0 });
-    godot_Transform3D result;
+    godot_Transform3D result = { 0 };
     gdcc_builtin_operator_Transform3D_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8067,7 +8068,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_Transform3D godot_Transform3D_op_multiply_float(const godot_Transform3D * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Transform3D_op_multiply_float", "*", "Transform3D", return (godot_Transform3D){ 0 });
-    godot_Transform3D result;
+    godot_Transform3D result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8076,7 +8077,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_DIVIDE_
 
 godot_Transform3D godot_Transform3D_op_divide_float(const godot_Transform3D * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Transform3D_op_divide_float", "/", "Transform3D", return (godot_Transform3D){ 0 });
-    godot_Transform3D result;
+    godot_Transform3D result = { 0 };
     gdcc_builtin_operator_Transform3D_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8085,7 +8086,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_Vector3 godot_Transform3D_op_multiply_Vector3(const godot_Transform3D * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_Transform3D_op_multiply_Vector3", "*", "Transform3D", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8094,7 +8095,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_Plane godot_Transform3D_op_multiply_Plane(const godot_Transform3D * left, const godot_Plane * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_Plane, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_PLANE), "godot_Transform3D_op_multiply_Plane", "*", "Transform3D", return (godot_Plane){ 0 });
-    godot_Plane result;
+    godot_Plane result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_Plane((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8103,7 +8104,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_AABB godot_Transform3D_op_multiply_AABB(const godot_Transform3D * left, const godot_AABB * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_AABB, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_AABB), "godot_Transform3D_op_multiply_AABB", "*", "Transform3D", return (godot_AABB){ 0 });
-    godot_AABB result;
+    godot_AABB result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_AABB((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8112,7 +8113,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_EQUAL_T
 
 godot_bool godot_Transform3D_op_equal_Transform3D(const godot_Transform3D * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_EQUAL_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_Transform3D_op_equal_Transform3D", "==", "Transform3D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform3D_EQUAL_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8121,7 +8122,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_NOT_EQU
 
 godot_bool godot_Transform3D_op_not_equal_Transform3D(const godot_Transform3D * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_NOT_EQUAL_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_Transform3D_op_not_equal_Transform3D", "!=", "Transform3D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform3D_NOT_EQUAL_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8130,7 +8131,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_Transform3D godot_Transform3D_op_multiply_Transform3D(const godot_Transform3D * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_Transform3D_op_multiply_Transform3D", "*", "Transform3D", return (godot_Transform3D){ 0 });
-    godot_Transform3D result;
+    godot_Transform3D result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8139,7 +8140,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_IN_Dict
 
 godot_bool godot_Transform3D_op_in_Dictionary(const godot_Transform3D * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Transform3D_op_in_Dictionary", "in", "Transform3D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform3D_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8148,7 +8149,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_IN_Arra
 
 godot_bool godot_Transform3D_op_in_Array(const godot_Transform3D * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Transform3D_op_in_Array", "in", "Transform3D", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Transform3D_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8157,7 +8158,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Transform3D_MULTIPL
 
 godot_PackedVector3Array godot_Transform3D_op_multiply_PackedVector3Array(const godot_Transform3D * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Transform3D_MULTIPLY_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_Transform3D_op_multiply_PackedVector3Array", "*", "Transform3D", return (godot_PackedVector3Array){ 0 });
-    godot_PackedVector3Array result;
+    godot_PackedVector3Array result = { 0 };
     gdcc_builtin_operator_Transform3D_MULTIPLY_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8205,7 +8206,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Projection_x = NULL;
 
 godot_Vector4 godot_Projection_get_x(const godot_Projection *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Projection_x, GDExtensionPtrGetter, member_name, "x", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PROJECTION, &member_name), "godot_Projection_get_x", "x", "Projection", return (godot_Vector4){ 0 });
-    godot_Vector4 value;
+    godot_Vector4 value = { 0 };
     gdcc_builtin_get_Projection_x((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8221,7 +8222,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Projection_y = NULL;
 
 godot_Vector4 godot_Projection_get_y(const godot_Projection *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Projection_y, GDExtensionPtrGetter, member_name, "y", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PROJECTION, &member_name), "godot_Projection_get_y", "y", "Projection", return (godot_Vector4){ 0 });
-    godot_Vector4 value;
+    godot_Vector4 value = { 0 };
     gdcc_builtin_get_Projection_y((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8237,7 +8238,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Projection_z = NULL;
 
 godot_Vector4 godot_Projection_get_z(const godot_Projection *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Projection_z, GDExtensionPtrGetter, member_name, "z", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PROJECTION, &member_name), "godot_Projection_get_z", "z", "Projection", return (godot_Vector4){ 0 });
-    godot_Vector4 value;
+    godot_Vector4 value = { 0 };
     gdcc_builtin_get_Projection_z((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8253,7 +8254,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Projection_w = NULL;
 
 godot_Vector4 godot_Projection_get_w(const godot_Projection *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Projection_w, GDExtensionPtrGetter, member_name, "w", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_PROJECTION, &member_name), "godot_Projection_get_w", "w", "Projection", return (godot_Vector4){ 0 });
-    godot_Vector4 value;
+    godot_Vector4 value = { 0 };
     gdcc_builtin_get_Projection_w((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8466,7 +8467,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_NOT = NU
 
 godot_bool godot_Projection_op_not(const godot_Projection * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Projection_op_not", "not", "Projection", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Projection_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8475,7 +8476,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_MULTIPLY
 
 godot_Vector4 godot_Projection_op_multiply_Vector4(const godot_Projection * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_MULTIPLY_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_Projection_op_multiply_Vector4", "*", "Projection", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_operator_Projection_MULTIPLY_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8484,7 +8485,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_EQUAL_Pr
 
 godot_bool godot_Projection_op_equal_Projection(const godot_Projection * left, const godot_Projection * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_EQUAL_Projection, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_Projection_op_equal_Projection", "==", "Projection", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Projection_EQUAL_Projection((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8493,7 +8494,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_NOT_EQUA
 
 godot_bool godot_Projection_op_not_equal_Projection(const godot_Projection * left, const godot_Projection * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_NOT_EQUAL_Projection, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_Projection_op_not_equal_Projection", "!=", "Projection", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Projection_NOT_EQUAL_Projection((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8502,7 +8503,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_MULTIPLY
 
 godot_Projection godot_Projection_op_multiply_Projection(const godot_Projection * left, const godot_Projection * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_MULTIPLY_Projection, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_Projection_op_multiply_Projection", "*", "Projection", return (godot_Projection){ 0 });
-    godot_Projection result;
+    godot_Projection result = { 0 };
     gdcc_builtin_operator_Projection_MULTIPLY_Projection((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8511,7 +8512,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_IN_Dicti
 
 godot_bool godot_Projection_op_in_Dictionary(const godot_Projection * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Projection_op_in_Dictionary", "in", "Projection", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Projection_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8520,7 +8521,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Projection_IN_Array
 
 godot_bool godot_Projection_op_in_Array(const godot_Projection * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Projection_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PROJECTION, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Projection_op_in_Array", "in", "Projection", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Projection_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8535,7 +8536,7 @@ void godot_Projection_indexed_set(godot_Projection *self, godot_int index, const
 
 godot_Vector4 godot_Projection_indexed_get(const godot_Projection *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Projection, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_Projection_indexed_get", "variant_get_ptr_indexed_getter", "Projection", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_indexed_get_Projection((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -8683,7 +8684,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_r = NULL;
 
 godot_float godot_Color_get_r(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_r, GDExtensionPtrGetter, member_name, "r", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_r", "r", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_r((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8699,7 +8700,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_g = NULL;
 
 godot_float godot_Color_get_g(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_g, GDExtensionPtrGetter, member_name, "g", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_g", "g", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_g((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8715,7 +8716,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_b = NULL;
 
 godot_float godot_Color_get_b(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_b, GDExtensionPtrGetter, member_name, "b", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_b", "b", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_b((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8731,7 +8732,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_a = NULL;
 
 godot_float godot_Color_get_a(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_a, GDExtensionPtrGetter, member_name, "a", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_a", "a", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_a((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8747,7 +8748,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_r8 = NULL;
 
 godot_int godot_Color_get_r8(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_r8, GDExtensionPtrGetter, member_name, "r8", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_r8", "r8", "Color", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Color_r8((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8763,7 +8764,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_g8 = NULL;
 
 godot_int godot_Color_get_g8(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_g8, GDExtensionPtrGetter, member_name, "g8", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_g8", "g8", "Color", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Color_g8((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8779,7 +8780,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_b8 = NULL;
 
 godot_int godot_Color_get_b8(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_b8, GDExtensionPtrGetter, member_name, "b8", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_b8", "b8", "Color", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Color_b8((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8795,7 +8796,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_a8 = NULL;
 
 godot_int godot_Color_get_a8(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_a8, GDExtensionPtrGetter, member_name, "a8", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_a8", "a8", "Color", return (godot_int)0);
-    godot_int value;
+    godot_int value = { 0 };
     gdcc_builtin_get_Color_a8((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8811,7 +8812,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_h = NULL;
 
 godot_float godot_Color_get_h(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_h, GDExtensionPtrGetter, member_name, "h", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_h", "h", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_h((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8827,7 +8828,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_s = NULL;
 
 godot_float godot_Color_get_s(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_s, GDExtensionPtrGetter, member_name, "s", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_s", "s", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_s((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8843,7 +8844,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_v = NULL;
 
 godot_float godot_Color_get_v(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_v, GDExtensionPtrGetter, member_name, "v", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_v", "v", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_v((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8859,7 +8860,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_ok_hsl_h = NULL;
 
 godot_float godot_Color_get_ok_hsl_h(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_ok_hsl_h, GDExtensionPtrGetter, member_name, "ok_hsl_h", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_ok_hsl_h", "ok_hsl_h", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_ok_hsl_h((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8875,7 +8876,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_ok_hsl_s = NULL;
 
 godot_float godot_Color_get_ok_hsl_s(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_ok_hsl_s, GDExtensionPtrGetter, member_name, "ok_hsl_s", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_ok_hsl_s", "ok_hsl_s", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_ok_hsl_s((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -8891,7 +8892,7 @@ static GDExtensionPtrGetter gdcc_builtin_get_Color_ok_hsl_l = NULL;
 
 godot_float godot_Color_get_ok_hsl_l(const godot_Color *self) {
     GDCC_RESOLVE_BUILTIN_NAMED_CACHE(gdcc_builtin_get_Color_ok_hsl_l, GDExtensionPtrGetter, member_name, "ok_hsl_l", godot_variant_get_ptr_getter(GDEXTENSION_VARIANT_TYPE_COLOR, &member_name), "godot_Color_get_ok_hsl_l", "ok_hsl_l", "Color", return (godot_float)0);
-    godot_float value;
+    godot_float value = { 0 };
     gdcc_builtin_get_Color_ok_hsl_l((GDExtensionConstTypePtr)self, (GDExtensionTypePtr)&value);
     return value;
 }
@@ -9105,7 +9106,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_NEGATE = NULL
 
 godot_Color godot_Color_op_negate(const godot_Color * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_NEGATE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NEGATE, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Color_op_negate", "unary-", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_NEGATE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9114,7 +9115,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_POSITIVE = NU
 
 godot_Color godot_Color_op_positive(const godot_Color * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_POSITIVE, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_POSITIVE, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Color_op_positive", "unary+", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_POSITIVE((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9123,7 +9124,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_NOT = NULL;
 
 godot_bool godot_Color_op_not(const godot_Color * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Color_op_not", "not", "Color", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Color_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9132,7 +9133,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_MULTIPLY_int 
 
 godot_Color godot_Color_op_multiply_int(const godot_Color * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_MULTIPLY_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_INT), "godot_Color_op_multiply_int", "*", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_MULTIPLY_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9141,7 +9142,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_DIVIDE_int = 
 
 godot_Color godot_Color_op_divide_int(const godot_Color * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_DIVIDE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_INT), "godot_Color_op_divide_int", "/", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_DIVIDE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9150,7 +9151,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_MULTIPLY_floa
 
 godot_Color godot_Color_op_multiply_float(const godot_Color * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_MULTIPLY_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Color_op_multiply_float", "*", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_MULTIPLY_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9159,7 +9160,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_DIVIDE_float 
 
 godot_Color godot_Color_op_divide_float(const godot_Color * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_DIVIDE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_Color_op_divide_float", "/", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_DIVIDE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9168,7 +9169,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_EQUAL_Color =
 
 godot_bool godot_Color_op_equal_Color(const godot_Color * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_EQUAL_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_op_equal_Color", "==", "Color", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Color_EQUAL_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9177,7 +9178,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_NOT_EQUAL_Col
 
 godot_bool godot_Color_op_not_equal_Color(const godot_Color * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_NOT_EQUAL_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_op_not_equal_Color", "!=", "Color", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Color_NOT_EQUAL_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9186,7 +9187,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_ADD_Color = N
 
 godot_Color godot_Color_op_add_Color(const godot_Color * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_ADD_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_op_add_Color", "+", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_ADD_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9195,7 +9196,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_SUBTRACT_Colo
 
 godot_Color godot_Color_op_subtract_Color(const godot_Color * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_SUBTRACT_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_SUBTRACT, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_op_subtract_Color", "-", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_SUBTRACT_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9204,7 +9205,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_MULTIPLY_Colo
 
 godot_Color godot_Color_op_multiply_Color(const godot_Color * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_MULTIPLY_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_op_multiply_Color", "*", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_MULTIPLY_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9213,7 +9214,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_DIVIDE_Color 
 
 godot_Color godot_Color_op_divide_Color(const godot_Color * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_DIVIDE_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_DIVIDE, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_op_divide_Color", "/", "Color", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_operator_Color_DIVIDE_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9222,7 +9223,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_IN_Dictionary
 
 godot_bool godot_Color_op_in_Dictionary(const godot_Color * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Color_op_in_Dictionary", "in", "Color", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Color_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9231,7 +9232,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_IN_Array = NU
 
 godot_bool godot_Color_op_in_Array(const godot_Color * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Color_op_in_Array", "in", "Color", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Color_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9240,7 +9241,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Color_IN_PackedColo
 
 godot_bool godot_Color_op_in_PackedColorArray(const godot_Color * left, const godot_PackedColorArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Color_IN_PackedColorArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_COLOR, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_Color_op_in_PackedColorArray", "in", "Color", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Color_IN_PackedColorArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -9255,7 +9256,7 @@ void godot_Color_indexed_set(godot_Color *self, godot_int index, godot_float val
 
 godot_float godot_Color_indexed_get(const godot_Color *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Color, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_COLOR), "godot_Color_indexed_get", "variant_get_ptr_indexed_getter", "Color", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_Color((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10196,7 +10197,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_NOT = NU
 
 godot_bool godot_StringName_op_not(const godot_StringName * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_NIL), "godot_StringName_op_not", "not", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10205,7 +10206,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_b
 
 godot_String godot_StringName_op_module_bool(const godot_StringName * left, godot_bool right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_bool, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_BOOL), "godot_StringName_op_module_bool", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_bool((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10214,7 +10215,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_i
 
 godot_String godot_StringName_op_module_int(const godot_StringName * left, godot_int right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_int, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_INT), "godot_StringName_op_module_int", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_int((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10223,7 +10224,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_f
 
 godot_String godot_StringName_op_module_float(const godot_StringName * left, godot_float right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_float, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_FLOAT), "godot_StringName_op_module_float", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_float((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10232,7 +10233,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_EQUAL_St
 
 godot_bool godot_StringName_op_equal_String(const godot_StringName * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_EQUAL_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING), "godot_StringName_op_equal_String", "==", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_EQUAL_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10241,7 +10242,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_NOT_EQUA
 
 godot_bool godot_StringName_op_not_equal_String(const godot_StringName * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_NOT_EQUAL_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING), "godot_StringName_op_not_equal_String", "!=", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_NOT_EQUAL_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10250,7 +10251,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_ADD_Stri
 
 godot_String godot_StringName_op_add_String(const godot_StringName * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_ADD_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING), "godot_StringName_op_add_String", "+", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_ADD_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10259,7 +10260,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_S
 
 godot_String godot_StringName_op_module_String(const godot_StringName * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING), "godot_StringName_op_module_String", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10268,7 +10269,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_IN_Strin
 
 godot_bool godot_StringName_op_in_String(const godot_StringName * left, const godot_String * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_IN_String, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING), "godot_StringName_op_in_String", "in", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_IN_String((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10277,7 +10278,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_V
 
 godot_String godot_StringName_op_module_Vector2(const godot_StringName * left, const godot_Vector2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Vector2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR2), "godot_StringName_op_module_Vector2", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Vector2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10286,7 +10287,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_V
 
 godot_String godot_StringName_op_module_Vector2i(const godot_StringName * left, const godot_Vector2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Vector2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR2I), "godot_StringName_op_module_Vector2i", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Vector2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10295,7 +10296,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_R
 
 godot_String godot_StringName_op_module_Rect2(const godot_StringName * left, const godot_Rect2 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Rect2, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_RECT2), "godot_StringName_op_module_Rect2", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Rect2((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10304,7 +10305,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_R
 
 godot_String godot_StringName_op_module_Rect2i(const godot_StringName * left, const godot_Rect2i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Rect2i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_RECT2I), "godot_StringName_op_module_Rect2i", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Rect2i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10313,7 +10314,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_V
 
 godot_String godot_StringName_op_module_Vector3(const godot_StringName * left, const godot_Vector3 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Vector3, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR3), "godot_StringName_op_module_Vector3", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Vector3((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10322,7 +10323,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_V
 
 godot_String godot_StringName_op_module_Vector3i(const godot_StringName * left, const godot_Vector3i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Vector3i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR3I), "godot_StringName_op_module_Vector3i", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Vector3i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10331,7 +10332,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_T
 
 godot_String godot_StringName_op_module_Transform2D(const godot_StringName * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_StringName_op_module_Transform2D", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10340,7 +10341,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_V
 
 godot_String godot_StringName_op_module_Vector4(const godot_StringName * left, const godot_Vector4 * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Vector4, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR4), "godot_StringName_op_module_Vector4", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Vector4((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10349,7 +10350,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_V
 
 godot_String godot_StringName_op_module_Vector4i(const godot_StringName * left, const godot_Vector4i * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Vector4i, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_VECTOR4I), "godot_StringName_op_module_Vector4i", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Vector4i((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10358,7 +10359,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_Plane(const godot_StringName * left, const godot_Plane * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Plane, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PLANE), "godot_StringName_op_module_Plane", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Plane((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10367,7 +10368,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_Q
 
 godot_String godot_StringName_op_module_Quaternion(const godot_StringName * left, const godot_Quaternion * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Quaternion, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_QUATERNION), "godot_StringName_op_module_Quaternion", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Quaternion((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10376,7 +10377,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_A
 
 godot_String godot_StringName_op_module_AABB(const godot_StringName * left, const godot_AABB * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_AABB, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_AABB), "godot_StringName_op_module_AABB", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_AABB((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10385,7 +10386,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_B
 
 godot_String godot_StringName_op_module_Basis(const godot_StringName * left, const godot_Basis * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Basis, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_BASIS), "godot_StringName_op_module_Basis", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Basis((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10394,7 +10395,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_T
 
 godot_String godot_StringName_op_module_Transform3D(const godot_StringName * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_StringName_op_module_Transform3D", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10403,7 +10404,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_Projection(const godot_StringName * left, const godot_Projection * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Projection, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PROJECTION), "godot_StringName_op_module_Projection", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Projection((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10412,7 +10413,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_C
 
 godot_String godot_StringName_op_module_Color(const godot_StringName * left, const godot_Color * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Color, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_COLOR), "godot_StringName_op_module_Color", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Color((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10421,7 +10422,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_EQUAL_St
 
 godot_bool godot_StringName_op_equal_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_EQUAL_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_equal_StringName", "==", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_EQUAL_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10430,7 +10431,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_NOT_EQUA
 
 godot_bool godot_StringName_op_not_equal_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_NOT_EQUAL_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_not_equal_StringName", "!=", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_NOT_EQUAL_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10439,7 +10440,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_LESS_Str
 
 godot_bool godot_StringName_op_less_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_LESS_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_less_StringName", "<", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_LESS_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10448,7 +10449,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_LESS_EQU
 
 godot_bool godot_StringName_op_less_equal_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_LESS_EQUAL_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_less_equal_StringName", "<=", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_LESS_EQUAL_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10457,7 +10458,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_GREATER_
 
 godot_bool godot_StringName_op_greater_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_GREATER_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_greater_StringName", ">", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_GREATER_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10466,7 +10467,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_GREATER_
 
 godot_bool godot_StringName_op_greater_equal_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_GREATER_EQUAL_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_greater_equal_StringName", ">=", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_GREATER_EQUAL_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10475,7 +10476,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_ADD_Stri
 
 godot_String godot_StringName_op_add_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_ADD_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_add_StringName", "+", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_ADD_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10484,7 +10485,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_S
 
 godot_String godot_StringName_op_module_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_module_StringName", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10493,7 +10494,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_IN_Strin
 
 godot_bool godot_StringName_op_in_StringName(const godot_StringName * left, const godot_StringName * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_IN_StringName, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_STRING_NAME), "godot_StringName_op_in_StringName", "in", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_IN_StringName((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10502,7 +10503,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_N
 
 godot_String godot_StringName_op_module_NodePath(const godot_StringName * left, const godot_NodePath * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_NodePath, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_NODE_PATH), "godot_StringName_op_module_NodePath", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_NodePath((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10511,7 +10512,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_R
 
 godot_String godot_StringName_op_module_RID(const godot_StringName * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_RID), "godot_StringName_op_module_RID", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10520,7 +10521,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_O
 
 godot_String godot_StringName_op_module_Object(const godot_StringName * left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_StringName_op_module_Object", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Object((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10529,7 +10530,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_IN_Objec
 
 godot_bool godot_StringName_op_in_Object(const godot_StringName * left, godot_Object * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_IN_Object, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_OBJECT), "godot_StringName_op_in_Object", "in", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_IN_Object((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)&right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10538,7 +10539,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_C
 
 godot_String godot_StringName_op_module_Callable(const godot_StringName * left, const godot_Callable * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Callable, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_CALLABLE), "godot_StringName_op_module_Callable", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Callable((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10547,7 +10548,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_S
 
 godot_String godot_StringName_op_module_Signal(const godot_StringName * left, const godot_Signal * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Signal, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_SIGNAL), "godot_StringName_op_module_Signal", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Signal((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10556,7 +10557,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_D
 
 godot_String godot_StringName_op_module_Dictionary(const godot_StringName * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_StringName_op_module_Dictionary", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10565,7 +10566,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_IN_Dicti
 
 godot_bool godot_StringName_op_in_Dictionary(const godot_StringName * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_StringName_op_in_Dictionary", "in", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10574,7 +10575,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_A
 
 godot_String godot_StringName_op_module_Array(const godot_StringName * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_StringName_op_module_Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10583,7 +10584,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_IN_Array
 
 godot_bool godot_StringName_op_in_Array(const godot_StringName * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_StringName_op_in_Array", "in", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10592,7 +10593,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedByteArray(const godot_StringName * left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_StringName_op_module_PackedByteArray", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedByteArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10601,7 +10602,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedInt32Array(const godot_StringName * left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_StringName_op_module_PackedInt32Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedInt32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10610,7 +10611,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedInt64Array(const godot_StringName * left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_StringName_op_module_PackedInt64Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedInt64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10619,7 +10620,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedFloat32Array(const godot_StringName * left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_StringName_op_module_PackedFloat32Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedFloat32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10628,7 +10629,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedFloat64Array(const godot_StringName * left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_StringName_op_module_PackedFloat64Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedFloat64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10637,7 +10638,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedStringArray(const godot_StringName * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_StringName_op_module_PackedStringArray", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10646,7 +10647,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_IN_Packe
 
 godot_bool godot_StringName_op_in_PackedStringArray(const godot_StringName * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_IN_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_StringName_op_in_PackedStringArray", "in", "StringName", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_StringName_IN_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10655,7 +10656,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedVector2Array(const godot_StringName * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_StringName_op_module_PackedVector2Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10664,7 +10665,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedVector3Array(const godot_StringName * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_StringName_op_module_PackedVector3Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10673,7 +10674,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedColorArray(const godot_StringName * left, const godot_PackedColorArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedColorArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_StringName_op_module_PackedColorArray", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedColorArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10682,7 +10683,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_StringName_MODULE_P
 
 godot_String godot_StringName_op_module_PackedVector4Array(const godot_StringName * left, const godot_PackedVector4Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_StringName_MODULE_PackedVector4Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MODULE, GDEXTENSION_VARIANT_TYPE_STRING_NAME, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_StringName_op_module_PackedVector4Array", "%", "StringName", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_operator_StringName_MODULE_PackedVector4Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10877,7 +10878,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_NodePath_NOT = NULL
 
 godot_bool godot_NodePath_op_not(const godot_NodePath * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_NodePath_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_NODE_PATH, GDEXTENSION_VARIANT_TYPE_NIL), "godot_NodePath_op_not", "not", "NodePath", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_NodePath_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10886,7 +10887,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_NodePath_EQUAL_Node
 
 godot_bool godot_NodePath_op_equal_NodePath(const godot_NodePath * left, const godot_NodePath * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_NodePath_EQUAL_NodePath, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_NODE_PATH, GDEXTENSION_VARIANT_TYPE_NODE_PATH), "godot_NodePath_op_equal_NodePath", "==", "NodePath", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_NodePath_EQUAL_NodePath((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10895,7 +10896,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_NodePath_NOT_EQUAL_
 
 godot_bool godot_NodePath_op_not_equal_NodePath(const godot_NodePath * left, const godot_NodePath * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_NodePath_NOT_EQUAL_NodePath, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_NODE_PATH, GDEXTENSION_VARIANT_TYPE_NODE_PATH), "godot_NodePath_op_not_equal_NodePath", "!=", "NodePath", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_NodePath_NOT_EQUAL_NodePath((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10904,7 +10905,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_NodePath_IN_Diction
 
 godot_bool godot_NodePath_op_in_Dictionary(const godot_NodePath * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_NodePath_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_NODE_PATH, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_NodePath_op_in_Dictionary", "in", "NodePath", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_NodePath_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10913,7 +10914,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_NodePath_IN_Array =
 
 godot_bool godot_NodePath_op_in_Array(const godot_NodePath * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_NodePath_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_NODE_PATH, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_NodePath_op_in_Array", "in", "NodePath", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_NodePath_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10955,7 +10956,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_NOT = NULL;
 
 godot_bool godot_RID_op_not(const godot_RID * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_NIL), "godot_RID_op_not", "not", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10964,7 +10965,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_EQUAL_RID = NUL
 
 godot_bool godot_RID_op_equal_RID(const godot_RID * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_EQUAL_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_RID), "godot_RID_op_equal_RID", "==", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_EQUAL_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10973,7 +10974,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_NOT_EQUAL_RID =
 
 godot_bool godot_RID_op_not_equal_RID(const godot_RID * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_NOT_EQUAL_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_RID), "godot_RID_op_not_equal_RID", "!=", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_NOT_EQUAL_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10982,7 +10983,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_LESS_RID = NULL
 
 godot_bool godot_RID_op_less_RID(const godot_RID * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_LESS_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_RID), "godot_RID_op_less_RID", "<", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_LESS_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -10991,7 +10992,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_LESS_EQUAL_RID 
 
 godot_bool godot_RID_op_less_equal_RID(const godot_RID * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_LESS_EQUAL_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_RID), "godot_RID_op_less_equal_RID", "<=", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_LESS_EQUAL_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11000,7 +11001,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_GREATER_RID = N
 
 godot_bool godot_RID_op_greater_RID(const godot_RID * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_GREATER_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_RID), "godot_RID_op_greater_RID", ">", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_GREATER_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11009,7 +11010,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_GREATER_EQUAL_R
 
 godot_bool godot_RID_op_greater_equal_RID(const godot_RID * left, const godot_RID * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_GREATER_EQUAL_RID, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_RID), "godot_RID_op_greater_equal_RID", ">=", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_GREATER_EQUAL_RID((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11018,7 +11019,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_IN_Dictionary =
 
 godot_bool godot_RID_op_in_Dictionary(const godot_RID * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_RID_op_in_Dictionary", "in", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11027,7 +11028,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_RID_IN_Array = NULL
 
 godot_bool godot_RID_op_in_Array(const godot_RID * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_RID_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_RID, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_RID_op_in_Array", "in", "RID", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_RID_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11224,7 +11225,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Callable_NOT = NULL
 
 godot_bool godot_Callable_op_not(const godot_Callable * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Callable_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_CALLABLE, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Callable_op_not", "not", "Callable", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Callable_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11233,7 +11234,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Callable_EQUAL_Call
 
 godot_bool godot_Callable_op_equal_Callable(const godot_Callable * left, const godot_Callable * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Callable_EQUAL_Callable, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_CALLABLE, GDEXTENSION_VARIANT_TYPE_CALLABLE), "godot_Callable_op_equal_Callable", "==", "Callable", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Callable_EQUAL_Callable((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11242,7 +11243,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Callable_NOT_EQUAL_
 
 godot_bool godot_Callable_op_not_equal_Callable(const godot_Callable * left, const godot_Callable * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Callable_NOT_EQUAL_Callable, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_CALLABLE, GDEXTENSION_VARIANT_TYPE_CALLABLE), "godot_Callable_op_not_equal_Callable", "!=", "Callable", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Callable_NOT_EQUAL_Callable((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11251,7 +11252,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Callable_IN_Diction
 
 godot_bool godot_Callable_op_in_Dictionary(const godot_Callable * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Callable_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_CALLABLE, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Callable_op_in_Dictionary", "in", "Callable", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Callable_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11260,7 +11261,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Callable_IN_Array =
 
 godot_bool godot_Callable_op_in_Array(const godot_Callable * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Callable_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_CALLABLE, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Callable_op_in_Array", "in", "Callable", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Callable_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11378,7 +11379,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Signal_NOT = NULL;
 
 godot_bool godot_Signal_op_not(const godot_Signal * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Signal_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_SIGNAL, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Signal_op_not", "not", "Signal", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Signal_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11387,7 +11388,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Signal_EQUAL_Signal
 
 godot_bool godot_Signal_op_equal_Signal(const godot_Signal * left, const godot_Signal * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Signal_EQUAL_Signal, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_SIGNAL, GDEXTENSION_VARIANT_TYPE_SIGNAL), "godot_Signal_op_equal_Signal", "==", "Signal", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Signal_EQUAL_Signal((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11396,7 +11397,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Signal_NOT_EQUAL_Si
 
 godot_bool godot_Signal_op_not_equal_Signal(const godot_Signal * left, const godot_Signal * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Signal_NOT_EQUAL_Signal, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_SIGNAL, GDEXTENSION_VARIANT_TYPE_SIGNAL), "godot_Signal_op_not_equal_Signal", "!=", "Signal", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Signal_NOT_EQUAL_Signal((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11405,7 +11406,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Signal_IN_Dictionar
 
 godot_bool godot_Signal_op_in_Dictionary(const godot_Signal * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Signal_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_SIGNAL, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Signal_op_in_Dictionary", "in", "Signal", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Signal_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11414,7 +11415,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Signal_IN_Array = N
 
 godot_bool godot_Signal_op_in_Array(const godot_Signal * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Signal_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_SIGNAL, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Signal_op_in_Array", "in", "Signal", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Signal_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11713,7 +11714,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Dictionary_NOT = NU
 
 godot_bool godot_Dictionary_op_not(const godot_Dictionary * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Dictionary_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_DICTIONARY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Dictionary_op_not", "not", "Dictionary", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Dictionary_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11722,7 +11723,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Dictionary_EQUAL_Di
 
 godot_bool godot_Dictionary_op_equal_Dictionary(const godot_Dictionary * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Dictionary_EQUAL_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_DICTIONARY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Dictionary_op_equal_Dictionary", "==", "Dictionary", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Dictionary_EQUAL_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11731,7 +11732,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Dictionary_NOT_EQUA
 
 godot_bool godot_Dictionary_op_not_equal_Dictionary(const godot_Dictionary * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Dictionary_NOT_EQUAL_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_DICTIONARY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Dictionary_op_not_equal_Dictionary", "!=", "Dictionary", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Dictionary_NOT_EQUAL_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11740,7 +11741,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Dictionary_IN_Dicti
 
 godot_bool godot_Dictionary_op_in_Dictionary(const godot_Dictionary * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Dictionary_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_DICTIONARY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Dictionary_op_in_Dictionary", "in", "Dictionary", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Dictionary_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11749,7 +11750,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Dictionary_IN_Array
 
 godot_bool godot_Dictionary_op_in_Array(const godot_Dictionary * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Dictionary_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_DICTIONARY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Dictionary_op_in_Array", "in", "Dictionary", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Dictionary_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11764,7 +11765,7 @@ void godot_Dictionary_indexed_set(godot_Dictionary *self, godot_int index, const
 
 godot_Variant godot_Dictionary_indexed_get(const godot_Dictionary *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Dictionary, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Dictionary_indexed_get", "variant_get_ptr_indexed_getter", "Dictionary", return godot_new_Variant_nil());
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_builtin_indexed_get_Dictionary((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -11779,7 +11780,7 @@ void godot_Dictionary_keyed_set(godot_Dictionary *self, const godot_Variant *key
 
 godot_Variant godot_Dictionary_keyed_get(const godot_Dictionary *self, const godot_Variant *key) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_keyed_get_Dictionary, GDExtensionPtrKeyedGetter, godot_variant_get_ptr_keyed_getter(GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Dictionary_keyed_get", "variant_get_ptr_keyed_getter", "Dictionary", return godot_new_Variant_nil());
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_builtin_keyed_get_Dictionary((GDExtensionConstTypePtr)self, (GDExtensionConstTypePtr)key, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12312,7 +12313,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_NOT = NULL;
 
 godot_bool godot_Array_op_not(const godot_Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_Array_op_not", "not", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12321,7 +12322,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_IN_Dictionary
 
 godot_bool godot_Array_op_in_Dictionary(const godot_Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_Array_op_in_Dictionary", "in", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12330,7 +12331,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_EQUAL_Array =
 
 godot_bool godot_Array_op_equal_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_EQUAL_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_equal_Array", "==", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_EQUAL_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12339,7 +12340,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_NOT_EQUAL_Arr
 
 godot_bool godot_Array_op_not_equal_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_NOT_EQUAL_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_not_equal_Array", "!=", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_NOT_EQUAL_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12348,7 +12349,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_LESS_Array = 
 
 godot_bool godot_Array_op_less_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_LESS_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_less_Array", "<", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_LESS_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12357,7 +12358,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_LESS_EQUAL_Ar
 
 godot_bool godot_Array_op_less_equal_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_LESS_EQUAL_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_LESS_EQUAL, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_less_equal_Array", "<=", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_LESS_EQUAL_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12366,7 +12367,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_GREATER_Array
 
 godot_bool godot_Array_op_greater_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_GREATER_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_greater_Array", ">", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_GREATER_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12375,7 +12376,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_GREATER_EQUAL
 
 godot_bool godot_Array_op_greater_equal_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_GREATER_EQUAL_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_GREATER_EQUAL, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_greater_equal_Array", ">=", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_GREATER_EQUAL_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12384,7 +12385,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_ADD_Array = N
 
 godot_Array godot_Array_op_add_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_ADD_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_add_Array", "+", "Array", return (godot_Array){ 0 });
-    godot_Array result;
+    godot_Array result = { 0 };
     gdcc_builtin_operator_Array_ADD_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12393,7 +12394,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_Array_IN_Array = NU
 
 godot_bool godot_Array_op_in_Array(const godot_Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_op_in_Array", "in", "Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12408,7 +12409,7 @@ void godot_Array_indexed_set(godot_Array *self, godot_int index, const godot_Var
 
 godot_Variant godot_Array_indexed_get(const godot_Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_Array_indexed_get", "variant_get_ptr_indexed_getter", "Array", return godot_new_Variant_nil());
-    godot_Variant result;
+    godot_Variant result = { 0 };
     gdcc_builtin_indexed_get_Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12985,7 +12986,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedByteArray_NOT
 
 godot_bool godot_PackedByteArray_op_not(const godot_PackedByteArray * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedByteArray_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedByteArray_op_not", "not", "PackedByteArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedByteArray_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -12994,7 +12995,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedByteArray_IN_
 
 godot_bool godot_PackedByteArray_op_in_Dictionary(const godot_PackedByteArray * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedByteArray_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedByteArray_op_in_Dictionary", "in", "PackedByteArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedByteArray_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13003,7 +13004,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedByteArray_IN_
 
 godot_bool godot_PackedByteArray_op_in_Array(const godot_PackedByteArray * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedByteArray_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedByteArray_op_in_Array", "in", "PackedByteArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedByteArray_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13012,7 +13013,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedByteArray_EQU
 
 godot_bool godot_PackedByteArray_op_equal_PackedByteArray(const godot_PackedByteArray * left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedByteArray_EQUAL_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_PackedByteArray_op_equal_PackedByteArray", "==", "PackedByteArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedByteArray_EQUAL_PackedByteArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13021,7 +13022,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedByteArray_NOT
 
 godot_bool godot_PackedByteArray_op_not_equal_PackedByteArray(const godot_PackedByteArray * left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedByteArray_NOT_EQUAL_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_PackedByteArray_op_not_equal_PackedByteArray", "!=", "PackedByteArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedByteArray_NOT_EQUAL_PackedByteArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13030,7 +13031,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedByteArray_ADD
 
 godot_PackedByteArray godot_PackedByteArray_op_add_PackedByteArray(const godot_PackedByteArray * left, const godot_PackedByteArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedByteArray_ADD_PackedByteArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_PackedByteArray_op_add_PackedByteArray", "+", "PackedByteArray", return (godot_PackedByteArray){ 0 });
-    godot_PackedByteArray result;
+    godot_PackedByteArray result = { 0 };
     gdcc_builtin_operator_PackedByteArray_ADD_PackedByteArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13045,7 +13046,7 @@ void godot_PackedByteArray_indexed_set(godot_PackedByteArray *self, godot_int in
 
 godot_int godot_PackedByteArray_indexed_get(const godot_PackedByteArray *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedByteArray, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_BYTE_ARRAY), "godot_PackedByteArray_indexed_get", "variant_get_ptr_indexed_getter", "PackedByteArray", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_builtin_indexed_get_PackedByteArray((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13267,7 +13268,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt32Array_NO
 
 godot_bool godot_PackedInt32Array_op_not(const godot_PackedInt32Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt32Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedInt32Array_op_not", "not", "PackedInt32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt32Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13276,7 +13277,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt32Array_IN
 
 godot_bool godot_PackedInt32Array_op_in_Dictionary(const godot_PackedInt32Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt32Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedInt32Array_op_in_Dictionary", "in", "PackedInt32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt32Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13285,7 +13286,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt32Array_IN
 
 godot_bool godot_PackedInt32Array_op_in_Array(const godot_PackedInt32Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt32Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedInt32Array_op_in_Array", "in", "PackedInt32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt32Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13294,7 +13295,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt32Array_EQ
 
 godot_bool godot_PackedInt32Array_op_equal_PackedInt32Array(const godot_PackedInt32Array * left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt32Array_EQUAL_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_PackedInt32Array_op_equal_PackedInt32Array", "==", "PackedInt32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt32Array_EQUAL_PackedInt32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13303,7 +13304,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt32Array_NO
 
 godot_bool godot_PackedInt32Array_op_not_equal_PackedInt32Array(const godot_PackedInt32Array * left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt32Array_NOT_EQUAL_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_PackedInt32Array_op_not_equal_PackedInt32Array", "!=", "PackedInt32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt32Array_NOT_EQUAL_PackedInt32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13312,7 +13313,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt32Array_AD
 
 godot_PackedInt32Array godot_PackedInt32Array_op_add_PackedInt32Array(const godot_PackedInt32Array * left, const godot_PackedInt32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt32Array_ADD_PackedInt32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_PackedInt32Array_op_add_PackedInt32Array", "+", "PackedInt32Array", return (godot_PackedInt32Array){ 0 });
-    godot_PackedInt32Array result;
+    godot_PackedInt32Array result = { 0 };
     gdcc_builtin_operator_PackedInt32Array_ADD_PackedInt32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13327,7 +13328,7 @@ void godot_PackedInt32Array_indexed_set(godot_PackedInt32Array *self, godot_int 
 
 godot_int godot_PackedInt32Array_indexed_get(const godot_PackedInt32Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedInt32Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_INT32_ARRAY), "godot_PackedInt32Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedInt32Array", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_builtin_indexed_get_PackedInt32Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13549,7 +13550,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt64Array_NO
 
 godot_bool godot_PackedInt64Array_op_not(const godot_PackedInt64Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt64Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedInt64Array_op_not", "not", "PackedInt64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt64Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13558,7 +13559,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt64Array_IN
 
 godot_bool godot_PackedInt64Array_op_in_Dictionary(const godot_PackedInt64Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt64Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedInt64Array_op_in_Dictionary", "in", "PackedInt64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt64Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13567,7 +13568,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt64Array_IN
 
 godot_bool godot_PackedInt64Array_op_in_Array(const godot_PackedInt64Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt64Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedInt64Array_op_in_Array", "in", "PackedInt64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt64Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13576,7 +13577,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt64Array_EQ
 
 godot_bool godot_PackedInt64Array_op_equal_PackedInt64Array(const godot_PackedInt64Array * left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt64Array_EQUAL_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_PackedInt64Array_op_equal_PackedInt64Array", "==", "PackedInt64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt64Array_EQUAL_PackedInt64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13585,7 +13586,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt64Array_NO
 
 godot_bool godot_PackedInt64Array_op_not_equal_PackedInt64Array(const godot_PackedInt64Array * left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt64Array_NOT_EQUAL_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_PackedInt64Array_op_not_equal_PackedInt64Array", "!=", "PackedInt64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedInt64Array_NOT_EQUAL_PackedInt64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13594,7 +13595,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedInt64Array_AD
 
 godot_PackedInt64Array godot_PackedInt64Array_op_add_PackedInt64Array(const godot_PackedInt64Array * left, const godot_PackedInt64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedInt64Array_ADD_PackedInt64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_PackedInt64Array_op_add_PackedInt64Array", "+", "PackedInt64Array", return (godot_PackedInt64Array){ 0 });
-    godot_PackedInt64Array result;
+    godot_PackedInt64Array result = { 0 };
     gdcc_builtin_operator_PackedInt64Array_ADD_PackedInt64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13609,7 +13610,7 @@ void godot_PackedInt64Array_indexed_set(godot_PackedInt64Array *self, godot_int 
 
 godot_int godot_PackedInt64Array_indexed_get(const godot_PackedInt64Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedInt64Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_INT64_ARRAY), "godot_PackedInt64Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedInt64Array", return (godot_int)0);
-    godot_int result;
+    godot_int result = { 0 };
     gdcc_builtin_indexed_get_PackedInt64Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13831,7 +13832,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat32Array_
 
 godot_bool godot_PackedFloat32Array_op_not(const godot_PackedFloat32Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat32Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedFloat32Array_op_not", "not", "PackedFloat32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat32Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13840,7 +13841,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat32Array_
 
 godot_bool godot_PackedFloat32Array_op_in_Dictionary(const godot_PackedFloat32Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat32Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedFloat32Array_op_in_Dictionary", "in", "PackedFloat32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat32Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13849,7 +13850,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat32Array_
 
 godot_bool godot_PackedFloat32Array_op_in_Array(const godot_PackedFloat32Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat32Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedFloat32Array_op_in_Array", "in", "PackedFloat32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat32Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13858,7 +13859,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat32Array_
 
 godot_bool godot_PackedFloat32Array_op_equal_PackedFloat32Array(const godot_PackedFloat32Array * left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat32Array_EQUAL_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_PackedFloat32Array_op_equal_PackedFloat32Array", "==", "PackedFloat32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat32Array_EQUAL_PackedFloat32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13867,7 +13868,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat32Array_
 
 godot_bool godot_PackedFloat32Array_op_not_equal_PackedFloat32Array(const godot_PackedFloat32Array * left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat32Array_NOT_EQUAL_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_PackedFloat32Array_op_not_equal_PackedFloat32Array", "!=", "PackedFloat32Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat32Array_NOT_EQUAL_PackedFloat32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13876,7 +13877,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat32Array_
 
 godot_PackedFloat32Array godot_PackedFloat32Array_op_add_PackedFloat32Array(const godot_PackedFloat32Array * left, const godot_PackedFloat32Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat32Array_ADD_PackedFloat32Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_PackedFloat32Array_op_add_PackedFloat32Array", "+", "PackedFloat32Array", return (godot_PackedFloat32Array){ 0 });
-    godot_PackedFloat32Array result;
+    godot_PackedFloat32Array result = { 0 };
     gdcc_builtin_operator_PackedFloat32Array_ADD_PackedFloat32Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -13891,7 +13892,7 @@ void godot_PackedFloat32Array_indexed_set(godot_PackedFloat32Array *self, godot_
 
 godot_float godot_PackedFloat32Array_indexed_get(const godot_PackedFloat32Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedFloat32Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT32_ARRAY), "godot_PackedFloat32Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedFloat32Array", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_PackedFloat32Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14113,7 +14114,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat64Array_
 
 godot_bool godot_PackedFloat64Array_op_not(const godot_PackedFloat64Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat64Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedFloat64Array_op_not", "not", "PackedFloat64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat64Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14122,7 +14123,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat64Array_
 
 godot_bool godot_PackedFloat64Array_op_in_Dictionary(const godot_PackedFloat64Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat64Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedFloat64Array_op_in_Dictionary", "in", "PackedFloat64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat64Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14131,7 +14132,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat64Array_
 
 godot_bool godot_PackedFloat64Array_op_in_Array(const godot_PackedFloat64Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat64Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedFloat64Array_op_in_Array", "in", "PackedFloat64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat64Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14140,7 +14141,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat64Array_
 
 godot_bool godot_PackedFloat64Array_op_equal_PackedFloat64Array(const godot_PackedFloat64Array * left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat64Array_EQUAL_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_PackedFloat64Array_op_equal_PackedFloat64Array", "==", "PackedFloat64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat64Array_EQUAL_PackedFloat64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14149,7 +14150,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat64Array_
 
 godot_bool godot_PackedFloat64Array_op_not_equal_PackedFloat64Array(const godot_PackedFloat64Array * left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat64Array_NOT_EQUAL_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_PackedFloat64Array_op_not_equal_PackedFloat64Array", "!=", "PackedFloat64Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedFloat64Array_NOT_EQUAL_PackedFloat64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14158,7 +14159,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedFloat64Array_
 
 godot_PackedFloat64Array godot_PackedFloat64Array_op_add_PackedFloat64Array(const godot_PackedFloat64Array * left, const godot_PackedFloat64Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedFloat64Array_ADD_PackedFloat64Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_PackedFloat64Array_op_add_PackedFloat64Array", "+", "PackedFloat64Array", return (godot_PackedFloat64Array){ 0 });
-    godot_PackedFloat64Array result;
+    godot_PackedFloat64Array result = { 0 };
     gdcc_builtin_operator_PackedFloat64Array_ADD_PackedFloat64Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14173,7 +14174,7 @@ void godot_PackedFloat64Array_indexed_set(godot_PackedFloat64Array *self, godot_
 
 godot_float godot_PackedFloat64Array_indexed_get(const godot_PackedFloat64Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedFloat64Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_FLOAT64_ARRAY), "godot_PackedFloat64Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedFloat64Array", return (godot_float)0);
-    godot_float result;
+    godot_float result = { 0 };
     gdcc_builtin_indexed_get_PackedFloat64Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14395,7 +14396,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedStringArray_N
 
 godot_bool godot_PackedStringArray_op_not(const godot_PackedStringArray * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedStringArray_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedStringArray_op_not", "not", "PackedStringArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedStringArray_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14404,7 +14405,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedStringArray_I
 
 godot_bool godot_PackedStringArray_op_in_Dictionary(const godot_PackedStringArray * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedStringArray_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedStringArray_op_in_Dictionary", "in", "PackedStringArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedStringArray_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14413,7 +14414,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedStringArray_I
 
 godot_bool godot_PackedStringArray_op_in_Array(const godot_PackedStringArray * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedStringArray_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedStringArray_op_in_Array", "in", "PackedStringArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedStringArray_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14422,7 +14423,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedStringArray_E
 
 godot_bool godot_PackedStringArray_op_equal_PackedStringArray(const godot_PackedStringArray * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedStringArray_EQUAL_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_PackedStringArray_op_equal_PackedStringArray", "==", "PackedStringArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedStringArray_EQUAL_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14431,7 +14432,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedStringArray_N
 
 godot_bool godot_PackedStringArray_op_not_equal_PackedStringArray(const godot_PackedStringArray * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedStringArray_NOT_EQUAL_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_PackedStringArray_op_not_equal_PackedStringArray", "!=", "PackedStringArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedStringArray_NOT_EQUAL_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14440,7 +14441,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedStringArray_A
 
 godot_PackedStringArray godot_PackedStringArray_op_add_PackedStringArray(const godot_PackedStringArray * left, const godot_PackedStringArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedStringArray_ADD_PackedStringArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_PackedStringArray_op_add_PackedStringArray", "+", "PackedStringArray", return (godot_PackedStringArray){ 0 });
-    godot_PackedStringArray result;
+    godot_PackedStringArray result = { 0 };
     gdcc_builtin_operator_PackedStringArray_ADD_PackedStringArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14455,7 +14456,7 @@ void godot_PackedStringArray_indexed_set(godot_PackedStringArray *self, godot_in
 
 godot_String godot_PackedStringArray_indexed_get(const godot_PackedStringArray *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedStringArray, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_STRING_ARRAY), "godot_PackedStringArray_indexed_get", "variant_get_ptr_indexed_getter", "PackedStringArray", return (godot_String){ 0 });
-    godot_String result;
+    godot_String result = { 0 };
     gdcc_builtin_indexed_get_PackedStringArray((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14677,7 +14678,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_bool godot_PackedVector2Array_op_not(const godot_PackedVector2Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedVector2Array_op_not", "not", "PackedVector2Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14686,7 +14687,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_PackedVector2Array godot_PackedVector2Array_op_multiply_Transform2D(const godot_PackedVector2Array * left, const godot_Transform2D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_MULTIPLY_Transform2D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_TRANSFORM2D), "godot_PackedVector2Array_op_multiply_Transform2D", "*", "PackedVector2Array", return (godot_PackedVector2Array){ 0 });
-    godot_PackedVector2Array result;
+    godot_PackedVector2Array result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_MULTIPLY_Transform2D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14695,7 +14696,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_bool godot_PackedVector2Array_op_in_Dictionary(const godot_PackedVector2Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedVector2Array_op_in_Dictionary", "in", "PackedVector2Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14704,7 +14705,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_bool godot_PackedVector2Array_op_in_Array(const godot_PackedVector2Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedVector2Array_op_in_Array", "in", "PackedVector2Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14713,7 +14714,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_bool godot_PackedVector2Array_op_equal_PackedVector2Array(const godot_PackedVector2Array * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_EQUAL_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_PackedVector2Array_op_equal_PackedVector2Array", "==", "PackedVector2Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_EQUAL_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14722,7 +14723,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_bool godot_PackedVector2Array_op_not_equal_PackedVector2Array(const godot_PackedVector2Array * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_NOT_EQUAL_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_PackedVector2Array_op_not_equal_PackedVector2Array", "!=", "PackedVector2Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_NOT_EQUAL_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14731,7 +14732,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector2Array_
 
 godot_PackedVector2Array godot_PackedVector2Array_op_add_PackedVector2Array(const godot_PackedVector2Array * left, const godot_PackedVector2Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector2Array_ADD_PackedVector2Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_PackedVector2Array_op_add_PackedVector2Array", "+", "PackedVector2Array", return (godot_PackedVector2Array){ 0 });
-    godot_PackedVector2Array result;
+    godot_PackedVector2Array result = { 0 };
     gdcc_builtin_operator_PackedVector2Array_ADD_PackedVector2Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14746,7 +14747,7 @@ void godot_PackedVector2Array_indexed_set(godot_PackedVector2Array *self, godot_
 
 godot_Vector2 godot_PackedVector2Array_indexed_get(const godot_PackedVector2Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedVector2Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR2_ARRAY), "godot_PackedVector2Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedVector2Array", return (godot_Vector2){ 0 });
-    godot_Vector2 result;
+    godot_Vector2 result = { 0 };
     gdcc_builtin_indexed_get_PackedVector2Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14968,7 +14969,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_bool godot_PackedVector3Array_op_not(const godot_PackedVector3Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedVector3Array_op_not", "not", "PackedVector3Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14977,7 +14978,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_PackedVector3Array godot_PackedVector3Array_op_multiply_Transform3D(const godot_PackedVector3Array * left, const godot_Transform3D * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_MULTIPLY_Transform3D, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_MULTIPLY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_TRANSFORM3D), "godot_PackedVector3Array_op_multiply_Transform3D", "*", "PackedVector3Array", return (godot_PackedVector3Array){ 0 });
-    godot_PackedVector3Array result;
+    godot_PackedVector3Array result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_MULTIPLY_Transform3D((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14986,7 +14987,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_bool godot_PackedVector3Array_op_in_Dictionary(const godot_PackedVector3Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedVector3Array_op_in_Dictionary", "in", "PackedVector3Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -14995,7 +14996,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_bool godot_PackedVector3Array_op_in_Array(const godot_PackedVector3Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedVector3Array_op_in_Array", "in", "PackedVector3Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15004,7 +15005,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_bool godot_PackedVector3Array_op_equal_PackedVector3Array(const godot_PackedVector3Array * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_EQUAL_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_PackedVector3Array_op_equal_PackedVector3Array", "==", "PackedVector3Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_EQUAL_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15013,7 +15014,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_bool godot_PackedVector3Array_op_not_equal_PackedVector3Array(const godot_PackedVector3Array * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_NOT_EQUAL_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_PackedVector3Array_op_not_equal_PackedVector3Array", "!=", "PackedVector3Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_NOT_EQUAL_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15022,7 +15023,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector3Array_
 
 godot_PackedVector3Array godot_PackedVector3Array_op_add_PackedVector3Array(const godot_PackedVector3Array * left, const godot_PackedVector3Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector3Array_ADD_PackedVector3Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_PackedVector3Array_op_add_PackedVector3Array", "+", "PackedVector3Array", return (godot_PackedVector3Array){ 0 });
-    godot_PackedVector3Array result;
+    godot_PackedVector3Array result = { 0 };
     gdcc_builtin_operator_PackedVector3Array_ADD_PackedVector3Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15037,7 +15038,7 @@ void godot_PackedVector3Array_indexed_set(godot_PackedVector3Array *self, godot_
 
 godot_Vector3 godot_PackedVector3Array_indexed_get(const godot_PackedVector3Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedVector3Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR3_ARRAY), "godot_PackedVector3Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedVector3Array", return (godot_Vector3){ 0 });
-    godot_Vector3 result;
+    godot_Vector3 result = { 0 };
     gdcc_builtin_indexed_get_PackedVector3Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15259,7 +15260,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedColorArray_NO
 
 godot_bool godot_PackedColorArray_op_not(const godot_PackedColorArray * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedColorArray_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedColorArray_op_not", "not", "PackedColorArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedColorArray_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15268,7 +15269,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedColorArray_IN
 
 godot_bool godot_PackedColorArray_op_in_Dictionary(const godot_PackedColorArray * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedColorArray_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedColorArray_op_in_Dictionary", "in", "PackedColorArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedColorArray_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15277,7 +15278,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedColorArray_IN
 
 godot_bool godot_PackedColorArray_op_in_Array(const godot_PackedColorArray * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedColorArray_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedColorArray_op_in_Array", "in", "PackedColorArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedColorArray_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15286,7 +15287,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedColorArray_EQ
 
 godot_bool godot_PackedColorArray_op_equal_PackedColorArray(const godot_PackedColorArray * left, const godot_PackedColorArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedColorArray_EQUAL_PackedColorArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_PackedColorArray_op_equal_PackedColorArray", "==", "PackedColorArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedColorArray_EQUAL_PackedColorArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15295,7 +15296,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedColorArray_NO
 
 godot_bool godot_PackedColorArray_op_not_equal_PackedColorArray(const godot_PackedColorArray * left, const godot_PackedColorArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedColorArray_NOT_EQUAL_PackedColorArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_PackedColorArray_op_not_equal_PackedColorArray", "!=", "PackedColorArray", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedColorArray_NOT_EQUAL_PackedColorArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15304,7 +15305,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedColorArray_AD
 
 godot_PackedColorArray godot_PackedColorArray_op_add_PackedColorArray(const godot_PackedColorArray * left, const godot_PackedColorArray * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedColorArray_ADD_PackedColorArray, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_PackedColorArray_op_add_PackedColorArray", "+", "PackedColorArray", return (godot_PackedColorArray){ 0 });
-    godot_PackedColorArray result;
+    godot_PackedColorArray result = { 0 };
     gdcc_builtin_operator_PackedColorArray_ADD_PackedColorArray((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15319,7 +15320,7 @@ void godot_PackedColorArray_indexed_set(godot_PackedColorArray *self, godot_int 
 
 godot_Color godot_PackedColorArray_indexed_get(const godot_PackedColorArray *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedColorArray, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_COLOR_ARRAY), "godot_PackedColorArray_indexed_get", "variant_get_ptr_indexed_getter", "PackedColorArray", return (godot_Color){ 0 });
-    godot_Color result;
+    godot_Color result = { 0 };
     gdcc_builtin_indexed_get_PackedColorArray((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15541,7 +15542,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector4Array_
 
 godot_bool godot_PackedVector4Array_op_not(const godot_PackedVector4Array * left) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector4Array_NOT, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, GDEXTENSION_VARIANT_TYPE_NIL), "godot_PackedVector4Array_op_not", "not", "PackedVector4Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector4Array_NOT((GDExtensionConstTypePtr)left, NULL, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15550,7 +15551,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector4Array_
 
 godot_bool godot_PackedVector4Array_op_in_Dictionary(const godot_PackedVector4Array * left, const godot_Dictionary * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector4Array_IN_Dictionary, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, GDEXTENSION_VARIANT_TYPE_DICTIONARY), "godot_PackedVector4Array_op_in_Dictionary", "in", "PackedVector4Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector4Array_IN_Dictionary((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15559,7 +15560,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector4Array_
 
 godot_bool godot_PackedVector4Array_op_in_Array(const godot_PackedVector4Array * left, const godot_Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector4Array_IN_Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_IN, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, GDEXTENSION_VARIANT_TYPE_ARRAY), "godot_PackedVector4Array_op_in_Array", "in", "PackedVector4Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector4Array_IN_Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15568,7 +15569,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector4Array_
 
 godot_bool godot_PackedVector4Array_op_equal_PackedVector4Array(const godot_PackedVector4Array * left, const godot_PackedVector4Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector4Array_EQUAL_PackedVector4Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_PackedVector4Array_op_equal_PackedVector4Array", "==", "PackedVector4Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector4Array_EQUAL_PackedVector4Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15577,7 +15578,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector4Array_
 
 godot_bool godot_PackedVector4Array_op_not_equal_PackedVector4Array(const godot_PackedVector4Array * left, const godot_PackedVector4Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector4Array_NOT_EQUAL_PackedVector4Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_NOT_EQUAL, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_PackedVector4Array_op_not_equal_PackedVector4Array", "!=", "PackedVector4Array", return false);
-    godot_bool result;
+    godot_bool result = { 0 };
     gdcc_builtin_operator_PackedVector4Array_NOT_EQUAL_PackedVector4Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15586,7 +15587,7 @@ static GDExtensionPtrOperatorEvaluator gdcc_builtin_operator_PackedVector4Array_
 
 godot_PackedVector4Array godot_PackedVector4Array_op_add_PackedVector4Array(const godot_PackedVector4Array * left, const godot_PackedVector4Array * right) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_operator_PackedVector4Array_ADD_PackedVector4Array, GDExtensionPtrOperatorEvaluator, godot_variant_get_ptr_operator_evaluator(GDEXTENSION_VARIANT_OP_ADD, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY, GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_PackedVector4Array_op_add_PackedVector4Array", "+", "PackedVector4Array", return (godot_PackedVector4Array){ 0 });
-    godot_PackedVector4Array result;
+    godot_PackedVector4Array result = { 0 };
     gdcc_builtin_operator_PackedVector4Array_ADD_PackedVector4Array((GDExtensionConstTypePtr)left, (GDExtensionConstTypePtr)right, (GDExtensionTypePtr)&result);
     return result;
 }
@@ -15601,7 +15602,7 @@ void godot_PackedVector4Array_indexed_set(godot_PackedVector4Array *self, godot_
 
 godot_Vector4 godot_PackedVector4Array_indexed_get(const godot_PackedVector4Array *self, godot_int index) {
     GDCC_RESOLVE_BUILTIN_CACHE(gdcc_builtin_indexed_get_PackedVector4Array, GDExtensionPtrIndexedGetter, godot_variant_get_ptr_indexed_getter(GDEXTENSION_VARIANT_TYPE_PACKED_VECTOR4_ARRAY), "godot_PackedVector4Array_indexed_get", "variant_get_ptr_indexed_getter", "PackedVector4Array", return (godot_Vector4){ 0 });
-    godot_Vector4 result;
+    godot_Vector4 result = { 0 };
     gdcc_builtin_indexed_get_PackedVector4Array((GDExtensionConstTypePtr)self, index, (GDExtensionTypePtr)&result);
     return result;
 }

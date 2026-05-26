@@ -108,10 +108,6 @@ abstract class FixedGodotBindings {
                     
                     #include <godot_utility.h>
                     
-                    typedef struct godot_Engine godot_Engine;
-                    typedef struct godot_ClassDB godot_ClassDB;
-                    typedef struct godot_RefCounted godot_RefCounted;
-                    
                     #ifdef __cplusplus
                     extern "C" {
                     #endif
@@ -174,7 +170,7 @@ abstract class FixedGodotBindings {
                     
                     """);
             FixedGodotBindings.this.appendDefinitions(this, out);
-            return out.toString();
+            return out.toString().stripTrailing() + "\n";
         }
 
         protected void appendSingletonDefinition(@NotNull StringBuilder out, @NotNull String className) {
@@ -225,9 +221,11 @@ abstract class FixedGodotBindings {
             appendFixedPtrcallArgs(out, args);
             if (!returnType.equals("void")) {
                 if (functionName.equals("godot_Object_get_instance_id")) {
-                    out.append("    uint64_t result;\n");
+                    out.append("    ").append(GodotBindingSupport.initializedCarrierDeclaration("uint64_t", "result"))
+                            .append(";\n");
                 } else {
-                    out.append("    ").append(returnType).append(" result;\n");
+                    out.append("    ").append(GodotBindingSupport.initializedCarrierDeclaration(returnType, "result"))
+                            .append(";\n");
                 }
             }
             out.append("    godot_object_method_bind_ptrcall(")

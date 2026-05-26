@@ -1,7 +1,7 @@
 #ifndef GDCC_HELPER_H
 #define GDCC_HELPER_H
 
-#include <gdextension-lite.h>
+#include <godot_binding.h>
 #include <gdcc_string_name.h>
 #include <gdcc_string.h>
 #include <gdcc_call.h>
@@ -57,6 +57,7 @@ GDCC_DEFINE_OBJECT_SETTER(godot_int, int)
 GDCC_DEFINE_OBJECT_SETTER(godot_Vector3*, Vector3)
 
 #define godot_Nil godot_Variant
+#define godot_TypedArray(value)  godot_Array
 #define godot_TypedDictionary(key, value)  godot_Dictionary
 
 static godot_Engine* _gd_engine;

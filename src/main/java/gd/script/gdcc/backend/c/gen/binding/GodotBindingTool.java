@@ -138,7 +138,7 @@ public final class GodotBindingTool {
         files.put("godot_builtin_layout.h", renderBuiltinLayout(api));
         files.put("godot_builtin_types.h", renderBuiltinTypes(api));
         files.put("godot_native_structures.h", renderNativeStructures(api));
-        files.put("godot_abi.h", renderAbiHeader());
+        files.put("godot_abi.h", renderAbiHeader(api));
         return files;
     }
 
@@ -653,8 +653,9 @@ public final class GodotBindingTool {
         return out.toString();
     }
 
-    private static @NotNull String renderAbiHeader() {
-        return generatedHeaderPreamble("GDCC_GODOT_ABI_H") + """
+    private static @NotNull String renderAbiHeader(@NotNull ExtensionAPI api) {
+        var out = new StringBuilder(generatedHeaderPreamble("GDCC_GODOT_ABI_H"));
+        out.append("""
                 
                 #include <gdextension/gdextension_interface.h>
                 #include <godot_macros.h>
@@ -665,8 +666,52 @@ public final class GodotBindingTool {
                 #include <godot_builtin_types.h>
                 #include <godot_native_structures.h>
                 
+                """);
+        appendEngineClassTypedefs(api, out);
+        appendEngineClassEnums(api, out);
+        out.append("""
                 #endif
-                """;
+                """);
+        return out.toString();
+    }
+
+    private static void appendEngineClassTypedefs(@NotNull ExtensionAPI api, @NotNull StringBuilder out) {
+        for (var clazz : api.classes()) {
+            if (clazz.name().equals("Object")) {
+                continue;
+            }
+            var className = GodotBindingSupport.cIdentifier(clazz.name());
+            out.append("typedef struct godot_")
+                    .append(className)
+                    .append(" godot_")
+                    .append(className)
+                    .append(";\n");
+        }
+        out.append('\n');
+    }
+
+    private static void appendEngineClassEnums(@NotNull ExtensionAPI api, @NotNull StringBuilder out) {
+        var nativeScopedEnumRefs = nativeScopedEnumRefs(api);
+        for (var clazz : api.classes()) {
+            var ownerName = GodotBindingSupport.cIdentifier(clazz.name());
+            for (var classEnum : GodotBindingSupport.list(clazz.enums())) {
+                if (nativeScopedEnumRefs.contains(new ScopedEnumRef(clazz.name(), classEnum.name()))) {
+                    continue;
+                }
+                var enumTypeName = "godot_" + ownerName + "_" + GodotBindingSupport.cIdentifier(classEnum.name());
+                out.append("typedef enum ").append(enumTypeName).append(" {\n");
+                for (var value : GodotBindingSupport.list(classEnum.values())) {
+                    out.append("    godot_")
+                            .append(ownerName)
+                            .append("_")
+                            .append(GodotBindingSupport.cIdentifier(value.name()))
+                            .append(" = ")
+                            .append(value.value())
+                            .append(",\n");
+                }
+                out.append("} ").append(enumTypeName).append(";\n\n");
+            }
+        }
     }
 
     private static void appendBuiltinSizeAsserts(@NotNull ExtensionAPI api, @NotNull StringBuilder out) {
@@ -699,16 +744,7 @@ public final class GodotBindingTool {
     }
 
     private static void appendNativeScopedEnums(@NotNull ExtensionAPI api, @NotNull StringBuilder out) {
-        var references = new LinkedHashSet<ScopedEnumRef>();
-        for (var structure : api.nativeStructures()) {
-            for (var field : parseNativeFields(structure)) {
-                var type = field.type().replace("*", "").trim();
-                if (type.contains("::")) {
-                    var parts = type.split("::", 2);
-                    references.add(new ScopedEnumRef(parts[0], parts[1]));
-                }
-            }
-        }
+        var references = nativeScopedEnumRefs(api);
         for (var ref : references) {
             var classData = api.classes().stream()
                     .filter(clazz -> ref.owner().equals(clazz.name()))
@@ -736,6 +772,20 @@ public final class GodotBindingTool {
             }
             out.append("} ").append(typeName).append(";\n\n");
         }
+    }
+
+    private static @NotNull LinkedHashSet<ScopedEnumRef> nativeScopedEnumRefs(@NotNull ExtensionAPI api) {
+        var references = new LinkedHashSet<ScopedEnumRef>();
+        for (var structure : api.nativeStructures()) {
+            for (var field : parseNativeFields(structure)) {
+                var type = field.type().replace("*", "").trim();
+                if (type.contains("::")) {
+                    var parts = type.split("::", 2);
+                    references.add(new ScopedEnumRef(parts[0], parts[1]));
+                }
+            }
+        }
+        return references;
     }
 
     private static @NotNull List<NativeField> parseNativeFields(@NotNull ExtensionNativeStructure structure) {

@@ -81,6 +81,32 @@ class GodotAbiHeaderCompileTest {
         var source = tempDir.resolve("godot_binding_probe.c");
         Files.writeString(source, """
                 #include <godot_binding.h>
+                static GDExtensionClassLibraryPtr class_library = NULL;
+                #include <gdcc_bind.h>
+
+                GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(
+                        gdcc_probe_method_bind_with_fallbacks,
+                        u8"Node",
+                        u8"queue_free",
+                        "Node",
+                        "queue_free",
+                        (GDExtensionInt)321,
+                        (GDExtensionInt)2,
+                        (GDExtensionInt)654,
+                        (GDExtensionInt)987
+                )
+
+                GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(
+                        gdcc_probe_method_bind_without_fallbacks,
+                        u8"Object",
+                        u8"get_instance_id",
+                        "Object",
+                        "get_instance_id",
+                        (GDExtensionInt)123,
+                        (GDExtensionInt)0,
+                        (GDExtensionInt)0
+                )
+
                 static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
                     (void)p_function_name;
                     return NULL;
@@ -104,12 +130,26 @@ class GodotAbiHeaderCompileTest {
                 int gdcc_probe(void) {
                     GDExtensionBool initialized = godot_initialize_interface(gdcc_fake_get_proc_address);
                     GDExtensionVariantType type = godot_variant_get_type((GDExtensionConstVariantPtr)0);
+                    godot_Node *node = NULL;
+                    godot_Node2D *node2d = NULL;
+                    godot_Engine *engine = godot_Engine_singleton();
+                    godot_Node_InternalMode mode = godot_Node_INTERNAL_MODE_BACK;
+                    if (0) {
+                        GDExtensionMethodBindPtr bind = NULL;
+                        (void)gdcc_probe_method_bind_with_fallbacks(&bind);
+                        (void)gdcc_probe_method_bind_without_fallbacks(&bind);
+                    }
                     (void)type;
+                    (void)node;
+                    (void)node2d;
+                    (void)engine;
+                    (void)mode;
                     return initialized;
                 }
                 """);
 
-        var headerProbe = compileObject(zig, source, List.of(), tempDir.resolve("godot_binding_probe.o"));
+        var gdccIncludeDir = Path.of("src/main/c/codegen/include_451/gdcc").toAbsolutePath().normalize();
+        var headerProbe = compileObject(zig, source, List.of("-I" + gdccIncludeDir), tempDir.resolve("godot_binding_probe.o"));
         assertEquals(0, headerProbe.exitCode(), headerProbe::diagnostic);
 
         var cxxSource = tempDir.resolve("godot_binding_cpp_probe.cpp");

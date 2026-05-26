@@ -1,8 +1,32 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
 <#-- @ftlvariable name="usedEngineMethods" type="java.util.List<gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver.ResolvedMethodCall>" -->
+<#-- @ftlvariable name="usedEngineConstructors" type="java.util.List<gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsage>" -->
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENGINE_METHOD_BINDS_H
 #define GDEXTENSION_${module.moduleName?upper_case}_ENGINE_METHOD_BINDS_H
+
+// Engine constructor wrappers used by this module.
+<#if usedEngineConstructors?size == 0>
+// No engine constructors were collected for this module.
+<#else>
+<#list usedEngineConstructors as constructor>
+static inline godot_${constructor.cIdentifier} *godot_new_${constructor.cIdentifier}(void) {
+    GDExtensionObjectPtr object = godot_classdb_construct_object(GD_STATIC_SN(u8"${constructor.escapedClassName}"));
+    if (object == NULL) {
+        gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){
+                .kind = "engine_constructor",
+                .function_name = "godot_new_${constructor.cIdentifier}",
+                .lookup_name = "${constructor.escapedClassName}",
+                .owner = "${constructor.escapedClassName}",
+                .type = "${constructor.escapedClassName}",
+        });
+        return NULL;
+    }
+    return (godot_${constructor.cIdentifier} *)object;
+}
+
+</#list>
+</#if>
 
 // Exact engine method-bind accessors used by this module.
 // The session snapshot order matches the first successful entry.c body render hit order.
@@ -11,25 +35,25 @@
 <#else>
 <#list usedEngineMethods as resolved>
 <#assign helperParams = helper.collectEngineMethodHelperParameters(resolved)>
-static inline GDExtensionMethodBindPtr ${helper.renderEngineMethodBindAccessorName(resolved)}(void) {
-    static GDExtensionMethodBindPtr bind = NULL;
-    if (bind != NULL) {
-        return bind;
-    }
-    <#list helper.collectEngineMethodBindLookupHashes(resolved) as hash>
-    bind = godot_classdb_get_method_bind(
-        GD_STATIC_SN(u8"${resolved.ownerClassName}"),
-        GD_STATIC_SN(u8"${resolved.methodName}"),
-        (GDExtensionInt)${hash?c}LL
-    );
-    if (bind != NULL) {
-        return bind;
-    }
-    </#list>
-    return NULL;
-}
+<#assign lookupHashes = helper.collectEngineMethodBindLookupHashes(resolved)>
+GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(
+        ${helper.renderEngineMethodBindAccessorName(resolved)},
+        u8"${resolved.ownerClassName}",
+        u8"${resolved.methodName}",
+        "${resolved.ownerClassName}",
+        "${resolved.methodName}",
+        (GDExtensionInt)${lookupHashes[0]?c}LL,
+        (GDExtensionInt)${lookupHashes?size - 1},
+<#if lookupHashes?size gt 1>
+<#list lookupHashes as hash>
+    <#if hash_index gt 0>    (GDExtensionInt)${hash?c}LL<#if hash_has_next>,</#if></#if>
+</#list>
+<#else>
+        (GDExtensionInt)0
+</#if>
+)
 
-// Direct exact-engine helper kept separate from gdextension-lite public wrappers.
+// Direct exact-engine helper kept separate from public Godot wrappers.
 static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngineMethodCallHelperName(resolved)}(
 <#if !resolved.isStatic() || helperParams?size gt 0 || resolved.isVararg()>
 <#if !resolved.isStatic()>
@@ -46,9 +70,8 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
     void
 </#if>
 ) {
-    GDExtensionMethodBindPtr bind = ${helper.renderEngineMethodBindAccessorName(resolved)}();
-    if (bind == NULL) {
-        GDCC_PRINT_RUNTIME_ERROR("${helper.renderEngineMethodBindLookupErrorDescription(resolved)}", __func__, __FILE__, __LINE__);
+    GDExtensionMethodBindPtr bind = NULL;
+    if (!${helper.renderEngineMethodBindAccessorName(resolved)}(&bind)) {
 <#if resolved.returnType.typeName == "void">
         return;
 <#else>
@@ -80,7 +103,9 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
     const GDExtensionConstVariantPtr *call_args = argc > 0 ? (const GDExtensionConstVariantPtr *)argv : NULL;
 </#if>
     GDExtensionCallError error = { 0 };
-    godot_Variant ret = godot_new_Variant_nil();
+    // object_method_bind_call constructs into raw Variant storage; error paths must not destroy it.
+    godot_bool ret_initialized = false;
+    godot_Variant ret;
 <#if resolved.returnType.typeName != "void">
     godot_bool call_ok = false;
     ${helper.renderGdTypeInC(resolved.returnType)} result;
@@ -94,7 +119,7 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
 </#if>
         call_args,
         final_argc,
-        &ret,
+        (GDExtensionUninitializedVariantPtr)&ret,
         &error
     );
     if (error.error != GDEXTENSION_CALL_OK) {
@@ -189,12 +214,15 @@ static inline ${helper.renderGdTypeInC(resolved.returnType)} ${helper.renderEngi
         GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);
         goto cleanup;
     }
+    ret_initialized = true;
 <#if resolved.returnType.typeName != "void">
     result = ${helper.renderUnpackFunctionName(resolved.returnType)}((GDExtensionVariantPtr)&ret);
     call_ok = true;
 </#if>
 cleanup:
-    godot_Variant_destroy(&ret);
+    if (ret_initialized) {
+        godot_Variant_destroy(&ret);
+    }
 <#list helperParams?reverse as param>
     godot_Variant_destroy(&fixed_arg_${helperParams?size - param_index - 1});
 </#list>

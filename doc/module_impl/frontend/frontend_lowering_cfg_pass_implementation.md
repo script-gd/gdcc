@@ -586,7 +586,7 @@ overload 选择合同：
 
 backend 相关的当前事实：
 
-- engine class object construction 直调 gdextension-lite `godot_new_XXX()`
+- engine class object construction 仍经过 GDCC 自有 runtime support 发布的 `godot_new_XXX()` wrapper 边界
 - gdcc class object construction 复用 `XXX_class_create_instance(...)`
 - 对显式 C 构造的 gdcc `RefCounted` 对象：
   - 先调用 `XXX_class_create_instance(NULL, false)`

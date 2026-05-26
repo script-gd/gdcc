@@ -13,6 +13,24 @@ extern "C" {
 GDCC_GODOT_DECL godot_Variant godot_new_Variant_nil(void);
 GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Variant(const godot_Variant *value);
 GDCC_GODOT_DECL void godot_Variant_destroy(godot_Variant *self);
+GDCC_GODOT_DECL godot_Quaternion godot_new_Quaternion_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Quaternion(const godot_Quaternion * value);
+GDCC_GODOT_DECL godot_Plane godot_new_Plane_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Plane(const godot_Plane * value);
+GDCC_GODOT_DECL godot_Transform3D godot_new_Transform3D_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Transform3D(const godot_Transform3D * value);
+GDCC_GODOT_DECL godot_Array godot_new_Array_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Array(const godot_Array * value);
+GDCC_GODOT_DECL godot_RID godot_new_RID_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_RID(const godot_RID * value);
+GDCC_GODOT_DECL godot_PackedColorArray godot_new_PackedColorArray_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_PackedColorArray(const godot_PackedColorArray * value);
+GDCC_GODOT_DECL godot_Rect2 godot_new_Rect2_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Rect2(const godot_Rect2 * value);
+GDCC_GODOT_DECL godot_Vector4 godot_new_Vector4_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Vector4(const godot_Vector4 * value);
+GDCC_GODOT_DECL godot_Vector3 godot_new_Vector3_with_Variant(const godot_Variant *value);
+GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Vector3(const godot_Vector3 * value);
 GDCC_GODOT_DECL godot_Vector2i godot_new_Vector2i_with_Variant(const godot_Variant *value);
 GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Vector2i(const godot_Vector2i * value);
 GDCC_GODOT_DECL godot_float godot_new_float_with_Variant(const godot_Variant *value);
@@ -71,24 +89,6 @@ GDCC_GODOT_DECL godot_PackedStringArray godot_new_PackedStringArray_with_Variant
 GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_PackedStringArray(const godot_PackedStringArray * value);
 GDCC_GODOT_DECL godot_PackedFloat64Array godot_new_PackedFloat64Array_with_Variant(const godot_Variant *value);
 GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_PackedFloat64Array(const godot_PackedFloat64Array * value);
-GDCC_GODOT_DECL godot_Quaternion godot_new_Quaternion_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Quaternion(const godot_Quaternion * value);
-GDCC_GODOT_DECL godot_Plane godot_new_Plane_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Plane(const godot_Plane * value);
-GDCC_GODOT_DECL godot_Transform3D godot_new_Transform3D_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Transform3D(const godot_Transform3D * value);
-GDCC_GODOT_DECL godot_Array godot_new_Array_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Array(const godot_Array * value);
-GDCC_GODOT_DECL godot_RID godot_new_RID_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_RID(const godot_RID * value);
-GDCC_GODOT_DECL godot_PackedColorArray godot_new_PackedColorArray_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_PackedColorArray(const godot_PackedColorArray * value);
-GDCC_GODOT_DECL godot_Rect2 godot_new_Rect2_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Rect2(const godot_Rect2 * value);
-GDCC_GODOT_DECL godot_Vector4 godot_new_Vector4_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Vector4(const godot_Vector4 * value);
-GDCC_GODOT_DECL godot_Vector3 godot_new_Vector3_with_Variant(const godot_Variant *value);
-GDCC_GODOT_DECL godot_Variant godot_new_Variant_with_Vector3(const godot_Vector3 * value);
 
 
 

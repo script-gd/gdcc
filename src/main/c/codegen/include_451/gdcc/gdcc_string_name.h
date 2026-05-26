@@ -1,7 +1,7 @@
 #ifndef GDCC_STRING_NAME_H
 #define GDCC_STRING_NAME_H
 
-#include <gdextension-lite.h>
+#include <godot_binding.h>
 #include "gdcc_likely.h"
 
 typedef struct StringNameDestroyRegistry {

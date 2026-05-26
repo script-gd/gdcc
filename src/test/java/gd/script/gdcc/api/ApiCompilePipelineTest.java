@@ -20,6 +20,9 @@ class ApiCompilePipelineTest {
         var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
         var api = ApiCompileTestSupport.newApi(compiler);
         var projectPath = tempDir.resolve("pipeline-project");
+        var staleVendorFile = projectPath.resolve("include/gdextension-lite/gdextension-lite-one.c");
+        Files.createDirectories(staleVendorFile.getParent());
+        Files.writeString(staleVendorFile, "stale vendor runtime");
 
         api.createModule("demo", "Pipeline Demo");
         api.setCompileOptions(
@@ -90,8 +93,12 @@ class ApiCompilePipelineTest {
         assertEquals(COptimizationLevel.RELEASE, compiler.lastOptimizationLevel());
         assertEquals(TargetPlatform.WEB_WASM32, compiler.lastTargetPlatform());
         assertTrue(compiler.lastCFiles().stream().anyMatch(path -> path.getFileName().toString().equals("entry.c")));
-        assertTrue(compiler.lastCFiles().stream().anyMatch(path -> path.getFileName().toString().equals("gdextension-lite-one.c")));
-        assertFalse(compiler.lastIncludeDirs().isEmpty());
+        assertTrue(compiler.lastCFiles().stream().anyMatch(path -> path.endsWith("godot/godot_binding.c")));
+        assertFalse(compiler.lastCFiles().stream().anyMatch(path -> path.endsWith("gdextension-lite/gdextension-lite-one.c")));
+        assertFalse(compiler.lastCFiles().contains(staleVendorFile));
+        assertTrue(compiler.lastIncludeDirs().stream().anyMatch(path -> path.endsWith("include/gdcc")));
+        assertTrue(compiler.lastIncludeDirs().stream().anyMatch(path -> path.endsWith("include/godot")));
+        assertFalse(compiler.lastIncludeDirs().stream().anyMatch(path -> path.endsWith("include/gdextension-lite")));
 
         var entrySource = Files.readString(projectPath.resolve("entry.c"));
         assertTrue(entrySource.contains("GD_STATIC_SN(u8\"PipelineSmoke\")"), entrySource);

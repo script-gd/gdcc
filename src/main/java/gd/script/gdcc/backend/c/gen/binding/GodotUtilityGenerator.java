@@ -146,7 +146,12 @@ final class GodotUtilityGenerator {
             out.append(");\n");
             appendUtilityArgs(out, function);
             if (!GodotBindingSupport.isVoid(function.returnType())) {
-                out.append("    ").append(GodotBindingSupport.returnCType(function.returnType())).append(" result;\n");
+                out.append("    ")
+                        .append(GodotBindingSupport.initializedCarrierDeclaration(
+                                GodotBindingSupport.returnCType(function.returnType()),
+                                "result"
+                        ))
+                        .append(";\n");
             }
             out.append("    ").append(cacheName).append('(')
                     .append(GodotBindingSupport.isVoid(function.returnType()) ? "NULL" : "(GDExtensionTypePtr)&result")

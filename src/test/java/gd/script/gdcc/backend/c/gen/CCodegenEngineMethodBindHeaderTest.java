@@ -14,6 +14,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
@@ -138,10 +139,20 @@ class CCodegenEngineMethodBindHeaderTest {
                 "gdcc_engine_call_probe_count_P_RI("
         );
         assertContainsAll(
-                resolveFunctionBodyByPrefix(bindHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_P_RI"),
+                bindHeader,
+                "GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(",
+                "gdcc_engine_method_bind_probe_count_P_RI,",
+                "u8\"Probe\"",
+                "u8\"count\"",
                 "(GDExtensionInt)72LL",
+                "(GDExtensionInt)2",
                 "(GDExtensionInt)721LL",
                 "(GDExtensionInt)722LL"
+        );
+        assertFalse(bindHeader.contains("gdcc_engine_method_bind_probe_count_P_RI_compatibility_hashes"), bindHeader);
+        assertFalse(
+                bindHeader.contains("static inline GDExtensionBool gdcc_engine_method_bind_probe_count_P_RI("),
+                bindHeader
         );
         assertFalse(bindHeader.contains("gdcc_engine_method_bind_array_size_"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_method_bind_worker_ping_"), bindHeader);
@@ -251,13 +262,15 @@ class CCodegenEngineMethodBindHeaderTest {
                 "gdcc_engine_call_probe_count_P_RI("
         );
         assertContainsAll(
-                resolveFunctionBodyByPrefix(oldHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_P_RI"),
+                oldHeader,
+                "gdcc_engine_method_bind_probe_count_P_RI,",
                 "(GDExtensionInt)72LL",
                 "(GDExtensionInt)721LL",
                 "(GDExtensionInt)722LL"
         );
         assertContainsAll(
-                resolveFunctionBodyByPrefix(newHeader, "static inline GDExtensionMethodBindPtr gdcc_engine_method_bind_probe_count_P_RI"),
+                newHeader,
+                "gdcc_engine_method_bind_probe_count_P_RI,",
                 "(GDExtensionInt)172LL",
                 "(GDExtensionInt)1721LL"
         );
@@ -303,10 +316,48 @@ class CCodegenEngineMethodBindHeaderTest {
         assertContainsAll(
                 bindHeader,
                 "GDEXTENSION_EMPTY_ENGINE_BIND_HEADER_MODULE_ENGINE_METHOD_BINDS_H",
+                "No engine constructors were collected for this module.",
                 "No exact engine method binds were collected for this module."
         );
+        assertFalse(bindHeader.contains("godot_new_Node"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_method_bind_"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_call_"), bindHeader);
+    }
+
+    @Test
+    @DisplayName("generate should emit constructor wrappers without polluting exact engine method usage")
+    void generateShouldEmitConstructorWrappersWithoutPollutingExactEngineMethodUsage() {
+        var hostClass = newClass("Worker", "RefCounted");
+
+        var constructNode = newVoidFunction("construct_node");
+        constructNode.createAndAddVariable("node", new GdObjectType("Node"));
+        entry(constructNode).appendInstruction(new ConstructObjectInsn("node", "Node"));
+        entry(constructNode).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(constructNode);
+
+        var module = new LirModule("engine_constructor_bind_header_module", List.of(hostClass));
+        var codegen = newCodegen(module, apiWith(List.of(), List.of(nodeClass(), refCountedClass())), List.of(hostClass));
+        var renderedFiles = renderFiles(codegen.generate());
+        var entrySource = renderedFiles.get("entry.c");
+        var bindHeader = renderedFiles.get("engine_method_binds.h");
+
+        assertTrue(entrySource.contains("$node = godot_new_Node();"), entrySource);
+        assertContainsAll(
+                bindHeader,
+                "static inline godot_Node *godot_new_Node(void)",
+                "GDExtensionObjectPtr object = godot_classdb_construct_object(GD_STATIC_SN(u8\"Node\"));",
+                ".kind = \"engine_constructor\"",
+                ".function_name = \"godot_new_Node\"",
+                ".lookup_name = \"Node\"",
+                "return (godot_Node *)object;",
+                "No exact engine method binds were collected for this module."
+        );
+        assertFalse(bindHeader.contains("godot_new_RefCounted(void)"), bindHeader);
+        assertFalse(bindHeader.contains("godot_classdb_construct_object2"), bindHeader);
+        assertFalse(bindHeader.contains("godot_new_StringName_with_latin1_chars"), bindHeader);
+        assertFalse(bindHeader.contains("godot_StringName_destroy"), bindHeader);
+        assertFalse(bindHeader.contains("GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR("), bindHeader);
+        assertFalse(bindHeader.contains("gdcc_engine_method_bind_node_"), bindHeader);
     }
 
     @Test
@@ -363,8 +414,8 @@ class CCodegenEngineMethodBindHeaderTest {
         var linkBody = resolveFunctionBodyByPrefix(bindHeader, "static inline godot_int gdcc_engine_call_probe_link_PL5Probe_TI_RI");
         assertContainsAll(
                 linkBody,
-                "GDExtensionMethodBindPtr bind = gdcc_engine_method_bind_probe_link_PL5Probe_TI_RI();",
-                "GDCC_PRINT_RUNTIME_ERROR(\"engine method bind lookup failed: Probe.link\"",
+                "GDExtensionMethodBindPtr bind = NULL;",
+                "if (!gdcc_engine_method_bind_probe_link_PL5Probe_TI_RI(&bind)) {",
                 "return 0;",
                 "const GDExtensionConstTypePtr args[] = {",
                 "&arg0,",
@@ -374,6 +425,8 @@ class CCodegenEngineMethodBindHeaderTest {
                 "self,",
                 "&result"
         );
+        assertFalse(linkBody.contains("bind == NULL"), linkBody);
+        assertFalse(linkBody.contains("engine method bind lookup failed: Probe.link"), linkBody);
         assertFalse(linkBody.contains("NULL,\n        args"), linkBody);
 
         var spawnSignature = resolveFunctionSignatureByPrefix(
@@ -388,13 +441,15 @@ class CCodegenEngineMethodBindHeaderTest {
         );
         assertContainsAll(
                 spawnBody,
-                "GDExtensionMethodBindPtr bind = gdcc_engine_method_bind_static_probe_spawn_PT_RV();",
-                "GDCC_PRINT_RUNTIME_ERROR(\"engine method bind lookup failed: Probe.spawn\"",
+                "GDExtensionMethodBindPtr bind = NULL;",
+                "if (!gdcc_engine_method_bind_static_probe_spawn_PT_RV(&bind)) {",
                 "godot_object_method_bind_ptrcall(",
                 "NULL,",
                 "args,",
                 "arg0"
         );
+        assertFalse(spawnBody.contains("bind == NULL"), spawnBody);
+        assertFalse(spawnBody.contains("engine method bind lookup failed: Probe.spawn"), spawnBody);
     }
 
     @Test
@@ -546,16 +601,19 @@ class CCodegenEngineMethodBindHeaderTest {
                 "const godot_int fixed_argc = (godot_int)2;",
                 "GDExtensionConstVariantPtr final_args[2 + argc];",
                 "final_args[fixed_argc + i] = argv[i];",
-                "godot_Variant ret = godot_new_Variant_nil();",
+                "// object_method_bind_call constructs into raw Variant storage; error paths must not destroy it.",
+                "godot_bool ret_initialized = false;",
+                "godot_Variant ret;",
                 "godot_object_method_bind_call(",
                 "self,",
-                "&ret,",
+                "(GDExtensionUninitializedVariantPtr)&ret,",
                 "&error",
                 "char call_error_desc[512];",
                 "gdcc_variant_type_to_utf8(error.expected, expected_type_name, sizeof(expected_type_name));",
                 "engine method call failed: Probe.mix: invalid argument #%lld, expected '%s', got '%s'",
                 "engine method call failed: Probe.mix: unknown call error %d",
                 "GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);",
+                "ret_initialized = true;",
                 "result = godot_new_String_with_Variant(",
                 "if (!call_ok) {",
                 "return godot_new_String();"
@@ -568,12 +626,13 @@ class CCodegenEngineMethodBindHeaderTest {
         assertOrderedFragments(
                 mixBody,
                 "cleanup:",
+                "if (ret_initialized) {",
                 "godot_Variant_destroy(&ret);",
                 "godot_Variant_destroy(&fixed_arg_1);",
                 "godot_Variant_destroy(&fixed_arg_0);"
         );
         assertFalse(mixBody.contains("godot_Variant_destroy(argv["), mixBody);
-        assertFalse(mixBody.contains("godot_Variant ret;"), mixBody);
+        assertFalse(mixBody.contains("godot_Variant ret = godot_new_Variant_nil();"), mixBody);
         assertFalse(mixBody.contains(", NULL,\n        &error"), mixBody);
 
         var broadcastSignature = resolveFunctionSignatureByPrefix(
@@ -594,17 +653,21 @@ class CCodegenEngineMethodBindHeaderTest {
         assertContainsAll(
                 broadcastBody,
                 "godot_Variant fixed_arg_0 = godot_new_Variant_with_int(arg0);",
-                "godot_Variant ret = godot_new_Variant_nil();",
+                "godot_bool ret_initialized = false;",
+                "godot_Variant ret;",
                 "godot_object_method_bind_call(",
                 "NULL,",
-                "&ret,",
+                "(GDExtensionUninitializedVariantPtr)&ret,",
                 "&error",
                 "char call_error_desc[512];",
                 "engine method call failed: Probe.broadcast: too many arguments, expected %lld, got %lld",
                 "GDCC_PRINT_RUNTIME_ERROR(call_error_desc, __func__, __FILE__, __LINE__);",
+                "ret_initialized = true;",
+                "if (ret_initialized) {",
                 "godot_Variant_destroy(&ret);",
                 "godot_Variant_destroy(&fixed_arg_0);"
         );
+        assertFalse(broadcastBody.contains("godot_Variant ret = godot_new_Variant_nil();"), broadcastBody);
         assertFalse(broadcastBody.contains(", NULL,\n        &error"), broadcastBody);
     }
 
@@ -919,6 +982,36 @@ class CCodegenEngineMethodBindHeaderTest {
                                 0
                         )
                 ),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass nodeClass() {
+        return new ExtensionGdClass(
+                "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass refCountedClass() {
+        return new ExtensionGdClass(
+                "RefCounted",
+                true,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
                 List.of()
         );
     }

@@ -191,7 +191,7 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
         assertTrue(
                 entrySource.contains("godot_new_Vector3_with_Vector3i"),
-                () -> "Vector3i-to-Vector3 ordinary boundary should use the gdextension-lite constructor.\nSource:\n" + entrySource
+                () -> "Vector3i-to-Vector3 ordinary boundary should use the generated builtin constructor.\nSource:\n" + entrySource
         );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
@@ -646,10 +646,6 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
         );
         assertTrue(entrySource.contains("RuntimePlainWorker_class_create_instance(NULL, true)"), entrySource);
         assertTrue(entrySource.contains("RuntimeConstructorWorker__init(self);"), entrySource);
-        assertFalse(
-                entrySource.contains("gdcc_ref_counted_init_raw(godot_classdb_construct_object2(GD_STATIC_SN(u8\"RefCounted\")))"),
-                entrySource
-        );
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(

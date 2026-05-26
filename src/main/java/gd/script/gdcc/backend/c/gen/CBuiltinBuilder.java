@@ -49,7 +49,7 @@ public final class CBuiltinBuilder {
 
     /// Render constructor symbol `godot_new_<BuiltinType>[_with_<argType>...]`.
     ///
-    /// `argTypeSuffixes` should match gdextension-lite constructor suffix tokens, e.g.
+    /// `argTypeSuffixes` should match the generated Godot constructor suffix tokens, e.g.
     /// `float`, `int`, `Vector2`, `utf8_chars`.
     public @NotNull String renderConstructorFunctionName(@NotNull GdType type,
                                                          @NotNull List<String> argTypeSuffixes) {

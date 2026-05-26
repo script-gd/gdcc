@@ -112,13 +112,30 @@
 - `deinitialize(...)` must use the same level guard before printing unload messages or destroying GDCC static registries.
 - This keeps class registration, StringName/String registries, and module log output scoped to the scene-level lifecycle that Godot uses for runtime class availability.
 
-### Exact Engine Ptrcall Helper Return Carrier Contract
+### Ptrcall Helper Return Carrier Contract
 
 - Backend-owned exact engine helpers in `engine_method_binds.h` call `godot_object_method_bind_ptrcall(...)` directly.
+- Generated Godot builtin wrappers call these `GDExtensionTypePtr` result APIs directly:
+  - `GDExtensionPtrBuiltInMethod`;
+  - `GDExtensionPtrOperatorEvaluator`;
+  - `GDExtensionPtrGetter`;
+  - `GDExtensionPtrIndexedGetter`;
+  - `GDExtensionPtrKeyedGetter`.
+- Generated Godot utility wrappers call `GDExtensionPtrUtilityFunction`, whose non-`void` return slot follows the same
+  initialized carrier rule.
 - Non-`void` ptrcall return carriers must be initialized before the call:
   - primitive carriers use the same generated `{ 0 }` form for consistency;
   - destroyable value wrappers such as `godot_String`, `godot_Array`, `godot_Dictionary`, and `godot_Variant` must not be left as uninitialized stack storage.
-- This matches gdextension-lite wrapper behavior and avoids passing an invalid return carrier to Godot for value-semantic wrapper returns such as `Object.get_class() -> String`.
+- Godot's ptrcall implementations assign into the return slot through typed carrier helpers; they do not placement-construct
+  `GDExtensionTypePtr` destinations. This avoids passing an invalid return carrier to Godot for value-semantic wrapper returns such as
+  `Object.get_class() -> String`, `String.substr() -> String`, utility calls such as `lerp(...) -> Variant`, or typed container
+  metadata methods returning `Variant`.
+- This rule does not apply to interface functions whose signature explicitly asks for `GDExtensionUninitialized*Ptr`.
+  Constructor, `Variant` conversion, `godot_variant_call*`, `godot_variant_evaluate(...)`, `godot_variant_get*`, and
+  `godot_object_method_bind_call(...)` paths keep raw destination storage semantics.
+- `godot_object_method_bind_call(...)` is the exact-engine vararg exception to remember: its return slot must be a raw
+  `godot_Variant` storage location cast to `GDExtensionUninitializedVariantPtr`. Do not prebuild a nil `Variant` before
+  the call, and do not destroy that storage on error paths where Godot did not construct a return value.
 
 ### Global Helper Raw Pointer Contract
 
@@ -383,9 +400,9 @@ Transform2D(1, 0, 0, 1, 0, 0), RID(), -99, "000000000000000000000000000000000000
   - Regular builtin constructors are selected by exact `ExtensionBuiltinClass` constructor metadata
     after frontend lowering has materialized any accepted argument boundary. The generated symbol is
     `godot_new_<Type>[_with_<argType>...]`.
-  - `Transform2D`, `Transform3D`, `Basis`, and `Projection` may use backend helper-shim constructor
-    signatures when Godot API metadata has no exact constructor surface but gdextension-lite exposes
-    the helper.
+  - `Transform2D`, `Transform3D`, `Basis`, and `Projection` may use GDCC-owned helper-shim constructor
+    signatures when Godot API metadata has no exact constructor surface but the binding
+    naming contract already exposed the helper.
   - Typed `Array` / `Dictionary` construction first uses the plain container value, then calls the
     typed constructor with a real nil `Variant` script carrier. Backend must not replace this with a
     null pointer shortcut.

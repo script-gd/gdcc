@@ -109,6 +109,76 @@ class GodotBuiltinGeneratorTest {
     }
 
     @Test
+    void renderBuiltinPtrcallResultCarriersShouldBeInitialized() throws IOException {
+        var source = GodotBuiltinGenerator.renderBuiltinSupport(ExtensionApiLoader.loadDefault()).get("godot_builtin.c");
+
+        var substrBody = functionBody(source, "godot_String godot_String_substr(");
+        var stringAddBody = functionBody(source, "godot_String godot_String_op_add_String(");
+        var vector3XBody = functionBody(source, "godot_float godot_Vector3_get_x(");
+        var arrayTypedScriptBody = functionBody(source, "godot_Variant godot_Array_get_typed_script(");
+        var dictionaryTypedValueScriptBody = functionBody(
+                source,
+                "godot_Variant godot_Dictionary_get_typed_value_script("
+        );
+        var arrayIndexedBody = functionBody(source, "godot_Variant godot_Array_indexed_get(");
+        var dictionaryKeyedBody = functionBody(source, "godot_Variant godot_Dictionary_keyed_get(");
+
+        assertAll(
+                () -> assertTrue(source.contains(
+                        "/* Builtin ptrcall return slots are assignment targets, "
+                                + "not construction destinations. */ \\\n"
+                )),
+                () -> assertTrue(source.contains("return_type result = { 0 }; \\")),
+                () -> assertFalse(source.contains("return_type result; \\")),
+                () -> assertTrue(substrBody.contains(
+                        "GDCC_BUILTIN_METHOD_RETURN(gdcc_builtin_method_String_substr, self, args, godot_String, 2);"
+                )),
+                () -> assertTrue(arrayTypedScriptBody.contains(
+                        "GDCC_BUILTIN_METHOD_RETURN0(gdcc_builtin_method_Array_get_typed_script, self, godot_Variant);"
+                )),
+                () -> assertTrue(dictionaryTypedValueScriptBody.contains(
+                        "GDCC_BUILTIN_METHOD_RETURN0("
+                                + "gdcc_builtin_method_Dictionary_get_typed_value_script, self, godot_Variant);"
+                )),
+                () -> assertInitializedCarrier(stringAddBody, "godot_String", "result"),
+                () -> assertInitializedCarrier(vector3XBody, "godot_float", "value"),
+                () -> assertInitializedCarrier(arrayIndexedBody, "godot_Variant", "result"),
+                () -> assertInitializedCarrier(dictionaryKeyedBody, "godot_Variant", "result")
+        );
+    }
+
+    @Test
+    void renderBuiltinConstructionDestinationsShouldRemainUninitializedStorage() throws IOException {
+        var source = GodotBuiltinGenerator.renderBuiltinSupport(ExtensionApiLoader.loadDefault()).get("godot_builtin.c");
+
+        var variantNilBody = functionBody(source, "godot_Variant godot_new_Variant_nil(");
+        var vector3ConstructorBody = functionBody(source, "godot_Vector3 godot_new_Vector3_with_float_float_float(");
+        var stringUtf8Body = functionBody(source, "godot_String godot_new_String_with_utf8_chars(");
+
+        assertAll(
+                () -> assertTrue(source.contains("GDExtensionUninitializedVariantPtr")),
+                () -> assertTrue(source.contains("GDExtensionUninitializedTypePtr")),
+                () -> assertTrue(source.contains("GDExtensionUninitializedStringPtr")),
+                () -> assertTrue(variantNilBody.contains("godot_Variant self;")),
+                () -> assertTrue(variantNilBody.contains(
+                        "godot_variant_new_nil((GDExtensionUninitializedVariantPtr)&self);"
+                )),
+                () -> assertFalse(variantNilBody.contains("godot_Variant self = { 0 };"), variantNilBody),
+                () -> assertTrue(vector3ConstructorBody.contains("godot_Vector3 self;")),
+                () -> assertTrue(vector3ConstructorBody.contains(
+                        "gdcc_builtin_ctor_Vector3_3((GDExtensionUninitializedTypePtr)&self, args);"
+                )),
+                () -> assertFalse(vector3ConstructorBody.contains("godot_Vector3 self = { 0 };"),
+                        vector3ConstructorBody),
+                () -> assertTrue(stringUtf8Body.contains("godot_String self;")),
+                () -> assertTrue(stringUtf8Body.contains(
+                        "godot_string_new_with_utf8_chars((GDExtensionUninitializedStringPtr)&self, p_contents);"
+                )),
+                () -> assertFalse(stringUtf8Body.contains("godot_String self = { 0 };"), stringUtf8Body)
+        );
+    }
+
+    @Test
     void renderBuiltinMethodShouldTryCompatibilityHashesBeforeFailing() {
         var method = new ExtensionBuiltinClass.ClassMethod(
                 "compat_len",
@@ -238,11 +308,7 @@ class GodotBuiltinGeneratorTest {
             boolean hasArguments,
             boolean voidReturn
     ) {
-        var functionStart = source.indexOf(functionSignature);
-        assertTrue(functionStart >= 0, "missing generated function: " + functionSignature);
-        var functionEnd = source.indexOf("\n}\n\n", functionStart);
-        assertTrue(functionEnd > functionStart, "missing generated function end: " + functionSignature);
-        var body = source.substring(functionStart, functionEnd);
+        var body = functionBody(source, functionSignature);
 
         assertAll(
                 () -> assertTrue(body.contains("GDCC_RESOLVE_BUILTIN_METHOD_CACHE(" + cacheName),
@@ -261,6 +327,25 @@ class GodotBuiltinGeneratorTest {
                 () -> assertFalse(body.contains(cacheName + "((GDExtensionTypePtr)self"),
                         "method wrapper must not inline ptrcall")
         );
+    }
+
+    private static void assertInitializedCarrier(
+            @NotNull String body,
+            @NotNull String cType,
+            @NotNull String name
+    ) {
+        assertAll(
+                () -> assertTrue(body.contains(cType + " " + name + " = { 0 };"), body),
+                () -> assertFalse(body.contains(cType + " " + name + ";\n"), body)
+        );
+    }
+
+    private static @NotNull String functionBody(@NotNull String source, @NotNull String functionSignature) {
+        var functionStart = source.indexOf(functionSignature);
+        assertTrue(functionStart >= 0, "missing generated function: " + functionSignature);
+        var functionEnd = source.indexOf("\n}\n\n", functionStart);
+        assertTrue(functionEnd > functionStart, "missing generated function end: " + functionSignature);
+        return source.substring(functionStart, functionEnd);
     }
 
     private static int countOccurrences(@NotNull String text, @NotNull String needle) {

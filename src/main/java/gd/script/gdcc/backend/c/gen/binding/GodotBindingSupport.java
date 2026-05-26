@@ -304,7 +304,8 @@ final class GodotBindingSupport {
                 #ifndef GDCC_BUILTIN_METHOD_RETURN
                 #define GDCC_BUILTIN_METHOD_RETURN(cache, self_value, args_value, return_type, argument_count) \\
                     do { \\
-                        return_type result; \\
+                        /* Builtin ptrcall return slots are assignment targets, not construction destinations. */ \\
+                        return_type result = { 0 }; \\
                         (cache)((GDExtensionTypePtr)(self_value), args_value, (GDExtensionTypePtr)&result, argument_count); \\
                         return result; \\
                     } while (false)
@@ -413,6 +414,11 @@ final class GodotBindingSupport {
 
     static @NotNull String renderPublicParameter(@NotNull String type, @Nullable String rawName) {
         return publicParameterType(type) + " " + parameterName(rawName);
+    }
+
+    /// GDExtension ptrcall result slots are assignment targets, so wrapper locals must be valid carriers first.
+    static @NotNull String initializedCarrierDeclaration(@NotNull String cType, @NotNull String name) {
+        return cType + " " + name + " = { 0 }";
     }
 
     static @NotNull String typePtrArgument(@NotNull String type, @NotNull String name) {

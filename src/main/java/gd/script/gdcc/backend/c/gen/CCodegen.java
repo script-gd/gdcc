@@ -4,6 +4,8 @@ import gd.script.gdcc.backend.Codegen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.GeneratedFile;
 import gd.script.gdcc.backend.TemplateLoader;
+import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageBuffer;
+import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageSession;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
 import gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade;
@@ -437,13 +439,20 @@ public class CCodegen implements Codegen {
 
     public @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                             @NotNull LirFunctionDef func) {
-        return generateFuncBody(clazz, func, EngineMethodUsageBuffer.noOp());
+        return generateFuncBody(clazz, func, EngineMethodUsageBuffer.noOp(), EngineConstructorUsageBuffer.noOp());
+    }
+
+    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                     @NotNull LirFunctionDef func,
+                                     @NotNull EngineMethodUsageBuffer usageBuffer) {
+        return generateFuncBody(clazz, func, usageBuffer, EngineConstructorUsageBuffer.noOp());
     }
 
     @SuppressWarnings("unchecked")
     @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                      @NotNull LirFunctionDef func,
-                                     @NotNull EngineMethodUsageBuffer usageBuffer) {
+                                     @NotNull EngineMethodUsageBuffer usageBuffer,
+                                     @NotNull EngineConstructorUsageBuffer constructorUsageBuffer) {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
@@ -453,7 +462,7 @@ public class CCodegen implements Codegen {
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
-        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer, constructorUsageBuffer);
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
@@ -477,6 +486,18 @@ public class CCodegen implements Codegen {
         var usageBuffer = usageSession.newFunctionBuffer();
         var body = generateFuncBody(clazz, func, usageBuffer);
         usageSession.commit(usageBuffer);
+        return body;
+    }
+
+    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                     @NotNull LirFunctionDef func,
+                                     @NotNull EngineMethodUsageSession usageSession,
+                                     @NotNull EngineConstructorUsageSession constructorUsageSession) {
+        var usageBuffer = usageSession.newFunctionBuffer();
+        var constructorUsageBuffer = constructorUsageSession.newFunctionBuffer();
+        var body = generateFuncBody(clazz, func, usageBuffer, constructorUsageBuffer);
+        usageSession.commit(usageBuffer);
+        constructorUsageSession.commit(constructorUsageBuffer);
         return body;
     }
 
@@ -523,8 +544,9 @@ public class CCodegen implements Codegen {
         }
         try {
             var usageSession = new EngineMethodUsageSession();
+            var constructorUsageSession = new EngineConstructorUsageSession();
             var bodyRender = new GenerateRenderFacade(
-                    (classDef, func) -> generateFuncBody(classDef, func, usageSession),
+                    (classDef, func) -> generateFuncBody(classDef, func, usageSession, constructorUsageSession),
                     this::generatePropertyInitApplyBody
             );
             var cTplCtx = Map.of(
@@ -534,10 +556,12 @@ public class CCodegen implements Codegen {
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
             var usedEngineMethods = usageSession.snapshot();
+            var usedEngineConstructors = constructorUsageSession.snapshot();
             var bindTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
-                    "usedEngineMethods", usedEngineMethods
+                    "usedEngineMethods", usedEngineMethods,
+                    "usedEngineConstructors", usedEngineConstructors
             );
             var engineMethodBindsSrc = TemplateLoader.renderFromClasspath(
                     "template_451/engine_method_binds.h.ftl",

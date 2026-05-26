@@ -66,9 +66,11 @@ public class FrontendLoweringToCTypedArrayAbiIntegrationTest {
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_Array_get_typed_class_name(&probe0);",
                 "godot_Array_get_typed_script(&probe0);",
-                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, &probe0_script_is_null_result, &probe0_script_is_null_valid);",
+                "godot_Variant probe0_script_is_null_result;",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, (GDExtensionUninitializedVariantPtr)&probe0_script_is_null_result, &probe0_script_is_null_valid);",
                 "expected = GDEXTENSION_VARIANT_TYPE_ARRAY;"
         );
+        assertRawVariantEvaluateResultSlot(entryHeader, "probe0_script_is_null_result");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -154,8 +156,10 @@ public class FrontendLoweringToCTypedArrayAbiIntegrationTest {
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_Array_get_typed_class_name(&probe0);",
                 "godot_Array_get_typed_script(&probe0);",
-                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, &probe0_script_is_null_result, &probe0_script_is_null_valid);"
+                "godot_Variant probe0_script_is_null_result;",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, (GDExtensionUninitializedVariantPtr)&probe0_script_is_null_result, &probe0_script_is_null_valid);"
         );
+        assertRawVariantEvaluateResultSlot(entryHeader, "probe0_script_is_null_result");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -401,8 +405,10 @@ public class FrontendLoweringToCTypedArrayAbiIntegrationTest {
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_Array_get_typed_class_name(&probe0);",
                 "godot_Array_get_typed_script(&probe0);",
-                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, &probe0_script_is_null_result, &probe0_script_is_null_valid);"
+                "godot_Variant probe0_script_is_null_result;",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, (GDExtensionUninitializedVariantPtr)&probe0_script_is_null_result, &probe0_script_is_null_valid);"
         );
+        assertRawVariantEvaluateResultSlot(entryHeader, "probe0_script_is_null_result");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -484,8 +490,10 @@ public class FrontendLoweringToCTypedArrayAbiIntegrationTest {
                 "godot_bool typed_mismatch = godot_Array_get_typed_builtin(&probe0) != (godot_int)GDEXTENSION_VARIANT_TYPE_OBJECT;",
                 "godot_Array_get_typed_class_name(&probe0);",
                 "godot_Array_get_typed_script(&probe0);",
-                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, &probe0_script_is_null_result, &probe0_script_is_null_valid);"
+                "godot_Variant probe0_script_is_null_result;",
+                "godot_variant_evaluate(GDEXTENSION_VARIANT_OP_EQUAL, &probe0_script, &probe0_script_nil, (GDExtensionUninitializedVariantPtr)&probe0_script_is_null_result, &probe0_script_is_null_valid);"
         );
+        assertRawVariantEvaluateResultSlot(entryHeader, "probe0_script_is_null_result");
 
         var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
         runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
@@ -740,6 +748,13 @@ public class FrontendLoweringToCTypedArrayAbiIntegrationTest {
                     () -> "Missing fragment `" + needle + "` in:\n" + text
             );
         }
+    }
+
+    private static void assertRawVariantEvaluateResultSlot(@NotNull String text, @NotNull String resultName) {
+        assertFalse(
+                text.contains(resultName + " = godot_new_Variant_nil();"),
+                () -> "`godot_variant_evaluate` must receive raw result storage, not a pre-initialized Variant:\n" + text
+        );
     }
 
     private static boolean hasTypedArrayGuardFailureSignal(@NotNull String output) {
