@@ -2,9 +2,13 @@ package gd.script.gdcc.backend.c.gen.binding.usage;
 
 import gd.script.gdcc.backend.c.gen.binding.GodotBindingSymbol;
 import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
+import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Set;
 
@@ -21,6 +25,28 @@ class GodotBindingUsageSessionTest {
 
         buffer.recordGodotCall(providedName);
         buffer.recordModuleLocalGodotBinding(ModuleLocalGodotBinding.classConstant("Probe", "Known", "1"));
+        session.commit(buffer);
+
+        assertTrue(session.moduleLocalBindings().isEmpty());
+        assertTrue(session.moduleLocalCFunctionNames().isEmpty());
+    }
+
+    @Test
+    void gdccHelperWrappersShouldBeRuntimeProvided() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var session = GodotBindingUsageSession.forRegistry(registry);
+        var buffer = session.newFunctionBuffer();
+
+        for (var functionName : List.of(
+                "godot_new_gdcc_Object_with_Variant",
+                "godot_new_Transform2D_with_float_float_float_float_float_float",
+                "godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float",
+                "godot_new_Basis_with_float_float_float_float_float_float_float_float_float",
+                "godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float",
+                "godot_Variant_call"
+        )) {
+            buffer.recordGodotCall(functionName);
+        }
         session.commit(buffer);
 
         assertTrue(session.moduleLocalBindings().isEmpty());

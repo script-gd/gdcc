@@ -20,6 +20,14 @@ import java.util.Set;
 public final class GodotBindingProvidedSymbols {
     private static final @NotNull String INTERFACE_HEADER_RESOURCE =
             "/include_451/godot/gdextension/gdextension_interface.h";
+    private static final @NotNull List<String> GDCC_HELPER_C_FUNCTION_NAMES = List.of(
+            "godot_new_gdcc_Object_with_Variant",
+            "godot_new_Transform2D_with_float_float_float_float_float_float",
+            "godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float",
+            "godot_new_Basis_with_float_float_float_float_float_float_float_float_float",
+            "godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float",
+            "godot_Variant_call"
+    );
     private static volatile Set<String> defaultRuntimeProvidedCFunctionNames;
 
     private GodotBindingProvidedSymbols() {
@@ -85,9 +93,7 @@ public final class GodotBindingProvidedSymbols {
             FixedGodotBindings.symbols(api).stream()
                     .map(GodotBindingSymbol::cFunctionName)
                     .forEach(provided::add);
-            // `godot_Variant_call` is a GDCC-owned dynamic-dispatch helper from gdcc_helper.h.
-            // It is not generated per module, but generated bodies may call it through CBodyBuilder.
-            provided.add("godot_Variant_call");
+            provided.addAll(GDCC_HELPER_C_FUNCTION_NAMES);
             return Set.copyOf(provided);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to load default Godot binding provided set", exception);
