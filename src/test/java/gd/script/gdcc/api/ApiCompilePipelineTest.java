@@ -1,6 +1,7 @@
 package gd.script.gdcc.api;
 
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
+import gd.script.gdcc.backend.c.build.ModuleLocalGodotBindingFixtureProjectBuilder;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -103,5 +104,71 @@ class ApiCompilePipelineTest {
         var entrySource = Files.readString(projectPath.resolve("entry.c"));
         assertTrue(entrySource.contains("GD_STATIC_SN(u8\"PipelineSmoke\")"), entrySource);
         assertTrue(entrySource.contains("GD_STATIC_SN(u8\"Helper\")"), entrySource);
+    }
+
+    @Test
+    void compileWithModuleLocalBindingKeepsGeneratedLinksAndNativeInputsStable(@TempDir Path tempDir) throws Exception {
+        var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
+        var api = ApiCompileTestSupport.newApi(new ModuleLocalGodotBindingFixtureProjectBuilder(compiler));
+        var projectPath = tempDir.resolve("module-local-project");
+
+        api.createModule("demo", "Module Local Demo");
+        api.setCompileOptions("demo", ApiCompileTestSupport.compileOptions(projectPath));
+        api.putFile("demo", "/src/module_local_smoke.gd", """
+                class_name ModuleLocalSmoke
+                extends RefCounted
+
+                func run() -> int:
+                    return 13
+                """);
+
+        var result = ApiCompileTestSupport.awaitResult(api, api.compile("demo"));
+        var artifact = result.artifacts().getFirst();
+        var normalizedProjectPath = projectPath.toAbsolutePath().normalize();
+
+        assertEquals(CompileResult.Outcome.SUCCESS, result.outcome());
+        assertEquals(
+                List.of(
+                        projectPath.resolve("entry.c"),
+                        projectPath.resolve("engine_method_binds.h"),
+                        projectPath.resolve("entry.h")
+                ),
+                result.generatedFiles()
+        );
+        assertEquals(
+                List.of(
+                        "/__build__/generated/entry.c",
+                        "/__build__/generated/engine_method_binds.h",
+                        "/__build__/generated/entry.h",
+                        "/__build__/artifacts/" + artifact.getFileName()
+                ),
+                result.outputLinks().stream().map(VfsEntrySnapshot.LinkEntrySnapshot::virtualPath).toList()
+        );
+        assertEquals(
+                List.of("engine_method_binds.h", "entry.c", "entry.h"),
+                api.listDirectory("demo", "/__build__/generated").stream().map(VfsEntrySnapshot::name).toList()
+        );
+        assertTrue(result.outputLinks().stream().noneMatch(link -> link.virtualPath().contains("godot_module_bindings")));
+
+        assertEquals(
+                List.of(
+                        normalizedProjectPath.resolve("entry.c"),
+                        normalizedProjectPath.resolve("include/godot/godot_binding.c")
+                ),
+                compiler.lastCFiles().stream().map(path -> path.toAbsolutePath().normalize()).toList()
+        );
+        assertEquals(
+                List.of(
+                        normalizedProjectPath.resolve("include/gdcc"),
+                        normalizedProjectPath.resolve("include/godot")
+                ),
+                compiler.lastIncludeDirs().stream().map(path -> path.toAbsolutePath().normalize()).toList()
+        );
+
+        var bindHeader = Files.readString(projectPath.resolve("engine_method_binds.h"));
+        assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
+        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
+        assertFalse(Files.exists(projectPath.resolve("godot_module_bindings.c")));
+        assertFalse(Files.exists(projectPath.resolve("godot_module_bindings.h")));
     }
 }

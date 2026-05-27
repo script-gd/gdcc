@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-final class GodotBindingSupport {
+public final class GodotBindingSupport {
     private static final @NotNull Set<String> C_KEYWORDS = Set.of(
             "auto", "break", "case", "char", "class", "const", "continue", "default", "do", "double",
             "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
@@ -443,11 +443,14 @@ final class GodotBindingSupport {
     }
 
     static @NotNull String zeroReturnByCType(@NotNull String cType) {
+        if (cType.strip().endsWith("*")) {
+            return "NULL";
+        }
         return switch (cType) {
             case "godot_bool" -> "false";
             case "godot_int" -> "(godot_int)0";
             case "godot_float" -> "(godot_float)0";
-            case "godot_Object *", "godot_Engine *", "godot_ClassDB *", "GDExtensionClassInstancePtr" -> "NULL";
+            case "GDExtensionClassInstancePtr" -> "NULL";
             case "godot_Variant" -> "godot_new_Variant_nil()";
             default -> "(" + cType + "){ 0 }";
         };
@@ -488,7 +491,7 @@ final class GodotBindingSupport {
         return C_KEYWORDS.contains(name) ? name + "_arg" : name;
     }
 
-    static @NotNull String cIdentifier(@NotNull String raw) {
+    public static @NotNull String cIdentifier(@NotNull String raw) {
         var identifier = raw.replaceAll("[^A-Za-z0-9_]", "_").replaceAll("_+", "_");
         if (identifier.isBlank()) {
             throw new IllegalArgumentException("Cannot render blank C identifier from '" + raw + "'");
@@ -499,7 +502,7 @@ final class GodotBindingSupport {
         return identifier;
     }
 
-    static @NotNull String escapeCString(@NotNull String value) {
+    public static @NotNull String escapeCString(@NotNull String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 

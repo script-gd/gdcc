@@ -44,9 +44,9 @@ static inline GDExtensionObjectPtr ${classDef.name}_object_ptr(${classDef.name}*
 static inline void ${classDef.name}_set_object_ptr(${classDef.name}* self, GDExtensionObjectPtr obj);
 
 const GDExtensionInstanceBindingCallbacks ${classDef.name}_class_binding_callbacks = {
-    .create_callback = NULL,
-    .free_callback = NULL,
-    .reference_callback = NULL,
+    NULL,
+    NULL,
+    NULL,
 };
 
 static void ${classDef.name}_class_bind_methods();
@@ -334,27 +334,26 @@ static void gdcc_bind_method${helper.renderFuncBindName(bindingData)}(
         <#assign returnMetadata = helper.renderBoundMetadata(bindingData.returnType, "godot_PROPERTY_USAGE_DEFAULT", "method return")>
         GDExtensionPropertyInfo return_info = gdcc_make_property_full(${returnMetadata.typeEnumLiteral}, GD_STATIC_SN(u8""), ${returnMetadata.hintEnumLiteral}, ${returnMetadata.hintStringExpr}, ${returnMetadata.classNameExpr}, ${returnMetadata.usageExpr});
     </#if>
-    GDExtensionClassMethodInfo method_info = {
-        .name = method_name,
-        .method_userdata = function,
-        .call_func = call_func,
-        .ptrcall_func = ptrcall_func,
-        .method_flags = GDEXTENSION_METHOD_FLAGS_DEFAULT<#if bindingData.staticMethod> | GDEXTENSION_METHOD_FLAG_STATIC</#if>,
-        <#if bindingData.returnType.typeName != "void">
-            .has_return_value = true,
-            .return_value_info = &return_info,
-            .return_value_metadata = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE,
-        <#else>
-            .has_return_value = false,
-        </#if>
-        .argument_count = ${bindingData.paramTypes?size},
-        .arguments_info = args_info,
-        .arguments_metadata = args_metadata,
-        <#if bindingData.defaultVariables?size gt 0>
-            .default_argument_count = ${bindingData.defaultVariables?size},
-            .default_arguments = default_args_ptrs,
-        </#if>
-    };
+    GDExtensionClassMethodInfo method_info = { 0 };
+    method_info.name = method_name;
+    method_info.method_userdata = function;
+    method_info.call_func = call_func;
+    method_info.ptrcall_func = ptrcall_func;
+    method_info.method_flags = GDEXTENSION_METHOD_FLAGS_DEFAULT<#if bindingData.staticMethod> | GDEXTENSION_METHOD_FLAG_STATIC</#if>;
+    <#if bindingData.returnType.typeName != "void">
+        method_info.has_return_value = true;
+        method_info.return_value_info = &return_info;
+        method_info.return_value_metadata = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE;
+    <#else>
+        method_info.has_return_value = false;
+    </#if>
+    method_info.argument_count = ${bindingData.paramTypes?size};
+    method_info.arguments_info = args_info;
+    method_info.arguments_metadata = args_metadata;
+    <#if bindingData.defaultVariables?size gt 0>
+        method_info.default_argument_count = ${bindingData.defaultVariables?size};
+        method_info.default_arguments = default_args_ptrs;
+    </#if>
     godot_classdb_register_extension_class_method(class_library, class_name, &method_info);
     // Clean up
     <#list bindingData.paramTypes as paramType>

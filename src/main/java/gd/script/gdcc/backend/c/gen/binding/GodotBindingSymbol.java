@@ -8,10 +8,10 @@ import java.util.Objects;
 
 /// Structural identity for a generated Godot binding wrapper.
 ///
-/// Hash values are lookup metadata, not wrapper identity.  The parameter ABI list deliberately
+/// Hash values are lookup metadata, not wrapper identity. The parameter ABI list deliberately
 /// keeps pointer constness / destination shape visible so future module-local generators cannot
 /// accidentally merge incompatible C call surfaces behind the same public function name.
-record GodotBindingSymbol(
+public record GodotBindingSymbol(
         @NotNull Family family,
         @NotNull String owner,
         @NotNull String name,
@@ -22,7 +22,7 @@ record GodotBindingSymbol(
         @Nullable Long primaryHash,
         @NotNull List<Long> compatibilityHashes
 ) {
-    GodotBindingSymbol {
+    public GodotBindingSymbol {
         Objects.requireNonNull(family);
         Objects.requireNonNull(owner);
         Objects.requireNonNull(name);
@@ -32,28 +32,30 @@ record GodotBindingSymbol(
         compatibilityHashes = List.copyOf(compatibilityHashes);
     }
 
-    @NotNull String signatureKey() {
+    public @NotNull String signatureKey() {
         var params = parameters.stream()
                 .map(parameter -> parameter.cType() + " " + parameter.abi())
                 .toList();
         return returnType + "(" + String.join(", ", params) + ")" + (vararg ? " vararg" : "");
     }
 
-    enum Family {
+    public enum Family {
+        SINGLETON,
+        CLASS_CONSTANT,
         BUILTIN,
         UTILITY,
         FIXED
     }
 
-    record Parameter(@NotNull String name, @NotNull String cType, @NotNull Abi abi) {
-        Parameter {
+    public record Parameter(@NotNull String name, @NotNull String cType, @NotNull Abi abi) {
+        public Parameter {
             Objects.requireNonNull(name);
             Objects.requireNonNull(cType);
             Objects.requireNonNull(abi);
         }
     }
 
-    enum Abi {
+    public enum Abi {
         VALUE,
         CONST_TYPE_PTR,
         MUTABLE_TYPE_PTR,

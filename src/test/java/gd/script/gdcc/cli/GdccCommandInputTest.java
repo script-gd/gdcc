@@ -6,8 +6,10 @@ import gd.script.gdcc.api.ModuleSnapshot;
 import gd.script.gdcc.api.VfsEntrySnapshot;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GdextensionMetadataFile;
+import gd.script.gdcc.backend.c.build.ModuleLocalGodotBindingFixtureProjectBuilder;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.enums.GodotVersion;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -444,6 +446,66 @@ class GdccCommandInputTest {
         );
     }
 
+    @Test
+    void moduleLocalBindingOutputKeepsCliGeneratedLinksAndNativeInputsStable(@TempDir Path tempDir)
+            throws IOException {
+        var source = writeSource(tempDir.resolve("module_local.gd"), validSource("ModuleLocalCliSmoke"));
+        var outputDir = tempDir.resolve("build/demo");
+        var compiler = CliCompileTestSupport.TestCompiler.succeeding();
+        var terminal = new Terminal(
+                compiler,
+                CliCompileTestSupport.newApi(new ModuleLocalGodotBindingFixtureProjectBuilder(compiler))
+        );
+
+        var exitCode = terminal.command().commandLine().execute(
+                "-o",
+                outputDir.toString(),
+                source.toString()
+        );
+
+        var result = CliCompileTestSupport.awaitLastResult(terminal.api, "demo");
+        var normalizedOutputDir = outputDir.toAbsolutePath().normalize();
+
+        assertEquals(0, exitCode);
+        assertEquals(
+                List.of(
+                        outputDir.resolve("entry.c").toAbsolutePath().normalize(),
+                        outputDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
+                        outputDir.resolve("entry.h").toAbsolutePath().normalize()
+                ),
+                result.generatedFiles()
+        );
+        assertEquals(
+                List.of(
+                        "/__build__/generated/entry.c",
+                        "/__build__/generated/engine_method_binds.h",
+                        "/__build__/generated/entry.h",
+                        "/__build__/artifacts/" + result.artifacts().getFirst().getFileName()
+                ),
+                result.outputLinks().stream().map(VfsEntrySnapshot.LinkEntrySnapshot::virtualPath).toList()
+        );
+        assertEquals(
+                List.of(
+                        normalizedOutputDir.resolve("entry.c"),
+                        normalizedOutputDir.resolve("include/godot/godot_binding.c")
+                ),
+                compiler.lastCFiles().stream().map(path -> path.toAbsolutePath().normalize()).toList()
+        );
+        assertEquals(
+                List.of(
+                        normalizedOutputDir.resolve("include/gdcc"),
+                        normalizedOutputDir.resolve("include/godot")
+                ),
+                compiler.lastIncludeDirs().stream().map(path -> path.toAbsolutePath().normalize()).toList()
+        );
+
+        var bindHeader = Files.readString(outputDir.resolve("engine_method_binds.h"), StandardCharsets.UTF_8);
+        assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
+        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
+        assertFalse(Files.exists(outputDir.resolve("godot_module_bindings.c")));
+        assertFalse(Files.exists(outputDir.resolve("godot_module_bindings.h")));
+    }
+
     private static void assertSourceFile(API api, String virtualPath, String displayPath, String source) {
         var entry = assertInstanceOf(VfsEntrySnapshot.FileEntrySnapshot.class, api.readEntry("demo", virtualPath));
         assertEquals(virtualPath, entry.virtualPath());
@@ -494,10 +556,23 @@ class GdccCommandInputTest {
     }
 
     private static final class Terminal {
-        private final CliCompileTestSupport.TestCompiler compiler = CliCompileTestSupport.TestCompiler.succeeding();
-        private final API api = CliCompileTestSupport.newApi(compiler);
+        private final CliCompileTestSupport.TestCompiler compiler;
+        private final API api;
         private final StringWriter out = new StringWriter();
         private final StringWriter err = new StringWriter();
+
+        private Terminal() {
+            this(CliCompileTestSupport.TestCompiler.succeeding());
+        }
+
+        private Terminal(@NotNull CliCompileTestSupport.TestCompiler compiler) {
+            this(compiler, CliCompileTestSupport.newApi(compiler));
+        }
+
+        private Terminal(@NotNull CliCompileTestSupport.TestCompiler compiler, @NotNull API api) {
+            this.compiler = compiler;
+            this.api = api;
+        }
 
         GdccCommand command() {
             return new GdccCommand(api, new PrintWriter(out, true), new PrintWriter(err, true));

@@ -3,9 +3,9 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.GeneratedFile;
 import gd.script.gdcc.backend.ProjectInfo;
-import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageBuffer;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
+import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageBuffer;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.InvalidInsnException;
@@ -53,6 +53,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -201,12 +202,13 @@ public class CCodegenTest {
         var cCode = generatedFileText(files, "entry.c");
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
         var hCode = generatedFileText(files, "entry.h");
-        System.out.println(hCode);
-        System.out.println(cCode);
         assertTrue(cCode.contains("Loading my_module"));
         assertTrue(bindHeaderCode.contains("GDEXTENSION_MY_MODULE_ENGINE_METHOD_BINDS_H"));
+        assertTrue(bindHeaderCode.contains("No module-local Godot wrappers were collected for this module."), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("godot_module_bindings"), bindHeaderCode);
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
         assertTrue(hCode.contains("#include \"engine_method_binds.h\""));
+        assertFalse(hCode.contains("godot_module_bindings"), hCode);
     }
 
     @Test
@@ -415,11 +417,14 @@ public class CCodegenTest {
                 bindHeaderCode,
                 "static inline godot_Node *godot_new_Node(void)",
                 "godot_classdb_construct_object(GD_STATIC_SN(u8\"Node\"))",
-                ".kind = \"engine_constructor\"",
-                ".function_name = \"godot_new_Node\"",
+                "gdcc_binding_lookup_context context = { 0 };",
+                "context.kind = \"engine_constructor\";",
+                "context.function_name = \"godot_new_Node\";",
                 "return (godot_Node *)object;",
                 "No exact engine method binds were collected for this module."
         );
+        assertFalse(bindHeaderCode.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"), bindHeaderCode);
+        assertFalse(bindHeaderCode.contains("\n                .kind = \"engine_constructor\""), bindHeaderCode);
         assertFalse(bindHeaderCode.contains("godot_new_RefCounted(void)"), bindHeaderCode);
         assertFalse(bindHeaderCode.contains("godot_classdb_construct_object2"), bindHeaderCode);
         assertFalse(bindHeaderCode.contains("godot_new_StringName_with_latin1_chars"), bindHeaderCode);
@@ -520,10 +525,9 @@ public class CCodegenTest {
             @Override
             @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                              @NotNull LirFunctionDef func,
-                                             @NotNull EngineMethodUsageBuffer usageBuffer,
-                                             @NotNull EngineConstructorUsageBuffer constructorUsageBuffer) {
+                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
                 sessionBodyCalled[0] = true;
-                return super.generateFuncBody(clazz, func, usageBuffer, constructorUsageBuffer);
+                return super.generateFuncBody(clazz, func, usageBuffer);
             }
         };
         codegen.prepare(ctx, module);
@@ -534,6 +538,100 @@ public class CCodegenTest {
         assertTrue(sessionBodyCalled[0], "generate() should render bodies through the session-bound helper path.");
         assertFalse(publicBodyCalled[0], "generate() should not route through the public no-op usage renderer.");
         assertTrue(bindHeaderCode.contains("gdcc_engine_method_bind_node_queue_free_P_RV("), bindHeaderCode);
+    }
+
+    @Test
+    public void generateShouldKeepCoreFilesWhenModuleLocalGodotWrappersAreCollected() throws Exception {
+        var workerClass = new LirClassDef("ModuleLocalWrapperWorker", "RefCounted");
+        var useWrapper = newFunction("use_module_local_wrapper", GdVoidType.VOID);
+        entry(useWrapper).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(useWrapper);
+
+        var module = new LirModule("module_local_wrapper_generation_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen() {
+            @Override
+            @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                             @NotNull LirFunctionDef func,
+                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
+                if (!func.getName().equals("use_module_local_wrapper")) {
+                    return super.generateFuncBody(clazz, func, usageBuffer);
+                }
+                usageBuffer.recordModuleLocalGodotBinding(moduleLocalConstantBinding());
+                return """
+                        goto entry;
+                        entry: // entry
+                        godot_Probe_READY();
+                        goto __finally__;
+                        __finally__: // __finally__
+                        return;
+                        """;
+            }
+        };
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var entrySource = generatedFileText(files, "entry.c");
+        var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
+        var entryHeader = generatedFileText(files, "entry.h");
+
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertTrue(entrySource.contains("godot_Probe_READY();"), entrySource);
+        assertTrue(bindHeaderCode.contains("static inline godot_int godot_Probe_READY(void)"), bindHeaderCode);
+        assertTrue(bindHeaderCode.contains("return (godot_int)13;"), bindHeaderCode);
+        assertFalse(entryHeader.contains("godot_module_bindings"), entryHeader);
+        assertFalse(bindHeaderCode.contains("godot_module_bindings"), bindHeaderCode);
+    }
+
+    @Test
+    public void failedSessionBodyRenderShouldNotLeakModuleLocalGodotBindingUsageIntoTheModuleSession() throws Exception {
+        var workerClass = new LirClassDef("ModuleLocalWrapperWorker", "RefCounted");
+        var invalid = newFunction("record_module_local_then_fail", GdVoidType.VOID);
+        entry(invalid).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(invalid);
+        var valid = newFunction("record_module_local_valid", GdVoidType.VOID);
+        entry(valid).setTerminator(new ReturnInsn(null));
+        workerClass.addFunction(valid);
+
+        var module = new LirModule("module_local_wrapper_failed_render_module", List.of(workerClass));
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen() {
+            @Override
+            @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
+                                             @NotNull LirFunctionDef func,
+                                             @NotNull GodotBindingUsageBuffer usageBuffer) {
+                usageBuffer.recordModuleLocalGodotBinding(moduleLocalConstantBinding());
+                if (func.getName().equals("record_module_local_then_fail")) {
+                    throw new InvalidInsnException("forced module-local render failure");
+                }
+                return """
+                        goto entry;
+                        entry: // entry
+                        godot_Probe_READY();
+                        goto __finally__;
+                        __finally__: // __finally__
+                        return;
+                        """;
+            }
+        };
+        codegen.prepare(ctx, module);
+
+        var usageSession = new GodotBindingUsageSession(Set.of());
+        assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, invalid, usageSession));
+        assertTrue(usageSession.moduleLocalBindings().isEmpty(), "Failed function renders must not commit module-local usage.");
+
+        var validBody = codegen.generateFuncBody(workerClass, valid, usageSession);
+        var snapshot = usageSession.moduleLocalBindings();
+
+        assertTrue(validBody.contains("godot_Probe_READY();"), validBody);
+        assertEquals(1, snapshot.size(), snapshot.toString());
+        assertEquals("godot_Probe_READY", snapshot.getFirst().symbol().cFunctionName());
     }
 
     @Test
@@ -565,13 +663,13 @@ public class CCodegenTest {
         var codegen = new CCodegen();
         codegen.prepare(ctx, module);
 
-        var usageSession = new EngineMethodUsageSession();
+        var usageSession = new GodotBindingUsageSession(Set.of());
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, invalid, usageSession));
         assertInstanceOf(InvalidInsnException.class, ex);
-        assertTrue(usageSession.snapshot().isEmpty(), "Failed function renders must not commit helper usage.");
+        assertTrue(usageSession.engineMethods().isEmpty(), "Failed function renders must not commit helper usage.");
 
         var validBody = codegen.generateFuncBody(workerClass, valid, usageSession);
-        var snapshot = usageSession.snapshot();
+        var snapshot = usageSession.engineMethods();
 
         assertTrue(validBody.contains("gdcc_engine_call_node_queue_free_P_RV"), validBody);
         assertEquals(1, snapshot.size(), snapshot.toString());
@@ -2427,6 +2525,10 @@ public class CCodegenTest {
 
     private static LirInstruction.VariableOperand varOperand(String id) {
         return new LirInstruction.VariableOperand(id);
+    }
+
+    private static ModuleLocalGodotBinding moduleLocalConstantBinding() {
+        return ModuleLocalGodotBinding.classConstant("Probe", "READY", "13");
     }
 
     private static ExtensionAPI engineHelperApi() {

@@ -31,8 +31,8 @@
     的核心 3 文件公共契约仍保持不变。
   - 阶段 3 不能假定 `shared-include` 或项目 `include` 是干净目录；旧 `gdextension-lite` 子树即使残留，
     也必须被 `CProjectBuilder` 的显式输入规则排除。
-  - 阶段 4 引入可选 `godot_module_bindings.h/.c` 时，才反向更新 API / CLI 层 generated file、output link 和
-    `/generated` 目录列表断言。
+  - 阶段 4 接入 module-local wrapper 使用集时，仍保持模块级 C 代码只由 `entry.c` 一个 translation unit 承载；
+    不新增 generated `.c`、API / CLI generated file、output link 或 `/generated` 目录列表公共契约。
 - 目标 Godot ABI：`GodotVersion.V451` / Godot 4.5.1
 - 目标 Godot ABI 配置：仅支持 `float_64`，也就是 64-bit pointer + single-precision `real_t`。
   `REAL_T_IS_DOUBLE` 和 32-bit Godot build configuration 不在 GDCC C backend 支持范围内，生成的 ABI support
@@ -229,7 +229,8 @@ class method wrapper 和 singleton getter 等符号。
   - 使用 `godot_variant_get_ptr_utility_function(...)` 和 lookup hash 实现全量 utility function wrapper。
 - engine class method/property/singleton/constant wrapper 不放入静态 `include_451/godot` 全量预生成文件。
   - 固定 helper/template 必需的 engine wrapper 进入 `godot_fixed_binding.h/.c`。
-  - 脚本实际使用且未被 fixed 覆盖的残余 engine wrapper 进入项目级 `godot_module_bindings.h/.c`。
+  - 脚本实际使用且未被 fixed 覆盖的残余 engine wrapper 进入 `engine_method_binds.h` 的模块级
+    `static inline` section。
   - exact engine `CALL_METHOD` 不回退到这些 public wrapper；它继续只走 `engine_method_binds.h` 中的 backend-owned helper。
 - `src/main/c/codegen/include_451/godot/godot_binding.h`
   - 可选聚合头，替代 `<gdextension-lite.h>` 的 include 体验。
@@ -252,20 +253,24 @@ class method wrapper 和 singleton getter 等符号。
   - 只列出当前 runtime/helper/template 需要、且不由 interface / builtin / utility 全量输出覆盖的 wrapper，
     并作为后续模块级使用集的 provided set 输入。
 
-模块级 generated binding 不放在 `include_451/godot` 下，而是和 `entry.c`、`entry.h`、`engine_method_binds.h`
-一样由 `CCodegen.generate()` 作为 `GeneratedFile` 输出到生成项目目录：
+模块级 generated binding 不放在 `include_451/godot` 下，也不生成新的模块级 `.c` 文件。阶段 4 的
+module-local wrapper 作为 `engine_method_binds.h` 中的 `static inline` section 输出，并由现有
+`entry.h` include 链进入唯一的模块级 `entry.c` translation unit：
 
-- `godot_module_bindings.h`
-  - 只在 module-local usage snapshot 非空时生成。
-  - `#include <godot_binding.h>`，复用 ABI、interface、builtin、utility、fixed runtime 声明。
-  - 不包含 `entry.h`，不读取 `class_library` 这类 entry translation unit 私有状态。
-- `godot_module_bindings.c`
-  - 只在 module-local usage snapshot 非空时生成。
-  - `#include "godot_module_bindings.h"`，作为独立 generated C translation unit 编译。
-  - 不由静态 `godot_binding.c` 聚合，也不复制到 include root。
-
-若担心第一步改动过大，可以先固定 `godot_binding.c` 聚合所有静态 runtime `.c`；module-local `.c` 从设计上始终是项目生成输入，
-不再塞回 runtime 聚合入口。
+- `engine_method_binds.h`
+  - 保持 exact engine method helper header 的现有职责，并新增 module-local Godot wrapper section。
+  - 只在 module-local usage snapshot 非空时输出该 section；snapshot 为空时仍只包含 constructor / exact method helper 区块。
+  - module-local wrapper 只能使用 header-visible 依赖：`entry.h` 先 include `<godot_binding.h>`、
+    `<gdcc_helper.h>`，再 include `"engine_method_binds.h"`，因此 wrapper 可以复用 `GD_STATIC_SN(...)`、
+    `gdcc_binding_lookup_fail(...)` 和 entry translation unit 的 `class_library`。
+  - wrapper 必须是 `static inline`，避免新增动态导出符号和跨 translation unit 链接表面。
+- `CCodegen.generate()`
+  - 继续只返回 `entry.c`、`engine_method_binds.h`、`entry.h` 三个核心 generated files。
+  - 不生成 `godot_module_bindings.h`、`godot_module_bindings.c` 或任何其它 module-local `.c`。
+- `CProjectBuilder`
+  - native compiler input 继续是本轮 generated `.c` 中的 `entry.c` 加固定 runtime
+    `<includeRoot>/godot/godot_binding.c`。
+  - 不因为 module-local wrapper snapshot 非空而新增 projectPath 下的 `.c` 输入。
 
 ## GDExtension interface wrapper 生成 contract
 
@@ -525,7 +530,7 @@ typed container 和 GDCC-owned helper 边界：
 - `src/main/java/gd/script/gdcc/backend/c/gen/binding/FixedGodotBindings`
   - 源码维护固定 wrapper 清单的抽象生成骨架，按 `GodotVersion` 分派到具体版本数据集。
   - `Godot451FixedBindings` 只维护 Godot 4.5.1 固定 wrapper 清单；新版本应添加新的数据子类。
-  - 使用 `List.of(...)` / record literal 描述 `GodotBindingSymbol` 或 `GodotBindingSpec`，保持 review 可读。
+  - 使用 `List.of(...)` / record literal 描述 `GodotBindingSymbol`，保持 review 可读。
   - 只包含不由全量 interface、全量 builtin、全量 utility 覆盖的固定 runtime/helper/template wrapper。
   - 对 `_Generic`、宏拼接、FreeMarker 拼接和 Java helper 生成的固定调用，必须在这里显式列出。
 - `src/main/java/gd/script/gdcc/backend/c/gen/binding/GdccHelperBindingScanner.java`
@@ -613,40 +618,58 @@ wrapper 来源按层分离：
 - fixed runtime wrapper：只包含 `FixedGodotBindings` 当前版本数据列出的具体符号，生成到
   `godot_fixed_binding.h/.c`；它不按 singleton、class constant、engine class 这类大类拥有符号。
 - module-local wrapper：只管理经过 interface/builtin/utility/fixed provided set 过滤后仍随模块变化的具体符号，
-  例如未 provided 的 engine constructor、engine public method/property helper、singleton getter、class constant helper。
+  例如未 provided 的 engine public method/property helper、singleton getter、class constant helper。
 
-因此 `CCodegen.generate()` 只需要为 module-local wrapper 增加一个 backend binding usage session，和现有
-`EngineMethodUsageSession` 并列；builtin / utility 不进入模块级输出。
+因此 `CCodegen.generate()` 只需要持有一个总的 backend binding usage session。该 session 对外作为
+`GodotBindingUsageSession` API，内部再拆分 exact engine method、engine constructor、module-local singleton/constant
+三条使用集；builtin / utility 不进入模块级输出。
 
-建议新增 Java 类型：
+当前 Java 类型：
 
-- `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingUsageSession.java`
-- `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingUsageBuffer.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/usage/GodotBindingUsageSession.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/usage/GodotBindingUsageBuffer.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/usage/AbstractUsageSession.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/usage/AbstractUsageBuffer.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/ModuleLocalGodotBinding.java`
 - `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingSymbol.java`
-- `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingGenerator.java`
+- `src/main/java/gd/script/gdcc/backend/c/gen/binding/GodotBindingProvidedSymbols.java`
+- `src/main/c/codegen/template_451/engine_method_binds.h.ftl`
 
 职责划分：
 
-- `GodotBindingSymbol` 表示一个需要声明/实现的 Godot wrapper：
+- `GodotBindingUsageSession` 是 `CCodegen` 使用的总 API：
+  - 对外提供 `newFunctionBuffer()`、`commit(buffer)`、`engineMethods()`、`engineConstructors()`、
+    `moduleLocalBindings()`；测试可额外读取 provided/module-local C function name snapshot。
+  - 内部拥有 exact engine method、engine constructor、module-local binding 三套 collector；生成器不再在调用链中并列传递多组
+    session/buffer 参数。
+  - 通过 `GodotBindingProvidedSymbols` 加载 interface/builtin/utility/fixed provided set。
+- `GodotBindingUsageBuffer` 是函数级临时记录器：
+  - 同时承载 engine method、engine constructor、module-local binding 三类记录入口。
+  - 函数体、property init apply body、模板 facade 各自使用独立 buffer；对应 render 成功后才 commit，失败时丢弃，
+    不污染模块级 session。
+- `ModuleLocalGodotBinding` 表示当前会在 module-local header section 中输出的 wrapper：
+  - 当前只允许 `Singleton` 和 `ClassConstant` 两条路径。
+  - 已去掉无生产使用点的 generic `CLASS_METHOD` 类别；exact engine method/property 继续走 backend-owned
+    `gdcc_engine_call*` / accessor 使用集，engine constructor 继续走 constructor 使用集。
+- `GodotBindingSymbol` 表示 Godot wrapper 的结构性 C surface：
   - 预生成层：builtin constructor/destructor、variant pack/unpack、builtin member/index/key/operator helper、utility function。
   - 固定层：固定 helper/template 当前实际消费、且不属于 interface/builtin/utility 全量集合的具体符号。
-  - 模块层：脚本或模板在本模块实际需要、且不属于 provided set 的具体 engine/class/singleton 符号。
-- `GodotBindingUsageBuffer` 服务单函数 render，避免失败函数污染模块级使用集。
-- `GodotBindingUsageSession` 在 `generate()` 中 commit 成功的函数使用集，并加载 interface/builtin/utility/fixed provided set。
-- `GodotBindingGenerator` 根据 session snapshot 只生成 module-local `godot_module_bindings.h/.c`；
-  不再生成 `godot_builtin_generated.*` 或 `godot_utility_generated.*`。
+  - 模块层：脚本或模板在本模块实际需要、且不属于 provided set 的具体 singleton/class constant 符号。
+- `engine_method_binds.h.ftl` 根据 `moduleLocalBindings()` snapshot 渲染 module-local `static inline` wrapper section；
+  Java 侧只传递结构化 binding 列表，不再用 Java 字符串拼接生成 singleton/class constant C wrapper。
 
 去重规则：
 
-- `GodotBindingSymbol` 必须是 canonical key，至少包含 kind、owner/type、member/method/constant name、constructor index/operator 或参数 suffix、参数 ABI、return ABI、static/vararg 标记；参数 ABI 必须区分 initialized mutable pointer、const pointer 和 uninitialized destination pointer；indexed engine property helper 若内联固定 index，该 index 是 wrapper 调用形状的一部分。
-- `hash` / `hashCompatibility` 不进入 `GodotBindingSymbol`；它们属于 `GodotBindingSpec` 的 lookup metadata，用于 Godot pointer lookup 和兼容性验证。
-- `GodotBindingUsageSession` 内部使用 `LinkedHashMap<GodotBindingSymbol, GodotBindingSpec>`，与当前 `EngineMethodUsageSession` 的稳定顺序模式一致。
+- module-local key 由 `ModuleLocalGodotBinding` 的 family、owner、name、C function name 和 signature 组成。
+- 当前 module-local singleton/class constant 不保存 method lookup hash；exact engine method lookup hash 保留在
+  `EngineMethodUsageSession` 对应的 `ResolvedMethodCall` 路径内。
+- `GodotBindingUsageSession` 内部 collector 使用 `LinkedHashMap` 保持稳定顺序；该顺序匹配首次成功 body render 的 hit order。
 - session 初始化时读入 interface/builtin/utility/fixed provided set，并把这些 symbol 标记为 `providedByRuntime = true`。
 - 函数级 `GodotBindingUsageBuffer` 渲染成功后再 commit；commit 时 `putIfAbsent`，脚本再次使用预生成/fixed wrapper 或同一脚本内重复使用同一 wrapper 都不会生成第二份实现。
 - 若两个不同 spec 生成同一个 C function name，但结构性 signature 或 ABI 不一致，必须 fail-fast；这表示命名规则冲突，不能靠后写覆盖。
-- 若同一个 canonical symbol 的 lookup metadata 不兼容，也必须 fail-fast；不能把 hash 变化当成第二个 wrapper 身份来规避冲突。
-- `GodotBindingGenerator` 只输出 `providedByRuntime = false` 的 module-local wrapper；生成的 `godot_module_bindings.h`
-  必须 include `godot_binding.h` 来复用 interface/builtin/utility/fixed wrapper 声明。
+- 若同一个 canonical module-local binding 的 metadata 不兼容，也必须 fail-fast；当前主要覆盖 class constant value 漂移。
+- `engine_method_binds.h.ftl` 只输出 `providedByRuntime = false` 的 module-local wrapper；输出位置必须已经位于
+  `entry.h` include 链路中，以复用 `<godot_binding.h>`、`<gdcc_helper.h>` 和 entry translation unit 的状态。
 - 预生成集合或固定清单更新后，`CCodegen` 不需要改 builtin/utility 调用点；后续脚本中使用同一 wrapper 会被 session 识别为已由 runtime support 提供。
 
 另需新增一个固定 interface generator：
@@ -665,28 +688,30 @@ wrapper 来源按层分离：
 当前代码没有独立的 `CCodeGenContext`，实际上下文链路是：
 
 1. `CCodegen.prepare(CodegenContext, LirModule)` 注册 GDCC 类并创建 `CGenHelper`。
-2. `CCodegen.generate()` 创建模块级 session，构造 `GenerateRenderFacade`，再渲染 `entry.c.ftl`。
+2. `CCodegen.generate()` 创建模块级 session 和模板级 buffer，构造 `GenerateRenderFacade`，再渲染 `entry.c.ftl`。
 3. 模板通过 `bodyRender.generateFuncBody(classDef, func)` 进入 Java 函数体渲染。
-4. `generateFuncBody(clazz, func, engineSession, godotSession)` 为每个函数创建函数级 buffer，
+4. `generateFuncBody(clazz, func, usageSession)` 为每个函数创建函数级 buffer，
    构造 `CBodyBuilder`，逐条分发 `CInsnGen`。
 5. 函数体渲染成功后才 commit buffer；渲染失败不得污染模块级使用集。
-6. `entry.c` 渲染完成后，`CCodegen.generate()` 从 session snapshot 生成可选 `godot_module_bindings.h/.c`，
-   再和核心文件一起返回 `GeneratedFile`。
+6. `entry.c` 渲染成功后，`CCodegen.generate()` 先 commit 模板级 buffer，再取得 session snapshot，并把 module-local wrapper section
+   作为 `engine_method_binds.h` 的一部分渲染；最终仍只返回核心 3 个 `GeneratedFile`。
 
-因此 module-local `GodotBindingUsageSession` 应复制 `EngineMethodUsageSession` 的所有权边界，而不是放进全局单例。
-它只记录未被 interface/builtin/utility/fixed provided set 覆盖的残余 wrapper：
+因此 `GodotBindingUsageSession` 应保持 caller-owned module session 所有权边界，而不是放进全局单例。
+它通过内部子 collector 管理 exact engine method、engine constructor、module-local singleton/class constant：
 
-- `CCodegen.generate()` 同时持有 `EngineMethodUsageSession` 与 `GodotBindingUsageSession`。
-- `GodotBindingUsageSession` 构造时读取 interface symbol set、全量 builtin symbol set、全量 utility symbol set、fixed source-list snapshot，把它们放入 provided set。
-- `GenerateRenderFacade` 需要扩展出显式模板记录入口，例如 `recordGodotBinding(String cFunctionName, String useSite)`，
-  仅用于模板中仍可能产生 module-local wrapper 的路径；全量/固定 provided symbol 不需要登记来驱动生成。
-- `CCodegen.generateFuncBody(clazz, func, engineBuffer, godotBuffer)` 创建同时持有两个 buffer 的 `CBodyBuilder`。
-- `CBodyBuilder` 新增 `recordUsedGodotBinding(GodotBindingRequest request)`，并在 `callVoid(...)`、`callAssign(...)`
-  中对 `funcName.startsWith("godot_")` 的调用先查询 provided set；provided symbol 只做验证，不进入 module-local 输出。
-- 对 `appendLine(...)` / `appendRaw(...)` 直接拼出的 `godot_*` 调用，不依赖字符串扫描兜底；对应 generator 必须在 emit 点显式调用
-  `recordUsedGodotBinding(...)`，前提是该符号不属于 interface/builtin/utility/fixed provided set。
-- `CCodegen.generatePropertyInitApplyBody(...)` 当前直接创建 `new CBodyBuilder(helper, clazz, initFunction)`，阶段 4 必须改成接收并使用
-  `GodotBindingUsageBuffer`，用于记录 engine property/class constant 等 module-local wrapper；constructor/copy/destroy 等 builtin wrapper 已由全量 builtin 提供。
+- `CCodegen.generate()` 持有一个 `GodotBindingUsageSession`。
+- `GodotBindingUsageSession` 构造时读取 interface symbol set、全量 builtin symbol set、全量 utility symbol set、fixed source-list snapshot，把它们放入 module-local provided set。
+- `GenerateRenderFacade` 提供类型化 `recordModuleLocalGodotBinding(ModuleLocalGodotBinding binding)`，
+  仅写入 `CCodegen.generate()` 创建的模板级 buffer，用于模板中仍可能产生 module-local singleton/class constant wrapper 的路径；
+  全量/固定 provided symbol 不需要登记来驱动生成。
+- `CCodegen.generateFuncBody(clazz, func, usageSession)` 创建一个总 `GodotBindingUsageBuffer`，并传给 `CBodyBuilder`。
+- `CBodyBuilder` 通过 `recordUsedEngineMethodCall(...)`、`recordUsedEngineConstructor(...)`、
+  `recordModuleLocalGodotBinding(...)` 分别记录到总 buffer 的对应子 collector；`callVoid(...)` / `callAssign(...)`
+  中对 `funcName.startsWith("godot_")` 的调用先查询 provided/module-local set。
+- 对 `appendLine(...)` / `appendRaw(...)` 直接拼出的 `godot_*` 调用，不依赖字符串扫描兜底；对应 generator 必须在 emit 点显式登记
+  `ModuleLocalGodotBinding`，前提是该符号不属于 interface/builtin/utility/fixed provided set。
+- `CCodegen.generatePropertyInitApplyBody(...)` 接收同一个 `GodotBindingUsageSession`，创建函数级 buffer 并在成功后 commit；
+  constructor/copy/destroy 等 builtin wrapper 已由全量 builtin 提供。
 
 记录入口按“尽量集中，必要时显式”的策略分层：
 
@@ -695,8 +720,8 @@ wrapper 来源按层分离：
   - `CallGlobalInsnGen` 的 utility wrapper、`NewDataInsnGen` 的 String/StringName/Variant constructor、`PackUnpackVariantInsnGen`、
     `CBuiltinBuilder`、builtin property/operator/index/key 路径均由全量 builtin/utility 提供，不驱动 module-local 生成。
   - `CallMethodInsnGen` dynamic fallback、engine property、class constant 等残余路径仍可登记 module-local wrapper。
-  - engine class constructor 已由阶段 3.2 的 constructor usage snapshot 按需生成；阶段 4 默认不再把它作为
-    `GodotBindingUsageSession` 的新增 wrapper kind。
+  - engine class constructor 已由阶段 3.2 的 constructor usage snapshot 按需生成；阶段 4 只把该 snapshot
+    收进总 `GodotBindingUsageSession` 的内部 constructor collector，不作为 `ModuleLocalGodotBinding` 类别。
 - `CBodyBuilder.emitDestroy(...)`
   - `godot_object_destroy` 是 interface wrapper。
   - `godot_<Builtin>_destroy` 来自全量 builtin wrapper，不进入 module-local usage set。
@@ -726,7 +751,7 @@ wrapper 来源按层分离：
   - engine property wrapper `godot_<Class>_get_<property>` / `godot_<Class>_set_<property>` 只在 exact engine route 之外仍需要时生成。
   - unknown object fallback 的 `godot_Object_get` / `godot_Object_set` 来自 fixed source-list provided set。
 - `BackendMethodCallResolver`
-  - exact `ENGINE` route 继续生成 `gdcc_engine_call*`，只进入 `EngineMethodUsageSession`。
+  - exact `ENGINE` route 继续生成 `gdcc_engine_call*`，只进入总 `GodotBindingUsageSession` 的 engine method 子 collector。
   - `BUILTIN` route 生成 `godot_<Builtin>_<method>`，来自全量 builtin provided set。
   - `GDCC` route 生成 `Owner_method`，不进入 Godot binding usage。
   - `OBJECT_DYNAMIC` / `VARIANT_DYNAMIC` 的 `godot_Object_call` / `godot_Variant_call` 来自 fixed source-list provided set。
@@ -753,49 +778,46 @@ wrapper 来源按层分离：
 防重防漏策略：
 
 - 非 interface `godot_*` 函数名先查询 provided set：interface、全量 builtin、全量 utility、fixed source-list。
-- 只有不在 provided set 且确认为具体 engine public wrapper、engine property helper、singleton getter 或 class constant helper
-  的符号进入 `GodotBindingUsageBuffer`。
-- module-local generator 只输出未 provided 的 symbol。
+- 只有不在 provided set 且确认为具体 singleton getter 或 class constant helper 的符号进入 module-local binding collector。
+- module-local header renderer 只输出未 provided 的 symbol。
 - generated C 文本扫描只做验收：所有 `godot_*` 调用必须属于 interface set、builtin set、utility set、fixed set、module-local generated set、
   GDCC-owned macro/helper 白名单或类型名白名单。扫描失败表示漏记或清单缺失。
 - 同一 canonical symbol 重复出现只保留首次顺序；同一 C function name 对应不同结构性 signature/ABI 直接报错。
-- 同一 canonical symbol 的 lookup metadata 必须能按对应 wrapper kind 的规则证明兼容：
-  class/builtin method 可用 Godot `hash_compatibility` 证明，utility function 只能接受相同 hash；
-  不兼容时报错，但不生成第二个 symbol。
+- 同一 canonical module-local binding 的 metadata 必须兼容；当前 class constant value 漂移会 fail-fast，
+  但不生成第二个 symbol。method hash 兼容规则留在 exact engine method / builtin / utility generator 路径内。
 - 扫描不负责发现 wrapper、不负责补登记、不负责生成；新增路径要么落入全量预生成/固定清单，要么显式登记为 module-local。
 
-## 模块级 generated binding 文件进入编译的规则
+## 模块级 wrapper 输出与编译规则
 
 当前 `GeneratedFile.saveTo(projectPath)` 会把 codegen 产物写到生成项目目录；`CProjectBuilder` 再把本轮
-`GeneratedFile` 中所有 `.c` 文件加入 native compiler input。编译器 include path 只给 include root 下的静态目录，
-不会把 `projectPath` 作为 `-I` 传入。因此模块级 binding 文件必须沿用现有 `entry.c` / `entry.h` /
-`engine_method_binds.h` 的项目生成物模型，而不能让静态 include root 文件反向 include 项目目录文件。
+`GeneratedFile` 中所有 `.c` 文件加入 native compiler input。为保持当前模块级单翻译单元模型，阶段 4
+不得生成新的 module-local `.c`。module-local wrapper 必须沿用现有 `entry.c` / `entry.h` /
+`engine_method_binds.h` 的项目生成物模型，由 header-only `static inline` code 进入 `entry.c`。
 
 最佳方案固定为：
 
 - `godot_binding.h/.c` 只代表静态 runtime support。
   - header 只聚合 `godot_abi.h`、`godot_interface.h`、`godot_builtin.h`、`godot_utility.h`、`godot_fixed_binding.h`。
   - source 只聚合 `godot_interface.c`、`godot_builtin.c`、`godot_utility.c`、`godot_fixed_binding.c`。
-  - 任何 module-local header/source 都不得被它们 include。
-- module-local generator 输出 `godot_module_bindings.h/.c` 到 `projectPath` 根目录。
-  - 这两个文件与 `entry.c`、`entry.h`、`engine_method_binds.h` 是同级 generated files。
-  - `godot_module_bindings.h` 用 angle include 引入 `<godot_binding.h>`，不 include `"entry.h"`。
-  - `godot_module_bindings.c` 用 quote include 引入 `"godot_module_bindings.h"`。
-- `entry.h.ftl` 在 module-local snapshot 非空时生成 `#include "godot_module_bindings.h"`。
-  - `entry.c` 仍只需要 `#include "entry.h"`。
-  - 这样 entry translation unit 能看到 module-local wrapper 声明，且 quoted include 在同目录命中。
+  - 任何 module-local wrapper 都不得被它们 include 或聚合。
+- module-local header renderer 输出到 `engine_method_binds.h`。
+  - `engine_method_binds.h` 与 `entry.h`、`entry.c` 仍是同一模块生成物链路。
+  - `entry.h` 继续先 include `<godot_binding.h>` 与 `<gdcc_helper.h>`，再 include `"engine_method_binds.h"`。
+  - module-local wrapper section 因此和 engine constructor wrapper、exact engine helper 一样进入 `entry.c`
+    这一唯一模块级 translation unit。
 - `CProjectBuilder` 不新增 `projectPath` include dir。
   - 阶段 3 仍只追加一个静态 runtime C 输入：`<includeRoot>/godot/godot_binding.c`。
-  - 阶段 4 后，`godot_module_bindings.c` 若作为 `GeneratedFile` 返回，会被现有 generated `.c` 收集逻辑自动加入 `cFiles`。
-  - 不扫描 `projectPath` 寻找额外 `.c`，只编译本轮 codegen 返回的 generated `.c`，避免 stale 文件进入编译。
+  - 阶段 4 后，module-local wrapper snapshot 非空也不得让 projectPath 下出现额外 generated `.c`。
+  - 不扫描 `projectPath` 寻找额外 `.c`，只编译本轮 codegen 返回的 `entry.c` 和固定 runtime source，
+    避免 stale 文件进入编译。
   - 这条规则还要覆盖 shared include 残留：`CProjectBuilder` 不得扫描或按存在性追加
     `<includeRoot>/gdextension-lite/gdextension-lite-one.c`，否则 `ResourceExtractor` 不删除旧文件的语义会让迁移前 vendor
     重新参与编译。
 
 这条规则解决两个边界问题：
 
-- 静态 include root 不需要也不能知道某个模块的 generated header。
-- “继续只追加一个 runtime binding C 文件”只描述 runtime support；模块级 generated `.c` 和 `entry.c` 一样属于当前模块的普通编译输入。
+- 静态 include root 不需要也不能知道某个模块的 generated wrapper。
+- “继续只追加一个 runtime binding C 文件”同时也是阶段 4 的 native input 约束：模块级 C 输入仍只有 `entry.c`。
 
 ## ExtensionAPI metadata 与 engine property 语义前置重构
 
@@ -1038,8 +1060,8 @@ runtime lookup failure 规则：
   - `#include <gdextension/gdextension_interface.h>` 改为新 ABI include。
   - `#include <gdextension-lite.h>` 改为 `#include <godot_binding.h>` 或按需包含 `godot_abi.h` / `godot_interface.h`。
   - 保持 `#include <gdcc_helper.h>` 和 `#include "engine_method_binds.h"`。
-  - 阶段 4 后，当 module-local usage snapshot 非空时，额外 `#include "godot_module_bindings.h"`；
-    该 generated header 与 `entry.h` 同在项目目录，不走静态 include root。
+  - 阶段 4 后，module-local wrapper 仍由 `"engine_method_binds.h"` 承载，不额外 include
+    `godot_module_bindings.h`。
 - `src/main/c/codegen/template_451/entry.c.ftl`
   - 删除 `#include <implementation-macros.h>`。
   - `gdextension_lite_initialize(p_get_proc_address);` 改为 `if (!godot_initialize_interface(p_get_proc_address)) { return false; }`。
@@ -1075,14 +1097,15 @@ runtime lookup failure 规则：
   - 不能依赖 `ResourceExtractor` 清理旧文件。若阶段 3 仍暂时保留 vendor zip 资源，`CProjectBuilder` 必须改为显式抽取
     `gdcc/**` 与 `godot/**` 等非 vendor 资源，或在同阶段删除 vendor zip；不得继续盲目抽取整个 `include_451`
     后再用存在性扫描捞编译输入。
-  - 继续把本轮 `CCodegen.generate()` 返回的所有 generated `.c` 加入 `cFiles`；阶段 4 的
-    `godot_module_bindings.c` 依靠这条已有规则进入编译。
+  - 继续把本轮 `CCodegen.generate()` 返回的所有 generated `.c` 加入 `cFiles`；阶段 4 不新增 module-local
+    generated `.c`，因此这里仍只收集 `entry.c`。
   - 注释和测试断言中不再提 `gdextension-lite` amalgamation。
   - 该切换只能在 `godot_binding.c` 已聚合 `godot_interface.c` 和 `godot_fixed_binding.c` 后执行；
     不能早于 fixed runtime wrapper 阶段。
 - `CCodegen`
   - 继续生成 `entry.c`、`engine_method_binds.h`、`entry.h`。
-  - 当 module-local usage snapshot 非空时，新增生成 `godot_module_bindings.h/.c`。
+  - 当 module-local usage snapshot 非空时，把 module-local wrapper section 渲染进 `engine_method_binds.h`；
+    不新增 generated file。
   - 并列管理 `EngineMethodUsageSession` 与 `GodotBindingUsageSession`。
   - 构造 `GodotBindingUsageSession` 时加载 interface/builtin/utility/fixed provided set，把预生成和固定 wrapper 作为 runtime-provided symbol 注入去重表。
   - `GenerateRenderFacade` 或 `CBodyBuilder` 需要同时持有 engine method buffer 与 Godot binding buffer；仍保持函数渲染成功后再 commit。
@@ -1852,8 +1875,8 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
 - `CProjectBuilder`
   - `includeDirs = List.of(includeRoot.resolve("gdcc"), includeRoot.resolve("godot"))`。
   - `cFiles` 追加 `<includeRoot>/godot/godot_binding.c`；该文件必须存在且是 regular file，否则构建准备阶段直接失败。
-  - `cFiles` 仍先收集本轮 `GeneratedFile` 中所有 `.c`，因此阶段 4 后的 `godot_module_bindings.c`
-    不需要额外扫描逻辑即可进入编译。
+  - `cFiles` 仍先收集本轮 `GeneratedFile` 中所有 `.c`；阶段 4 不生成 `godot_module_bindings.c`，
+    因此 module-local wrapper snapshot 非空也不能改变 native input 数量。
   - 删除旧的 `Files.exists(includeRoot.resolve("gdextension-lite").resolve("gdextension-lite-one.c"))`
     存在即加入分支；旧 vendor 子树即使残留在 `shared-include` 或项目 `include`，也不能影响本轮 native input。
   - 不把 `projectPath` 加入 include dirs；项目级 generated header 只能通过同目录 quote include 链路进入 translation unit。
@@ -2155,7 +2178,7 @@ wrapper 面。
 - 本阶段优先不改变 `CompileResult.generatedFiles()`、`outputLinks()` 和 API/CLI 的核心 generated file 契约。
   engine constructor 的按需 wrapper 应先作为 `engine_method_binds.h` 中的模块局部 `static inline` 生成物出现。
   该 header 已由 `entry.h` 无条件 include，当前角色实际是 module-local exact engine helper header，不只是
-  method-bind helper 容器。阶段 4 若要迁移到 `godot_module_bindings.h/.c`，必须作为后续显式重构处理。
+  method-bind helper 容器。阶段 4 继续沿用这个落点；若未来要迁移到独立 module binding 文件，必须作为后续显式重构处理。
 
 实现计划：
 
@@ -2222,7 +2245,7 @@ wrapper 面。
   - 不要在独立 `godot_module_bindings.c` 中直接使用 `GD_STATIC_SN(...)`，除非同时引入该 translation unit 自己的
     deinitialize hook 或把 `gdcc_string_name.h` 的 registry 改成单一外部定义。当前 header-static registry 是
     per-translation-unit 状态，不能假设 `entry.c` 的 cleanup 会销毁其它 `.c` 文件里的静态缓存。
-  - 如果阶段 4 后续迁移 constructor wrapper 到 `godot_module_bindings.c`，必须先解决上面的 cleanup 边界。
+  - 如果未来迁移 constructor wrapper 到 `godot_module_bindings.c`，必须先解决上面的 cleanup 边界。
 - 更新工具和扫描器语义：
   - `generate-fixed` 输出的 `godot_fixed_binding.h/.c` 不再包含 `godot_new_Node()` / `godot_new_RefCounted()` 这类
     engine constructor wrapper。
@@ -2298,73 +2321,114 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderInt
 本阶段只把仍随模块变化的非 interface `godot_*` 调用纳入可验证的使用集生成。interface、builtin、utility、fixed
 runtime wrapper 已在前置阶段作为 provided set 发布，不再由模块使用集决定是否生成。module-local session 必须复用
 `EngineMethodUsageSession` 的函数级 buffer + 成功后 commit 模式，不能用全局单例或 generated C 扫描自动补 wrapper。
+本阶段不新增模块级 C translation unit：module-local wrapper 作为 `engine_method_binds.h` 中的 header-only
+`static inline` section 输出，并继续通过 `entry.h` 进入唯一的模块级 `entry.c`。
+
+实施状态（2026-05-26）：
+
+- [x] 已重新确认 `AGENTS.md` 的并行子代理、定向测试、文档同步和“不新增 build/config 修改”约束；阶段 4
+  调研已由 `gpt-5.4-mini` 子代理并行覆盖相关文档、C 后端生成链路、build/API/CLI 输出契约和测试缺口，并已关闭完成的子代理。
+- [x] 已把 usage collector 统一迁移到 `gd.script.gdcc.backend.c.gen.binding.usage`，新增总 API
+  `GodotBindingUsageSession` / `GodotBindingUsageBuffer`，并用 `AbstractUsageSession` / `AbstractUsageBuffer`
+  抽出函数级 buffer、成功后 commit、稳定顺序 snapshot 的公共骨架。
+- [x] 已将原 module-local wrapper spec 收窄为 `ModuleLocalGodotBinding` sealed API，当前只保留 `Singleton`
+  与 `ClassConstant` 两条路径；已删除没有生产使用点且容易误导维护的 generic `CLASS_METHOD` 类别。
+- [x] 已将 module-local singleton/class constant wrapper 的 C 输出逻辑放入 `engine_method_binds.h.ftl`，
+  Java 侧只传递 `ModuleLocalGodotBinding` 列表；已用 `ModuleLocalGodotBindingTemplateTest` 分别覆盖空 section、
+  singleton lookup helper、class constant literal helper，并负向断言二者不会走 class method bind lookup。
+- [x] 已避免 `template_451` 生成路径使用 C designated initializer；lookup failure context 和 method info
+  使用 `{ 0 }` 初始化后逐字段赋值，callback 三元结构使用位置初始化，规避当前 `CCodeFormatter` 对 `.field = ...`
+  结构体字面量的格式化缺口。
+- [x] 已用 `GodotBindingUsageSessionTest` 覆盖 provided 不生成、singleton/class constant first-use 顺序、失败 buffer
+  不泄漏、未知 non-provided 调用 fail-fast、同 C function name 冲突、同 canonical constant 值漂移 fail-fast，以及跨
+  buffer commit 的 C name 冲突。
+- [x] 已将 `GodotBindingGeneratedCScanner` 移到 `src/test/java`，作为单元测试辅助扫描器；`CCodegen.generate()`
+  不再运行该校验。它只在测试中验证 `godot_*` 是否属于 provided、module-local、本地定义、GDCC helper/type
+  白名单，不参与补登记；已用 `GodotBindingGeneratedCScannerTest` 覆盖正向白名单、本地指针返回 wrapper
+  定义和未知 wrapper 失败。
+- [x] 已将 `CCodegen.generate()`、`GenerateRenderFacade` 和 `CBodyBuilder` 改为只传递总的
+  `GodotBindingUsageSession` / `GodotBindingUsageBuffer` API；engine method、engine constructor、module-local binding
+  三套内部 collector 不再作为生成器调用链参数泄漏。
+- [x] 已把 module-local section 传入 `engine_method_binds.h.ftl`；`generate()` 仍只返回 `entry.c`、
+  `engine_method_binds.h`、`entry.h`，未新增 `godot_module_bindings.h` / `godot_module_bindings.c`。
+- [x] 已将 `CBodyBuilder.callVoid(...)` / `callAssign(...)` 接入 provided/module-local 调用校验；`appendLine(...)`
+  和 `appendRaw(...)` 仍不做隐式解析，直接拼接的残余 `godot_*` 由显式登记和生成后扫描共同约束。
+- [x] 已补强 `CCodegenTest` / `CCodegenEngineMethodBindHeaderTest` 的三文件与 no `godot_module_bindings`
+  断言；当前已通过
+  `script/run-gradle-targeted-tests.sh --tests GodotBindingUsageSessionTest,ModuleLocalGodotBindingTemplateTest,GodotBindingGeneratedCScannerTest,CCodegenEngineMethodUsageSessionTest,CCodegenEngineMethodBindHeaderTest,CCodegenTest`。
+- [x] 已通过 build/API/CLI 和 binding generator 回归：
+  `script/run-gradle-targeted-tests.sh --tests CProjectBuilderSharedIncludeTest,ApiCompilePipelineTest,ApiCompileArtifactLinkTest,ApiCompileDiagnosticsTest,ApiRecompileArtifactRefreshTest,GdccCommandInputTest,FixedGodotBindingsTest,GodotBuiltinGeneratorTest,GodotUtilityGeneratorTest,GodotInterfaceGeneratorTest,GodotBindingToolAbiSupportTest`；
+  最终 `./gradlew classes --no-daemon --info --console=plain` 和 `git diff --check` 通过。
 
 阶段 3.2 已把 engine class constructor wrapper 从 fixed runtime 全量预生成中移出，并通过 constructor usage snapshot
-在 `engine_method_binds.h` 中按需生成 `static inline godot_new_<Class>()`。本阶段默认不重新处理 engine constructor；若后续决定把
-constructor wrapper 迁移到 `godot_module_bindings.h/.c`，必须先解决 `GD_STATIC_SN` header-static registry 在独立
-translation unit 中的 cleanup 边界，并同步更新阶段 3.2 的验收。
+在 `engine_method_binds.h` 中按需生成 `static inline godot_new_<Class>()`。本阶段默认不重新处理 engine constructor；
+也不把 constructor wrapper 迁移到新的 module binding 文件。若未来要拆出独立 module binding 文件，必须作为
+单独重构先解决 `class_library`、`GD_STATIC_SN` / `GD_STATIC_S` header-static registry 和 deinitialize cleanup 边界。
 
 新增类型：
 
-- `GodotBindingUsageSession`
-  - 由 `CCodegen.generate()` 创建。
-  - 构造时读取 interface/builtin/utility/fixed symbol snapshot，把这些 symbol 放入 `provided` set。
-  - 暴露 `beginFunction()` / `commit(buffer)` / `snapshot()` 或等价 API。
-  - 内部用 `LinkedHashMap<GodotBindingSymbol, GodotBindingSpec>` 保持稳定顺序。
-- `GodotBindingUsageBuffer`
-  - 函数级临时记录器。
+- `binding.usage.GodotBindingUsageSession`
+  - 由 `CCodegen.generate()` 创建，是生成器调用链唯一需要传递的 usage session API。
+  - 构造时读取 interface/builtin/utility/fixed symbol snapshot，把这些 symbol 放入 module-local provided set。
+  - 对外暴露 `newFunctionBuffer()` / `commit(buffer)`、`engineMethods()`、`engineConstructors()`、
+    `moduleLocalBindings()`；`providedCFunctionNames()`、`moduleLocalCFunctionNames()` 仅用于 focused tests。
+  - 内部拥有 exact engine method、engine constructor、module-local binding 三套 session。
+- `binding.usage.GodotBindingUsageBuffer`
+  - 函数级临时记录器，同时提供 `recordEngineMethodCall(...)`、`recordEngineConstructor(...)`、
+    `recordModuleLocalGodotBinding(...)`、`recordGodotCall(...)`。
   - 函数体、property init apply body、模板 facade 各自使用独立 buffer。
-  - render 失败时丢弃，不污染模块级 session。
+  - 对应 render 成功后才 commit；失败时丢弃，不污染模块级 session。
+- `binding.usage.AbstractUsageSession` / `binding.usage.AbstractUsageBuffer`
+  - 仅抽出有序 map、函数级 snapshot、成功后 commit 这些重复骨架。
+  - 具体冲突规则仍留在 engine/module-local 专用 collector 中，避免把业务语义塞进抽象父类。
 - `GodotBindingSymbol`
-  - canonical key，至少包含 kind、owner/type、method/member/constant、constructor index、operator、variant type、
-    return ABI、参数 ABI、static/vararg 标记；参数 ABI 必须包含 initialized / const / uninitialized destination 状态；
-    indexed engine property helper 若内联固定 index，该 index 也进入 key。
-  - 不包含 method hash、utility hash、`hashCompatibility` 或其他 lookup-only metadata。
-- `GodotBindingSpec`
-  - 保存 canonical symbol 之外的生成材料，例如 C function name、lookup hash、compatibility hash、property getter/setter raw name。
-  - 与同一 `GodotBindingSymbol` 合并时，只能合并兼容的 lookup metadata；不兼容时 fail-fast。
-  - 对 class method / engine property 这类 method bind wrapper，spec 必须保留 primary hash 和按 Godot metadata 顺序去重的
-    compatibility hash 候选；generator 不能只保存最后一个 hash。
-  - 对 utility wrapper，spec 不得合成 compatibility hash 候选；hash 不一致就是不兼容 metadata。
-- `GodotBindingGenerator`
-  - 根据 session snapshot 输出 module-local generated binding。
-  - 只输出 `provided = false` 的 symbol。
-  - 输出的每个 lookup wrapper 都必须缓存非空结果并在空指针 lookup miss 时 fail-fast，不能返回默认值或继续调用空指针。
-  - 先输出一个模块级聚合 `godot_module_bindings.h/.c`；后续若要拆成 engine class / engine property / class constant 文件，
-    也必须保持它们是 projectPath 下的 generated files，而不是 `godot_binding.h/.c` 的静态聚合内容。
+  - 预生成/fixed/module-local wrapper 共享的结构性 C surface 描述。
+  - 当前 module-local key 使用 family、owner、name、C function name 和 signature；exact engine method lookup hash
+    继续留在 `ResolvedMethodCall` / engine method usage 路径中。
+- `ModuleLocalGodotBinding`
+  - sealed API，仅包含 `Singleton` 与 `ClassConstant`。
+  - `Singleton` 对应 `godot_global_get_singleton(...)` helper；`ClassConstant` 对应 literal return helper。
+  - generic class method public wrapper 不再作为阶段 4 类别存在。
+- `engine_method_binds.h.ftl`
+  - 根据 session snapshot 输出 module-local header-only wrapper section。
+  - 只输出不在 provided set 中的 module-local singleton/class constant。
+  - singleton lookup wrapper 必须缓存非空结果并在 lookup miss 时走统一 failure 诊断；class constant wrapper 只输出 literal helper。
+  - lookup failure context 不使用 `.field = ...` designated initializer，保持 `CCodeFormatter` 可处理。
+  - 后续若要拆成 engine class / engine property / class constant 小节，
+    也必须保持在 `entry.h` include 链路内，不得生成新的 module-local `.c`。
 
 session 传递链路：
 
-1. `CCodegen.generate()` 创建 `EngineMethodUsageSession` 和 `GodotBindingUsageSession`。
-2. 构造 `GenerateRenderFacade(engineSession, godotSession, ...)`，让模板能显式登记残余 module-local wrapper。
-3. `GenerateRenderFacade.generateFuncBody(classDef, func)` 调用 `CCodegen.generateFuncBody(classDef, func, engineSession, godotSession)`。
-4. `generateFuncBody(...)` 同时创建 `EngineMethodUsageBuffer` 与 `GodotBindingUsageBuffer`。
-5. `new CBodyBuilder(helper, clazz, func, engineBuffer, godotBuffer)`，函数体内所有 `CInsnGen` 通过 builder 校验 provided wrapper，并只登记残余 module-local wrapper。
-6. 函数体完整 render 成功后，依次 `engineSession.commit(engineBuffer)`、`godotSession.commit(godotBuffer)`。
-7. `CCodegen.generatePropertyInitApplyBody(...)` 必须改为接收 `GodotBindingUsageSession`，为 apply body 创建 buffer 并在成功后 commit。
-8. `entry.c` 渲染完成后取得 `engineSession.snapshot()` 和 `godotSession.snapshot()`；此时函数体、property init apply body
-   和 `entry.c.ftl` 内的登记都已完成。
-9. `GodotBindingGenerator` 根据 `godotSession.snapshot()` 生成 `godot_module_bindings.h/.c`；snapshot 为空时不生成。
-10. 渲染 `engine_method_binds.h`。
-11. 渲染 `entry.h` 时传入 `hasGodotModuleBindings`；为真时输出 `#include "godot_module_bindings.h"`。
-12. 最后把 `entry.c`、`engine_method_binds.h`、`entry.h` 和可选的 `godot_module_bindings.h/.c`
-    一起返回 `GeneratedFile`，其中 `godot_module_bindings.c` 作为普通 generated `.c` 进入 `CProjectBuilder.cFiles`。
+1. `CCodegen.generate()` 创建一个 `GodotBindingUsageSession` 和一个模板级 `GodotBindingUsageBuffer`。
+2. 构造 `GenerateRenderFacade(..., templateUsageBuffer)`，让模板能显式登记残余 module-local wrapper，但不直接写入 module session。
+3. `GenerateRenderFacade.generateFuncBody(classDef, func)` 调用 `CCodegen.generateFuncBody(classDef, func, usageSession)`。
+4. `generateFuncBody(...)` 从总 session 创建一个 `GodotBindingUsageBuffer`。
+5. `new CBodyBuilder(helper, clazz, func, usageBuffer)`，函数体内所有 `CInsnGen` 通过 builder 校验 provided wrapper，并只登记残余 module-local wrapper。
+6. 函数体完整 render 成功后，调用 `usageSession.commit(usageBuffer)`；commit 内部分别合并 engine method、
+   engine constructor 和 module-local binding。
+7. `CCodegen.generatePropertyInitApplyBody(...)` 接收同一个 `GodotBindingUsageSession`，为 apply body 创建 buffer 并在成功后 commit。
+8. `entry.c` 渲染成功后 commit 模板级 buffer，再取得 `usageSession.engineMethods()`、`usageSession.engineConstructors()` 和
+   `usageSession.moduleLocalBindings()`；此时函数体、property init apply body 和 `entry.c.ftl` 内的登记都已完成。
+9. `engine_method_binds.h.ftl` 根据 `usageSession.moduleLocalBindings()` 渲染 module-local wrapper section；
+   snapshot 为空时输出空 section。
+10. 渲染 `engine_method_binds.h`，把 module-local wrapper section 放在 engine constructor wrapper 与 exact engine helper
+    附近，继续作为模块级 helper header。
+11. 渲染 `entry.h`；include 关系保持 `#include <godot_binding.h>`、`#include <gdcc_helper.h>`、
+    `#include "engine_method_binds.h"`，不新增 `godot_module_bindings.h`。
+12. 最后仍只把 `entry.c`、`engine_method_binds.h`、`entry.h` 作为 `GeneratedFile` 返回。
 
-生成文件集合测试必须在本阶段同步更新：
+生成文件集合测试必须在本阶段锁定“不新增文件”：
 
-- `CCodegenEngineMethodBindHeaderTest` 当前有断言输出文件集合恰好为 `entry.c`、`engine_method_binds.h`、`entry.h`。
-  阶段 4 后该断言必须改为“至少包含这 3 个核心文件，并额外包含 `godot_module_bindings.h/.c`（若 snapshot 非空）”。
-- `CCodegenTest` 中所有 `files.size() == 3` 或 `List.of("entry.c", "engine_method_binds.h", "entry.h")` 断言，
-  必须改为集合成员断言或按场景区分：
-  空 module / 无 module-local wrapper 可以仍只输出核心 3 文件；需要 module-local wrapper 的 fixture 必须断言
-  `godot_module_bindings.h/.c` 存在。
-- API / CLI 层通过 `CompileResult.generatedFiles()` 和 `outputLinks()` 暴露 generated files。阶段 4 若让同一 fixture 产出 module-local binding 文件，
+- `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 中的核心文件集合断言继续保持
+  `entry.c`、`engine_method_binds.h`、`entry.h`。
+- 需要 module-local wrapper 的 fixture 必须断言 wrapper 出现在 `engine_method_binds.h` 的 module-local section，
+  并断言 `CCodegen.generate()` 不返回 `godot_module_bindings.h`、`godot_module_bindings.c` 或其它新增文件。
+- API / CLI 层通过 `CompileResult.generatedFiles()` 和 `outputLinks()` 暴露 generated files；阶段 4 不改变这些列表。
   `ApiCompilePipelineTest`、`ApiCompileArtifactLinkTest`、`ApiCompileDiagnosticsTest`、`ApiRecompileArtifactRefreshTest`、
-  `GdccCommandInputTest` 的精确列表断言必须跟随改为“包含核心文件 + 包含 expected `godot_module_bindings.*` 文件 + artifact link 顺序稳定”，
-  不得继续死卡 3 个文件。
-- build 层测试必须区分 generated files 和 native compiler input：
-  - `generatedFiles()` 包含 `godot_module_bindings.h/.c` 只表示它们由本轮 codegen 写到 `projectPath`。
-  - `compiler.cFiles()` 必须包含 `projectPath/godot_module_bindings.c`，因为它是 generated `.c`。
+  `GdccCommandInputTest` 应保持核心 3 文件和 artifact link 顺序稳定。
+- build 层测试必须确认 native compiler input 不变：
+  - `generatedFiles()` 仍只包含核心 3 文件。
+  - `compiler.cFiles()` 仍只包含 `projectPath/entry.c` 和 `<includeRoot>/godot/godot_binding.c` 这两类输入。
   - `compiler.includeDirs()` 仍只能包含 `includeRoot/gdcc` 与 `includeRoot/godot`，不得为 module-local header 添加 `projectPath`。
 - `CCodegenEngineMethodBindHeaderTest` 的 exact engine method 语义断言必须保留：
   builtin / dynamic / GDCC local call 不进入 `engine_method_binds.h`，exact engine route 仍只生成 `gdcc_engine_call*` helper，
@@ -2389,15 +2453,16 @@ module-local 登记位置必须按类型明确落点：
 - engine class constructor
   - 阶段 3.2 已先行处理：`ConstructInsnGen` 的 engine object constructor 分支登记 constructor usage snapshot，
     `engine_method_binds.h` 按需输出 `static inline godot_new_<Class>()`。
-  - 阶段 4 默认不再为 constructor 生成 `godot_module_bindings.h/.c` wrapper，也不把 constructor 重新纳入
-    generic `GodotBindingUsageSession`；除非后续明确执行“constructor wrapper 从 `engine_method_binds.h`
-    迁移到 module binding 文件”的重构。
-  - 若执行该重构，必须保留阶段 3.2 的语义：public constructor wrapper 使用 `godot_classdb_construct_object(...)`
-    和 cached `StringName`，不得用 `godot_classdb_construct_object2(...)` 直接替换。
+  - 阶段 4 只把 constructor usage 纳入总 `GodotBindingUsageSession` 的内部子 collector，不把 constructor 重新纳入
+    module-local `ModuleLocalGodotBinding` 路径，也不改变阶段 3.2 的输出位置。
+  - public constructor wrapper 继续使用 `godot_classdb_construct_object(...)` 和 cached `StringName`，
+    不得用 `godot_classdb_construct_object2(...)` 直接替换。
 - engine class method/property public wrapper
   - 使用点：exact engine route 之外仍需要 engine public wrapper 的 dynamic/object bridge，
     `LoadPropertyInsnGen` / `StorePropertyInsnGen` 的 engine property helper。
-  - 登记方式：`CallMethodInsnGen`、property insn gen 在确定不是 exact `gdcc_engine_call*` 后登记。
+  - 当前状态：生产路径没有这类 public wrapper 登记点；`CLASS_METHOD` generic module-local 类别已移除，避免让维护者误以为
+    exact engine method 会回退到 `godot_<Owner>_<method>` public wrapper。
+  - 后续若重新引入，必须先明确哪条非 exact 路径会发出 public wrapper call，再新增单独类型化路径和测试。
   - method wrapper 身份 metadata：`classes[].methods[].arguments/return_value/is_vararg/is_static`。
     engine property helper 输入 metadata 来自阶段 0 resolver 输出的 `getter/setter/type/index`；method
     `hash` / `hash_compatibility` 只进 lookup metadata。
@@ -2408,15 +2473,15 @@ module-local 登记位置必须按类型明确落点：
   - metadata：`singletons[]`。
 - class enum/int constant helper
   - 使用点：当前 `LoadStaticInsnGen` 多数可直接 literal 化；若生成 `godot_<Class>_<Constant>()` helper，必须登记。
-  - 登记方式：literal 路径不登记，helper 路径登记 `CLASS_CONSTANT`。
+  - 登记方式：literal 路径不登记，helper 路径登记 `ModuleLocalGodotBinding.ClassConstant`。
   - metadata：`classes[].constants[]` / `classes[].enums[]`。
 
 `CBodyBuilder` 的改造规则：
 
 - `callVoid(...)` / `callAssign(...)`
-  - 对 `funcName.startsWith("godot_")` 的调用统一调用 `recordUsedGodotBinding(...)`。
-  - `recordUsedGodotBinding(...)` 先查询 interface/builtin/utility/fixed provided set；provided wrapper 只做校验，不进入 module-local output。
-  - 其余名字必须能解析为 canonical `GodotBindingSymbol`，否则 fail-fast。
+  - 对 `funcName.startsWith("godot_")` 的调用统一调用 usage buffer 的 `recordGodotCall(...)`。
+  - `recordGodotCall(...)` 先查询 interface/builtin/utility/fixed provided set；provided wrapper 只做校验，不进入 module-local output。
+  - 其余名字必须已经由同一 emit 分支显式登记为 `ModuleLocalGodotBinding`，否则 fail-fast。
 - `appendLine(...)` / `appendRaw(...)`
   - 不做隐式解析。
   - 任何直接拼出的残余 module-local `godot_*` 必须在同一 emit 分支显式登记。
@@ -2430,17 +2495,20 @@ module-local 登记位置必须按类型明确落点：
 
 模板登记规则：
 
-- `GenerateRenderFacade` 提供 `recordGodotBinding(String cFunctionName, String useSite)` 或类型化 API。
+- `GenerateRenderFacade` 提供类型化 `recordModuleLocalGodotBinding(ModuleLocalGodotBinding binding)` API。
+  - 该 API 只能写入模板级 `GodotBindingUsageBuffer`；`CCodegen.generate()` 在 `entry.c` 渲染成功后统一 commit。
+  - 不允许把它绑定到 `GodotBindingUsageSession` 的立即提交入口，否则失败渲染会绕过事务边界污染模块级 usage。
 - `entry.c.ftl`
   - interface wrapper 如 `godot_classdb_register_extension_class5`、`godot_object_set_instance` 由 interface set 忽略。
   - `godot_print` 来自全量 utility，`godot_new_Variant_with_String` / `godot_Variant_destroy` 来自全量 builtin，不登记生成。
 - `entry.h.ftl`
   - typed Array/Dictionary preflight、pack/unpack、destroy、operator helper 来自全量 builtin/fixed provided set，不登记生成。
-  - 只根据 `hasGodotModuleBindings` 输出 `#include "godot_module_bindings.h"`；模板本身不登记新的 module-local wrapper，
-    避免“渲染 header 后才知道是否需要 header”的循环。
+  - 不新增 `#include "godot_module_bindings.h"`；模板本身不登记新的 module-local wrapper，避免“渲染 header
+    后才知道是否需要 header”的循环。
 - `engine_method_binds.h.ftl`
   - `godot_classdb_get_method_bind`、`godot_object_method_bind_call`、`godot_object_method_bind_ptrcall` 属于全量 interface。
   - exact vararg helper 的参数 pack、返回 unpack、临时 destroy 来自全量 builtin provided set。
+  - 直接根据 `moduleLocalBindings` 列表输出 module-local wrapper section，不经由 Java 侧 renderer。
 
 生成逻辑：
 
@@ -2448,27 +2516,29 @@ module-local 登记位置必须按类型明确落点：
 - constructor index、variant type、operator enum、class/method/property 名全部来自 `ExtensionAPI` metadata 或
   Godot `extension_api_dump.cpp` 输出的对应字段；engine property accessor method 名必须来自 raw `getter` / `setter`，
   不从 property 名拼接推导。
-- lookup hash 同样来自 `ExtensionAPI` metadata，但只存入 `GodotBindingSpec` / generated lookup 代码，不参与 `GodotBindingSymbol` key。
+- exact engine lookup hash 同样来自 `ExtensionAPI` metadata，但只存入 `ResolvedMethodCall` / engine method usage 路径，
+  不进入 `ModuleLocalGodotBinding`。
 - generated wrapper 的参数和返回 carrier 生成必须保留 initialized / const / uninitialized destination 区别；
   module-local engine method/property wrapper 调用 `godot_object_method_bind_call` 时，返回 `Variant` carrier 也按
   `GDExtensionUninitializedVariantPtr` out-param 处理；不得先构造 nil `Variant` 再把同一地址作为返回槽传入。
 - 使用 `GD_STATIC_SN` / `GD_STATIC_S` 或等价静态缓存，避免每次调用重复构造 name carrier。
-  如果缓存点位于独立 `godot_module_bindings.c`，必须同步提供该 translation unit 的 cleanup hook，
-  或先把 `gdcc_string_name.h` / `gdcc_string.h` 的 registry 改为共享单定义状态；不能假设 `entry.c`
-  的 header-static registry cleanup 会清理其它 `.c` 中的缓存。
+  因为 module-local wrapper section 位于 `engine_method_binds.h` 并最终进入 `entry.c`，这些缓存必须落在
+  entry translation unit 的 header-static registry 内，由现有 `deinitialize(...)` cleanup 覆盖。
 - 对缺失 metadata 的 wrapper fail-fast，不静默发空实现。
 - 对 lookup 返回空指针的 wrapper fail-fast，不缓存 `NULL`，不继续调用，不通过返回默认值掩盖 metadata/hash 冲突。
-- class method bind lookup 候选必须由 primary hash + `hash_compatibility` 组成；utility function 没有候选集合，
-  只允许 primary hash 严格匹配。
-- `godot_module_bindings.h` 必须 include `godot_binding.h`，以复用 ABI、interface、builtin、utility、fixed wrapper 声明。
+- exact engine method bind lookup 候选必须由 primary hash + `hash_compatibility` 组成；utility function 没有候选集合，
+  只允许 primary hash 严格匹配。当前 module-local singleton/class constant 路径不执行 method bind lookup。
+- module-local wrapper section 必须依赖 `entry.h` 既有 include 顺序复用 ABI、interface、builtin、utility、fixed
+  wrapper 声明，不得自行引入新的 generated header。
 
 防重防漏验收：
 
 - 除固定全量的 `godot_interface.h/.c`、`godot_builtin.h/.c`、`godot_utility.h/.c` 和 fixed source-list 输出外，
   module-local 生成产物只包含本模块实际使用且未 provided 的 wrapper。
 - 脚本调用预生成/固定 wrapper，例如 `godot_new_Variant_nil` 或 `godot_print` 时，
-  `godot_module_bindings.c` 不生成同名函数。
-- 脚本调用未 provided 的 engine public wrapper / property helper / class constant helper 时，`godot_module_bindings.c` 正常生成。
+  `engine_method_binds.h` 的 module-local section 不生成同名函数。
+- 脚本调用未 provided 的 engine public wrapper / property helper / class constant helper 时，`engine_method_binds.h`
+  的 module-local section 正常生成对应 `static inline` wrapper。
 - 同一 canonical symbol 重复使用只保留首次稳定顺序。
 - 同一 C function name 对应不同结构性 signature/ABI 时生成失败，而不是后者覆盖前者。
 - 同一 canonical symbol 对应不兼容 lookup hash / `hash_compatibility` 时生成失败；兼容 hash 变化不能制造第二个 wrapper symbol。
@@ -2479,6 +2549,9 @@ module-local 登记位置必须按类型明确落点：
 - `CCodegen.generatePropertyInitApplyBody(...)` 中出现的 constructor/copy/destroy wrapper 被全量 builtin provided set 覆盖；
   其中出现的 engine property/class constant helper 能进入 session snapshot。
 - `entry.c.ftl`、`entry.h.ftl`、`engine_method_binds.h.ftl` 中的非 interface builtin/utility/fixed wrapper 均被 provided set 覆盖。
+- `CCodegen.generate()` 在 module-local snapshot 非空时仍只返回 `entry.c`、`engine_method_binds.h`、`entry.h`。
+- `CProjectBuilder` 在 module-local snapshot 非空时仍只把 `entry.c` 和 `<includeRoot>/godot/godot_binding.c`
+  送入 native compiler。
 - 不再出现 `#include <gdextension-lite.h>`、`gdextension_lite_initialize`、`implementation-macros.h`。
 - exact engine `CALL_METHOD` 测试确认仍只使用 `gdcc_engine_call*` helper。
 
@@ -2634,8 +2707,9 @@ frontend 文档清理的核心不是把 backend 生成细节复制进去，而�
 - `doc/module_impl/api/rpc_api_implementation.md`
   - 核对 `Compile Pipeline Contract`、`Output Publication Contract`、`Stable Test Anchors`。
   - 阶段 3 仍保持核心 3 个 generated files 公共契约时，不提前改 API 文档示例。
-  - 阶段 4 若 `godot_module_bindings.h/.c` 可选出现，更新 generated file、output VFS local links、
-    `CompileResult.generatedHostPaths` 和 `/__build__/generated/**` 示例；不要把 module-local binding 文件写成静态 runtime support。
+  - 阶段 4 仍保持核心 3 个 generated files 公共契约；module-local wrapper 只是
+    `engine_method_binds.h` 的内部 section，不改变 generated file、output VFS local links、
+    `CompileResult.generatedHostPaths` 或 `/__build__/generated/**` 示例。
   - API 仍不生成 `.gdextension` metadata；这条职责边界不能因 binding 文件变化而移动到 API 层。
 - `doc/module_impl/cli/cli_implementation.md`
   - 核对 artifact 命名、generated file paths、verbose 输出、output VFS links、build log、`.gdextension` library path
@@ -2668,9 +2742,9 @@ frontend 文档清理的核心不是把 backend 生成细节复制进去，而�
   - 若 `doc/gdextension-lite.md` 已改名为 `doc/godot_binding_naming.md`，命令中的文档路径同步替换。
   - 只允许本计划、历史命名来源文档或明确标注“迁移前/历史”的说明残留。
   - `src/main`、`src/test` 中不允许有运行时代码、构建代码、测试断言、display name 或 failure message 依赖旧 vendor。
-- `rg -n "runtimeName|三名模型|raw JSON|重新读 JSON|回扫 raw|只有 3 个 generated|godot_module_bindings.*runtime binding" doc/module_impl`
+- `rg -n "runtimeName|三名模型|raw JSON|重新读 JSON|回扫 raw|godot_module_bindings.*runtime binding|godot_module_bindings.*generated file|projectPath/godot_module_bindings" doc/module_impl`
   - 命中必须逐条解释：要么是历史说明，要么是明确禁止项；现行合同不能继续宣称下游回扫 raw metadata、runtimeName
-    持久化、generated file 集合永远只有 3 个，或把 module-local binding 当作静态 runtime binding。
+    持久化，或把 module-local binding 当作静态 runtime binding / 独立 generated file。
 - 对 `doc/module_impl` 下每一份文档形成清理记录：
   - `current-contract`: 已确认无旧事实源，且和统一事实源层级一致。
   - `updated-contract`: 已改写为 GDCC 自有 binding / metadata / generated file / class name 口径。
@@ -2748,14 +2822,14 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     - 新断言检查 accessor 输出 primary hash 与 `hashCompatibility` 候选、lookup miss failure helper、以及调用 helper
       不再吞掉 bind lookup miss。
 - 阶段 4：反向更新 generated file 精确列表断言：
-  - `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 不应继续无条件断言文件集合恰好为
+  - `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 应继续断言文件集合恰好为
     `entry.c`、`engine_method_binds.h`、`entry.h`。
-  - 对无 module-local wrapper 的 fixture，可以断言只输出核心 3 文件；对需要 module-local wrapper 的 fixture，
-    必须断言额外 `godot_module_bindings.h/.c` 存在，并验证它们不重复输出 provided wrapper。
-  - API / CLI 层的 `generatedFiles()`、`outputLinks()`、`/generated` 目录列表断言应改为集合成员和稳定顺序断言，
-    不再把“只有 3 个 generated files”当成全局 invariant。
-  - build 层 fixture 若触发 module-local wrapper，必须断言 native compiler input 包含
-    `projectPath/godot_module_bindings.c`，同时 include dirs 仍不包含 `projectPath`。
+  - 对需要 module-local wrapper 的 fixture，断言 wrapper 出现在 `engine_method_binds.h` 的 module-local section，
+    并断言没有 `godot_module_bindings.h/.c` 或其它新增 generated file。
+  - API / CLI 层的 `generatedFiles()`、`outputLinks()`、`/generated` 目录列表断言保持核心 3 文件和稳定顺序；
+    阶段 4 不因 wrapper 使用集新增公开输出。
+  - build 层 fixture 若触发 module-local wrapper，必须断言 native compiler input 仍只包含
+    `projectPath/entry.c` 和 `shared-include/godot/godot_binding.c` 这两类输入，同时 include dirs 仍不包含 `projectPath`。
 - 阶段 5：`rg` 清理时，`doc/module_impl` 全目录、测试注释、display name、failure message 中的
   `gdextension-lite` 也要处理；只允许本计划和明确标注为历史来源的文档保留旧名。
 
@@ -2846,29 +2920,31 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - 验证 scanner 会忽略 interface wrapper、builtin/utility provided wrapper、类型名、`gdcc_*` helper、`GD_STATIC_*`。
   - 验证 scanner 对 FreeMarker 拼接、`_Generic`、token pasting 只报告“不可由扫描推断”，不把扫描结果当作新增 wrapper 来源。
   - 验证固定 helper 中可见但不在 provided/fixed 清单中的 `godot_*` 会让 `check-fixed` fail-fast。
-- `GodotBindingGeneratorTest`
+- `ModuleLocalGodotBindingTemplateTest`
   - 验证只生成未被 interface/builtin/utility/fixed provided set 覆盖的 module-local wrapper。
-  - 验证 engine property wrapper、engine constructor、singleton getter、class constant helper 的最小 wrapper 生成。
-  - 验证 module-local class method / engine property wrapper 按 primary hash + `hash_compatibility` 候选查找 method bind，
-    全部失败时 fail-fast，不生成默认返回值分支。
+  - 验证 singleton getter 和 class constant helper 的最小 wrapper section 生成到 `engine_method_binds.h`。
+  - 验证 singleton 与 class constant 分别走 `godot_global_get_singleton(...)` 和 literal return 两条路径，
+    不混入 `godot_classdb_get_method_bind(...)` / `module_method_bind`。
+  - 验证 singleton 和 engine constructor lookup failure context 不使用 `.field = ...` designated initializer。
   - 验证相同 symbol 去重和稳定排序。
-  - 验证 provided set 中已提供的 wrapper 不会被 module-local generator 再次输出。
+  - 验证 provided set 中已提供的 wrapper 不会被 module-local section 再次输出。
+  - 验证渲染结果不要求新增 `godot_module_bindings.h/.c`，也不改变 `CCodegen.generate()` 的 generated file 集合。
 - `GodotBindingUsageSessionTest`
   - 验证函数级 buffer render 成功后才 commit，失败 buffer 不污染 session。
-  - 验证 interface/builtin/utility/fixed snapshot 预加载为 provided set，module-local generator 不输出这些 symbol。
-  - 验证同一 canonical symbol 重复登记稳定去重。
+  - 验证 interface/builtin/utility/fixed snapshot 预加载为 provided set，module-local template section 不输出这些 symbol。
+  - 验证 module-local singleton/class constant first-use 顺序和同一 canonical binding 重复登记稳定去重。
   - 验证同一 C function name 映射到不同结构性 signature/ABI 时 fail-fast。
-  - 验证 hash / `hashCompatibility` 变化不会生成第二个 canonical symbol；class/builtin method 的兼容 hash 可以合并为
-    lookup 候选，utility hash 变化必须作为不兼容 metadata fail-fast。
+  - 验证同一 class constant canonical binding 的 value 漂移 fail-fast，且跨 buffer commit 的 C name 冲突也会 fail-fast。
 - `GodotBindingUsageRegistrationTest`
   - 验证 `CBodyBuilder.callAssign` / `callVoid` 自动登记非 interface `godot_*`。
   - 验证 `appendLine` / `appendRaw` 直接拼出的 `godot_*` 若未显式登记，会被 generated C 扫描测试发现。
-  - 验证 `CCodegen.generatePropertyInitApplyBody(...)` 中的 constructor/copy/destroy wrapper 被 builtin provided set 覆盖，engine property/class constant helper 才进入 session。
+  - 验证 `CCodegen.generatePropertyInitApplyBody(...)` 中的 constructor/copy/destroy wrapper 被 builtin provided set 覆盖，
+    只有显式 module-local singleton/class constant helper 才进入 module-local binding collector。
   - 验证 `GenerateRenderFacade` 只登记模板中的残余 module-local wrapper，不登记 builtin/utility/fixed provided wrapper。
-- `GodotBindingGeneratedCScanTest`
-  - 验证 generated C 中每个 `godot_*` 调用都属于 interface set、builtin set、utility set、fixed set、module-local generated set、
+- `GodotBindingGeneratedCScannerTest`
+  - 使用 test-only scanner 验证 generated C 片段中每个 `godot_*` 调用都属于 interface set、builtin set、utility set、fixed set、module-local generated set、
     GDCC-owned macro/helper 白名单或类型名白名单。
-  - 验证扫描只负责 fail-fast，不会自动修改 usage session 或生成物。
+  - 验证扫描只负责单元测试 fail-fast，不会在 `CCodegen.generate()` 中运行，也不会自动修改 usage session 或生成物。
 - `GodotInterfaceGeneratorTest`
   - 验证生成的 `godot_*` 声明和实现集合等于 `gdextension_interface.h` 中可解析的 `@name` / function pointer typedef 配对集合。
   - 验证每个 `@name` 都能和紧随的签名 typedef 配对；缺失配对时 fail-fast。
@@ -2928,8 +3004,10 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
    全量 constructor wrapper。
 10. 提交阶段 4，把 provided set 之外残余的具体 engine public/property/singleton/class constant wrapper 接入 module-local session，
    并用 interface/builtin/utility/fixed provided set 防止脚本重复生成 runtime 已提供的 wrapper。
-   该阶段生成可选 `godot_module_bindings.h/.c`，由 `entry.h` 同目录 include，并由 generated `.c` 收集规则进入 native compiler input；
-   同阶段更新 `CCodegen*`、API、CLI 和 build 层断言，不再无条件锁死 3 个 generated files；engine constructor
+   该阶段把 module-local wrapper 作为 `engine_method_binds.h` 内的 header-only `static inline` section 输出，
+   继续由 `entry.h` 进入唯一模块级 `entry.c` translation unit；不生成 `godot_module_bindings.h/.c`，
+   不改变 `CCodegen.generate()` 的 3 个 generated files、API/CLI 公开输出或 `CProjectBuilder` native input。
+   同阶段更新 `CCodegen*`、API、CLI 和 build 层断言，锁定“不新增文件、不新增 `.c` 输入”；engine constructor
    默认沿用阶段 3.2 的 `engine_method_binds.h` 按需生成，不在本阶段重复迁移。
 11. 最后提交阶段 5，删除 vendor zip，清理已知旧 `<includeRoot>/gdextension-lite` 子树，并对 `doc/module_impl`
    每一份文档做 `current-contract` / `updated-contract` / `historical-reference` 归类；同提交完成源码注释、
@@ -2970,10 +3048,10 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - `ApiCompilePipelineTest`、`CProjectBuilderSharedIncludeTest` 当前锁定 `gdextension-lite-one.c` 和 `gdextension-lite` include dir；
     它们必须在阶段 3 与 `CProjectBuilder` 输入切换同提交更新。
   - `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 和 API / CLI 层部分测试当前锁定 generated file 恰好为 3 个；
-    阶段 3 不应修改这些公共文件集合断言，只有阶段 4 的 fixture 实际产出 `godot_module_bindings.h/.c` 时，
-    才与 module-local binding 文件同提交更新。
-  - build 层若新增 module-local fixture，必须同时断言 `godot_module_bindings.c` 作为 generated `.c` 进入 `cFiles`，
-    但 include dirs 不新增 `projectPath`。
+    阶段 3 和阶段 4 都不应放宽这个公共文件集合断言。阶段 4 的 module-local fixture 应反向证明 wrapper
+    进入 `engine_method_binds.h`，且没有 `godot_module_bindings.h/.c` 或其它新增 generated file。
+  - build 层若新增 module-local fixture，必须同时断言 `cFiles` 不出现 `projectPath/godot_module_bindings.c`，
+    仍只包含 `projectPath/entry.c` 与 `<includeRoot>/godot/godot_binding.c`，且 include dirs 不新增 `projectPath`。
   - 反向更新测试时不能削弱语义：exact engine method bind、typed Array/Dictionary outward ABI、ownership lifecycle 断言必须保留，
     只替换旧 vendor 路径和旧文件数量假设。
 - builtin struct ABI layout 不匹配：
@@ -3025,7 +3103,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - C function name 冲突必须 fail-fast，不能靠“后生成覆盖先生成”得到看似通过的 ABI。
 - fixed wrapper 重复生成：
   - `FixedGodotBindings` 当前版本数据是固定 helper wrapper 的唯一事实来源；snapshot JSON 只能作为对账和测试产物。
-  - `GodotBindingUsageSession` 必须把 interface/builtin/utility/fixed snapshot 作为 provided set 预加载；module-local generator 只输出不在 provided set 中的 wrapper。
+  - `GodotBindingUsageSession` 必须把 interface/builtin/utility/fixed snapshot 作为 provided set 预加载；module-local header renderer
+    只输出不在 provided set 中的 wrapper。
   - 同名不同签名必须报错，不能靠 include 顺序或链接顺序掩盖。
 - fixed helper 扫描遗漏：
   - scanner 不再负责发现 wrapper；FreeMarker 拼接、Java helper 名称、`_Generic`、`##` token pasting 都必须通过版本化源码清单或全量预生成集合覆盖。
@@ -3095,16 +3174,17 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   `generate-abi-support`、`check-fixed`、`generate-fixed`、`dump-fixed-manifest`。
 - `check-fixed` 与 generated C 扫描只做 fail-fast 验收，不负责发现 wrapper、不负责补登记、不负责生成。
 - 模块级 wrapper 生成加载 interface/builtin/utility/fixed provided set，脚本再次使用预生成或固定 wrapper 时不会生成重复 C 函数。
-- 模块级 wrapper 输出为 `projectPath/godot_module_bindings.h/.c`；`godot_binding.h/.c` 不 include 它们，
-  `CProjectBuilder` 也不为它们新增 `projectPath` include dir。
+- 模块级 wrapper 输出为 `engine_method_binds.h` 内的 header-only `static inline` section；`godot_binding.h/.c` 不 include
+  module-local wrapper，`CProjectBuilder` 不新增 `projectPath` include dir，也不新增 `projectPath/godot_module_bindings.c`
+  之类的模块级 `.c` 输入。
 - `entry.c` 在 `gdextension_entry(...)` 中调用 `godot_initialize_interface(...)`，失败时返回 `false`，scene-level lifecycle guard 保持不变。
 - `GDE_EXPORT`、`godot_PROPERTY_HINT_*`、`godot_PROPERTY_USAGE_*`、`godot_METHOD_FLAG_*`、`godot_global_constants.h`、
   native struct、builtin type、builtin size assert 和 builtin member offset/meta assert 都来自 GDCC 自有 `godot/**` 头文件。
 - `implementation-macros.h`、`definition-macros.h`、`generated/global_enums.h`、`generated/native_structures.h`、`generated/variant/sizes.h` 不再被运行时代码或生成代码 include。
 - 现有测试已按阶段反向更新：
   - 构建输入测试断言 `godot_binding.c` 和 `godot` include root，而不是 `gdextension-lite-one.c` / `gdextension-lite` include root。
-  - generated file 集合测试允许 `godot_module_bindings.h/.c` 出现，并验证核心文件、静态 runtime support 和模块级 binding 文件的职责，
-    而不是无条件锁死 3 个文件。
+  - generated file 集合测试继续锁定 `entry.c`、`engine_method_binds.h`、`entry.h`，并验证 module-local wrapper section
+    只写入 `engine_method_binds.h`，不会新增 `godot_module_bindings.h/.c` 或其它 generated file。
   - exact engine method bind、typed container ABI 和 ownership lifecycle 相关断言保留。
 - targeted unit tests 和需要环境支持的 runtime integration tests 通过。
 - `doc/module_impl` 下每一份文档已被归类为 `current-contract` / `updated-contract` / `historical-reference`，

@@ -1,5 +1,6 @@
-package gd.script.gdcc.backend.c.gen.binding;
+package gd.script.gdcc.backend.c.gen.binding.usage;
 
+import gd.script.gdcc.backend.c.gen.binding.GodotBindingSupport;
 import org.jetbrains.annotations.NotNull;
 
 /// Module-local engine constructor wrapper required by a successfully rendered function body.

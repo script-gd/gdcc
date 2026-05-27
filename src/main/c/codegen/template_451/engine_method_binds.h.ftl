@@ -1,7 +1,8 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
 <#-- @ftlvariable name="usedEngineMethods" type="java.util.List<gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver.ResolvedMethodCall>" -->
-<#-- @ftlvariable name="usedEngineConstructors" type="java.util.List<gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsage>" -->
+<#-- @ftlvariable name="usedEngineConstructors" type="java.util.List<gd.script.gdcc.backend.c.gen.binding.usage.EngineConstructorUsage>" -->
+<#-- @ftlvariable name="usedModuleLocalBindings" type="java.util.List<gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding>" -->
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENGINE_METHOD_BINDS_H
 #define GDEXTENSION_${module.moduleName?upper_case}_ENGINE_METHOD_BINDS_H
 
@@ -13,18 +14,54 @@
 static inline godot_${constructor.cIdentifier} *godot_new_${constructor.cIdentifier}(void) {
     GDExtensionObjectPtr object = godot_classdb_construct_object(GD_STATIC_SN(u8"${constructor.escapedClassName}"));
     if (object == NULL) {
-        gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){
-                .kind = "engine_constructor",
-                .function_name = "godot_new_${constructor.cIdentifier}",
-                .lookup_name = "${constructor.escapedClassName}",
-                .owner = "${constructor.escapedClassName}",
-                .type = "${constructor.escapedClassName}",
-        });
+        gdcc_binding_lookup_context context = { 0 };
+        context.kind = "engine_constructor";
+        context.function_name = "godot_new_${constructor.cIdentifier}";
+        context.lookup_name = "${constructor.escapedClassName}";
+        context.owner = "${constructor.escapedClassName}";
+        context.type = "${constructor.escapedClassName}";
+        gdcc_binding_lookup_fail(&context);
         return NULL;
     }
     return (godot_${constructor.cIdentifier} *)object;
 }
 
+</#list>
+</#if>
+
+// Module-local Godot wrappers used by this module.
+<#if usedModuleLocalBindings?size == 0>
+// No module-local Godot wrappers were collected for this module.
+<#else>
+<#list usedModuleLocalBindings as binding>
+<#if binding.familyName() == "SINGLETON">
+<#-- @ftlvariable name="binding" type="gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding.Singleton" -->
+static inline ${binding.returnType()} ${binding.cFunctionName()}(void) {
+    static ${binding.returnType()} ${binding.cacheName()} = NULL;
+    if (${binding.cacheName()} == NULL) {
+        ${binding.cacheName()} = (${binding.returnType()})godot_global_get_singleton(GD_STATIC_SN(u8"${binding.escapedOwner()}"));
+        if (${binding.cacheName()} == NULL) {
+            gdcc_binding_lookup_context context = { 0 };
+            context.kind = "module_singleton";
+            context.function_name = "${binding.escapedCFunctionName()}";
+            context.lookup_name = "${binding.escapedLookupName()}";
+            context.owner = "${binding.escapedOwner()}";
+            gdcc_binding_lookup_fail(&context);
+            return NULL;
+        }
+    }
+    return ${binding.cacheName()};
+}
+
+<#elseif binding.familyName() == "CLASS_CONSTANT">
+<#-- @ftlvariable name="binding" type="gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding.ClassConstant" -->
+static inline godot_int ${binding.cFunctionName()}(void) {
+    return (godot_int)${binding.constantValue()};
+}
+
+<#else>
+<#stop "Unsupported module-local Godot binding family: ${binding.familyName()}">
+</#if>
 </#list>
 </#if>
 

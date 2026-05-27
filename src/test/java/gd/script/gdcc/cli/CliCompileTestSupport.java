@@ -34,10 +34,18 @@ final class CliCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull TestCompiler compiler) {
-        return newApi(compiler, CompileTaskHooks.none());
+        return newApi(new CProjectBuilder(compiler), CompileTaskHooks.none());
+    }
+
+    static @NotNull API newApi(@NotNull CProjectBuilder projectBuilder) {
+        return newApi(projectBuilder, CompileTaskHooks.none());
     }
 
     static @NotNull API newApi(@NotNull TestCompiler compiler, @NotNull CompileTaskHooks hooks) {
+        return newApi(new CProjectBuilder(compiler), hooks);
+    }
+
+    static @NotNull API newApi(@NotNull CProjectBuilder projectBuilder, @NotNull CompileTaskHooks hooks) {
         try {
             var constructor = API.class.getDeclaredConstructor(
                     Clock.class,
@@ -53,7 +61,7 @@ final class CliCompileTestSupport {
                     Clock.systemUTC(),
                     new GdScriptParserService(),
                     new FrontendLoweringPassManager(),
-                    new CProjectBuilder(compiler),
+                    projectBuilder,
                     hooks,
                     COMPLETED_TASK_TTL,
                     TASK_SWEEP_INTERVAL
@@ -97,6 +105,8 @@ final class CliCompileTestSupport {
         private final @Nullable CountDownLatch enteredLatch;
         private final @Nullable CountDownLatch releaseLatch;
         private final @NotNull AtomicInteger invocationCount = new AtomicInteger();
+        private volatile @NotNull List<Path> lastIncludeDirs = List.of();
+        private volatile @NotNull List<Path> lastCFiles = List.of();
 
         private TestCompiler(
                 boolean success,
@@ -142,6 +152,8 @@ final class CliCompileTestSupport {
                 @NotNull TargetPlatform targetPlatform
         ) throws IOException {
             invocationCount.incrementAndGet();
+            lastIncludeDirs = List.copyOf(includeDirs);
+            lastCFiles = List.copyOf(cFiles);
             for (var event : events) {
                 if (!API.recordCurrentCompileTaskEvent(event.category(), event.detail())) {
                     throw new AssertionError("Expected task event recorder to be bound");
@@ -163,6 +175,14 @@ final class CliCompileTestSupport {
 
         int invocationCount() {
             return invocationCount.get();
+        }
+
+        @NotNull List<Path> lastIncludeDirs() {
+            return lastIncludeDirs;
+        }
+
+        @NotNull List<Path> lastCFiles() {
+            return lastCFiles;
         }
 
         boolean awaitEntered() {

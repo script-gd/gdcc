@@ -4,8 +4,13 @@ import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.c.gen.CCodegen;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirBasicBlock;
+import gd.script.gdcc.lir.LirClassDef;
+import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
+import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -86,6 +91,56 @@ public class CProjectBuilderSharedIncludeTest {
     }
 
     @Test
+    public void buildProjectWithModuleLocalBindingKeepsNativeInputsStable(@TempDir Path tempDir) throws IOException {
+        var workspaceDir = tempDir.resolve("workspace");
+        var projectDir = workspaceDir.resolve("project-a");
+        var sharedIncludeDir = workspaceDir.resolve("shared-include");
+        Files.createDirectories(projectDir);
+        Files.createDirectories(sharedIncludeDir);
+
+        var projectInfo = new CProjectInfo("testproj", GodotVersion.V451, projectDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var compiler = new CapturingCompiler();
+        var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler);
+
+        builder.initProject(projectInfo);
+        var staleVendorFile = sharedIncludeDir.resolve("gdextension-lite/gdextension-lite-one.c");
+        Files.createDirectories(staleVendorFile.getParent());
+        Files.writeString(staleVendorFile, "stale vendor runtime");
+        Files.writeString(projectDir.resolve("godot_module_bindings.c"), "stale module-local c");
+        Files.writeString(projectDir.resolve("extra.c"), "stale generated c");
+        var result = builder.buildProject(projectInfo, prepareCodegenWithFunction(projectInfo));
+
+        var expectedGdcc = sharedIncludeDir.toAbsolutePath().normalize().resolve("gdcc");
+        var expectedGodot = sharedIncludeDir.toAbsolutePath().normalize().resolve("godot");
+        var expectedGeneratedFiles = List.of(
+                projectDir.resolve("entry.c").toAbsolutePath().normalize(),
+                projectDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
+                projectDir.resolve("entry.h").toAbsolutePath().normalize()
+        );
+
+        assertTrue(result.success());
+        assertEquals(expectedGeneratedFiles, result.generatedFiles().stream()
+                .map(path -> path.toAbsolutePath().normalize())
+                .toList());
+        assertEquals(List.of(expectedGdcc, expectedGodot), compiler.includeDirs());
+        assertEquals(
+                List.of(
+                        projectDir.resolve("entry.c").toAbsolutePath().normalize(),
+                        expectedGodot.resolve("godot_binding.c")
+                ),
+                compiler.cFiles()
+        );
+        assertFalse(compiler.cFiles().contains(staleVendorFile.toAbsolutePath().normalize()));
+        assertFalse(compiler.cFiles().contains(projectDir.resolve("godot_module_bindings.c").toAbsolutePath().normalize()));
+        assertFalse(compiler.cFiles().contains(projectDir.resolve("extra.c").toAbsolutePath().normalize()));
+        assertFalse(compiler.includeDirs().contains(projectDir.toAbsolutePath().normalize()));
+
+        var bindHeader = Files.readString(projectDir.resolve("engine_method_binds.h"));
+        assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
+        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
+    }
+
+    @Test
     public void ignoreSharedIncludeForcesProjectLocalInclude(@TempDir Path tempDir) throws IOException {
         var workspaceDir = tempDir.resolve("workspace");
         var projectDir = workspaceDir.resolve("project-a");
@@ -130,6 +185,23 @@ public class CProjectBuilderSharedIncludeTest {
         var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
         var context = new CodegenContext(projectInfo, new ClassRegistry(api));
         codegen.prepare(context, new LirModule(projectInfo.projectName(), List.of()));
+        return codegen;
+    }
+
+    private static @NotNull CCodegen prepareCodegenWithFunction(@NotNull CProjectInfo projectInfo) throws IOException {
+        var codegen = new CCodegen();
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var context = new CodegenContext(projectInfo, new ClassRegistry(api));
+        var clazz = new LirClassDef("ModuleLocalBuildInputSmoke", "RefCounted");
+        var function = new LirFunctionDef("touch_module_local");
+        function.setHidden(true);
+        function.setReturnType(GdVoidType.VOID);
+        var entry = new LirBasicBlock("entry");
+        entry.setTerminator(new ReturnInsn(null));
+        function.addBasicBlock(entry);
+        function.setEntryBlockId("entry");
+        clazz.addFunction(function);
+        codegen.prepare(context, new LirModule(projectInfo.projectName(), List.of(clazz)));
         return codegen;
     }
 

@@ -41,8 +41,12 @@ final class ApiCompileTestSupport {
     }
 
     static @NotNull API newApi(@NotNull RecordingCompiler compiler) {
+        return newApi(new CProjectBuilder(compiler));
+    }
+
+    static @NotNull API newApi(@NotNull CProjectBuilder projectBuilder) {
         return newApi(
-                compiler,
+                projectBuilder,
                 CompileTaskHooks.none(),
                 Clock.systemUTC(),
                 TEST_COMPLETED_COMPILE_TASK_TTL,
@@ -55,7 +59,17 @@ final class ApiCompileTestSupport {
             @NotNull CompileTaskHooks compileTaskHooks
     ) {
         return newApi(
-                compiler,
+                new CProjectBuilder(compiler),
+                compileTaskHooks
+        );
+    }
+
+    static @NotNull API newApi(
+            @NotNull CProjectBuilder projectBuilder,
+            @NotNull CompileTaskHooks compileTaskHooks
+    ) {
+        return newApi(
+                projectBuilder,
                 compileTaskHooks,
                 Clock.systemUTC(),
                 TEST_COMPLETED_COMPILE_TASK_TTL,
@@ -70,11 +84,27 @@ final class ApiCompileTestSupport {
             @NotNull Duration completedCompileTaskTtl,
             @NotNull Duration compileTaskSweepInterval
     ) {
+        return newApi(
+                new CProjectBuilder(compiler),
+                compileTaskHooks,
+                clock,
+                completedCompileTaskTtl,
+                compileTaskSweepInterval
+        );
+    }
+
+    static @NotNull API newApi(
+            @NotNull CProjectBuilder projectBuilder,
+            @NotNull CompileTaskHooks compileTaskHooks,
+            @NotNull Clock clock,
+            @NotNull Duration completedCompileTaskTtl,
+            @NotNull Duration compileTaskSweepInterval
+    ) {
         return new API(
                 clock,
                 new GdScriptParserService(),
                 new FrontendLoweringPassManager(),
-                new CProjectBuilder(compiler),
+                projectBuilder,
                 compileTaskHooks,
                 completedCompileTaskTtl,
                 compileTaskSweepInterval

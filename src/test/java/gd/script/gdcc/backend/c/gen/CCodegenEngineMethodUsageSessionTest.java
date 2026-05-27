@@ -2,9 +2,8 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
-import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageSession;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.exception.InvalidInsnException;
@@ -110,7 +109,7 @@ class CCodegenEngineMethodUsageSessionTest {
 
         var module = new LirModule("engine_usage_module", List.of(hostClass));
         var codegen = newCodegen(module, apiWith(List.of(arrayBuiltinWithSize()), List.of(probeClassWithOverloadedTouch())), List.of(hostClass));
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
 
         codegen.generateFuncBody(hostClass, instanceTwice, session);
         assertSnapshot(session, List.of(spec("Probe", "touch", false, "P_RV")));
@@ -151,7 +150,7 @@ class CCodegenEngineMethodUsageSessionTest {
                 apiWith(List.of(), List.of(windowClassWithRawPropertyAccessors())),
                 List.of(hostClass)
         );
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
 
         codegen.generateFuncBody(hostClass, propertyAccess, session);
 
@@ -201,16 +200,16 @@ class CCodegenEngineMethodUsageSessionTest {
 
         var module = new LirModule("engine_usage_failure_module", List.of(hostClass));
         var codegen = newCodegen(module, apiWith(List.of(), List.of(probeClassWithFailureAnchors())), List.of(hostClass));
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
 
         assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, failVoidWithResult, session));
-        assertTrue(session.snapshot().isEmpty());
+        assertTrue(session.engineMethods().isEmpty());
 
         assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, failResultTarget, session));
-        assertTrue(session.snapshot().isEmpty());
+        assertTrue(session.engineMethods().isEmpty());
 
         assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(hostClass, failArgType, session));
-        assertTrue(session.snapshot().isEmpty());
+        assertTrue(session.engineMethods().isEmpty());
 
         codegen.generateFuncBody(hostClass, valid, session);
         assertSnapshot(session, List.of(spec("Probe", "count", false, "P_RI")));
@@ -239,21 +238,20 @@ class CCodegenEngineMethodUsageSessionTest {
 
         var module = new LirModule("engine_constructor_usage_failure_module", List.of(hostClass));
         var codegen = newCodegen(module, apiWith(List.of(), List.of(nodeClass())), List.of(hostClass));
-        var methodSession = new EngineMethodUsageSession();
-        var constructorSession = new EngineConstructorUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
 
         assertThrows(
                 InvalidInsnException.class,
-                () -> codegen.generateFuncBody(hostClass, invalid, methodSession, constructorSession)
+                () -> codegen.generateFuncBody(hostClass, invalid, session)
         );
-        assertTrue(methodSession.snapshot().isEmpty());
-        assertTrue(constructorSession.snapshot().isEmpty(), "Failed function renders must not commit constructor usage.");
+        assertTrue(session.engineMethods().isEmpty());
+        assertTrue(session.engineConstructors().isEmpty(), "Failed function renders must not commit constructor usage.");
 
-        var validBody = codegen.generateFuncBody(hostClass, valid, methodSession, constructorSession);
+        var validBody = codegen.generateFuncBody(hostClass, valid, session);
         assertTrue(validBody.contains("godot_new_Node()"), validBody);
-        assertTrue(methodSession.snapshot().isEmpty());
-        assertEquals(1, constructorSession.snapshot().size(), constructorSession.snapshot().toString());
-        assertEquals("Node", constructorSession.snapshot().getFirst().className());
+        assertTrue(session.engineMethods().isEmpty());
+        assertEquals(1, session.engineConstructors().size(), session.engineConstructors().toString());
+        assertEquals("Node", session.engineConstructors().getFirst().className());
     }
 
     @Test
@@ -286,7 +284,7 @@ class CCodegenEngineMethodUsageSessionTest {
         var secondBody = codegen.generateFuncBody(hostClass, publicRender);
         assertEquals(firstBody, secondBody);
 
-        var session = new EngineMethodUsageSession();
+        var session = GodotBindingUsageSession.forRegistry(codegen.ctx.classRegistry());
         codegen.generateFuncBody(hostClass, sessionRender, session);
         assertSnapshot(session, List.of(spec("Probe", "touch", true, "PT_RV")));
     }
@@ -309,10 +307,10 @@ class CCodegenEngineMethodUsageSessionTest {
     }
 
     private static void assertSnapshot(
-            @NotNull EngineMethodUsageSession session,
+            @NotNull GodotBindingUsageSession session,
             @NotNull List<SnapshotSpec> expected
     ) {
-        var actual = session.snapshot().stream()
+        var actual = session.engineMethods().stream()
                 .map(resolved -> {
                     var key = EngineMethodSymbolKey.from(resolved);
                     assertNotNull(key, "session snapshot should only contain exact engine methods");

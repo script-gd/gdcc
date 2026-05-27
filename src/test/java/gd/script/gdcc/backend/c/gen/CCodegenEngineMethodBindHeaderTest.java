@@ -317,9 +317,11 @@ class CCodegenEngineMethodBindHeaderTest {
                 bindHeader,
                 "GDEXTENSION_EMPTY_ENGINE_BIND_HEADER_MODULE_ENGINE_METHOD_BINDS_H",
                 "No engine constructors were collected for this module.",
+                "No module-local Godot wrappers were collected for this module.",
                 "No exact engine method binds were collected for this module."
         );
         assertFalse(bindHeader.contains("godot_new_Node"), bindHeader);
+        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_method_bind_"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_call_"), bindHeader);
     }
@@ -346,12 +348,15 @@ class CCodegenEngineMethodBindHeaderTest {
                 bindHeader,
                 "static inline godot_Node *godot_new_Node(void)",
                 "GDExtensionObjectPtr object = godot_classdb_construct_object(GD_STATIC_SN(u8\"Node\"));",
-                ".kind = \"engine_constructor\"",
-                ".function_name = \"godot_new_Node\"",
-                ".lookup_name = \"Node\"",
+                "gdcc_binding_lookup_context context = { 0 };",
+                "context.kind = \"engine_constructor\";",
+                "context.function_name = \"godot_new_Node\";",
+                "context.lookup_name = \"Node\";",
                 "return (godot_Node *)object;",
                 "No exact engine method binds were collected for this module."
         );
+        assertFalse(bindHeader.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"), bindHeader);
+        assertFalse(bindHeader.contains("\n                .kind = \"engine_constructor\""), bindHeader);
         assertFalse(bindHeader.contains("godot_new_RefCounted(void)"), bindHeader);
         assertFalse(bindHeader.contains("godot_classdb_construct_object2"), bindHeader);
         assertFalse(bindHeader.contains("godot_new_StringName_with_latin1_chars"), bindHeader);

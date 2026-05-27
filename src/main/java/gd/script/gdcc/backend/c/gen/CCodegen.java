@@ -4,24 +4,18 @@ import gd.script.gdcc.backend.Codegen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.GeneratedFile;
 import gd.script.gdcc.backend.TemplateLoader;
-import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageBuffer;
-import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageSession;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageSession;
 import gd.script.gdcc.backend.c.gen.binding.GenerateRenderFacade;
-import gd.script.gdcc.backend.c.gen.insn.*;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageBuffer;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageSession;
 import gd.script.gdcc.backend.c.gen.insn.*;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.enums.LifecycleProvenance;
-import gd.script.gdcc.lir.*;
-import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.lir.validation.ControlFlowIntegrityValidator;
 import gd.script.gdcc.lir.validation.LifecycleInstructionRestrictionValidator;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.RefCountedStatus;
-import gd.script.gdcc.type.*;
 import gd.script.gdcc.type.*;
 import gd.script.gdcc.util.CCodeFormatter;
 import freemarker.template.TemplateException;
@@ -439,20 +433,13 @@ public class CCodegen implements Codegen {
 
     public @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                             @NotNull LirFunctionDef func) {
-        return generateFuncBody(clazz, func, EngineMethodUsageBuffer.noOp(), EngineConstructorUsageBuffer.noOp());
-    }
-
-    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
-                                     @NotNull LirFunctionDef func,
-                                     @NotNull EngineMethodUsageBuffer usageBuffer) {
-        return generateFuncBody(clazz, func, usageBuffer, EngineConstructorUsageBuffer.noOp());
+        return generateFuncBody(clazz, func, GodotBindingUsageBuffer.noOp());
     }
 
     @SuppressWarnings("unchecked")
     @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                      @NotNull LirFunctionDef func,
-                                     @NotNull EngineMethodUsageBuffer usageBuffer,
-                                     @NotNull EngineConstructorUsageBuffer constructorUsageBuffer) {
+                                     @NotNull GodotBindingUsageBuffer usageBuffer) {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generateBlock().");
         }
@@ -462,7 +449,7 @@ public class CCodegen implements Codegen {
         if (!func.hasBasicBlock(func.getEntryBlockId())) {
             throw new IllegalArgumentException("Function " + func.getName() + " has invalid entry block ID: " + func.getEntryBlockId());
         }
-        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer, constructorUsageBuffer);
+        var bodyBuilder = new CBodyBuilder(helper, clazz, func, usageBuffer);
         // generate blocks
         bodyBuilder.appendRaw("goto " + func.getEntryBlockId() + ";\n");
         for (var bb : func) {
@@ -482,22 +469,10 @@ public class CCodegen implements Codegen {
 
     @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
                                      @NotNull LirFunctionDef func,
-                                     @NotNull EngineMethodUsageSession usageSession) {
-        var usageBuffer = usageSession.newFunctionBuffer();
+                                     @NotNull GodotBindingUsageSession godotBindingUsageSession) {
+        var usageBuffer = godotBindingUsageSession.newFunctionBuffer();
         var body = generateFuncBody(clazz, func, usageBuffer);
-        usageSession.commit(usageBuffer);
-        return body;
-    }
-
-    @NotNull String generateFuncBody(@NotNull LirClassDef clazz,
-                                     @NotNull LirFunctionDef func,
-                                     @NotNull EngineMethodUsageSession usageSession,
-                                     @NotNull EngineConstructorUsageSession constructorUsageSession) {
-        var usageBuffer = usageSession.newFunctionBuffer();
-        var constructorUsageBuffer = constructorUsageSession.newFunctionBuffer();
-        var body = generateFuncBody(clazz, func, usageBuffer, constructorUsageBuffer);
-        usageSession.commit(usageBuffer);
-        constructorUsageSession.commit(constructorUsageBuffer);
+        godotBindingUsageSession.commit(usageBuffer);
         return body;
     }
 
@@ -506,11 +481,22 @@ public class CCodegen implements Codegen {
     /// route so property initialization keeps unified slot-write semantics without becoming a setter call.
     public @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
                                                          @NotNull LirPropertyDef property) {
+        return generatePropertyInitApplyBody(clazz, property, GodotBindingUsageBuffer.noOp());
+    }
+
+    private @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
+                                                          @NotNull LirPropertyDef property,
+                                                          @NotNull GodotBindingUsageBuffer usageBuffer) {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generating property init apply code.");
         }
         var initFunction = resolvePropertyInitFunction(clazz, property);
-        var bodyBuilder = new CBodyBuilder(helper, clazz, initFunction);
+        var bodyBuilder = new CBodyBuilder(
+                helper,
+                clazz,
+                initFunction,
+                usageBuffer
+        );
         bodyBuilder.applyPropertyInitializerFirstWrite(
                 "self->" + property.getName(),
                 property.getType(),
@@ -524,6 +510,15 @@ public class CCodegen implements Codegen {
                 CBodyBuilder.OwnershipKind.OWNED
         );
         return bodyBuilder.build();
+    }
+
+    @NotNull String generatePropertyInitApplyBody(@NotNull LirClassDef clazz,
+                                                  @NotNull LirPropertyDef property,
+                                                  @NotNull GodotBindingUsageSession godotBindingUsageSession) {
+        var buffer = godotBindingUsageSession.newFunctionBuffer();
+        var body = generatePropertyInitApplyBody(clazz, property, buffer);
+        godotBindingUsageSession.commit(buffer);
+        return body;
     }
 
 
@@ -543,11 +538,13 @@ public class CCodegen implements Codegen {
             }
         }
         try {
-            var usageSession = new EngineMethodUsageSession();
-            var constructorUsageSession = new EngineConstructorUsageSession();
+            var usageSession = GodotBindingUsageSession.forRegistry(ctx.classRegistry());
+            // Template-visible registrations are committed only after `entry.c` renders successfully.
+            var templateUsageBuffer = usageSession.newFunctionBuffer();
             var bodyRender = new GenerateRenderFacade(
-                    (classDef, func) -> generateFuncBody(classDef, func, usageSession, constructorUsageSession),
-                    this::generatePropertyInitApplyBody
+                    (classDef, func) -> generateFuncBody(classDef, func, usageSession),
+                    (classDef, property) -> generatePropertyInitApplyBody(classDef, property, usageSession),
+                    templateUsageBuffer
             );
             var cTplCtx = Map.of(
                     "module", module,
@@ -555,13 +552,16 @@ public class CCodegen implements Codegen {
                     "bodyRender", bodyRender
             );
             var cSrc = TemplateLoader.renderFromClasspath("template_451/entry.c.ftl", cTplCtx);
-            var usedEngineMethods = usageSession.snapshot();
-            var usedEngineConstructors = constructorUsageSession.snapshot();
+            usageSession.commit(templateUsageBuffer);
+            var usedEngineMethods = usageSession.engineMethods();
+            var usedEngineConstructors = usageSession.engineConstructors();
+            var usedModuleLocalBindings = usageSession.moduleLocalBindings();
             var bindTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
                     "usedEngineMethods", usedEngineMethods,
-                    "usedEngineConstructors", usedEngineConstructors
+                    "usedEngineConstructors", usedEngineConstructors,
+                    "usedModuleLocalBindings", usedModuleLocalBindings
             );
             var engineMethodBindsSrc = TemplateLoader.renderFromClasspath(
                     "template_451/engine_method_binds.h.ftl",

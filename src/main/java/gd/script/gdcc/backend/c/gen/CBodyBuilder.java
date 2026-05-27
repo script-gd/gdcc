@@ -1,13 +1,11 @@
 package gd.script.gdcc.backend.c.gen;
 
-import gd.script.gdcc.backend.c.gen.binding.EngineConstructorUsageBuffer;
-import gd.script.gdcc.backend.c.gen.binding.EngineMethodUsageBuffer;
+import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
+import gd.script.gdcc.backend.c.gen.binding.usage.GodotBindingUsageBuffer;
 import gd.script.gdcc.backend.c.gen.insn.BackendMethodCallResolver;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.lir.*;
-import gd.script.gdcc.lir.*;
 import gd.script.gdcc.scope.ClassRegistry;
-import gd.script.gdcc.type.*;
 import gd.script.gdcc.type.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -33,8 +31,7 @@ public final class CBodyBuilder {
     private final @NotNull CGenHelper helper;
     private final @NotNull LirClassDef clazz;
     private final @NotNull LirFunctionDef func;
-    private final @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer;
-    private final @NotNull EngineConstructorUsageBuffer engineConstructorUsageBuffer;
+    private final @NotNull GodotBindingUsageBuffer usageBuffer;
     private final @NotNull StringBuilder out = new StringBuilder();
 
     private @Nullable LirBasicBlock currentBlock;
@@ -46,26 +43,17 @@ public final class CBodyBuilder {
     public CBodyBuilder(@NotNull CGenHelper helper,
                         @NotNull LirClassDef clazz,
                         @NotNull LirFunctionDef func) {
-        this(helper, clazz, func, EngineMethodUsageBuffer.noOp());
+        this(helper, clazz, func, GodotBindingUsageBuffer.noOp());
     }
 
     CBodyBuilder(@NotNull CGenHelper helper,
                  @NotNull LirClassDef clazz,
                  @NotNull LirFunctionDef func,
-                 @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer) {
-        this(helper, clazz, func, engineMethodUsageBuffer, EngineConstructorUsageBuffer.noOp());
-    }
-
-    CBodyBuilder(@NotNull CGenHelper helper,
-                 @NotNull LirClassDef clazz,
-                 @NotNull LirFunctionDef func,
-                 @NotNull EngineMethodUsageBuffer engineMethodUsageBuffer,
-                 @NotNull EngineConstructorUsageBuffer engineConstructorUsageBuffer) {
+                 @NotNull GodotBindingUsageBuffer usageBuffer) {
         this.helper = Objects.requireNonNull(helper);
         this.clazz = Objects.requireNonNull(clazz);
         this.func = Objects.requireNonNull(func);
-        this.engineMethodUsageBuffer = Objects.requireNonNull(engineMethodUsageBuffer);
-        this.engineConstructorUsageBuffer = Objects.requireNonNull(engineConstructorUsageBuffer);
+        this.usageBuffer = Objects.requireNonNull(usageBuffer);
     }
 
     public @NotNull CBodyBuilder setCurrentPosition(@NotNull LirBasicBlock block,
@@ -231,13 +219,19 @@ public final class CBodyBuilder {
     /// Exact engine usage collection is function-local at builder scope.
     /// The buffer stays isolated from module session state until the caller commits after a successful render.
     public void recordUsedEngineMethodCall(@NotNull BackendMethodCallResolver.ResolvedMethodCall resolved) {
-        engineMethodUsageBuffer.record(resolved);
+        usageBuffer.recordEngineMethodCall(resolved);
     }
 
     /// Engine constructors keep their public `godot_new_<Class>()` call shape in generated bodies.
     /// Recording here only decides which module-local wrapper definitions are emitted later.
     public void recordUsedEngineConstructor(@NotNull GdObjectType constructedType) {
-        engineConstructorUsageBuffer.record(constructedType);
+        usageBuffer.recordEngineConstructor(constructedType);
+    }
+
+    /// Explicitly records a module-local Godot wrapper before emitting the matching `godot_*` call.
+    /// Runtime-provided wrappers are ignored here and stay owned by `godot_binding.h/.c`.
+    public void recordModuleLocalGodotBinding(@NotNull ModuleLocalGodotBinding binding) {
+        usageBuffer.recordModuleLocalGodotBinding(binding);
     }
 
     /// Resolves the PtrKind for a given GdType based on the class registry.
@@ -540,6 +534,7 @@ public final class CBodyBuilder {
     public @NotNull CBodyBuilder callVoid(@NotNull String funcName,
                                           @NotNull List<ValueRef> args,
                                           @Nullable List<ValueRef> varargs) {
+        recordUsedGodotBindingCall(funcName);
         RenderResult argsResult;
         if (varargs == null) {
             argsResult = renderArgs(funcName, args);
@@ -574,6 +569,7 @@ public final class CBodyBuilder {
                                             @NotNull GdType returnType,
                                             @NotNull List<ValueRef> args,
                                             @Nullable List<ValueRef> varargs) {
+        recordUsedGodotBindingCall(funcName);
         var discardResult = target instanceof DiscardRef;
         if (!discardResult) {
             checkTargetAssignable(target);
@@ -1326,6 +1322,14 @@ public final class CBodyBuilder {
                 funcName.equals("try_destroy_object") ||
                 funcName.equals("gdcc_object_from_godot_object_ptr") ||
                 funcName.equals("gdcc_cmp_object");
+    }
+
+    private void recordUsedGodotBindingCall(@NotNull String funcName) {
+        try {
+            usageBuffer.recordGodotCall(funcName);
+        } catch (IllegalStateException exception) {
+            throw invalidInsn(exception.getMessage());
+        }
     }
 
     private boolean checkGlobalFuncReturnGodotRawPtr(@NotNull String funcName) {

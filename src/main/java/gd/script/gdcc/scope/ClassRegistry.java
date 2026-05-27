@@ -830,4 +830,12 @@ public final class ClassRegistry implements Scope {
     public @NotNull @UnmodifiableView List<ExtensionGdClass> getExtensionGdClassList() {
         return gdClassByName.values().stream().toList();
     }
+
+    public @NotNull @UnmodifiableView List<ExtensionBuiltinClass> getExtensionBuiltinClassList() {
+        return builtinByName.values().stream().toList();
+    }
+
+    public @NotNull @UnmodifiableView List<ExtensionUtilityFunction> getExtensionUtilityFunctionList() {
+        return utilityByName.values().stream().toList();
+    }
 }
