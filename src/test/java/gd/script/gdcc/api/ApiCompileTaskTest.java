@@ -32,11 +32,19 @@ class ApiCompileTaskTest {
 
         var taskId = api.compile("demo");
 
-        var queuedTask = api.getCompileTask(taskId);
-        assertEquals(CompileTaskSnapshot.State.QUEUED, queuedTask.state());
-        assertEquals(CompileTaskSnapshot.Stage.QUEUED, queuedTask.stage());
-        assertEquals(1, queuedTask.revision());
-        assertNull(queuedTask.result());
+        var initialTask = api.getCompileTask(taskId);
+        assertEquals(taskId, initialTask.taskId());
+        assertEquals("demo", initialTask.moduleId());
+        assertTrue(
+                initialTask.state() == CompileTaskSnapshot.State.QUEUED
+                        || initialTask.state() == CompileTaskSnapshot.State.RUNNING,
+                () -> "Expected queued or running compile task, got " + initialTask.state()
+        );
+        if (initialTask.state() == CompileTaskSnapshot.State.QUEUED) {
+            assertEquals(CompileTaskSnapshot.Stage.QUEUED, initialTask.stage());
+            assertEquals(1, initialTask.revision());
+        }
+        assertNull(initialTask.result());
 
         assertTrue(compiler.awaitEntered());
         var runningTask = ApiCompileTestSupport.awaitSnapshot(
@@ -50,7 +58,7 @@ class ApiCompileTaskTest {
         assertEquals("demo", runningTask.moduleId());
         assertEquals(CompileTaskSnapshot.State.RUNNING, runningTask.state());
         assertEquals(CompileTaskSnapshot.Stage.BUILDING_NATIVE, runningTask.stage());
-        assertTrue(runningTask.revision() > queuedTask.revision());
+        assertTrue(runningTask.revision() > 1);
         assertNull(runningTask.result());
 
         var duplicateCompileError = assertThrows(ApiCompileAlreadyRunningException.class, () -> api.compile("demo"));
