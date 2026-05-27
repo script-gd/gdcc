@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: |
-            tmp/test/**/compiler-cache
+            tmp/test/shared-compiler-cache
             tmp/test/**/include
           key: ci-native-test-outputs-${{ runner.os }}-zig-${{ env.ZIG_VERSION }}-godot-${{ env.GODOT_VERSION }}-${{ hashFiles('src/main/**', 'src/test/**') }}
           restore-keys: |
@@ -101,6 +101,8 @@ jobs:
 
       - name: Run unit tests
         shell: bash
+        env:
+          GDCC_SHARED_C_COMPILER_CACHE: tmp/test/shared-compiler-cache
         run: ./gradlew test jar --no-daemon --info --console=plain
 
       - name: Package jar and runtime libraries

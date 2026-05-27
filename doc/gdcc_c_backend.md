@@ -3,6 +3,15 @@
 Runtime helper layout, binding generator behavior, public C wrapper naming and fixed-binding
 registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
 
+## Native Compiler Cache
+
+`ZigCcCompiler` stores Zig local and global compiler caches under a shared cache root when one is
+available. If `GDCC_SHARED_C_COMPILER_CACHE` is set to a usable directory path, the compiler creates
+that directory when necessary and uses it as the root for `ZIG_CACHE_DIR` and `ZIG_GLOBAL_CACHE_DIR`.
+Blank values, invalid paths, files, or paths that cannot be created fall back to the existing
+project-location behavior: use the project parent's `shared-compiler-cache` directory when it
+already exists, otherwise use the project's own `compiler-cache` directory.
+
 ## Reminders
 
 ### Use GDCC Class Types

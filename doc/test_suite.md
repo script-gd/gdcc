@@ -166,6 +166,11 @@ Required:
 
 If these prerequisites are not available, the JUnit wrapper test will be skipped by assumption rather than fail the whole suite.
 
+Native builds can share Zig compiler caches across the per-case `tmp/test` project directories by
+setting `GDCC_SHARED_C_COMPILER_CACHE`, for example `tmp/test/shared-compiler-cache`. The compiler
+creates that directory when it is missing. If the variable is blank, invalid, points to a file, or
+cannot be created, the backend falls back to its default project-local cache selection.
+
 ## Running the Suite
 
 The current JUnit entry is:

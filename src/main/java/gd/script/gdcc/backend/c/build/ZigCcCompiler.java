@@ -6,16 +6,19 @@ import org.jetbrains.annotations.NotNull;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ZigCcCompiler implements CCompiler {
     private static final String PROJECT_CACHE_DIR_NAME = "compiler-cache";
     private static final String SHARED_CACHE_DIR_NAME = "shared-compiler-cache";
+    private static final String SHARED_CACHE_ENV = "GDCC_SHARED_C_COMPILER_CACHE";
     private static final Duration OUTPUT_READER_JOIN_TIMEOUT = Duration.ofSeconds(1);
 
     @Override
@@ -127,7 +130,24 @@ public class ZigCcCompiler implements CCompiler {
     }
 
     static @NotNull Path resolveCompilerCacheRoot(@NotNull Path projectDir) {
+        return resolveCompilerCacheRoot(projectDir, System.getenv());
+    }
+
+    static @NotNull Path resolveCompilerCacheRoot(@NotNull Path projectDir, @NotNull Map<String, String> environment) {
         var normalizedProjectDir = projectDir.toAbsolutePath().normalize();
+        var envCacheValue = environment.get(SHARED_CACHE_ENV);
+        if (envCacheValue != null && !envCacheValue.isBlank()) {
+            try {
+                var envCacheDir = Path.of(envCacheValue).toAbsolutePath().normalize();
+                Files.createDirectories(envCacheDir);
+                if (Files.isDirectory(envCacheDir)) {
+                    return envCacheDir;
+                }
+            } catch (IOException | InvalidPathException exception) {
+                // Fall back to the project-location cache rule below.
+            }
+        }
+
         var projectParent = normalizedProjectDir.getParent();
         if (projectParent == null) {
             return normalizedProjectDir.resolve(PROJECT_CACHE_DIR_NAME);
