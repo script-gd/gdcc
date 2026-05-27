@@ -1,4 +1,4 @@
-# CALL_METHOD 实现说明（最终合并版）
+# CALL_METHOD 实现说明
 
 > 本文档作为 `CALL_METHOD` 在 C Backend 的长期维护说明。  
 > 只保留已完成实现、当前状态和后续工程仍有价值的约定与反思。
@@ -70,7 +70,7 @@
   - 作为唯一事实源
 - 本文只保留与 `CALL_METHOD` 总体实现仍强相关的交界事实：
   - exact engine route 已切到 backend-owned generated helper
-  - `gdextension-lite` public wrapper 不再是 migrated exact engine route 的事实来源
+  - migrated exact engine route 的事实来源是 backend-owned helper，不是 public wrapper 命名面
   - static engine method 通过实例 `call_method` 命中时，仍保留 warning + receiver-free helper 合同
 
 ## 长期约定（必须保持）

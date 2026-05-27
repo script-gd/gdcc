@@ -22,7 +22,7 @@ import java.util.Objects;
 
 /// Backend adapter for the shared property metadata resolver.
 ///
-/// Responsibilities kept in backend after Phase 5:
+/// Backend-specific responsibilities:
 /// - translate shared lookup results into legacy backend-specific lookup records
 /// - preserve stable `invalidInsn(...)` wording expected by existing codegen tests
 /// - render owner-aligned receiver expressions for generated C calls

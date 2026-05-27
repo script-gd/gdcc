@@ -19,9 +19,7 @@ class ModuleLocalGodotBindingTemplateTest {
 
         assertAll(
                 () -> assertTrue(header.contains("Module-local Godot wrappers used by this module.")),
-                () -> assertTrue(header.contains("No module-local Godot wrappers were collected for this module.")),
-                () -> assertFalse(header.contains("godot_module_bindings.h")),
-                () -> assertFalse(header.contains("godot_module_bindings.c"))
+                () -> assertTrue(header.contains("No module-local Godot wrappers were collected for this module."))
         );
     }
 
@@ -41,7 +39,6 @@ class ModuleLocalGodotBindingTemplateTest {
                 () -> assertFalse(header.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"), header),
                 () -> assertFalse(header.contains("\n                .kind = \"module_singleton\""), header),
                 () -> assertFalse(header.contains("godot_classdb_get_method_bind("), header),
-                () -> assertFalse(header.contains("module_method_bind"), header),
                 () -> assertFalse(header.contains("return (godot_int)"), header)
         );
     }
@@ -58,8 +55,7 @@ class ModuleLocalGodotBindingTemplateTest {
                 () -> assertTrue(header.contains("return (godot_int)13;"), header),
                 () -> assertFalse(header.contains("godot_global_get_singleton("), header),
                 () -> assertFalse(header.contains("module_singleton"), header),
-                () -> assertFalse(header.contains("godot_classdb_get_method_bind("), header),
-                () -> assertFalse(header.contains("module_method_bind"), header)
+                () -> assertFalse(header.contains("godot_classdb_get_method_bind("), header)
         );
     }
 

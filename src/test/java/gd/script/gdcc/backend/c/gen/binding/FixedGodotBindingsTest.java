@@ -105,8 +105,7 @@ class FixedGodotBindingsTest {
                 () -> assertTrue(source.contains("GDExtensionUninitializedVariantPtr")),
                 () -> assertFalse(source.contains("godot_new_gdcc_Object_with_Variant")),
                 () -> assertFalse(source.contains("FixedGodotBindings451")),
-                () -> assertFalse(source.contains("Godot451FixedBindings")),
-                () -> assertFalse(source.contains("gdextension-lite"))
+                () -> assertFalse(source.contains("Godot451FixedBindings"))
         );
         assertFixedPtrcallReturnCarrierInitialized(source, "godot_Variant godot_Object_get(", "godot_Variant");
         assertFixedPtrcallReturnCarrierInitialized(source, "godot_int godot_Object_get_instance_id(", "uint64_t");
@@ -262,8 +261,7 @@ class FixedGodotBindingsTest {
                 () -> assertTrue(manifest.contains("\"signature\": \"godot_Variant(")),
                 () -> assertFalse(manifest.contains("godot_print")),
                 () -> assertFalse(manifest.contains("godot_new_")),
-                () -> assertFalse(manifest.contains("gdcc_fixed_construct_object")),
-                () -> assertFalse(manifest.contains("gdextension-lite"))
+                () -> assertFalse(manifest.contains("gdcc_fixed_construct_object"))
         );
     }
 

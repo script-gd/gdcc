@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：阶段 3.1/3.2 已完成；阶段 4/5 待实施
+- 状态：阶段 5 已完成
 - 范围（整份计划的真实触点，具体阶段仍按后文分批提交）：
   - `src/main/java/gd/script/gdcc/gdextension/**`
   - `src/main/java/gd/script/gdcc/scope/**`
@@ -20,7 +20,7 @@
   - `src/test/java/gd/script/gdcc/backend/c/**`
   - `src/test/java/gd/script/gdcc/api/**`
   - `src/test/java/gd/script/gdcc/cli/**`
-  - `doc/gdextension-lite.md`
+  - `doc/gdcc_runtime_lib.md`
   - `doc/gdcc_c_backend.md`
   - `doc/module_impl/**`
   - 被触及源码注释、test display name、failure message 中的旧 `gdextension-lite` 事实表述
@@ -40,7 +40,7 @@
 - 重点参考：
   - `doc/module_impl/backend/engine_method_bind_implementation.md`
   - `doc/gdcc_c_backend.md`
-  - `doc/gdextension-lite.md`
+  - `doc/gdcc_runtime_lib.md`
   - `doc/module_impl/backend/backend_ownership_lifecycle_contract.md`
   - `doc/module_impl/backend/variant_abi_contract.md`
   - `doc/module_impl/backend/typed_array_abi_contract.md`
@@ -81,8 +81,8 @@
    builtin ABI 尺寸定义和 builtin member offset/meta layout 定义；`global_enums[]` 与 `global_constants[]`
    都必须从目标 Godot metadata 全量预生成，不按 helper 或脚本使用情况裁剪。
 6. builtin callable wrapper 和 utility function wrapper 按 Godot 版本全量预生成，不再依赖模块使用集或源码扫描决定是否输出。
-7. 固化 GDCC 自有 builtin wrapper 生成 contract：迁移完成后，`doc/gdextension-lite.md` 或其改名后的文档只作为
-   `godot_` 历史命名来源，不作为“按 JSON 全量映射”的生成规则。
+7. 固化 GDCC 自有 builtin wrapper 生成 contract：迁移完成后，`doc/gdcc_runtime_lib.md` 作为当前 runtime
+   library 与 `godot_` wrapper 命名事实源；具体生成行为仍以版本化 generator 和测试锚点为准。
 8. 固定 `gdcc/*.h` helper 和固定模板所需的非 interface wrapper 由版本化源码清单 + 命令行工具生成，并作为模块级生成的 provided set 输入。
 9. 保留现有 `godot_` 命名规则，避免让 Java 后端、模板和测试在同一轮迁移中大规模改名。
 10. 保留已经迁移完成的 exact engine `CALL_METHOD` 合同：继续走 `engine_method_binds.h` 中的 `gdcc_engine_call*` helper，不回退 `godot_<Owner>_<method>` public wrapper。
@@ -405,7 +405,8 @@ Godot 4.5.1 `gdextension_interface.h` 明确把指针 ABI 分成 initialized、c
 
 ## Godot builtin wrapper 生成 contract
 
-`doc/gdextension-lite.md` 只定义当前代码已经采用的 `godot_` / `gdcc_` 命名形状，不能继续作为生成规则的替代品。
+`doc/gdcc_runtime_lib.md` 定义当前 runtime helper 布局、`godot_` / `gdcc_` 命名形状和 fixed binding
+注册规则；具体生成集合、过滤和 ABI contract 仍以本节规则与 generator 测试为准。
 迁移后的 `GodotBuiltinGenerator` 必须把旧库中已经被 GDCC 代码依赖的过滤、合成和冲突规则固化为 GDCC 自己的版本级 contract。
 “全量预生成 builtin wrapper”表示全量输出这个 contract 允许的 wrapper，不表示把 Godot JSON 的每个 builtin constructor/operator/method
 无条件映射成 C 函数。
@@ -495,7 +496,7 @@ typed container 和 GDCC-owned helper 边界：
 
 命名、身份和冲突处理：
 
-- C 函数名沿用 `doc/gdextension-lite.md` 的 `godot_` 命名习惯，但生成 contract 以本节规则为准。
+- C 函数名沿用 `doc/gdcc_runtime_lib.md` 的 `godot_` 命名习惯，但生成 contract 以本节规则为准。
 - canonical key 必须包含 wrapper family/kind、owner/type、constructor index 或 operator/member/method/property 标识、
   参数 ABI、返回 ABI、vararg/static 标记；参数 ABI 必须包含 initialized / const / uninitialized destination 状态，
   不能只记录底层 `void *` 形态。engine property helper 若捕获 indexed property 的固定 `index`，必须把该 index
@@ -1888,9 +1889,8 @@ fixed source-list 至少覆盖剩余 engine/runtime helper 面：
     - 两种做法都不允许把 `gdextension-lite/gdextension-lite-one.c` 重新抽取为新内容；旧目录若已存在，只能作为待阶段 5 清理的残留，
       不能进入 include dirs 或 native compiler input。
 - 活动文档和被触及注释
-  - 同阶段更新 `doc/gdextension-lite.md` 中“generated entry.c 调用 `gdextension_lite_initialize(...)`”
-    这类当前事实表述；改为说明该文档进入历史命名/旧行为参考状态，新的入口初始化由
-    `godot_initialize_interface(...)` 完成。
+  - 同阶段更新 `doc/gdcc_runtime_lib.md` 中 entry lifecycle、runtime helper 与 binding wrapper 事实表述；
+    新的入口初始化由 `godot_initialize_interface(...)` 完成。
   - 同阶段更新 `doc/gdcc_c_backend.md` 的 entry lifecycle / wrapper behavior 相关表述，不能继续把
     gdextension-lite 当作当前初始化或 wrapper 行为事实源。
   - 同阶段更新被触及源码注释，例如 `CProjectBuilder`、`ConstructInsnGen`、`CGenHelper` 中把
@@ -2353,8 +2353,8 @@ runtime wrapper 已在前置阶段作为 provided set 发布，不再由模块�
   `engine_method_binds.h`、`entry.h`，未新增 `godot_module_bindings.h` / `godot_module_bindings.c`。
 - [x] 已将 `CBodyBuilder.callVoid(...)` / `callAssign(...)` 接入 provided/module-local 调用校验；`appendLine(...)`
   和 `appendRaw(...)` 仍不做隐式解析，直接拼接的残余 `godot_*` 由显式登记和生成后扫描共同约束。
-- [x] 已补强 `CCodegenTest` / `CCodegenEngineMethodBindHeaderTest` 的三文件与 no `godot_module_bindings`
-  断言；当前已通过
+- [x] 已补强 `CCodegenTest` / `CCodegenEngineMethodBindHeaderTest` 的三文件、module-local section
+  和当前 helper 输出锚点；旧 module-local 独立文件名不再作为测试专项负向断言。当前已通过
   `script/run-gradle-targeted-tests.sh --tests GodotBindingUsageSessionTest,ModuleLocalGodotBindingTemplateTest,GodotBindingGeneratedCScannerTest,CCodegenEngineMethodUsageSessionTest,CCodegenEngineMethodBindHeaderTest,CCodegenTest`。
 - [x] 已通过 build/API/CLI 和 binding generator 回归：
   `script/run-gradle-targeted-tests.sh --tests CProjectBuilderSharedIncludeTest,ApiCompilePipelineTest,ApiCompileArtifactLinkTest,ApiCompileDiagnosticsTest,ApiRecompileArtifactRefreshTest,GdccCommandInputTest,FixedGodotBindingsTest,GodotBuiltinGeneratorTest,GodotUtilityGeneratorTest,GodotInterfaceGeneratorTest,GodotBindingToolAbiSupportTest`；
@@ -2422,7 +2422,7 @@ session 传递链路：
 - `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 中的核心文件集合断言继续保持
   `entry.c`、`engine_method_binds.h`、`entry.h`。
 - 需要 module-local wrapper 的 fixture 必须断言 wrapper 出现在 `engine_method_binds.h` 的 module-local section，
-  并断言 `CCodegen.generate()` 不返回 `godot_module_bindings.h`、`godot_module_bindings.c` 或其它新增文件。
+  并通过 `CCodegen.generate()` 的精确三文件列表证明没有其它 generated file。
 - API / CLI 层通过 `CompileResult.generatedFiles()` 和 `outputLinks()` 暴露 generated files；阶段 4 不改变这些列表。
   `ApiCompilePipelineTest`、`ApiCompileArtifactLinkTest`、`ApiCompileDiagnosticsTest`、`ApiRecompileArtifactRefreshTest`、
   `GdccCommandInputTest` 应保持核心 3 文件和 artifact link 顺序稳定。
@@ -2512,7 +2512,7 @@ module-local 登记位置必须按类型明确落点：
 
 生成逻辑：
 
-- wrapper name 继续按 `doc/gdextension-lite.md` 的 `godot_` 命名约定；生成集合、过滤和合成只服从本文的 GDCC contract。
+- wrapper name 继续按 `doc/gdcc_runtime_lib.md` 的 `godot_` 命名约定；生成集合、过滤和合成只服从本文的 GDCC contract。
 - constructor index、variant type、operator enum、class/method/property 名全部来自 `ExtensionAPI` metadata 或
   Godot `extension_api_dump.cpp` 输出的对应字段；engine property accessor method 名必须来自 raw `getter` / `setter`，
   不从 property 名拼接推导。
@@ -2563,6 +2563,37 @@ module-local 登记位置必须按类型明确落点：
 - **历史来源文档**：明确标注为历史命名来源、迁移前行为或审计记录，不再承担生成规则职责。
 - **引用型文档**：只引用统一事实源和测试锚点，不重复维护实现规则表。
 
+#### 阶段 5 执行状态
+
+- [x] 已重新确认 `AGENTS.md` 的并行子代理、定向测试、文档同步和阶段 5 验收要求。
+- [x] 已使用 `gpt-5.4-mini` 子代理并行完成 backend 文档、frontend/scope 文档、API/CLI/common 文档、
+  测试文案和构建输入清理点的只读调研。
+- [x] 5A 已完成：删除 `src/main/c/codegen/include_451/gdextension-lite.zip`；`CProjectBuilder`
+  不再自动删除旧 vendor 子树 `<includeRoot>/gdextension-lite`，旧内容由迁移操作手动清理；其 native
+  输入规则仍为本轮 generated `.c` 加 `<includeRoot>/godot/godot_binding.c`；`ResourceExtractor`
+  保持“抽取/覆盖但不删除无关文件”的工具 contract。
+- [x] 5A 已补充并运行定向测试锚点：
+  `script/run-gradle-targeted-tests.sh --tests CProjectBuilderSharedIncludeTest,ApiCompilePipelineTest,ResourceExtractorTest`。
+- [x] 5B backend 文档已清理：旧根层历史命名文档已改名为 `doc/gdcc_runtime_lib.md`，
+  并扩展为当前 runtime helper、binding generator、命名和 fixed binding 注册事实源；
+  `doc/gdcc_c_backend.md` 补充 runtime library 事实源链接与 `godot_initialize_interface(...)` 入口初始化合同；
+  backend active contract 文档不再把旧 vendor wrapper 写成当前事实源。
+- [x] 5C frontend/scope 文档分类记录已写入；`runtimeName` / 三名模型 / raw metadata 命中均为明确禁止项或历史说明。
+- [x] 5D API / CLI / common 文档分类记录已写入，三者均保持 current-contract。
+- [x] 5E 源码注释、模板注释和测试文案已清理；`src/main` / `src/test` 不再把旧 vendor
+  文件名、旧初始化函数、旧 macro header 或旧 module-local generated file 名称作为当前事实源或专项负向断言。
+  `ApiCompilePipelineTest` 与 `CProjectBuilderSharedIncludeTest` 仅保留 stale vendor fixture 常量，用于证明脏工作区残留
+  不会进入 native compiler input。
+- [x] 5F 已完成 `rg` 验收：旧 module-local 文件名在 `src/main` / `src/test` 中无命中；旧 vendor 命中仅保留在
+  stale vendor fixture 常量、本迁移计划、runtime library 历史说明或明确标注“迁移前/历史”的说明中。
+- [x] 阶段 5 targeted tests 已通过：
+  - `script/run-gradle-targeted-tests.sh --tests ApiCompilePipelineTest,CProjectBuilderSharedIncludeTest,CCodegenTest,CCodegenEngineMethodBindHeaderTest,GdccCommandInputTest,GodotInterfaceGeneratorTest,GodotBindingToolAbiSupportTest,FixedGodotBindingsTest,ModuleLocalGodotBindingTemplateTest`
+  - `script/run-gradle-targeted-tests.sh --tests CProjectBuilderSharedIncludeTest,ResourceExtractorTest`
+  - `script/run-gradle-targeted-tests.sh --tests CProjectBuilderSharedIncludeTest,ResourceExtractorTest,ApiCompilePipelineTest,GdccCommandInputTest,CCodegenTest,CCodegenEngineMethodBindHeaderTest,FixedGodotBindingsTest,GodotInterfaceGeneratorTest,GodotBindingToolAbiSupportTest,ModuleLocalGodotBindingTemplateTest`
+  - `script/run-gradle-targeted-tests.sh --tests CGenHelperTest,CBodyBuilderPhaseBTest,CBodyBuilderPhaseCTest,CConstructInsnGenTest,CallGlobalInsnGenTest,CallMethodInsnGenTest,MethodResolverParityTest,EngineMethodSymbolKeyTest,CPackUnpackVariantInsnGenTest,COperatorInsnGenTest,IndexLoadInsnGenTest,IndexStoreInsnGenTest,ApiCompileArtifactLinkTest,ApiCompileDiagnosticsTest,ApiRecompileArtifactRefreshTest,GdccCommandTaskTest`
+- [x] 已运行 `git diff --check`；IDE problem scan 仅报告既有未使用 accessor / 测试辅助参数等 warning，
+  无本阶段新增错误。
+
 #### 5A：vendor 资源、构建输入和 stale include 卫生
 
 当以上 wrapper 覆盖和测试通过后，删除或确认已删除：
@@ -2574,33 +2605,32 @@ module-local 登记位置必须按类型明确落点：
 
 - `CProjectBuilder`
   - 保留阶段 3 的显式输入规则：只编译本轮 generated `.c` 与 `<includeRoot>/godot/godot_binding.c`。
-  - 可在 `initProject` / `buildProject` 的 include 准备阶段增加窄范围遗留清理，只删除
-    `<includeRoot>/gdextension-lite` 这个 GDCC 旧 vendor 子树；不要把 `ResourceExtractor` 改成清空整个
-    include root 的通用同步器。
-  - 清理后仍要通过 stale vendor 测试证明：即使旧文件被用户或旧版本构建留下，native compiler input 也不会回退到
+  - 不在 `initProject` / `buildProject` 的 include 准备阶段自动删除
+    `<includeRoot>/gdextension-lite`；旧目录如需清理，由迁移操作手动删除。
+  - 仍要通过 stale vendor 测试证明：即使旧文件被用户或旧版本构建留下，native compiler input 也不会回退到
     `gdextension-lite-one.c`。
 - `ResourceExtractor`
-  - 保持“抽取/覆盖但不删除旧文件”的工具 contract；阶段 5 的清理只针对 GDCC 旧 vendor 子树和
-    `CProjectBuilder` 显式输入规则。
+  - 保持“抽取/覆盖但不删除旧文件”的工具 contract；阶段 5 不把它升级成 include root 同步器，
+    也不让 `CProjectBuilder` 代替用户执行旧目录删除。
   - 文档和测试不得把“资源包不再携带旧 zip”误写成“目标 include root 会自动清空旧文件”。
 
 #### 5B：根层文档与 backend 文档清理
 
-- `doc/gdextension-lite.md`
-  - 改名为 `doc/godot_binding_naming.md`，或保留原文件名但在开头明确标记为历史 gdextension-lite
-    命名来源与迁移参考。
-  - 删除或改写“当前 generated entry.c 调用 `gdextension_lite_initialize(...)`”等当前事实表述。
-  - 保留 `godot_` 命名标准作为 generated binding 的 public C symbol 规则，但说明生成 contract 以本计划和
-    GDCC generator 测试为准。
+- `doc/gdcc_runtime_lib.md`
+  - 由旧根层历史命名文档改名而来；不再作为历史命名备忘录，而是当前 GDCC runtime library
+    与 binding wrapper 事实源。
+  - 必须覆盖 runtime helper 文件职责、binding generator 行为、后端 C 函数命名约定、默认 fixed binding 分类，
+    以及新增 fixed binding / handwritten `godot_*` helper 的注册流程。
+  - 保留 `gdextension-lite` 仅作为迁移前历史说明，不能作为当前生成或编译依赖。
 - `doc/gdcc_c_backend.md`
   - 将 “matches gdextension-lite wrapper behavior” 改成描述 GDCC 自有 Godot binding wrapper 的 ABI 行为。
   - 将 “gdextension-lite exposes the helper” 这类默认值/constructor 事实源改成 GDCC builtin wrapper contract
     或版本化 compatibility helper。
   - 更新 entry lifecycle 小节，说明 entry 初始化调用 `godot_initialize_interface(...)`，不再提旧初始化函数作为当前路径。
 - 必须重写或历史化的 backend 文档：
-  - `doc/module_impl/backend/builtin_constructor_naming_audit.md`
-    - 标为历史命名审计或改写为 GDCC builtin constructor naming contract；不能继续把 gdextension-lite
-      当现行构造器生成规则。
+  - `doc/module_impl/backend/builtin_builder_implementation.md`
+    - 作为 GDCC builtin constructor naming / materialization / typed container 构造的当前事实源；
+      不能继续把 gdextension-lite 当现行构造器生成规则。
   - `doc/module_impl/backend/implicit_conversion_implementation.md`
     - 将 `CVectorIToVectorIntrinsic` 的 “gdextension-lite constructor conversion” 改为 generated builtin constructor /
       `CBuiltinBuilder` / `godot_builtin` contract。
@@ -2615,9 +2645,8 @@ module-local 登记位置必须按类型明确落点：
   - `doc/module_impl/backend/call_method_implementation.md`
     - 将 “gdextension-lite public wrapper 不再是事实来源” 收束成历史注记；当前合同只写
       exact route、dynamic fallback 和 module-local wrapper 分工。
-  - `doc/module_impl/backend/c_builtin_builder_refactor.md`
-    - 清理旧 API 名、test display name 或历史 `@DisplayName`，避免把 `CBuiltinBuilder` 的现行 helper
-      继续描述成 gdextension-lite API。
+  - `doc/module_impl/backend/builtin_builder_implementation.md`
+    - 保持当前 API 名、测试锚点和 `CBuiltinBuilder` helper 合同与源码一致。
 - 逐份确认无需语义改写但必须扫描的 backend 合同：
   - `assign_insn_implementation.md`
   - `backend_ownership_lifecycle_contract.md`
@@ -2734,13 +2763,14 @@ frontend 文档清理的核心不是把 backend 生成细节复制进去，而�
   - `ApiCompilePipelineTest`、`CProjectBuilderSharedIncludeTest`、`FrontendLoweringToCProjectBuilderIntegrationTest`、
     `CConstructInsnGenTest` 是必须同步更新的最小公开锁点。
   - 对阶段 4 影响的 API / CLI 公共契约测试，继续使用 generated file / output link 的公共语义命名；
-    不把 `godot_module_bindings.*` 描述成 runtime binding C 文件。
+    不保留旧 module-local 独立文件名的专项负向断言。
 
 #### 5F：文档和事实源验收
 
 - `rg -n "gdextension-lite|gdextension_lite|gdextension-lite-one|implementation-macros|<gdextension-lite.h>|shared-include/gdextension-lite|tmp/inspect_gdlite" src/main src/test doc`
-  - 若 `doc/gdextension-lite.md` 已改名为 `doc/godot_binding_naming.md`，命令中的文档路径同步替换。
-  - 只允许本计划、历史命名来源文档或明确标注“迁移前/历史”的说明残留。
+  - 旧根层文档路径必须是 `doc/gdcc_runtime_lib.md`；旧历史命名文件不再存在。
+  - 只允许本计划、runtime library 历史说明、明确标注“迁移前/历史”的说明，或
+    `ApiCompilePipelineTest` / `CProjectBuilderSharedIncludeTest` 中的 stale vendor fixture 常量残留。
   - `src/main`、`src/test` 中不允许有运行时代码、构建代码、测试断言、display name 或 failure message 依赖旧 vendor。
 - `rg -n "runtimeName|三名模型|raw JSON|重新读 JSON|回扫 raw|godot_module_bindings.*runtime binding|godot_module_bindings.*generated file|projectPath/godot_module_bindings" doc/module_impl`
   - 命中必须逐条解释：要么是历史说明，要么是明确禁止项；现行合同不能继续宣称下游回扫 raw metadata、runtimeName
@@ -2752,6 +2782,51 @@ frontend 文档清理的核心不是把 backend 生成细节复制进去，而�
 - 干净工作区构建准备测试：确认 `CProjectBuilder` 只收本轮 generated `.c` 与 `<includeRoot>/godot/godot_binding.c`。
 - 脏工作区构建准备测试：预先放入旧 `shared-include/gdextension-lite/gdextension-lite-one.c`，确认它不会进入
   native compiler input，也不会让 include dirs 重新包含 `shared-include/gdextension-lite`。
+
+#### 阶段 5 文档归类记录
+
+根层文档：
+
+- `updated-contract`: `doc/gdcc_c_backend.md`, `doc/gdcc_runtime_lib.md`
+
+backend 文档：
+
+- `updated-contract`: `doc/module_impl/backend/gdextension_lite_removal_plan.md`,
+  `builtin_builder_implementation.md`, `implicit_conversion_implementation.md`,
+  `index_insn_implementation.md`, `engine_method_bind_implementation.md`,
+  `call_method_implementation.md`
+- `current-contract`: `assign_insn_implementation.md`, `backend_ownership_lifecycle_contract.md`,
+  `call_global_implementation.md`, `cbodybuilder_implementation.md`, `construct_array_implementation.md`,
+  `explicit_c_inheritance_layout_contract.md`, `lifecycle_instruction_restriction.md`,
+  `load_static_implementation.md`, `load_store_property_implementation.md`,
+  `operator_insn_implementation.md`, `typed_array_abi_contract.md`,
+  `typed_dictionary_abi_contract.md`, `variant_abi_contract.md`
+
+frontend / scope 文档：
+
+- `updated-contract`: `frontend_exact_call_extension_metadata_contract.md`,
+  `frontend_builtin_property_access_implementation.md`, `gdcc_facing_class_name_contract.md`,
+  `inner_class_implementation.md`, `runtime_name_mapping_implementation.md`,
+  `superclass_canonical_name_contract.md`, `scope_architecture_refactor_plan.md`
+- `historical-reference`: `frontend_builtin_constructor_variant_argument_plan.md`,
+  `frontend_lowering_plan.md`
+- `current-contract`: `frontend_dynamic_call_lowering_implementation.md`,
+  `frontend_engine_virtual_override_implementation.md`, `frontend_property_init_lowering_implementation.md`,
+  `frontend_void_call_result_behavior.md`, `frontend_chain_binding_expr_type_implementation.md`,
+  `frontend_type_check_analyzer_implementation.md`, `frontend_implicit_conversion_matrix.md`,
+  `frontend_lowering_(un)pack_implementation.md`, `frontend_lowering_cfg_pass_implementation.md`,
+  `frontend_top_binding_analyzer_implementation.md`, `scope_type_resolver_implementation.md`,
+  `scope_analyzer_implementation.md`, `frontend_variable_analyzer_implementation.md`,
+  `frontend_visible_value_resolver_implementation.md`, `frontend_unary_binary_expr_semantic_implementation.md`,
+  `diagnostic_manager.md`, `frontend_analysis_inspection_tool_implementation.md`,
+  `frontend_compile_check_analyzer_implementation.md`, `frontend_complex_writable_target_implementation.md`,
+  `frontend_lowering_func_pre_pass_implementation.md`, `frontend_lowering_skeleton_pre_pass_implementation.md`,
+  `frontend_loop_control_flow_analyzer_implementation.md`, `frontend_rules.md`
+
+API / CLI / common 文档：
+
+- `current-contract`: `doc/module_impl/api/rpc_api_implementation.md`,
+  `doc/module_impl/cli/cli_implementation.md`, `doc/module_impl/common_rules.md`
 
 ## 行为验收清单
 
@@ -2825,7 +2900,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
   - `CCodegenEngineMethodBindHeaderTest`、`CCodegenTest` 应继续断言文件集合恰好为
     `entry.c`、`engine_method_binds.h`、`entry.h`。
   - 对需要 module-local wrapper 的 fixture，断言 wrapper 出现在 `engine_method_binds.h` 的 module-local section，
-    并断言没有 `godot_module_bindings.h/.c` 或其它新增 generated file。
+    并通过核心三文件精确列表证明不会新增其它 generated file。
   - API / CLI 层的 `generatedFiles()`、`outputLinks()`、`/generated` 目录列表断言保持核心 3 文件和稳定顺序；
     阶段 4 不因 wrapper 使用集新增公开输出。
   - build 层 fixture 若触发 module-local wrapper，必须断言 native compiler input 仍只包含
@@ -3009,9 +3084,10 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
    不改变 `CCodegen.generate()` 的 3 个 generated files、API/CLI 公开输出或 `CProjectBuilder` native input。
    同阶段更新 `CCodegen*`、API、CLI 和 build 层断言，锁定“不新增文件、不新增 `.c` 输入”；engine constructor
    默认沿用阶段 3.2 的 `engine_method_binds.h` 按需生成，不在本阶段重复迁移。
-11. 最后提交阶段 5，删除 vendor zip，清理已知旧 `<includeRoot>/gdextension-lite` 子树，并对 `doc/module_impl`
-   每一份文档做 `current-contract` / `updated-contract` / `historical-reference` 归类；同提交完成源码注释、
-   模板注释、测试 display name、failure message 和旧断言的全仓清理。
+11. 最后提交阶段 5，删除 vendor zip，手动清理工作区中已知旧 `<includeRoot>/gdextension-lite` 子树；
+   不在 `CProjectBuilder` 增加自动删除逻辑。并对 `doc/module_impl` 每一份文档做
+   `current-contract` / `updated-contract` / `historical-reference` 归类；同提交完成源码注释、模板注释、
+   测试 display name、failure message 和旧断言的全仓清理。
 
 这个顺序避免旧计划中“先移除 vendor 编译输入、后补 fixed wrapper”的不可编译中间态。每个阶段都有明确可回归的边界。
 
@@ -3037,8 +3113,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
     `<includeRoot>/godot/godot_binding.c`，并在新 runtime C 文件缺失时 fail-fast。
   - 阶段 3 不应通过“清空整个 include root”解决这个问题；若需要防止 vendor zip 被重新抽取，只使用版本化非 vendor
     资源 allow-list，或在同阶段删除 vendor zip。
-  - 阶段 5 才做目录卫生：只清理 `<includeRoot>/gdextension-lite` 这个已知旧 vendor 子树，不能删除用户未授权的其他
-    shared include 内容。
+  - 阶段 5 的目录卫生是人工迁移操作：只手动清理 `<includeRoot>/gdextension-lite` 这个已知旧 vendor 子树，
+    不能删除用户未授权的其他 shared include 内容；`CProjectBuilder` 不负责自动删除。
 - 旧测试反向卡住迁移：
   - 阶段 0 必须反向更新直接构造 `ExtensionGdClass.PropertyInfo(...)` 的测试 fixture，例如
     `ExtensionMetadataTypeParsingTest`、`ScopePropertyResolverTest`、`BackendPropertyAccessResolverTest`、
@@ -3132,14 +3208,14 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
 迁移完成必须同时满足：
 
 - `src/main/c/codegen/include_451/gdextension-lite.zip` 已删除。
-- 生成项目的 include tree 中没有 `gdextension-lite` 目录。
+- 新资源抽取不会生成 `gdextension-lite` 目录；旧工作区若已残留该目录，迁移时手动删除。
 - `entry.c` 不出现 `gdextension_lite_initialize`。
 - native 编译输入不包含 `gdextension-lite-one.c`；即使 `shared-include` 或项目 `include` 中预先残留该文件，也不会被
   `CProjectBuilder` 加入 `cFiles`。
 - `CProjectBuilder` 不再使用旧 vendor 文件存在性作为编译输入规则；静态 runtime support 只来自显式的
   `<includeRoot>/godot/godot_binding.c`，该文件缺失时构建准备阶段 fail-fast。
 - `ResourceExtractor` 的非删除语义不会重新引入旧 vendor：运行时构建路径要么不再盲目抽取 vendor zip，要么 vendor zip
-  已被删除；阶段 5 的窄范围清理会移除已知旧 `<includeRoot>/gdextension-lite` 子树。
+  已被删除；已知旧 `<includeRoot>/gdextension-lite` 子树是手动迁移清理项，不由运行时构建路径自动删除。
 - `entry.c`、`entry.h`、`engine_method_binds.h` 能只依赖 `gdcc/**` 与 `godot/**` 编译。
 - `ExtensionApiLoader` 不再丢弃 `builtin_class_sizes`、`builtin_class_member_offsets`。
 - `ExtensionAPI` 承载顶层 `global_constants[]`；`ClassRegistry`、裸常量 lowering 和 `@GlobalScope` static-load
@@ -3184,7 +3260,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCTypedArrayAbiInte
 - 现有测试已按阶段反向更新：
   - 构建输入测试断言 `godot_binding.c` 和 `godot` include root，而不是 `gdextension-lite-one.c` / `gdextension-lite` include root。
   - generated file 集合测试继续锁定 `entry.c`、`engine_method_binds.h`、`entry.h`，并验证 module-local wrapper section
-    只写入 `engine_method_binds.h`，不会新增 `godot_module_bindings.h/.c` 或其它 generated file。
+    只写入 `engine_method_binds.h`，不会新增其它 generated file。
   - exact engine method bind、typed container ABI 和 ownership lifecycle 相关断言保留。
 - targeted unit tests 和需要环境支持的 runtime integration tests 通过。
 - `doc/module_impl` 下每一份文档已被归类为 `current-contract` / `updated-contract` / `historical-reference`，

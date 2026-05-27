@@ -12,7 +12,7 @@
   - `doc/gdcc_low_ir.md`
   - `doc/gdcc_type_system.md`
   - `doc/gdcc_c_backend.md`
-  - `doc/module_impl/c_builtin_builder_refactor.md`
+  - `doc/module_impl/backend/builtin_builder_implementation.md`
   - `doc/module_impl/call_method_implementation.md`
 
 ## 当前最终状态（与代码对齐）

@@ -360,8 +360,8 @@ public final class CBodyBuilder {
     }
 
     /// Creates an OWNED value reference from a raw C expression.
-    /// Use this only for audited fresh object producer routes where the expression already transfers
-    /// ownership to the current lowering site, for example direct constructor/materialization calls.
+    /// Use this only for fresh object producer routes where the expression already transfers ownership
+    /// to the current lowering site, for example direct constructor/materialization calls.
     public @NotNull ValueRef valueOfOwnedExpr(@NotNull String code, @NotNull GdType type, @NotNull PtrKind ptrKind) {
         // OWNED sources are consumed by destination slots and must not be owned again.
         return new ExprValue(code, type, ptrKind, OwnershipKind.OWNED);

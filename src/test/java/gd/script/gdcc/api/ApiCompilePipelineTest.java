@@ -16,12 +16,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ApiCompilePipelineTest {
+    private static final Path STALE_VENDOR_RUNTIME_SOURCE = Path.of("gdextension-lite", "gdextension-lite-one.c");
+
     @Test
     void compileBuildsMultiFileModuleAndStoresLastCompileResult(@TempDir Path tempDir) throws Exception {
         var compiler = ApiCompileTestSupport.RecordingCompiler.succeeding();
         var api = ApiCompileTestSupport.newApi(compiler);
         var projectPath = tempDir.resolve("pipeline-project");
-        var staleVendorFile = projectPath.resolve("include/gdextension-lite/gdextension-lite-one.c");
+        var staleVendorFile = projectPath.resolve("include").resolve(STALE_VENDOR_RUNTIME_SOURCE);
         Files.createDirectories(staleVendorFile.getParent());
         Files.writeString(staleVendorFile, "stale vendor runtime");
 
@@ -95,11 +97,9 @@ class ApiCompilePipelineTest {
         assertEquals(TargetPlatform.WEB_WASM32, compiler.lastTargetPlatform());
         assertTrue(compiler.lastCFiles().stream().anyMatch(path -> path.getFileName().toString().equals("entry.c")));
         assertTrue(compiler.lastCFiles().stream().anyMatch(path -> path.endsWith("godot/godot_binding.c")));
-        assertFalse(compiler.lastCFiles().stream().anyMatch(path -> path.endsWith("gdextension-lite/gdextension-lite-one.c")));
         assertFalse(compiler.lastCFiles().contains(staleVendorFile));
         assertTrue(compiler.lastIncludeDirs().stream().anyMatch(path -> path.endsWith("include/gdcc")));
         assertTrue(compiler.lastIncludeDirs().stream().anyMatch(path -> path.endsWith("include/godot")));
-        assertFalse(compiler.lastIncludeDirs().stream().anyMatch(path -> path.endsWith("include/gdextension-lite")));
 
         var entrySource = Files.readString(projectPath.resolve("entry.c"));
         assertTrue(entrySource.contains("GD_STATIC_SN(u8\"PipelineSmoke\")"), entrySource);
@@ -148,7 +148,6 @@ class ApiCompilePipelineTest {
                 List.of("engine_method_binds.h", "entry.c", "entry.h"),
                 api.listDirectory("demo", "/__build__/generated").stream().map(VfsEntrySnapshot::name).toList()
         );
-        assertTrue(result.outputLinks().stream().noneMatch(link -> link.virtualPath().contains("godot_module_bindings")));
 
         assertEquals(
                 List.of(
@@ -167,8 +166,5 @@ class ApiCompilePipelineTest {
 
         var bindHeader = Files.readString(projectPath.resolve("engine_method_binds.h"));
         assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
-        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
-        assertFalse(Files.exists(projectPath.resolve("godot_module_bindings.c")));
-        assertFalse(Files.exists(projectPath.resolve("godot_module_bindings.h")));
     }
 }

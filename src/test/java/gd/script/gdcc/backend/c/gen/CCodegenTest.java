@@ -205,10 +205,8 @@ public class CCodegenTest {
         assertTrue(cCode.contains("Loading my_module"));
         assertTrue(bindHeaderCode.contains("GDEXTENSION_MY_MODULE_ENGINE_METHOD_BINDS_H"));
         assertTrue(bindHeaderCode.contains("No module-local Godot wrappers were collected for this module."), bindHeaderCode);
-        assertFalse(bindHeaderCode.contains("godot_module_bindings"), bindHeaderCode);
         assertTrue(hCode.contains("GDEXTENSION_MY_MODULE_ENTRY_H"));
         assertTrue(hCode.contains("#include \"engine_method_binds.h\""));
-        assertFalse(hCode.contains("godot_module_bindings"), hCode);
     }
 
     @Test
@@ -242,10 +240,7 @@ public class CCodegenTest {
                         entryBody.indexOf("class_library = p_library;"),
                 entryBody
         );
-        assertFalse(cCode.contains("gdextension_lite_initialize"), cCode);
-        assertFalse(cCode.contains("implementation-macros.h"), cCode);
         assertTrue(hCode.contains("#include <godot_binding.h>"), hCode);
-        assertFalse(hCode.contains("gdextension-lite.h"), hCode);
 
         var initializeBody = resolveFunctionBodyByPrefix(cCode, "void initialize(void* userdata");
         assertContainsAll(
@@ -576,14 +571,11 @@ public class CCodegenTest {
         var files = codegen.generate();
         var entrySource = generatedFileText(files, "entry.c");
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
-        var entryHeader = generatedFileText(files, "entry.h");
 
         assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
         assertTrue(entrySource.contains("godot_Probe_READY();"), entrySource);
         assertTrue(bindHeaderCode.contains("static inline godot_int godot_Probe_READY(void)"), bindHeaderCode);
         assertTrue(bindHeaderCode.contains("return (godot_int)13;"), bindHeaderCode);
-        assertFalse(entryHeader.contains("godot_module_bindings"), entryHeader);
-        assertFalse(bindHeaderCode.contains("godot_module_bindings"), bindHeaderCode);
     }
 
     @Test

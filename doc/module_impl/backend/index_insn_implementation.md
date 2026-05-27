@@ -14,7 +14,8 @@
 - 关联文档：
   - `doc/gdcc_c_backend.md`
   - `doc/gdcc_type_system.md`
-  - `doc/gdextension-lite.md`
+  - `doc/module_impl/backend/gdextension_lite_removal_plan.md`
+  - `doc/gdcc_runtime_lib.md`
 
 ---
 

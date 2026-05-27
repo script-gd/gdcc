@@ -25,7 +25,7 @@
   - `engine_method_binds.h`
   - `entry.h`
 - `entry.h` 无条件包含 `engine_method_binds.h`
-- exact engine `CALL_METHOD` 已不再走 `gdextension-lite` public wrapper
+- exact engine `CALL_METHOD` 不走 public `godot_<Owner>_<method>` wrapper
 - exact engine route 当前统一发布 backend-owned helper：
   - non-vararg：`gdcc_engine_call_<owner>_<method>_<symbolId>(...)`
   - vararg：`gdcc_engine_callv_<owner>_<method>_<symbolId>(...)`
@@ -45,7 +45,7 @@
   - direct `godot_object_method_bind_call(...)`
 - 缺失非零 bind hash 的 exact engine route 现为显式失败：
   - 不再静默回退 `godot_<Owner>_<method>`
-  - 不再静默回退 `gdextension-lite` wrapper
+  - 不再回退到迁移前 public wrapper 路径
 
 ### 当前行为锚点
 

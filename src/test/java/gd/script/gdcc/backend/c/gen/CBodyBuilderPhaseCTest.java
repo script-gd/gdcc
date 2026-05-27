@@ -33,9 +33,9 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/// Tests for CBodyBuilder Phase C: Semantic Core Implementation.
+/// Tests for CBodyBuilder semantic core behavior.
 ///
-/// Phase C focuses on:
+/// Coverage focuses on:
 /// - Argument rendering with '&' decision
 /// - Assignability check
 /// - RHS copy and conversion

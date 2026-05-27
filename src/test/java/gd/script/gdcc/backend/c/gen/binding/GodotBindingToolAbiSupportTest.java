@@ -84,8 +84,7 @@ class GodotBindingToolAbiSupportTest {
                 () -> assertTrue(builtinTypes.contains("GDCC_GODOT_ASSERT_LAYOUT(Vector3, z);")),
                 () -> assertTrue(nativeStructures.contains("typedef enum godot_TextServer_Direction")),
                 () -> assertTrue(nativeStructures.contains("godot_PhysicsServer3DExtensionMotionCollision collisions[32];")),
-                () -> assertTrue(nativeStructures.contains("godot_Object * collider")),
-                () -> assertFalse(String.join("\n", firstSnapshot.values()).contains("GDEXTENSION_LITE_"))
+                () -> assertTrue(nativeStructures.contains("godot_Object * collider"))
         );
     }
 

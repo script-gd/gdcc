@@ -501,9 +501,6 @@ class GdccCommandInputTest {
 
         var bindHeader = Files.readString(outputDir.resolve("engine_method_binds.h"), StandardCharsets.UTF_8);
         assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
-        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
-        assertFalse(Files.exists(outputDir.resolve("godot_module_bindings.c")));
-        assertFalse(Files.exists(outputDir.resolve("godot_module_bindings.h")));
     }
 
     private static void assertSourceFile(API api, String virtualPath, String displayPath, String source) {

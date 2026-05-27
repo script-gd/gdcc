@@ -1,5 +1,8 @@
 # C Backend
 
+Runtime helper layout, binding generator behavior, public C wrapper naming and fixed-binding
+registration rules are maintained in [gdcc_runtime_lib.md](gdcc_runtime_lib.md).
+
 ## Reminders
 
 ### Use GDCC Class Types
@@ -104,6 +107,8 @@
 ### GDExtension Entry Lifecycle Contract
 
 - Generated `gdextension_entry(...)` must publish the lifecycle level expected by the generated registration code:
+  - call `godot_initialize_interface(p_get_proc_address)` before publishing callbacks or using any runtime wrapper;
+  - return `false` immediately if interface initialization fails;
   - `r_initialization->minimum_initialization_level = GDEXTENSION_INITIALIZATION_SCENE;`
   - `r_initialization->userdata = NULL;`
   - `r_initialization->initialize = &initialize;`

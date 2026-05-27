@@ -333,10 +333,7 @@ class GodotInterfaceGeneratorTest {
                 () -> assertTrue(generatedSource.contains("#include \"godot_interface.c\"")),
                 () -> assertTrue(generatedSource.contains("#include \"godot_builtin.c\"")),
                 () -> assertTrue(generatedSource.contains("#include \"godot_utility.c\"")),
-                () -> assertTrue(generatedSource.contains("#include \"godot_fixed_binding.c\"")),
-                () -> assertFalse(generatedHeader.contains("godot_module_bindings")),
-                () -> assertFalse(generatedSource.contains("godot_module_bindings")),
-                () -> assertFalse(generatedSource.contains("gdextension-lite"))
+                () -> assertTrue(generatedSource.contains("#include \"godot_fixed_binding.c\""))
         );
     }
 

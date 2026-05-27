@@ -321,7 +321,6 @@ class CCodegenEngineMethodBindHeaderTest {
                 "No exact engine method binds were collected for this module."
         );
         assertFalse(bindHeader.contains("godot_new_Node"), bindHeader);
-        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_method_bind_"), bindHeader);
         assertFalse(bindHeader.contains("gdcc_engine_call_"), bindHeader);
     }

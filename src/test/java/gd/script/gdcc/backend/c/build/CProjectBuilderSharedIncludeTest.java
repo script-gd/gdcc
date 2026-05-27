@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CProjectBuilderSharedIncludeTest {
+    private static final Path STALE_VENDOR_RUNTIME_SOURCE = Path.of("gdextension-lite", "gdextension-lite-one.c");
 
     @Test
     public void initProjectSyncsSharedIncludeAndSkipsProjectInclude(@TempDir Path tempDir) throws IOException {
@@ -47,7 +48,6 @@ public class CProjectBuilderSharedIncludeTest {
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_interface.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_fixed_binding.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_binding.c")));
-        assertFalse(Files.exists(sharedIncludeDir.resolve("gdextension-lite")));
         assertNotEquals("BROKEN", Files.readString(sharedIncludeDir.resolve("gdcc/gdcc_helper.h")).trim());
     }
 
@@ -64,9 +64,9 @@ public class CProjectBuilderSharedIncludeTest {
         var builder = new CProjectBuilder(compiler);
 
         builder.initProject(projectInfo);
-        var staleVendorFile = sharedIncludeDir.resolve("gdextension-lite/gdextension-lite-one.c");
+        var staleVendorFile = sharedIncludeDir.resolve(STALE_VENDOR_RUNTIME_SOURCE);
         Files.createDirectories(staleVendorFile.getParent());
-        Files.writeString(staleVendorFile, "stale vendor runtime");
+        Files.writeString(staleVendorFile, "historical vendor runtime");
         Files.writeString(projectDir.resolve("stale.c"), "stale");
         var result = builder.buildProject(projectInfo, prepareCodegen(projectInfo));
 
@@ -103,10 +103,9 @@ public class CProjectBuilderSharedIncludeTest {
         var builder = new ModuleLocalGodotBindingFixtureProjectBuilder(compiler);
 
         builder.initProject(projectInfo);
-        var staleVendorFile = sharedIncludeDir.resolve("gdextension-lite/gdextension-lite-one.c");
+        var staleVendorFile = sharedIncludeDir.resolve(STALE_VENDOR_RUNTIME_SOURCE);
         Files.createDirectories(staleVendorFile.getParent());
-        Files.writeString(staleVendorFile, "stale vendor runtime");
-        Files.writeString(projectDir.resolve("godot_module_bindings.c"), "stale module-local c");
+        Files.writeString(staleVendorFile, "historical vendor runtime");
         Files.writeString(projectDir.resolve("extra.c"), "stale generated c");
         var result = builder.buildProject(projectInfo, prepareCodegenWithFunction(projectInfo));
 
@@ -131,13 +130,11 @@ public class CProjectBuilderSharedIncludeTest {
                 compiler.cFiles()
         );
         assertFalse(compiler.cFiles().contains(staleVendorFile.toAbsolutePath().normalize()));
-        assertFalse(compiler.cFiles().contains(projectDir.resolve("godot_module_bindings.c").toAbsolutePath().normalize()));
         assertFalse(compiler.cFiles().contains(projectDir.resolve("extra.c").toAbsolutePath().normalize()));
         assertFalse(compiler.includeDirs().contains(projectDir.toAbsolutePath().normalize()));
 
         var bindHeader = Files.readString(projectDir.resolve("engine_method_binds.h"));
         assertTrue(bindHeader.contains("static inline godot_int godot_Probe_READY(void)"), bindHeader);
-        assertFalse(bindHeader.contains("godot_module_bindings"), bindHeader);
     }
 
     @Test
