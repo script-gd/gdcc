@@ -66,11 +66,11 @@
 ### 已实现 exact engine helper route
 
 - exact engine route 的详细实现、ABI 合同、命名规则与测试锚点，统一以：
-  - `doc/module_impl/backend/engine_method_bind_implementation.md`
+  - `doc/module_impl/backend/godot_binding_implementation.md`
   - 作为唯一事实源
 - 本文只保留与 `CALL_METHOD` 总体实现仍强相关的交界事实：
   - exact engine route 已切到 backend-owned generated helper
-  - migrated exact engine route 的事实来源是 backend-owned helper，不是 public wrapper 命名面
+  - exact engine route 的事实来源是 backend-owned helper，不是 public wrapper 命名面
   - static engine method 通过实例 `call_method` 命中时，仍保留 warning + receiver-free helper 合同
 
 ## 长期约定（必须保持）

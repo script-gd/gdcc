@@ -90,6 +90,10 @@ The currently supported version is Godot `4.5.1`.
 metadata, not symbol identity. A C function-name collision is only valid when the full ABI
 signature is identical.
 
+Module-level usage collection, exact engine method-bind helpers, engine constructor wrappers, and
+module-local wrapper rendering are maintained in
+`doc/module_impl/backend/godot_binding_implementation.md`.
+
 ## C Naming Conventions
 
 Generated Godot binding wrappers keep the established `godot_*` public C shape:

@@ -18,7 +18,7 @@
 - 关联文档：
   - `doc/module_impl/frontend/frontend_rules.md`
   - `doc/module_impl/frontend/diagnostic_manager.md`
-  - `doc/module_impl/backend/engine_method_bind_implementation.md`
+  - `doc/module_impl/backend/godot_binding_implementation.md`
   - `doc/test_suite.md`
   - `doc/test_error/test_suite_engine_integration_known_limits.md`
 
