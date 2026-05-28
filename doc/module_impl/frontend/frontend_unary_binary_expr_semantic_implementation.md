@@ -36,7 +36,7 @@
   - 不在这里转正 `ConditionalExpression`
   - 不在这里补 `ConditionalExpression` 的 lowering / CFG / compile-only 放行
   - 不在这里扩张 `Dictionary`、packed array family 或其他 container 的保型规则
-  - 不在这里引入 numeric promotion、`StringName` / `String` 等更宽隐式转换
+  - 不在这里引入 numeric promotion 或 typed-boundary widening；`StringName` / `String` 互转由 ordinary typed boundary helper 管理，unary / binary 语义不拥有这条规则
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic 路径
   - 不在这里把 `not in` 提升为已支持语义；当前版本仍保持显式 unsupported 边界
 

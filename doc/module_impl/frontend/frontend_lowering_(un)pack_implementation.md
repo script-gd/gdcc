@@ -2,8 +2,9 @@
 
 > Updated: 2026-05-11
 >
-> 本文档是 frontend ordinary typed-boundary `(un)pack` materialization 的事实源。
-> 它不再记录实施步骤、完成进度或验收流水账；若合同变化，应直接改写当前状态。
+> 本文档是 frontend ordinary typed-boundary materialization 的事实源。
+> `String <-> StringName` 条目已完成 Phase 0 文档同步；实现闭合由后续 phase 完成。
+> 本文档不再记录实施流水账；若长期合同变化，应直接改写当前状态。
 
 ## 1. 维护合同
 
@@ -15,6 +16,7 @@
   - `Nil -> object`
   - `int -> float`
   - 同维度 `Vector*i -> Vector*`
+  - `String <-> StringName`
 - 本文档不覆盖：
   - condition truthiness normalization
   - `DYNAMIC` target 的 runtime-open assignment 语义
@@ -54,6 +56,11 @@ frontend 当前已经把 ordinary typed-boundary `(un)pack` 收敛成 compile-re
 - source 是同维度 `Vector*i`，target 是 `Vector*`
   - frontend shared semantic 通过 `ALLOW_WITH_INTRINSIC_CAST` 接受该边界
   - body lowering 必须显式插入对应 `CallIntrinsicInsn(..., "c_vectorNi_to_vectorN", ...)`，并返回新的 `Vector*` temp slot
+- source 是 `String`，target 是 `StringName`，或 source 是 `StringName`，target 是 `String`
+  - frontend shared semantic 通过 constructor materialization decision 接受该边界
+  - body lowering 必须显式插入 target-typed `ConstructBuiltinInsn`，并返回新的 target temp slot
+  - 普通 `"..."` 字面量仍先 lower 为 `String`；只有流入 `StringName` slot 时才通过这条 ordinary boundary 生成 constructor materialization
+  - `&"..."` 字面量直接 lower 为 `StringName`，不需要额外 constructor materialization
 - 其余 ordinary boundary
   - 继续回退 `ClassRegistry.checkAssignable(...)`
   - 若 strict assignability 不成立，则 frontend 直接拒绝
@@ -127,6 +134,7 @@ shared helper 当前固定发布以下几类 decision：
 - `ALLOW_WITH_UNPACK`
 - `ALLOW_WITH_LITERAL_NULL`
 - `ALLOW_WITH_INTRINSIC_CAST`
+- `ALLOW_WITH_BUILTIN_CONSTRUCTOR`
 - `REJECT`
 
 其中：
@@ -135,6 +143,7 @@ shared helper 当前固定发布以下几类 decision：
 - `ALLOW_WITH_UNPACK` 表示 source-level 边界合法，但 LIR 需要显式 `UnpackVariantInsn`
 - `ALLOW_WITH_LITERAL_NULL` 表示 source-level 边界合法，但 LIR 需要显式 object-typed `LiteralNullInsn`
 - `ALLOW_WITH_INTRINSIC_CAST` 表示 source-level 边界合法，但 LIR 需要显式 backend-owned intrinsic materialization；当前成员是 `int -> float` 与同维度 `Vector*i -> Vector*`
+- `ALLOW_WITH_BUILTIN_CONSTRUCTOR` 表示 source-level 边界合法，但 LIR 需要显式 target-typed builtin constructor materialization；当前成员是 `String <-> StringName`
 
 这套 decision 是 frontend ordinary boundary 的统一语义接口；shared semantic 与 lowering 都必须消费同一张 decision table，而不是分别推导。
 
@@ -169,13 +178,14 @@ local / assignment / call / return / subscript key/index consumer 都必须走�
 
 ### 4.2 helper 的当前合同
 
-该 helper 当前只做五类结果：
+该 helper 当前只做六类结果：
 
 - direct：直接返回原 slot id
 - pack：分配新 temp，并追加 `PackVariantInsn`
 - unpack：分配新 temp，并追加 `UnpackVariantInsn`
 - null-object：分配新 temp，并追加 object-typed `LiteralNullInsn`
 - intrinsic cast：分配 target-typed 新 temp，并追加 backend-owned `CallIntrinsicInsn`
+- builtin constructor：分配 target-typed 新 temp，并追加 `ConstructBuiltinInsn`
 
 它不得：
 
@@ -209,6 +219,7 @@ stop-node lowering 当前必须按当前函数 return slot type 走同一套 ord
 - `stable Variant -> concrete return` 由显式 `UnpackVariantInsn` 闭合
 - `Nil -> object return` 由显式 object-typed `LiteralNullInsn` 闭合
 - `int -> float return` 由显式 `CallIntrinsicInsn(..., "c_int_to_float", ...)` 闭合
+- `String <-> StringName return` 由显式 target-typed `ConstructBuiltinInsn` 闭合
 
 ---
 
@@ -222,6 +233,18 @@ stop-node lowering 当前必须按当前函数 return slot type 走同一套 ord
 - `Vector3(Vector3i(...))` 继续属于 constructor route，不能反向替代 ordinary boundary materialization
 - `c_int_to_float` 与 `c_vectorNi_to_vectorN` 是 C backend-owned intrinsic 名称；通用 LIR intrinsic surface 与 catalog 由
   `doc/gdcc_lir_intrinsic.md` 维护
+
+### 4.6 builtin constructor boundary 合同
+
+`String -> StringName` 与 `StringName -> String` 是 ordinary typed boundary conversion，不是
+builtin 单参数 stable `Variant` constructor special route，也不是 backend intrinsic：
+
+- `var name: StringName = text`、assignment、return、fixed call argument、vararg 与 subscript key/value boundary 都必须消费 shared helper 的 constructor materialization decision
+- lowering 不得在各 consumer 中硬编码这两条转换；唯一物化入口仍是 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
+- ordinary `"text"` 流入 `StringName` slot 时必须先生成 `LiteralStringInsn`，再生成 target-typed `ConstructBuiltinInsn`
+- `&"text"` 已经是 direct `StringName` literal route，不应额外生成 constructor
+- `StringName(text)` / `String(name)` 继续属于显式 constructor call route，不能反向替代 ordinary boundary materialization
+- 该路径复用 `ConstructBuiltinInsn` 与 backend generated builtin constructor wrapper，不更新 `doc/gdcc_lir_intrinsic.md` catalog
 
 ---
 
@@ -258,8 +281,7 @@ backend 当前继续承担：
 
 - 除 `int -> float` 这一已纳入矩阵的 scalar intrinsic cast 外，其它 widened scalar conversion
 - 反向 `Vector* -> Vector*i`、错维度 vector conversion、`Rect2i -> Rect2`
-- `StringName` / `String` 互转
-- `String` / `NodePath` 等 builtin strict implicit conversion
+- `String` / `NodePath`、`String -> Color` 等其它 builtin strict implicit conversion
 - 一般性的 container element widening
 - `cast` / `as` / `is` 路径的专用语义
 - backend 自动帮 frontend 猜 ordinary `(un)pack` 点

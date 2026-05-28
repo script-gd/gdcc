@@ -1,11 +1,11 @@
 # 隐式转换实现说明
 
-> 本文档是 GDCC 已落地隐式转换实现的长期事实源。  
+> 本文档是 GDCC 隐式转换实现合同的长期事实源。  
 > 只保留当前语义边界、实现合同、测试锚点与后续维护规则；不记录阶段性实施步骤、执行进度或验收流水账。
 
 ## 文档状态
 
-- 状态：Implemented / Maintained
+- 状态：Maintained（`String <-> StringName` feature gate 已完成 Phase 0 文档同步；实现闭合由后续 phase 完成）
 - 范围：
   - frontend ordinary typed boundary
   - frontend constructor / callable overload ranking 中复用的 boundary specificity
@@ -18,6 +18,8 @@
   - `Vector2i -> Vector2`
   - `Vector3i -> Vector3`
   - `Vector4i -> Vector4`
+  - `String -> StringName`
+  - `StringName -> String`
 - 关联文档：
   - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
   - `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
@@ -39,6 +41,8 @@ GDCC 在 source-level ordinary typed boundary 上支持以下 widening：
 | `Vector2i` | `Vector2` | `call_intrinsic "c_vector2i_to_vector2"` |
 | `Vector3i` | `Vector3` | `call_intrinsic "c_vector3i_to_vector3"` |
 | `Vector4i` | `Vector4` | `call_intrinsic "c_vector4i_to_vector4"` |
+| `String` | `StringName` | target-typed `construct_builtin` |
+| `StringName` | `String` | target-typed `construct_builtin` |
 
 这些规则通过 shared frontend boundary helper 统一生效。assignment、call、return、constructor、
 subscript 等 consumer 不得各自维护局部 widened conversion 表。
@@ -67,7 +71,7 @@ subscript 等 consumer 不得各自维护局部 widened conversion 表。
 - `Vector*i` 与 `Vector*` 之间维度不一致的转换
 - `Rect2i -> Rect2` 或 `Rect2 -> Rect2i`
 - `bool -> int`、`bool -> float`、`int -> bool`、`float -> bool`
-- `String <-> StringName`、`String -> int`、`String -> float`
+- `String -> NodePath`、`NodePath -> String`、`String -> Color`、`String -> int`、`String -> float`、`StringName -> int`
 - unary / binary operator numeric promotion，例如 `int + float` 或 `Vector3i + Vector3`
 - `PackedVector*iArray -> PackedVector*Array`
 - `Array[int] -> Array[float]`
@@ -97,9 +101,10 @@ value-type widening。
 
 ```java
 ALLOW_WITH_INTRINSIC_CAST
+ALLOW_WITH_BUILTIN_CONSTRUCTOR
 ```
 
-该 decision 表示 source-level boundary 合法，但 source slot 不能直接流入 target slot。lowering 必须显式生成 target-typed temp。
+这些 decision 表示 source-level boundary 合法，但 source slot 不能直接流入 target slot。lowering 必须显式生成 target-typed temp。
 
 当前 decision rank 固定为：
 
@@ -107,14 +112,14 @@ ALLOW_WITH_INTRINSIC_CAST
 |---|---:|
 | `ALLOW_DIRECT` | 4 |
 | `ALLOW_WITH_LITERAL_NULL` | 3 |
-| `ALLOW_WITH_INTRINSIC_CAST` | 2 |
+| `ALLOW_WITH_INTRINSIC_CAST` / `ALLOW_WITH_BUILTIN_CONSTRUCTOR` | 2 |
 | `ALLOW_WITH_PACK` / `ALLOW_WITH_UNPACK` | 1 |
 | `REJECT` | 0 |
 
 该排序用于 bare call、constructor resolver 和 `ScopeMethodResolver` frontend path 的 overload specificity。关键约束：
 
-- exact match 高于 intrinsic cast
-- intrinsic cast 高于 `Variant` pack/unpack
+- exact match 高于 intrinsic cast / constructor materialization
+- intrinsic cast / constructor materialization 高于 `Variant` pack/unpack
 - rejected pair 不参与 successful overload selection
 - 多个非支配候选继续 ambiguous
 
@@ -125,6 +130,8 @@ ALLOW_WITH_INTRINSIC_CAST
 - `take(Vector3i(...))` 在 `take(Vector3i)` 与 `take(Vector3)` 同时存在时选择 `take(Vector3i)`
 - `take(Vector3i(...))` 在 `take(Vector3)` 与 `take(Variant)` 同时存在时选择 `take(Vector3)`
 - 只有 `take(Vector3i)` 时，`take(Vector3(...))` 不反向匹配
+- `take("text")` 在 `take(StringName)` 与 `take(Variant)` 同时存在时选择 `take(StringName)`
+- `take(&"name")` 在 `take(String)` 与 `take(Variant)` 同时存在时选择 `take(String)`
 
 ## Constructor Route 合同
 
@@ -136,6 +143,7 @@ constructor-only widening 表。
 - exact constructor argument type 高于 widened constructor argument type
 - widened constructor argument type 高于 `Variant` constructor fallback
 - `Vector*i -> Vector*` 只允许同维度 2/3/4
+- `String <-> StringName` 通过 ordinary boundary constructor materialization decision 参与 ranking，但显式 `StringName(String)` / `String(StringName)` 仍是 ordinary constructor call route
 - `Vector* -> Vector*i` 与错维度 `Vector*i -> Vector*` 必须拒绝
 - unary stable `Variant` builtin constructor 仍是独立 route：
   - sema 发布 resolved constructor route
@@ -155,13 +163,24 @@ $<Vector3_temp> = call_intrinsic "c_vector3i_to_vector3" $<Vector3i_source>;
 $<Vector4_temp> = call_intrinsic "c_vector4i_to_vector4" $<Vector4i_source>;
 ```
 
+`ALLOW_WITH_BUILTIN_CONSTRUCTOR` 必须分配新的 target-typed temp，并追加对应 `ConstructBuiltinInsn`：
+
+```text
+$<StringName_temp> = construct_builtin $<String_source>;
+$<String_temp> = construct_builtin $<StringName_source>;
+```
+
 后续 consumer 必须消费该 target-typed temp，而不是继续读取原始 source slot。
 
 Subscript key/index lowering 也必须走同一 materialization 路径：
 
 - `Dictionary[float, V]` 的 `int` key 先 cast 到 `float` temp，再发 keyed access
 - `Dictionary[Vector3, V]` 的 `Vector3i` key 先 cast 到 `Vector3` temp，再发 keyed access
+- `Dictionary[StringName, V]` 的 `String` key 先 construct 到 `StringName` temp，再发 keyed access
+- `Dictionary[String, V]` 的 `StringName` key 先 construct 到 `String` temp，再发 keyed access
 - `Dictionary[K, Vector3]` 的 `Vector3i` value 写入先 cast 到 `Vector3` temp
+- `Dictionary[K, StringName]` 的 `String` value 写入先 construct 到 `StringName` temp
+- `Dictionary[K, String]` 的 `StringName` value 写入先 construct 到 `String` temp
 - `Array[T]` / packed array 的 `Variant` index 先 unpack 到 `int` temp，再发 indexed access
 - access-kind selection 必须基于 materialized key/index type
 - writable-route reverse commit 必须复用同一 frozen access chain 内已经 materialized 的 key/index slot
@@ -223,6 +242,18 @@ $target = godot_new_Vector3_with_Vector3i(&$source);
 source 是非 `ref` local 时参数形态应取地址；source 是 `ref` parameter 时参数形态应直接传 pointer。
 该 pointer shape 由 `CBodyBuilder.renderArgument(...)` / `callAssign(...)` 负责，intrinsic 不手写。
 
+`String <-> StringName` 的 source-level boundary 不新增 backend intrinsic。frontend lowering 显式生成
+target-typed `ConstructBuiltinInsn` 后，backend 继续走 `ConstructInsnGen` -> `CBuiltinBuilder.constructBuiltin(...)`
+-> generated builtin constructor wrapper：
+
+```c
+$target = godot_new_StringName_with_String(&$source);
+$target = godot_new_String_with_StringName(&$source);
+```
+
+`CBuiltinBuilder.constructBuiltin(...)` 仍按 target type 与 `ValueRef.type()` 做 exact constructor metadata
+matching；backend matcher 不拥有隐式转换规则。
+
 ## 入站 `call_func` Wrapper 兼容规则
 
 GDExtension 入站 `call_func` wrapper 是独立边界。它处理 Godot 通过 `Object.call(...)` 等 Variant-call
@@ -236,10 +267,13 @@ surface 调用 GDCC 生成方法的路径，不经过 frontend lowering，因此
   - `Vector2` 参数额外接受 `Variant(VECTOR2I)`
   - `Vector3` 参数额外接受 `Variant(VECTOR3I)`
   - `Vector4` 参数额外接受 `Variant(VECTOR4I)`
+  - `StringName` 参数额外接受 `Variant(STRING)`
+  - `String` 参数额外接受 `Variant(STRING_NAME)`
 - metadata 与 `r_error->expected` 仍发布 target 参数类型
 - `int` 参数不接受 `Variant(FLOAT)`
 - `Vector*i` 参数不接受 `Variant(VECTOR*)`
 - `Rect2` 参数不接受 `Variant(RECT2I)`
+- `String` / `StringName` 以外的 string-family 类型不因本规则放宽，例如 `NodePath` 不参与互通
 - ptrcall ABI 不变
 - ordinary `Variant -> concrete` unpack 不变
 
@@ -258,11 +292,13 @@ surface 调用 GDCC 生成方法的路径，不经过 frontend lowering，因此
   - 提供 `gdcc_new_Vector2_from_call_arg_variant(...)`
   - 提供 `gdcc_new_Vector3_from_call_arg_variant(...)`
   - 提供 `gdcc_new_Vector4_from_call_arg_variant(...)`
+  - 提供 `gdcc_new_StringName_from_call_arg_variant(...)`
+  - 提供 `gdcc_new_String_from_call_arg_variant(...)`
 
-wrapper-only vector helper 不是独立校验边界：
+wrapper-only materializer helper 不是独立校验边界：
 
-- helper 只根据已经通过 gate 的 cached runtime type 选择 exact `Vector*` unpack 或同维
-  `Vector*i -> Vector*` constructor materialization
+- vector helper 只根据已经通过 gate 的 cached runtime type 选择 exact `Vector*` unpack 或同维 `Vector*i -> Vector*` constructor materialization
+- string helper 只根据已经通过 gate 的 cached runtime type 选择 exact `String` / `StringName` unpack 或 cross-case `StringName(String)` / `String(StringName)` constructor materialization，并清理 cross-case 中间值
 - helper 本身不重新验证 runtime type，也不负责设置 `r_error`
 - generated `call_func` 模板必须先计算并缓存 `argN_type`，执行 `renderCallWrapperVariantTypeGate(...)`
   失败分支和 typed-container preflight，之后才允许调用 `renderCallWrapperUnpackExpr(...)`
@@ -284,8 +320,8 @@ wrapper-only vector helper 不是独立校验边界：
 ### 2. Materialization
 
 - 所有 accepted non-direct conversion 都必须显式物化
-- `ALLOW_WITH_INTRINSIC_CAST` 不得作为 `ALLOW_DIRECT` 的别名
-- frontend ordinary boundary 必须生成对应 `call_intrinsic`
+- `ALLOW_WITH_INTRINSIC_CAST` / `ALLOW_WITH_BUILTIN_CONSTRUCTOR` 不得作为 `ALLOW_DIRECT` 的别名
+- frontend ordinary boundary 必须生成对应 `call_intrinsic` 或 `construct_builtin`
 - source slot 不能直接流入 target slot，除非 decision 是真正 direct route
 
 ### 3. Container 与 subscript
@@ -371,3 +407,7 @@ wrapper-only vector helper 不是独立校验边界：
 - 增加 intrinsic implementation tests，覆盖成功路径和坏 result / argument / arity
 - 增加 `CallIntrinsicInsnGenTest` 或 registry tests，覆盖 unknown intrinsic 与 operand 解析边界
 - 若需要入站 wrapper 兼容，明确 helper 是否只是 gate 后 materializer，不得让 helper 成为第二套错误边界
+
+新增 `ALLOW_WITH_BUILTIN_CONSTRUCTOR` pair 时，不更新 `doc/gdcc_lir_intrinsic.md` catalog；必须确认
+target/source exact constructor metadata 或 generated wrapper 已存在，并增加 constructor materialization、
+backend constructor output 与入站 wrapper parity 的 focused tests。

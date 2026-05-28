@@ -139,7 +139,8 @@ static void call${helper.renderFuncBindName(bindingData)}(
 
 <#--Check the argument type. -->
 <#--Variant outward slots are encoded as NIL metadata, so only non-Variant -->
-<#--parameters keep the exact runtime gate here. -->
+<#--parameters keep the runtime gate here. Non-exact inbound exceptions must be -->
+<#--accepted by this gate before wrapper-local materialization runs below. -->
     <#list bindingData.paramTypes as paramType>
     <#if paramType.typeName != "Variant">
     const GDExtensionVariantType arg${paramType_index}_type = godot_variant_get_type(p_args[${paramType_index}]);
@@ -152,8 +153,9 @@ static void call${helper.renderFuncBindName(bindingData)}(
     </#if>
     </#list>
 
-<#--Typed-container preflight stays ahead of wrapper-local unpack so mismatches can-->
-<#--return without introducing a second cleanup contract for partially materialized locals.-->
+<#--Typed-container preflight stays ahead of wrapper-local unpack/materialization so -->
+<#--mismatches can return without introducing a second cleanup contract for partially -->
+<#--materialized locals.-->
     <#list bindingData.paramTypes as paramType>
         <#if helper.needsTypedArrayCallGuard(paramType)>
         <#assign probeVarName = "probe" + paramType_index>

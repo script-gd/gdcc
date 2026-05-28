@@ -32,7 +32,7 @@
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
   - 不在这里转正 parameter default、lambda、`for`、`match`、block-local `const`、class constant 的正式 body 语义
-  - 不在这里扩张 keyed builtin、numeric promotion、`StringName` / `String` 互转等更宽隐式兼容
+  - 不在这里扩张 keyed builtin、numeric promotion 或其它 typed-boundary 兼容矩阵；`StringName` / `String` 互转由 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 独立管理
 
 ---
 
@@ -375,7 +375,8 @@
 - receiver 为上述 `GdContainerType`
   - key/index compatibility 统一复用 `FrontendVariantBoundaryCompatibility`
   - 因此 plain `Dictionary`（`Dictionary[Variant, Variant]`）现在接受 stable key 写入 `Variant` key slot
-  - 但不额外支持 Godot keyed/index widened conversion，例如 `String` / `StringName` 互通或 float index
+  - `String` / `StringName` 互通只通过 ordinary typed boundary helper 生效，不在 subscript semantic 中维护第二份清单
+  - 但不额外支持 Godot keyed/index widened conversion，例如 builtin keyed metadata route 或 float index
   - 成功后发布 element/value type
 - receiver 为 `Variant`
   - 发布 `DYNAMIC(Variant)`

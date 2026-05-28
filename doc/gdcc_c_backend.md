@@ -189,11 +189,15 @@ already exists, otherwise use the project's own `compiler-cache` directory.
 - Inbound compatibility exceptions are narrow and must stay aligned with frontend ordinary-boundary rules:
   - `Variant(INT) -> float parameter`
   - same-dimension `Variant(Vector*i) -> Vector* parameter`
+  - `Variant(STRING) -> StringName parameter`
+  - `Variant(STRING_NAME) -> String parameter`
 - For those exceptions:
   - float parameter metadata and `r_error->expected` remain `GDEXTENSION_VARIANT_TYPE_FLOAT`
   - wrapper-local materialization explicitly casts the `INT` payload to `godot_float`
   - vector parameter metadata and `r_error->expected` remain the target `GDEXTENSION_VARIANT_TYPE_VECTOR*`
   - wrapper-local vector materialization uses the wrapper-only inbound helper after the runtime gate has accepted the cached runtime type
+  - string-family parameter metadata and `r_error->expected` remain the target `GDEXTENSION_VARIANT_TYPE_STRING_NAME` or `GDEXTENSION_VARIANT_TYPE_STRING`
+  - wrapper-local string-family materialization uses the wrapper-only inbound helper after the runtime gate has accepted the cached runtime type; cross-case materialization must call `StringName(String)` / `String(StringName)` and destroy the intermediate value
   - the helper itself is not a validation boundary; the generated wrapper gate order owns safety and `r_error`
 - `ptrcall` ABI shape remains unchanged by this contract.
 - Typed dictionary ABI is now maintained as a separate implemented contract:

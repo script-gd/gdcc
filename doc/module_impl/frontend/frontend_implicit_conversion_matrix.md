@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（Godot 规则已梳理，GDCC 当前支持面已对齐到现有实现）
-- 更新时间：2026-05-13
+- 状态：事实源维护中（Godot 规则已梳理，`String <-> StringName` feature gate 已完成 Phase 0 文档同步；实现闭合由后续 phase 完成）
+- 更新时间：2026-05-28
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -33,7 +33,7 @@
   - 说明自己消费的是哪一类 boundary
   - 引用本文档中的矩阵与维护合同
 - 代码注释同样不得私自扩写“当前支持哪些 implicit conversion”的平行规则表；关键入口只允许引用本文档，并说明自己在整条链路中的职责。
-- 若未来新增 `String <-> StringName`、packed array widened conversion 等支持面，验收顺序固定为：
+- 若未来新增 packed array widened conversion 等支持面，验收顺序固定为：
   1. 更新本文档矩阵与摘要
   2. 更新 shared helper / consumer 实现
   3. 更新对应测试
@@ -80,6 +80,7 @@
 - `Nil -> object`：支持
 - `int -> float`：支持，必须通过 `ALLOW_WITH_INTRINSIC_CAST` 与显式 lowering materialization 闭合
 - 同维度 `Vector*i -> Vector*`：支持，必须通过 `ALLOW_WITH_INTRINSIC_CAST` 与显式 lowering materialization 闭合
+- `String <-> StringName`：支持，必须通过 constructor materialization decision 与显式 `construct_builtin` lowering 闭合
 - 其余 typed boundary：原则上回退 `ClassRegistry.checkAssignable(...)`
 
 这意味着：
@@ -87,7 +88,7 @@
 - `int(seed: Variant)` / `Array(seed: Variant)` 这类 builtin constructor special route 的接受与 lower 方式，不由本文矩阵定义
 - 若未来要调整这条 constructor special route，应同步更新 `frontend_builtin_constructor_variant_argument_plan.md` 及相关事实源文档，而不是把它误记成 matrix 扩面
 
-这意味着 Godot 支持、但不属于以上五类的 builtin implicit conversion，在 GDCC 中默认都还是 `N`。
+这意味着 Godot 支持、但不属于以上显式列出的 builtin implicit conversion，在 GDCC 中默认都还是 `N`。
 
 ---
 
@@ -176,8 +177,8 @@
 | `int` | `float` | Y | Y | 由 `ALLOW_WITH_INTRINSIC_CAST` 表达；lowering 必须生成 `call_intrinsic "c_int_to_float"`，不得当作 direct flow |
 | `float` | `bool` | Y | N | Godot scalar family strict convert |
 | `float` | `int` | Y | N | Godot 会截断；GDCC 当前不支持 |
-| `String` | `StringName` | Y | N | Godot 文档明确说明常见 API 会自动转换 |
-| `StringName` | `String` | Y | N | Godot strict convert table 支持 |
+| `String` | `StringName` | Y | Y | ordinary typed-boundary constructor materialization；lowering 必须生成 target-typed `construct_builtin`，不得当作 direct flow |
+| `StringName` | `String` | Y | Y | ordinary typed-boundary constructor materialization；lowering 必须生成 target-typed `construct_builtin`，不得当作 direct flow |
 | `String` | `NodePath` | Y | N | Godot strict convert table 支持 |
 | `NodePath` | `String` | Y | N | Godot strict convert table 支持 |
 | `String` | `Color` | Y | N | 例如颜色文本到 `Color` |
@@ -272,12 +273,14 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - ordinary `Variant` boundary 也已经适用于 subscript key/index
 - 因此 plain `Dictionary`（`Dictionary[Variant, Variant]`）现在接受 `String` 等 stable key 写入 `Variant` key slot；对应 keyed lowering / backend codegen 会继续把 key 物化到真实 `Variant` 调用面
 
-当前仍未支持的，是 Godot keyed/index 路径上的额外 widened compatibility：
+当前仍未支持的，是 Godot keyed/index 路径上不属于 ordinary boundary helper 的额外 widened compatibility：
 
 | 场景 | Godot | GDCC | 备注 |
 | --- | --- | --- | --- |
 | `int` key 用于 `Dictionary[float, V]` | Y | Y | 这是 ordinary typed boundary 中 `int -> float` 的直接结果；lowering 必须先把 key 物化为 `float` slot |
-| `String` key 用于 `StringName` keyed access | Y | N | GDCC subscript 当前只复用 ordinary boundary helper，不单独追加 keyed widened conversion |
+| `String` key 用于 `Dictionary[StringName, V]` | Y | Y | 这是 ordinary typed boundary 中 `String -> StringName` 的直接结果；lowering 必须先把 key 物化为 `StringName` slot |
+| `StringName` key 用于 `Dictionary[String, V]` | Y | Y | 这是 ordinary typed boundary 中 `StringName -> String` 的直接结果；lowering 必须先把 key 物化为 `String` slot |
+| `String` key 用于 builtin keyed metadata route | Y | N | builtin keyed access 仍不属于 MVP；本 feature 不打开 `vector["x"]`、`Color()["r"]` 等 route |
 | `float` index 用于 `Array` / packed array | Y | N | 本质上依赖 `float -> int` 兼容 |
 
 `Array` / packed array 的 index target type 仍是 `int`，因此本次只支持已有 ordinary `Variant -> int` boundary，不支持 `float` index 自动收窄。`Array` / `Dictionary` 本身也不做递归 primitive widening，例如 `Array[int] -> Array[float]`、`Dictionary[int, V] -> Dictionary[float, V]`、`Dictionary[K, int] -> Dictionary[K, float]` 仍不属于 supported matrix。
@@ -326,6 +329,7 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `FrontendTypeCheckAnalyzer`
 - `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`
   - ordinary `(un)pack` consumer/materialization 的长期合同以 `frontend_lowering_(un)pack_implementation.md` 为准
+  - `String <-> StringName` 这类 constructor materialization 仍属于同一个 ordinary boundary materialization 入口；不得在 consumer 内维护局部分支
 
 ### 9.2 当前明确拒绝 widened conversion 的文档锚点
 
@@ -375,12 +379,12 @@ Godot strict implicit conversion 表里没有 `Dictionary` 到其他 builtin con
 - `Variant` boundary：已支持
 - object hierarchy：已支持
 - `Nil -> object`：已支持
-- builtin strict implicit conversion：已支持 `int -> float` 与同维度 `Vector*i -> Vector*` 这两类显式 intrinsic materialization；其它 builtin strict conversion 仍未支持
-- keyed/index widened compatibility：未支持
+- builtin strict implicit conversion：已支持 `int -> float`、同维度 `Vector*i -> Vector*` 与 `String <-> StringName`；前两类走 intrinsic materialization，string family 走 constructor materialization；其它 builtin strict conversion 仍未支持
+- keyed/index widened compatibility：只支持已经属于 ordinary typed boundary helper 的 key/index conversion；builtin keyed metadata route 与 `float -> int` index 仍未支持
 
 因此，若后续要把 GDCC 的 typed boundary 行为推进到接近 Godot，优先级最高的缺口依次是：
 
 1. scalar family：`bool` / `int` / `float`
-2. string family：`String` / `StringName` / `NodePath`
+2. string family：`String` / `NodePath`
 3. geometry value family
 4. `Array <-> Packed*Array`

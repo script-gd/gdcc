@@ -292,6 +292,18 @@ helper 行为必须按 runtime tag 分流：
 而是在进入代码改动前先统一会写出相反结论的长期文档、源码注释和测试锚点，避免实现落地后仍残留
 “`String <-> StringName` 不支持”或“只支持 float/vector wrapper 例外”的旧合同。
 
+#### Phase 0 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成相关 frontend 文档、frontend 代码/测试、backend wrapper 文档/代码调研并关闭子代理。
+- [x] 同步长期事实源文档：
+  - frontend matrix / lowering / rules / chain-binding / type-check / constructor-special-route / unary-binary / CFG lowering
+  - backend implicit-conversion / builtin-builder / variant ABI / C backend / runtime helper / known-limits
+- [x] 同步源码注释与 wrapper helper 注释。
+- [x] 添加 Phase 0 静态一致性测试。
+- [x] 运行 targeted tests 并记录结果：`script/run-gradle-targeted-tests.sh --tests FrontendStringStringNamePhase0DocumentationTest`，通过。
+
 #### 必须同步的长期事实源
 
 修改：
@@ -697,6 +709,22 @@ materialization 细则：
 
 复核项：
 
+- Phase 0 已修改的长期事实源文档必须逐项重新查验，确认它们与 Phase 1-6 的最终实现、测试锚点和 runtime wrapper 行为一致：
+  - `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
+  - `doc/module_impl/frontend/frontend_lowering_(un)pack_implementation.md`
+  - `doc/module_impl/frontend/frontend_rules.md`
+  - `doc/module_impl/frontend/frontend_chain_binding_expr_type_implementation.md`
+  - `doc/module_impl/frontend/frontend_type_check_analyzer_implementation.md`
+  - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`
+  - `doc/module_impl/frontend/frontend_builtin_constructor_variant_argument_plan.md`
+  - `doc/module_impl/frontend/frontend_unary_binary_expr_semantic_implementation.md`
+  - `doc/module_impl/backend/implicit_conversion_implementation.md`
+  - `doc/module_impl/backend/builtin_builder_implementation.md`
+  - `doc/module_impl/backend/variant_abi_contract.md`
+  - `doc/gdcc_c_backend.md`
+  - `doc/gdcc_runtime_lib.md`
+  - `doc/test_error/test_suite_engine_integration_known_limits.md`
+  - `doc/module_impl/frontend/frontend_string_stringname_implicit_conversion_plan.md`
 - `rg` 检查 `doc/`、`src/main/java/`、`src/main/c/`、`src/test/java/` 中的旧说法：
   - `String <-> StringName`
   - `StringName / String`

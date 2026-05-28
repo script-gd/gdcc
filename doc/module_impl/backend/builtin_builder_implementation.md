@@ -127,6 +127,9 @@ helper shim constructor 是显式白名单例外，可以跳过 API metadata 校
 当前不在 `constructBuiltin(...)` 中做 implicit conversion。
 例如 `Variant` 参数不会自动匹配 `int`，`int` 参数也不会自动匹配 `float` constructor。
 需要 widening 的路径必须在 frontend/lowering 或 intrinsic 侧生成目标类型 temp。
+`String <-> StringName` ordinary boundary 也是同一原则：frontend 必须先显式生成 target-typed
+`ConstructBuiltinInsn`，backend constructor matcher 只看到 `StringName(String)` 或
+`String(StringName)` 的 exact constructor metadata，不自行推断 implicit conversion。
 
 ### 3.4 Helper Shim 白名单
 
@@ -322,4 +325,3 @@ script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest
    防线是复用 `ScopeTypeParsers.parseExtensionTypeMetadata(...)` 与 `CGenHelper.parseExtensionType(...)`。
 5. **helper shim 白名单扩大失控**：helper shim 是版本化 runtime contract，不是普通 constructor 的替代机制。
    防线是新增 shim 必须同时有 runtime wrapper、usage tracking 和生成测试。
-

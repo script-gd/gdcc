@@ -529,9 +529,9 @@ public final class CGenHelper {
 
     /// Render the inbound `call_func` runtime gate for one non-Variant wrapper argument.
     ///
-    /// The wrapper keeps exact runtime checks by default. Widening is limited to the same narrow
-    /// inbound rules the frontend ordinary-boundary matrix already owns: `INT -> float` and
-    /// same-dimension `Vector*i -> Vector*`.
+    /// The wrapper keeps exact runtime checks by default. Any non-exact inbound rule must stay
+    /// aligned with the frontend ordinary-boundary matrix and must be paired with wrapper-local
+    /// materialization in `renderCallWrapperUnpackExpr(...)`.
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
         if (paramType instanceof GdFloatType) {
@@ -551,10 +551,10 @@ public final class CGenHelper {
 
     /// Render the inbound `call_func` local materialization expression for one wrapper argument.
     ///
-    /// This is deliberately separate from `renderUnpackFunctionName(...)` because only
-    /// Godot-to-GDExtension method calls get narrow inbound widening for selected typed params.
+    /// This is deliberately separate from `renderUnpackFunctionName(...)`: only
+    /// Godot-to-GDExtension method calls get wrapper-local inbound widening for selected typed params.
     /// The generated wrapper is responsible for running the runtime gate before evaluating this
-    /// expression; wrapper-only vector helpers are materializers, not validators.
+    /// expression; wrapper-only helpers are materializers, not validators.
     ///
     /// @param typeExpr cached runtime type expression from the preceding wrapper gate. When this is null, the
     ///                 generated expression repeats `godot_variant_get_type(...)` against `variantPtrExpr`.

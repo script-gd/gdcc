@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Implemented / Maintained
+- 状态：Maintained（`String <-> StringName` 入站 wrapper parity 已完成 Phase 0 文档同步；实现闭合由后续 phase 完成）
 - 范围：
   - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
@@ -79,7 +79,7 @@
   - method return metadata
   - property registration metadata
 - non-`Variant` outward slot 继续沿用现有 `gdExtensionType` 与 base usage 行为；入站
-  `call_func` wrapper 只在 `float` 参数上额外接受 `Variant(INT)`，不改变 outward metadata
+  `call_func` wrapper 只在少量 frontend ordinary-boundary widening 上额外接受相邻 runtime tag，不改变 outward metadata
 - 当前 outward ABI 只自定义 `type` / `usage`：
   - `hint`
   - `hint_string`
@@ -96,9 +96,13 @@
   - 窄兼容例外只允许当前 frontend ordinary-boundary matrix 已拥有的 inbound widening：
     - `float` 参数额外接受 `Variant(INT)`，并在 wrapper-local materialization 中显式转成 `godot_float`
     - `Vector2` / `Vector3` / `Vector4` 参数额外接受同维 `Variant(Vector2i)` / `Variant(Vector3i)` / `Variant(Vector4i)`
+    - `StringName` 参数额外接受 `Variant(STRING)`，并先 unpack `String` 再通过 `StringName(String)` constructor materialize
+    - `String` 参数额外接受 `Variant(STRING_NAME)`，并先 unpack `StringName` 再通过 `String(StringName)` constructor materialize
   - `r_error->expected` 仍保持目标参数类型，方法参数 metadata 也仍发布目标参数类型：
     - `float` 仍发布 `GDEXTENSION_VARIANT_TYPE_FLOAT`
     - `Vector*` 仍发布对应 `GDEXTENSION_VARIANT_TYPE_VECTOR*`
+    - `StringName` 仍发布 `GDEXTENSION_VARIANT_TYPE_STRING_NAME`
+    - `String` 仍发布 `GDEXTENSION_VARIANT_TYPE_STRING`
   - `float -> int`、`Vector* -> Vector*i`、错维 `Vector*i -> Vector*`、`Rect2i -> Rect2`、`bool -> float`、`String -> float` 等其它 conversion 仍不得通过这条 gate
 - `Variant` 参数：
   - 不能执行 `actual_type == NIL` 的精确比较
@@ -109,6 +113,7 @@
   - 不因为 ordinary `Variant` outward ABI 调整而改变
 - wrapper-only inbound materialization helper 不是独立校验边界：
   - `gdcc_new_Vector2_from_call_arg_variant(...)`、`gdcc_new_Vector3_from_call_arg_variant(...)`、`gdcc_new_Vector4_from_call_arg_variant(...)` 只根据已经通过 gate 的 cached runtime type 选择 exact `Vector*` unpack 或同维 `Vector*i -> Vector*` constructor materialization
+  - `gdcc_new_StringName_from_call_arg_variant(...)` 与 `gdcc_new_String_from_call_arg_variant(...)` 只根据已经通过 gate 的 cached runtime type 选择 exact unpack 或 cross-case constructor materialization，并负责销毁 cross-case 中间 `String` / `StringName`
   - helper 本身不重新验证 runtime type，也不负责设置 `r_error`
   - generated `call_func` 模板必须先计算并缓存 `argN_type`，执行 `renderCallWrapperVariantTypeGate(...)` 失败分支和 typed-container preflight，之后才允许调用 `renderCallWrapperUnpackExpr(...)` 物化 wrapper-owned 参数局部
   - 后续新增 wrapper-only helper 时也必须遵守同一顺序：runtime gate 是唯一错误边界，helper 只能是 gate 之后的 materializer

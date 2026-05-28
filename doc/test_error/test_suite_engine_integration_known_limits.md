@@ -63,7 +63,7 @@
   - `int(scores["alpha"])`
 - keyed lowering 路由保持不变：plain `Dictionary` + `String` key 继续冻结为 `VariantSetKeyedInsn` / `VariantGetKeyedInsn`，backend codegen 再把 key 物化到真实 `Variant` 调用面
 - test-suite 资源脚本已去掉历史 workaround，不再需要显式 `var alpha_key: Variant = "alpha"`
-- 当前剩余 gap 只在 Godot 更宽的 keyed/index widened conversion，例如 `String` / `StringName` 互通、以及 `Array` / packed array 的 float index
+- 当前剩余 gap 只在 Godot 更宽、且不属于 ordinary typed-boundary helper 的 keyed/index widened conversion，例如 builtin keyed metadata route、以及 `Array` / packed array 的 float index；`Dictionary[StringName, V]` / `Dictionary[String, V]` 的 `String` / `StringName` key 互通由 ordinary boundary feature gate 覆盖
 
 当前回归锚点包括：
 

@@ -142,7 +142,7 @@ GDCC 当前在前两步与 Godot 一致：
 本计划不包含以下扩面：
 
 - 把所有 multi-arg builtin constructor 都改成 runtime-open
-- 借机支持 `int -> float`、`String <-> StringName` 等新的 ordinary implicit conversion
+- 借机支持新的 ordinary implicit conversion；`String <-> StringName` 的 ordinary boundary constructor materialization 由独立 feature gate 管理，不由 builtin unary stable-`Variant` shortcut 替代
 - 把 `int(...)` 改写成 `cast` / `as`
 - 修改 `gdparser` 语法层；当前问题不在 parser lowering
 - 用 backend 放宽 constructor 元数据匹配来“掩盖” frontend 语义分歧

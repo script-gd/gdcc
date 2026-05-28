@@ -527,6 +527,9 @@ ordinary `Variant` boundary materialization 现在已经冻结为 executable-bod
   - 该 `Variant` 结果若随后跨越 ordinary typed boundary，再由 frontend ordinary boundary helper 做后续 `(un)pack`
 - return
   - stop-node lowering 按当前函数 return slot type 做同一套 boundary materialization
+- `String <-> StringName`
+  - 普通 `"..."` 仍先 lower 为 `String` literal；流入 `StringName` slot 时再由 ordinary boundary helper 物化为 target-typed `ConstructBuiltinInsn`
+  - `&"..."` 是 direct `StringName` literal route，不应通过普通 string literal 路径伪装成 direct assignment
 
 这条 ordinary-boundary helper 与 condition normalization 是两条并列但不同的合同：
 
