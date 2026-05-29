@@ -1124,6 +1124,176 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runMaterializesStringFamilySubscriptKeysBeforeSelectingAccessInstructions() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_subscript_key_boundary.gd",
+                """
+                        class_name BodyInsnStringFamilySubscriptKeyBoundary
+                        extends RefCounted
+
+                        func name_key_ops(box: Dictionary[StringName, int], key: String) -> int:
+                            box[key] = 7
+                            return box[key]
+
+                        func text_key_ops(box: Dictionary[String, int], key: StringName) -> int:
+                            box[key] = 11
+                            return box[key]
+                        """,
+                Map.of(
+                        "BodyInsnStringFamilySubscriptKeyBoundary",
+                        "RuntimeBodyInsnStringFamilySubscriptKeyBoundary"
+                ),
+                true
+        );
+        var nameContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilySubscriptKeyBoundary",
+                "name_key_ops"
+        );
+        var textContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilySubscriptKeyBoundary",
+                "text_key_ops"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var nameInstructions = allInstructions(nameContext.targetFunction());
+        var textInstructions = allInstructions(textContext.targetFunction());
+        var nameConstructors = constructBuiltinInsns(nameInstructions);
+        var textConstructors = constructBuiltinInsns(textInstructions);
+        var nameConstructorResultIds = nameConstructors.stream()
+                .map(ConstructBuiltinInsn::resultId)
+                .toList();
+        var textConstructorResultIds = textConstructors.stream()
+                .map(ConstructBuiltinInsn::resultId)
+                .toList();
+        var setNamedInsn = requireOnlyInstruction(nameContext.targetFunction(), VariantSetNamedInsn.class);
+        var getNamedInsn = requireOnlyInstruction(nameContext.targetFunction(), VariantGetNamedInsn.class);
+        var setKeyedInsn = requireOnlyInstruction(textContext.targetFunction(), VariantSetKeyedInsn.class);
+        var getKeyedInsn = requireOnlyInstruction(textContext.targetFunction(), VariantGetKeyedInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, nameConstructors.size()),
+                () -> assertEquals(2, textConstructors.size()),
+                () -> assertTrue(nameConstructorResultIds.contains(setNamedInsn.nameId())),
+                () -> assertTrue(nameConstructorResultIds.contains(getNamedInsn.nameId())),
+                () -> assertTrue(textConstructorResultIds.contains(setKeyedInsn.keyId())),
+                () -> assertTrue(textConstructorResultIds.contains(getKeyedInsn.keyId())),
+                () -> assertTrue(nameConstructors.stream().allMatch(insn -> requireVariableType(
+                        nameContext.targetFunction(),
+                        insn.resultId()
+                ).equals(GdStringNameType.STRING_NAME))),
+                () -> assertTrue(nameConstructors.stream().allMatch(insn -> requireVariableType(
+                        nameContext.targetFunction(),
+                        onlyVariableOperandId(insn.args())
+                ).equals(GdStringType.STRING))),
+                () -> assertTrue(textConstructors.stream().allMatch(insn -> requireVariableType(
+                        textContext.targetFunction(),
+                        insn.resultId()
+                ).equals(GdStringType.STRING))),
+                () -> assertTrue(textConstructors.stream().allMatch(insn -> requireVariableType(
+                        textContext.targetFunction(),
+                        onlyVariableOperandId(insn.args())
+                ).equals(GdStringNameType.STRING_NAME))),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantSetNamedInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantGetNamedInsn.class::isInstance)),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantGetInsn.class::isInstance)),
+                () -> assertEquals(0, countInstructions(nameInstructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(textInstructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(nameInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(textInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(nameInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(textInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runMaterializesStringFamilySubscriptValuesBeforeStoreInstructions() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_subscript_value_boundary.gd",
+                """
+                        class_name BodyInsnStringFamilySubscriptValueBoundary
+                        extends RefCounted
+
+                        func name_value_ops(box: Dictionary[int, StringName], value: String) -> void:
+                            box[1] = value
+
+                        func text_value_ops(box: Dictionary[int, String], value: StringName) -> void:
+                            box[2] = value
+                        """,
+                Map.of(
+                        "BodyInsnStringFamilySubscriptValueBoundary",
+                        "RuntimeBodyInsnStringFamilySubscriptValueBoundary"
+                ),
+                true
+        );
+        var nameContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilySubscriptValueBoundary",
+                "name_value_ops"
+        );
+        var textContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilySubscriptValueBoundary",
+                "text_value_ops"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var nameInstructions = allInstructions(nameContext.targetFunction());
+        var textInstructions = allInstructions(textContext.targetFunction());
+        var nameConstructor = requireOnlyInstruction(nameContext.targetFunction(), ConstructBuiltinInsn.class);
+        var textConstructor = requireOnlyInstruction(textContext.targetFunction(), ConstructBuiltinInsn.class);
+        var nameSetInsn = requireOnlyInstruction(nameContext.targetFunction(), VariantSetIndexedInsn.class);
+        var textSetInsn = requireOnlyInstruction(textContext.targetFunction(), VariantSetIndexedInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(nameConstructor.resultId(), nameSetInsn.valueId()),
+                () -> assertEquals(textConstructor.resultId(), textSetInsn.valueId()),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(nameContext.targetFunction(), nameConstructor.resultId())
+                ),
+                () -> assertEquals(
+                        GdStringType.STRING,
+                        requireVariableType(textContext.targetFunction(), textConstructor.resultId())
+                ),
+                () -> assertEquals(
+                        GdStringType.STRING,
+                        requireVariableType(nameContext.targetFunction(), onlyVariableOperandId(nameConstructor.args()))
+                ),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(textContext.targetFunction(), onlyVariableOperandId(textConstructor.args()))
+                ),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantSetInsn.class::isInstance)),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance)),
+                () -> assertFalse(nameInstructions.stream().anyMatch(VariantSetNamedInsn.class::isInstance)),
+                () -> assertFalse(textInstructions.stream().anyMatch(VariantSetNamedInsn.class::isInstance)),
+                () -> assertEquals(0, countInstructions(nameInstructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(textInstructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(nameInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(textInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(nameInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(textInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
     void runLowersExplicitSelfDirectPropertyAssignmentTargetWithoutMissingPrefixType() throws Exception {
         var prepared = prepareContext(
                 "body_insn_explicit_self_property_assignment.gd",

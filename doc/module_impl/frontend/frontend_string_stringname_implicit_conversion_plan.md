@@ -643,6 +643,23 @@ helper 行为必须按 runtime tag 分流：
 
 ### Phase 4：subscript key/value 边界
 
+#### Phase 4 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 4 相关文档、前端 subscript 生产代码与测试结构调研并关闭子代理。
+- [x] 确认 subscript semantic 已复用 `FrontendVariantBoundaryCompatibility`，未新增 subscript 专用
+  `String` / `StringName` widening 规则。
+- [x] 在 `FrontendSubscriptSemanticSupportTest` 补充 `Dictionary[StringName, int]` 接受
+  `String` key、`Dictionary[String, int]` 接受 `StringName` key 的 shared-boundary 正例。
+- [x] 在 `FrontendLoweringBodyInsnPassTest` 补充 `String` / `StringName` key 先经
+  target-typed `ConstructBuiltinInsn` 物化，再分别选择 named / keyed subscript route 的锚点。
+- [x] 在 `FrontendLoweringBodyInsnPassTest` 补充 `Dictionary[int, StringName]` value write 接受
+  `String`、`Dictionary[int, String]` value write 接受 `StringName` 的物化锚点，确认 constructor
+  result slot 进入最终 `VariantSetIndexedInsn.valueId()`。
+- [x] 运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests FrontendSubscriptSemanticSupportTest,FrontendLoweringBodyInsnPassTest`，通过。
+
 不新增 subscript 专用规则，只消费 Phase 1/3 的 ordinary boundary。
 
 重点测试：
@@ -663,6 +680,23 @@ helper 行为必须按 runtime tag 分流：
 - `String` receiver、`Vector` receiver 等 builtin keyed access 仍保持现有 unsupported 合同；本任务只影响 typed container boundary。
 
 ### Phase 5：C backend constructor 验证
+
+#### Phase 5 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 5 相关文档、C backend constructor 生产代码与测试结构调研并关闭子代理。
+- [x] 确认 `ConstructInsnGen` / `CBuiltinBuilder` 已按 exact constructor metadata matching 消费
+  `ConstructBuiltinInsn`，无需新增 backend intrinsic 或放宽 backend matcher。
+- [x] 确认 bundled API / generated wrapper 已包含 `godot_new_StringName_with_String(...)` 与
+  `godot_new_String_with_StringName(...)`。
+- [x] 在 `CConstructInsnGenTest` 补充 `String -> StringName` non-ref source 取地址传参的 C 输出锚点。
+- [x] 在 `CConstructInsnGenTest` 补充 `StringName -> String` ref source 直接传 pointer 的 C 输出锚点。
+- [x] 在 `CConstructInsnGenTest` 补充 string-family constructor 的 non-variable operand 拒绝锚点。
+- [x] 在 `CConstructInsnGenTest` 补充缺失 `StringName(String)` metadata 时继续 fail-fast 的锚点。
+- [x] 未修改 `ConstructInsnGen` / `CBuiltinBuilder` / `CIntrinsicManager`，避免引入 backend implicit-conversion surface。
+- [x] 运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests CConstructInsnGenTest`，通过。
 
 修改：
 

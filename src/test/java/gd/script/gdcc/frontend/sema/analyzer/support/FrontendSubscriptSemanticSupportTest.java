@@ -9,6 +9,7 @@ import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -110,6 +111,27 @@ class FrontendSubscriptSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, packedFloatIndexResult.status());
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, arrayVariantIndexResult.status());
         assertEquals(GdIntType.INT, arrayVariantIndexResult.publishedType());
+    }
+
+    @Test
+    void resolveSubscriptTypeAcceptsStringFamilyKeysForTypedDictionariesThroughSharedBoundary() {
+        var support = new FrontendSubscriptSemanticSupport(newRegistry(List.of()));
+
+        var stringKeyForStringNameDictionary = support.resolveSubscriptType(
+                new GdDictionaryType(GdStringNameType.STRING_NAME, GdIntType.INT),
+                List.of(GdStringType.STRING),
+                "subscript expression"
+        );
+        var stringNameKeyForStringDictionary = support.resolveSubscriptType(
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
+                List.of(GdStringNameType.STRING_NAME),
+                "subscript expression"
+        );
+
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, stringKeyForStringNameDictionary.status());
+        assertEquals(GdIntType.INT, stringKeyForStringNameDictionary.publishedType());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, stringNameKeyForStringDictionary.status());
+        assertEquals(GdIntType.INT, stringNameKeyForStringDictionary.publishedType());
     }
 
     @Test

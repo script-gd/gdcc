@@ -6,6 +6,7 @@ import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
 import gd.script.gdcc.gdextension.ExtensionSingleton;
@@ -115,6 +116,87 @@ class CConstructInsnGenTest {
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("Builtin constructor validation failed"));
         assertTrue(ex.getMessage().contains("'int' with args [Variant]"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should emit StringName(String) constructor with non-ref source address")
+    void constructBuiltinShouldEmitStringNameFromNonRefStringConstructor() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_string_name_from_string");
+        func.createAndAddVariable("text", GdStringType.STRING);
+        func.createAndAddVariable("name", GdStringNameType.STRING_NAME);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "name",
+                List.of(new LirInstruction.VariableOperand("text"))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithStringFamilyConstructors());
+        var call = extractCall(body, "godot_new_StringName_with_String");
+        assertTrue(call.contains("&$text"), call);
+    }
+
+    @Test
+    @DisplayName("construct_builtin should emit String(StringName) constructor with ref source pointer")
+    void constructBuiltinShouldEmitStringFromRefStringNameConstructor() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_string_from_ref_string_name");
+        var source = func.createAndAddTmpRefVariable(GdStringNameType.STRING_NAME);
+        func.createAndAddVariable("text", GdStringType.STRING);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "text",
+                List.of(new LirInstruction.VariableOperand(source.id()))
+        ));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithStringFamilyConstructors());
+        var call = extractCall(body, "godot_new_String_with_StringName");
+        assertTrue(call.contains("$" + source.id()), call);
+        assertFalse(call.contains("&$" + source.id()), call);
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject non-variable operands on String family constructors")
+    void constructBuiltinShouldRejectStringFamilyNonVariableOperand() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_string_family_non_var_operand");
+        func.createAndAddVariable("name", GdStringNameType.STRING_NAME);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "name",
+                List.of(new LirInstruction.StringOperand("not_var"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithStringFamilyConstructors())
+        );
+        assertTrue(ex.getMessage().contains("must be a variable operand"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should fail fast when String family constructor metadata is missing")
+    void constructBuiltinShouldRejectStringFamilyConstructorWhenMetadataIsMissing() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_string_family_missing_metadata");
+        func.createAndAddVariable("text", GdStringType.STRING);
+        func.createAndAddVariable("name", GdStringNameType.STRING_NAME);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "name",
+                List.of(new LirInstruction.VariableOperand("text"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, apiWithStringFamilyBuiltinsWithoutConstructors())
+        );
+        assertTrue(ex.getMessage().contains("Builtin constructor validation failed"));
+        assertTrue(ex.getMessage().contains("'StringName' with args [String]"));
     }
 
     @Test
@@ -882,6 +964,40 @@ class CConstructInsnGenTest {
         );
     }
 
+    private ExtensionAPI apiWithStringFamilyConstructors() {
+        return apiWithBuiltins(List.of(
+                newBuiltinClass(
+                        "String",
+                        List.of(newConstructor("String", "StringName"))
+                ),
+                newBuiltinClass(
+                        "StringName",
+                        List.of(newConstructor("StringName", "String"))
+                )
+        ));
+    }
+
+    private ExtensionAPI apiWithStringFamilyBuiltinsWithoutConstructors() {
+        return apiWithBuiltins(List.of(
+                newBuiltinClass("String", List.of()),
+                newBuiltinClass("StringName", List.of())
+        ));
+    }
+
+    private ExtensionAPI apiWithBuiltins(List<ExtensionBuiltinClass> builtins) {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                builtins,
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
     private ExtensionAPI apiWithConstructibleObjectClasses() {
         return new ExtensionAPI(
                 null,
@@ -901,16 +1017,31 @@ class CConstructInsnGenTest {
         );
     }
 
-    private ExtensionBuiltinClass newZeroArgPackedBuiltinClass(String typeName) {
+    private ExtensionBuiltinClass newBuiltinClass(
+            String typeName,
+            List<ExtensionBuiltinClass.ConstructorInfo> constructors
+    ) {
         return new ExtensionBuiltinClass(
                 typeName,
                 false,
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of(new ExtensionBuiltinClass.ConstructorInfo(typeName, 0, List.of())),
+                constructors,
                 List.of(),
                 List.of()
+        );
+    }
+
+    private ExtensionBuiltinClass newZeroArgPackedBuiltinClass(String typeName) {
+        return newBuiltinClass(typeName, List.of(new ExtensionBuiltinClass.ConstructorInfo(typeName, 0, List.of())));
+    }
+
+    private ExtensionBuiltinClass.ConstructorInfo newConstructor(String owner, String argType) {
+        return new ExtensionBuiltinClass.ConstructorInfo(
+                owner,
+                2,
+                List.of(new ExtensionFunctionArgument("from", argType, null, null))
         );
     }
 
