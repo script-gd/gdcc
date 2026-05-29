@@ -55,8 +55,9 @@ extend the runtime-provided `godot_*` surface.
 - `gdcc_operator.h`: backend-owned operator support such as division/shift guards, integer power
   and object identity comparison.
 - `gdcc_intrinsic.h`: wrapper-only inbound materialization helpers for accepted Variant payloads whose
-  runtime type differs from the published method metadata, including numeric/vector narrow payloads
-  and string-family `String` / `StringName` cross-cases.
+  runtime type differs from the published method metadata. It owns vector narrow-payload helpers
+  and string-family `String` / `StringName` cross-case helpers; scalar `int -> float` inbound
+  materialization remains directly emitted by the generated wrapper code.
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,

@@ -1,9 +1,9 @@
 # Frontend Lowering `(un)pack` Implementation
 
-> Updated: 2026-05-11
+> Updated: 2026-05-29
 >
 > 本文档是 frontend ordinary typed-boundary materialization 的事实源。
-> `String <-> StringName` 条目已完成 Phase 0 文档同步；实现闭合由后续 phase 完成。
+> `String <-> StringName` 条目已完成实现闭合；ordinary boundary、literal 路线与 backend constructor 消费均以当前合同为准。
 > 本文档不再记录实施流水账；若长期合同变化，应直接改写当前状态。
 
 ## 1. 维护合同

@@ -25,6 +25,20 @@
 
 这两条支持面都属于同一个 `String` / `StringName` 隐式转换 feature gate。source-level compile path 与
 Godot dynamic call 入站 wrapper 任何一侧缺失，都不满足本计划的完成标准。
+本文档中的 “parity” 只表示这两条支持面之间的完成度对齐：
+
+- source-level ordinary typed boundary
+- GDExtension `call_func` inbound wrapper
+
+它不表示 GDCC 已经与 Godot 的所有 string-family 行为对齐。以下事实必须单独保持：
+
+- operator 行为不是本 feature 的 parity 范围；`String` / `StringName` 的 `+`、`==`、`!=`
+  等由 unary/binary operator metadata 与 operator lowering 合同决定，不由 ordinary typed boundary
+  或 inbound wrapper 放宽。
+- explicit cast 不是本 feature 的 parity 范围；`CastExpression` / `CastItem` 仍按现有 lowering
+  unsupported 合同处理。
+- `NodePath -> String` 不是本 feature 的 parity 范围；`String -> NodePath`、`NodePath -> String`
+  等相邻 Godot strict conversion 仍保持 GDCC 当前不支持状态。
 
 这些边界通过现有 shared frontend boundary helper 统一进入以下 consumer：
 
@@ -39,6 +53,7 @@ Godot dynamic call 入站 wrapper 任何一侧缺失，都不满足本计划的�
 本计划不包含：
 
 - `String <-> NodePath`
+- `NodePath -> String`
 - `String -> Color`、`int -> Color` 等其它 Godot strict conversion
 - 显式 `cast` / `as` / `is` lowering
 - builtin keyed metadata access 的新支持面，例如 `vector["x"]`
@@ -657,10 +672,35 @@ helper 行为必须按 runtime tag 分流：
 - [x] 在 `FrontendLoweringBodyInsnPassTest` 补充 `Dictionary[int, StringName]` value write 接受
   `String`、`Dictionary[int, String]` value write 接受 `StringName` 的物化锚点，确认 constructor
   result slot 进入最终 `VariantSetIndexedInsn.valueId()`。
+- [x] 追加记录 typed Dictionary subscript 的长期不变量：`Dictionary[StringName, V]` 用 `String`
+  key 之所以能选择 named route，是因为 body lowering 先通过
+  `materializeFrontendBoundaryValue(...)` 把 key 物化成 container key type，再基于物化后的
+  `StringName` key type 判定 access kind；access-kind truth source 本身只把 `GdStringNameType`
+  视为 named key。
+- [x] 在 `FrontendBodyLoweringSessionTest` 追加 helper 级回归测试，直接锚定
+  `materializeSubscriptKey(...)` 返回的 materialized slot/type/access-kind 必须成对消费，并用原始
+  `String` / `StringName` key type 的相反 route 作为负向漂移锚点。
+- [x] 在 `FrontendWritableRouteSupportTest` 追加 writable-route 回归测试，确认 leaf read 与
+  reverse commit 复用同一个 materialized key，并分别锚定 `Dictionary[StringName, V]` +
+  `String` key 的 named route 与 `Dictionary[String, V]` + `StringName` key 的 keyed route。
 - [x] 运行 targeted tests 并记录结果：
   `script/run-gradle-targeted-tests.sh --tests FrontendSubscriptSemanticSupportTest,FrontendLoweringBodyInsnPassTest`，通过。
+- [x] 追加补强后运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendLoweringBodyInsnPassTest,FrontendSubscriptSemanticSupportTest`，通过。
+- [x] 追加 writable-route 补强后运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendWritableRouteSupportTest,FrontendLoweringBodyInsnPassTest,FrontendSubscriptSemanticSupportTest`，通过。
 
 不新增 subscript 专用规则，只消费 Phase 1/3 的 ordinary boundary。
+
+长期不变量：
+
+- subscript lowering 必须把 `MaterializedSubscriptKey.slotId()`、`type()` 与 `accessKind()` 作为同一组结果消费；
+  任何 direct load/store、writable-route leaf read 或 reverse commit 都不得丢弃该结果后用原始 source key type
+  重新调用 `FrontendSubscriptAccessSupport.determineAccessKind(...)`。
+- 对 `Dictionary[StringName, V]` + `String` key，原始 `String` key 若直接判 access kind 会落到 keyed route；
+  正确 route 必须来自物化后的 `StringName` key，因此最终是 named route。
+- 对 `Dictionary[String, V]` + `StringName` key，原始 `StringName` key 若直接判 access kind 会落到 named route；
+  正确 route 必须来自物化后的 `String` key，因此最终是 keyed route。
 
 重点测试：
 
@@ -670,6 +710,15 @@ helper 行为必须按 runtime tag 分流：
 - `Dictionary[String, int]` key 接受 `StringName`
   - set/get key 先物化成 `String`
   - 不误选 named route
+- `materializeSubscriptKey(...)` helper 级覆盖
+  - `Dictionary[StringName, V]` + 原始 `String` key 返回 materialized `StringName` key 与 `NAMED`
+  - `Dictionary[String, V]` + 原始 `StringName` key 返回 materialized `String` key 与 `KEYED`
+  - 同时断言若直接用原始 key type 判 access kind，会分别落入相反的 keyed / named route
+- writable-route 覆盖
+  - leaf read 与 reverse commit 只 materialize 一次 `String -> StringName` / `StringName -> String` key
+  - `VariantGetNamedInsn.nameId()` / `VariantSetNamedInsn.nameId()` 与
+    `VariantGetKeyedInsn.keyId()` / `VariantSetKeyedInsn.keyId()` 都消费同一个 constructor result
+  - 双向负向断言分别不生成相反的 keyed / named 指令
 - `Dictionary[int, StringName]` value write 接受 `String`
 - `Dictionary[int, String]` value write 接受 `StringName`
 
@@ -677,6 +726,8 @@ helper 行为必须按 runtime tag 分流：
 
 - `FrontendSubscriptSemanticSupportTest` 证明 key/index compatibility 放行来自 shared helper。
 - `FrontendLoweringBodyInsnPassTest` 证明 key/value materialization 发生在 final `VariantGet*` / `VariantSet*` 之前。
+- `FrontendBodyLoweringSessionTest` 与 `FrontendWritableRouteSupportTest` 证明 helper 与 writable-route caller
+  都按 materialized key/type/access-kind 同组结果消费。
 - `String` receiver、`Vector` receiver 等 builtin keyed access 仍保持现有 unsupported 合同；本任务只影响 typed container boundary。
 
 ### Phase 5：C backend constructor 验证
@@ -805,6 +856,25 @@ materialization 细则：
 本阶段在代码与测试补齐后执行，不再引入新行为。它只做 drift check：确认 Phase 0 列出的文档、
 源码注释、测试命名与当前实现一致，并确认每条规范性合同都能落到具体测试证据。
 
+#### Phase 7 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成前端文档、后端文档、代码/测试锚点与独立复核调研并关闭子代理。
+- [x] 使用 `rg` 检查 `doc/`、`src/main/java/`、`src/main/c/`、`src/test/java/` 中
+  `String` / `StringName`、`unsupported` / `不支持` / `gap`、`call_func` wrapper 相关旧表述。
+- [x] 同步长期事实源文档中的完成态状态行与职责描述。
+- [x] 修正 `frontend_rules.md` 中把已正式支持的 `StringName` / `String` 互通误列为局部放宽风险的表述。
+- [x] 补充入站 `call_func` wrapper runtime 锚点，覆盖双向正例与相邻 `NodePath` 负例。
+- [x] 运行 targeted tests、IDE 检查与 diff 检查并记录结果：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLoweringToCProjectBuilderIntegrationTest.lowerStringFamilyInboundCallWrapperBuildNativeLibraryAndRunInGodot`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests FrontendVariantBoundaryCompatibilityTest,FrontendBodyLoweringSessionTest,FrontendAssignmentSemanticSupportTest,FrontendTypeCheckAnalyzerTest`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTest,FrontendConstructorResolutionSupportTest,ScopeMethodResolverTest,FrontendSubscriptSemanticSupportTest,FrontendLoweringBodyInsnPassTest`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests CConstructInsnGenTest,CNewDataInsnGenTest,CGenHelperTest,CCodegenTest`，通过。
+  - IDE rebuild `FrontendLoweringToCProjectBuilderIntegrationTest.java`，通过。
+  - `git diff --check`，通过。
+  - `rg` 旧口径扫描：完成态状态行、`gdcc_intrinsic.h` numeric/vector 误述与当前支持面的冲突表述均已清理；剩余命中只属于本计划的历史问题描述。
+
 复核项：
 
 - Phase 0 已修改的长期事实源文档必须逐项重新查验，确认它们与 Phase 1-6 的最终实现、测试锚点和 runtime wrapper 行为一致：
@@ -860,6 +930,23 @@ materialization 细则：
 
 ### Phase 8：最终验证
 
+#### Phase 8 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 8 文档复查、代码/测试锚点复查、targeted test 执行与独立审查，并关闭子代理。
+- [x] 复查长期事实源、源码注释与测试锚点，确认 `String <-> StringName` 完成态仍是
+  source-level `construct_builtin` materialization 与 `call_func` inbound wrapper parity，不新增 backend intrinsic。
+- [x] 运行旧口径 drift scan；长期事实源未再出现 Phase 0-only 实现待闭合状态、
+  `gdcc_intrinsic.h` 旧 numeric/vector 误述或当前支持面冲突表述。
+- [x] 运行 Phase 8 targeted tests 并记录结果：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendVariantBoundaryCompatibilityTest,FrontendAssignmentSemanticSupportTest,FrontendTypeCheckAnalyzerTest`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTest,FrontendConstructorResolutionSupportTest,ScopeMethodResolverTest`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests FrontendSubscriptSemanticSupportTest,FrontendLoweringBodyInsnPassTest`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests CConstructInsnGenTest,CNewDataInsnGenTest`，通过。
+  - `script/run-gradle-targeted-tests.sh --tests CGenHelperTest,CCodegenTest`，通过。
+- [x] 独立审查确认新增 runtime integration anchor 覆盖双向正例与相邻 `NodePath` 负例；未发现 Phase 8 阻塞问题。
+
 建议 targeted test 命令：
 
 ```bash
@@ -877,7 +964,7 @@ PR 前再按项目要求决定是否运行完整 `clean build`。
 - **ownership / destructor 风险**：`String` 与 `StringName` 都是 destroyable value-semantic type，backend constructor path 必须继续通过 `construct_builtin` / `callAssign(...)`，不要走 scalar cast 的裸表达式路径。
 - **subscript access kind 漂移**：`Dictionary[StringName, V]` 用 `String` key 后，应基于 materialized `StringName` key 选择 access kind；不得用原始 `String` key 提前选 route。
 - **overload ambiguity**：新增 rank 会改变 `String` / `StringName` / `Variant` 混合候选的选择。concrete source 应稳定选 exact 或 constructor materialization；`Variant` source 的同 rank ambiguity 不应被本任务掩盖。
-- **文档漂移**：当前多份文档明确写着 `String <-> StringName` 不支持。实现前必须先统一事实源，避免代码与文档长期冲突。
+- **文档漂移**：历史事实源曾明确写着 `String <-> StringName` 不支持。实现闭合后仍需 drift check，避免旧合同重新进入长期文档、注释或测试命名。
 - **显式 cast 混入**：`CastItem` lowering 当前未实现。不要为了让 `StringName(text)` 或 typed boundary 通过而顺手打开 `cast` / `as`。
 - **入站 wrapper 边界**：source-level 隐式转换和 Godot dynamic call 入站 wrapper 是两条路径，但本 feature 要求二者同步完成。不得在缺少入站 wrapper parity 时把实现标记为完成。
 - **入站 materializer 退化**：`String <-> StringName` 入站 wrapper 不能只放宽 runtime gate 后统一调用 target-type `Variant` constructor；cross-case 必须先 unpack payload 实际类型，再走 `StringName(String)` / `String(StringName)` constructor，并销毁中间值。

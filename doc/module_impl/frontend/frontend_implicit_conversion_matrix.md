@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（Godot 规则已梳理，`String <-> StringName` feature gate 已完成 Phase 0 文档同步；实现闭合由后续 phase 完成）
-- 更新时间：2026-05-28
+- 状态：事实源维护中（Godot 规则已梳理，`String <-> StringName` feature gate 已完成实现闭合；ordinary typed boundary 的 semantic / lowering / backend constructor 与 GDExtension `call_func` inbound wrapper 合同已同步）
+- 更新时间：2026-05-29
 - 适用范围：
   - `doc/module_impl/frontend/**`
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -68,6 +68,15 @@
 - backend 对 `Variant` pack/unpack 的运行时校验
 - builtin 单参数 stable `Variant` constructor special route
   - 该路径属于 constructor resolution / lowering 合同，而不是 ordinary typed-boundary widened conversion
+
+`String <-> StringName` feature gate 中的 “parity” 只限定为 ordinary typed boundary 与
+GDExtension `call_func` inbound wrapper 两条路径的完成度对齐；它不覆盖 operator、explicit cast
+或相邻 Godot strict conversion。尤其是：
+
+- `String` / `StringName` 的 operator 支持由 exact operator metadata 与 operator lowering 合同决定，
+  不由本文矩阵扩面。
+- `CastExpression` / `CastItem` 仍不是本 feature 的支持面。
+- `NodePath -> String`、`String -> NodePath` 仍保持当前 GDCC 不支持状态。
 
 ### 1.3 当前 GDCC 的统一基线
 

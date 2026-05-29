@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.lowering.pass.body;
 
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.lowering.FrontendLoweringContext;
+import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringBuildCfgPass;
@@ -18,6 +19,7 @@ import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -238,6 +240,74 @@ class FrontendBodyLoweringSessionTest {
                     () -> assertEquals(testCase.targetType(), constructedVariable.type())
             );
         }
+    }
+
+    @Test
+    void materializeSubscriptKeySelectsAccessKindFromStringFamilyContainerKeyType() throws Exception {
+        var session = prepareSession();
+        var nameBlock = new LirBasicBlock("string_key_to_string_name");
+        var textBlock = new LirBasicBlock("string_name_key_to_string");
+        var nameDictionary = new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT);
+        var textDictionary = new GdDictionaryType(GdStringType.STRING, GdVariantType.VARIANT);
+        session.ensureVariable("source_text", GdStringType.STRING);
+        session.ensureVariable("source_name", GdStringNameType.STRING_NAME);
+
+        var nameKey = session.materializeSubscriptKey(
+                nameBlock,
+                "source_text",
+                GdStringType.STRING,
+                nameDictionary,
+                null,
+                "string_key_for_string_name_dictionary"
+        );
+        var textKey = session.materializeSubscriptKey(
+                textBlock,
+                "source_name",
+                GdStringNameType.STRING_NAME,
+                textDictionary,
+                null,
+                "string_name_key_for_string_dictionary"
+        );
+
+        var nameConstruct = assertInstanceOf(
+                ConstructBuiltinInsn.class,
+                nameBlock.getNonTerminatorInstructions().getFirst()
+        );
+        var textConstruct = assertInstanceOf(
+                ConstructBuiltinInsn.class,
+                textBlock.getNonTerminatorInstructions().getFirst()
+        );
+        var nameArgument = assertInstanceOf(LirInstruction.VariableOperand.class, nameConstruct.args().getFirst());
+        var textArgument = assertInstanceOf(LirInstruction.VariableOperand.class, textConstruct.args().getFirst());
+        var nameVariable = session.targetFunction().getVariableById(nameKey.slotId());
+        var textVariable = session.targetFunction().getVariableById(textKey.slotId());
+        assertNotNull(nameVariable);
+        assertNotNull(textVariable);
+
+        assertAll(
+                () -> assertEquals(1, nameBlock.getNonTerminatorInstructions().size()),
+                () -> assertEquals(1, textBlock.getNonTerminatorInstructions().size()),
+                () -> assertEquals("source_text", nameArgument.id()),
+                () -> assertEquals("source_name", textArgument.id()),
+                () -> assertEquals(nameConstruct.resultId(), nameKey.slotId()),
+                () -> assertEquals(textConstruct.resultId(), textKey.slotId()),
+                () -> assertEquals(GdStringNameType.STRING_NAME, nameKey.type()),
+                () -> assertEquals(GdStringType.STRING, textKey.type()),
+                () -> assertEquals(GdStringNameType.STRING_NAME, nameVariable.type()),
+                () -> assertEquals(GdStringType.STRING, textVariable.type()),
+                () -> assertEquals(FrontendSubscriptAccessSupport.AccessKind.NAMED, nameKey.accessKind()),
+                () -> assertEquals(FrontendSubscriptAccessSupport.AccessKind.KEYED, textKey.accessKind()),
+                // These raw-source checks pin the route drift that would happen if a caller ignored
+                // the bundled `MaterializedSubscriptKey` result and recalculated from the source key.
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.KEYED,
+                        FrontendSubscriptAccessSupport.determineAccessKind(nameDictionary, GdStringType.STRING)
+                ),
+                () -> assertEquals(
+                        FrontendSubscriptAccessSupport.AccessKind.NAMED,
+                        FrontendSubscriptAccessSupport.determineAccessKind(textDictionary, GdStringNameType.STRING_NAME)
+                )
+        );
     }
 
     @Test

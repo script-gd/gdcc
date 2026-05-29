@@ -5,7 +5,7 @@
 
 ## 文档状态
 
-- 状态：Maintained（`String <-> StringName` feature gate 已完成 Phase 0 文档同步；实现闭合由后续 phase 完成）
+- 状态：Maintained（`String <-> StringName` feature gate 已完成实现闭合；source-level constructor materialization 与入站 `call_func` wrapper parity 均已同步）
 - 范围：
   - frontend ordinary typed boundary
   - frontend constructor / callable overload ranking 中复用的 boundary specificity

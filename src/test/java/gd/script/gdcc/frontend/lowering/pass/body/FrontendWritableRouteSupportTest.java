@@ -17,6 +17,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
+import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
@@ -35,6 +36,8 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Point;
@@ -51,6 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -233,6 +237,134 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("box_slot", getKeyedInsn.keyedVariantId()),
                 () -> assertEquals("box_slot", setKeyedInsn.keyedVariantId()),
                 () -> assertEquals("leaf_result", setKeyedInsn.valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitReusesStringKeyMaterializedForStringNameDictionaryNamedRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        var dictionaryType = new GdDictionaryType(GdStringNameType.STRING_NAME, GdVariantType.VARIANT);
+        session.ensureVariable("box_slot", dictionaryType);
+        session.ensureVariable("key_slot", GdStringType.STRING);
+        session.ensureVariable("rhs_slot", GdVariantType.VARIANT);
+        session.ensureVariable("leaf_result", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("box"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "string-name dictionary receiver",
+                        "box_slot",
+                        dictionaryType
+                ),
+                new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "box_slot",
+                        dictionaryType,
+                        null,
+                        "key_slot",
+                        GdStringType.STRING,
+                        GdVariantType.VARIANT
+                ),
+                List.of(new FrontendWritableRouteSupport.SubscriptCommitStep(
+                        "box_slot",
+                        dictionaryType,
+                        null,
+                        "key_slot",
+                        GdStringType.STRING
+                ))
+        );
+
+        var leafSlotId = FrontendWritableRouteSupport.materializeLeafReadInto(session, block, chain, "leaf_result");
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                leafSlotId,
+                FrontendWritableRouteSupport.ALWAYS_APPLY
+        );
+
+        var instructions = block.getNonTerminatorInstructions();
+        var constructInsn = assertInstanceOf(ConstructBuiltinInsn.class, instructions.getFirst());
+        var getNamedInsn = assertInstanceOf(VariantGetNamedInsn.class, instructions.get(1));
+        var setNamedInsn = assertInstanceOf(VariantSetNamedInsn.class, instructions.get(2));
+        var constructedKey = session.targetFunction().getVariableById(constructInsn.resultId());
+        assertNotNull(constructedKey);
+
+        assertAll(
+                () -> assertEquals(3, instructions.size()),
+                () -> assertEquals("key_slot", onlyVariableOperandId(constructInsn.args())),
+                () -> assertEquals(GdStringNameType.STRING_NAME, constructedKey.type()),
+                () -> assertEquals("leaf_result", leafSlotId),
+                () -> assertEquals(constructInsn.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals(constructInsn.resultId(), setNamedInsn.nameId()),
+                () -> assertEquals("box_slot", getNamedInsn.namedVariantId()),
+                () -> assertEquals("box_slot", setNamedInsn.namedVariantId()),
+                () -> assertEquals("leaf_result", setNamedInsn.valueId()),
+                () -> assertFalse(instructions.stream().anyMatch(VariantGetKeyedInsn.class::isInstance)),
+                () -> assertFalse(instructions.stream().anyMatch(VariantSetKeyedInsn.class::isInstance))
+        );
+    }
+
+    @Test
+    void reverseCommitReusesStringNameKeyMaterializedForStringDictionaryKeyedRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        var dictionaryType = new GdDictionaryType(GdStringType.STRING, GdVariantType.VARIANT);
+        session.ensureVariable("box_slot", dictionaryType);
+        session.ensureVariable("key_slot", GdStringNameType.STRING_NAME);
+        session.ensureVariable("rhs_slot", GdVariantType.VARIANT);
+        session.ensureVariable("leaf_result", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("box"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "string dictionary receiver",
+                        "box_slot",
+                        dictionaryType
+                ),
+                new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "box_slot",
+                        dictionaryType,
+                        null,
+                        "key_slot",
+                        GdStringNameType.STRING_NAME,
+                        GdVariantType.VARIANT
+                ),
+                List.of(new FrontendWritableRouteSupport.SubscriptCommitStep(
+                        "box_slot",
+                        dictionaryType,
+                        null,
+                        "key_slot",
+                        GdStringNameType.STRING_NAME
+                ))
+        );
+
+        var leafSlotId = FrontendWritableRouteSupport.materializeLeafReadInto(session, block, chain, "leaf_result");
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                leafSlotId,
+                FrontendWritableRouteSupport.ALWAYS_APPLY
+        );
+
+        var instructions = block.getNonTerminatorInstructions();
+        var constructInsn = assertInstanceOf(ConstructBuiltinInsn.class, instructions.getFirst());
+        var getKeyedInsn = assertInstanceOf(VariantGetKeyedInsn.class, instructions.get(1));
+        var setKeyedInsn = assertInstanceOf(VariantSetKeyedInsn.class, instructions.get(2));
+        var constructedKey = session.targetFunction().getVariableById(constructInsn.resultId());
+        assertNotNull(constructedKey);
+
+        assertAll(
+                () -> assertEquals(3, instructions.size()),
+                () -> assertEquals("key_slot", onlyVariableOperandId(constructInsn.args())),
+                () -> assertEquals(GdStringType.STRING, constructedKey.type()),
+                () -> assertEquals("leaf_result", leafSlotId),
+                () -> assertEquals(constructInsn.resultId(), getKeyedInsn.keyId()),
+                () -> assertEquals(constructInsn.resultId(), setKeyedInsn.keyId()),
+                () -> assertEquals("box_slot", getKeyedInsn.keyedVariantId()),
+                () -> assertEquals("box_slot", setKeyedInsn.keyedVariantId()),
+                () -> assertEquals("leaf_result", setKeyedInsn.valueId()),
+                () -> assertFalse(instructions.stream().anyMatch(VariantGetNamedInsn.class::isInstance)),
+                () -> assertFalse(instructions.stream().anyMatch(VariantSetNamedInsn.class::isInstance))
         );
     }
 

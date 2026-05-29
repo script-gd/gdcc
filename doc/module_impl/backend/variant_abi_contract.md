@@ -5,12 +5,12 @@
 
 ## 文档状态
 
-- 状态：Maintained（`String <-> StringName` 入站 wrapper parity 已完成 Phase 0 文档同步；实现闭合由后续 phase 完成）
+- 状态：Maintained（`String <-> StringName` 入站 wrapper parity 已完成实现闭合；runtime gate、wrapper-local materializer、cleanup 与 focused/runtime 锚点已同步）
 - 范围：
   - `src/main/java/gd/script/gdcc/backend/c/**`
   - `src/main/c/codegen/**`
   - `src/test/java/gd/script/gdcc/backend/c/**`
-- 更新时间：2026-04-11
+- 更新时间：2026-05-29
 - 上游对齐基线：
   - Godot 4.x 对 source-level `Variant` outward slot 的合同：
     - `type = NIL`

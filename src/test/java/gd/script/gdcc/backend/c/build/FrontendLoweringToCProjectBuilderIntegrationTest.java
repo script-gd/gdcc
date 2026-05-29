@@ -224,6 +224,108 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
     }
 
     @Test
+    void lowerStringFamilyInboundCallWrapperBuildNativeLibraryAndRunInGodot() throws Exception {
+        if (ZigUtil.findZig() == null) {
+            Assumptions.abort("Zig not found; skipping String/StringName inbound wrapper integration test");
+            return;
+        }
+
+        var tempDir = Path.of("tmp/test/frontend_string_family_inbound_wrapper_runtime");
+        Files.createDirectories(tempDir);
+
+        var source = """
+                class_name StringFamilyInboundWrapperSmoke
+                extends Node
+
+                func take_string_name(value: StringName) -> StringName:
+                    return value
+
+                func take_string(value: String) -> String:
+                    return value
+                """;
+        var module = parseModule(
+                tempDir.resolve("string_family_inbound_wrapper_smoke.gd"),
+                source,
+                Map.of("StringFamilyInboundWrapperSmoke", "RuntimeStringFamilyInboundWrapperSmoke")
+        );
+        var diagnostics = new DiagnosticManager();
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadVersion(GodotVersion.V451));
+        var lowered = new FrontendLoweringPassManager().lower(module, classRegistry, diagnostics);
+
+        assertNotNull(lowered, () -> "Lowering returned null with diagnostics: " + diagnostics.snapshot());
+        assertFalse(diagnostics.hasErrors(), () -> "Unexpected frontend diagnostics: " + diagnostics.snapshot());
+
+        var projectDir = tempDir.resolve("project");
+        Files.createDirectories(projectDir);
+        var projectInfo = new CProjectInfo(
+                "frontend_string_family_inbound_wrapper_runtime",
+                GodotVersion.V451,
+                projectDir,
+                COptimizationLevel.DEBUG,
+                TargetPlatform.getNativePlatform()
+        );
+        var codegen = new CCodegen();
+        codegen.prepare(new CodegenContext(projectInfo, classRegistry), lowered);
+
+        var buildResult = new CProjectBuilder().buildProject(projectInfo, codegen);
+        var entryHeader = Files.readString(projectDir.resolve("entry.h"));
+
+        assertTrue(buildResult.success(), () -> "Native build should succeed. Build log:\n" + buildResult.buildLog());
+        assertTrue(
+                entryHeader.contains("gdcc_new_StringName_from_call_arg_variant"),
+                () -> "StringName call wrapper should use the wrapper-local materializer.\nHeader:\n" + entryHeader
+        );
+        assertTrue(
+                entryHeader.contains("gdcc_new_String_from_call_arg_variant"),
+                () -> "String call wrapper should use the wrapper-local materializer.\nHeader:\n" + entryHeader
+        );
+        assertTrue(
+                entryHeader.contains("arg0_type == GDEXTENSION_VARIANT_TYPE_STRING_NAME || arg0_type == GDEXTENSION_VARIANT_TYPE_STRING"),
+                () -> "StringName call wrapper gate should accept exact and String payloads.\nHeader:\n" + entryHeader
+        );
+        assertTrue(
+                entryHeader.contains("arg0_type == GDEXTENSION_VARIANT_TYPE_STRING || arg0_type == GDEXTENSION_VARIANT_TYPE_STRING_NAME"),
+                () -> "String call wrapper gate should accept exact and StringName payloads.\nHeader:\n" + entryHeader
+        );
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "StringFamilyInboundWrapperNode",
+                        "RuntimeStringFamilyInboundWrapperSmoke",
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec(stringFamilyInboundCallWrapperTestScript())
+        ));
+
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot run should emit \"" + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("frontend String/StringName inbound dynamic call check passed."),
+                () -> "Godot output should confirm String/StringName inbound wrapper compatibility.\nOutput:\n" + combinedOutput
+        );
+        assertTrue(
+                combinedOutput.contains("Cannot convert argument 2 from NodePath to StringName."),
+                () -> "Godot output should confirm adjacent string-family payloads still fail the StringName gate.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend String/StringName inbound dynamic call check failed."),
+                () -> "String/StringName inbound wrapper compatibility check should not fail.\nOutput:\n" + combinedOutput
+        );
+        assertFalse(
+                combinedOutput.contains("frontend String/StringName inbound dynamic call after bad call."),
+                () -> "Runtime script should not continue past the intentionally invalid boundary call.\nOutput:\n" + combinedOutput
+        );
+    }
+
+    @Test
     void lowerFrontendBuiltinChainedPropertyWritebackBuildNativeLibraryAndRunInGodot() throws Exception {
         if (ZigUtil.findZig() == null) {
             Assumptions.abort("Zig not found; skipping builtin chained writeback integration test");
@@ -2466,6 +2568,32 @@ public class FrontendLoweringToCProjectBuilderIntegrationTest {
                         print("frontend Vector*i-to-Vector source boundary check passed.")
                     else:
                         push_error("frontend Vector*i-to-Vector source boundary check failed.")
+                """;
+    }
+
+    private static @NotNull String stringFamilyInboundCallWrapperTestScript() {
+        return """
+                extends Node
+
+                const TARGET_NODE_NAME = "StringFamilyInboundWrapperNode"
+
+                func _ready() -> void:
+                    var target = get_parent().get_node_or_null(TARGET_NODE_NAME)
+                    if target == null:
+                        push_error("Target node missing.")
+                        return
+
+                    var name_from_text = target.call("take_string_name", "from-text")
+                    var text_from_name = target.call("take_string", &"from-name")
+                    var exact_name = target.call("take_string_name", &"exact-name")
+                    var exact_text = target.call("take_string", "exact-text")
+                    if typeof(name_from_text) == TYPE_STRING_NAME and String(name_from_text) == "from-text" and typeof(text_from_name) == TYPE_STRING and String(text_from_name) == "from-name" and typeof(exact_name) == TYPE_STRING_NAME and String(exact_name) == "exact-name" and typeof(exact_text) == TYPE_STRING and String(exact_text) == "exact-text":
+                        print("frontend String/StringName inbound dynamic call check passed.")
+                    else:
+                        push_error("frontend String/StringName inbound dynamic call check failed.")
+
+                    target.call("take_string_name", NodePath("bad"))
+                    print("frontend String/StringName inbound dynamic call after bad call.")
                 """;
     }
 
