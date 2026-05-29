@@ -7,6 +7,8 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -17,7 +19,8 @@ import java.util.Objects;
 ///
 /// The helper is intentionally narrow:
 /// - it decides only whether a source/target pair is accepted at the frontend semantic boundary
-/// - it distinguishes direct flow from explicit pack/unpack/null-object/intrinsic-cast edges so lowering can reuse the same rule later
+/// - it distinguishes direct flow from explicit pack/unpack/null-object/intrinsic-cast/
+///   builtin-constructor edges so lowering can reuse the same rule later
 /// - it does not emit diagnostics and does not weaken backend/global `ClassRegistry.checkAssignable(...)`
 /// - the exact allowed matrix is owned by `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`;
 ///   this helper must stay mechanically aligned with that document instead of evolving its own rule list
@@ -30,6 +33,7 @@ public final class FrontendVariantBoundaryCompatibility {
         ALLOW_WITH_UNPACK,
         ALLOW_WITH_LITERAL_NULL,
         ALLOW_WITH_INTRINSIC_CAST,
+        ALLOW_WITH_BUILTIN_CONSTRUCTOR,
         REJECT;
 
         public boolean allows() {
@@ -50,6 +54,7 @@ public final class FrontendVariantBoundaryCompatibility {
     /// - `ALLOW_WITH_UNPACK`
     /// - `ALLOW_WITH_LITERAL_NULL`
     /// - `ALLOW_WITH_INTRINSIC_CAST`
+    /// - `ALLOW_WITH_BUILTIN_CONSTRUCTOR`
     /// - `ALLOW_DIRECT`
     /// - `REJECT`
     public static @NotNull Decision determineFrontendBoundaryDecision(
@@ -70,6 +75,8 @@ public final class FrontendVariantBoundaryCompatibility {
             case GdIntVectorType sourceVector when target instanceof GdFloatVectorType targetVector
                     && isSupportedSameDimensionVectorWidening(sourceVector, targetVector) ->
                     Decision.ALLOW_WITH_INTRINSIC_CAST;
+            case GdStringType _ when target instanceof GdStringNameType -> Decision.ALLOW_WITH_BUILTIN_CONSTRUCTOR;
+            case GdStringNameType _ when target instanceof GdStringType -> Decision.ALLOW_WITH_BUILTIN_CONSTRUCTOR;
             default -> registry.checkAssignable(source, target) ? Decision.ALLOW_DIRECT : Decision.REJECT;
         };
     }
@@ -97,13 +104,15 @@ public final class FrontendVariantBoundaryCompatibility {
     ///
     /// Overload resolution consumes this only after applicability has accepted a candidate:
     /// direct flow stays more specific than literal null, intrinsic casts, and Variant
-    /// pack/unpack routes; rejected pairs remain rank 0 so shared resolvers can use the same
-    /// numeric callback for both applicability and tie-breaking.
+    /// pack/unpack routes; builtin constructor materialization shares the intrinsic-cast rank
+    /// because both require target-typed temps before later lowering/backend stages see them.
+    /// Rejected pairs remain rank 0 so shared resolvers can use the same numeric callback for
+    /// both applicability and tie-breaking.
     public static int decisionSpecificityRank(@NotNull Decision decision) {
         return switch (decision) {
             case ALLOW_DIRECT -> 4;
             case ALLOW_WITH_LITERAL_NULL -> 3;
-            case ALLOW_WITH_INTRINSIC_CAST -> 2;
+            case ALLOW_WITH_INTRINSIC_CAST, ALLOW_WITH_BUILTIN_CONSTRUCTOR -> 2;
             case ALLOW_WITH_UNPACK, ALLOW_WITH_PACK -> 1;
             case REJECT -> 0;
         };

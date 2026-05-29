@@ -473,6 +473,21 @@ helper 行为必须按 runtime tag 分流：
 
 ### Phase 1：前端边界兼容性
 
+#### Phase 1 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 1 相关文档、compatibility 代码、测试结构调研并关闭子代理。
+- [x] 在 `FrontendVariantBoundaryCompatibility` 中新增 `ALLOW_WITH_BUILTIN_CONSTRUCTOR` decision。
+- [x] 精确支持 `String -> StringName` 与 `StringName -> String`，不使用宽泛 `GdStringLikeType` family 规则。
+- [x] 保持 `ClassRegistry.checkAssignable(...)` strict assignability 不变，并补充反向锚点测试。
+- [x] 将 constructor materialization decision 的 specificity rank 固定为 2，与 intrinsic cast 同级。
+- [x] 为后续 Phase 3 lowering switch 增加显式 fail-fast 分支，避免提前实现 `ConstructBuiltinInsn` 物化。
+- [x] 添加 `FrontendVariantBoundaryCompatibilityTest` 正例、邻近负例与 rank 测试。
+- [x] 运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests FrontendVariantBoundaryCompatibilityTest,ClassRegistryTest`，通过。
+- [x] 运行 IDE file rebuild 检查改过的 Java 文件，`build_project` 通过。
+
 修改：
 
 - `FrontendVariantBoundaryCompatibility`
@@ -724,6 +739,8 @@ materialization 细则：
   - `doc/gdcc_c_backend.md`
   - `doc/gdcc_runtime_lib.md`
   - `doc/test_error/test_suite_engine_integration_known_limits.md`
+  - `doc/module_impl/frontend/frontend_string_stringname_implicit_conversion_plan.md`
+- Phase 1 修改过的文档必须在本阶段重新查验：
   - `doc/module_impl/frontend/frontend_string_stringname_implicit_conversion_plan.md`
 - `rg` 检查 `doc/`、`src/main/java/`、`src/main/c/`、`src/test/java/` 中的旧说法：
   - `String <-> StringName`

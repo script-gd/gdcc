@@ -322,6 +322,7 @@ public class ClassRegistryTest {
         assertFalse(registry.checkAssignable(GdBoolType.BOOL, GdFloatType.FLOAT));
         assertFalse(registry.checkAssignable(GdIntType.INT, GdBoolType.BOOL));
         assertFalse(registry.checkAssignable(GdStringType.STRING, GdStringNameType.STRING_NAME));
+        assertFalse(registry.checkAssignable(GdStringNameType.STRING_NAME, GdStringType.STRING));
         assertFalse(registry.checkAssignable(GdVariantType.VARIANT, GdIntType.INT));
         assertFalse(registry.checkAssignable(GdNilType.NIL, GdObjectType.OBJECT));
         assertFalse(registry.checkAssignable(GdIntVectorType.VECTOR2I, GdFloatVectorType.VECTOR2));
@@ -405,7 +406,7 @@ public class ClassRegistryTest {
     }
 
     @Test
-    void utilitySignatureShouldNormalizeTypedarrayMetadataThroughRegistry() throws IOException {
+    void utilitySignatureShouldNormalizeTypedarrayMetadataThroughRegistry() {
         var registry = new ClassRegistry(new ExtensionAPI(
                 null,
                 List.of(),

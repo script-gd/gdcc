@@ -699,6 +699,15 @@ public final class FrontendBodyLoweringSession {
                 yield nullSlotId;
             }
             case ALLOW_WITH_INTRINSIC_CAST -> materializeIntrinsicCast(block, sourceSlot, source, target, use);
+            case ALLOW_WITH_BUILTIN_CONSTRUCTOR -> throw new IllegalStateException(
+                    "Frontend boundary '"
+                            + use
+                            + "' requires builtin-constructor materialization from '"
+                            + source.getTypeName()
+                            + "' to '"
+                            + target.getTypeName()
+                            + "', but constructor boundary lowering is not implemented yet"
+            );
             case REJECT -> throw new IllegalStateException(
                     "Frontend boundary '"
                             + use
