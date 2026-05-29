@@ -14,7 +14,10 @@ import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -446,6 +449,21 @@ class FrontendAssignmentSemanticSupportTest {
                 GdFloatType.FLOAT,
                 GdIntType.INT
         ));
+        assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
+                GdStringNameType.STRING_NAME,
+                GdStringType.STRING
+        ));
+        assertTrue(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
+                GdStringType.STRING,
+                GdStringNameType.STRING_NAME
+        ));
+        assertTrue(!FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+                support,
+                GdNodePathType.NODE_PATH,
+                GdStringType.STRING
+        ));
     }
 
     @Test
@@ -590,6 +608,62 @@ class FrontendAssignmentSemanticSupportTest {
         assertEquals(FrontendExpressionTypeStatus.FAILED, wrongDimensionResult.expressionType().status());
         assertTrue(wrongDimensionResult.expressionType().detailReason().contains("Vector3i"));
         assertTrue(wrongDimensionResult.expressionType().detailReason().contains("Vector2"));
+    }
+
+    @Test
+    void resolveAssignmentExpressionTypeAcceptsStringFamilyConstructorBoundaries() throws Exception {
+        var analyzed = analyze(
+                "assignment_semantic_support_string_family.gd",
+                """
+                        class_name AssignmentSemanticSupportStringFamily
+                        extends RefCounted
+
+                        var text: String = ""
+                        var name: StringName = &""
+                        var count: int = 0
+
+                        func ping() -> void:
+                            name = text
+                            text = name
+                            count = text
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var assignments = findNodes(findFunction(analyzed.ast(), "ping"), AssignmentExpression.class, _ -> true);
+
+        var stringToStringName = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(0),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var stringNameToString = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(1),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+        var unrelatedScalarMismatch = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                support,
+                assignments.get(2),
+                FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT,
+                publishedResolver,
+                false
+        );
+
+        for (var successfulResult : List.of(stringToStringName, stringNameToString)) {
+            assertEquals(FrontendExpressionTypeStatus.RESOLVED, successfulResult.expressionType().status());
+            assertEquals(GdVoidType.VOID, successfulResult.expressionType().publishedType());
+        }
+
+        assertTrue(unrelatedScalarMismatch.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, unrelatedScalarMismatch.expressionType().status());
+        assertTrue(unrelatedScalarMismatch.expressionType().detailReason().contains("String"));
+        assertTrue(unrelatedScalarMismatch.expressionType().detailReason().contains("int"));
     }
 
     @Test

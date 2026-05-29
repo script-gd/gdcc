@@ -19,12 +19,14 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -530,9 +532,83 @@ class ScopeMethodResolverTest {
     }
 
     @Test
+    @DisplayName("shared method resolver frontend rank should prefer StringName boundary over Variant pack")
+    void resolveInstanceMethodFrontendRankShouldPreferStringNameOverVariantPack() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendStringNameVariantOverloads())), List.of());
+
+        var strictResult = ScopeMethodResolver.resolveInstanceMethod(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdStringType.STRING)
+        );
+        var strictFailure = assertInstanceOf(ScopeMethodResolver.Failed.class, strictResult);
+        assertEquals(ScopeMethodResolver.FailureKind.NO_APPLICABLE_OVERLOAD, strictFailure.kind());
+
+        var frontendResult = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdStringType.STRING),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, frontendResult);
+        assertEquals(GdStringNameType.STRING_NAME, resolved.method().parameters().getFirst().type());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should keep cross-parameter StringName boundary ambiguous")
+    void resolveInstanceMethodFrontendRankShouldKeepCrossParameterStringNameBoundaryAmbiguous() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendCrossParameterOverloads())), List.of());
+
+        var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank_pair",
+                List.of(GdIntType.INT, GdStringType.STRING),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, result);
+        assertEquals(ScopeMethodResolver.DynamicKind.OBJECT_DYNAMIC, fallback.dynamicKind());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.AMBIGUOUS_OVERLOAD, fallback.reason());
+    }
+
+    @Test
     @DisplayName("shared method resolver frontend rank should keep equally ranked overloads ambiguous")
     void resolveInstanceMethodFrontendRankShouldKeepEqualRankOverloadsAmbiguous() {
         var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendEqualRankOverloads())), List.of());
+
+        var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
+                registry,
+                new GdObjectType("Node"),
+                "rank",
+                List.of(GdVariantType.VARIANT),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var fallback = assertInstanceOf(ScopeMethodResolver.DynamicFallback.class, result);
+        assertEquals(ScopeMethodResolver.DynamicKind.OBJECT_DYNAMIC, fallback.dynamicKind());
+        assertEquals(ScopeMethodResolver.DynamicFallbackReason.AMBIGUOUS_OVERLOAD, fallback.reason());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should keep String and StringName Variant source ambiguous")
+    void resolveInstanceMethodFrontendRankShouldKeepStringFamilyVariantSourceAmbiguous() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendStringStringNameOverloads())), List.of());
 
         var result = ScopeMethodResolver.resolveInstanceMethodWithParameterRank(
                 registry,
@@ -572,6 +648,29 @@ class ScopeMethodResolverTest {
         var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
         assertTrue(resolved.method().isStatic());
         assertEquals(GdFloatType.FLOAT, resolved.method().parameters().getFirst().type());
+    }
+
+    @Test
+    @DisplayName("shared method resolver frontend rank should apply StringName boundary to static methods")
+    void resolveStaticMethodFrontendRankShouldPreferStringNameOverVariantPack() {
+        var registry = newRegistry(apiWith(List.of(), List.of(nodeClassWithFrontendStaticStringNameVariantOverloads())), List.of());
+        var nodeTypeMeta = registry.resolveTypeMeta("Node");
+
+        var result = ScopeMethodResolver.resolveStaticMethodWithParameterRank(
+                registry,
+                nodeTypeMeta,
+                "rank_static",
+                List.of(GdStringType.STRING),
+                (sourceType, targetType) -> FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                        registry,
+                        sourceType,
+                        targetType
+                )
+        );
+
+        var resolved = assertInstanceOf(ScopeMethodResolver.Resolved.class, result);
+        assertTrue(resolved.method().isStatic());
+        assertEquals(GdStringNameType.STRING_NAME, resolved.method().parameters().getFirst().type());
     }
 
     @Test
@@ -921,6 +1020,20 @@ class ScopeMethodResolverTest {
         ));
     }
 
+    private static ExtensionGdClass nodeClassWithFrontendStringNameVariantOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "StringName"),
+                nodeMethod("rank", false, "Variant")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendCrossParameterOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank_pair", false, "float", "String"),
+                nodeMethod("rank_pair", false, "int", "StringName")
+        ));
+    }
+
     private static ExtensionGdClass nodeClassWithFrontendEqualRankOverloads() {
         return nodeClassWithMethods(List.of(
                 nodeMethod("rank", false, "int"),
@@ -928,9 +1041,23 @@ class ScopeMethodResolverTest {
         ));
     }
 
+    private static ExtensionGdClass nodeClassWithFrontendStringStringNameOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank", false, "String"),
+                nodeMethod("rank", false, "StringName")
+        ));
+    }
+
     private static ExtensionGdClass nodeClassWithFrontendStaticFloatVariantOverloads() {
         return nodeClassWithMethods(List.of(
                 nodeMethod("rank_static", true, "float"),
+                nodeMethod("rank_static", true, "Variant")
+        ));
+    }
+
+    private static ExtensionGdClass nodeClassWithFrontendStaticStringNameVariantOverloads() {
+        return nodeClassWithMethods(List.of(
+                nodeMethod("rank_static", true, "StringName"),
                 nodeMethod("rank_static", true, "Variant")
         ));
     }
@@ -950,7 +1077,11 @@ class ScopeMethodResolverTest {
         );
     }
 
-    private static ExtensionGdClass.ClassMethod nodeMethod(String name, boolean isStatic, String parameterType) {
+    private static ExtensionGdClass.ClassMethod nodeMethod(String name, boolean isStatic, String... parameterTypes) {
+        var arguments = new ArrayList<ExtensionFunctionArgument>();
+        for (var index = 0; index < parameterTypes.length; index++) {
+            arguments.add(new ExtensionFunctionArgument("arg" + index, parameterTypes[index], null, null));
+        }
         return new ExtensionGdClass.ClassMethod(
                 name,
                 false,
@@ -960,7 +1091,7 @@ class ScopeMethodResolverTest {
                 0L,
                 List.of(),
                 new ExtensionGdClass.ClassMethod.ClassMethodReturn("void"),
-                List.of(new ExtensionFunctionArgument("value", parameterType, null, null))
+                List.copyOf(arguments)
         );
     }
 

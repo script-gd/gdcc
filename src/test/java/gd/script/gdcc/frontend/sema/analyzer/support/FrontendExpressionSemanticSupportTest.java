@@ -25,6 +25,7 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -306,6 +307,7 @@ class FrontendExpressionSemanticSupportTest {
                         func ping(plain: Array, seed: Variant) -> void:
                             int(plain[0])
                             String(plain[0])
+                            StringName(plain[0])
                             Array(seed)
                             Dictionary(seed)
                             Node(seed)
@@ -327,6 +329,12 @@ class FrontendExpressionSemanticSupportTest {
                 CallExpression.class,
                 candidate -> candidate.callee() instanceof IdentifierExpression identifier
                         && identifier.name().equals("String")
+        );
+        var stringNameCall = findNode(
+                pingFunction,
+                CallExpression.class,
+                candidate -> candidate.callee() instanceof IdentifierExpression identifier
+                        && identifier.name().equals("StringName")
         );
         var arrayCall = findNode(
                 pingFunction,
@@ -350,6 +358,7 @@ class FrontendExpressionSemanticSupportTest {
 
         var intResult = support.resolveCallExpressionType(intCall, publishedResolver, true, false);
         var stringResult = support.resolveCallExpressionType(stringCall, publishedResolver, true, false);
+        var stringNameResult = support.resolveCallExpressionType(stringNameCall, publishedResolver, true, false);
         var arrayResult = support.resolveCallExpressionType(arrayCall, publishedResolver, true, false);
         var dictionaryResult = support.resolveCallExpressionType(dictionaryCall, publishedResolver, true, false);
         var nodeResult = support.resolveCallExpressionType(nodeCall, publishedResolver, true, false);
@@ -381,6 +390,19 @@ class FrontendExpressionSemanticSupportTest {
                     assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedStringCall.callKind());
                     assertEquals(FrontendReceiverKind.TYPE_META, resolvedStringCall.receiverKind());
                     assertEquals(List.of(GdVariantType.VARIANT), resolvedStringCall.argumentTypes());
+                },
+                () -> {
+                    assertTrue(stringNameResult.rootOwnsOutcome());
+                    assertEquals(FrontendExpressionTypeStatus.RESOLVED, stringNameResult.expressionType().status());
+                    var publishedStringNameType = stringNameResult.expressionType().publishedType();
+                    assertNotNull(publishedStringNameType);
+                    assertEquals("StringName", publishedStringNameType.getTypeName());
+                    var resolvedStringNameCall = stringNameResult.publishedCallOrNull();
+                    assertNotNull(resolvedStringNameCall);
+                    assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedStringNameCall.status());
+                    assertEquals(FrontendCallResolutionKind.CONSTRUCTOR, resolvedStringNameCall.callKind());
+                    assertEquals(FrontendReceiverKind.TYPE_META, resolvedStringNameCall.receiverKind());
+                    assertEquals(List.of(GdVariantType.VARIANT), resolvedStringNameCall.argumentTypes());
                 },
                 () -> {
                     assertTrue(arrayResult.rootOwnsOutcome());
@@ -1138,6 +1160,9 @@ class FrontendExpressionSemanticSupportTest {
         var directInt = newCallable("helper", GdIntType.INT, GdIntType.INT);
         var primitiveFloat = newCallable("helper", GdFloatType.FLOAT, GdFloatType.FLOAT);
         var variantPack = newCallable("helper", GdVariantType.VARIANT, GdVariantType.VARIANT);
+        var directString = newCallable("helper", GdStringType.STRING, GdStringType.STRING);
+        var stringNameBoundary = newCallable("helper", GdStringNameType.STRING_NAME, GdStringNameType.STRING_NAME);
+        var stringVariantPack = newCallable("helper", GdVariantType.VARIANT, GdVariantType.VARIANT);
 
         var directSelection = support.selectCallableOverload(
                 List.of(directInt, primitiveFloat),
@@ -1152,6 +1177,45 @@ class FrontendExpressionSemanticSupportTest {
         );
         assertSame(primitiveFloat, primitiveSelection.selected());
         assertNull(primitiveSelection.detailReason());
+
+        var stringExactSelection = support.selectCallableOverload(
+                List.of(directString, stringNameBoundary),
+                List.of(GdStringType.STRING)
+        );
+        assertSame(directString, stringExactSelection.selected());
+        assertNull(stringExactSelection.detailReason());
+
+        var stringNameExactSelection = support.selectCallableOverload(
+                List.of(directString, stringNameBoundary),
+                List.of(GdStringNameType.STRING_NAME)
+        );
+        assertSame(stringNameBoundary, stringNameExactSelection.selected());
+        assertNull(stringNameExactSelection.detailReason());
+
+        var stringConstructorSelection = support.selectCallableOverload(
+                List.of(stringNameBoundary, stringVariantPack),
+                List.of(GdStringType.STRING)
+        );
+        assertSame(stringNameBoundary, stringConstructorSelection.selected());
+        assertNull(stringConstructorSelection.detailReason());
+
+        // Each candidate is more specific for a different parameter; rank sums must not decide it.
+        var crossParameterAmbiguousSelection = support.selectCallableOverload(
+                List.of(
+                        newCallable("helper", GdVoidType.VOID, GdFloatType.FLOAT, GdStringType.STRING),
+                        newCallable("helper", GdVoidType.VOID, GdIntType.INT, GdStringNameType.STRING_NAME)
+                ),
+                List.of(GdIntType.INT, GdStringType.STRING)
+        );
+        assertTrue(crossParameterAmbiguousSelection.selected() == null);
+        assertTrue(crossParameterAmbiguousSelection.detailReason().contains("Ambiguous bare call overload"));
+
+        var stringFamilyVariantAmbiguousSelection = support.selectCallableOverload(
+                List.of(directString, stringNameBoundary),
+                List.of(GdVariantType.VARIANT)
+        );
+        assertTrue(stringFamilyVariantAmbiguousSelection.selected() == null);
+        assertTrue(stringFamilyVariantAmbiguousSelection.detailReason().contains("Ambiguous bare call overload"));
 
         var variantAmbiguous = List.of(
                 newCallable("helper", GdIntType.INT, GdIntType.INT),

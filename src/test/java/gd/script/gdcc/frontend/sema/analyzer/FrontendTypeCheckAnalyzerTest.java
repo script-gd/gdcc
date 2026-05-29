@@ -17,6 +17,7 @@ import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -706,6 +707,91 @@ class FrontendTypeCheckAnalyzerTest {
                 diagnostic.message().contains("rejected_local_dimension")
                         && diagnostic.message().contains("Vector3i")
                         && diagnostic.message().contains("Vector2")
+        ));
+    }
+
+    @Test
+    void analyzeAcceptsStringFamilyBoundariesAtOrdinaryTypeCheckSlots() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_string_family_boundaries.gd", """
+                class_name TypeCheckStringFamilyBoundaries
+                extends RefCounted
+
+                var accepted_property_name: StringName = ""
+                var accepted_property_text: String = &"property_text"
+                var rejected_property: int = &"not_an_int"
+
+                func ping(text: String, name: StringName) -> void:
+                    var accepted_local_name: StringName = text
+                    var accepted_local_text: String = name
+                    var rejected_local: int = text
+                    name = text
+                    text = name
+
+                func return_name(text: String) -> StringName:
+                    return text
+
+                func return_text(name: StringName) -> String:
+                    return name
+
+                func reject_return(text: String) -> int:
+                    return text
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(preparedInput.unit().ast(), "accepted_property_name", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(preparedInput.unit().ast(), "accepted_property_text", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "accepted_local_name", preparedInput).status()
+        );
+        assertEquals(
+                FrontendExpressionTypeStatus.RESOLVED,
+                requireInitializerType(pingFunction.body().statements(), "accepted_local_text", preparedInput).status()
+        );
+        var assignments = findNodes(pingFunction, AssignmentExpression.class, _ -> true);
+        for (var assignment : assignments) {
+            assertEquals(
+                    FrontendExpressionTypeStatus.RESOLVED,
+                    Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(assignment)).status()
+            );
+        }
+
+        var typeCheckDiagnostics = diagnosticsByCategory(
+                preparedInput.diagnosticManager().snapshot(),
+                "sema.type_check"
+        );
+        assertEquals(3, typeCheckDiagnostics.size());
+        assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
+                diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
+                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_string_family_boundaries.gd"))
+                        .equals(diagnostic.sourcePath())
+                        && diagnostic.range() != null
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("rejected_property")
+                        && diagnostic.message().contains("StringName")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("rejected_local")
+                        && diagnostic.message().contains("String")
+                        && diagnostic.message().contains("int")
+        ));
+        assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
+                diagnostic.message().contains("Return value type 'String'")
+                        && diagnostic.message().contains("int")
         ));
     }
 

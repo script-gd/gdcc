@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.gdextension.ExtensionAPI;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -9,7 +10,10 @@ import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
 import gd.script.gdcc.type.GdFloatVectorType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -41,6 +45,20 @@ class FrontendConstructorResolutionSupportTest {
                 () -> assertEquals(ScopeOwnerKind.BUILTIN, resolution.ownerKind()),
                 () -> assertSame(builtinClass, resolution.declarationSite()),
                 () -> assertNull(resolution.detailReason())
+        );
+
+        var stringNameBuiltin = builtinWithUnaryConstructors("StringName", List.of("int", "StringName"));
+        var stringNameResolution = FrontendConstructorResolutionSupport.resolveConstructor(
+                newRegistry(stringNameBuiltin),
+                builtinTypeMeta(stringNameBuiltin),
+                List.of(GdVariantType.VARIANT)
+        );
+
+        assertAll(
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, stringNameResolution.status()),
+                () -> assertEquals(ScopeOwnerKind.BUILTIN, stringNameResolution.ownerKind()),
+                () -> assertSame(stringNameBuiltin, stringNameResolution.declarationSite()),
+                () -> assertNull(stringNameResolution.detailReason())
         );
     }
 
@@ -102,6 +120,75 @@ class FrontendConstructorResolutionSupportTest {
                 () -> assertEquals(FrontendCallResolutionStatus.FAILED, wrongDimensionResolution.status()),
                 () -> assertTrue(wrongDimensionResolution.detailReason().contains("Vector2i")),
                 () -> assertTrue(wrongDimensionResolution.detailReason().contains("Vector3"))
+        );
+    }
+
+    @Test
+    void resolveConstructorRanksStringFamilyBoundaryWithExactAndVariantRoutes() {
+        var exactPreferredTarget = builtinWithUnaryConstructors("String", List.of("StringName", "String", "Variant"));
+        var exactSelected = assertResolvedConstructor(exactPreferredTarget, List.of(GdStringType.STRING));
+
+        var constructorPreferredTarget = builtinWithUnaryConstructors("String", List.of("Variant", "StringName"));
+        var constructorSelected = assertResolvedConstructor(constructorPreferredTarget, List.of(GdStringType.STRING));
+
+        assertAll(
+                () -> assertEquals("String", exactSelected.arguments().getFirst().type()),
+                () -> assertEquals("StringName", constructorSelected.arguments().getFirst().type())
+        );
+    }
+
+    @Test
+    void resolveConstructorKeepsCrossParameterStringFamilyBoundaryAmbiguous() {
+        var builtinClass = builtinWithConstructors(
+                "String",
+                List.of(
+                        List.of("float", "String"),
+                        List.of("int", "StringName")
+                )
+        );
+        var resolution = FrontendConstructorResolutionSupport.resolveConstructor(
+                newRegistry(builtinClass),
+                builtinTypeMeta(builtinClass),
+                List.of(GdIntType.INT, GdStringType.STRING)
+        );
+
+        assertAll(
+                () -> assertEquals(FrontendCallResolutionStatus.FAILED, resolution.status()),
+                () -> assertEquals(ScopeOwnerKind.BUILTIN, resolution.ownerKind()),
+                () -> assertTrue(resolution.detailReason().contains("Ambiguous constructor overload"))
+        );
+    }
+
+    @Test
+    void resolveConstructorAcceptsExplicitStringFamilyConstructors() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var stringNameResolution = FrontendConstructorResolutionSupport.resolveConstructor(
+                registry,
+                registry.resolveTypeMeta("StringName"),
+                List.of(GdStringType.STRING)
+        );
+        var stringResolution = FrontendConstructorResolutionSupport.resolveConstructor(
+                registry,
+                registry.resolveTypeMeta("String"),
+                List.of(GdStringNameType.STRING_NAME)
+        );
+
+        var stringNameConstructor = assertInstanceOf(
+                ExtensionBuiltinClass.ConstructorInfo.class,
+                stringNameResolution.declarationSite()
+        );
+        var stringConstructor = assertInstanceOf(
+                ExtensionBuiltinClass.ConstructorInfo.class,
+                stringResolution.declarationSite()
+        );
+
+        assertAll(
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, stringNameResolution.status()),
+                () -> assertEquals(ScopeOwnerKind.BUILTIN, stringNameResolution.ownerKind()),
+                () -> assertEquals("String", stringNameConstructor.arguments().getFirst().type()),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, stringResolution.status()),
+                () -> assertEquals(ScopeOwnerKind.BUILTIN, stringResolution.ownerKind()),
+                () -> assertEquals("StringName", stringConstructor.arguments().getFirst().type())
         );
     }
 
@@ -191,12 +278,34 @@ class FrontendConstructorResolutionSupportTest {
             @NotNull String className,
             @NotNull List<String> parameterTypes
     ) {
+        return builtinWithConstructors(
+                className,
+                parameterTypes.stream()
+                        .map(List::of)
+                        .toList()
+        );
+    }
+
+    private static @NotNull ExtensionBuiltinClass builtinWithConstructors(
+            @NotNull String className,
+            @NotNull List<List<String>> signatures
+    ) {
         var constructors = new ArrayList<ExtensionBuiltinClass.ConstructorInfo>();
-        for (var index = 0; index < parameterTypes.size(); index++) {
+        for (var index = 0; index < signatures.size(); index++) {
+            var signature = signatures.get(index);
+            var arguments = new ArrayList<ExtensionFunctionArgument>();
+            for (var argumentIndex = 0; argumentIndex < signature.size(); argumentIndex++) {
+                arguments.add(new ExtensionFunctionArgument(
+                        "arg" + argumentIndex,
+                        signature.get(argumentIndex),
+                        null,
+                        null
+                ));
+            }
             constructors.add(new ExtensionBuiltinClass.ConstructorInfo(
                     className,
                     index,
-                    List.of(new ExtensionFunctionArgument("value", parameterTypes.get(index), null, null))
+                    List.copyOf(arguments)
             ));
         }
         return new ExtensionBuiltinClass(

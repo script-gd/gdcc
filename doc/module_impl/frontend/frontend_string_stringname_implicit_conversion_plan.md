@@ -513,6 +513,20 @@ helper 行为必须按 runtime tag 分流：
 
 ### Phase 2：语义 consumer 与 overload 排序测试
 
+#### Phase 2 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 2 相关文档、frontend semantic consumer、method resolver 与基线测试调研并关闭子代理。
+- [x] 确认 semantic consumer 与 method resolver 已经复用 `FrontendVariantBoundaryCompatibility` / frontend rank helper，不需要新增生产代码分支。
+- [x] 在 `FrontendAssignmentSemanticSupportTest` 补充 assignment-facing `String <-> StringName` 正例与邻近负例。
+- [x] 在 `FrontendTypeCheckAnalyzerTest` 补充 local / property initializer、assignment 表达式发布、return slot 的 type-check 锚点与 unsupported route 负例。
+- [x] 在 `FrontendExpressionSemanticSupportTest` 补充 bare-call / callable overload 的 exact、constructor materialization、Variant pack 与逐参数歧义锚点。
+- [x] 在 `FrontendConstructorResolutionSupportTest` 补充 builtin constructor 排序、多参数歧义、stable-`Variant` shortcut 与显式 `StringName(String)` / `String(StringName)` route 锚点。
+- [x] 在 `ScopeMethodResolverTest` 补充 instance/static method frontend-rank、跨参数歧义与 object dynamic fallback 锚点。
+- [x] 运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests FrontendAssignmentSemanticSupportTest,FrontendTypeCheckAnalyzerTest,FrontendExpressionSemanticSupportTest,FrontendConstructorResolutionSupportTest,ScopeMethodResolverTest`，通过。
+
 预期大多数 consumer 不需要改代码，因为它们已经复用 shared boundary helper。
 
 重点补测试：
