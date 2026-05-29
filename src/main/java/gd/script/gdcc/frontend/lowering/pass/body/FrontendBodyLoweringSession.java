@@ -22,6 +22,7 @@ import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
+import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -699,15 +700,7 @@ public final class FrontendBodyLoweringSession {
                 yield nullSlotId;
             }
             case ALLOW_WITH_INTRINSIC_CAST -> materializeIntrinsicCast(block, sourceSlot, source, target, use);
-            case ALLOW_WITH_BUILTIN_CONSTRUCTOR -> throw new IllegalStateException(
-                    "Frontend boundary '"
-                            + use
-                            + "' requires builtin-constructor materialization from '"
-                            + source.getTypeName()
-                            + "' to '"
-                            + target.getTypeName()
-                            + "', but constructor boundary lowering is not implemented yet"
-            );
+            case ALLOW_WITH_BUILTIN_CONSTRUCTOR -> materializeBuiltinConstructorBoundary(block, sourceSlot, target, use);
             case REJECT -> throw new IllegalStateException(
                     "Frontend boundary '"
                             + use
@@ -718,6 +711,27 @@ public final class FrontendBodyLoweringSession {
                             + "'"
             );
         };
+    }
+
+    /// Materializes a frontend-owned builtin-constructor boundary into a target-typed temp.
+    ///
+    /// This route is for ordinary typed-boundary conversions that already have exact Godot builtin
+    /// constructor metadata, such as `String <-> StringName`. The backend constructor matcher stays
+    /// exact; lowering makes the conversion explicit here instead of teaching each consumer or the
+    /// backend to infer a widening rule.
+    private @NotNull String materializeBuiltinConstructorBoundary(
+            @NotNull LirBasicBlock block,
+            @NotNull String sourceSlotId,
+            @NotNull GdType targetType,
+            @NotNull String boundaryUse
+    ) {
+        var constructedSlotId = nextBoundaryMaterializationSlotId(boundaryUse, "builtin_constructor");
+        ensureVariable(constructedSlotId, targetType);
+        block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(
+                constructedSlotId,
+                List.of(new LirInstruction.VariableOperand(sourceSlotId))
+        ));
+        return constructedSlotId;
     }
 
     /// Materializes an intrinsic-cast ordinary boundary into a backend-owned intrinsic call.

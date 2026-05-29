@@ -580,6 +580,25 @@ helper 行为必须按 runtime tag 分流：
 
 ### Phase 3：前端 lowering 物化
 
+#### Phase 3 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 3 相关文档、前端 lowering 生产代码与 lowering 测试结构调研并关闭子代理。
+- [x] 在 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)` 中接通
+  `ALLOW_WITH_BUILTIN_CONSTRUCTOR`，通过 target-typed `ConstructBuiltinInsn` 物化 ordinary
+  `String <-> StringName` 边界。
+- [x] 保持 `requireIntrinsicCastName(...)` 只覆盖 `int -> float` 与同维度 `Vector*i -> Vector*`，
+  未在 local init、assignment、call、return 或 subscript consumer 中新增局部分支。
+- [x] 在 `FrontendBodyLoweringSessionTest` 补充 helper 级 `String -> StringName` /
+  `StringName -> String` constructor materialization 正例与 `String -> NodePath` /
+  `StringName -> int` 邻近负例。
+- [x] 在 `FrontendLoweringBodyInsnPassTest` 补充 local initializer、assignment/property store、
+  fixed call argument、return slot、property initializer、普通 `"..."` 与 `&"..."`
+  literal 分流的 lowering 锚点。
+- [x] 运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest,FrontendLoweringBodyInsnPassTest`，通过。
+
 修改：
 
 - `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)`

@@ -13,6 +13,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
+import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -22,7 +23,10 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -185,6 +189,94 @@ class FrontendBodyLoweringSessionTest {
                     () -> assertEquals(testCase.targetType(), castedVariable.type())
             );
         }
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueConstructsStringFamilySourcesThroughBuiltinConstructor() throws Exception {
+        var cases = List.of(
+                new BuiltinConstructorBoundaryCase(
+                        "source_text",
+                        GdStringType.STRING,
+                        GdStringNameType.STRING_NAME
+                ),
+                new BuiltinConstructorBoundaryCase(
+                        "source_name",
+                        GdStringNameType.STRING_NAME,
+                        GdStringType.STRING
+                )
+        );
+
+        for (var testCase : cases) {
+            var session = prepareSession();
+            var block = new LirBasicBlock("entry_" + testCase.sourceSlotId());
+            session.ensureVariable(testCase.sourceSlotId(), testCase.sourceType());
+
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    testCase.sourceSlotId(),
+                    testCase.sourceType(),
+                    testCase.targetType(),
+                    "string_family_boundary"
+            );
+
+            var instructions = block.getNonTerminatorInstructions();
+            var constructInsn = assertInstanceOf(ConstructBuiltinInsn.class, instructions.getFirst());
+            var constructedVariable = session.targetFunction().getVariableById(materializedSlotId);
+            var constructorArgument = assertInstanceOf(
+                    LirInstruction.VariableOperand.class,
+                    constructInsn.args().getFirst()
+            );
+            assertNotNull(constructedVariable);
+
+            assertAll(
+                    testCase.sourceType().getTypeName() + " -> " + testCase.targetType().getTypeName(),
+                    () -> assertEquals(1, instructions.size()),
+                    () -> assertNotEquals(testCase.sourceSlotId(), materializedSlotId),
+                    () -> assertEquals(materializedSlotId, constructInsn.resultId()),
+                    () -> assertEquals(1, constructInsn.args().size()),
+                    () -> assertEquals(testCase.sourceSlotId(), constructorArgument.id()),
+                    () -> assertEquals(testCase.targetType(), constructedVariable.type())
+            );
+        }
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueRejectsStringFamilyNeighborBoundaries() throws Exception {
+        var session = prepareSession();
+        var nodePathBlock = new LirBasicBlock("string_to_node_path");
+        var intBlock = new LirBasicBlock("string_name_to_int");
+        session.ensureVariable("source_text", GdStringType.STRING);
+        session.ensureVariable("source_name", GdStringNameType.STRING_NAME);
+
+        var nodePathException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        nodePathBlock,
+                        "source_text",
+                        GdStringType.STRING,
+                        GdNodePathType.NODE_PATH,
+                        "string_to_node_path_boundary"
+                )
+        );
+        var intException = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        intBlock,
+                        "source_name",
+                        GdStringNameType.STRING_NAME,
+                        GdIntType.INT,
+                        "string_name_to_int_boundary"
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(nodePathException.getMessage().contains("string_to_node_path_boundary"), nodePathException.getMessage()),
+                () -> assertTrue(nodePathException.getMessage().contains("rejects source type 'String'"), nodePathException.getMessage()),
+                () -> assertTrue(intException.getMessage().contains("string_name_to_int_boundary"), intException.getMessage()),
+                () -> assertTrue(intException.getMessage().contains("rejects source type 'StringName'"), intException.getMessage()),
+                () -> assertTrue(nodePathBlock.getNonTerminatorInstructions().isEmpty()),
+                () -> assertTrue(intBlock.getNonTerminatorInstructions().isEmpty())
+        );
     }
 
     @Test
@@ -463,6 +555,13 @@ class FrontendBodyLoweringSessionTest {
             @NotNull GdType sourceType,
             @NotNull GdType targetType,
             @NotNull String intrinsicName
+    ) {
+    }
+
+    private record BuiltinConstructorBoundaryCase(
+            @NotNull String sourceSlotId,
+            @NotNull GdType sourceType,
+            @NotNull GdType targetType
     ) {
     }
 

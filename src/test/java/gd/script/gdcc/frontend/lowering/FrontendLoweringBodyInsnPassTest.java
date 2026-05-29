@@ -66,6 +66,8 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
@@ -1383,6 +1385,403 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(0, countInstructions(varargVariantInstructions, UnpackVariantInsn.class)),
                 () -> assertNotNull(onlyVariableOperandId(callVarargVariantInsn.args())),
                 () -> assertFalse(callVarargVariantContext.targetFunction().getVariables().containsKey("cfg_tmp_v1"))
+        );
+    }
+
+    @Test
+    void runLowersStringFamilyLocalInitializersThroughConstructBuiltinInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_local_init.gd",
+                """
+                        class_name BodyInsnStringFamilyLocalInit
+                        extends RefCounted
+
+                        func ping(text: String) -> StringName:
+                            var from_text: StringName = text
+                            var from_literal: StringName = "line\\nbreak"
+                            var direct_name: StringName = &"ready"
+                            return from_text
+                        """,
+                Map.of("BodyInsnStringFamilyLocalInit", "RuntimeBodyInsnStringFamilyLocalInit"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyLocalInit",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var constructors = constructBuiltinInsns(instructions);
+        var literalString = requireOnlyInstruction(function, LiteralStringInsn.class);
+        var literalStringName = requireOnlyInstruction(function, LiteralStringNameInsn.class);
+        var assignSources = assignSourcesByTarget(instructions);
+        var firstConstructorArg = onlyVariableOperandId(constructors.getFirst().args());
+        var secondConstructorArg = onlyVariableOperandId(constructors.getLast().args());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, constructors.size()),
+                () -> assertEquals(GdStringType.STRING, requireVariableType(function, firstConstructorArg)),
+                () -> assertEquals(literalString.resultId(), secondConstructorArg),
+                () -> assertEquals("line\nbreak", literalString.value()),
+                () -> assertEquals("ready", literalStringName.value()),
+                () -> assertEquals(constructors.getFirst().resultId(), assignSources.get("from_text")),
+                () -> assertEquals(constructors.getLast().resultId(), assignSources.get("from_literal")),
+                () -> assertEquals(literalStringName.resultId(), assignSources.get("direct_name")),
+                () -> assertEquals(GdStringNameType.STRING_NAME, requireVariableType(function, constructors.getFirst().resultId())),
+                () -> assertEquals(GdStringNameType.STRING_NAME, requireVariableType(function, constructors.getLast().resultId())),
+                () -> assertEquals(0, countInstructions(instructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersStringFamilyAssignmentsAndPropertyStoresThroughConstructBuiltinInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_assignment.gd",
+                """
+                        class_name BodyInsnStringFamilyAssignment
+                        extends RefCounted
+
+                        var prop_name: StringName = &""
+                        var prop_text: String = ""
+
+                        func ping(text: String, name: StringName) -> void:
+                            var local_name: StringName = &""
+                            var local_text: String = ""
+                            local_name = text
+                            local_text = name
+                            prop_name = text
+                            prop_text = name
+                        """,
+                Map.of("BodyInsnStringFamilyAssignment", "RuntimeBodyInsnStringFamilyAssignment"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyAssignment",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var constructors = constructBuiltinInsns(instructions);
+        var assignSources = assignSourcesByTarget(instructions);
+        var propNameStores = storeValueIdsForProperty(instructions, "prop_name");
+        var propTextStores = storeValueIdsForProperty(instructions, "prop_text");
+        var constructorResultIds = constructors.stream()
+                .map(ConstructBuiltinInsn::resultId)
+                .toList();
+        var constructorArgs = constructors.stream()
+                .map(insn -> onlyVariableOperandId(insn.args()))
+                .toList();
+        var constructorArgTypes = constructorArgs.stream()
+                .map(arg -> requireVariableType(function, arg))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(4, constructors.size()),
+                () -> assertEquals(
+                        List.of(
+                                GdStringType.STRING,
+                                GdStringNameType.STRING_NAME,
+                                GdStringType.STRING,
+                                GdStringNameType.STRING_NAME
+                        ),
+                        constructorArgTypes
+                ),
+                () -> assertTrue(constructorResultIds.contains(assignSources.get("local_name"))),
+                () -> assertTrue(constructorResultIds.contains(assignSources.get("local_text"))),
+                () -> assertEquals(1, propNameStores.size()),
+                () -> assertEquals(1, propTextStores.size()),
+                () -> assertTrue(constructorResultIds.contains(propNameStores.getFirst())),
+                () -> assertTrue(constructorResultIds.contains(propTextStores.getFirst())),
+                () -> assertEquals(GdStringNameType.STRING_NAME, requireVariableType(function, propNameStores.getFirst())),
+                () -> assertEquals(GdStringType.STRING, requireVariableType(function, propTextStores.getFirst())),
+                () -> assertEquals(0, countInstructions(instructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersStringFamilyCallArgumentsThroughConstructBuiltinInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_call_args.gd",
+                """
+                        class_name BodyInsnStringFamilyCallArgs
+                        extends RefCounted
+
+                        func take_name(value: StringName) -> StringName:
+                            return value
+
+                        func take_text(value: String) -> String:
+                            return value
+
+                        func from_text(text: String) -> StringName:
+                            return take_name(text)
+
+                        func from_name(name: StringName) -> String:
+                            return take_text(name)
+
+                        func from_literal() -> StringName:
+                            return take_name("call\\nname")
+
+                        func from_direct_literal() -> StringName:
+                            return take_name(&"call_name")
+                        """,
+                Map.of("BodyInsnStringFamilyCallArgs", "RuntimeBodyInsnStringFamilyCallArgs"),
+                true
+        );
+        var fromTextContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyCallArgs",
+                "from_text"
+        );
+        var fromNameContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyCallArgs",
+                "from_name"
+        );
+        var fromLiteralContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyCallArgs",
+                "from_literal"
+        );
+        var fromDirectLiteralContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyCallArgs",
+                "from_direct_literal"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var fromTextInstructions = allInstructions(fromTextContext.targetFunction());
+        var fromNameInstructions = allInstructions(fromNameContext.targetFunction());
+        var fromLiteralInstructions = allInstructions(fromLiteralContext.targetFunction());
+        var fromDirectLiteralInstructions = allInstructions(fromDirectLiteralContext.targetFunction());
+
+        var textConstructor = requireOnlyInstruction(fromTextContext.targetFunction(), ConstructBuiltinInsn.class);
+        var nameConstructor = requireOnlyInstruction(fromNameContext.targetFunction(), ConstructBuiltinInsn.class);
+        var literalConstructor = requireOnlyInstruction(fromLiteralContext.targetFunction(), ConstructBuiltinInsn.class);
+        var textCall = requireOnlyInstruction(fromTextContext.targetFunction(), CallMethodInsn.class);
+        var nameCall = requireOnlyInstruction(fromNameContext.targetFunction(), CallMethodInsn.class);
+        var literalCall = requireOnlyInstruction(fromLiteralContext.targetFunction(), CallMethodInsn.class);
+        var directLiteralCall = requireOnlyInstruction(fromDirectLiteralContext.targetFunction(), CallMethodInsn.class);
+        var literalString = requireOnlyInstruction(fromLiteralContext.targetFunction(), LiteralStringInsn.class);
+        var literalStringName = requireOnlyInstruction(fromDirectLiteralContext.targetFunction(), LiteralStringNameInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(
+                        GdStringType.STRING,
+                        requireVariableType(fromTextContext.targetFunction(), onlyVariableOperandId(textConstructor.args()))
+                ),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(fromNameContext.targetFunction(), onlyVariableOperandId(nameConstructor.args()))
+                ),
+                () -> assertEquals(literalString.resultId(), onlyVariableOperandId(literalConstructor.args())),
+                () -> assertEquals(textConstructor.resultId(), onlyVariableOperandId(textCall.args())),
+                () -> assertEquals(nameConstructor.resultId(), onlyVariableOperandId(nameCall.args())),
+                () -> assertEquals(literalConstructor.resultId(), onlyVariableOperandId(literalCall.args())),
+                () -> assertEquals(literalStringName.resultId(), onlyVariableOperandId(directLiteralCall.args())),
+                () -> assertEquals("call\nname", literalString.value()),
+                () -> assertEquals("call_name", literalStringName.value()),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(fromTextContext.targetFunction(), textConstructor.resultId())
+                ),
+                () -> assertEquals(GdStringType.STRING, requireVariableType(fromNameContext.targetFunction(), nameConstructor.resultId())),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(fromLiteralContext.targetFunction(), literalConstructor.resultId())
+                ),
+                () -> assertEquals(0, countInstructions(fromDirectLiteralInstructions, ConstructBuiltinInsn.class)),
+                () -> assertEquals(0, countInstructions(fromTextInstructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(fromNameInstructions, CallIntrinsicInsn.class)),
+                () -> assertEquals(0, countInstructions(fromLiteralInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(fromDirectLiteralInstructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(fromLiteralInstructions, UnpackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(fromDirectLiteralInstructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersStringFamilyReturnSlotsThroughConstructBuiltinInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_return.gd",
+                """
+                        class_name BodyInsnStringFamilyReturn
+                        extends RefCounted
+
+                        func ret_name(text: String) -> StringName:
+                            return text
+
+                        func ret_text(name: StringName) -> String:
+                            return name
+
+                        func ret_name_literal() -> StringName:
+                            return "return\\nvalue"
+
+                        func ret_name_direct_literal() -> StringName:
+                            return &"return_name"
+                        """,
+                Map.of("BodyInsnStringFamilyReturn", "RuntimeBodyInsnStringFamilyReturn"),
+                true
+        );
+        var retNameContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyReturn",
+                "ret_name"
+        );
+        var retTextContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyReturn",
+                "ret_text"
+        );
+        var retNameLiteralContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyReturn",
+                "ret_name_literal"
+        );
+        var retNameDirectLiteralContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnStringFamilyReturn",
+                "ret_name_direct_literal"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var retNameConstructor = requireOnlyInstruction(retNameContext.targetFunction(), ConstructBuiltinInsn.class);
+        var retTextConstructor = requireOnlyInstruction(retTextContext.targetFunction(), ConstructBuiltinInsn.class);
+        var retNameLiteralConstructor = requireOnlyInstruction(retNameLiteralContext.targetFunction(), ConstructBuiltinInsn.class);
+        var retNameReturn = requireOnlyReturnInsn(retNameContext.targetFunction());
+        var retTextReturn = requireOnlyReturnInsn(retTextContext.targetFunction());
+        var retNameLiteralReturn = requireOnlyReturnInsn(retNameLiteralContext.targetFunction());
+        var retNameDirectLiteralReturn = requireOnlyReturnInsn(retNameDirectLiteralContext.targetFunction());
+        var literalString = requireOnlyInstruction(retNameLiteralContext.targetFunction(), LiteralStringInsn.class);
+        var literalStringName = requireOnlyInstruction(retNameDirectLiteralContext.targetFunction(), LiteralStringNameInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(
+                        GdStringType.STRING,
+                        requireVariableType(retNameContext.targetFunction(), onlyVariableOperandId(retNameConstructor.args()))
+                ),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(retTextContext.targetFunction(), onlyVariableOperandId(retTextConstructor.args()))
+                ),
+                () -> assertEquals(literalString.resultId(), onlyVariableOperandId(retNameLiteralConstructor.args())),
+                () -> assertEquals(retNameConstructor.resultId(), retNameReturn.returnValueId()),
+                () -> assertEquals(retTextConstructor.resultId(), retTextReturn.returnValueId()),
+                () -> assertEquals(retNameLiteralConstructor.resultId(), retNameLiteralReturn.returnValueId()),
+                () -> assertEquals(literalStringName.resultId(), retNameDirectLiteralReturn.returnValueId()),
+                () -> assertEquals("return\nvalue", literalString.value()),
+                () -> assertEquals("return_name", literalStringName.value()),
+                () -> assertEquals(
+                        0,
+                        countInstructions(allInstructions(retNameDirectLiteralContext.targetFunction()), ConstructBuiltinInsn.class)
+                ),
+                () -> assertEquals(0, countInstructions(allInstructions(retNameContext.targetFunction()), PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(retTextContext.targetFunction()), UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersStringFamilyPropertyInitializersThroughConstructBuiltinInsn() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_string_family_property_init.gd",
+                """
+                        class_name BodyInsnStringFamilyPropertyInit
+                        extends RefCounted
+
+                        var name_from_text: StringName = "field\\nname"
+                        var name_direct: StringName = &"field_name"
+                        var text_from_name: String = &"field_text"
+
+                        func ping() -> int:
+                            return 1
+                        """,
+                Map.of("BodyInsnStringFamilyPropertyInit", "RuntimeBodyInsnStringFamilyPropertyInit"),
+                true
+        );
+        var nameFromTextContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnStringFamilyPropertyInit",
+                "_field_init_name_from_text"
+        );
+        var nameDirectContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnStringFamilyPropertyInit",
+                "_field_init_name_direct"
+        );
+        var textFromNameContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnStringFamilyPropertyInit",
+                "_field_init_text_from_name"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var nameFromTextConstructor = requireOnlyInstruction(
+                nameFromTextContext.targetFunction(),
+                ConstructBuiltinInsn.class
+        );
+        var textFromNameConstructor = requireOnlyInstruction(
+                textFromNameContext.targetFunction(),
+                ConstructBuiltinInsn.class
+        );
+        var nameFromTextLiteral = requireOnlyInstruction(nameFromTextContext.targetFunction(), LiteralStringInsn.class);
+        var nameDirectLiteral = requireOnlyInstruction(nameDirectContext.targetFunction(), LiteralStringNameInsn.class);
+        var textFromNameLiteral = requireOnlyInstruction(textFromNameContext.targetFunction(), LiteralStringNameInsn.class);
+        var nameFromTextReturn = requireOnlyReturnInsn(nameFromTextContext.targetFunction());
+        var nameDirectReturn = requireOnlyReturnInsn(nameDirectContext.targetFunction());
+        var textFromNameReturn = requireOnlyReturnInsn(textFromNameContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(nameFromTextLiteral.resultId(), onlyVariableOperandId(nameFromTextConstructor.args())),
+                () -> assertEquals(textFromNameLiteral.resultId(), onlyVariableOperandId(textFromNameConstructor.args())),
+                () -> assertEquals(nameFromTextConstructor.resultId(), nameFromTextReturn.returnValueId()),
+                () -> assertEquals(nameDirectLiteral.resultId(), nameDirectReturn.returnValueId()),
+                () -> assertEquals(textFromNameConstructor.resultId(), textFromNameReturn.returnValueId()),
+                () -> assertEquals("field\nname", nameFromTextLiteral.value()),
+                () -> assertEquals("field_name", nameDirectLiteral.value()),
+                () -> assertEquals("field_text", textFromNameLiteral.value()),
+                () -> assertEquals(
+                        GdStringNameType.STRING_NAME,
+                        requireVariableType(nameFromTextContext.targetFunction(), nameFromTextConstructor.resultId())
+                ),
+                () -> assertEquals(
+                        GdStringType.STRING,
+                        requireVariableType(textFromNameContext.targetFunction(), textFromNameConstructor.resultId())
+                ),
+                () -> assertEquals(0, countInstructions(allInstructions(nameDirectContext.targetFunction()), ConstructBuiltinInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(nameFromTextContext.targetFunction()), PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(allInstructions(textFromNameContext.targetFunction()), UnpackVariantInsn.class))
         );
     }
 
@@ -4172,6 +4571,15 @@ class FrontendLoweringBodyInsnPassTest {
                 .filter(UnpackVariantInsn.class::isInstance)
                 .map(UnpackVariantInsn.class::cast)
                 .map(UnpackVariantInsn::resultId)
+                .toList();
+    }
+
+    private static @NotNull List<ConstructBuiltinInsn> constructBuiltinInsns(
+            @NotNull List<LirInstruction> instructions
+    ) {
+        return instructions.stream()
+                .filter(ConstructBuiltinInsn.class::isInstance)
+                .map(ConstructBuiltinInsn.class::cast)
                 .toList();
     }
 
