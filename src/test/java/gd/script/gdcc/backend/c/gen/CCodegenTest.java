@@ -39,6 +39,7 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdRect2Type;
@@ -863,6 +864,56 @@ public class CCodegenTest {
         );
         assertFalse(takeRect2CallBody.contains("GDEXTENSION_VARIANT_TYPE_RECT2I"), takeRect2CallBody);
         assertFalse(takeRect2CallBody.contains("gdcc_new_Rect2_from_call_arg_variant"), takeRect2CallBody);
+    }
+
+    @Test
+    public void generatesCallWrapperInboundStringFamilyCompatibilityWithoutWeakeningOtherParams() throws Exception {
+        var workerClass = new LirClassDef("InboundStringCallWorker", "Node");
+        addSingleParamReturnFunction(workerClass, "InboundStringCallWorker", "take_string_name", GdStringNameType.STRING_NAME);
+        addSingleParamReturnFunction(workerClass, "InboundStringCallWorker", "take_string", GdStringType.STRING);
+        addSingleParamReturnFunction(workerClass, "InboundStringCallWorker", "take_node_path", GdNodePathType.NODE_PATH);
+
+        var module = new LirModule("inbound_string_call_module", List.of(workerClass));
+        var hCode = generateHeader(module);
+
+        var takeStringNameCallBody = resolveCallWrapperBody(hCode, "_1_arg_StringName_ret_StringName");
+        var takeStringCallBody = resolveCallWrapperBody(hCode, "_1_arg_String_ret_String");
+        var takeNodePathCallBody = resolveCallWrapperBody(hCode, "_1_arg_NodePath_ret_NodePath");
+
+        assertContainsAll(
+                takeStringNameCallBody,
+                "const GDExtensionVariantType arg0_type = godot_variant_get_type(p_args[0]);",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_STRING_NAME || arg0_type == GDEXTENSION_VARIANT_TYPE_STRING))",
+                "expected = GDEXTENSION_VARIANT_TYPE_STRING_NAME;",
+                "godot_StringName arg0 = gdcc_new_StringName_from_call_arg_variant((GDExtensionVariantPtr)p_args[0], arg0_type);"
+        );
+        assertEquals(1, countOccurrences(takeStringNameCallBody, "godot_variant_get_type(p_args[0])"), takeStringNameCallBody);
+        assertFalse(
+                takeStringNameCallBody.contains("godot_new_StringName_with_Variant((GDExtensionVariantPtr)p_args[0])"),
+                takeStringNameCallBody
+        );
+
+        assertContainsAll(
+                takeStringCallBody,
+                "const GDExtensionVariantType arg0_type = godot_variant_get_type(p_args[0]);",
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_STRING || arg0_type == GDEXTENSION_VARIANT_TYPE_STRING_NAME))",
+                "expected = GDEXTENSION_VARIANT_TYPE_STRING;",
+                "godot_String arg0 = gdcc_new_String_from_call_arg_variant((GDExtensionVariantPtr)p_args[0], arg0_type);"
+        );
+        assertEquals(1, countOccurrences(takeStringCallBody, "godot_variant_get_type(p_args[0])"), takeStringCallBody);
+        assertFalse(
+                takeStringCallBody.contains("godot_new_String_with_Variant((GDExtensionVariantPtr)p_args[0])"),
+                takeStringCallBody
+        );
+
+        assertContainsAll(
+                takeNodePathCallBody,
+                "if (!(arg0_type == GDEXTENSION_VARIANT_TYPE_NODE_PATH))",
+                "expected = GDEXTENSION_VARIANT_TYPE_NODE_PATH;",
+                "godot_NodePath arg0 = godot_new_NodePath_with_Variant((GDExtensionVariantPtr)p_args[0]);"
+        );
+        assertFalse(takeNodePathCallBody.contains("GDEXTENSION_VARIANT_TYPE_STRING"), takeNodePathCallBody);
+        assertFalse(takeNodePathCallBody.contains("from_call_arg_variant"), takeNodePathCallBody);
     }
 
     @Test

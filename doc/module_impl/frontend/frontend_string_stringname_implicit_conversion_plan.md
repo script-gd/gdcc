@@ -730,6 +730,22 @@ helper 行为必须按 runtime tag 分流：
 实现不得声明“只完成 source-level compile path”。`int -> float` 与 `Vector*i -> Vector*` 的完整支持面已经包含
 GDExtension `call_func` wrapper 入站 parity；`String <-> StringName` 必须保持同等级闭环。
 
+#### Phase 6 执行状态
+
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具使用要求。
+- [x] 使用 MCP `list_directory_tree` 以 depth >= 3 列出 `doc` 与 `doc/module_impl`。
+- [x] 使用并行子代理完成 Phase 6 相关文档、生产代码与测试结构调研并关闭子代理。
+- [x] 在 `CGenHelper.renderCallWrapperVariantTypeGate(...)` / `renderCallWrapperUnpackExpr(...)` 中接通
+  `String` / `StringName` 入站 wrapper gate 与 materializer。
+- [x] 在 `gdcc_intrinsic.h` 中补充 wrapper-only string-family inbound helper，并销毁 cross-case 中间值。
+- [x] 在 `CGenHelperTest` 补充 gate / unpack 正反锚点。
+- [x] 在 `CCodegenTest` 补充 rendered `entry.h` wrapper body 锚点。
+- [x] 运行 targeted tests 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests CGenHelperTest,CCodegenTest`，通过。
+- [x] 运行 C header compile smoke 并记录结果：
+  `script/run-gradle-targeted-tests.sh --tests GodotAbiHeaderCompileTest`，通过。
+- [x] 运行 IDE file rebuild 检查改过的 Java 文件，`build_project` 通过。
+
 修改：
 
 - `CGenHelper.renderCallWrapperVariantTypeGate(...)`

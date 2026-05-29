@@ -15,6 +15,7 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdRect2Type;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -664,6 +666,23 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("call wrapper type gate should accept string-family payloads only for string targets")
+    void renderCallWrapperVariantTypeGateShouldAcceptStringFamilyPayloadsOnlyForStringTargets() {
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_STRING_NAME || type == GDEXTENSION_VARIANT_TYPE_STRING)",
+                helper.renderCallWrapperVariantTypeGate(GdStringNameType.STRING_NAME, "type")
+        );
+        assertEquals(
+                "(type == GDEXTENSION_VARIANT_TYPE_STRING || type == GDEXTENSION_VARIANT_TYPE_STRING_NAME)",
+                helper.renderCallWrapperVariantTypeGate(GdStringType.STRING, "type")
+        );
+
+        var nodePathGate = helper.renderCallWrapperVariantTypeGate(GdNodePathType.NODE_PATH, "type");
+        assertEquals("(type == GDEXTENSION_VARIANT_TYPE_NODE_PATH)", nodePathGate);
+        assertFalse(nodePathGate.contains("STRING"), nodePathGate);
+    }
+
+    @Test
     @DisplayName("call wrapper vector widening should reject non builtin vector dimensions")
     void renderCallWrapperVectorWideningShouldRejectNonBuiltinVectorDimensions() {
         var invalidVector = new GdFloatVectorType(5);
@@ -722,6 +741,45 @@ class CGenHelperTest {
                 "godot_new_Rect2_with_Variant(value_ptr)",
                 helper.renderCallWrapperUnpackExpr(GdRect2Type.RECT2, "value_ptr", "value_type")
         );
+    }
+
+    @Test
+    @DisplayName("call wrapper unpack should route string-family params through string materializers only")
+    void renderCallWrapperUnpackExprShouldRouteStringFamilyParamsThroughStringMaterializersOnly() {
+        assertEquals(
+                "gdcc_new_StringName_from_call_arg_variant(value_ptr, value_type)",
+                helper.renderCallWrapperUnpackExpr(GdStringNameType.STRING_NAME, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "gdcc_new_String_from_call_arg_variant(value_ptr, value_type)",
+                helper.renderCallWrapperUnpackExpr(GdStringType.STRING, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "gdcc_new_StringName_from_call_arg_variant(value_ptr, godot_variant_get_type(value_ptr))",
+                helper.renderCallWrapperUnpackExpr(GdStringNameType.STRING_NAME, "value_ptr", null)
+        );
+
+        var nodePathUnpack = helper.renderCallWrapperUnpackExpr(GdNodePathType.NODE_PATH, "value_ptr", "value_type");
+        assertEquals("godot_new_NodePath_with_Variant(value_ptr)", nodePathUnpack);
+        assertFalse(nodePathUnpack.contains("from_call_arg_variant"), nodePathUnpack);
+    }
+
+    @Test
+    @DisplayName("call wrapper string materializers should convert cross-case payloads and destroy intermediates")
+    void callWrapperStringMaterializersShouldConvertCrossCasePayloadsAndDestroyIntermediates() throws IOException {
+        var source = Files.readString(Path.of("src/main/c/codegen/include_451/gdcc/gdcc_intrinsic.h"));
+
+        assertTrue(source.contains("gdcc_new_StringName_from_call_arg_variant"), source);
+        assertTrue(source.contains("if (type == GDEXTENSION_VARIANT_TYPE_STRING)"), source);
+        assertTrue(source.contains("godot_String source = godot_new_String_with_Variant(value);"), source);
+        assertTrue(source.contains("godot_StringName result = godot_new_StringName_with_String(&source);"), source);
+        assertTrue(source.contains("godot_String_destroy(&source);"), source);
+
+        assertTrue(source.contains("gdcc_new_String_from_call_arg_variant"), source);
+        assertTrue(source.contains("if (type == GDEXTENSION_VARIANT_TYPE_STRING_NAME)"), source);
+        assertTrue(source.contains("godot_StringName source = godot_new_StringName_with_Variant(value);"), source);
+        assertTrue(source.contains("godot_String result = godot_new_String_with_StringName(&source);"), source);
+        assertTrue(source.contains("godot_StringName_destroy(&source);"), source);
     }
 
     @Test
