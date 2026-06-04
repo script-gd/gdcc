@@ -55,6 +55,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "initializer/local/constructors_and_constants.gd",
             "initializer/local/int_to_float_boundaries.gd",
             "initializer/local/object_and_engine_constructor.gd",
+            "initializer/local/string_to_stringname_boundaries.gd",
+            "initializer/local/stringname_to_string_boundaries.gd",
             "initializer/local/variant_boundaries.gd",
             "initializer/local/vectori_to_vector_boundaries.gd",
             "initializer/property/int_to_float_boundaries.gd",
@@ -83,6 +85,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/string_literal_escape_unicode_surface.gd",
             "runtime/string_literal_internal_surface.gd",
             "runtime/string_literal_utf8_offset_surface.gd",
+            "runtime/string_stringname_inbound_dynamic_call.gd",
             "runtime/vectori_to_vector_inbound_dynamic_call.gd",
             "runtime/vectori_to_vector_reverse_guard.gd",
             "runtime/virtual/physics_process_called_and_delta_valid.gd",
@@ -92,7 +95,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "smoke/basic_arithmetic.gd",
             "subscript/array_roundtrip.gd",
             "subscript/dictionary_float_key_roundtrip.gd",
-            "subscript/packed_array_mutation_roundtrip.gd"
+            "subscript/packed_array_mutation_roundtrip.gd",
+            "subscript/string_stringname_dictionary_key_roundtrip.gd"
     );
     private static final List<String> ABI_SCRIPT_PATHS = scriptPathsWithPrefix("abi/");
     private static final List<String> ALGORITHM_SCRIPT_PATHS = scriptPathsWithPrefix("algorithm/");

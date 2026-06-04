@@ -39,6 +39,8 @@
 - `var sequence: Array = [0, 1]`
 - `var scores: Dictionary = {}`
 - `graph["A"] = ["B", "C"]`
+- `var values: Dictionary[StringName, int] = {}`
+- `var values: Dictionary[String, int] = {}`
 
 在 `test_suite` 这条 compile/link/run 链路里都会先停在 compile surface，典型报错为：
 
@@ -49,6 +51,9 @@
 
 - 新增数组/图算法用例不能直接用数组字面量初始化 seed 数据
 - 新增字典/图算法用例不能直接用字典字面量搭图
+- `String` / `StringName` typed Dictionary key 端到端锚点也不能在 compiled source 内用 `{}` 构造 seed；
+  本轮新增的 subscript resource 改为由 Godot validation script 构造 typed Dictionary，再传入 compiled
+  method，在 compiled body 内只验证 key materialization、route 与 writable writeback。
 
 当前处理结论：
 
@@ -143,39 +148,3 @@
 - 当前回归锚点包括：
   - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
   - `src/test/java/gd/script/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
-
-## 2. `test_suite` 当前只能把 `Node` 根脚本挂进场景树
-
-事实来源：
-
-- `doc/test_suite.md`
-  - 明确要求 compiled script 必须 `extends Node`
-  - 原因是 `GdScriptUnitTestCompileRunner` 通过 scene node 安装编译产物
-  - 若根脚本不是 `Node`，Godot 会创建 placeholder node，验证脚本看到的将不再是目标运行时类
-
-对 test suite 的直接影响：
-
-- 不能把纯 `extends RefCounted` 的顶层脚本直接作为 scene-mounted resource case
-- “真实 RefCounted 派生类在场景中的操作” 只能通过以下方式覆盖：
-  - 顶层脚本仍 `extends Node`
-  - 在该脚本内部实例化并操作 `RefCounted` 派生类
-  - 如需同时验证场景树行为，再让真实 `Node` 派生 inner class 挂进树内
-
-当前处理结论：
-
-- 新增 `scene/nested_node_refcounted_scene.gd` 采用 Node-root + inner `Node` + inner `RefCounted` 的组合路径
-- 该用例覆盖的是当前 harness 可表达的最接近真实场景协作的正向 surface
-
-## 后续建议
-
-- 若后续要为纯 `RefCounted` 顶层脚本补真引擎 compile/link/run case，需要先扩展 `test_suite` harness，而不是继续往现有 scene-mounted 合同里硬塞
-- 若 frontend 后续正式支持 `for` / `match` / `lambda`，应补一轮更贴近 Godot 习惯写法的算法端到端样例，并把当前基于 `while` 的替代写法保留为 regression anchor
-
-## 已修复回顾
-
-- 原问题 6“编译脚本内部 string literal surface 污染”已不再属于当前 known limit。
-- 当前回归锚点包括：
-  - `src/test/test_suite/unit_test/script/runtime/string_literal_internal_surface.gd`
-  - `src/test/test_suite/unit_test/validation/runtime/string_literal_internal_surface.gd`
-  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java` 中的 runtime category `@TestFactory`
-  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
