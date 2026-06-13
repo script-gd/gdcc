@@ -1040,7 +1040,7 @@ class CConstructInsnGenTest {
     private ExtensionBuiltinClass.ConstructorInfo newConstructor(String owner, String argType) {
         return new ExtensionBuiltinClass.ConstructorInfo(
                 owner,
-                2,
+                0,
                 List.of(new ExtensionFunctionArgument("from", argType, null, null))
         );
     }

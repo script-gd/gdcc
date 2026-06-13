@@ -35,6 +35,7 @@ import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendAssignmentSemanticSupportTest {
@@ -459,7 +460,7 @@ class FrontendAssignmentSemanticSupportTest {
                 GdStringType.STRING,
                 GdStringNameType.STRING_NAME
         ));
-        assertTrue(!FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
+        assertFalse(FrontendAssignmentSemanticSupport.checkAssignmentCompatible(
                 support,
                 GdNodePathType.NODE_PATH,
                 GdStringType.STRING
