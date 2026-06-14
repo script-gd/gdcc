@@ -517,6 +517,36 @@ Acceptance:
 
 Extend or reuse `GodotGdextensionTestRunner` so one Godot project contains both execution paths.
 
+Implementation status:
+
+- Status: completed on 2026-06-14
+- Deliverables:
+  - extended `src/test/java/gd/script/gdcc/backend/c/build/GodotGdextensionTestRunner.java`
+    to support:
+    - explicit `COptimizationLevel` selection for generated `.gdextension` metadata
+    - managed script resources installed as `res://` files before scene generation
+    - scene nodes that attach scripts through declared resource paths instead of inline property text
+    - cleanup of stale managed benchmark script roots between project preparations
+  - extended `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunner.java`
+    to prepare a dual-target `ProjectSetup` containing:
+    - one compiled target node mounted by gdcc runtime class name
+    - one interpreter node backed by the paired interpreter script resource
+    - one measurement node backed by the paired measurement script resource
+  - upgraded `src/test/test_suite/benchmark/measurement/algorithm/int_loop.gd`
+    from a placeholder into a minimal dual-target readiness script that resolves both targets,
+    executes their shared benchmark surface, and reports setup success without introducing Step 4 timing logic
+  - added focused Step 3 tests in:
+    - `src/test/java/gd/script/gdcc/backend/c/build/GodotGdextensionTestRunnerTest.java`
+    - `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+- Notes:
+  - benchmark directives are now validated and stripped before interpreter / measurement scripts are
+    installed into the reusable Godot project so runtime files stay executable plain GDScript
+  - the shared project writer now removes stale generated benchmark script roots before installing
+    new managed resources, so one case cannot accidentally reuse another case's interpreter or
+    measurement script
+  - Step 3 intentionally stops at project preparation and scene wiring; it does not yet launch
+    Godot or parse benchmark output, which remain Step 4 and Step 5 work
+
 Tasks:
 
 - mount the compiled target by runtime class name

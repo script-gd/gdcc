@@ -6,6 +6,8 @@ import gd.script.gdcc.backend.c.build.CCompiler;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.CProjectBuilder;
 import gd.script.gdcc.backend.c.build.CProjectInfo;
+import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
+import gd.script.gdcc.backend.c.build.ScriptResourceSpec;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
 import gd.script.gdcc.backend.c.gen.CCodegen;
 import gd.script.gdcc.enums.GodotVersion;
@@ -46,6 +48,20 @@ public final class GdScriptBenchmarkRunner {
     public static final String SCRIPT_RESOURCE_ROOT = "benchmark/script";
     public static final String INTERPRETER_RESOURCE_ROOT = "benchmark/interpreter";
     public static final String MEASUREMENT_RESOURCE_ROOT = "benchmark/measurement";
+    static final String COMPILED_TARGET_NODE_NAME = "CompiledTarget";
+    static final String INTERPRETER_TARGET_NODE_NAME = "InterpreterTarget";
+    static final String MEASUREMENT_NODE_NAME = "BenchmarkMeasurement";
+    static final String INTERPRETER_SCRIPT_PLACEHOLDER = "__GDCC_BENCHMARK_INTERPRETER_SCRIPT__";
+    static final String COMPILED_TARGET_NODE_PLACEHOLDER = "__GDCC_BENCHMARK_COMPILED_TARGET_NODE__";
+    static final String INTERPRETER_TARGET_NODE_PLACEHOLDER = "__GDCC_BENCHMARK_INTERPRETER_TARGET_NODE__";
+    static final String BENCHMARK_DIRECTIVE_PREFIX = "# gdcc-benchmark:";
+    static final String BENCHMARK_NAME_DIRECTIVE = "name=";
+    static final String BENCHMARK_ITERATIONS_DIRECTIVE = "iterations=";
+    static final String BENCHMARK_WARMUPS_DIRECTIVE = "warmups=";
+    static final String BENCHMARK_SAMPLES_DIRECTIVE = "samples=";
+    static final String BENCHMARK_MIN_BATCH_US_DIRECTIVE = "min_batch_us=";
+    static final String BENCHMARK_OUTPUT_CONTAINS_DIRECTIVE = "output_contains=";
+    static final String BENCHMARK_OUTPUT_NOT_CONTAINS_DIRECTIVE = "output_not_contains=";
 
     private static final Path WORK_ROOT = Path.of("tmp/test/test_suite/benchmark");
 
@@ -106,15 +122,20 @@ public final class GdScriptBenchmarkRunner {
                 () -> "Native build failed for " + scriptResourcePath + ".\nBuild log:\n" + nativeBuild.result().buildLog()
         );
 
+        var projectSetupPrepareStart = System.nanoTime();
+        var projectSetup = prepareProjectSetup(resources, scriptResourcePath, runtimeClassName, nativeBuild.result().artifacts());
+        var projectSetupPrepareDuration = elapsedSince(projectSetupPrepareStart);
+
         var timing = new CaseBuildResult.Timing(
                 resourceReadDuration,
                 workDirectoryPrepareDuration,
                 frontendLoweringDuration,
                 runtimeClassValidationDuration,
+                projectSetupPrepareDuration,
                 nativeBuild.timing(),
                 elapsedSince(totalStart)
         );
-        return new CaseBuildResult(scriptResourcePath, runtimeClassName, projectDir, nativeBuild.result(), timing);
+        return new CaseBuildResult(scriptResourcePath, runtimeClassName, projectDir, nativeBuild.result(), projectSetup, timing);
     }
 
     private void checkCounterpartPaths(
@@ -258,6 +279,122 @@ public final class GdScriptBenchmarkRunner {
                 + ". Unexpected: " + String.join(", ", unexpectedPaths);
     }
 
+    /// Step 3 keeps project preparation benchmark-specific inside this runner while reusing the shared
+    /// Godot project writer for the actual file generation.
+    private @NotNull GodotGdextensionTestRunner.ProjectSetup prepareProjectSetup(
+            @NotNull BenchmarkCaseResources resources,
+            @NotNull String scriptResourcePath,
+            @NotNull String runtimeClassName,
+            @NotNull List<Path> artifacts
+    ) {
+        var interpreterResourcePath = benchmarkResourcePath(INTERPRETER_RESOURCE_ROOT, scriptResourcePath);
+        var measurementResourcePath = benchmarkResourcePath(MEASUREMENT_RESOURCE_ROOT, scriptResourcePath);
+        return new GodotGdextensionTestRunner.ProjectSetup(
+                artifacts,
+                List.of(
+                        new GodotGdextensionTestRunner.SceneNodeSpec(
+                                COMPILED_TARGET_NODE_NAME,
+                                runtimeClassName,
+                                ".",
+                                Map.of()
+                        ),
+                        new GodotGdextensionTestRunner.SceneNodeSpec(
+                                INTERPRETER_TARGET_NODE_NAME,
+                                "Node",
+                                ".",
+                                Map.of(),
+                                interpreterResourcePath
+                        ),
+                        new GodotGdextensionTestRunner.SceneNodeSpec(
+                                MEASUREMENT_NODE_NAME,
+                                "Node",
+                                ".",
+                                Map.of(),
+                                measurementResourcePath
+                        )
+                ),
+                List.of(
+                        new ScriptResourceSpec(
+                                interpreterResourcePath,
+                                stripBenchmarkDirectives(resources.interpreterSource())
+                        ),
+                        new ScriptResourceSpec(
+                                measurementResourcePath,
+                                prepareMeasurementScript(resources, scriptResourcePath, interpreterResourcePath)
+                        )
+                ),
+                null,
+                COptimizationLevel.RELEASE
+        );
+    }
+
+    private static @NotNull String prepareMeasurementScript(
+            @NotNull BenchmarkCaseResources resources,
+            @NotNull String scriptResourcePath,
+            @NotNull String interpreterResourcePath
+    ) {
+        var directiveParseResult = stripAndValidateBenchmarkDirectives(scriptResourcePath, resources.measurementSource());
+        return directiveParseResult.scriptBody()
+                .replace(INTERPRETER_SCRIPT_PLACEHOLDER, interpreterResourcePath)
+                .replace(COMPILED_TARGET_NODE_PLACEHOLDER, COMPILED_TARGET_NODE_NAME)
+                .replace(INTERPRETER_TARGET_NODE_PLACEHOLDER, INTERPRETER_TARGET_NODE_NAME);
+    }
+
+    private static @NotNull String stripBenchmarkDirectives(@NotNull String scriptSource) {
+        return stripAndValidateBenchmarkDirectives(null, scriptSource).scriptBody();
+    }
+
+    /// Step 3 only needs directive validation and stripping so Godot receives plain executable scripts.
+    private static @NotNull DirectiveParseResult stripAndValidateBenchmarkDirectives(
+            @Nullable String scriptResourcePath,
+            @NotNull String scriptSource
+    ) {
+        var scriptBody = new StringBuilder();
+        var lines = scriptSource.split("\\R", -1);
+        for (var line : lines) {
+            var trimmedLine = line.trim();
+            if (trimmedLine.startsWith(BENCHMARK_DIRECTIVE_PREFIX)) {
+                validateBenchmarkDirective(
+                        scriptResourcePath == null ? "<inline>" : scriptResourcePath,
+                        trimmedLine.substring(BENCHMARK_DIRECTIVE_PREFIX.length()).trim()
+                );
+                continue;
+            }
+            scriptBody.append(line).append('\n');
+        }
+        return new DirectiveParseResult(scriptBody.toString(), scriptBody.isEmpty());
+    }
+
+    private static void validateBenchmarkDirective(@NotNull String scriptResourcePath, @NotNull String directive) {
+        assertFalse(
+                directive.isBlank(),
+                () -> "Benchmark directive must provide a non-empty value in " + scriptResourcePath
+        );
+        var knownPrefixes = List.of(
+                BENCHMARK_NAME_DIRECTIVE,
+                BENCHMARK_ITERATIONS_DIRECTIVE,
+                BENCHMARK_WARMUPS_DIRECTIVE,
+                BENCHMARK_SAMPLES_DIRECTIVE,
+                BENCHMARK_MIN_BATCH_US_DIRECTIVE,
+                BENCHMARK_OUTPUT_CONTAINS_DIRECTIVE,
+                BENCHMARK_OUTPUT_NOT_CONTAINS_DIRECTIVE
+        );
+        var matchedPrefix = knownPrefixes.stream().filter(directive::startsWith).findFirst().orElse(null);
+        assertNotNull(
+                matchedPrefix,
+                () -> "Unknown benchmark directive `" + directive + "` in " + scriptResourcePath
+        );
+        var value = directive.substring(matchedPrefix.length()).trim();
+        assertFalse(
+                value.isBlank(),
+                () -> "Benchmark directive `" + directive + "` must provide a non-empty value in " + scriptResourcePath
+        );
+    }
+
+    private static @NotNull String benchmarkResourcePath(@NotNull String resourceRoot, @NotNull String scriptResourcePath) {
+        return "res://" + resourceRoot + "/" + scriptResourcePath;
+    }
+
     private static @NotNull String stripExtension(@NotNull String resourcePath) {
         var extensionIndex = resourcePath.lastIndexOf('.');
         return extensionIndex < 0 ? resourcePath : resourcePath.substring(0, extensionIndex);
@@ -277,6 +414,7 @@ public final class GdScriptBenchmarkRunner {
             @NotNull String runtimeClassName,
             @NotNull Path projectDir,
             @NotNull CBuildResult buildResult,
+            @NotNull GodotGdextensionTestRunner.ProjectSetup projectSetup,
             @NotNull Timing timing
     ) {
         public CaseBuildResult {
@@ -284,6 +422,7 @@ public final class GdScriptBenchmarkRunner {
             runtimeClassName = Objects.requireNonNull(runtimeClassName);
             Objects.requireNonNull(projectDir);
             Objects.requireNonNull(buildResult);
+            Objects.requireNonNull(projectSetup);
             Objects.requireNonNull(timing);
         }
 
@@ -309,6 +448,7 @@ public final class GdScriptBenchmarkRunner {
                 @NotNull Duration workDirectoryPrepare,
                 @NotNull Duration frontendLowering,
                 @NotNull Duration runtimeClassValidation,
+                @NotNull Duration projectSetupPrepare,
                 @NotNull NativeBuildTiming nativeBuild,
                 @NotNull Duration total
         ) {
@@ -317,6 +457,7 @@ public final class GdScriptBenchmarkRunner {
                 Objects.requireNonNull(workDirectoryPrepare);
                 Objects.requireNonNull(frontendLowering);
                 Objects.requireNonNull(runtimeClassValidation);
+                Objects.requireNonNull(projectSetupPrepare);
                 Objects.requireNonNull(nativeBuild);
                 Objects.requireNonNull(total);
             }
@@ -368,6 +509,12 @@ public final class GdScriptBenchmarkRunner {
         private NativeBuild {
             Objects.requireNonNull(result);
             Objects.requireNonNull(timing);
+        }
+    }
+
+    private record DirectiveParseResult(@NotNull String scriptBody, boolean empty) {
+        private DirectiveParseResult {
+            Objects.requireNonNull(scriptBody);
         }
     }
 }

@@ -155,6 +155,120 @@ class GdScriptBenchmarkRunnerTest {
                 Files.exists(metadataFile),
                 () -> "Expected current runtime layout generated file `entry.h` to exist under " + result.projectDir()
         );
+        assertEquals(gd.script.gdcc.backend.c.build.COptimizationLevel.RELEASE, result.projectSetup().optimizationLevel());
+        assertEquals(2, result.projectSetup().scriptResources().size());
+    }
+
+    @Test
+    void compileBenchmarkCaseShouldPrepareDualTargetProjectSetup(@TempDir Path tempDir) throws Exception {
+        var artifact = tempDir.resolve("compiled_release_x86_64.so");
+        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
+        var compiler = new RecordingCompiler(new CCompileResult(true, "release build ok", List.of(artifact)));
+        var runner = new GdScriptBenchmarkRunner(getClass().getClassLoader(), compiler);
+
+        var result = runner.compileBenchmarkCase("algorithm/int_loop.gd");
+
+        var projectSetup = result.projectSetup();
+        assertEquals(3, projectSetup.sceneNodes().size());
+        assertEquals(GdScriptBenchmarkRunner.COMPILED_TARGET_NODE_NAME, projectSetup.sceneNodes().getFirst().nodeName());
+        assertEquals(result.runtimeClassName(), projectSetup.sceneNodes().getFirst().nodeType());
+        var interpreterNode = projectSetup.sceneNodes().get(1);
+        assertEquals(GdScriptBenchmarkRunner.INTERPRETER_TARGET_NODE_NAME, interpreterNode.nodeName());
+        assertEquals("res://benchmark/interpreter/algorithm/int_loop.gd", interpreterNode.scriptResourcePath());
+        var measurementNode = projectSetup.sceneNodes().getLast();
+        assertEquals(GdScriptBenchmarkRunner.MEASUREMENT_NODE_NAME, measurementNode.nodeName());
+        assertEquals("res://benchmark/measurement/algorithm/int_loop.gd", measurementNode.scriptResourcePath());
+
+        var interpreterScript = projectSetup.scriptResources().stream()
+                .filter(resource -> resource.resourcePath().contains("/interpreter/"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(interpreterScript.scriptContent().contains("# gdcc-benchmark:"));
+        assertTrue(interpreterScript.scriptContent().contains("class_name BenchmarkIntLoopInterpreter"));
+
+        var measurementScript = projectSetup.scriptResources().stream()
+                .filter(resource -> resource.resourcePath().contains("/measurement/"))
+                .findFirst()
+                .orElseThrow();
+        assertFalse(measurementScript.scriptContent().contains("# gdcc-benchmark:"));
+        assertTrue(measurementScript.scriptContent().contains(GdScriptBenchmarkRunner.COMPILED_TARGET_NODE_NAME));
+        assertTrue(measurementScript.scriptContent().contains(GdScriptBenchmarkRunner.INTERPRETER_TARGET_NODE_NAME));
+        assertTrue(measurementScript.scriptContent().contains("res://benchmark/interpreter/algorithm/int_loop.gd"));
+        assertTrue(measurementScript.scriptContent().contains("benchmark dual target ready"));
+    }
+
+    @Test
+    void compileBenchmarkCaseShouldRejectUnknownBenchmarkDirective(@TempDir Path tempDir) throws Exception {
+        writeTextResource(
+                tempDir,
+                "benchmark/script/algorithm/invalid_directive.gd",
+                """
+                        class_name InvalidDirectiveCompiled
+                        extends Node
+                        """
+        );
+        writeTextResource(
+                tempDir,
+                "benchmark/interpreter/algorithm/invalid_directive.gd",
+                """
+                        class_name InvalidDirectiveInterpreter
+                        extends Node
+                        """
+        );
+        writeTextResource(
+                tempDir,
+                "benchmark/measurement/algorithm/invalid_directive.gd",
+                """
+                        # gdcc-benchmark: unsupported=value
+                        extends Node
+                        """
+        );
+        var artifact = tempDir.resolve("compiled_release_x86_64.so");
+        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
+
+        try (var loader = new URLClassLoader(new URL[]{tempDir.toUri().toURL()}, getClass().getClassLoader())) {
+            var runner = new GdScriptBenchmarkRunner(loader, new RecordingCompiler(new CCompileResult(true, "ok", List.of(artifact))));
+            var error = assertThrows(AssertionError.class, () -> runner.compileBenchmarkCase("algorithm/invalid_directive.gd"));
+            assertTrue(error.getMessage().contains("unsupported=value"));
+            assertTrue(error.getMessage().contains("invalid_directive.gd"));
+        }
+    }
+
+    @Test
+    void compileBenchmarkCaseShouldRejectBlankBenchmarkDirectiveValue(@TempDir Path tempDir) throws Exception {
+        writeTextResource(
+                tempDir,
+                "benchmark/script/algorithm/blank_directive.gd",
+                """
+                        class_name BlankDirectiveCompiled
+                        extends Node
+                        """
+        );
+        writeTextResource(
+                tempDir,
+                "benchmark/interpreter/algorithm/blank_directive.gd",
+                """
+                        class_name BlankDirectiveInterpreter
+                        extends Node
+                        """
+        );
+        writeTextResource(
+                tempDir,
+                "benchmark/measurement/algorithm/blank_directive.gd",
+                """
+                        # gdcc-benchmark: iterations=
+                        extends Node
+                        """
+        );
+        var artifact = tempDir.resolve("compiled_release_x86_64.so");
+        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
+
+        try (var loader = new URLClassLoader(new URL[]{tempDir.toUri().toURL()}, getClass().getClassLoader())) {
+            var runner = new GdScriptBenchmarkRunner(loader, new RecordingCompiler(new CCompileResult(true, "ok", List.of(artifact))));
+            var error = assertThrows(AssertionError.class, () -> runner.compileBenchmarkCase("algorithm/blank_directive.gd"));
+            assertTrue(error.getMessage().contains("iterations="));
+            assertTrue(error.getMessage().contains("non-empty value"));
+        }
     }
 
     @Test

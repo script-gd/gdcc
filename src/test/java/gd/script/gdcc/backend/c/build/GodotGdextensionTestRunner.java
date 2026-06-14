@@ -28,6 +28,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
+import gd.script.gdcc.util.StringUtil;
+
 import static java.time.Duration.ofNanos;
 
 /// Prepares and runs the shared Godot GDExtension test project for Java integration tests.
@@ -106,12 +108,13 @@ public final class GodotGdextensionTestRunner {
         var targetPlatform = TargetPlatform.getNativePlatform();
         var dynamicLibrary = findDynamicLibrary(copiedArtifacts, librarySuffix(targetPlatform));
         var dynamicLibraryPath = testProjectDir.relativize(dynamicLibrary).toString();
-        writeGdextensionFile("res://" + dynamicLibraryPath, targetPlatform);
+        writeGdextensionFile("res://" + dynamicLibraryPath, setup.optimizationLevel(), targetPlatform);
         writeExtensionListFile();
+        writeScriptResources(setup.scriptResources());
         if (setup.testScript() != null) {
             writeTestScript(setup.testScript());
         }
-        writeMainScene(setup.sceneNodes(), setup.testScript());
+        writeMainScene(setup.sceneNodes(), setup.scriptResources(), setup.testScript());
     }
 
     /// Runs Godot with the default runtime options for the requested display mode.
@@ -286,21 +289,28 @@ public final class GodotGdextensionTestRunner {
     ///
     /// The generated scene is intentionally small: it only contains enough structure for Godot to
     /// instantiate the compiled classes and let the validation script exercise them.
-    private void writeMainScene(@NotNull List<SceneNodeSpec> sceneNodes, @Nullable TestScriptSpec testScript) throws IOException {
+    private void writeMainScene(
+            @NotNull List<SceneNodeSpec> sceneNodes,
+            @NotNull List<ScriptResourceSpec> scriptResources,
+            @Nullable TestScriptSpec testScript
+    ) throws IOException {
+        var scriptResourceIds = collectScriptResourceIds(sceneNodes, scriptResources, testScript);
         var content = new StringBuilder();
-        var loadSteps = testScript == null ? 2 : 3;
+        var loadSteps = 1 + scriptResourceIds.size();
         content.append("[gd_scene load_steps=").append(loadSteps).append(" format=3]\n\n");
         content.append("[ext_resource type=\"Script\" path=\"res://root.gd\" id=\"1_root\"]\n");
-        if (testScript != null) {
+        for (var entry : scriptResourceIds.entrySet()) {
             content.append("[ext_resource type=\"Script\" path=\"")
-                    .append(testScript.resourcePath())
-                    .append("\" id=\"2_test\"]\n");
+                    .append(entry.getKey())
+                    .append("\" id=\"")
+                    .append(entry.getValue())
+                    .append("\"]\n");
         }
         content.append("\n[node name=\"Root\" type=\"Node3D\"]\n");
         content.append("script = ExtResource(\"1_root\")\n\n");
 
         for (var sceneNode : sceneNodes) {
-            appendSceneNode(content, sceneNode);
+            appendSceneNode(content, sceneNode, scriptResourceIds);
         }
 
         if (testScript != null) {
@@ -308,16 +318,21 @@ public final class GodotGdextensionTestRunner {
                     testScript.nodeName(),
                     testScript.nodeType(),
                     testScript.parentPath(),
-                    Map.of("script", "ExtResource(\"2_test\")")
+                    Map.of(),
+                    testScript.resourcePath()
             );
-            appendSceneNode(content, scriptNode);
+            appendSceneNode(content, scriptNode, scriptResourceIds);
         }
 
         Files.writeString(mainScenePath, content.toString(), StandardCharsets.UTF_8);
     }
 
     /// Appends one scene node block to the generated `.tscn` file.
-    private static void appendSceneNode(@NotNull StringBuilder content, @NotNull SceneNodeSpec sceneNode) {
+    private static void appendSceneNode(
+            @NotNull StringBuilder content,
+            @NotNull SceneNodeSpec sceneNode,
+            @NotNull Map<String, String> scriptResourceIds
+    ) {
         content.append("[node name=\"")
                 .append(sceneNode.nodeName())
                 .append("\" type=\"")
@@ -325,10 +340,37 @@ public final class GodotGdextensionTestRunner {
                 .append("\" parent=\"")
                 .append(sceneNode.parentPath())
                 .append("\"]\n");
-        for (var property : sceneNode.properties().entrySet()) {
+        var properties = new LinkedHashMap<>(sceneNode.properties());
+        if (sceneNode.scriptResourcePath() != null) {
+            properties.put("script", "ExtResource(\"" + scriptResourceIds.get(sceneNode.scriptResourcePath()) + "\")");
+        }
+        for (var property : properties.entrySet()) {
             content.append(property.getKey()).append(" = ").append(property.getValue()).append("\n");
         }
         content.append("\n");
+    }
+
+    /// Writes the managed script resources that should exist as `res://` files before Godot loads the scene.
+    private void writeScriptResources(@NotNull List<ScriptResourceSpec> scriptResources) throws IOException {
+        clearManagedScriptRoots(scriptResources);
+        for (var scriptResource : scriptResources) {
+            scriptResource.writeToProject(testProjectDir);
+        }
+    }
+
+    /// Benchmark and runtime helpers can replace whole generated resource roots between cases so
+    /// stale scripts never survive from a previous scene layout.
+    private void clearManagedScriptRoots(@NotNull List<ScriptResourceSpec> scriptResources) throws IOException {
+        var roots = scriptResources.stream()
+                .map(scriptResource -> scriptResource.managedScriptRoot(testProjectDir))
+                .distinct()
+                .toList();
+        for (var root : roots) {
+            if (!Files.exists(root)) {
+                continue;
+            }
+            clearDirectory(root);
+        }
     }
 
     /// Writes the optional validation script into the Godot project as a `res://` resource.
@@ -512,12 +554,16 @@ public final class GodotGdextensionTestRunner {
     }
 
     /// Writes the generated `.gdextension` metadata that points Godot at the selected library.
-    private void writeGdextensionFile(@NotNull String libraryPath, @NotNull TargetPlatform targetPlatform) throws IOException {
+    private void writeGdextensionFile(
+            @NotNull String libraryPath,
+            @NotNull COptimizationLevel optimizationLevel,
+            @NotNull TargetPlatform targetPlatform
+    ) throws IOException {
         Files.writeString(
                 testProjectDir.resolve(GDEXTENSION_FILE_NAME),
                 GdextensionMetadataFile.render(
                         libraryPath.replace('\\', '/'),
-                        COptimizationLevel.DEBUG,
+                        optimizationLevel,
                         targetPlatform
                 ),
                 StandardCharsets.UTF_8
@@ -571,6 +617,35 @@ public final class GodotGdextensionTestRunner {
         };
     }
 
+    private static @NotNull Map<String, String> collectScriptResourceIds(
+            @NotNull List<SceneNodeSpec> sceneNodes,
+            @NotNull List<ScriptResourceSpec> scriptResources,
+            @Nullable TestScriptSpec testScript
+    ) throws IOException {
+        var declaredPaths = scriptResources.stream()
+                .map(ScriptResourceSpec::resourcePath)
+                .toList();
+        var scriptResourceIds = new LinkedHashMap<String, String>();
+        var nextIndex = 2;
+        for (var sceneNode : sceneNodes) {
+            if (sceneNode.scriptResourcePath() == null) {
+                continue;
+            }
+            if (!declaredPaths.contains(sceneNode.scriptResourcePath())) {
+                throw new IOException("Scene node script resource was not declared in ProjectSetup: " + sceneNode.scriptResourcePath());
+            }
+            scriptResourceIds.putIfAbsent(sceneNode.scriptResourcePath(), nextScriptResourceId(nextIndex++));
+        }
+        if (testScript != null) {
+            scriptResourceIds.putIfAbsent(testScript.resourcePath(), nextScriptResourceId(nextIndex));
+        }
+        return scriptResourceIds;
+    }
+
+    private static @NotNull String nextScriptResourceId(int index) {
+        return index + "_script";
+    }
+
     /// Event that completed the Java-side wait for a Godot run.
     ///
     /// `STOP_SIGNAL` is the normal success path for the unit-test runner. `PROCESS_EXIT` usually
@@ -591,13 +666,27 @@ public final class GodotGdextensionTestRunner {
             @NotNull String nodeName,
             @NotNull String nodeType,
             @NotNull String parentPath,
-            @NotNull Map<String, String> properties
+            @NotNull Map<String, String> properties,
+            @Nullable String scriptResourcePath
     ) {
         public SceneNodeSpec {
             nodeName = requireNotBlank(nodeName, "nodeName");
             nodeType = requireNotBlank(nodeType, "nodeType");
             parentPath = parentPath.isBlank() ? "." : parentPath;
             properties = new LinkedHashMap<>(Objects.requireNonNull(properties));
+            scriptResourcePath = normalizeScriptResourcePath(scriptResourcePath);
+            if (scriptResourcePath != null && properties.containsKey("script")) {
+                throw new IllegalArgumentException("SceneNodeSpec cannot set both properties.script and scriptResourcePath");
+            }
+        }
+
+        public SceneNodeSpec(
+                @NotNull String nodeName,
+                @NotNull String nodeType,
+                @NotNull String parentPath,
+                @NotNull Map<String, String> properties
+        ) {
+            this(nodeName, nodeType, parentPath, properties, null);
         }
     }
 
@@ -635,11 +724,23 @@ public final class GodotGdextensionTestRunner {
     public record ProjectSetup(
             @NotNull List<Path> artifacts,
             @NotNull List<SceneNodeSpec> sceneNodes,
-            @Nullable TestScriptSpec testScript
+            @NotNull List<ScriptResourceSpec> scriptResources,
+            @Nullable TestScriptSpec testScript,
+            @NotNull COptimizationLevel optimizationLevel
     ) {
         public ProjectSetup {
             artifacts = List.copyOf(Objects.requireNonNull(artifacts));
             sceneNodes = List.copyOf(Objects.requireNonNull(sceneNodes));
+            scriptResources = List.copyOf(Objects.requireNonNull(scriptResources));
+            Objects.requireNonNull(optimizationLevel);
+        }
+
+        public ProjectSetup(
+                @NotNull List<Path> artifacts,
+                @NotNull List<SceneNodeSpec> sceneNodes,
+                @Nullable TestScriptSpec testScript
+        ) {
+            this(artifacts, sceneNodes, List.of(), testScript, COptimizationLevel.DEBUG);
         }
     }
 
@@ -757,6 +858,13 @@ public final class GodotGdextensionTestRunner {
             throw new IllegalArgumentException(fieldName + " must not be blank");
         }
         return value;
+    }
+
+    private static @Nullable String normalizeScriptResourcePath(@Nullable String scriptResourcePath) {
+        if (scriptResourcePath == null || scriptResourcePath.isBlank()) {
+            return null;
+        }
+        return ScriptResourceSpec.validateResourcePath(StringUtil.requireNonBlank(scriptResourcePath, "scriptResourcePath"));
     }
 
     /// Returns the elapsed duration since a `System.nanoTime` sample.
