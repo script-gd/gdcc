@@ -1,0 +1,674 @@
+# Benchmark Test Suite Implementation Plan
+
+> This document is the implementation plan for the Godot-backed benchmark system under
+> `src/test/java/gd/script/gdcc/test_suite`. The system compares functions executed by Godot's
+> built-in GDScript interpreter with functions executed through gdcc-generated GDExtension classes,
+> and reports function-body timing after subtracting measured single-call overhead.
+
+## Document Status
+
+- Status: implementation plan
+- Updated: 2026-06-14
+- Scope:
+  - `src/test/java/gd/script/gdcc/test_suite/**`
+  - `src/test/test_suite/benchmark/**`
+  - shared runtime test infrastructure in `src/test/java/gd/script/gdcc/backend/c/build/**`
+  - benchmark-facing compile and GDExtension project preparation paths
+- Direct fact sources:
+  - `AGENTS.md`
+  - `doc/test_suite.md`
+  - `doc/test_error/test_suite_engine_integration_known_limits.md`
+  - `doc/test_error/string_stringname_test_suite_exposed_limits.md`
+  - `doc/module_impl/common_rules.md`
+  - `doc/module_impl/api/rpc_api_implementation.md`
+  - `doc/module_impl/cli/cli_implementation.md`
+  - `doc/gdcc_c_backend.md`
+  - `doc/gdcc_runtime_lib.md`
+  - `doc/gdcc_low_ir.md`
+  - `doc/gdcc_type_system.md`
+  - `doc/gdcc_ownership_lifecycle_spec.md`
+  - `doc/module_impl/backend/godot_binding_implementation.md`
+  - `doc/module_impl/backend/cbodybuilder_implementation.md`
+  - `doc/module_impl/backend/backend_ownership_lifecycle_contract.md`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunner.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptUnitTestCompileRunnerTest.java`
+  - `src/test/java/gd/script/gdcc/test_suite/GdScriptEngineVirtualOverrideRuntimeTest.java`
+  - `src/test/java/gd/script/gdcc/backend/c/build/GodotGdextensionTestRunner.java`
+  - `src/main/java/gd/script/gdcc/backend/c/build/CProjectBuilder.java`
+  - `src/main/java/gd/script/gdcc/backend/c/build/GdextensionMetadataFile.java`
+  - `src/main/java/gd/script/gdcc/backend/c/build/ZigUtil.java`
+  - `src/main/java/gd/script/gdcc/util/ResourceExtractor.java`
+- Explicit non-goals:
+  - Do not introduce JMH or a new build plugin.
+  - Do not modify Gradle build scripts.
+  - Do not measure frontend or native build performance in the same benchmark metric.
+  - Do not replace the existing correctness-oriented `unit_test` suite.
+  - Do not depend on the removed `gdextension-lite` vendor layout.
+  - Do not treat benchmark numbers as stable cross-machine regression thresholds in ordinary CI.
+
+---
+
+## 1. Purpose
+
+The benchmark suite provides a repeatable local harness for runtime performance comparisons:
+
+1. compile a benchmark GDScript source through gdcc into a native GDExtension artifact
+2. install the artifact into the reusable Godot test project
+3. install a matching interpreter-side GDScript script into the same project
+4. launch Godot through the existing Java runner
+5. run benchmark functions through both execution paths
+6. subtract measured single-call overhead from each sample
+7. aggregate multiple samples into mean, standard deviation, and per-path comparison data
+
+The benchmark system must stay inside the existing test-suite architecture. It should reuse the
+current resource discovery, native build, `.gdextension` generation, `extension_list.cfg` preparation,
+Godot process management, and skip behavior instead of creating another end-to-end runner stack.
+
+---
+
+## 2. Terminology
+
+- **Benchmark case**
+  - One resource-backed benchmark identified by a relative path under `benchmark/script`.
+- **Compiled target**
+  - The gdcc-compiled class mounted through GDExtension and invoked from Godot.
+- **Interpreter target**
+  - A regular GDScript class loaded by Godot's built-in interpreter.
+- **Measurement script**
+  - The Godot-side script that calls both targets, measures durations, prints machine-readable
+    results, and prints the shared stop signal path.
+- **Invocation overhead**
+  - The measured cost of crossing the same call path with a no-op or equivalent baseline function.
+- **Body time**
+  - `measured_duration - invocation_overhead`, clamped only by explicit reporting rules. Negative
+    raw adjusted samples must be reported, not silently hidden, until the caller decides whether a
+    benchmark is too small.
+- **Batch**
+  - One group of repeated calls measured as a single duration to reduce timer noise.
+- **Sample**
+  - One adjusted body-time value computed from a target batch and its overhead batch.
+- **Run**
+  - The full execution of all configured warmup batches and measurement samples for one case.
+
+---
+
+## 3. Placement
+
+### 3.1 Java Code
+
+Benchmark Java code belongs under `src/test/java/gd/script/gdcc/test_suite`.
+
+The planned package is:
+
+- `gd.script.gdcc.test_suite.benchmark`
+
+The package should contain cohesive internals rather than many thin files:
+
+- `GdScriptBenchmarkRunner`
+  - discovers benchmark resources
+  - compiles the gdcc target
+  - prepares the Godot project
+  - runs Godot
+  - parses benchmark result lines
+  - returns typed benchmark summaries
+- `GdScriptBenchmarkRunnerTest`
+  - JUnit entry point and resource-set contract
+  - skips when `zig` or `GODOT_BIN` is unavailable
+  - runs selected benchmark cases as dynamic tests
+- Small nested records inside the runner for metadata, samples, summaries, and parsed result lines.
+
+Do not add a service interface for the runner while there is only one implementation.
+
+### 3.2 Resource Layout
+
+Benchmark resources belong under `src/test/test_suite/benchmark`.
+
+Initial layout:
+
+- `src/test/test_suite/benchmark/script/**`
+  - gdcc-compiled benchmark sources
+- `src/test/test_suite/benchmark/interpreter/**`
+  - interpreter-side scripts with matching relative paths
+- `src/test/test_suite/benchmark/measurement/**`
+  - Godot-side measurement scripts with matching relative paths
+
+The runner should require the three files to exist for each benchmark case. A missing pair is a
+fixture error, not a skipped benchmark.
+
+If this three-directory shape proves too verbose during implementation, the runner may use one
+measurement template shared by all cases plus per-case metadata directives, but the first
+implementation should keep the interpreter target explicit so it can represent interpreter-only
+workarounds without changing compiled source semantics.
+
+---
+
+## 4. Benchmark Case Contract
+
+Each case must expose the same public benchmark surface from both targets:
+
+- `benchmark()`
+  - performs the work being measured
+  - returns a value or mutates state that the measurement script can validate
+- `baseline()`
+  - has the same receiver and call style as `benchmark()`
+  - performs no benchmark work
+  - returns a value compatible with the call path when needed
+- optional `prepare()`
+  - initializes reusable state before warmup and measurement
+- optional `check(result)`
+  - validates caller-visible behavior if the benchmark returns or mutates data
+
+Benchmark source must respect current frontend and backend limits:
+
+- avoid `for`, `match`, and `lambda` in compiled sources until frontend support lands
+- avoid array and dictionary literals in compiled sources where compile mode still rejects them
+- construct seed data with supported constructors and mutating methods
+- avoid typed dictionary overload patterns that can collide in generated wrapper helper names
+- validate caller-visible mutation when the measured function mutates state
+
+The benchmark case contract is intentionally function-level. Engine startup, resource loading,
+GDExtension initialization, and scene construction are excluded from the reported body-time metric.
+
+---
+
+## 5. Execution Contract
+
+### 5.1 Compile and Build
+
+The runner should follow the existing `GdScriptUnitTestCompileRunner` path:
+
+1. read the compiled source resource
+2. parse with `GdScriptParserService`
+3. lower with `FrontendLoweringPassManager`
+4. validate that the mounted root class is Godot-instantiable when the case needs a scene node
+5. build release native artifacts with `CCodegen` and `CProjectBuilder`
+6. assert successful build and keep build logs in failure output
+
+Runtime benchmark artifacts must use `COptimizationLevel.RELEASE`. Debug builds are acceptable only
+for troubleshooting compile or runtime failures outside benchmark measurement, and debug-run numbers
+must not be written to the benchmark JSON report or compared with interpreter timings.
+
+The generated native project must use the current runtime layout:
+
+- `entry.c`
+- `entry.h`
+- `engine_method_binds.h`
+- `godot/godot_binding.c`
+- extracted `godot/**` and `gdcc/**` helper sources
+
+The benchmark suite must not rely on `gdextension-lite`.
+
+### 5.2 Godot Project Preparation
+
+The runner should reuse `GodotGdextensionTestRunner.prepareProject(...)`:
+
+- copy native artifacts into `test_project/bin`
+- regenerate `GDExtensionTest.gdextension`
+- regenerate `.godot/extension_list.cfg`
+- regenerate `main.tscn`
+- install the measurement script as a `res://` resource
+
+The measurement scene should mount:
+
+- one compiled target node using the gdcc runtime class name
+- one interpreter target node using the interpreter script
+- one measurement script node that owns timing and reporting
+
+If the first implementation cannot attach an interpreter script through `SceneNodeSpec` properties
+without changing `GodotGdextensionTestRunner`, add the smallest necessary runner extension to support
+extra script resources and explicit scene-node `script` properties. Keep that extension generic and
+runtime-test oriented; benchmark semantics stay in `GdScriptBenchmarkRunner`.
+
+### 5.3 Godot Run
+
+The runner should call `GodotGdextensionTestRunner.run(...)` with configurable `RunOptions`.
+
+Default runtime behavior:
+
+- headless by default
+- process timeout higher than unit tests, because benchmark cases intentionally run repeated work
+- frame budget controlled by benchmark configuration
+- JUnit assumption skip when `GODOT_BIN` is missing
+
+Benchmark output must include a pass marker and the shared `TEST_STOP_SIGNAL`. Missing either marker
+is a test failure with full combined Godot output.
+
+---
+
+## 6. Measurement Contract
+
+### 6.1 Timer Source
+
+Godot-side timing should use Godot's monotonic time API from the measurement script. Java process
+timing is not acceptable for function-body measurements because it includes process scheduling,
+stream collection, and Godot lifecycle overhead.
+
+The measurement script must print all raw timing values needed to recompute summaries on the Java
+side. Java-side aggregation is preferred so parsing, validation, and report formatting remain under
+JUnit.
+
+### 6.2 Warmup
+
+Each execution path must run warmup batches before samples are recorded.
+
+Warmup requirements:
+
+- run compiled and interpreter paths in the same Godot process
+- run baseline and benchmark functions during warmup
+- do not include warmup data in mean or standard deviation
+- print warmup configuration in the result header
+
+### 6.3 Invocation Overhead Removal
+
+For each measured path and sample:
+
+1. run a baseline batch with the same receiver and call mechanism
+2. compute `overhead_per_call = baseline_duration / iterations`
+3. run a benchmark batch with the same iteration count
+4. compute `measured_per_call = benchmark_duration / iterations`
+5. compute `body_per_call = measured_per_call - overhead_per_call`
+
+The baseline must be measured independently for compiled and interpreter paths because their call
+mechanisms can differ. A single global overhead value is not valid.
+
+For very small benchmarks, `body_per_call` may be close to zero or negative after subtraction. The
+runner should report the raw adjusted value and mark the case as unstable if configured stability
+rules are violated; it should not silently clamp values to zero.
+
+### 6.4 Sampling
+
+Initial configuration should be explicit and easy to override:
+
+- warmup batches: 3
+- measurement samples: 10
+- iterations per batch: case-configurable, default 1,000
+- minimum batch duration warning: 1 ms
+
+Configuration can come from `# gdcc-benchmark:` directives in the measurement or benchmark source.
+The parser should mirror the existing `# gdcc-test:` style: strip directives before installing any
+script that Godot executes, keep unknown directives as Java-side fixture errors, and require
+non-blank directive values.
+
+Supported initial directives:
+
+- `name=<display-name>`
+- `iterations=<positive-int>`
+- `warmups=<non-negative-int>`
+- `samples=<positive-int>`
+- `min_batch_us=<positive-int>`
+- `output_contains=<text>`
+- `output_not_contains=<text>`
+
+Avoid fixed enum-style benchmark categories unless they are used by multiple cases immediately.
+
+### 6.5 Statistics
+
+Java-side aggregation must compute:
+
+- per-path sample count
+- per-path mean body time
+- per-path standard deviation using sample standard deviation
+- per-path minimum and maximum body time
+- compiled/interpreter ratio using mean body time
+- raw overhead mean for each path
+- warning flags for samples below minimum batch duration, negative adjusted values, and missing
+  behavior validation
+
+Use nanoseconds as the Java internal unit after parsing Godot output. Report human-readable values in
+microseconds or milliseconds only at formatting boundaries.
+
+---
+
+## 7. Output Contract
+
+Godot output should contain machine-readable result lines with stable prefixes.
+
+Initial line shape:
+
+```text
+GDCC_BENCHMARK_RESULT case=<path> path=<compiled|interpreter> sample=<index> iterations=<n> baseline_us=<n> benchmark_us=<n> body_ns=<n>
+```
+
+Java summary line shape:
+
+```text
+[gdcc-benchmark] case=<path> compiled.mean=<duration> compiled.stddev=<duration> interpreter.mean=<duration> interpreter.stddev=<duration> ratio=<number> samples=<n> iterations=<n>
+```
+
+The Java runner must also write a machine-readable JSON report after a successful benchmark run.
+The report is the durable data product; console lines are for fast local diagnosis.
+
+Default report path:
+
+```text
+tmp/test/test_suite/benchmark/report.json
+```
+
+The path should be configurable through a benchmark runner option or environment variable after the
+initial implementation, but the first implementation must keep the default under `tmp` so generated
+benchmark data never mixes with source fixtures.
+
+Initial JSON shape:
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-14T00:00:00Z",
+  "environment": {
+    "os": "Linux",
+    "arch": "x86_64",
+    "java_version": "25",
+    "godot_bin": "/path/to/godot",
+    "godot_version": "4.5.1",
+    "zig": "/path/to/zig",
+    "target_platform": "LINUX_X86_64",
+    "optimization": "RELEASE"
+  },
+  "config": {
+    "warmups": 3,
+    "samples": 10,
+    "iterations": 1000,
+    "min_batch_us": 1000
+  },
+  "cases": [
+    {
+      "case": "algorithm/int_loop.gd",
+      "name": "Integer loop",
+      "status": "passed",
+      "warnings": [],
+      "compiled": {
+        "samples": 10,
+        "mean_body_ns": 120.0,
+        "stddev_body_ns": 8.5,
+        "min_body_ns": 108,
+        "max_body_ns": 134,
+        "mean_overhead_ns": 35.0,
+        "raw_samples": [
+          {
+            "sample": 0,
+            "iterations": 1000,
+            "baseline_us": 35,
+            "benchmark_us": 155,
+            "body_ns": 120
+          }
+        ]
+      },
+      "interpreter": {
+        "samples": 10,
+        "mean_body_ns": 950.0,
+        "stddev_body_ns": 50.0,
+        "min_body_ns": 880,
+        "max_body_ns": 1010,
+        "mean_overhead_ns": 42.0,
+        "raw_samples": []
+      },
+      "ratio": {
+        "compiled_to_interpreter_mean": 0.1263,
+        "interpreter_to_compiled_mean": 7.9167
+      }
+    }
+  ]
+}
+```
+
+JSON field rules:
+
+- `schema_version` is a positive integer and must change on incompatible report-shape changes.
+- `generated_at` uses UTC ISO-8601 text.
+- `environment` captures enough toolchain context to compare local runs without guessing.
+- `cases[*].status` is `passed`, `failed`, or `skipped`; failed cases may omit runtime statistics
+  but must include enough diagnostic text to identify the failure.
+- `raw_samples` contains adjusted sample inputs and outputs. It may be omitted only when a later
+  explicit `include_raw_samples=false` option is added.
+- all durations inside JSON use numeric nanoseconds or microseconds according to the field suffix;
+  JSON must not store formatted duration strings such as `"1.23ms"`.
+- paths inside JSON use forward slashes for stable cross-platform comparison.
+
+The JUnit test should fail for malformed result lines, missing samples, inconsistent iteration
+counts, missing pass markers, failed output expectations, and Godot timeout. It should not fail
+solely because one runtime path is slower than the other unless an explicit per-case threshold is
+added later.
+
+---
+
+## 8. Implementation Steps
+
+### Step 1: Define Fixture Layout and Resource Discovery
+
+Implement benchmark resource roots and discovery in `GdScriptBenchmarkRunner`.
+
+Tasks:
+
+- add constants for `benchmark/script`, `benchmark/interpreter`, and `benchmark/measurement`
+- list compiled benchmark scripts with `ResourceExtractor.listResourceFilesRecursively(...)`
+- require matching interpreter and measurement resources for every relative path
+- add a JUnit resource-set contract in `GdScriptBenchmarkRunnerTest`
+
+Acceptance:
+
+- an empty benchmark directory fails with a clear fixture message only when the benchmark test is
+  explicitly run
+- a missing interpreter or measurement counterpart reports the exact relative path
+- resource ordering is stable across runs
+
+### Step 2: Reuse Compile and Native Build Flow
+
+Extract only the needed logic from `GdScriptUnitTestCompileRunner` or keep it private in the new
+runner if sharing would create awkward abstractions.
+
+Tasks:
+
+- parse and lower each compiled benchmark source
+- build a release native library through `CProjectBuilder` with `COptimizationLevel.RELEASE`
+- preserve build timing and build log in result records
+- require Zig with the same assumption style as existing runtime tests
+
+Acceptance:
+
+- a minimal benchmark source produces a dynamic library artifact
+- benchmark measurement artifacts are built with release optimization, not debug optimization
+- build failures include the native build log
+- generated project outputs use the current runtime layout, not `gdextension-lite`
+- no new public abstraction is introduced for a single implementation
+
+### Step 3: Prepare a Dual-Target Godot Scene
+
+Extend or reuse `GodotGdextensionTestRunner` so one Godot project contains both execution paths.
+
+Tasks:
+
+- mount the compiled target by runtime class name
+- install the interpreter target script as a resource
+- mount an interpreter node with that script attached
+- install and mount the measurement script
+- keep project preparation destructive only inside generated files and `bin`
+
+Acceptance:
+
+- Godot loads the generated GDExtension through regenerated `.gdextension` and `extension_list.cfg`
+- the measurement script can call both compiled and interpreter targets in one process
+- stale artifacts from prior benchmark cases do not affect the current case
+
+### Step 4: Implement Godot-Side Measurement Protocol
+
+Create the initial measurement script template and per-case contract.
+
+Tasks:
+
+- run warmup batches for both paths
+- measure baseline and benchmark batches independently for each path
+- print `GDCC_BENCHMARK_RESULT` lines for every sample
+- print a per-case pass marker after behavior validation succeeds
+- print or trigger the shared stop path expected by `GodotGdextensionTestRunner`
+
+Acceptance:
+
+- Java can reconstruct every sample without relying on human-readable text
+- missing or malformed result lines fail the JUnit test
+- behavior validation happens before the pass marker
+- baseline and benchmark calls use the same receiver and call mechanism for each path
+
+### Step 5: Parse Results and Compute Statistics
+
+Implement Java-side parsing, aggregation, and JSON report generation in the benchmark runner.
+
+Tasks:
+
+- parse all result lines from combined Godot output
+- group samples by case and path
+- validate sample counts and iteration consistency
+- compute mean, sample standard deviation, min, max, overhead mean, and ratio
+- report warnings for short batches, negative adjusted samples, and missing checks
+- write `tmp/test/test_suite/benchmark/report.json` with `schema_version`, environment, config,
+  per-case statistics, ratio data, warnings, and raw samples
+
+Acceptance:
+
+- a deterministic fake output unit test validates parsing and statistics without launching Godot
+- a deterministic report writer unit test validates JSON shape and numeric duration fields without
+  launching Godot
+- standard deviation uses the sample formula when sample count is greater than one
+- one-sample cases report zero or unavailable standard deviation consistently
+- malformed numeric fields produce actionable failure messages
+- report JSON can be parsed back by Java tests and contains every benchmark case that was selected
+  for the run
+- generated JSON uses forward-slash paths and does not contain formatted duration strings
+
+### Step 6: Add Initial Benchmark Cases
+
+Add a minimal set of representative fixtures.
+
+Initial cases:
+
+- integer arithmetic loop using `while`
+- string or `StringName` operation that avoids known typed-dictionary helper collisions
+- object or container mutation case that validates caller-visible state
+
+Acceptance:
+
+- cases avoid unsupported frontend constructs
+- each case has compiled, interpreter, and measurement resources
+- each case prints both compiled and interpreter samples
+- at least one case validates mutation visible to the caller
+
+### Step 7: Add Focused JUnit Entrypoints
+
+Add targeted tests rather than running benchmarks as part of every ordinary unit-test pass.
+
+Tasks:
+
+- add a dynamic-test class for benchmark cases
+- add a parser/statistics unit test that runs without Godot
+- skip runtime benchmark tests when Zig or `GODOT_BIN` is unavailable
+- make benchmark execution opt-in if runtime cost is too high for routine targeted tests
+
+Acceptance:
+
+- `script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkRunnerTest` runs the benchmark
+  harness on machines with Zig and `GODOT_BIN`
+- machines without Zig or `GODOT_BIN` skip runtime benchmark tests via JUnit assumptions
+- parser/statistics tests run without external tools
+
+### Step 8: Document Operator Workflow
+
+Add a short operator note after implementation lands.
+
+Tasks:
+
+- document required environment variables
+- document targeted Gradle command
+- document output line format and interpretation
+- document JSON report path, schema version, unit conventions, and whether raw samples are included
+- document that benchmark measurements use release native artifacts and debug builds are only for
+  troubleshooting
+- document that local benchmark numbers are not CI regression thresholds
+
+Acceptance:
+
+- a developer can run one benchmark class from repository root
+- output includes case name, mean, standard deviation, and ratio
+- `tmp/test/test_suite/benchmark/report.json` can be consumed by scripts without scraping console
+  output
+- troubleshooting notes mention Godot binary, Zig, timeout, and unsupported frontend constructs
+
+---
+
+## 9. Validation Matrix
+
+Required validation before considering the benchmark system implemented:
+
+- Resource contract:
+  - compiled, interpreter, and measurement resources are paired by relative path
+  - missing pair failures identify the exact file
+- Compile path:
+  - frontend diagnostics fail the case
+  - native benchmark artifacts use `COptimizationLevel.RELEASE`
+  - native build diagnostics fail the case with build log
+  - generated artifacts are copied into the Godot project
+- Runtime path:
+  - Godot process starts from `GODOT_BIN`
+  - stop signal is seen
+  - pass marker is seen
+  - timeout fails with combined output
+- Measurement path:
+  - each runtime path has the configured sample count
+  - each sample contains baseline and benchmark durations
+  - call overhead is subtracted per path and per sample
+  - mean and standard deviation are computed on adjusted body times
+- Reporting path:
+  - summary line is stable enough for log collection
+  - JSON report is written to `tmp/test/test_suite/benchmark/report.json` by default
+  - JSON report contains schema version, environment, config, case summaries, ratios, warnings, and
+    raw samples
+  - JSON report records `environment.optimization` as `RELEASE` for measured compiled results
+  - JSON report stores numeric duration values with explicit unit suffixes rather than formatted
+    strings
+  - JSON report can be parsed by a focused unit test without launching Godot
+  - warnings are visible but do not become hard failures unless the case opts in
+- Environment behavior:
+  - missing Zig skips runtime benchmark tests
+  - missing `GODOT_BIN` skips runtime benchmark tests
+  - parser/statistics unit tests do not require Zig or Godot
+
+---
+
+## 10. Risks and Controls
+
+- Timer noise:
+  - measure batches instead of single calls
+  - warn when batch duration is too small
+  - keep raw samples available in failure output
+- Godot startup and scene overhead:
+  - measure inside Godot after scene setup
+  - exclude Java process timing from body-time metrics
+- Call path asymmetry:
+  - measure separate baselines for compiled and interpreter targets
+  - require baseline and benchmark to use the same receiver and invocation style per path
+- Fixture drift:
+  - keep an explicit resource-set contract test
+  - fail on missing counterpart resources
+- Existing compiler limits:
+  - restrict initial benchmark sources to supported constructs
+  - keep interpreter workarounds in interpreter resources, not in compiled sources
+- Lifecycle-sensitive benchmark cases:
+  - validate caller-visible mutation and object/container state after timing
+  - do not use benchmark cases as a substitute for ownership correctness tests
+- Runtime dependency instability:
+  - use JUnit assumptions for missing tools
+  - keep benchmark tests targeted and opt-in for local performance work
+
+---
+
+## 11. Open Decisions
+
+- Whether benchmark runtime tests should always run when targeted, or require an opt-in environment
+  variable such as `GDCC_RUN_BENCHMARKS=1`.
+- Whether result summaries should also be written to a file under `tmp/test/test_suite/benchmark`
+- Whether JSON report history should keep timestamped files in addition to the default latest
+  `report.json`.
+- Whether raw sample arrays should be optional for very large benchmark runs after the initial
+  implementation.
+- Whether future compile-time benchmarks should share resource layout with runtime benchmarks or
+  use a separate `benchmark/compile` root to avoid mixing metrics.
+- Whether benchmark thresholds should ever become CI gates. The initial plan explicitly avoids this
+  because local Godot and native compiler performance is machine-dependent.
