@@ -45,6 +45,16 @@ public final class GdextensionMetadataFile {
             @NotNull COptimizationLevel optimizationLevel,
             @NotNull TargetPlatform targetPlatform
     ) {
+        var key = libraryKey(optimizationLevel, targetPlatform);
+        var compatibilityKeys = compatibilityLibraryKeys(targetPlatform);
+        var libraries = new StringBuilder();
+        libraries.append(key).append(" = \"").append(Objects.requireNonNull(libraryPath, "libraryPath must not be null")).append("\"");
+        for (var compatibilityKey : compatibilityKeys) {
+            if (compatibilityKey.equals(key)) {
+                continue;
+            }
+            libraries.append("\n").append(compatibilityKey).append(" = \"").append(libraryPath).append("\"");
+        }
         return """
                 [configuration]
                 
@@ -52,12 +62,11 @@ public final class GdextensionMetadataFile {
                 compatibility_minimum = "%s"
                 
                 [libraries]
-                %s = "%s"
+                %s
                 """.formatted(
                 ENTRY_SYMBOL,
                 COMPATIBILITY_MINIMUM,
-                libraryKey(optimizationLevel, targetPlatform),
-                Objects.requireNonNull(libraryPath, "libraryPath must not be null")
+                libraries
         );
     }
 
@@ -79,6 +88,14 @@ public final class GdextensionMetadataFile {
             case ANDROID_X86_64, ANDROID_AARCH64 -> "android";
             case WEB_WASM32 -> "web";
         };
+    }
+
+    private static @NotNull java.util.List<String> compatibilityLibraryKeys(@NotNull TargetPlatform targetPlatform) {
+        var feature = platformFeature(targetPlatform);
+        return java.util.List.of(
+                feature + ".release",
+                feature + ".debug"
+        );
     }
 
     private static @NotNull String pathText(@NotNull Path path) {

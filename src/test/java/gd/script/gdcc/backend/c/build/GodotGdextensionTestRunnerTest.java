@@ -89,7 +89,7 @@ public class GodotGdextensionTestRunnerTest {
         var gdextensionText = Files.readString(projectDir.resolve("GDExtensionTest.gdextension"), StandardCharsets.UTF_8);
         assertTrue(gdextensionText.contains("[libraries]"));
         assertTrue(gdextensionText.contains(".release = "), gdextensionText);
-        assertFalse(gdextensionText.contains(".debug = "), gdextensionText);
+        assertTrue(gdextensionText.contains(".debug = "), gdextensionText);
     }
 
     @Test

@@ -565,6 +565,35 @@ Acceptance:
 
 Create the initial measurement script template and per-case contract.
 
+Implementation status:
+
+- Status: completed on 2026-06-14
+- Deliverables:
+  - replaced `src/test/test_suite/benchmark/measurement/algorithm/int_loop.gd`
+    with the Step 4 measurement protocol:
+    - emits one `GDCC_BENCHMARK_HEADER` line with encoded case metadata
+    - runs warmup batches for compiled and interpreter targets in the same Godot process
+    - measures baseline and benchmark batches independently per path
+    - emits one `GDCC_BENCHMARK_RESULT` line per sample with
+      `case/path/sample/iterations/baseline_us/benchmark_us/body_ns/check_*`
+    - prints the benchmark pass marker and exits through the shared `root.gd` shutdown path
+  - extended `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunner.java`
+    so benchmark directives are parsed into structured config and substituted into the
+    installed measurement script
+  - added focused protocol tests in
+    `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+    for:
+    - directive parsing and validation
+    - measurement script placeholder substitution
+    - malformed / missing result protocol failures
+- Notes:
+  - header `name` is URL-encoded so machine-readable fields remain whitespace-safe without
+    inventing a second delimiter layer
+  - the protocol reports negative adjusted body samples as-is; warning/instability handling stays
+    in Java-side aggregation rather than clamping in GDScript
+  - behavior checks are evaluated per sample and reported as structured booleans so Java can fail
+    precisely on a protocol violation instead of scraping free-form text
+
 Tasks:
 
 - run warmup batches for both paths
@@ -583,6 +612,41 @@ Acceptance:
 ### Step 5: Parse Results and Compute Statistics
 
 Implement Java-side parsing, aggregation, and JSON report generation in the benchmark runner.
+
+Implementation status:
+
+- Status: completed on 2026-06-14
+- Deliverables:
+  - extended `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunner.java`
+    with:
+    - compile + prepare + Godot run orchestration for benchmark cases
+    - machine-readable result parsing and validation
+    - per-path aggregation of mean / sample stddev / min / max / overhead mean
+    - warning generation for negative adjusted samples, short batches, and missing checks
+    - summary-line formatting
+    - JSON report writing to `tmp/test/test_suite/benchmark/report.json`
+  - added deterministic parser/statistics/report tests in
+    `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+    covering:
+    - successful aggregation with warnings
+    - malformed numeric field failure
+    - missing pass marker failure
+    - inconsistent sample-count failure
+    - failed behavior-check failure
+    - JSON field shape and numeric duration serialization
+  - added a real runtime benchmark integration test in
+    `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+    that compiles, runs, parses, and persists the bundled benchmark case when Zig and `GODOT_BIN`
+    are available
+  - updated `src/main/java/gd/script/gdcc/backend/c/build/GdextensionMetadataFile.java`
+    and `src/test/java/gd/script/gdcc/backend/c/build/GodotGdextensionTestRunnerTest.java`
+    so runtime launches can resolve the generated benchmark extension through both platform
+    debug/release keys while still measuring release-built native artifacts
+- Notes:
+  - report JSON now uses snake_case field names where the plan requires them, while Java records
+    keep concise camelCase accessors
+  - summary lines stay human-oriented and duration-unit formatted; JSON remains numeric-only
+  - benchmark runtime tests still rely on JUnit assumptions for missing Zig or `GODOT_BIN`
 
 Tasks:
 
