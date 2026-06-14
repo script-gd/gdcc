@@ -437,6 +437,25 @@ added later.
 
 Implement benchmark resource roots and discovery in `GdScriptBenchmarkRunner`.
 
+Implementation status:
+
+- Status: completed on 2026-06-14
+- Deliverables:
+  - added `gd.script.gdcc.test_suite.benchmark.GdScriptBenchmarkRunner`
+  - added benchmark resource roots under `src/test/test_suite/benchmark/{script,interpreter,measurement}`
+  - added `GdScriptBenchmarkRunnerTest` resource-set contract coverage for:
+    - bundled expected resource list
+    - empty benchmark directory failure
+    - missing interpreter counterpart failure
+    - missing measurement counterpart failure
+    - unexpected counterpart resource failure
+    - stable sorted ordering across duplicate classpath roots
+- Notes:
+  - counterpart validation currently enforces exact set equality between compiled script paths and
+    interpreter / measurement paths so fixture drift fails before compile or runtime work starts
+  - resource discovery keeps the existing `ResourceExtractor.listResourceFilesRecursively(...)`
+    ordering contract instead of introducing benchmark-specific sorting logic
+
 Tasks:
 
 - add constants for `benchmark/script`, `benchmark/interpreter`, and `benchmark/measurement`
@@ -455,6 +474,29 @@ Acceptance:
 
 Extract only the needed logic from `GdScriptUnitTestCompileRunner` or keep it private in the new
 runner if sharing would create awkward abstractions.
+
+Implementation status:
+
+- Status: completed on 2026-06-14
+- Deliverables:
+  - reused parse + lower flow inside `GdScriptBenchmarkRunner`
+  - reused `CCodegen` + `CProjectBuilder` native build path with `COptimizationLevel.RELEASE`
+  - preserved build timing and build log in `GdScriptBenchmarkRunner.CaseBuildResult`
+  - added minimal benchmark fixture `algorithm/int_loop.gd` for compiled / interpreter /
+    measurement resource pairing
+  - added `GdScriptBenchmarkRunnerTest` coverage for:
+    - release optimization selection
+    - dynamic library artifact creation
+    - current runtime layout generation via `entry.h`
+    - native build failure message including build log
+    - targeted release-build execution when Zig is available
+- Notes:
+  - the new runner keeps benchmark-specific state in nested records instead of introducing another
+    public compile/build abstraction
+  - the release-build tests inject a recording `CCompiler` to lock the optimization contract
+    without depending on Godot runtime execution
+  - runtime project preparation and measurement execution remain for later steps; Step 2 stops at
+    producing validated release artifacts with retained diagnostics
 
 Tasks:
 
