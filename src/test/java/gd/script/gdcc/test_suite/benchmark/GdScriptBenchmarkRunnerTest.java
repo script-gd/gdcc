@@ -23,6 +23,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -491,7 +492,7 @@ class GdScriptBenchmarkRunnerTest {
 
         assertTrue(algorithmDir.startsWith(runtimeRoot));
         assertTrue(collectionDir.startsWith(runtimeRoot));
-        assertFalse(algorithmDir.equals(collectionDir));
+        assertNotEquals(algorithmDir, collectionDir);
         assertTrue(algorithmDir.toString().endsWith("algorithm_int_loop"));
         assertTrue(collectionDir.toString().endsWith("collection_array_mutation"));
     }
@@ -506,7 +507,7 @@ class GdScriptBenchmarkRunnerTest {
         assertTrue(mathReport.startsWith(reportRoot));
         assertEquals(Path.of("tmp/test/test_suite/benchmark/report-algorithm-int_loop.json"), algorithmReport);
         assertEquals(Path.of("tmp/test/test_suite/benchmark/report-math-newton_sqrt.json"), mathReport);
-        assertFalse(algorithmReport.equals(mathReport));
+        assertNotEquals(algorithmReport, mathReport);
     }
 
     @Test
@@ -660,6 +661,90 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
+    void renderReportJsonShouldRetainWarningsRawSamplesAndCombinedOutput() {
+        var report = new BenchmarkReport(
+                1,
+                "2026-06-15T00:00:00Z",
+                new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
+                new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
+                List.of(new BenchmarkReport.CaseSummary(
+                        "runtime/stringname_roundtrip.gd",
+                        "StringName roundtrip",
+                        "passed",
+                        List.of(GdScriptBenchmarkRunner.WARNING_NEGATIVE_BODY + ":compiled:1"),
+                        new BenchmarkReport.PathStatistics(
+                                2,
+                                12.0,
+                                3.0,
+                                9,
+                                15,
+                                4.0,
+                                List.of(
+                                        new BenchmarkReport.RawSample(0, 1000, 4, 16, 12),
+                                        new BenchmarkReport.RawSample(1, 1000, 5, 14, 9)
+                                ),
+                                List.of(GdScriptBenchmarkRunner.WARNING_SHORT_BATCH + ":compiled:0")
+                        ),
+                        new BenchmarkReport.PathStatistics(
+                                2,
+                                24.0,
+                                1.0,
+                                23,
+                                25,
+                                6.0,
+                                List.of(new BenchmarkReport.RawSample(0, 1000, 6, 30, 24)),
+                                List.of(GdScriptBenchmarkRunner.WARNING_MISSING_CHECK + ":interpreter:0")
+                        ),
+                        new BenchmarkReport.RatioSummary(0.5, 2.0),
+                        true,
+                        List.of("godot", "--headless"),
+                        "GDCC_BENCHMARK_RESULT case=runtime/stringname_roundtrip.gd"
+                ))
+        );
+
+        var root = JsonParser.parseString(BenchmarkReportWriter.renderReportJson(report)).getAsJsonObject();
+        var caseObject = root.getAsJsonArray("cases").get(0).getAsJsonObject();
+        assertEquals(
+                "GDCC_BENCHMARK_RESULT case=runtime/stringname_roundtrip.gd",
+                caseObject.get("combined_output").getAsString()
+        );
+        assertEquals(
+                GdScriptBenchmarkRunner.WARNING_NEGATIVE_BODY + ":compiled:1",
+                caseObject.getAsJsonArray("warnings").get(0).getAsString()
+        );
+        var compiled = caseObject.getAsJsonObject("compiled");
+        assertEquals(2, compiled.getAsJsonArray("raw_samples").size());
+        assertEquals(
+                GdScriptBenchmarkRunner.WARNING_SHORT_BATCH + ":compiled:0",
+                compiled.getAsJsonArray("warnings").get(0).getAsString()
+        );
+        assertEquals(16, compiled.getAsJsonArray("raw_samples").get(0).getAsJsonObject().get("benchmark_us").getAsInt());
+        assertEquals(0.5, caseObject.getAsJsonObject("ratio").get("compiled_to_interpreter_mean").getAsDouble());
+    }
+
+    @Test
+    void summaryLineShouldRenderInfiniteRatioWhenInterpreterMeanIsZero() {
+        var summary = new BenchmarkReport.CaseSummary(
+                "runtime/stringname_roundtrip.gd",
+                "StringName roundtrip",
+                "passed",
+                List.of(),
+                new BenchmarkReport.PathStatistics(1, 250.0, 0.0, 250, 250, 10.0, List.of(), List.of()),
+                new BenchmarkReport.PathStatistics(1, 0.0, 0.0, 0, 0, 8.0, List.of(), List.of()),
+                new BenchmarkReport.RatioSummary(Double.POSITIVE_INFINITY, 0.0),
+                true,
+                List.of("godot", "--headless"),
+                "output"
+        );
+        var config = new BenchmarkReport.ReportConfig(3, 1, 20_000, 1_000);
+
+        assertEquals(
+                "[gdcc-benchmark] case=runtime/stringname_roundtrip.gd compiled.mean=0.250us compiled.stddev=0.000us interpreter.mean=0.000us interpreter.stddev=0.000us ratio=inf samples=1 iterations=20000",
+                GdScriptBenchmarkRunner.summaryLine(summary, config)
+        );
+    }
+
+    @Test
     void writeReportShouldCreateParentDirectoriesAndPersistJson(@TempDir Path tempDir) throws Exception {
         var report = new BenchmarkReport(
                 1,
@@ -687,6 +772,20 @@ class GdScriptBenchmarkRunnerTest {
         var root = JsonParser.parseString(Files.readString(reportPath)).getAsJsonObject();
         assertEquals(1, root.get("schema_version").getAsInt());
         assertEquals("collection/array_mutation.gd", root.getAsJsonArray("cases").get(0).getAsJsonObject().get("case").getAsString());
+    }
+
+    @Test
+    void benchmarkRuntimeEnvGateShouldAcceptOnlyDocumentedTruthyValues() {
+        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("1"));
+        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("true"));
+        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("YES"));
+        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("On"));
+
+        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue(null));
+        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue(""));
+        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("0"));
+        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("false"));
+        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("enabled"));
     }
 
     private static void writeBenchmarkFixture(@NotNull Path root, @NotNull String relativePath, @NotNull String measurementScript) throws IOException {

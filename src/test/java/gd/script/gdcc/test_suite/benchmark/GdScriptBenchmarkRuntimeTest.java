@@ -131,7 +131,12 @@ class GdScriptBenchmarkRuntimeTest {
     }
 
     private static boolean benchmarkRuntimeEnabled() {
-        var value = System.getenv(RUN_BENCHMARKS_ENV);
+        return isEnabledEnvValue(System.getenv(RUN_BENCHMARKS_ENV));
+    }
+
+    /// Keeps the accepted opt-in values explicit so the runtime gate and the operator guide stay
+    /// anchored to the same contract.
+    static boolean isEnabledEnvValue(String value) {
         if (value == null) {
             return false;
         }

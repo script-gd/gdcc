@@ -779,6 +779,28 @@ Acceptance:
 
 Add a short operator note after implementation lands.
 
+Implementation status:
+
+- Status: completed on 2026-06-15
+- Deliverables:
+  - added `doc/benchmark.md` as the benchmark operator guide covering:
+    - required runtime environment variables and opt-in gate
+    - targeted Gradle commands for pure Java contract tests and Godot-backed runtime tests
+    - machine-readable output line formats, summary-line interpretation, and stop-signal behavior
+    - JSON report path, schema version, unit conventions, retained raw samples, and durable-data guidance
+    - release-vs-debug interpretation rules and current warning categories
+    - fixture limits and troubleshooting notes for Zig, `GODOT_BIN`, timeout, and unsupported constructs
+  - added focused Step 8 contract tests in:
+    - `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+    - `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRuntimeTest.java`
+- Notes:
+  - the operator guide is intentionally user-facing and documents current contracts instead of
+    re-explaining the whole implementation pipeline
+  - runtime benchmark execution remains opt-in through `GDCC_RUN_BENCHMARKS`; missing Zig or
+    `GODOT_BIN` continue to skip runtime tests through JUnit assumptions
+  - console summary lines are documented as quick diagnostics only; the per-case JSON report remains
+    the durable artifact for scripts and follow-up analysis
+
 Tasks:
 
 - document required environment variables
@@ -788,6 +810,7 @@ Tasks:
 - document that benchmark measurements use release native artifacts and debug builds are only for
   troubleshooting
 - document that local benchmark numbers are not CI regression thresholds
+- an overall detail document at doc/benchmark.md
 
 Acceptance:
 
