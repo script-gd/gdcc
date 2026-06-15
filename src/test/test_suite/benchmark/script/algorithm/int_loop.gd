@@ -1,7 +1,7 @@
 class_name BenchmarkIntLoop
 extends Node
 
-var _seed := 0
+var _seed: int = 0
 
 func prepare() -> void:
     _seed = 1

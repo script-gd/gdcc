@@ -31,6 +31,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -56,7 +57,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /// - `# gdcc-benchmark:` directives are parsed on the Java side and stripped before scripts are
 ///   installed into the project.
 /// - Godot emits one machine-readable line per measured sample.
-/// - Java validates, aggregates, and persists the structured result into `tmp/test/.../report.json`.
+/// - Java validates, aggregates, and persists the structured result into a per-case
+///   `tmp/test/.../report-<case>.json` file.
 public final class GdScriptBenchmarkRunner {
     public static final String SCRIPT_RESOURCE_ROOT = "benchmark/script";
     public static final String INTERPRETER_RESOURCE_ROOT = "benchmark/interpreter";
@@ -83,7 +85,7 @@ public final class GdScriptBenchmarkRunner {
     static final String BENCHMARK_OUTPUT_NOT_CONTAINS_DIRECTIVE = "output_not_contains=";
 
     private static final Path WORK_ROOT = Path.of("tmp/test/test_suite/benchmark");
-    private static final Path REPORT_PATH = WORK_ROOT.resolve("report.json");
+    private static final Path RUNTIME_PROJECT_TEMPLATE_DIR = Path.of("test_project");
     private static final int DEFAULT_ITERATIONS = 1_000;
     private static final int DEFAULT_WARMUPS = 3;
     private static final int DEFAULT_SAMPLES = 10;
@@ -187,7 +189,8 @@ public final class GdScriptBenchmarkRunner {
 
         var totalStart = System.nanoTime();
         var buildResult = compileBenchmarkCase(scriptResourcePath);
-        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        var runtimeProjectDir = prepareRuntimeProjectDirectory(scriptResourcePath);
+        var runner = new GodotGdextensionTestRunner(runtimeProjectDir);
         var projectPrepareStart = System.nanoTime();
         runner.prepareProject(buildResult.projectSetup());
         var projectPrepareDuration = elapsedSince(projectPrepareStart);
@@ -202,7 +205,8 @@ public final class GdScriptBenchmarkRunner {
         );
 
         var report = parseCaseOutput(scriptResourcePath, buildResult.config(), runResult, combinedOutput);
-        BenchmarkReportWriter.writeReport(REPORT_PATH, report);
+        var reportPath = reportPathForCase(scriptResourcePath);
+        BenchmarkReportWriter.writeReport(reportPath, report);
         System.out.println(summaryLine(report.cases().getFirst(), report.config()));
         var outputValidationDuration = elapsedSince(outputValidationStart);
         var timing = new CaseRuntimeResult.Timing(
@@ -212,7 +216,34 @@ public final class GdScriptBenchmarkRunner {
                 outputValidationDuration,
                 elapsedSince(totalStart)
         );
-        return new CaseRuntimeResult(buildResult, runResult, report, REPORT_PATH, timing);
+        return new CaseRuntimeResult(buildResult, runResult, report, reportPath, timing);
+    }
+
+    /// Benchmarks reuse the checked-in Godot fixture as a template but run each case inside its own
+    /// generated project directory so late process shutdown from a previous case cannot rewrite the
+    /// next case's scene or scripts.
+    static @NotNull Path prepareRuntimeProjectDirectory(@NotNull String scriptResourcePath) throws IOException {
+        var targetDir = runtimeProjectDirForCase(scriptResourcePath);
+        if (Files.exists(targetDir)) {
+            clearDirectory(targetDir);
+        }
+        Files.createDirectories(targetDir);
+        copyDirectory(RUNTIME_PROJECT_TEMPLATE_DIR, targetDir);
+        return targetDir;
+    }
+
+    static @NotNull Path runtimeProjectDirForCase(@NotNull String scriptResourcePath) {
+        return WORK_ROOT.resolve("runtime").resolve(sanitizeCaseName(stripExtension(scriptResourcePath)));
+    }
+
+    static @NotNull Path reportPathForCase(@NotNull String scriptResourcePath) {
+        return WORK_ROOT.resolve(reportFileNameForCase(scriptResourcePath));
+    }
+
+    /// Report file names keep the benchmark category readable while avoiding collisions across cases.
+    static @NotNull String reportFileNameForCase(@NotNull String scriptResourcePath) {
+        var base = stripExtension(scriptResourcePath);
+        return "report-" + base.replace('\\', '-').replace('/', '-').replace(':', '-').replace('.', '-') + ".json";
     }
 
     static @NotNull GodotGdextensionTestRunner.RunOptions defaultRunOptions() {
@@ -601,6 +632,35 @@ public final class GdScriptBenchmarkRunner {
     /// Keeps per-case build directories readable while remaining safe on Windows paths.
     private static @NotNull String sanitizeCaseName(@NotNull String caseName) {
         return caseName.replace('\\', '_').replace('/', '_').replace(':', '_').replace('.', '_');
+    }
+
+    private static void copyDirectory(@NotNull Path sourceDir, @NotNull Path targetDir) throws IOException {
+        try (var walk = Files.walk(sourceDir)) {
+            for (var source : walk.toList()) {
+                var relative = sourceDir.relativize(source);
+                var target = targetDir.resolve(relative);
+                if (Files.isDirectory(source)) {
+                    Files.createDirectories(target);
+                    continue;
+                }
+                var parent = target.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+            }
+        }
+    }
+
+    private static void clearDirectory(@NotNull Path dir) throws IOException {
+        try (var walk = Files.walk(dir)) {
+            for (var path : walk.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                if (path.equals(dir)) {
+                    continue;
+                }
+                Files.deleteIfExists(path);
+            }
+        }
     }
 
     private static @NotNull Duration elapsedSince(long startNanos) {

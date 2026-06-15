@@ -1,5 +1,5 @@
-# gdcc-benchmark: name=Integer loop
-# gdcc-benchmark: iterations=50000
+# gdcc-benchmark: name=Newton sqrt
+# gdcc-benchmark: iterations=20000
 # gdcc-benchmark: warmups=3
 # gdcc-benchmark: samples=10
 # gdcc-benchmark: min_batch_us=1000

@@ -341,12 +341,14 @@ The report is the durable data product; console lines are for fast local diagnos
 Default report path:
 
 ```text
-tmp/test/test_suite/benchmark/report.json
+tmp/test/test_suite/benchmark/report-<case>.json
 ```
 
 The path should be configurable through a benchmark runner option or environment variable after the
 initial implementation, but the first implementation must keep the default under `tmp` so generated
-benchmark data never mixes with source fixtures.
+benchmark data never mixes with source fixtures. The `<case>` portion is derived from the benchmark
+resource path by removing `.gd` and replacing path separators with `-`, e.g.
+`math/newton_sqrt.gd -> report-math-newton_sqrt.json`.
 
 Initial JSON shape:
 
@@ -624,7 +626,7 @@ Implementation status:
     - per-path aggregation of mean / sample stddev / min / max / overhead mean
     - warning generation for negative adjusted samples, short batches, and missing checks
     - summary-line formatting
-    - JSON report writing to `tmp/test/test_suite/benchmark/report.json`
+    - per-case JSON report writing to `tmp/test/test_suite/benchmark/report-<case>.json`
   - added deterministic parser/statistics/report tests in
     `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
     covering:
@@ -655,7 +657,7 @@ Tasks:
 - validate sample counts and iteration consistency
 - compute mean, sample standard deviation, min, max, overhead mean, and ratio
 - report warnings for short batches, negative adjusted samples, and missing checks
-- write `tmp/test/test_suite/benchmark/report.json` with `schema_version`, environment, config,
+- write `tmp/test/test_suite/benchmark/report-<case>.json` with `schema_version`, environment, config,
   per-case statistics, ratio data, warnings, and raw samples
 
 Acceptance:
@@ -674,11 +676,47 @@ Acceptance:
 
 Add a minimal set of representative fixtures.
 
+Implementation status:
+
+- Status: completed on 2026-06-15
+- Deliverables:
+  - expanded bundled benchmark fixtures under `src/test/test_suite/benchmark/**` with:
+    - `algorithm/int_loop.gd`
+    - `runtime/stringname_roundtrip.gd`
+    - `collection/array_mutation.gd`
+    - `collection/dictionary_lookup.gd`
+    - `math/vector3_transform.gd`
+    - `math/newton_sqrt.gd`
+  - kept each case in compiled / interpreter / measurement triplets with identical relative paths
+  - added explicit caller-visible mutation validation in `collection/array_mutation.gd`
+  - updated benchmark resource contract coverage in
+    `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+    so the bundled fixture list is pinned in deterministic order
+- Notes:
+  - `runtime/stringname_roundtrip.gd` uses direct `String -> StringName -> String` boundary flows
+    instead of typed-dictionary fixtures so it stays clear of the current helper-name collision gap
+  - container fixtures keep seed construction in `prepare()` with `Array()` / `Dictionary()`
+    population and `while` loops only, matching current compile-mode support limits
+  - `collection/array_mutation.gd` validates caller-visible mutation and now relies on the
+    measurement contract to rerun `prepare()` before every warmup batch and sample so stateful
+    paths do not drift after warmup
+  - faster cases now raise case-local `iterations` values so `batch_below_min_duration` remains a
+    diagnostic warning instead of dominating ordinary local runs:
+    - `algorithm/int_loop.gd`: 50,000
+    - `collection/array_mutation.gd`: 50,000
+    - `collection/dictionary_lookup.gd`: 10,000
+    - `math/newton_sqrt.gd`: 20,000
+    - `math/vector3_transform.gd`: 10,000
+    - `runtime/stringname_roundtrip.gd`: 20,000
+
 Initial cases:
 
 - integer arithmetic loop using `while`
 - string or `StringName` operation that avoids known typed-dictionary helper collisions
 - object or container mutation case that validates caller-visible state
+- vector math operation, e.g. 3-body problem simulation
+- float math operation, e.g. solving equations using Newton's method
+- container operation
 
 Acceptance:
 
@@ -691,12 +729,44 @@ Acceptance:
 
 Add targeted tests rather than running benchmarks as part of every ordinary unit-test pass.
 
+Implementation status:
+
+- Status: completed on 2026-06-15
+- Deliverables:
+  - kept parser / statistics / JSON contract tests in
+    `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+    so they run without Zig or Godot
+  - added `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRuntimeTest.java`
+    as the focused Godot-backed benchmark entrypoint
+  - split runtime dynamic tests by benchmark category:
+    - algorithm
+    - collection
+    - math
+    - runtime
+  - added `GDCC_RUN_BENCHMARKS` gating so runtime benchmark tests skip unless:
+    - Zig is available
+    - `GODOT_BIN` is configured
+    - `GDCC_RUN_BENCHMARKS` is enabled with `1/true/yes/on`
+  - added focused unit coverage for:
+    - output expectation failure paths
+    - report writer directory creation and persisted JSON shape
+- Notes:
+  - benchmark release-build dynamic tests stay in the runtime-focused class because they still
+    depend on Zig and belong to the external-tool entry surface rather than the pure parser tests
+  - the pure Java test class now cleanly covers resource contracts, directive parsing, output
+    parsing, statistics, and JSON serialization without any Godot process requirement
+  - benchmark runtime execution now copies the checked-in `test_project` fixture into a per-case
+    directory under `tmp/test/test_suite/benchmark/runtime/<case>` before launch so one case cannot
+    rewrite another case's scene or managed script resources while an earlier Godot process is
+    still finishing shutdown after `Test stop.`
+  - focused unit tests pin the per-batch `prepare()` contract in rendered measurement scripts and
+    the per-case runtime project directory mapping
+
 Tasks:
 
 - add a dynamic-test class for benchmark cases
 - add a parser/statistics unit test that runs without Godot
-- skip runtime benchmark tests when Zig or `GODOT_BIN` is unavailable
-- make benchmark execution opt-in if runtime cost is too high for routine targeted tests
+- skip runtime benchmark tests when Zig or `GODOT_BIN` is unavailable or no env flag is provided
 
 Acceptance:
 
@@ -723,7 +793,7 @@ Acceptance:
 
 - a developer can run one benchmark class from repository root
 - output includes case name, mean, standard deviation, and ratio
-- `tmp/test/test_suite/benchmark/report.json` can be consumed by scripts without scraping console
+- `tmp/test/test_suite/benchmark/report-<case>.json` can be consumed by scripts without scraping console
   output
 - troubleshooting notes mention Godot binary, Zig, timeout, and unsupported frontend constructs
 
@@ -749,11 +819,12 @@ Required validation before considering the benchmark system implemented:
 - Measurement path:
   - each runtime path has the configured sample count
   - each sample contains baseline and benchmark durations
+  - stateful fixtures re-enter `prepare()` before every warmup batch and every recorded sample
   - call overhead is subtracted per path and per sample
   - mean and standard deviation are computed on adjusted body times
 - Reporting path:
   - summary line is stable enough for log collection
-  - JSON report is written to `tmp/test/test_suite/benchmark/report.json` by default
+  - JSON report is written to `tmp/test/test_suite/benchmark/report-<case>.json` by default
   - JSON report contains schema version, environment, config, case summaries, ratios, warnings, and
     raw samples
   - JSON report records `environment.optimization` as `RELEASE` for measured compiled results
@@ -773,6 +844,7 @@ Required validation before considering the benchmark system implemented:
 - Timer noise:
   - measure batches instead of single calls
   - warn when batch duration is too small
+  - raise per-case `iterations` rather than weakening the warning into a silent clamp
   - keep raw samples available in failure output
 - Godot startup and scene overhead:
   - measure inside Godot after scene setup
@@ -788,7 +860,12 @@ Required validation before considering the benchmark system implemented:
   - keep interpreter workarounds in interpreter resources, not in compiled sources
 - Lifecycle-sensitive benchmark cases:
   - validate caller-visible mutation and object/container state after timing
+  - restore mutable benchmark fixture state through `prepare()` at each batch boundary rather than
+    relying on one whole-run initialization
   - do not use benchmark cases as a substitute for ownership correctness tests
+- Shared runtime project races:
+  - isolate benchmark runs into per-case generated Godot project directories under `tmp`
+  - keep the checked-in `test_project` as a template only, not as a mutable shared run directory
 - Runtime dependency instability:
   - use JUnit assumptions for missing tools
   - keep benchmark tests targeted and opt-in for local performance work
@@ -798,13 +875,10 @@ Required validation before considering the benchmark system implemented:
 ## 11. Open Decisions
 
 - Whether benchmark runtime tests should always run when targeted, or require an opt-in environment
-  variable such as `GDCC_RUN_BENCHMARKS=1`.
-- Whether result summaries should also be written to a file under `tmp/test/test_suite/benchmark`
-- Whether JSON report history should keep timestamped files in addition to the default latest
-  `report.json`.
+  variable such as `GDCC_RUN_BENCHMARKS=1`. A: GDCC_RUN_BENCHMARKS required
+- Whether result summaries should also be written to a file under `tmp/test/test_suite/benchmark` A: yes
+- Whether JSON report history should keep timestamped files in addition to the default per-case
+  `report-<case>.json`. A: no
 - Whether raw sample arrays should be optional for very large benchmark runs after the initial
-  implementation.
-- Whether future compile-time benchmarks should share resource layout with runtime benchmarks or
-  use a separate `benchmark/compile` root to avoid mixing metrics.
-- Whether benchmark thresholds should ever become CI gates. The initial plan explicitly avoids this
-  because local Godot and native compiler performance is machine-dependent.
+  implementation. A: no
+- Whether benchmark thresholds should ever become CI gates. A: no

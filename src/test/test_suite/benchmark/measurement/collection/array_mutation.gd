@@ -1,4 +1,4 @@
-# gdcc-benchmark: name=Integer loop
+# gdcc-benchmark: name=Array mutation
 # gdcc-benchmark: iterations=50000
 # gdcc-benchmark: warmups=3
 # gdcc-benchmark: samples=10

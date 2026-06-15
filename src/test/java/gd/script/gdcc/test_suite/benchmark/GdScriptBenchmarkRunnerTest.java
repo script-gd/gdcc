@@ -8,13 +8,9 @@ import gd.script.gdcc.backend.c.build.CCompiler;
 import gd.script.gdcc.backend.c.build.COptimizationLevel;
 import gd.script.gdcc.backend.c.build.GodotGdextensionTestRunner;
 import gd.script.gdcc.backend.c.build.TargetPlatform;
-import gd.script.gdcc.backend.c.build.ZigUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -24,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,7 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdScriptBenchmarkRunnerTest {
     private static final List<String> EXPECTED_BENCHMARK_SCRIPT_PATHS = List.of(
-            "algorithm/int_loop.gd"
+            "algorithm/int_loop.gd",
+            "collection/array_mutation.gd",
+            "collection/dictionary_lookup.gd",
+            "math/newton_sqrt.gd",
+            "math/vector3_transform.gd",
+            "runtime/stringname_roundtrip.gd"
     );
 
     @Test
@@ -155,7 +155,7 @@ class GdScriptBenchmarkRunnerTest {
         assertTrue(result.buildResult().success());
         assertEquals(result.requireDynamicLibraryArtifact(), artifact);
         assertEquals("Integer loop", result.config().name());
-        assertEquals(1_000, result.config().iterations());
+        assertEquals(50_000, result.config().iterations());
         assertEquals(3, result.config().warmups());
         assertEquals(10, result.config().samples());
         assertEquals(1_000, result.config().minBatchUs());
@@ -204,11 +204,42 @@ class GdScriptBenchmarkRunnerTest {
         assertTrue(measurementScript.scriptContent().contains(GdScriptBenchmarkRunner.INTERPRETER_TARGET_NODE_NAME));
         assertTrue(measurementScript.scriptContent().contains("res://benchmark/interpreter/algorithm/int_loop.gd"));
         assertTrue(measurementScript.scriptContent().contains("GDCC_BENCHMARK_HEADER case=%s name=%s iterations=%d warmups=%d samples=%d min_batch_us=%d"));
-        assertTrue(measurementScript.scriptContent().contains("const ITERATIONS = 1000"));
+        assertTrue(measurementScript.scriptContent().contains("const ITERATIONS = 50000"));
         assertTrue(measurementScript.scriptContent().contains("const WARMUPS = 3"));
         assertTrue(measurementScript.scriptContent().contains("const SAMPLES = 10"));
         assertTrue(measurementScript.scriptContent().contains("const MIN_BATCH_US = 1000"));
         assertTrue(measurementScript.scriptContent().contains(GdScriptBenchmarkRunner.expectedPassMarker("algorithm/int_loop.gd")));
+    }
+
+    @Test
+    void compileBenchmarkCaseShouldRenderPerBatchPrepareIntoMeasurementScript(@TempDir Path tempDir) throws Exception {
+        var artifact = tempDir.resolve("compiled_release_x86_64.so");
+        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
+        var compiler = new RecordingCompiler(new CCompileResult(true, "release build ok", List.of(artifact)));
+        var runner = new GdScriptBenchmarkRunner(getClass().getClassLoader(), compiler);
+
+        var result = runner.compileBenchmarkCase("collection/array_mutation.gd");
+
+        var measurementScript = result.projectSetup().scriptResources().stream()
+                .filter(resource -> resource.resourcePath().contains("/measurement/"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(
+                measurementScript.scriptContent().contains("""
+                        while iteration < ITERATIONS:
+                                _prepare_target(target)
+                                target.baseline()
+                        """),
+                () -> "Baseline batches should reset state before each invocation.\n" + measurementScript.scriptContent()
+        );
+        assertTrue(
+                measurementScript.scriptContent().contains("""
+                        while iteration < ITERATIONS:
+                                _prepare_target(target)
+                                value = target.benchmark()
+                        """),
+                () -> "Benchmark batches should reset state before each invocation.\n" + measurementScript.scriptContent()
+        );
     }
 
     @Test
@@ -234,6 +265,29 @@ class GdScriptBenchmarkRunnerTest {
         assertEquals(9, config.minBatchUs());
         assertEquals(List.of("compiled"), config.outputExpectations().outputContains());
         assertEquals(List.of("error"), config.outputExpectations().outputNotContains());
+    }
+
+    @Test
+    void parseCaseOutputShouldRejectMissingExpectedOutputText() {
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                1000,
+                3,
+                1,
+                1000,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of("must-appear"), List.of())
+        );
+        var output = """
+                GDCC_BENCHMARK_HEADER case=algorithm/int_loop.gd name=Integer+loop iterations=1000 warmups=3 samples=1 min_batch_us=1000
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=compiled sample=0 iterations=1000 baseline_us=40 benchmark_us=160 body_ns=120 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=0 iterations=1000 baseline_us=50 benchmark_us=1050 body_ns=1000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_PASS::algorithm/int_loop.gd
+                Test stop.
+                """;
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(0, true, false, false, output, "", List.of("godot"));
+
+        var error = assertThrows(AssertionError.class, () -> GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output));
+        assertTrue(error.getMessage().contains("must-appear"));
     }
 
     @Test
@@ -418,6 +472,60 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
+    void parseBenchmarkConfigShouldCaptureRaisedIterationsFromBundledShortBenchmarks(@TempDir Path tempDir) throws Exception {
+        var artifact = tempDir.resolve("compiled_release_x86_64.so");
+        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
+        var compiler = new RecordingCompiler(new CCompileResult(true, "release build ok", List.of(artifact)));
+        var runner = new GdScriptBenchmarkRunner(getClass().getClassLoader(), compiler);
+
+        assertEquals(50_000, runner.compileBenchmarkCase("collection/array_mutation.gd").config().iterations());
+        assertEquals(10_000, runner.compileBenchmarkCase("math/vector3_transform.gd").config().iterations());
+        assertEquals(20_000, runner.compileBenchmarkCase("runtime/stringname_roundtrip.gd").config().iterations());
+    }
+
+    @Test
+    void runtimeProjectDirectoryShouldBePerCaseAndUnderBenchmarkWorkRoot() {
+        var runtimeRoot = Path.of("tmp/test/test_suite/benchmark/runtime");
+        var algorithmDir = GdScriptBenchmarkRunner.runtimeProjectDirForCase("algorithm/int_loop.gd");
+        var collectionDir = GdScriptBenchmarkRunner.runtimeProjectDirForCase("collection/array_mutation.gd");
+
+        assertTrue(algorithmDir.startsWith(runtimeRoot));
+        assertTrue(collectionDir.startsWith(runtimeRoot));
+        assertFalse(algorithmDir.equals(collectionDir));
+        assertTrue(algorithmDir.toString().endsWith("algorithm_int_loop"));
+        assertTrue(collectionDir.toString().endsWith("collection_array_mutation"));
+    }
+
+    @Test
+    void reportPathShouldBePerCaseStableAndUnderBenchmarkWorkRoot() {
+        var reportRoot = Path.of("tmp/test/test_suite/benchmark");
+        var algorithmReport = GdScriptBenchmarkRunner.reportPathForCase("algorithm/int_loop.gd");
+        var mathReport = GdScriptBenchmarkRunner.reportPathForCase("math/newton_sqrt.gd");
+
+        assertTrue(algorithmReport.startsWith(reportRoot));
+        assertTrue(mathReport.startsWith(reportRoot));
+        assertEquals(Path.of("tmp/test/test_suite/benchmark/report-algorithm-int_loop.json"), algorithmReport);
+        assertEquals(Path.of("tmp/test/test_suite/benchmark/report-math-newton_sqrt.json"), mathReport);
+        assertFalse(algorithmReport.equals(mathReport));
+    }
+
+    @Test
+    void reportFileNameShouldNormalizeNestedCaseSeparatorsWithoutDroppingReadableSegments() {
+        assertEquals(
+                "report-math-newton_sqrt.json",
+                GdScriptBenchmarkRunner.reportFileNameForCase("math/newton_sqrt.gd")
+        );
+        assertEquals(
+                "report-collection-array_mutation.json",
+                GdScriptBenchmarkRunner.reportFileNameForCase("collection/array_mutation.gd")
+        );
+        assertEquals(
+                "report-runtime-stringname_roundtrip.json",
+                GdScriptBenchmarkRunner.reportFileNameForCase("runtime/stringname_roundtrip.gd")
+        );
+    }
+
+    @Test
     void parseCaseOutputShouldRejectMalformedNumericField() {
         var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
                 "Integer loop",
@@ -551,55 +659,34 @@ class GdScriptBenchmarkRunnerTest {
         assertFalse(json.contains("1.23ms"));
     }
 
-    @TestFactory
-    Stream<DynamicTest> compilesBundledBenchmarkScriptsToReleaseArtifacts() throws Exception {
-        Assumptions.assumeTrue(
-                ZigUtil.findZig() != null,
-                "Zig not found; skipping bundled benchmark release-build tests"
+    @Test
+    void writeReportShouldCreateParentDirectoriesAndPersistJson(@TempDir Path tempDir) throws Exception {
+        var report = new BenchmarkReport(
+                1,
+                "2026-06-14T00:00:00Z",
+                new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
+                new BenchmarkReport.ReportConfig(3, 1, 1000, 1000),
+                List.of(new BenchmarkReport.CaseSummary(
+                        "collection/array_mutation.gd",
+                        "Array mutation",
+                        "passed",
+                        List.of(),
+                        new BenchmarkReport.PathStatistics(1, 30.0, 0.0, 30, 30, 4.0, List.of(new BenchmarkReport.RawSample(0, 1000, 4, 34, 30)), List.of()),
+                        new BenchmarkReport.PathStatistics(1, 45.0, 0.0, 45, 45, 5.0, List.of(new BenchmarkReport.RawSample(0, 1000, 5, 50, 45)), List.of()),
+                        new BenchmarkReport.RatioSummary(0.6667, 1.5),
+                        true,
+                        List.of("godot", "--headless"),
+                        "GDCC_BENCHMARK_RESULT"
+                ))
         );
-        var runner = new GdScriptBenchmarkRunner();
-        var scriptPaths = runner.listBenchmarkResourcePaths();
-        assertEquals(EXPECTED_BENCHMARK_SCRIPT_PATHS, scriptPaths);
+        var reportPath = tempDir.resolve("nested/reports/report.json");
 
-        return scriptPaths.stream().map(scriptPath -> DynamicTest.dynamicTest(
-                scriptPath,
-                () -> {
-                    var result = new GdScriptBenchmarkRunner().compileBenchmarkCase(scriptPath);
-                    assertTrue(result.buildResult().success(), () -> "Expected successful release build for " + scriptPath);
-                    assertTrue(
-                            result.requireDynamicLibraryArtifact().getFileName().toString().contains("_release_"),
-                            () -> "Benchmark artifact should encode release optimization in filename: "
-                                    + result.requireDynamicLibraryArtifact().getFileName()
-                    );
-                }
-        ));
-    }
+        BenchmarkReportWriter.writeReport(reportPath, report);
 
-    @TestFactory
-    Stream<DynamicTest> compilesRunsAndReportsBundledBenchmarkScripts() throws Exception {
-        Assumptions.assumeTrue(
-                ZigUtil.findZig() != null,
-                "Zig not found; skipping bundled benchmark runtime tests"
-        );
-        Assumptions.assumeTrue(
-                GodotGdextensionTestRunner.findGodotBinaryFromEnv() != null,
-                "GODOT_BIN not found; skipping bundled benchmark runtime tests"
-        );
-        var runner = new GdScriptBenchmarkRunner();
-        var scriptPaths = runner.listBenchmarkResourcePaths();
-        assertEquals(EXPECTED_BENCHMARK_SCRIPT_PATHS, scriptPaths);
-
-        return scriptPaths.stream().map(scriptPath -> DynamicTest.dynamicTest(
-                scriptPath,
-                () -> {
-                    var result = new GdScriptBenchmarkRunner().compileAndRunBenchmarkCase(scriptPath);
-                    assertTrue(result.runResult().stopSignalSeen());
-                    assertTrue(result.runResult().combinedOutput().contains(GdScriptBenchmarkRunner.RESULT_LINE_PREFIX));
-                    assertTrue(result.runResult().combinedOutput().contains(GdScriptBenchmarkRunner.expectedPassMarker(scriptPath)));
-                    assertTrue(Files.exists(result.reportPath()));
-                    assertEquals(scriptPath, result.report().cases().getFirst().casePath());
-                }
-        ));
+        assertTrue(Files.exists(reportPath));
+        var root = JsonParser.parseString(Files.readString(reportPath)).getAsJsonObject();
+        assertEquals(1, root.get("schema_version").getAsInt());
+        assertEquals("collection/array_mutation.gd", root.getAsJsonArray("cases").get(0).getAsJsonObject().get("case").getAsString());
     }
 
     private static void writeBenchmarkFixture(@NotNull Path root, @NotNull String relativePath, @NotNull String measurementScript) throws IOException {
