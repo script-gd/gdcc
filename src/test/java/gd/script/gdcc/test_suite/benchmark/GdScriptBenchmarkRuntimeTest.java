@@ -7,28 +7,16 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
 import java.nio.file.Files;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GdScriptBenchmarkRuntimeTest {
     private static final String RUN_BENCHMARKS_ENV = "GDCC_RUN_BENCHMARKS";
-    private static final List<String> EXPECTED_BENCHMARK_SCRIPT_PATHS = List.of(
-            "algorithm/int_loop.gd",
-            "collection/array_mutation.gd",
-            "collection/dictionary_lookup.gd",
-            "math/newton_sqrt.gd",
-            "math/vector3_transform.gd",
-            "runtime/stringname_roundtrip.gd"
-    );
-    private static final List<String> ALGORITHM_SCRIPT_PATHS = scriptPathsWithPrefix("algorithm/");
-    private static final List<String> COLLECTION_SCRIPT_PATHS = scriptPathsWithPrefix("collection/");
-    private static final List<String> MATH_SCRIPT_PATHS = scriptPathsWithPrefix("math/");
-    private static final List<String> RUNTIME_SCRIPT_PATHS = scriptPathsWithPrefix("runtime/");
 
     @TestFactory
     Stream<DynamicTest> compilesBundledBenchmarkScriptsToReleaseArtifacts() throws Exception {
@@ -38,7 +26,7 @@ class GdScriptBenchmarkRuntimeTest {
         );
         var runner = new GdScriptBenchmarkRunner();
         var scriptPaths = runner.listBenchmarkResourcePaths();
-        assertEquals(EXPECTED_BENCHMARK_SCRIPT_PATHS, scriptPaths);
+        assertFalse(scriptPaths.isEmpty(), "Expected at least one bundled benchmark case");
 
         return scriptPaths.stream().map(scriptPath -> DynamicTest.dynamicTest(
                 scriptPath,
@@ -57,7 +45,7 @@ class GdScriptBenchmarkRuntimeTest {
     @TestFactory
     Stream<DynamicTest> compilesRunsAndReportsAlgorithmBenchmarks() throws Exception {
         return runBundledBenchmarkScripts(
-                ALGORITHM_SCRIPT_PATHS,
+                "algorithm/",
                 "Zig not found; skipping algorithm benchmark runtime tests",
                 "GODOT_BIN not found; skipping algorithm benchmark runtime tests"
         );
@@ -66,7 +54,7 @@ class GdScriptBenchmarkRuntimeTest {
     @TestFactory
     Stream<DynamicTest> compilesRunsAndReportsCollectionBenchmarks() throws Exception {
         return runBundledBenchmarkScripts(
-                COLLECTION_SCRIPT_PATHS,
+                "collection/",
                 "Zig not found; skipping collection benchmark runtime tests",
                 "GODOT_BIN not found; skipping collection benchmark runtime tests"
         );
@@ -75,7 +63,7 @@ class GdScriptBenchmarkRuntimeTest {
     @TestFactory
     Stream<DynamicTest> compilesRunsAndReportsMathBenchmarks() throws Exception {
         return runBundledBenchmarkScripts(
-                MATH_SCRIPT_PATHS,
+                "math/",
                 "Zig not found; skipping math benchmark runtime tests",
                 "GODOT_BIN not found; skipping math benchmark runtime tests"
         );
@@ -84,14 +72,14 @@ class GdScriptBenchmarkRuntimeTest {
     @TestFactory
     Stream<DynamicTest> compilesRunsAndReportsRuntimeBenchmarks() throws Exception {
         return runBundledBenchmarkScripts(
-                RUNTIME_SCRIPT_PATHS,
+                "runtime/",
                 "Zig not found; skipping runtime benchmark runtime tests",
                 "GODOT_BIN not found; skipping runtime benchmark runtime tests"
         );
     }
 
     private static Stream<DynamicTest> runBundledBenchmarkScripts(
-            List<String> scriptPaths,
+            String prefix,
             String zigSkipMessage,
             String godotSkipMessage
     ) throws Exception {
@@ -107,9 +95,14 @@ class GdScriptBenchmarkRuntimeTest {
 
         var runner = new GdScriptBenchmarkRunner();
         var discoveredScriptPaths = runner.listBenchmarkResourcePaths();
-        assertEquals(EXPECTED_BENCHMARK_SCRIPT_PATHS, discoveredScriptPaths);
+        assertFalse(discoveredScriptPaths.isEmpty(), "Expected at least one bundled benchmark case");
+        var filteredScriptPaths = discoveredScriptPaths.stream()
+                .filter(scriptPath -> scriptPath.startsWith(prefix))
+                .toList();
+        assertFalse(filteredScriptPaths.isEmpty(), () -> "No bundled benchmark cases found for prefix `" + prefix + "`.");
+        assertEquals(filteredScriptPaths.stream().sorted().toList(), filteredScriptPaths);
 
-        return scriptPaths.stream().map(scriptPath -> DynamicTest.dynamicTest(
+        return filteredScriptPaths.stream().map(scriptPath -> DynamicTest.dynamicTest(
                 scriptPath,
                 () -> {
                     var result = new GdScriptBenchmarkRunner().compileAndRunBenchmarkCase(scriptPath);
@@ -124,11 +117,6 @@ class GdScriptBenchmarkRuntimeTest {
         ));
     }
 
-    private static List<String> scriptPathsWithPrefix(String prefix) {
-        return EXPECTED_BENCHMARK_SCRIPT_PATHS.stream()
-                .filter(scriptPath -> scriptPath.startsWith(prefix))
-                .toList();
-    }
 
     private static boolean benchmarkRuntimeEnabled() {
         return isEnabledEnvValue(System.getenv(RUN_BENCHMARKS_ENV));

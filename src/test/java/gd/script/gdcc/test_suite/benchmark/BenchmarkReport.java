@@ -49,9 +49,10 @@ public record BenchmarkReport(
             @NotNull String name,
             @NotNull String status,
             @NotNull List<String> warnings,
-            @NotNull BenchmarkReport.PathStatistics compiled,
-            @NotNull BenchmarkReport.PathStatistics interpreter,
-            @NotNull BenchmarkReport.RatioSummary ratio,
+            @SerializedName("failure") @Nullable String failure,
+            @Nullable BenchmarkReport.PathStatistics compiled,
+            @Nullable BenchmarkReport.PathStatistics interpreter,
+            @Nullable BenchmarkReport.RatioSummary ratio,
             @SerializedName("pass_marker_seen") boolean passMarkerSeen,
             @NotNull List<String> command,
             @SerializedName("combined_output") @NotNull String combinedOutput
@@ -62,9 +63,6 @@ public record BenchmarkReport(
             Objects.requireNonNull(name);
             Objects.requireNonNull(status);
             warnings = List.copyOf(Objects.requireNonNull(warnings));
-            Objects.requireNonNull(compiled);
-            Objects.requireNonNull(interpreter);
-            Objects.requireNonNull(ratio);
             command = List.copyOf(Objects.requireNonNull(command));
             Objects.requireNonNull(combinedOutput);
         }

@@ -63,6 +63,7 @@ public final class GdScriptBenchmarkRunner {
     public static final String SCRIPT_RESOURCE_ROOT = "benchmark/script";
     public static final String INTERPRETER_RESOURCE_ROOT = "benchmark/interpreter";
     public static final String MEASUREMENT_RESOURCE_ROOT = "benchmark/measurement";
+    public static final String MEASUREMENT_TEMPLATE_RESOURCE = "benchmark/template/measurement.gd";
     public static final String RESULT_LINE_PREFIX = "GDCC_BENCHMARK_RESULT ";
     public static final String HEADER_LINE_PREFIX = "GDCC_BENCHMARK_HEADER ";
     public static final String PASS_MARKER_PREFIX = "GDCC_BENCHMARK_PASS::";
@@ -75,6 +76,13 @@ public final class GdScriptBenchmarkRunner {
     static final String INTERPRETER_SCRIPT_PLACEHOLDER = "__GDCC_BENCHMARK_INTERPRETER_SCRIPT__";
     static final String COMPILED_TARGET_NODE_PLACEHOLDER = "__GDCC_BENCHMARK_COMPILED_TARGET_NODE__";
     static final String INTERPRETER_TARGET_NODE_PLACEHOLDER = "__GDCC_BENCHMARK_INTERPRETER_TARGET_NODE__";
+    static final String CASE_PATH_PLACEHOLDER = "__GDCC_BENCHMARK_CASE_PATH__";
+    static final String CASE_NAME_PLACEHOLDER = "__GDCC_BENCHMARK_CASE_NAME__";
+    static final String ITERATIONS_PLACEHOLDER = "__GDCC_BENCHMARK_ITERATIONS__";
+    static final String WARMUPS_PLACEHOLDER = "__GDCC_BENCHMARK_WARMUPS__";
+    static final String SAMPLES_PLACEHOLDER = "__GDCC_BENCHMARK_SAMPLES__";
+    static final String MIN_BATCH_US_PLACEHOLDER = "__GDCC_BENCHMARK_MIN_BATCH_US__";
+    static final String PASS_MARKER_PLACEHOLDER = "__GDCC_BENCHMARK_PASS_MARKER__";
     static final String BENCHMARK_DIRECTIVE_PREFIX = "# gdcc-benchmark:";
     static final String BENCHMARK_NAME_DIRECTIVE = "name=";
     static final String BENCHMARK_ITERATIONS_DIRECTIVE = "iterations=";
@@ -198,10 +206,19 @@ public final class GdScriptBenchmarkRunner {
         var runResult = runner.run(runOptions);
         var outputValidationStart = System.nanoTime();
         var combinedOutput = runResult.combinedOutput();
-        assertStopSignalSeen(scriptResourcePath, runResult);
-
-        var report = parseCaseOutput(scriptResourcePath, buildResult.config(), runResult, combinedOutput);
         var reportPath = reportPathForCase(scriptResourcePath);
+        BenchmarkReport report;
+        try {
+            assertStopSignalSeen(scriptResourcePath, runResult);
+            report = parseCaseOutput(scriptResourcePath, buildResult.config(), runResult, combinedOutput);
+        } catch (AssertionError error) {
+            try {
+                writeFailedReport(reportPath, scriptResourcePath, buildResult.config(), runResult, combinedOutput, error);
+            } catch (IOException writeError) {
+                error.addSuppressed(writeError);
+            }
+            throw error;
+        }
         BenchmarkReportWriter.writeReport(reportPath, report);
         System.out.println(summaryLine(report.cases().getFirst(), report.config()));
         var outputValidationDuration = elapsedSince(outputValidationStart);
@@ -224,7 +241,7 @@ public final class GdScriptBenchmarkRunner {
             clearDirectory(targetDir);
         }
         Files.createDirectories(targetDir);
-        copyDirectory(RUNTIME_PROJECT_TEMPLATE_DIR, targetDir);
+        copyDirectory(targetDir);
         return targetDir;
     }
 
@@ -314,6 +331,55 @@ public final class GdScriptBenchmarkRunner {
         );
     }
 
+    static @NotNull BenchmarkReport failedReport(
+            @NotNull String scriptResourcePath,
+            @NotNull BenchmarkConfig config,
+            @NotNull GodotGdextensionTestRunner.GodotRunResult runResult,
+            @NotNull String combinedOutput,
+            @NotNull AssertionError error
+    ) {
+        return new BenchmarkReport(
+                1,
+                UTC_FORMATTER.format(Instant.now()),
+                currentEnvironment(),
+                new BenchmarkReport.ReportConfig(
+                        config.warmups(),
+                        config.samples(),
+                        config.iterations(),
+                        config.minBatchUs()
+                ),
+                List.of(new BenchmarkReport.CaseSummary(
+                        scriptResourcePath.replace('\\', '/'),
+                        config.name(),
+                        "failed",
+                        List.of(),
+                        failureMessage(error),
+                        null,
+                        null,
+                        null,
+                        combinedOutput.contains(expectedPassMarker(scriptResourcePath)),
+                        runResult.command(),
+                        combinedOutput
+                ))
+        );
+    }
+
+    static void writeFailedReport(
+            @NotNull Path reportPath,
+            @NotNull String scriptResourcePath,
+            @NotNull BenchmarkConfig config,
+            @NotNull GodotGdextensionTestRunner.GodotRunResult runResult,
+            @NotNull String combinedOutput,
+            @NotNull AssertionError error
+    ) throws IOException {
+        BenchmarkReportWriter.writeReport(reportPath, failedReport(scriptResourcePath, config, runResult, combinedOutput, error));
+    }
+
+    private static @NotNull String failureMessage(@NotNull AssertionError error) {
+        var message = error.getMessage();
+        return message == null || message.isBlank() ? error.getClass().getName() : message;
+    }
+
     private void checkCounterpartPaths(
             @NotNull List<String> scriptResourcePaths,
             @NotNull String counterpartRoot,
@@ -336,8 +402,9 @@ public final class GdScriptBenchmarkRunner {
         var compiledSource = readRequiredResourceText(SCRIPT_RESOURCE_ROOT + "/" + scriptResourcePath);
         var interpreterSource = readRequiredResourceText(INTERPRETER_RESOURCE_ROOT + "/" + scriptResourcePath);
         var measurementSource = readRequiredResourceText(MEASUREMENT_RESOURCE_ROOT + "/" + scriptResourcePath);
+        var measurementTemplate = readRequiredResourceText(MEASUREMENT_TEMPLATE_RESOURCE);
         var config = parseBenchmarkConfig(scriptResourcePath, measurementSource);
-        return new BenchmarkCaseResources(scriptResourcePath, compiledSource, interpreterSource, measurementSource, config);
+        return new BenchmarkCaseResources(scriptResourcePath, compiledSource, interpreterSource, measurementSource, measurementTemplate, config);
     }
 
     private @NotNull LoweredCase lowerModule(@NotNull Path sourcePath, @NotNull String source, @NotNull String moduleName) throws IOException {
@@ -508,18 +575,28 @@ public final class GdScriptBenchmarkRunner {
             @NotNull String scriptResourcePath,
             @NotNull String interpreterResourcePath
     ) {
-        var directiveParseResult = stripAndValidateBenchmarkDirectives(scriptResourcePath, resources.measurementSource());
-        return directiveParseResult.scriptBody()
+        var descriptor = stripAndValidateBenchmarkDirectives(scriptResourcePath, resources.measurementSource());
+        checkMeasurementDescriptorOnly(scriptResourcePath, descriptor.scriptBody());
+        return resources.measurementTemplate()
                 .replace(INTERPRETER_SCRIPT_PLACEHOLDER, interpreterResourcePath)
                 .replace(COMPILED_TARGET_NODE_PLACEHOLDER, COMPILED_TARGET_NODE_NAME)
                 .replace(INTERPRETER_TARGET_NODE_PLACEHOLDER, INTERPRETER_TARGET_NODE_NAME)
-                .replace("__GDCC_BENCHMARK_CASE_PATH__", scriptResourcePath)
-                .replace("__GDCC_BENCHMARK_CASE_NAME__", encodeStructuredFieldValue(resources.config().name()))
-                .replace("__GDCC_BENCHMARK_ITERATIONS__", Integer.toString(resources.config().iterations()))
-                .replace("__GDCC_BENCHMARK_WARMUPS__", Integer.toString(resources.config().warmups()))
-                .replace("__GDCC_BENCHMARK_SAMPLES__", Integer.toString(resources.config().samples()))
-                .replace("__GDCC_BENCHMARK_MIN_BATCH_US__", Integer.toString(resources.config().minBatchUs()))
-                .replace("__GDCC_BENCHMARK_PASS_MARKER__", expectedPassMarker(scriptResourcePath));
+                .replace(CASE_PATH_PLACEHOLDER, scriptResourcePath)
+                .replace(CASE_NAME_PLACEHOLDER, encodeStructuredFieldValue(resources.config().name()))
+                .replace(ITERATIONS_PLACEHOLDER, Integer.toString(resources.config().iterations()))
+                .replace(WARMUPS_PLACEHOLDER, Integer.toString(resources.config().warmups()))
+                .replace(SAMPLES_PLACEHOLDER, Integer.toString(resources.config().samples()))
+                .replace(MIN_BATCH_US_PLACEHOLDER, Integer.toString(resources.config().minBatchUs()))
+                .replace(PASS_MARKER_PLACEHOLDER, expectedPassMarker(scriptResourcePath));
+    }
+
+    private static void checkMeasurementDescriptorOnly(@NotNull String scriptResourcePath, @NotNull String scriptBody) {
+        assertTrue(
+                scriptBody.isBlank(),
+                () -> "Benchmark measurement resource must contain only "
+                        + BENCHMARK_DIRECTIVE_PREFIX + " directives because the executable measurement script "
+                        + "is generated from " + MEASUREMENT_TEMPLATE_RESOURCE + ": " + scriptResourcePath
+        );
     }
 
     private static @NotNull DirectiveParseResult stripBenchmarkDirectives(@NotNull String scriptSource) {
@@ -647,10 +724,10 @@ public final class GdScriptBenchmarkRunner {
         return caseName.replace('\\', '_').replace('/', '_').replace(':', '_').replace('.', '_');
     }
 
-    private static void copyDirectory(@NotNull Path sourceDir, @NotNull Path targetDir) throws IOException {
-        try (var walk = Files.walk(sourceDir)) {
+    private static void copyDirectory(@NotNull Path targetDir) throws IOException {
+        try (var walk = Files.walk(RUNTIME_PROJECT_TEMPLATE_DIR)) {
             for (var source : walk.toList()) {
-                var relative = sourceDir.relativize(source);
+                var relative = RUNTIME_PROJECT_TEMPLATE_DIR.relativize(source);
                 var target = targetDir.resolve(relative);
                 if (Files.isDirectory(source)) {
                     Files.createDirectories(target);
@@ -832,6 +909,7 @@ public final class GdScriptBenchmarkRunner {
                 config.name(),
                 "passed",
                 deduplicateWarnings(warnings),
+                null,
                 compiledStats,
                 interpreterStats,
                 ratio,
@@ -987,12 +1065,15 @@ public final class GdScriptBenchmarkRunner {
             @NotNull BenchmarkReport.CaseSummary caseSummary,
             @NotNull BenchmarkReport.ReportConfig config
     ) {
+        var compiled = Objects.requireNonNull(caseSummary.compiled());
+        var interpreter = Objects.requireNonNull(caseSummary.interpreter());
+        var ratio = Objects.requireNonNull(caseSummary.ratio());
         return "[gdcc-benchmark] case=" + caseSummary.casePath()
-                + " compiled.mean=" + formatDurationNs(caseSummary.compiled().meanBodyNs())
-                + " compiled.stddev=" + formatDurationNs(caseSummary.compiled().stddevBodyNs())
-                + " interpreter.mean=" + formatDurationNs(caseSummary.interpreter().meanBodyNs())
-                + " interpreter.stddev=" + formatDurationNs(caseSummary.interpreter().stddevBodyNs())
-                + " ratio=" + formatRatio(caseSummary.ratio().compiledToInterpreterMean())
+                + " compiled.mean=" + formatDurationNs(compiled.meanBodyNs())
+                + " compiled.stddev=" + formatDurationNs(compiled.stddevBodyNs())
+                + " interpreter.mean=" + formatDurationNs(interpreter.meanBodyNs())
+                + " interpreter.stddev=" + formatDurationNs(interpreter.stddevBodyNs())
+                + " ratio=" + formatRatio(ratio.compiledToInterpreterMean())
                 + " samples=" + config.samples()
                 + " iterations=" + config.iterations();
     }
@@ -1181,6 +1262,7 @@ public final class GdScriptBenchmarkRunner {
             @NotNull String compiledSource,
             @NotNull String interpreterSource,
             @NotNull String measurementSource,
+            @NotNull String measurementTemplate,
             @NotNull BenchmarkConfig config
     ) {
         private BenchmarkCaseResources {
@@ -1188,6 +1270,7 @@ public final class GdScriptBenchmarkRunner {
             Objects.requireNonNull(compiledSource);
             Objects.requireNonNull(interpreterSource);
             Objects.requireNonNull(measurementSource);
+            Objects.requireNonNull(measurementTemplate);
             Objects.requireNonNull(config);
         }
     }

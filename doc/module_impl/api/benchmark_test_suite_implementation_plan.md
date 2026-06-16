@@ -130,15 +130,18 @@ Initial layout:
 - `src/test/test_suite/benchmark/interpreter/**`
   - interpreter-side scripts with matching relative paths
 - `src/test/test_suite/benchmark/measurement/**`
-  - Godot-side measurement scripts with matching relative paths
+  - per-case measurement metadata descriptors with matching relative paths
+- `src/test/test_suite/benchmark/template/measurement.gd`
+  - shared Godot-side measurement template used to generate the executable script installed into
+    each runtime project
 
 The runner should require the three files to exist for each benchmark case. A missing pair is a
 fixture error, not a skipped benchmark.
 
-If this three-directory shape proves too verbose during implementation, the runner may use one
-measurement template shared by all cases plus per-case metadata directives, but the first
-implementation should keep the interpreter target explicit so it can represent interpreter-only
-workarounds without changing compiled source semantics.
+The runner keeps the interpreter target explicit so it can represent interpreter-only workarounds
+without changing compiled source semantics. Measurement descriptors contain only `# gdcc-benchmark:`
+metadata; protocol output, warmup/sample loops, overhead subtraction, and behavior-check invocation
+come from the shared template.
 
 ---
 
@@ -419,7 +422,7 @@ JSON field rules:
 - `generated_at` uses UTC ISO-8601 text.
 - `environment` captures enough toolchain context to compare local runs without guessing.
 - `cases[*].status` is `passed`, `failed`, or `skipped`; failed cases may omit runtime statistics
-  but must include enough diagnostic text to identify the failure.
+  and ratios but must include a `failure` diagnostic text to identify the failure.
 - `raw_samples` contains adjusted sample inputs and outputs. It may be omitted only when a later
   explicit `include_raw_samples=false` option is added.
 - all durations inside JSON use numeric nanoseconds or microseconds according to the field suffix;
@@ -446,7 +449,7 @@ Implementation status:
   - added `gd.script.gdcc.test_suite.benchmark.GdScriptBenchmarkRunner`
   - added benchmark resource roots under `src/test/test_suite/benchmark/{script,interpreter,measurement}`
   - added `GdScriptBenchmarkRunnerTest` resource-set contract coverage for:
-    - bundled expected resource list
+    - non-empty bundled discovery with baseline case coverage
     - empty benchmark directory failure
     - missing interpreter counterpart failure
     - missing measurement counterpart failure
@@ -455,6 +458,8 @@ Implementation status:
 - Notes:
   - counterpart validation currently enforces exact set equality between compiled script paths and
     interpreter / measurement paths so fixture drift fails before compile or runtime work starts
+  - bundled discovery tests intentionally avoid pinning the complete benchmark script list; new cases
+    are accepted when they provide matching compiled, interpreter, and measurement resources
   - resource discovery keeps the existing `ResourceExtractor.listResourceFilesRecursively(...)`
     ordering contract instead of introducing benchmark-specific sorting logic
 
@@ -535,14 +540,15 @@ Implementation status:
     - one interpreter node backed by the paired interpreter script resource
     - one measurement node backed by the paired measurement script resource
   - upgraded `src/test/test_suite/benchmark/measurement/algorithm/int_loop.gd`
-    from a placeholder into a minimal dual-target readiness script that resolves both targets,
-    executes their shared benchmark surface, and reports setup success without introducing Step 4 timing logic
+    from a placeholder into a per-case measurement descriptor that carries Step 4 metadata without
+    duplicating protocol logic
   - added focused Step 3 tests in:
     - `src/test/java/gd/script/gdcc/backend/c/build/GodotGdextensionTestRunnerTest.java`
     - `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
 - Notes:
-  - benchmark directives are now validated and stripped before interpreter / measurement scripts are
-    installed into the reusable Godot project so runtime files stay executable plain GDScript
+  - benchmark directives are now validated and stripped before interpreter scripts are installed;
+    measurement descriptors are validated as metadata-only inputs so the shared template owns the
+    executable protocol logic
   - the shared project writer now removes stale generated benchmark script roots before installing
     new managed resources, so one case cannot accidentally reuse another case's interpreter or
     measurement script
@@ -571,8 +577,8 @@ Implementation status:
 
 - Status: completed on 2026-06-14
 - Deliverables:
-  - replaced `src/test/test_suite/benchmark/measurement/algorithm/int_loop.gd`
-    with the Step 4 measurement protocol:
+  - added `src/test/test_suite/benchmark/template/measurement.gd`
+    as the shared Step 4 measurement protocol template:
     - emits one `GDCC_BENCHMARK_HEADER` line with encoded case metadata
     - runs warmup batches for compiled and interpreter targets in the same Godot process
     - measures baseline and benchmark batches independently per path
@@ -581,7 +587,7 @@ Implementation status:
     - prints the benchmark pass marker and exits through the shared `root.gd` shutdown path
   - extended `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunner.java`
     so benchmark directives are parsed into structured config and substituted into the
-    installed measurement script
+    installed measurement script generated from the shared template
   - added focused protocol tests in
     `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
     for:
@@ -591,6 +597,8 @@ Implementation status:
 - Notes:
   - header `name` is URL-encoded so machine-readable fields remain whitespace-safe without
     inventing a second delimiter layer
+  - per-case resources under `benchmark/measurement/**` are descriptors only; the runner rejects
+    executable GDScript bodies there so protocol and batch logic cannot drift between cases
   - the protocol reports negative adjusted body samples as-is; warning/instability handling stays
     in Java-side aggregation rather than clamping in GDScript
   - behavior checks are evaluated per sample and reported as structured booleans so Java can fail
@@ -687,7 +695,8 @@ Implementation status:
     - `collection/dictionary_lookup.gd`
     - `math/vector3_transform.gd`
     - `math/newton_sqrt.gd`
-  - kept each case in compiled / interpreter / measurement triplets with identical relative paths
+  - kept each case in compiled / interpreter / measurement-descriptor triplets with identical
+    relative paths
   - added explicit caller-visible mutation validation in `collection/array_mutation.gd`
   - updated benchmark resource contract coverage in
     `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`

@@ -71,16 +71,23 @@ For each selected benchmark case, the runtime workflow is:
 1. Discover the paired compiled, interpreter, and measurement resources.
 2. Compile the benchmark case into a release native artifact.
 3. Prepare an isolated Godot project under `tmp/test/test_suite/benchmark/runtime/<case>/`.
-4. Install the compiled target, interpreter script, and measurement script into that project.
+4. Generate the measurement script from the shared template, then install it with the compiled
+   target and interpreter script into that project.
 5. Launch Godot and wait for the benchmark pass marker plus the shared `Test stop.` signal.
 6. Parse machine-readable benchmark lines from the combined Godot output.
 7. Aggregate statistics and write a JSON report under `tmp/test/test_suite/benchmark/`.
+
+If output parsing or validation fails after Godot returns, the runner still writes the per-case JSON
+report before rethrowing the JUnit failure. The failed report preserves the command, combined output,
+pass-marker state, and diagnostic text so the report remains useful for post-failure inspection.
 
 The stop signal comes from `test_project/root.gd`, which prints `Test stop.` from `_exit_tree()`.
 
 ## Console Output
 
-The measurement script emits machine-readable lines for Java-side parsing. The most important ones are:
+The executable measurement script is generated from `benchmark/template/measurement.gd` plus the
+per-case metadata descriptor under `benchmark/measurement/**`. It emits machine-readable lines for
+Java-side parsing. The most important ones are:
 
 ```text
 GDCC_BENCHMARK_HEADER case=<path> name=<url-encoded-name> iterations=<n> warmups=<n> samples=<n> min_batch_us=<n>
@@ -142,8 +149,10 @@ Current report contract:
 - `config`
   - warmups, samples, iterations, and `min_batch_us`
 - `cases`
-  - includes per-case status, warnings, compiled/interpreter statistics, ratios, executed command,
-    pass-marker state, combined output, and raw samples
+  - includes per-case status, warnings, optional failure text, compiled/interpreter statistics,
+    ratios, executed command, pass-marker state, combined output, and raw samples
+  - failed cases may omit compiled/interpreter statistics and ratios when the run failed before those
+    values could be computed
 
 Unit conventions:
 
@@ -191,6 +200,9 @@ Important current limits:
 - compiled benchmark sources must avoid `for`, `match`, and `lambda`
 - compiled benchmark sources must avoid array and dictionary literals that compile mode still rejects
 - stateful fixtures should restore reusable state through `prepare()` before each warmup batch and sample
+- per-case `benchmark/measurement/**` resources must contain only `# gdcc-benchmark:` directives;
+  protocol output, warmup/sample loops, overhead subtraction, and `check()` invocation belong to the
+  shared measurement template
 - typed dictionary overload patterns remain risky because helper-name collisions are not fully closed
 
 When a benchmark fixture needs seed data for arrays or dictionaries, construct it with supported
@@ -211,8 +223,8 @@ Common failure and skip causes:
   - check whether the case printed the benchmark pass marker
   - check whether `Test stop.` was reached
 - malformed or missing benchmark result lines
-  - verify the measurement script still emits `GDCC_BENCHMARK_HEADER` and `GDCC_BENCHMARK_RESULT`
-    lines in the expected format
+  - verify the shared measurement template still emits `GDCC_BENCHMARK_HEADER` and
+    `GDCC_BENCHMARK_RESULT` lines in the expected format
 - frontend compile failure
   - verify the benchmark script stays inside the currently supported frontend feature set
 
