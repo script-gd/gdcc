@@ -13,14 +13,12 @@ public record BenchmarkReport(
         @SerializedName("schema_version") int schemaVersion,
         @SerializedName("generated_at") @NotNull String generatedAt,
         @NotNull BenchmarkReport.EnvironmentSummary environment,
-        @NotNull BenchmarkReport.ReportConfig config,
         @NotNull List<BenchmarkReport.CaseSummary> cases
 ) {
     public BenchmarkReport {
         assertTrue(schemaVersion > 0, "Benchmark report schemaVersion must be > 0");
         Objects.requireNonNull(generatedAt);
         Objects.requireNonNull(environment);
-        Objects.requireNonNull(config);
         cases = List.copyOf(Objects.requireNonNull(cases));
     }
 
@@ -47,6 +45,7 @@ public record BenchmarkReport(
     public record CaseSummary(
             @SerializedName("case") @NotNull String casePath,
             @NotNull String name,
+            @NotNull BenchmarkReport.ReportConfig config,
             @NotNull String status,
             @NotNull List<String> warnings,
             @SerializedName("failure") @Nullable String failure,
@@ -61,6 +60,7 @@ public record BenchmarkReport(
             casePath = casePath.replace('\\', '/');
             Objects.requireNonNull(casePath);
             Objects.requireNonNull(name);
+            Objects.requireNonNull(config);
             Objects.requireNonNull(status);
             warnings = List.copyOf(Objects.requireNonNull(warnings));
             command = List.copyOf(Objects.requireNonNull(command));

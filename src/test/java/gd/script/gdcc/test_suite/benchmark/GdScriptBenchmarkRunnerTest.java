@@ -578,7 +578,7 @@ class GdScriptBenchmarkRunnerTest {
         assertEquals(70.71067811865476, interpreter.stddevBodyNs());
         assertEquals(0.02857142857142857, ratio.compiledToInterpreterMean());
         assertEquals("[gdcc-benchmark] case=algorithm/int_loop.gd compiled.mean=0.030us compiled.stddev=0.127us interpreter.mean=1.050us interpreter.stddev=0.071us ratio=0.0286 samples=2 iterations=1000",
-                GdScriptBenchmarkRunner.summaryLine(summary, report.config()));
+                GdScriptBenchmarkRunner.summaryLine(summary));
     }
 
     @Test
@@ -640,32 +640,8 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
-    void reportPathShouldBePerCaseStableAndUnderBenchmarkWorkRoot() {
-        var reportRoot = Path.of("tmp/test/test_suite/benchmark");
-        var algorithmReport = GdScriptBenchmarkRunner.reportPathForCase("algorithm/int_loop.gd");
-        var mathReport = GdScriptBenchmarkRunner.reportPathForCase("math/newton_sqrt.gd");
-
-        assertTrue(algorithmReport.startsWith(reportRoot));
-        assertTrue(mathReport.startsWith(reportRoot));
-        assertEquals(Path.of("tmp/test/test_suite/benchmark/report-algorithm-int_loop.json"), algorithmReport);
-        assertEquals(Path.of("tmp/test/test_suite/benchmark/report-math-newton_sqrt.json"), mathReport);
-        assertNotEquals(algorithmReport, mathReport);
-    }
-
-    @Test
-    void reportFileNameShouldNormalizeNestedCaseSeparatorsWithoutDroppingReadableSegments() {
-        assertEquals(
-                "report-math-newton_sqrt.json",
-                GdScriptBenchmarkRunner.reportFileNameForCase("math/newton_sqrt.gd")
-        );
-        assertEquals(
-                "report-collection-array_mutation.json",
-                GdScriptBenchmarkRunner.reportFileNameForCase("collection/array_mutation.gd")
-        );
-        assertEquals(
-                "report-runtime-stringname_roundtrip.json",
-                GdScriptBenchmarkRunner.reportFileNameForCase("runtime/stringname_roundtrip.gd")
-        );
+    void reportPathShouldBeMergedAndUnderBenchmarkWorkRoot() {
+        assertEquals(Path.of("tmp/test/test_suite/benchmark/report.json"), GdScriptBenchmarkRunner.reportPath());
     }
 
     @Test
@@ -893,10 +869,10 @@ class GdScriptBenchmarkRunnerTest {
                 1,
                 "2026-06-14T00:00:00Z",
                 new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
-                new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
                 List.of(new BenchmarkReport.CaseSummary(
                         "algorithm\\int_loop.gd",
                         "Integer loop",
+                        new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
                         "passed",
                         List.of(),
                         null,
@@ -937,10 +913,10 @@ class GdScriptBenchmarkRunnerTest {
                 1,
                 "2026-06-15T00:00:00Z",
                 new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
-                new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
                 List.of(new BenchmarkReport.CaseSummary(
                         "runtime/stringname_roundtrip.gd",
                         "StringName roundtrip",
+                        new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
                         "passed",
                         List.of(GdScriptBenchmarkRunner.WARNING_NEGATIVE_BODY + ":compiled:1"),
                         null,
@@ -995,10 +971,98 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
+    void renderMinimalReportJsonShouldDropHeavyRuntimeFields() {
+        var report = new BenchmarkReport(
+                1,
+                "2026-06-15T00:00:00Z",
+                new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
+                List.of(new BenchmarkReport.CaseSummary(
+                        "runtime/stringname_roundtrip.gd",
+                        "StringName roundtrip",
+                        new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
+                        "passed",
+                        List.of(GdScriptBenchmarkRunner.WARNING_NEGATIVE_BODY + ":compiled:1"),
+                        null,
+                        new BenchmarkReport.PathStatistics(
+                                2,
+                                12.0,
+                                3.0,
+                                9,
+                                15,
+                                4.0,
+                                List.of(
+                                        new BenchmarkReport.RawSample(0, 1000, 4, 16, 12),
+                                        new BenchmarkReport.RawSample(1, 1000, 5, 14, 9)
+                                ),
+                                List.of(GdScriptBenchmarkRunner.WARNING_SHORT_BATCH + ":compiled:0")
+                        ),
+                        new BenchmarkReport.PathStatistics(
+                                2,
+                                24.0,
+                                1.0,
+                                23,
+                                25,
+                                6.0,
+                                List.of(new BenchmarkReport.RawSample(0, 1000, 6, 30, 24)),
+                                List.of(GdScriptBenchmarkRunner.WARNING_MISSING_CHECK + ":interpreter:0")
+                        ),
+                        new BenchmarkReport.RatioSummary(0.5, 2.0),
+                        true,
+                        List.of("godot", "--headless"),
+                        "GDCC_BENCHMARK_RESULT case=runtime/stringname_roundtrip.gd"
+                ))
+        );
+
+        var root = JsonParser.parseString(BenchmarkReportWriter.renderMinimalReportJson(report)).getAsJsonObject();
+        var caseObject = root.getAsJsonArray("cases").get(0).getAsJsonObject();
+        assertFalse(caseObject.has("pass_marker_seen"));
+        assertFalse(caseObject.has("command"));
+        assertFalse(caseObject.has("combined_output"));
+        assertFalse(caseObject.getAsJsonObject("compiled").has("raw_samples"));
+        assertFalse(caseObject.getAsJsonObject("interpreter").has("raw_samples"));
+        assertEquals("passed", caseObject.get("status").getAsString());
+        assertEquals(0.5, caseObject.getAsJsonObject("ratio").get("compiled_to_interpreter_mean").getAsDouble());
+    }
+
+    @Test
+    void appendReportCaseShouldMergeCasesIntoSingleReport(@TempDir Path tempDir) throws Exception {
+        var reportPath = tempDir.resolve("report.json");
+        var firstReport = new BenchmarkReport(
+                1,
+                "2026-06-15T00:00:00Z",
+                new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
+                List.of(passedCaseSummary("algorithm/int_loop.gd", "Integer loop", 50_000))
+        );
+        var secondReport = new BenchmarkReport(
+                1,
+                "2026-06-15T00:01:00Z",
+                new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
+                List.of(passedCaseSummary("math/newton_sqrt.gd", "Newton sqrt", 10_000))
+        );
+
+        GdScriptBenchmarkRunner.appendReportCase(reportPath, firstReport);
+        var merged = GdScriptBenchmarkRunner.appendReportCase(reportPath, secondReport);
+
+        assertEquals(List.of("algorithm/int_loop.gd", "math/newton_sqrt.gd"), merged.cases().stream().map(BenchmarkReport.CaseSummary::casePath).toList());
+        var root = JsonParser.parseString(Files.readString(reportPath)).getAsJsonObject();
+        var cases = root.getAsJsonArray("cases");
+        assertEquals(2, cases.size());
+        assertEquals("algorithm/int_loop.gd", cases.get(0).getAsJsonObject().get("case").getAsString());
+        assertEquals("math/newton_sqrt.gd", cases.get(1).getAsJsonObject().get("case").getAsString());
+        assertEquals(10_000, cases.get(1).getAsJsonObject().getAsJsonObject("config").get("iterations").getAsInt());
+        var minRoot = JsonParser.parseString(Files.readString(tempDir.resolve("report-min.json"))).getAsJsonObject();
+        var minCase = minRoot.getAsJsonArray("cases").get(1).getAsJsonObject();
+        assertFalse(minCase.has("pass_marker_seen"));
+        assertFalse(minCase.has("command"));
+        assertFalse(minCase.has("combined_output"));
+    }
+
+    @Test
     void summaryLineShouldRenderInfiniteRatioWhenInterpreterMeanIsZero() {
         var summary = new BenchmarkReport.CaseSummary(
                 "runtime/stringname_roundtrip.gd",
                 "StringName roundtrip",
+                new BenchmarkReport.ReportConfig(3, 1, 20_000, 1_000),
                 "passed",
                 List.of(),
                 null,
@@ -1009,11 +1073,26 @@ class GdScriptBenchmarkRunnerTest {
                 List.of("godot", "--headless"),
                 "output"
         );
-        var config = new BenchmarkReport.ReportConfig(3, 1, 20_000, 1_000);
-
         assertEquals(
                 "[gdcc-benchmark] case=runtime/stringname_roundtrip.gd compiled.mean=0.250us compiled.stddev=0.000us interpreter.mean=0.000us interpreter.stddev=0.000us ratio=inf samples=1 iterations=20000",
-                GdScriptBenchmarkRunner.summaryLine(summary, config)
+                GdScriptBenchmarkRunner.summaryLine(summary)
+        );
+    }
+
+    private static BenchmarkReport.CaseSummary passedCaseSummary(@NotNull String casePath, @NotNull String name, int iterations) {
+        return new BenchmarkReport.CaseSummary(
+                casePath,
+                name,
+                new BenchmarkReport.ReportConfig(3, 1, iterations, 1000),
+                "passed",
+                List.of(),
+                null,
+                new BenchmarkReport.PathStatistics(1, 30.0, 0.0, 30, 30, 4.0, List.of(new BenchmarkReport.RawSample(0, iterations, 4, 34, 30)), List.of()),
+                new BenchmarkReport.PathStatistics(1, 45.0, 0.0, 45, 45, 5.0, List.of(new BenchmarkReport.RawSample(0, iterations, 5, 50, 45)), List.of()),
+                new BenchmarkReport.RatioSummary(0.6667, 1.5),
+                true,
+                List.of("godot", "--headless"),
+                "GDCC_BENCHMARK_RESULT"
         );
     }
 
@@ -1029,23 +1108,17 @@ class GdScriptBenchmarkRunnerTest {
                 "Godot stderr",
                 List.of("godot", "--headless")
         );
-        var reportPath = tempDir.resolve("report-algorithm-int_loop.json");
+        var reportPath = tempDir.resolve("report.json");
 
-        GdScriptBenchmarkRunner.writeFailedReport(
-                reportPath,
-                "algorithm/int_loop.gd",
-                new GdScriptBenchmarkRunner.BenchmarkConfig(
-                        "Integer loop",
-                        1000,
-                        3,
-                        1,
-                        1000,
-                        new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
-                ),
-                runResult,
-                output,
-                new AssertionError("Malformed benchmark field `baseline_us`")
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                1000,
+                3,
+                1,
+                1000,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
         );
+        BenchmarkReportWriter.writeReport(reportPath, GdScriptBenchmarkRunner.failedReport("algorithm/int_loop.gd", config, runResult, output, new AssertionError("Malformed benchmark field `baseline_us`")));
 
         var caseObject = JsonParser.parseString(Files.readString(reportPath))
                 .getAsJsonObject()
@@ -1066,10 +1139,10 @@ class GdScriptBenchmarkRunnerTest {
                 1,
                 "2026-06-14T00:00:00Z",
                 new BenchmarkReport.EnvironmentSummary("Linux", "x86_64", "25", "/tmp/godot", "4.5.1", "/tmp/zig", "LINUX_X86_64", "RELEASE"),
-                new BenchmarkReport.ReportConfig(3, 1, 1000, 1000),
                 List.of(new BenchmarkReport.CaseSummary(
                         "collection/array_mutation.gd",
                         "Array mutation",
+                        new BenchmarkReport.ReportConfig(3, 1, 1000, 1000),
                         "passed",
                         List.of(),
                         null,
@@ -1089,20 +1162,6 @@ class GdScriptBenchmarkRunnerTest {
         var root = JsonParser.parseString(Files.readString(reportPath)).getAsJsonObject();
         assertEquals(1, root.get("schema_version").getAsInt());
         assertEquals("collection/array_mutation.gd", root.getAsJsonArray("cases").get(0).getAsJsonObject().get("case").getAsString());
-    }
-
-    @Test
-    void benchmarkRuntimeEnvGateShouldAcceptOnlyDocumentedTruthyValues() {
-        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("1"));
-        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("true"));
-        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("YES"));
-        assertTrue(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("On"));
-
-        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue(null));
-        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue(""));
-        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("0"));
-        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("false"));
-        assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("enabled"));
     }
 
     @Test

@@ -57,8 +57,8 @@ import static org.junit.jupiter.api.Assertions.*;
 /// - `# gdcc-benchmark:` directives are parsed on the Java side and stripped before scripts are
 ///   installed into the project.
 /// - Godot emits one machine-readable line per measured sample.
-/// - Java validates, aggregates, and persists the structured result into a per-case
-///   `tmp/test/.../report-<case>.json` file.
+/// - Java validates, aggregates, and persists the structured result into one merged
+///   `tmp/test/.../report.json` file.
 public final class GdScriptBenchmarkRunner {
     public static final String SCRIPT_RESOURCE_ROOT = "benchmark/script";
     public static final String INTERPRETER_RESOURCE_ROOT = "benchmark/interpreter";
@@ -206,21 +206,22 @@ public final class GdScriptBenchmarkRunner {
         var runResult = runner.run(runOptions);
         var outputValidationStart = System.nanoTime();
         var combinedOutput = runResult.combinedOutput();
-        var reportPath = reportPathForCase(scriptResourcePath);
+        var reportPath = reportPath();
         BenchmarkReport report;
         try {
             assertStopSignalSeen(scriptResourcePath, runResult);
             report = parseCaseOutput(scriptResourcePath, buildResult.config(), runResult, combinedOutput);
         } catch (AssertionError error) {
             try {
-                writeFailedReport(reportPath, scriptResourcePath, buildResult.config(), runResult, combinedOutput, error);
+                report = failedReport(scriptResourcePath, buildResult.config(), runResult, combinedOutput, error);
+                appendReportCase(reportPath, report);
             } catch (IOException writeError) {
                 error.addSuppressed(writeError);
             }
             throw error;
         }
-        BenchmarkReportWriter.writeReport(reportPath, report);
-        System.out.println(summaryLine(report.cases().getFirst(), report.config()));
+        report = appendReportCase(reportPath, report);
+        System.out.println(summaryLine(report.cases().getLast()));
         var outputValidationDuration = elapsedSince(outputValidationStart);
         var timing = new CaseRuntimeResult.Timing(
                 buildResult.timing(),
@@ -249,14 +250,12 @@ public final class GdScriptBenchmarkRunner {
         return WORK_ROOT.resolve("runtime").resolve(sanitizeCaseName(stripExtension(scriptResourcePath)));
     }
 
-    static @NotNull Path reportPathForCase(@NotNull String scriptResourcePath) {
-        return WORK_ROOT.resolve(reportFileNameForCase(scriptResourcePath));
+    static @NotNull Path reportPath() {
+        return WORK_ROOT.resolve("report.json");
     }
 
-    /// Report file names keep the benchmark category readable while avoiding collisions across cases.
-    static @NotNull String reportFileNameForCase(@NotNull String scriptResourcePath) {
-        var base = stripExtension(scriptResourcePath);
-        return "report-" + base.replace('\\', '-').replace('/', '-').replace(':', '-').replace('.', '-') + ".json";
+    void resetReport() throws IOException {
+        Files.deleteIfExists(reportPath());
     }
 
     static @NotNull GodotGdextensionTestRunner.RunOptions defaultRunOptions() {
@@ -306,12 +305,6 @@ public final class GdScriptBenchmarkRunner {
                 1,
                 UTC_FORMATTER.format(Instant.now()),
                 currentEnvironment(),
-                new BenchmarkReport.ReportConfig(
-                        expectedConfig.warmups(),
-                        expectedConfig.samples(),
-                        expectedConfig.iterations(),
-                        expectedConfig.minBatchUs()
-                ),
                 List.of(caseSummary)
         );
     }
@@ -342,15 +335,10 @@ public final class GdScriptBenchmarkRunner {
                 1,
                 UTC_FORMATTER.format(Instant.now()),
                 currentEnvironment(),
-                new BenchmarkReport.ReportConfig(
-                        config.warmups(),
-                        config.samples(),
-                        config.iterations(),
-                        config.minBatchUs()
-                ),
                 List.of(new BenchmarkReport.CaseSummary(
                         scriptResourcePath.replace('\\', '/'),
                         config.name(),
+                        toReportConfig(config),
                         "failed",
                         List.of(),
                         failureMessage(error),
@@ -364,15 +352,27 @@ public final class GdScriptBenchmarkRunner {
         );
     }
 
-    static void writeFailedReport(
+    static @NotNull BenchmarkReport appendReportCase(
             @NotNull Path reportPath,
-            @NotNull String scriptResourcePath,
-            @NotNull BenchmarkConfig config,
-            @NotNull GodotGdextensionTestRunner.GodotRunResult runResult,
-            @NotNull String combinedOutput,
-            @NotNull AssertionError error
+            @NotNull BenchmarkReport report
     ) throws IOException {
-        BenchmarkReportWriter.writeReport(reportPath, failedReport(scriptResourcePath, config, runResult, combinedOutput, error));
+        if (!Files.exists(reportPath)) {
+            BenchmarkReportWriter.writeReports(reportPath, report);
+            return report;
+        }
+
+        var existing = BenchmarkReportWriter.readReport(reportPath);
+        var mergedCases = new ArrayList<>(existing.cases());
+        mergedCases.removeIf(caseSummary -> caseSummary.casePath().equals(report.cases().getFirst().casePath()));
+        mergedCases.add(report.cases().getFirst());
+        var merged = new BenchmarkReport(
+                report.schemaVersion(),
+                report.generatedAt(),
+                report.environment(),
+                mergedCases
+        );
+        BenchmarkReportWriter.writeReports(reportPath, merged);
+        return merged;
     }
 
     private static @NotNull String failureMessage(@NotNull AssertionError error) {
@@ -907,6 +907,7 @@ public final class GdScriptBenchmarkRunner {
         return new BenchmarkReport.CaseSummary(
                 scriptResourcePath.replace('\\', '/'),
                 config.name(),
+                toReportConfig(config),
                 "passed",
                 deduplicateWarnings(warnings),
                 null,
@@ -1062,8 +1063,7 @@ public final class GdScriptBenchmarkRunner {
     }
 
     static @NotNull String summaryLine(
-            @NotNull BenchmarkReport.CaseSummary caseSummary,
-            @NotNull BenchmarkReport.ReportConfig config
+            @NotNull BenchmarkReport.CaseSummary caseSummary
     ) {
         var compiled = Objects.requireNonNull(caseSummary.compiled());
         var interpreter = Objects.requireNonNull(caseSummary.interpreter());
@@ -1074,8 +1074,17 @@ public final class GdScriptBenchmarkRunner {
                 + " interpreter.mean=" + formatDurationNs(interpreter.meanBodyNs())
                 + " interpreter.stddev=" + formatDurationNs(interpreter.stddevBodyNs())
                 + " ratio=" + formatRatio(ratio.compiledToInterpreterMean())
-                + " samples=" + config.samples()
-                + " iterations=" + config.iterations();
+                + " samples=" + caseSummary.config().samples()
+                + " iterations=" + caseSummary.config().iterations();
+    }
+
+    private static @NotNull BenchmarkReport.ReportConfig toReportConfig(@NotNull BenchmarkConfig config) {
+        return new BenchmarkReport.ReportConfig(
+                config.warmups(),
+                config.samples(),
+                config.iterations(),
+                config.minBatchUs()
+        );
     }
 
     private static @NotNull String formatDurationNs(double nanoseconds) {

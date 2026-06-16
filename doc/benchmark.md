@@ -18,22 +18,17 @@ Required runtime dependencies:
 - `zig` must be available so the benchmark case can be compiled to a native artifact
 - `GODOT_BIN` must point to a runnable Godot binary
 
-Required opt-in for Godot-backed benchmark execution:
-
-- `GDCC_RUN_BENCHMARKS=1`
-  - accepted enabled values are `1`, `true`, `yes`, and `on`
-
 Related optional environment variable:
 
 - `GDCC_TEST_TIMING=1`
-  - enables extra timing output for the existing unit-test suite
-  - does not enable benchmark runtime execution
+    - enables extra timing output for the existing unit-test suite
+    - does not affect manual benchmark runtime execution
 
-Runtime benchmark tests use JUnit assumptions for missing external tools:
+Benchmark contract tests use JUnit assumptions for missing external tools:
 
-- missing `zig` skips the Godot-backed runtime benchmark tests
-- missing `GODOT_BIN` skips the Godot-backed runtime benchmark tests
-- missing `GDCC_RUN_BENCHMARKS` skips the Godot-backed runtime benchmark tests
+- missing `zig` skips the release-build benchmark compile tests
+
+The manual benchmark main fails fast when `zig` or `GODOT_BIN` is unavailable.
 
 ## Targeted Commands
 
@@ -43,24 +38,36 @@ Run the pure Java contract tests from the repository root:
 script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkRunnerTest
 ```
 
-Run the release-build and Godot-backed runtime entrypoint from the repository root:
+Run the release-build contract tests from the repository root:
 
 ```bash
-GDCC_RUN_BENCHMARKS=1 script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkRuntimeTest
+script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkCompileTest
 ```
+
+Run the Godot-backed runtime benchmark task from the repository root:
+
+```bash
+./gradlew benchmark --no-daemon --info --console=plain
+```
+
+The `benchmark` task launches `gd.script.gdcc.test_suite.benchmark.GdScriptBenchmarkMain` on the test runtime classpath.
+No benchmark-specific opt-in environment variable is required; `GODOT_BIN` is still required.
 
 What each entrypoint covers:
 
 - `GdScriptBenchmarkRunnerTest`
-  - resource-set validation
-  - directive parsing
-  - result-line parsing
-  - statistics aggregation
-  - JSON report serialization
-  - does not require Godot or Zig
-- `GdScriptBenchmarkRuntimeTest`
-  - release native artifact compilation for bundled benchmark cases
-  - Godot-backed benchmark execution when `zig`, `GODOT_BIN`, and `GDCC_RUN_BENCHMARKS` are available
+    - resource-set validation
+    - directive parsing
+    - result-line parsing
+    - statistics aggregation
+    - JSON report serialization
+    - does not require Godot or Zig
+- `GdScriptBenchmarkCompileTest`
+    - release native artifact compilation for bundled benchmark cases
+- `GdScriptBenchmarkMain`
+    - Godot-backed benchmark execution for bundled benchmark cases
+    - requires `zig` and `GODOT_BIN`
+    - writes the merged `tmp/test/test_suite/benchmark/report.json` file
 
 During normal development, prefer targeted execution over running the full test suite.
 
@@ -78,16 +85,16 @@ Test stop.
 Interpretation:
 
 - `GDCC_BENCHMARK_HEADER`
-  - reports the effective benchmark config for the case
+    - reports the effective benchmark config for the case
 - `GDCC_BENCHMARK_RESULT`
-  - one line per measured sample and per path
-  - `baseline_us` and `benchmark_us` are batch durations in microseconds
-  - `body_ns` is the adjusted per-call body time in nanoseconds
-  - negative adjusted samples are preserved and reported as warnings
+    - one line per measured sample and per path
+    - `baseline_us` and `benchmark_us` are batch durations in microseconds
+    - `body_ns` is the adjusted per-call body time in nanoseconds
+    - negative adjusted samples are preserved and reported as warnings
 - `GDCC_BENCHMARK_PASS::<path>`
-  - indicates benchmark-side behavior validation succeeded for the case
+    - indicates benchmark-side behavior validation succeeded for the case
 - `Test stop.`
-  - indicates the shared Godot test run reached shutdown
+    - indicates the shared Godot test run reached shutdown
 
 After successful parsing, Java prints a compact summary line:
 
@@ -98,30 +105,40 @@ After successful parsing, Java prints a compact summary line:
 Interpretation:
 
 - `compiled.mean` and `interpreter.mean`
-  - mean adjusted body time per call
+    - mean adjusted body time per call
 - `compiled.stddev` and `interpreter.stddev`
-  - sample standard deviation of adjusted body time per call
+    - sample standard deviation of adjusted body time per call
 - `ratio`
-  - compiled mean divided by interpreter mean
-  - smaller than `1` means the compiled path is faster
-  - `inf` means the interpreter mean was zero while the compiled mean was non-zero
+    - compiled mean divided by interpreter mean
+    - smaller than `1` means the compiled path is faster
+    - `inf` means the interpreter mean was zero while the compiled mean was non-zero
 
 The console summary is useful for quick diagnosis. The JSON report is the durable output.
 
 ## JSON Report
 
-Default report path:
+Default report paths:
 
 ```text
-tmp/test/test_suite/benchmark/report-<case>.json
+tmp/test/test_suite/benchmark/report.json
+tmp/test/test_suite/benchmark/report-min.json
 ```
 
-The report is intended for scripts and post-run inspection. It includes:
+The reports are intended for scripts and post-run inspection. They merge all benchmark cases from a manual run into one
+`cases` array and include:
 
 - generation metadata such as schema version and timestamp
 - environment details such as OS, Java, Godot, Zig, target platform, and optimization level
-- effective benchmark config such as warmups, samples, iterations, and `min_batch_us`
+- per-case effective benchmark config such as warmups, samples, iterations, and `min_batch_us`
 - per-case status, warnings, aggregated statistics, ratios, command, combined output, and raw samples
+
+The `report-min.json` variant keeps the same top-level structure and per-case statistics, but drops the heavy runtime
+fields:
+
+- `raw_samples`
+- `pass_marker_seen`
+- `command`
+- `combined_output`
 
 Unit conventions:
 
@@ -194,7 +211,7 @@ Important notes:
 Current layout conventions:
 
 - existing categories are `algorithm`, `collection`, `math`, and `runtime`
-- if you introduce a new category, also update the runtime test coverage that enumerates known prefixes
+- new categories are picked up automatically when all three resource roots contain matching paths
 
 Authoring constraints:
 
@@ -232,19 +249,17 @@ Current warning categories include:
 Common failure and skip causes:
 
 - `zig` not found
-  - ensure `zig` is on `PATH` or discoverable through the environment locations checked by `ZigUtil`
+    - ensure `zig` is on `PATH` or discoverable through the environment locations checked by `ZigUtil`
 - `GODOT_BIN` not found
-  - export `GODOT_BIN` to a runnable Godot binary
-- benchmark runtime tests are skipped unexpectedly
-  - confirm `GDCC_RUN_BENCHMARKS=1`
+    - export `GODOT_BIN` to a runnable Godot binary
 - Godot timeout
-  - inspect the combined output stored in the JSON report
-  - check whether the case printed the benchmark pass marker
-  - check whether `Test stop.` was reached
+    - inspect the combined output stored in the JSON report
+    - check whether the case printed the benchmark pass marker
+    - check whether `Test stop.` was reached
 - malformed or missing benchmark result lines
-  - verify the case still emits the expected benchmark protocol through the shared measurement template
+    - verify the case still emits the expected benchmark protocol through the shared measurement template
 - frontend compile failure
-  - verify the benchmark script stays inside the currently supported feature set
+    - verify the benchmark script stays inside the currently supported feature set
 
 Generated runtime artifacts and reports are written under:
 

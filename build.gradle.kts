@@ -61,6 +61,15 @@ tasks.test {
     useJUnitPlatform()
 }
 
+val benchmark by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Runs Godot-backed GDScript benchmarks and writes the merged JSON report."
+
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("gd.script.gdcc.test_suite.benchmark.GdScriptBenchmarkMain")
+}
+
 val generateVersionResource by tasks.registering {
     val versionFile = generatedVersionResources.map { it.file("gdcc-version.properties") }
     outputs.file(versionFile)
