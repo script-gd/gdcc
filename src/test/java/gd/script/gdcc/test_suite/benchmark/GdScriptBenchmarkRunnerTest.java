@@ -118,6 +118,27 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
+    void rejectsUnexpectedMeasurementFixtureWithoutCompiledCounterpart(@TempDir Path tempDir) throws Exception {
+        writeTextResource(tempDir, "benchmark/script/algorithm/int_loop.gd", "class_name BenchmarkCompiled\nextends Node\n");
+        writeTextResource(tempDir, "benchmark/interpreter/algorithm/int_loop.gd", "class_name BenchmarkInterpreter\nextends Node\n");
+        writeTextResource(tempDir, "benchmark/measurement/algorithm/int_loop.gd", "extends Node\n");
+        writeTextResource(tempDir, "benchmark/measurement/algorithm/extra_case.gd", "extends Node\n");
+
+        try (var loader = new URLClassLoader(new URL[]{tempDir.toUri().toURL()}, null)) {
+            var runner = new GdScriptBenchmarkRunner(loader);
+            var error = assertThrows(AssertionError.class, runner::listBenchmarkResourcePaths);
+            assertTrue(
+                    error.getMessage().contains("algorithm/extra_case.gd"),
+                    () -> "Unexpected measurement counterpart should report exact relative path, got: " + error.getMessage()
+            );
+            assertTrue(
+                    error.getMessage().contains("benchmark/measurement"),
+                    () -> "Unexpected measurement counterpart should report measurement root, got: " + error.getMessage()
+            );
+        }
+    }
+
+    @Test
     void benchmarkResourceOrderingStaysStableAcrossDuplicateClasspathRoots(@TempDir Path tempDir) throws Exception {
         var rootA = tempDir.resolve("root-a");
         var rootB = tempDir.resolve("root-b");
@@ -167,6 +188,40 @@ class GdScriptBenchmarkRunnerTest {
         );
         assertEquals(COptimizationLevel.RELEASE, result.projectSetup().optimizationLevel());
         assertEquals(2, result.projectSetup().scriptResources().size());
+    }
+
+    @Test
+    void compileBenchmarkCaseShouldFailOnFrontendDiagnostics(@TempDir Path tempDir) throws Exception {
+        writeBenchmarkFixture(
+                tempDir,
+                "algorithm/frontend_error.gd",
+                """
+                        extends Node
+                        """
+        );
+        writeTextResource(
+                tempDir,
+                "benchmark/script/algorithm/frontend_error.gd",
+                """
+                        class_name FrontendErrorCompiled
+                        extends Node
+                        
+                        func benchmark() -> int:
+                            var total := 0
+                            for index in range(3):
+                                total += index
+                            return total
+                        """
+        );
+        var artifact = tempDir.resolve("compiled_release_x86_64.so");
+        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
+
+        try (var loader = new URLClassLoader(new URL[]{tempDir.toUri().toURL()}, getClass().getClassLoader())) {
+            var runner = new GdScriptBenchmarkRunner(loader, new RecordingCompiler(new CCompileResult(true, "ok", List.of(artifact))));
+            var error = assertThrows(AssertionError.class, () -> runner.compileBenchmarkCase("algorithm/frontend_error.gd"));
+            assertTrue(error.getMessage().contains("diagnostics"), error::getMessage);
+            assertTrue(error.getMessage().contains("frontend_error.gd"), error::getMessage);
+        }
     }
 
     @Test
@@ -473,6 +528,37 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
+    void parseCaseOutputShouldKeepPerPathPerSampleOverheadSubtraction() {
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                4,
+                0,
+                2,
+                1,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
+        );
+        var output = """
+                GDCC_BENCHMARK_HEADER case=algorithm/int_loop.gd name=Integer+loop iterations=4 warmups=0 samples=2 min_batch_us=1
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=compiled sample=0 iterations=4 baseline_us=8 benchmark_us=20 body_ns=3000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=compiled sample=1 iterations=4 baseline_us=12 benchmark_us=28 body_ns=4000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=0 iterations=4 baseline_us=4 benchmark_us=44 body_ns=10000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=1 iterations=4 baseline_us=16 benchmark_us=56 body_ns=10000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_PASS::algorithm/int_loop.gd
+                Test stop.
+                """;
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(0, true, false, false, output, "", List.of("godot"));
+
+        var summary = GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output).cases().getFirst();
+
+        assertEquals(3_000, summary.compiled().rawSamples().getFirst().bodyNs());
+        assertEquals(4_000, summary.compiled().rawSamples().getLast().bodyNs());
+        assertEquals(3_500.0, summary.compiled().meanBodyNs());
+        assertEquals(2_500.0, summary.compiled().meanOverheadNs());
+        assertEquals(10_000.0, summary.interpreter().meanBodyNs());
+        assertEquals(2_500.0, summary.interpreter().meanOverheadNs());
+    }
+
+    @Test
     void parseBenchmarkConfigShouldCaptureRaisedIterationsFromBundledShortBenchmarks(@TempDir Path tempDir) throws Exception {
         var artifact = tempDir.resolve("compiled_release_x86_64.so");
         Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
@@ -548,6 +634,96 @@ class GdScriptBenchmarkRunnerTest {
         var error = assertThrows(AssertionError.class, () -> GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output));
         assertTrue(error.getMessage().contains("baseline_us"));
         assertTrue(error.getMessage().contains("nope"));
+    }
+
+    @Test
+    void parseCaseOutputShouldRejectDuplicateHeader() {
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                1000,
+                3,
+                1,
+                1000,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
+        );
+        var output = """
+                GDCC_BENCHMARK_HEADER case=algorithm/int_loop.gd name=Integer+loop iterations=1000 warmups=3 samples=1 min_batch_us=1000
+                GDCC_BENCHMARK_HEADER case=algorithm/int_loop.gd name=Integer+loop iterations=1000 warmups=3 samples=1 min_batch_us=1000
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=compiled sample=0 iterations=1000 baseline_us=40 benchmark_us=160 body_ns=120 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=0 iterations=1000 baseline_us=50 benchmark_us=1050 body_ns=1000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_PASS::algorithm/int_loop.gd
+                Test stop.
+                """;
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(0, true, false, false, output, "", List.of("godot"));
+
+        var error = assertThrows(AssertionError.class, () -> GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output));
+        assertTrue(error.getMessage().contains("Duplicate benchmark header"));
+    }
+
+    @Test
+    void parseCaseOutputShouldRejectUnknownRuntimePath() {
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                1000,
+                3,
+                1,
+                1000,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
+        );
+        var output = """
+                GDCC_BENCHMARK_HEADER case=algorithm/int_loop.gd name=Integer+loop iterations=1000 warmups=3 samples=1 min_batch_us=1000
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=native sample=0 iterations=1000 baseline_us=40 benchmark_us=160 body_ns=120 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=0 iterations=1000 baseline_us=50 benchmark_us=1050 body_ns=1000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_PASS::algorithm/int_loop.gd
+                Test stop.
+                """;
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(0, true, false, false, output, "", List.of("godot"));
+
+        var error = assertThrows(AssertionError.class, () -> GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output));
+        assertTrue(error.getMessage().contains("Unknown benchmark path"));
+    }
+
+    @Test
+    void parseCaseOutputShouldRejectCaseMismatch() {
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                1000,
+                3,
+                1,
+                1000,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
+        );
+        var output = """
+                GDCC_BENCHMARK_HEADER case=algorithm/other.gd name=Integer+loop iterations=1000 warmups=3 samples=1 min_batch_us=1000
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=compiled sample=0 iterations=1000 baseline_us=40 benchmark_us=160 body_ns=120 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=0 iterations=1000 baseline_us=50 benchmark_us=1050 body_ns=1000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_PASS::algorithm/int_loop.gd
+                Test stop.
+                """;
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(0, true, false, false, output, "", List.of("godot"));
+
+        var error = assertThrows(AssertionError.class, () -> GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output));
+        assertTrue(error.getMessage().contains("Unexpected header case"));
+    }
+
+    @Test
+    void assertStopSignalSeenShouldReportTimeoutWithCombinedOutput() {
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(
+                -1,
+                false,
+                true,
+                true,
+                "stdout before timeout",
+                "stderr before timeout",
+                List.of("godot", "--headless")
+        );
+
+        var error = assertThrows(AssertionError.class, () -> GdScriptBenchmarkRunner.assertStopSignalSeen("algorithm/int_loop.gd", runResult));
+        assertTrue(error.getMessage().contains("Test stop."));
+        assertTrue(error.getMessage().contains("Timed out: true"));
+        assertTrue(error.getMessage().contains("stdout before timeout"));
+        assertTrue(error.getMessage().contains("stderr before timeout"));
+        assertTrue(error.getMessage().contains("godot"));
     }
 
     @Test
@@ -652,6 +828,7 @@ class GdScriptBenchmarkRunnerTest {
         var json = BenchmarkReportWriter.renderReportJson(report);
         JsonObject root = JsonParser.parseString(json).getAsJsonObject();
         assertEquals(1, root.get("schema_version").getAsInt());
+        assertEquals("RELEASE", root.getAsJsonObject("environment").get("optimization").getAsString());
         JsonArray cases = root.getAsJsonArray("cases");
         assertEquals(1, cases.size());
         JsonObject caseObject = cases.get(0).getAsJsonObject();
@@ -786,6 +963,34 @@ class GdScriptBenchmarkRunnerTest {
         assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("0"));
         assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("false"));
         assertFalse(GdScriptBenchmarkRuntimeTest.isEnabledEnvValue("enabled"));
+    }
+
+    @Test
+    void parseCaseOutputShouldCaptureReleaseEnvironmentForReport() {
+        var config = new GdScriptBenchmarkRunner.BenchmarkConfig(
+                "Integer loop",
+                1000,
+                3,
+                1,
+                1000,
+                new GdScriptBenchmarkRunner.OutputExpectations(List.of(), List.of())
+        );
+        var output = """
+                GDCC_BENCHMARK_HEADER case=algorithm/int_loop.gd name=Integer+loop iterations=1000 warmups=3 samples=1 min_batch_us=1000
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=compiled sample=0 iterations=1000 baseline_us=40 benchmark_us=160 body_ns=120 check_ran=true check_passed=true
+                GDCC_BENCHMARK_RESULT case=algorithm/int_loop.gd path=interpreter sample=0 iterations=1000 baseline_us=50 benchmark_us=1050 body_ns=1000 check_ran=true check_passed=true
+                GDCC_BENCHMARK_PASS::algorithm/int_loop.gd
+                Test stop.
+                """;
+        var runResult = new GodotGdextensionTestRunner.GodotRunResult(0, true, false, false, output, "", List.of("godot"));
+
+        var environment = GdScriptBenchmarkRunner.parseCaseOutput("algorithm/int_loop.gd", config, runResult, output).environment();
+
+        assertEquals(System.getProperty("os.name"), environment.os());
+        assertEquals(System.getProperty("os.arch"), environment.arch());
+        assertEquals(System.getProperty("java.version"), environment.javaVersion());
+        assertEquals(TargetPlatform.getNativePlatform().name(), environment.targetPlatform());
+        assertEquals(COptimizationLevel.RELEASE.name(), environment.optimization());
     }
 
     private static void writeBenchmarkFixture(@NotNull Path root, @NotNull String relativePath, @NotNull String measurementScript) throws IOException {

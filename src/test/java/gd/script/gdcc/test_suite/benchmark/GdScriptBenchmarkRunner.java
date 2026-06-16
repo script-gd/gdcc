@@ -198,11 +198,7 @@ public final class GdScriptBenchmarkRunner {
         var runResult = runner.run(runOptions);
         var outputValidationStart = System.nanoTime();
         var combinedOutput = runResult.combinedOutput();
-        assertTrue(
-                runResult.stopSignalSeen(),
-                () -> "Godot benchmark run for " + scriptResourcePath + " did not emit \""
-                        + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\".\nOutput:\n" + combinedOutput
-        );
+        assertStopSignalSeen(scriptResourcePath, runResult);
 
         var report = parseCaseOutput(scriptResourcePath, buildResult.config(), runResult, combinedOutput);
         var reportPath = reportPathForCase(scriptResourcePath);
@@ -261,6 +257,8 @@ public final class GdScriptBenchmarkRunner {
             @NotNull GodotGdextensionTestRunner.GodotRunResult runResult,
             @NotNull String combinedOutput
     ) {
+        // Godot-side scripts deliberately use fixed machine-readable lines so Java can validate
+        // every timing sample without scraping human-oriented logs.
         var lines = combinedOutput.lines().toList();
         var resultLines = new ArrayList<SampleLine>();
         HeaderLine header = null;
@@ -298,6 +296,21 @@ public final class GdScriptBenchmarkRunner {
                         expectedConfig.minBatchUs()
                 ),
                 List.of(caseSummary)
+        );
+    }
+
+    static void assertStopSignalSeen(
+            @NotNull String scriptResourcePath,
+            @NotNull GodotGdextensionTestRunner.GodotRunResult runResult
+    ) {
+        assertTrue(
+                runResult.stopSignalSeen(),
+                () -> "Godot benchmark run for " + scriptResourcePath + " did not emit \""
+                        + GodotGdextensionTestRunner.TEST_STOP_SIGNAL + "\" before completion."
+                        + "\nTimed out: " + runResult.timedOut()
+                        + "\nExit code: " + runResult.exitCode()
+                        + "\nCommand: " + runResult.command()
+                        + "\nOutput:\n" + runResult.combinedOutput()
         );
     }
 
@@ -935,6 +948,8 @@ public final class GdScriptBenchmarkRunner {
     }
 
     private static @NotNull BenchmarkReport.EnvironmentSummary currentEnvironment() {
+        // The report captures the host/toolchain snapshot once per run so persisted benchmark JSON
+        // can be compared later without guessing which binaries or optimization level were used.
         var godotBinary = GodotGdextensionTestRunner.findGodotBinaryFromEnv();
         var zig = ZigUtil.findZig();
         return new BenchmarkReport.EnvironmentSummary(

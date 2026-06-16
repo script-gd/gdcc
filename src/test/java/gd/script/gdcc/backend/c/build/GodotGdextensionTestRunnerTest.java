@@ -55,6 +55,45 @@ public class GodotGdextensionTestRunnerTest {
     }
 
     @Test
+    public void prepareProjectShouldCopyGeneratedArtifactsIntoProjectBin() throws Exception {
+        var projectDir = tempDir.resolve("project");
+        var artifactDir = tempDir.resolve("artifacts");
+        Files.createDirectories(artifactDir);
+        var library = artifactDir.resolve("libgdcc_benchmark_release_x86_64.so");
+        var header = artifactDir.resolve("entry.h");
+        Files.writeString(library, "native-library", StandardCharsets.UTF_8);
+        Files.writeString(header, "native-header", StandardCharsets.UTF_8);
+
+        var runner = new GodotGdextensionTestRunner(projectDir);
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                List.of(library, header),
+                List.of(),
+                null
+        ));
+
+        assertEquals("native-library", Files.readString(projectDir.resolve("bin/libgdcc_benchmark_release_x86_64.so"), StandardCharsets.UTF_8));
+        assertEquals("native-header", Files.readString(projectDir.resolve("bin/entry.h"), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void prepareProjectShouldRejectMissingGeneratedArtifact() throws Exception {
+        var projectDir = tempDir.resolve("project");
+        var artifactDir = tempDir.resolve("artifacts");
+        Files.createDirectories(artifactDir);
+        var missingLibrary = artifactDir.resolve("libgdcc_benchmark_release_x86_64.so");
+
+        var runner = new GodotGdextensionTestRunner(projectDir);
+        var error = assertThrows(IOException.class, () -> runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                List.of(missingLibrary),
+                List.of(),
+                null
+        )));
+
+        assertTrue(error.getMessage().contains("Artifact not found"));
+        assertTrue(error.getMessage().contains(missingLibrary.getFileName().toString()));
+    }
+
+    @Test
     public void prepareProjectShouldInstallManagedScriptResourcesAndUseReleaseLibraryKey() throws Exception {
         var projectDir = tempDir.resolve("project");
         var runner = new GodotGdextensionTestRunner(projectDir);

@@ -824,41 +824,129 @@ Acceptance:
 
 ## 9. Validation Matrix
 
-Required validation before considering the benchmark system implemented:
+Implementation status:
+
+- Status: completed on 2026-06-15
+- Validation command:
+  - `script/run-gradle-targeted-tests.sh --tests GdScriptBenchmarkRunnerTest,GodotGdextensionTestRunnerTest`
+- Deliverables:
+  - added focused Step 9 validation coverage in
+    `src/test/java/gd/script/gdcc/test_suite/benchmark/GdScriptBenchmarkRunnerTest.java`
+  - added artifact-copy validation coverage in
+    `src/test/java/gd/script/gdcc/backend/c/build/GodotGdextensionTestRunnerTest.java`
+  - added `GdScriptBenchmarkRunner.assertStopSignalSeen(...)` so timeout / missing-stop-signal
+    diagnostics are unit-testable without launching Godot
+  - added concise comments at the output-protocol and environment-snapshot boundaries
+- Notes:
+  - GitHub / Godot upstream source lookup was not needed for this step: the existing repository
+    docs and runtime tests already define the `.gdextension`, stop-signal, script-resource, and
+    benchmark fixture contracts used by the validation matrix
+  - runtime benchmark execution remains opt-in through `GDCC_RUN_BENCHMARKS`; Step 9 pure Java
+    validation does not require Zig or Godot
+
+Validation evidence:
 
 - Resource contract:
-  - compiled, interpreter, and measurement resources are paired by relative path
-  - missing pair failures identify the exact file
+  - completed: compiled, interpreter, and measurement resources are paired by relative path
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.listsExpectedBundledBenchmarkScripts`
+    - `GdScriptBenchmarkRunnerTest.benchmarkResourceOrderingStaysStableAcrossDuplicateClasspathRoots`
+  - completed: missing pair failures identify the exact file
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.failsWhenInterpreterCounterpartIsMissing`
+    - `GdScriptBenchmarkRunnerTest.failsWhenMeasurementCounterpartIsMissing`
+    - `GdScriptBenchmarkRunnerTest.rejectsUnexpectedInterpreterFixtureWithoutCompiledCounterpart`
+    - `GdScriptBenchmarkRunnerTest.rejectsUnexpectedMeasurementFixtureWithoutCompiledCounterpart`
 - Compile path:
-  - frontend diagnostics fail the case
-  - native benchmark artifacts use `COptimizationLevel.RELEASE`
-  - native build diagnostics fail the case with build log
-  - generated artifacts are copied into the Godot project
+  - completed: frontend diagnostics fail the case
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.compileBenchmarkCaseShouldFailOnFrontendDiagnostics`
+  - completed: native benchmark artifacts use `COptimizationLevel.RELEASE`
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.releaseBuildUsesReleaseOptimizationAndPreservesBuildLog`
+    - `GdScriptBenchmarkRuntimeTest.compilesBundledBenchmarkScriptsToReleaseArtifacts`
+  - completed: native build diagnostics fail the case with build log
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.buildFailureIncludesNativeBuildLog`
+  - completed: generated artifacts are copied into the Godot project
+  - evidence:
+    - `GodotGdextensionTestRunnerTest.prepareProjectShouldCopyGeneratedArtifactsIntoProjectBin`
+    - `GodotGdextensionTestRunnerTest.prepareProjectShouldRejectMissingGeneratedArtifact`
 - Runtime path:
-  - Godot process starts from `GODOT_BIN`
-  - stop signal is seen
-  - pass marker is seen
-  - timeout fails with combined output
+  - completed: Godot process starts from `GODOT_BIN`
+  - evidence:
+    - `GodotGdextensionTestRunner.findGodotBinaryFromEnv`
+    - `GdScriptBenchmarkRuntimeTest.compilesRunsAndReports*`
+  - completed: stop signal is seen
+  - evidence:
+    - `GdScriptBenchmarkRuntimeTest.compilesRunsAndReports*`
+    - `GdScriptBenchmarkRunner.assertStopSignalSeen`
+  - completed: pass marker is seen
+  - evidence:
+    - `GdScriptBenchmarkRuntimeTest.compilesRunsAndReports*`
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldRejectMissingPassMarker`
+  - completed: timeout fails with combined output
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.assertStopSignalSeenShouldReportTimeoutWithCombinedOutput`
 - Measurement path:
-  - each runtime path has the configured sample count
-  - each sample contains baseline and benchmark durations
-  - stateful fixtures re-enter `prepare()` before every warmup batch and every recorded sample
-  - call overhead is subtracted per path and per sample
-  - mean and standard deviation are computed on adjusted body times
+  - completed: each runtime path has the configured sample count
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldRejectInconsistentSampleCount`
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldComputeStatisticsWarningsAndReportShape`
+  - completed: each sample contains baseline and benchmark durations
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldRejectMalformedNumericField`
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldKeepPerPathPerSampleOverheadSubtraction`
+  - completed: stateful fixtures re-enter `prepare()` before every warmup batch and every recorded sample
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.compileBenchmarkCaseShouldRenderPerBatchPrepareIntoMeasurementScript`
+  - completed: call overhead is subtracted per path and per sample
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldKeepPerPathPerSampleOverheadSubtraction`
+  - completed: mean and standard deviation are computed on adjusted body times
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldComputeStatisticsWarningsAndReportShape`
 - Reporting path:
-  - summary line is stable enough for log collection
-  - JSON report is written to `tmp/test/test_suite/benchmark/report-<case>.json` by default
-  - JSON report contains schema version, environment, config, case summaries, ratios, warnings, and
-    raw samples
-  - JSON report records `environment.optimization` as `RELEASE` for measured compiled results
-  - JSON report stores numeric duration values with explicit unit suffixes rather than formatted
-    strings
-  - JSON report can be parsed by a focused unit test without launching Godot
-  - warnings are visible but do not become hard failures unless the case opts in
+  - completed: summary line is stable enough for log collection
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldComputeStatisticsWarningsAndReportShape`
+    - `GdScriptBenchmarkRunnerTest.summaryLineShouldRenderInfiniteRatioWhenInterpreterMeanIsZero`
+  - completed: JSON report is written to `tmp/test/test_suite/benchmark/report-<case>.json` by default
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.reportPathShouldBePerCaseStableAndUnderBenchmarkWorkRoot`
+    - `GdScriptBenchmarkRunnerTest.writeReportShouldCreateParentDirectoriesAndPersistJson`
+  - completed: JSON report contains schema version, environment, config, case summaries, ratios,
+    warnings, and raw samples
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.renderReportJsonShouldUseNumericDurationFieldsAndForwardSlashPaths`
+    - `GdScriptBenchmarkRunnerTest.renderReportJsonShouldRetainWarningsRawSamplesAndCombinedOutput`
+  - completed: JSON report records `environment.optimization` as `RELEASE` for measured compiled results
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.renderReportJsonShouldUseNumericDurationFieldsAndForwardSlashPaths`
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldCaptureReleaseEnvironmentForReport`
+  - completed: JSON report stores numeric duration values with explicit unit suffixes rather than
+    formatted strings
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.renderReportJsonShouldUseNumericDurationFieldsAndForwardSlashPaths`
+  - completed: JSON report can be parsed by a focused unit test without launching Godot
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.writeReportShouldCreateParentDirectoriesAndPersistJson`
+  - completed: warnings are visible but do not become hard failures unless the case opts in
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest.parseCaseOutputShouldComputeStatisticsWarningsAndReportShape`
+    - `GdScriptBenchmarkRunnerTest.renderReportJsonShouldRetainWarningsRawSamplesAndCombinedOutput`
 - Environment behavior:
-  - missing Zig skips runtime benchmark tests
-  - missing `GODOT_BIN` skips runtime benchmark tests
-  - parser/statistics unit tests do not require Zig or Godot
+  - completed: missing Zig skips runtime benchmark tests
+  - evidence:
+    - `GdScriptBenchmarkRuntimeTest.compilesBundledBenchmarkScriptsToReleaseArtifacts`
+    - `GdScriptBenchmarkRuntimeTest.compilesRunsAndReports*`
+  - completed: missing `GODOT_BIN` skips runtime benchmark tests
+  - evidence:
+    - `GdScriptBenchmarkRuntimeTest.compilesRunsAndReports*`
+    - `GodotGdextensionTestRunner.findGodotBinaryFromEnv`
+  - completed: parser/statistics unit tests do not require Zig or Godot
+  - evidence:
+    - `GdScriptBenchmarkRunnerTest`
 
 ---
 
