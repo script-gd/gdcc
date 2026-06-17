@@ -213,12 +213,31 @@ Current layout conventions:
 - existing categories are `algorithm`, `collection`, `math`, and `runtime`
 - new categories are picked up automatically when all three resource roots contain matching paths
 
+Bundled benchmark case families currently cover:
+
+- `algorithm/int_loop.gd`: scalar integer loop overhead
+- `collection/array_mutation.gd`: mutable array update and traversal
+- `collection/dictionary_lookup.gd`: dictionary lookup from a reusable key set
+- `collection/linked_list.gd`: GDScript singly linked list append, traversal, and relink
+- `collection/tree_heap.gd`: binary min-heap push/pop and sift operations
+- `collection/bloom_filter.gd`: Bloom filter insert and membership checks
+- `collection/quadtree_lookup.gd`: fixed-grid quadtree-style 2D spatial lookup
+- `math/newton_sqrt.gd`: iterative floating-point square root
+- `math/vector3_transform.gd`: `Vector3` transform loop
+- `math/matrix_ops.gd`: scalar-backed matrix multiply/add and vector transform
+- `math/series_recurrence.gd`: geometric sum, Fibonacci-style recurrence, and alternating recurrence
+- `math/sliding_variance.gd`: fixed-window variance update without retaining historical samples
+- `runtime/stringname_roundtrip.gd`: `StringName` to `String` conversion
+- `runtime/node_batch_ops.gd`: batch `Node` add, rename, remove, and free operations
+
 Authoring constraints:
 
 - keep compiled benchmark scripts within the currently supported frontend and backend feature set
 - avoid unsupported constructs in compiled scripts such as `for`, `match`, and `lambda`
 - avoid array and dictionary literal patterns that compile mode still rejects
 - for stateful cases, reset reusable state in `prepare()` instead of relying on cross-sample carry-over
+- when `prepare()` rebuilds state, reset auxiliary counters and cached derived data there as well so
+  `baseline()`, `benchmark()`, and `check()` all observe the same per-batch state
 
 ## Build Mode and Interpretation Boundaries
 

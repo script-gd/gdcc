@@ -231,12 +231,11 @@ public final class FrontendBodyLoweringSupport {
                     CfgValueMaterializationKind.TEMP_SLOT,
                     null
             );
-            case AssignmentItem assignmentItem ->
-                    new CfgValueMaterialization(
-                            requireAssignmentResultType(analysisData, assignmentItem),
-                            CfgValueMaterializationKind.TEMP_SLOT,
-                            null
-                    );
+            case AssignmentItem assignmentItem -> new CfgValueMaterialization(
+                    requireAssignmentResultType(analysisData, assignmentItem),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
             case LocalDeclarationItem _ ->
                     throw new IllegalStateException("LocalDeclarationItem must not publish a result value id");
         };
