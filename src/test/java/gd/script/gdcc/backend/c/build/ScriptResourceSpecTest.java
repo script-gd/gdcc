@@ -70,4 +70,24 @@ class ScriptResourceSpecTest {
                 invalidPrefixError.getMessage()
         );
     }
+
+    @Test
+    void constructorShouldRejectTraversalOrAbsoluteLikeResourcePath() {
+        for (var resourcePath : new String[]{
+                "res://../escape/file.gd",
+                "res://benchmark/../escape/file.gd",
+                "res:///absoluteish/file.gd",
+                "res://benchmark//double/file.gd",
+                "res://benchmark/./file.gd"
+        }) {
+            var error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new ScriptResourceSpec(resourcePath, "extends Node\n")
+            );
+            assertEquals(
+                    "resourcePath must stay within project root: " + resourcePath,
+                    error.getMessage()
+            );
+        }
+    }
 }

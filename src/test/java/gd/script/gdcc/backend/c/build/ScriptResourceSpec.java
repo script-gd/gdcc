@@ -56,6 +56,11 @@ public record ScriptResourceSpec(
         if (relativePath.isBlank()) {
             throw new IllegalArgumentException("resourcePath must not be blank");
         }
+        for (var segment : relativePath.split("/")) {
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                throw new IllegalArgumentException("resourcePath must stay within project root: " + value);
+            }
+        }
         return value;
     }
 }

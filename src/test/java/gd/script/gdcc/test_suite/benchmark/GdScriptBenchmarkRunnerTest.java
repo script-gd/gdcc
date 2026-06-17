@@ -855,6 +855,29 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
+    @SuppressWarnings("DataFlowIssue")
+    void caseSummaryShouldRejectNullCasePathBeforeNormalization() {
+        var error = assertThrows(
+                NullPointerException.class,
+                () -> new BenchmarkReport.CaseSummary(
+                        null,
+                        "Integer loop",
+                        new BenchmarkReport.ReportConfig(3, 2, 1000, 1000),
+                        "passed",
+                        List.of(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        true,
+                        List.of("godot", "--headless"),
+                        "output"
+                )
+        );
+        assertEquals("casePath must not be null", error.getMessage());
+    }
+
+    @Test
     void renderReportJsonShouldRetainWarningsRawSamplesAndCombinedOutput() {
         var report = new BenchmarkReport(
                 1,

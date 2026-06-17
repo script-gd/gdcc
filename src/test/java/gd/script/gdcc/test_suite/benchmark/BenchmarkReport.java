@@ -57,8 +57,8 @@ public record BenchmarkReport(
             @SerializedName("combined_output") @NotNull String combinedOutput
     ) {
         public CaseSummary {
+            casePath = Objects.requireNonNull(casePath, "casePath must not be null");
             casePath = casePath.replace('\\', '/');
-            Objects.requireNonNull(casePath);
             Objects.requireNonNull(name);
             Objects.requireNonNull(config);
             Objects.requireNonNull(status);
