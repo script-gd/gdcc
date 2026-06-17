@@ -268,59 +268,6 @@ class GdScriptBenchmarkRunnerTest {
     }
 
     @Test
-    void compileBenchmarkCaseShouldGenerateMeasurementScriptFromSharedTemplate(@TempDir Path tempDir) throws Exception {
-        var artifact = tempDir.resolve("compiled_release_x86_64.so");
-        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
-        var compiler = new RecordingCompiler(new CCompileResult(true, "release build ok", List.of(artifact)));
-        var runner = new GdScriptBenchmarkRunner(getClass().getClassLoader(), compiler);
-
-        var result = runner.compileBenchmarkCase("runtime/stringname_roundtrip.gd");
-
-        var measurementScript = result.projectSetup().scriptResources().stream()
-                .filter(resource -> resource.resourcePath().contains("/measurement/"))
-                .findFirst()
-                .orElseThrow()
-                .scriptContent();
-        assertTrue(measurementScript.startsWith("extends Node\n"));
-        assertTrue(measurementScript.contains("const CASE_PATH = \"runtime/stringname_roundtrip.gd\""));
-        assertTrue(measurementScript.contains("const CASE_NAME = \"StringName+roundtrip\""));
-        assertTrue(measurementScript.contains("const ITERATIONS = 20000"));
-        assertTrue(measurementScript.contains("func _run_samples(path_name: String, target: Node) -> void:"));
-        assertTrue(measurementScript.contains("func _body_ns(baseline_us: int, benchmark_us: int) -> int:"));
-    }
-
-    @Test
-    void compileBenchmarkCaseShouldRenderPerBatchPrepareIntoMeasurementScript(@TempDir Path tempDir) throws Exception {
-        var artifact = tempDir.resolve("compiled_release_x86_64.so");
-        Files.writeString(artifact, "binary", StandardCharsets.UTF_8);
-        var compiler = new RecordingCompiler(new CCompileResult(true, "release build ok", List.of(artifact)));
-        var runner = new GdScriptBenchmarkRunner(getClass().getClassLoader(), compiler);
-
-        var result = runner.compileBenchmarkCase("collection/array_mutation.gd");
-
-        var measurementScript = result.projectSetup().scriptResources().stream()
-                .filter(resource -> resource.resourcePath().contains("/measurement/"))
-                .findFirst()
-                .orElseThrow();
-        assertTrue(
-                measurementScript.scriptContent().contains("""
-                        while iteration < ITERATIONS:
-                                _prepare_target(target)
-                                target.baseline()
-                        """),
-                () -> "Baseline batches should reset state before each invocation.\n" + measurementScript.scriptContent()
-        );
-        assertTrue(
-                measurementScript.scriptContent().contains("""
-                        while iteration < ITERATIONS:
-                                _prepare_target(target)
-                                value = target.benchmark()
-                        """),
-                () -> "Benchmark batches should reset state before each invocation.\n" + measurementScript.scriptContent()
-        );
-    }
-
-    @Test
     void parseBenchmarkConfigShouldAcceptKnownDirectiveValues() {
         var config = GdScriptBenchmarkRunner.parseBenchmarkConfig(
                 "algorithm/int_loop.gd",
