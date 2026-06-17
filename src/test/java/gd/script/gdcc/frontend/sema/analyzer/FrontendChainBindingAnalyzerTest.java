@@ -282,6 +282,196 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzeCurrentTypedLocalPropertyWritePathStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_property_write_path_baseline.gd",
+                """
+                        class_name TypedLocalPropertyWritePathBaseline
+                        extends RefCounted
+                        
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+                        
+                        func make_point() -> Point:
+                            return Point.new()
+                        
+                        func write_path(point: Point) -> void:
+                            var tail := make_point()
+                            tail.next = point
+                        """
+        );
+
+        var writePath = findFunction(analyzed.unit().ast(), "write_path");
+        var tailDeclaration = findNode(
+                writePath.body(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("tail")
+        );
+        var assignment = assertInstanceOf(
+                dev.superice.gdparser.frontend.ast.AssignmentExpression.class,
+                assertInstanceOf(ExpressionStatement.class, writePath.body().statements().get(1)).expression()
+        );
+        var nextStep = findNode(assignment, AttributePropertyStep.class, step -> step.name().equals("next"));
+
+        var initializerType = analyzed.analysisData().expressionTypes().get(tailDeclaration.value());
+        assertNotNull(initializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(nextStep);
+        assertNotNull(resolvedMember);
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
+                () -> assertTrue(initializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedMember.receiverKind()),
+                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeCurrentTypedLocalPropertyReadPathStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_property_read_path_baseline.gd",
+                """
+                        class_name TypedLocalPropertyReadPathBaseline
+                        extends RefCounted
+                        
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+                        
+                        func make_point() -> Point:
+                            return Point.new()
+                        
+                        func read_path() -> bool:
+                            var point := make_point()
+                            return point.marker != -1
+                        """
+        );
+
+        var readPath = findFunction(analyzed.unit().ast(), "read_path");
+        var pointDeclaration = findNode(
+                readPath.body(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("point")
+        );
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        var initializerType = analyzed.analysisData().expressionTypes().get(pointDeclaration.value());
+        assertNotNull(initializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
+                () -> assertTrue(initializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
+                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeCurrentTypedLocalAliasChainStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_alias_chain_baseline.gd",
+                """
+                        class_name TypedLocalAliasChainBaseline
+                        extends RefCounted
+                        
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+                        
+                        func make_point() -> Point:
+                            return Point.new()
+                        
+                        func read_path() -> bool:
+                            var a := make_point()
+                            var b := a
+                            var c := b
+                            return c.marker != -1
+                        """
+        );
+
+        var readPath = findFunction(analyzed.unit().ast(), "read_path");
+        var aDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("a"));
+        var bDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("b"));
+        var cDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("c"));
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        var aInitializerType = analyzed.analysisData().expressionTypes().get(aDeclaration.value());
+        var bInitializerType = analyzed.analysisData().expressionTypes().get(bDeclaration.value());
+        var cInitializerType = analyzed.analysisData().expressionTypes().get(cDeclaration.value());
+        assertNotNull(aInitializerType);
+        assertNotNull(bInitializerType);
+        assertNotNull(cInitializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+
+        /// Current drift is specifically about the already-published member fact. By the time
+        /// expression typing runs, the source-order alias chain has already been backfilled.
+        assertAll(
+                () -> assertTrue(aInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertTrue(bInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertTrue(cInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
+                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
+    void analyzeCurrentComplexInitializerAliasStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+        var analyzed = analyze(
+                "typed_local_complex_initializer_baseline.gd",
+                """
+                        class_name TypedLocalComplexInitializerBaseline
+                        extends RefCounted
+                        
+                        class Point:
+                            var next: Point = null
+                            var marker: int = -1
+                        
+                        class Factory:
+                            var next_point: Point = null
+                            
+                            func make_point(seed: int) -> Point:
+                                return next_point if next_point != null else Point.new()
+                        
+                        func read_path(factory: Factory, seed: int) -> bool:
+                            var p := factory.make_point(seed).next
+                            var q := p
+                            return q.marker != -1
+                        """
+        );
+
+        var readPath = findFunction(analyzed.unit().ast(), "read_path");
+        var pDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("p"));
+        var qDeclaration = findNode(readPath.body(), VariableDeclaration.class, declaration -> declaration.name().equals("q"));
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        var pInitializerType = analyzed.analysisData().expressionTypes().get(pDeclaration.value());
+        var qInitializerType = analyzed.analysisData().expressionTypes().get(qDeclaration.value());
+        assertNotNull(pInitializerType);
+        assertNotNull(qInitializerType);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+
+        /// Complex initializer + alias behaves the same way: slot backfill recovers later, but the
+        /// chain-binding result published earlier stays dynamic.
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, pInitializerType.status()),
+                () -> assertTrue(pInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertTrue(qInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
+                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
+        );
+    }
+
+    @Test
     void analyzeSuppressesDuplicateChainDiagnosticWhenPropertyInitializerHeadIsSealedUpstream() throws Exception {
         var analyzed = analyze(
                 "property_initializer_head_owned_by_top_binding.gd",

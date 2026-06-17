@@ -2,8 +2,16 @@
 
 - 日期：2026-06-17
 - 目标 issue：#40 `frontend: static property chain can degrade to DYNAMIC for typed local aliases`
-- 状态：实施计划；尚未修改生产代码
+- 状态：阶段 0 和阶段 1 已完成；阶段 2-4 未开始
 - 范围：frontend semantic phase 中 `:=` local slot type 稳定化
+
+当前进度摘要：
+
+- 已新增 `FrontendLocalTypeStabilizationAnalyzer` 的阶段 1 scaffold，但仍未接入 `FrontendSemanticAnalyzer` 主 pipeline。
+- 已为该 analyzer 增加 package-private probe surface，仅用于阶段 1 单测锁定暂态求型合同。
+- 已补阶段 0 回归基线测试，固定 write path、read path、alias 链、复杂 initializer 在当前 shared semantic 下的漂移现状。
+- 已补阶段 1 单测，锁定 silent resolver 的正向求型、true dynamic fail-closed、unsupported subtree 不泄漏 shared facts/diagnostics。
+- 当前仍未实现 `BlockScope.resetLocalType(...)` 写回，也未收口 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)`。
 
 ---
 
@@ -750,3 +758,177 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 6. 收口 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)`。
 7. 更新注释与计划文档中的完成状态。
 8. 再次运行 targeted tests。
+
+---
+
+## 13. 实施阶段细化
+
+本节把上面的检查清单展开成可执行阶段。每一阶段都应具备明确输入、输出和验收门槛，避免实现时只看到“大目标”而缺少落地顺序。
+
+### 13.1 阶段 0: 建立回归基线
+
+状态：已完成
+
+目标：
+
+- 先把 issue #40 的失败样例固定成测试，再开始改实现。
+
+步骤：
+
+1. 选择测试落点。
+   - 优先 `FrontendChainBindingAnalyzerTest`
+   - 其次 `FrontendExprTypeAnalyzerTest`
+   - 再补 `FrontendVarTypePostAnalyzerTest`
+   - 最后补 `FrontendSemanticAnalyzerFrameworkTest`
+2. 写入最小复现样例。
+   - write path：`var tail := make_point(); tail.next = point`
+   - read path：`var point := make_point(); return point.marker != -1`
+   - alias 链：`var a := make_point(); var b := a; var c := b`
+   - 复杂 initializer：`var p := factory.make_point(arg).next`
+3. 让测试先明确当前错误状态。
+   - 现状应能观察到 `DYNAMIC` 或 `Variant` 漂移。
+   - 目的不是修复，而是把问题固定成可重复回归。
+
+完成记录：
+
+- [x] 任务 0.1：测试落点选在 `FrontendChainBindingAnalyzerTest`，保持回归面直接锚定第一次正式发布的 member/call facts。
+- [x] 任务 0.2：已补四类样例：
+  - `analyzeCurrentTypedLocalPropertyWritePathStillDriftsToDynamicBeforeStabilizationPhase()`
+  - `analyzeCurrentTypedLocalPropertyReadPathStillDriftsToDynamicBeforeStabilizationPhase()`
+  - `analyzeCurrentTypedLocalAliasChainStillDriftsToDynamicBeforeStabilizationPhase()`
+  - `analyzeCurrentComplexInitializerAliasStillDriftsToDynamicBeforeStabilizationPhase()`
+- [x] 任务 0.3：上述测试当前断言的是“现状漂移”而不是“修复后行为”，这样可以在不破坏现有测试套件的前提下，把 #40 的回归面固定下来，供阶段 2/3 反向翻转断言。
+
+阶段产出：
+
+- 具备 4 个可重复的 shared-semantic 回归基线测试。
+- 文档与测试对复现语义一致，不再依赖变量名猜测。
+
+阶段验收：
+
+- 读者只看测试片段就能理解 `tail`、`point`、`a/b/c` 分别代表什么。
+- 当前实现下，这些测试会稳定暴露 `DYNAMIC` / `Variant` 漂移，证明回归面真实存在。
+
+### 13.2 阶段 1: 提取 silent 求型编排
+
+状态：已完成
+
+目标：
+
+- 准备可复用的“静默表达式求型”编排层，但不改变任何正式 facts。
+
+步骤：
+
+1. 在 `FrontendLocalTypeStabilizationAnalyzer` 内部先搭出私有 resolver/walker。
+2. 复用 `FrontendExpressionSemanticSupport` 处理普通表达式。
+3. 复用 `FrontendChainReductionFacade` / `FrontendChainReductionHelper` 处理复杂 attribute chain。
+4. 复用 `FrontendChainHeadReceiverSupport` 处理 head receiver。
+5. 统一把 provisional 失败降级为 `Variant`，不发最终 diagnostics。
+
+完成记录：
+
+- [x] 任务 1.1：`FrontendLocalTypeStabilizationAnalyzer` 已具备 walker + `SilentExpressionResolver` scaffold，仍保持 analyzer 私有实现，没有提取新公共 API。
+- [x] 任务 1.2：silent resolver 已复用 `FrontendExpressionSemanticSupport` 处理 literal / identifier / unary / binary / bare call / remaining explicit expression。
+- [x] 任务 1.3：silent resolver 已复用 `FrontendChainReductionFacade`、`FrontendChainReductionHelper`、`FrontendChainStatusBridge` 与 `FrontendAssignmentSemanticSupport` 处理 attribute chain、复杂 initializer 与 assignment expression。
+- [x] 任务 1.4：已新增 package-private probe surface 和 `FrontendLocalTypeStabilizationAnalyzerTest`，锁定以下合同：
+  - 复杂 initializer 可在单元层被静默求出暂态 `RESOLVED` type。
+  - true dynamic receiver 保持 `DYNAMIC(Variant)`，不被误收窄。
+  - `for` / `match` 等当前非目标子树不会被静默打开。
+  - `analysisData.resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()` 不被写入。
+  - 共享 `DiagnosticManager` 不泄漏新 diagnostics。
+
+阶段产出：
+
+- 新 phase 的内部求型路径已可单独运行。
+- 仍未接入正式 pipeline。
+
+阶段验收：
+
+- 复杂 initializer 能在单元层面被求出暂态 type。
+- `analysisData.resolvedMembers()` / `analysisData.resolvedCalls()` / `analysisData.expressionTypes()` 不被写入。
+- 无共享 diagnostics 泄漏。
+
+### 13.3 阶段 2: 实现 source-order local stabilization MVP
+
+目标：
+
+- 先在 supported executable body 内完成最小闭环。
+
+步骤：
+
+1. 遍历 supported executable body 的 statement 顺序。
+2. 只处理 eligible `var :=` declaration。
+3. 对 initializer 调 silent resolver。
+4. 一旦得到稳定 exact type，立即 `BlockScope.resetLocalType(...)`。
+5. 支持 `a := ...; b := a; c := b` 这种同 block alias 链。
+
+阶段产出：
+
+- `FrontendLocalTypeStabilizationAnalyzer` 的 MVP 行为完成。
+- 仍未接入 `FrontendSemanticAnalyzer` 主链路。
+
+阶段验收：
+
+- 单元测试中，alias 链可以从前到后稳定传播。
+- `tail.next` / `point.marker` / `c.marker` 等后续 member 访问不再因为 local slot 初始 `Variant` 退化为 `DYNAMIC`。
+- 真 dynamic receiver 仍保持 `Variant`。
+
+### 13.4 阶段 3: 接入主 pipeline 并收口旧 backfill
+
+目标：
+
+- 让新 phase 成为唯一的 inferred local slot primary owner。
+
+步骤：
+
+1. 在 `FrontendSemanticAnalyzer` 中插入新 phase。
+2. 更新相关注释，明确 chain binding 依赖 local stabilization 完成。
+3. 将 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 降级为兜底或一致性检查。
+4. 确认 `FrontendVarTypePostAnalyzer` 仍只做 republish。
+
+阶段产出：
+
+- 主 pipeline 已按新顺序运行。
+- 旧 backfill 不再是 primary owner。
+
+阶段验收：
+
+- `FrontendSemanticAnalyzerFrameworkTest` 能确认 phase 顺序正确。
+- `FrontendChainBindingAnalyzer` 看到的是稳定 local slot，而不是 `Variant` seed。
+- `FrontendExprTypeAnalyzer` 不再静默改写已经稳定的 local slot。
+
+### 13.5 阶段 4: 回归硬化与边界验证
+
+目标：
+
+- 防止新 pass 只修了主样例，却引入新的边界回归。
+
+步骤：
+
+1. 增补 true dynamic fail-closed 测试。
+2. 增补 unsupported subtree / 非目标结构的保守行为测试。
+3. 增补 `FrontendVarTypePostAnalyzer` republish 预期。
+4. 根据需要加 bounded retry 验收。
+5. 运行 targeted tests 并清理注释歧义。
+
+阶段产出：
+
+- 计划中的最小样例与边界样例均已稳定。
+- 计划与测试之间没有语义歧义。
+
+阶段验收：
+
+- 不新增重复 diagnostics。
+- 不把 `DYNAMIC` 真语义误收窄成 exact type。
+- 不把 control-flow merge / lambda / `for` / `match` 等 MVP 外场景悄悄打开。
+- 仍然保持 side-table owner 不变。
+
+### 13.6 阶段间切换条件
+
+从一个阶段进入下一个阶段之前，至少满足：
+
+- 阶段 0 -> 阶段 1：最小复现测试已固定，且当前错误状态可重复。
+- 阶段 1 -> 阶段 2：silent resolver 已能稳定返回可用的暂态 type。
+- 阶段 2 -> 阶段 3：alias 链与复杂 initializer 样例已在独立测试中通过。
+- 阶段 3 -> 阶段 4：主 pipeline 接入后，#40 样例仍通过，且旧 backfill 不再覆盖新结果。
+- 阶段 4 -> 完成：边界样例通过，且测试覆盖了 write path、read path、alias 链、复杂 initializer、true dynamic fail-closed。
