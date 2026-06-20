@@ -17,6 +17,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
@@ -68,7 +69,8 @@ import java.util.Objects;
 /// freshly published inner expression facts without introducing a second temporary table.
 /// `expressionTypes()` is not expression-only: besides ordinary expression roots, this phase also
 /// publishes attribute property/call/subscript steps when downstream compile/lowering needs the step
-/// itself as the stable fact anchor.
+/// itself as the stable fact anchor. Inferred local slot stabilization is owned by the earlier local
+/// stabilization phase; the legacy backfill path below is now only a guarded fallback.
 public class FrontendExprTypeAnalyzer {
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
@@ -498,14 +500,14 @@ public class FrontendExprTypeAnalyzer {
                     && attributeExpression.base() == identifierExpression;
         }
 
-        /// Supported local `:=` declarations are still inventoried as `Variant` during variable
-        /// analysis. Once the RHS expression type is published here, rewrite the block-local slot
-        /// only when that published result is stable enough to become the local's value type.
+        /// Supported local `:=` declarations should already have been stabilized before chain
+        /// binding. This legacy path is kept as a narrow fallback for unsupported MVP gaps: it can
+        /// still fill an untouched `Variant` slot, but it must never silently override a slot that an
+        /// earlier phase already stabilized.
         ///
-        /// This backfill intentionally updates only the block-scope inventory slot. It does not
-        /// rewrite `expressionTypes()` or `symbolBindings()`, so later consumers can still recover
-        /// initializer provenance through the local use-site's `declarationSite()` plus the
-        /// initializer expression's own published type and diagnostics.
+        /// The check keeps inferred local ownership explicit while preserving initializer provenance
+        /// through the local use-site's `declarationSite()` plus the initializer expression's own
+        /// published type and diagnostics.
         private void backfillInferredLocalType(@NotNull VariableDeclaration variableDeclaration) {
             if (!FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())
                     || variableDeclaration.value() == null) {
@@ -513,6 +515,10 @@ public class FrontendExprTypeAnalyzer {
             }
             var declarationScope = scopesByAst.get(variableDeclaration);
             if (!(declarationScope instanceof BlockScope blockScope)) {
+                return;
+            }
+            var existingLocal = blockScope.resolveValueHere(variableDeclaration.name().trim());
+            if (existingLocal == null || existingLocal.declaration() != variableDeclaration) {
                 return;
             }
             var publishedInitializerType = expressionTypes.get(variableDeclaration.value());
@@ -523,10 +529,27 @@ public class FrontendExprTypeAnalyzer {
                 case RESOLVED, DYNAMIC -> publishedInitializerType.publishedType();
                 case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
             };
-            if (backfilledType == null) {
+            if (backfilledType == null || backfilledType instanceof GdVoidType) {
+                return;
+            }
+            if (!(existingLocal.type() instanceof GdVariantType)) {
+                if (!sameType(existingLocal.type(), backfilledType)) {
+                    throw new IllegalStateException(
+                            "Inferred local slot type changed after stabilization for '"
+                                    + variableDeclaration.name().trim()
+                                    + "': existing="
+                                    + existingLocal.type().getTypeName()
+                                    + ", initializer="
+                                    + backfilledType.getTypeName()
+                    );
+                }
                 return;
             }
             blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, backfilledType);
+        }
+
+        private boolean sameType(@NotNull GdType first, @NotNull GdType second) {
+            return first.getTypeName().equals(second.getTypeName());
         }
 
         private @NotNull FrontendExpressionType resolveExpressionType(@NotNull Expression expression) {

@@ -39,8 +39,8 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
 
-/// Publishes final callable-local slot types after expression typing has already settled local `:=`
-/// backfill inside the lexical inventory.
+/// Publishes final callable-local slot types after local stabilization and expression typing have
+/// settled the lexical inventory.
 public class FrontendVarTypePostAnalyzer {
     public static final @NotNull String VARIABLE_SLOT_PUBLICATION_CATEGORY = "sema.variable_slot_publication";
 

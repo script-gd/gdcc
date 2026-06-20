@@ -282,7 +282,7 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
-    void analyzeCurrentTypedLocalPropertyWritePathStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+    void analyzeResolvesTypedLocalPropertyWritePathAfterStabilizationPhase() throws Exception {
         var analyzed = analyze(
                 "typed_local_property_write_path_baseline.gd",
                 """
@@ -322,15 +322,16 @@ class FrontendChainBindingAnalyzerTest {
         assertAll(
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
                 () -> assertTrue(initializerType.publishedType().getTypeName().endsWith("Point")),
-                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
                 () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedMember.receiverKind()),
-                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertTrue(resolvedMember.resultType().getTypeName().endsWith("Point")),
                 () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
         );
     }
 
     @Test
-    void analyzeCurrentTypedLocalPropertyReadPathStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+    void analyzeResolvesTypedLocalPropertyReadPathAfterStabilizationPhase() throws Exception {
         var analyzed = analyze(
                 "typed_local_property_read_path_baseline.gd",
                 """
@@ -366,14 +367,15 @@ class FrontendChainBindingAnalyzerTest {
         assertAll(
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
                 () -> assertTrue(initializerType.publishedType().getTypeName().endsWith("Point")),
-                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
-                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", resolvedMember.resultType().getTypeName()),
                 () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
         );
     }
 
     @Test
-    void analyzeCurrentTypedLocalAliasChainStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+    void analyzeResolvesTypedLocalAliasChainAfterStabilizationPhase() throws Exception {
         var analyzed = analyze(
                 "typed_local_alias_chain_baseline.gd",
                 """
@@ -410,20 +412,21 @@ class FrontendChainBindingAnalyzerTest {
         var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
         assertNotNull(resolvedMember);
 
-        /// Current drift is specifically about the already-published member fact. By the time
-        /// expression typing runs, the source-order alias chain has already been backfilled.
+        // The source-order stabilization pass updates each alias slot before chain binding consumes
+        // the next alias or the final member receiver.
         assertAll(
                 () -> assertTrue(aInitializerType.publishedType().getTypeName().endsWith("Point")),
                 () -> assertTrue(bInitializerType.publishedType().getTypeName().endsWith("Point")),
                 () -> assertTrue(cInitializerType.publishedType().getTypeName().endsWith("Point")),
-                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
-                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", resolvedMember.resultType().getTypeName()),
                 () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
         );
     }
 
     @Test
-    void analyzeCurrentComplexInitializerAliasStillDriftsToDynamicBeforeStabilizationPhase() throws Exception {
+    void analyzeResolvesComplexInitializerAliasAfterStabilizationPhase() throws Exception {
         var analyzed = analyze(
                 "typed_local_complex_initializer_baseline.gd",
                 """
@@ -434,11 +437,12 @@ class FrontendChainBindingAnalyzerTest {
                             var next: Point = null
                             var marker: int = -1
                         
+                        class Box:
+                            var next: Point = Point.new()
+                        
                         class Factory:
-                            var next_point: Point = null
-                            
-                            func make_point(seed: int) -> Point:
-                                return next_point if next_point != null else Point.new()
+                            func make_point(seed: int) -> Box:
+                                return Box.new()
                         
                         func read_path(factory: Factory, seed: int) -> bool:
                             var p := factory.make_point(seed).next
@@ -459,14 +463,15 @@ class FrontendChainBindingAnalyzerTest {
         var resolvedMember = analyzed.analysisData().resolvedMembers().get(markerStep);
         assertNotNull(resolvedMember);
 
-        /// Complex initializer + alias behaves the same way: slot backfill recovers later, but the
-        /// chain-binding result published earlier stays dynamic.
+        // The complex chain initializer is reduced silently before chain binding, so the alias can
+        // publish an exact member fact instead of keeping the old dynamic fallback.
         assertAll(
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, pInitializerType.status()),
                 () -> assertTrue(pInitializerType.publishedType().getTypeName().endsWith("Point")),
                 () -> assertTrue(qInitializerType.publishedType().getTypeName().endsWith("Point")),
-                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, resolvedMember.status()),
-                () -> assertEquals(GdVariantType.VARIANT, resolvedMember.receiverType()),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertTrue(resolvedMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", resolvedMember.resultType().getTypeName()),
                 () -> assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty())
         );
     }

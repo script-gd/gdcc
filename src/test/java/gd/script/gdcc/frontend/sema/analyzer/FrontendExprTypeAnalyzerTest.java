@@ -3,8 +3,10 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
@@ -47,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendExprTypeAnalyzerTest {
@@ -2224,6 +2227,77 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzeLeavesPreStabilizedInferredLocalSlotTypesUntouched() throws Exception {
+        var analyzed = analyze(
+                "expr_type_pre_stabilized_backfill.gd",
+                """
+                        class_name ExprTypePreStabilizedBackfill
+                        extends RefCounted
+
+                        class Point:
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func ping():
+                            var point := make_point()
+                            point
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, analyzed.analysisData().scopesByAst().get(pingFunction.body()));
+        var pointDeclaration = findVariable(pingFunction.body().statements(), "point");
+        var pointUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+
+        var pointSlot = bodyScope.resolveValue("point");
+        assertNotNull(pointSlot);
+        assertTrue(pointSlot.type().getTypeName().endsWith("Point"));
+        var initializerType = analyzed.analysisData().expressionTypes().get(pointDeclaration.value());
+        assertNotNull(initializerType);
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status());
+        assertEquals(pointSlot.type().getTypeName(), initializerType.publishedType().getTypeName());
+        var pointUseType = analyzed.analysisData().expressionTypes().get(pointUse);
+        assertNotNull(pointUseType);
+        assertEquals(pointSlot.type().getTypeName(), pointUseType.publishedType().getTypeName());
+    }
+
+    @Test
+    void analyzeRejectsConflictingBackfillForPreStabilizedInferredLocalSlot() throws Exception {
+        var input = prepareInputBeforeExpressionTyping(
+                "expr_type_conflicting_pre_stabilized_backfill.gd",
+                """
+                        class_name ExprTypeConflictingPreStabilizedBackfill
+                        extends RefCounted
+
+                        func ping():
+                            var value := 1
+                            value
+                        """
+        );
+        var pingFunction = findFunction(input.unit().ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, input.analysisData().scopesByAst().get(pingFunction.body()));
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
+        bodyScope.resetLocalType("value", valueDeclaration, GdVoidType.VOID);
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendExprTypeAnalyzer().analyze(
+                        input.classRegistry(),
+                        input.analysisData(),
+                        input.diagnosticManager()
+                )
+        );
+
+        assertTrue(failure.getMessage().contains("Inferred local slot type changed after stabilization"));
+        assertTrue(failure.getMessage().contains("value"));
+    }
+
+    @Test
     void analyzeLeavesInferredLocalsAsVariantWhenInitializerCannotPublishStableType() throws Exception {
         var analyzed = analyze(
                 "expr_type_inferred_no_backfill.gd",
@@ -2454,6 +2528,36 @@ class FrontendExprTypeAnalyzerTest {
         return new AnalyzedScript(unit.ast(), analysisData);
     }
 
+    private static @NotNull PreparedExpressionInput prepareInputBeforeExpressionTyping(
+            @NotNull String fileName,
+            @NotNull String source
+    ) throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
+                new FrontendModule("test_module", List.of(unit)),
+                classRegistry,
+                diagnostics,
+                analysisData
+        );
+        analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendScopeAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendTopBindingAnalyzer().analyze(analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        return new PreparedExpressionInput(unit, classRegistry, analysisData, diagnostics);
+    }
+
     private static @NotNull ClassRegistry registryWithKeyedStringBuiltin() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedBuiltins = api.builtinClasses().stream()
@@ -2597,6 +2701,14 @@ class FrontendExprTypeAnalyzerTest {
     private record AnalyzedScript(
             @NotNull Node ast,
             @NotNull FrontendAnalysisData analysisData
+    ) {
+    }
+
+    private record PreparedExpressionInput(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticManager diagnosticManager
     ) {
     }
 }

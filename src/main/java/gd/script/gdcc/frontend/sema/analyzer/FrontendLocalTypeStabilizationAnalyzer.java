@@ -65,10 +65,13 @@ import java.util.function.Supplier;
 /// - resolve initializer types through a silent local resolver
 /// - write back only exact stable local slot types
 ///
+/// The shared semantic pipeline runs this phase after top binding and before chain binding so member
+/// resolution consumes exact receiver slots for source-order `:=` aliases.
+///
 /// This phase deliberately does not:
 /// - update `resolvedMembers()`, `resolvedCalls()`, `expressionTypes()`, or `slotTypes()`
 /// - emit diagnostics
-public final class FrontendLocalTypeStabilizationAnalyzer {
+public class FrontendLocalTypeStabilizationAnalyzer {
     public void analyze(
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,

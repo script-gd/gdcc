@@ -78,6 +78,45 @@ class FrontendVarTypePostAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesPreStabilizedCallableLocalSlotTypesWithoutRewritingThem() throws Exception {
+        var analyzed = analyzeShared(
+                "var_type_post_pre_stabilized_locals.gd",
+                """
+                        class_name VarTypePostPreStabilizedLocals
+                        extends RefCounted
+
+                        class Point:
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func ping():
+                            var point := make_point()
+                            var alias := point
+                            return alias.marker
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast().statements(), "ping");
+        var point = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("point")
+        );
+        var alias = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("alias")
+        );
+
+        assertTrue(analyzed.analysisData().slotTypes().get(point).getTypeName().endsWith("Point"));
+        assertTrue(analyzed.analysisData().slotTypes().get(alias).getTypeName().endsWith("Point"));
+        assertTrue(analyzed.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY)));
+    }
+
+    @Test
     void analyzeKeepsUnsupportedForBodyLocalsOutOfPublishedSlotTypeTable() throws Exception {
         var analyzed = analyzeShared(
                 "var_type_post_unsupported_for_local.gd",
@@ -274,6 +313,8 @@ class FrontendVarTypePostAnalyzerTest {
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendTopBindingAnalyzer().analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());

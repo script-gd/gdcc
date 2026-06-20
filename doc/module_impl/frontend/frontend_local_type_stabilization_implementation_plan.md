@@ -2,16 +2,16 @@
 
 - 日期：2026-06-17
 - 目标 issue：#40 `frontend: static property chain can degrade to DYNAMIC for typed local aliases`
-- 状态：阶段 0 和阶段 1 已完成；阶段 2-4 未开始
+- 状态：阶段 0-3 已完成；阶段 4 未开始
 - 范围：frontend semantic phase 中 `:=` local slot type 稳定化
 
 当前进度摘要：
 
-- 已新增 `FrontendLocalTypeStabilizationAnalyzer` 的阶段 1 scaffold，但仍未接入 `FrontendSemanticAnalyzer` 主 pipeline。
+- 已新增 `FrontendLocalTypeStabilizationAnalyzer`，并已接入 `FrontendSemanticAnalyzer` 主 pipeline。
 - 已为该 analyzer 增加 package-private probe surface，仅用于阶段 1 单测锁定暂态求型合同。
 - 已补阶段 0 回归基线测试，固定 write path、read path、alias 链、复杂 initializer 在当前 shared semantic 下的漂移现状。
 - 已补阶段 1 单测，锁定 silent resolver 的正向求型、true dynamic fail-closed、unsupported subtree 不泄漏 shared facts/diagnostics。
-- 当前仍未实现 `BlockScope.resetLocalType(...)` 写回，也未收口 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)`。
+- 已完成阶段 2 source-order `BlockScope.resetLocalType(...)` 写回，并已完成阶段 3 主 pipeline 接入与 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 收口。
 
 ---
 
@@ -907,6 +907,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 
 ### 13.4 阶段 3: 接入主 pipeline 并收口旧 backfill
 
+状态：已完成
+
 目标：
 
 - 让新 phase 成为唯一的 inferred local slot primary owner。
@@ -917,6 +919,22 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 2. 更新相关注释，明确 chain binding 依赖 local stabilization 完成。
 3. 将 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 降级为兜底或一致性检查。
 4. 确认 `FrontendVarTypePostAnalyzer` 仍只做 republish。
+
+完成记录：
+
+- [x] 任务 3.1：已在 `FrontendSemanticAnalyzer` 中新增 `localTypeStabilizationAnalyzer` 字段，并保持既有构造器签名兼容；默认构造路径会创建 `FrontendLocalTypeStabilizationAnalyzer`，测试可通过新增长构造器注入 recording analyzer。
+- [x] 任务 3.2：主 shared semantic pipeline 已调整为 `FrontendTopBindingAnalyzer -> FrontendLocalTypeStabilizationAnalyzer -> FrontendChainBindingAnalyzer`，并在 local stabilization 后继续刷新 diagnostics snapshot，保持 phase boundary 形式一致。
+- [x] 任务 3.3：已更新 `FrontendSemanticAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、`FrontendExprTypeAnalyzer` 与 `FrontendVarTypePostAnalyzer` 的注释，明确 chain binding 消费已稳定 local slot，var type post 只 republish 已 settle 的 lexical inventory。
+- [x] 任务 3.4：`FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 已降级为 guarded fallback：只允许 untouched `Variant` slot 被补写；非 `Variant` slot 与 initializer final type 相同则 no-op，不一致则 fail-fast，避免 silent double-owner overwrite。
+- [x] 任务 3.5：已补阶段 3 单元测试与集成断言：
+  - `FrontendChainBindingAnalyzerTest` 翻转 #40 write path/read path/alias 链/复杂 initializer 旧漂移基线，确认 chain binding 看到稳定 receiver。
+  - `FrontendSemanticAnalyzerFrameworkTest` 新增 local stabilization phase-boundary recording，并补完整 pipeline 的 typed local write/read 集成断言。
+  - `FrontendExprTypeAnalyzerTest` 增补 pre-stabilized slot no-op 与 conflicting backfill fail-fast 覆盖。
+  - `FrontendVarTypePostAnalyzerTest` 增补稳定 alias slot republish 覆盖，并同步 helper 的手工 pipeline 顺序。
+- [x] 任务 3.6：已完成阶段 3 targeted 验证：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLocalTypeStabilizationAnalyzerTest,FrontendChainBindingAnalyzerTest,FrontendExprTypeAnalyzerTest,FrontendVarTypePostAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest`
+  - IDE targeted build for modified implementation/test files
+  - `git diff --check`
 
 阶段产出：
 
