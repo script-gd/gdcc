@@ -858,18 +858,18 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var unit = parserService.parseUnit(Path.of("tmp", "stable_local_type_body_facts.gd"), """
                 class_name StableLocalTypeBodyFacts
                 extends RefCounted
-
+                
                 class Point:
                     var next: Point = null
                     var marker: int = -1
-
+                
                 func make_point() -> Point:
                     return Point.new()
-
+                
                 func write_path(point: Point) -> void:
                     var tail := make_point()
                     tail.next = point
-
+                
                 func read_path() -> bool:
                     var point := make_point()
                     return point.marker != -1
@@ -915,6 +915,60 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 () -> assertEquals("bool", comparisonType.publishedType().getTypeName()),
                 () -> assertTrue(result.diagnostics().asList().stream()
                         .noneMatch(diagnostic -> diagnostic.category().equals("sema.member_resolution")))
+        );
+    }
+
+    @Test
+    void analyzePublishesParameterAliasFactsAcrossBodyPhases() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "parameter_alias_body_facts.gd"), """
+                class_name ParameterAliasBodyFacts
+                extends RefCounted
+                
+                class Point:
+                    var marker: int = -1
+                
+                func ping(value: Point) -> int:
+                    var a := value
+                    return a.marker
+                """, diagnostics);
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var result = analyzeModule("test_module", List.of(unit), registry, diagnostics);
+
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var valueParameter = pingFunction.parameters().getFirst();
+        var aliasDeclaration = findVariable(pingFunction.body().statements(), "a");
+        var markerStep = findNode(pingFunction.body(), dev.superice.gdparser.frontend.ast.AttributePropertyStep.class, step ->
+                step.name().equals("marker")
+        );
+        var returnValue = assertInstanceOf(ReturnStatement.class, pingFunction.body().statements().get(1)).value();
+        assertNotNull(returnValue);
+
+        var parameterSlotType = result.slotTypes().get(valueParameter);
+        var aliasSlotType = result.slotTypes().get(aliasDeclaration);
+        var aliasInitializerType = result.expressionTypes().get(aliasDeclaration.value());
+        var markerMember = result.resolvedMembers().get(markerStep);
+        var returnType = result.expressionTypes().get(returnValue);
+
+        assertAll(
+                () -> assertNotNull(parameterSlotType),
+                () -> assertTrue(parameterSlotType.getTypeName().endsWith("Point")),
+                () -> assertNotNull(aliasSlotType),
+                () -> assertTrue(aliasSlotType.getTypeName().endsWith("Point")),
+                () -> assertNotNull(aliasInitializerType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, aliasInitializerType.status()),
+                () -> assertTrue(aliasInitializerType.publishedType().getTypeName().endsWith("Point")),
+                () -> assertNotNull(markerMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, markerMember.status()),
+                () -> assertTrue(markerMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", markerMember.resultType().getTypeName()),
+                () -> assertNotNull(returnType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, returnType.status()),
+                () -> assertEquals("int", returnType.publishedType().getTypeName()),
+                () -> assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.member_resolution").isEmpty()),
+                () -> assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.expression_resolution").isEmpty()),
+                () -> assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.type_check").isEmpty())
         );
     }
 

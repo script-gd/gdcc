@@ -772,6 +772,9 @@ func ping(value: Point) -> int:
 
 参数 `value: Point` 在 `FrontendVariableAnalyzer.bindParameter(...)` 后已经进入 `CallableScope`，`ScopeValue.type()` 稳定为 `Point`。新 pass 的 initializer resolver 对 `value` use-site 求型时，可以通过现有 symbol binding 与 scope lookup 得到 `Point`，然后 `resetLocalType(a, Point)`。正式 chain binding 处理 `a.marker` 时就不再看到 `a: Variant`。
 
+`2026-06-20`：仓库已为这条 parameter alias 链路补齐 focused tests，分别覆盖 local stabilization
+write-back 与 shared semantic pipeline 下的 member / return type 闭环。
+
 需要 source-order 或 fixed-point 稳定的场景：
 
 ```gdscript
@@ -946,4 +949,3 @@ func read_path(dynamic_host) -> bool:
 - 它是一个只服务于 `BlockScope` local slot 的 silent pre-chain inference phase。
 
 在这个边界下，复杂 initializer、调用参数、local alias 链都可以通过现有纯语义 helper 复用实现；需要新增的是 pass 自身的 source-order/fixed-point walker、transient cache 和 fail-closed 策略，而不是第二套 member/call/type resolver。
-

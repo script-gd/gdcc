@@ -43,17 +43,17 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationComplexInitializer
                         extends RefCounted
-
+                        
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-
+                        
                         class Factory:
                             var cached: Point = null
-
+                        
                             func make_point(seed: int) -> Point:
                                 return cached if cached != null else Point.new()
-
+                        
                         func ping(factory: Factory, seed: int):
                             var point := factory.make_point(seed).next
                             point
@@ -97,13 +97,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationAliasChain
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping():
                             var a := make_point()
                             var b := a
@@ -133,23 +133,58 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     }
 
     @Test
+    void analyzeStabilizesParameterAliasFromCallableParameter() throws Exception {
+        var prepared = prepareProbeInput(
+                "local_type_stabilization_parameter_alias.gd",
+                """
+                        class_name LocalTypeStabilizationParameterAlias
+                        extends RefCounted
+                        
+                        class Point:
+                            var marker: int = -1
+                        
+                        func ping(value: Point):
+                            var a := value
+                            a
+                        """
+        );
+
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+
+        assertAll(
+                () -> assertTypeNameEndsWith(currentLocalType(prepared.analysisData(), pingFunction.body(), "a"), "Point"),
+                () -> assertTrue(prepared.analysisData().resolvedMembers().isEmpty()),
+                () -> assertTrue(prepared.analysisData().resolvedCalls().isEmpty()),
+                () -> assertTrue(prepared.analysisData().expressionTypes().isEmpty()),
+                () -> assertTrue(prepared.analysisData().slotTypes().isEmpty()),
+                () -> assertEquals(0, prepared.diagnosticManager().snapshot().asList().size())
+        );
+    }
+
+    @Test
     void analyzeStabilizesComplexInitializerThenAliasInBlockScope() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_complex_alias.gd",
                 """
                         class_name LocalTypeStabilizationComplexAlias
                         extends RefCounted
-
+                        
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-
+                        
                         class Factory:
                             var cached: Point = null
-
+                        
                             func make_point(seed: int) -> Point:
                                 return cached if cached != null else Point.new()
-
+                        
                         func ping(factory: Factory, seed: int):
                             var p := factory.make_point(seed).next
                             var q := p
@@ -183,7 +218,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationDynamicFailClosed
                         extends RefCounted
-
+                        
                         func ping(dynamic_host):
                             var point := dynamic_host.next
                             var alias := point
@@ -217,13 +252,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationLambdaBoundary
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping():
                             var before := make_point()
                             var maker := func():
@@ -270,7 +305,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationDynamicInitializer
                         extends RefCounted
-
+                        
                         func ping(dynamic_host):
                             var point := dynamic_host.next
                             point
@@ -302,13 +337,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationUnsupportedSubtreesWriteback
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping(toggle, choice, items):
                             var before_loop := make_point()
                             for item in items:
@@ -369,13 +404,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationUnsupportedSubtrees
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping(toggle, choice, items):
                             var before_loop := make_point()
                             for item in items:

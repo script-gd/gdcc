@@ -66,7 +66,8 @@ import java.util.function.Supplier;
 /// - write back only exact stable local slot types
 ///
 /// The shared semantic pipeline runs this phase after top binding and before chain binding so member
-/// resolution consumes exact receiver slots for source-order `:=` aliases.
+/// resolution consumes exact receiver slots for source-order `:=` aliases, including parameter-to-local
+/// aliases such as `var alias := typed_parameter`.
 ///
 /// This phase deliberately does not:
 /// - update `resolvedMembers()`, `resolvedCalls()`, `expressionTypes()`, or `slotTypes()`

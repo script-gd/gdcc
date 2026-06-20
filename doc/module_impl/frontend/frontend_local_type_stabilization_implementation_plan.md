@@ -580,6 +580,8 @@ func ping(value: Point) -> int:
 - `a` 的最终 slot type 是 `Point`。
 - `a.marker` 是 `RESOLVED` member。
 - return expression type 是 `int`。
+- `2026-06-20`：已由 `FrontendLocalTypeStabilizationAnalyzerTest.analyzeStabilizesParameterAliasFromCallableParameter`
+  与 `FrontendSemanticAnalyzerFrameworkTest.analyzePublishesParameterAliasFactsAcrossBodyPhases` 补齐测试闭环。
 
 #### 用例 C：local alias 链
 
