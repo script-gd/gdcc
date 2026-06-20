@@ -386,11 +386,27 @@ return c.marker
 
 因为处理 `b := a` 时，`a` 已经被同一 pass 写回为 `Point`。
 
-### 6.3 Bounded fixed-point
+### 6.3 Bounded fixed-point（未来扩展保留项）
 
-若实现需要 retry，则限制在单个 supported block 的 eligible declarations 集合内。
+当前阶段不实现 retry / fixed-point。
 
-收敛规则：
+原因是 supported local `:=` initializer 中的 local-to-local 依赖受 declaration-order 可见性约束：
+
+- GDScript local 不能引用之后才声明的 local。
+- `FrontendVisibleValueResolver` 会过滤 declaration-after-use 与 initializer self-reference。
+- 因此 eligible declaration 之间的有效依赖边只能指向同 block 的前序 visible local。
+- Source-order 单遍天然就是当前依赖图的拓扑序；处理 `b := a` 时，`a` 若能稳定，已经被前序 statement 写回。
+
+未来只有在打开下列范围时，才重新评估 bounded fixed-point 或更完整的数据流分析：
+
+- forward local reference。
+- assignment-based local type refinement。
+- CFG branch merge / loop body refinement。
+- `for` / `match` / lambda / capture local inventory。
+- block-local `const`、class `const`、property `:=` metadata backfill。
+- 函数返回类型由函数体推断或跨 callable / whole-module 推断。
+
+若未来确实需要 bounded retry，应仍限制在单个 supported block 的 eligible declarations 集合内，并保持以下收敛规则：
 
 - 每个 eligible declaration 最多从 seed 类型稳定一次。
 - 只允许 `Variant -> exact type` 的单调收敛。
@@ -398,7 +414,7 @@ return c.marker
 - 最大有效更新次数不超过 eligible declarations 数量。
 - 若一轮无变化则停止。
 
-不建议实现 whole-module fixed-point。
+仍不建议实现 whole-module fixed-point 作为本 phase 的默认行为。
 
 ### 6.4 Stable result 判定
 
@@ -860,7 +876,23 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 2. 只处理 eligible `var :=` declaration。
 3. 对 initializer 调 silent resolver。
 4. 一旦得到稳定 exact type，立即 `BlockScope.resetLocalType(...)`。
-5. 支持 `a := ...; b := a; c := b` 这种同 block alias 链。
+5. 支持 `a := ...; b := a; c := b` 这种同 block alias 链和复杂初始化表达式。
+
+完成记录：
+
+- [x] 任务 2.1：已在 `FrontendLocalTypeStabilizationAnalyzerTest` 增补阶段 2 独立单测，直接调用 `analyze(...)` 锚定真实 `BlockScope` 写回行为：
+  - source-order alias 链：`a := make_point(); b := a; c := b` 应在同一 block 内从前到后稳定为 `Point`。
+  - 复杂 initializer + alias：`p := factory.make_point(seed).next; q := p` 应稳定为 `Point`，同时不发布 `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`。
+  - true dynamic fail-closed：`dynamic_host.next` 和后续 alias 继续保持 `Variant`。
+  - unsupported control-flow subtree：`for` / `match` 内 local 在前置 variable phase 中本就不绑定，因此阶段 2 断言它们不会进入 stabilization probe/writeback；普通 supported block 与 `if` block 仍可稳定写回。
+- [x] 任务 2.2：`FrontendLocalTypeStabilizationAnalyzer.analyze(...)` 已启用 source-order writeback，`probe(...)` 继续保持阶段 1 的只读探针合同。
+- [x] 任务 2.3：eligible `var :=` initializer 求型后会立即按稳定结果写回当前 `BlockScope`，因此同一 supported block 后续 `b := a` / `c := b` 能读到前序 local 的最新 exact type。
+- [x] 任务 2.4：稳定写回标准已按阶段 2 收窄为 `RESOLVED` exact type；`DYNAMIC(Variant)`、失败/unsupported/deferred/blocked 结果和 value-required `void` 均保持 fail-closed，不写回。
+- [x] 任务 2.5：已运行 targeted 验证：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLocalTypeStabilizationAnalyzerTest`
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLocalTypeStabilizationAnalyzerTest,FrontendChainBindingAnalyzerTest,FrontendExprTypeAnalyzerTest,FrontendVarTypePostAnalyzerTest`
+  - `script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTest`
+  - `git diff --check`
 
 阶段产出：
 

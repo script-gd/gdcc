@@ -35,6 +35,7 @@ import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
@@ -43,6 +44,8 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticS
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -54,25 +57,24 @@ import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
-/// Phase-1 local type stabilization scaffold.
+/// Local type stabilization for supported callable executable bodies.
 ///
-/// Current scope is intentionally narrow:
+/// The scope is intentionally narrow:
 /// - walk supported callable executable bodies
 /// - find eligible local `var := initializer`
 /// - resolve initializer types through a silent local resolver
-/// - keep every result transient inside this analyzer instance
+/// - write back only exact stable local slot types
 ///
-/// This stage deliberately does not:
+/// This phase deliberately does not:
 /// - update `resolvedMembers()`, `resolvedCalls()`, `expressionTypes()`, or `slotTypes()`
 /// - emit diagnostics
-/// - rewrite `BlockScope` local slots yet
 public final class FrontendLocalTypeStabilizationAnalyzer {
     public void analyze(
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        run(classRegistry, analysisData, diagnosticManager);
+        run(classRegistry, analysisData, diagnosticManager, true);
     }
 
     /// Package-private probe surface for stage-1 tests.
@@ -86,13 +88,14 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        return run(classRegistry, analysisData, diagnosticManager);
+        return run(classRegistry, analysisData, diagnosticManager, false);
     }
 
     private @NotNull ProbeSnapshot run(
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
-            @NotNull DiagnosticManager diagnosticManager
+            @NotNull DiagnosticManager diagnosticManager,
+            boolean writeBackStableSlots
     ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
@@ -116,7 +119,8 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
                     classRegistry,
                     analysisData,
                     scopesByAst,
-                    probes
+                    probes,
+                    writeBackStableSlots
             ).walk(sourceClassRelation.unit().ast());
         }
         return new ProbeSnapshot(probes);
@@ -159,6 +163,7 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull SilentExpressionResolver silentExpressionResolver;
         private final @NotNull List<ProbeEntry> probes;
+        private final boolean writeBackStableSlots;
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
@@ -168,10 +173,12 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
                 @NotNull ClassRegistry classRegistry,
                 @NotNull FrontendAnalysisData analysisData,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
-                @NotNull List<ProbeEntry> probes
+                @NotNull List<ProbeEntry> probes,
+                boolean writeBackStableSlots
         ) {
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
             this.probes = Objects.requireNonNull(probes, "probes must not be null");
+            this.writeBackStableSlots = writeBackStableSlots;
             astWalker = new ASTWalker(this);
             silentExpressionResolver = new SilentExpressionResolver(
                     Objects.requireNonNull(sourcePath, "sourcePath must not be null"),
@@ -254,7 +261,8 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
         public @NotNull FrontendASTTraversalDirective handleVariableDeclaration(
                 @NotNull VariableDeclaration variableDeclaration
         ) {
-            if (supportedExecutableBlockDepth <= 0 || !isEligibleInferredLocal(variableDeclaration)) {
+            var blockScope = eligibleInferredLocalScope(variableDeclaration);
+            if (supportedExecutableBlockDepth <= 0 || blockScope == null) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             var initializer = Objects.requireNonNull(
@@ -263,6 +271,9 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
             );
             var initializerType = silentExpressionResolver.resolveExpressionType(initializer);
             probes.add(new ProbeEntry(variableDeclaration, initializer, initializerType));
+            if (writeBackStableSlots) {
+                stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
+            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -363,15 +374,43 @@ public final class FrontendLocalTypeStabilizationAnalyzer {
             }
         }
 
-        private boolean isEligibleInferredLocal(@NotNull VariableDeclaration variableDeclaration) {
+        private @Nullable BlockScope eligibleInferredLocalScope(@NotNull VariableDeclaration variableDeclaration) {
             if (variableDeclaration.kind() != DeclarationKind.VAR
                     || variableDeclaration.value() == null
                     || !FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())) {
-                return false;
+                return null;
             }
             var declarationScope = scopesByAst.get(variableDeclaration);
-            return declarationScope instanceof BlockScope blockScope
-                    && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
+            if (!(declarationScope instanceof BlockScope blockScope)
+                    || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
+                return null;
+            }
+            return blockScope;
+        }
+
+        private void stabilizeLocalSlot(
+                @NotNull BlockScope blockScope,
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull FrontendExpressionType initializerType
+        ) {
+            var stableType = stableLocalTypeOrNull(initializerType);
+            if (stableType == null) {
+                return;
+            }
+            blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, stableType);
+        }
+
+        private @Nullable GdType stableLocalTypeOrNull(
+                @NotNull FrontendExpressionType initializerType
+        ) {
+            if (initializerType.status() != FrontendExpressionTypeStatus.RESOLVED) {
+                return null;
+            }
+            var publishedType = initializerType.publishedType();
+            if (publishedType instanceof GdVoidType) {
+                return null;
+            }
+            return publishedType;
         }
 
         private boolean isNotPublished(@Nullable Node node) {
