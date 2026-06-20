@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 最小回填与 expr-owned diagnostics 已落地）
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
 - 更新时间：2026-04-26
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
@@ -51,14 +51,17 @@
 7. `analysisData.updateDiagnostics(...)`
 8. `FrontendTopBindingAnalyzer.analyze(...)`
 9. `analysisData.updateDiagnostics(...)`
-10. `FrontendChainBindingAnalyzer.analyze(...)`
+10. `FrontendLocalTypeStabilizationAnalyzer.analyze(...)`
 11. `analysisData.updateDiagnostics(...)`
-12. `FrontendExprTypeAnalyzer.analyze(...)`
+12. `FrontendChainBindingAnalyzer.analyze(...)`
 13. `analysisData.updateDiagnostics(...)`
+14. `FrontendExprTypeAnalyzer.analyze(...)`
+15. `analysisData.updateDiagnostics(...)`
 
 这意味着：
 
-- `FrontendChainBindingAnalyzer` 只运行在 skeleton、scope graph、variable inventory 与 `symbolBindings()` 已发布之后
+- `FrontendLocalTypeStabilizationAnalyzer` 运行在 top binding 之后、chain binding 之前，只回写符合条件的 `:=` local `BlockScope` slot
+- `FrontendChainBindingAnalyzer` 只运行在 skeleton、scope graph、variable inventory、`symbolBindings()` 与局部类型稳定化结果已发布之后
 - `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()` 与当前 `resolvedCalls()` published surface 已发布之后
 - body phase 仍保持“先发布 member/call，再发布 expression type”的顶层边界，不回头重开更早 phase
 
@@ -74,10 +77,14 @@
   - 发布 `resolvedMembers()` 与 chain-owned `resolvedCalls()` facts
   - 负责 `sema.member_resolution`、`sema.call_resolution`、`sema.deferred_chain_resolution`、`sema.unsupported_chain_route`
   - 负责链式 route 级别的恢复与 suffix 封口
+- `FrontendLocalTypeStabilizationAnalyzer`
+  - 只通过 `BlockScope.resetLocalType(...)` 回写 eligible local `:=` slot
+  - 在 slot 写回边界显式拒绝 bare `TYPE_META` 与 assignment initializer 的普通值兜底路径
+  - 不发布 `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`，也不拥有 diagnostics
 - `FrontendExprTypeAnalyzer`
   - 发布 `expressionTypes()`，并补充 bare `CallExpression` 的 `resolvedCalls()` facts
   - 负责 `sema.expression_resolution`、`sema.deferred_expression_resolution`、`sema.unsupported_expression_route`、`sema.discarded_expression`
-  - 负责 expression-only 路径的恢复、statement warning 与 `:=` 最小回填
+  - 负责 expression-only 路径的恢复、statement warning 与历史保留的受限 `:=` 兜底回填
 
 单一 owner 约束同样冻结为：
 
@@ -255,8 +262,8 @@
 
 - 作为合法 static-route head 使用的 bare `TYPE_META`，例如 `Worker.build()`、`EnumType.VALUE`
 - 只参与当前 chain reduction，不作为 ordinary value expression 写入 `expressionTypes()`
-- 这样可以避免 static-route head 污染普通 `expressionTypes()` 消费者与 legacy `:=` backfill
-- local type stabilization 另有 slot 写回边界 guard，显式拒绝 `var x := Worker` 这类 bare `TYPE_META` ordinary-value initializer；该 guard 不依赖 expression helper 的 `FAILED` 结果来维持合同
+- 这样可以避免 static-route head 污染普通 `expressionTypes()` 消费者与 `:=` 局部类型稳定化
+- 局部类型稳定化另有 slot 写回边界检查，显式拒绝 `var x := Worker` 这类 bare `TYPE_META` ordinary-value initializer；该检查不依赖 expression helper 的 `FAILED` 结果来维持合同
 
 ---
 
@@ -442,14 +449,15 @@ writable / compatibility 规则为：
 - `obj.prop[i] = value` 目前按“property value 上的 element mutation”建模
 - getter-only property 是否额外阻断该 aliasing route 尚未转正，后续若收口 property/container mutation 语义，必须统一处理，不能在 assignment helper 内临时加特判
 
-### 4.5 `:=` 最小回填
+### 4.5 `:=` 局部类型稳定化与受限兜底回填
 
 当前 `:=` 的稳定合同为：
 
 - variable inventory 阶段仍先按 `Variant` 写入局部变量类型
-- `FrontendExprTypeAnalyzer` 只在 RHS 发布结果为 `RESOLVED` 或 `DYNAMIC` 时执行局部变量类型回填
-- `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 不会回填声明类型
-- backfill 只消费已发布的 RHS typing，不回头修改 earlier phase 的规则
+- `FrontendLocalTypeStabilizationAnalyzer` 在正式 chain binding 前按 source order 回写 `RESOLVED` 且非 `void` 的 exact initializer type
+- `DYNAMIC(Variant)`、`BLOCKED`、`DEFERRED`、`FAILED`、`UNSUPPORTED` 与 value-required `void` 均不回写声明类型
+- bare `TYPE_META` ordinary-value initializer 与 assignment expression initializer 在局部类型稳定化的 slot 写回边界显式 fail-closed，保持变量清单阶段最初登记的 `Variant`
+- `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 只作为受限兜底回填 / 一致性检查，不能静默覆盖已经稳定的非 `Variant` slot
 
 同时明确：
 

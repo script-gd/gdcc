@@ -137,18 +137,20 @@
 
 - `typeRef == null` -> `Variant`
 - `typeRef.sourceText().trim().isEmpty()` -> `Variant`
-- `typeRef.sourceText().trim().equals(\":=\")` -> 当前临时回退为 `Variant`
+- `typeRef.sourceText().trim().equals(\":=\")` -> 先以 `Variant` 作为初始类型登记
 - 其他显式类型文本 -> 走严格 declared-type 解析
 - declared-type 解析失败 -> 发出 `sema.type_resolution` warning，并回退到 `Variant`
 
-### 3.2 `:=` 的当前与未来语义
+### 3.2 `:=` 初始登记与类型稳定化分工
 
 这里必须冻结一条事实：
 
 - `:=` 的目标语义是“分析右侧表达式类型，并据此确定变量类型”
-- 当前返回 `Variant` 只是因为 `FrontendExprTypeAnalyzer` 尚未发布表达式类型结果
+- `FrontendVariableAnalyzer` 只负责把推断类型 local 以 `Variant` 作为初始类型写入 `BlockScope`
+- 真正的局部变量 slot 类型稳定化由后续 `FrontendLocalTypeStabilizationAnalyzer` 在 top binding 之后、chain binding 之前按 source order 完成
+- assignment initializer、bare `TYPE_META` ordinary-value initializer、true dynamic 与 unsupported/deferred/failed initializer 都保持最初登记的 `Variant`
 
-后续工程不得把“当前回退到 `Variant`”误解释成语言层面的长期语义。
+后续工程不得把变量清单阶段最初登记的 `Variant` 误解释成语言层面的最终类型结论。
 
 ### 3.3 参数默认值
 
@@ -317,7 +319,7 @@
 - block-local `const` inventory
 - `frontend.sema.resolver.FrontendVisibleValueResolver`
 - `symbolBindings()` 的 use-site 发布
-- `FrontendExprTypeAnalyzer` 落地后对 `:=` 与参数默认值的真实语义接线
+- 参数默认值的真实语义接线
 
 ---
 

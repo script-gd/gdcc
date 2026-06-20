@@ -66,6 +66,7 @@ import java.util.function.Supplier;
 /// - find eligible local `var := initializer`
 /// - resolve initializer types through a silent local resolver
 /// - explicitly exclude bare `TYPE_META` ordinary-value initializers
+/// - explicitly fail-closed for assignment initializers
 /// - write back only exact stable local slot types
 ///
 /// The shared semantic pipeline runs this phase after top binding and before chain binding so member
@@ -98,6 +99,20 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             @NotNull DiagnosticManager diagnosticManager
     ) {
         return run(classRegistry, analysisData, diagnosticManager, false);
+    }
+
+    static @Nullable FrontendExpressionType probeAssignmentOrdinaryValueInitializerFailure(
+            @NotNull Expression initializer
+    ) {
+        return assignmentOrdinaryValueInitializerFailure(initializer);
+    }
+
+    static void probeStabilizeLocalSlot(
+            @NotNull BlockScope blockScope,
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull FrontendExpressionType initializerType
+    ) {
+        stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
     }
 
     private @NotNull ProbeSnapshot run(
@@ -133,6 +148,47 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             ).walk(sourceClassRelation.unit().ast());
         }
         return new ProbeSnapshot(probes);
+    }
+
+    /// Assignment expressions are statement effects in the current frontend contract, not ordinary
+    /// value producers. Keep this rejection next to the slot writeback gate so `var x := (a = b)`
+    /// remains an explicit local-stabilization fallback to the inventory-seeded `Variant`.
+    private static @Nullable FrontendExpressionType assignmentOrdinaryValueInitializerFailure(
+            @NotNull Expression initializer
+    ) {
+        if (!(initializer instanceof AssignmentExpression)) {
+            return null;
+        }
+        return FrontendExpressionType.failed(
+                "Assignment initializer cannot stabilize an inferred local because it is not an ordinary value"
+        );
+    }
+
+    private static void stabilizeLocalSlot(
+            @NotNull BlockScope blockScope,
+            @NotNull VariableDeclaration variableDeclaration,
+            @NotNull FrontendExpressionType initializerType
+    ) {
+        var stableType = stableLocalTypeOrNull(initializerType);
+        if (stableType == null) {
+            return;
+        }
+        blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, stableType);
+    }
+
+    private static @Nullable GdType stableLocalTypeOrNull(
+            @NotNull FrontendExpressionType initializerType
+    ) {
+        // Only exact ordinary values can rewrite the inventory-seeded local slot. Failed,
+        // dynamic, deferred, unsupported, and void initializers keep the existing `Variant`.
+        if (initializerType.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            return null;
+        }
+        var publishedType = initializerType.publishedType();
+        if (publishedType instanceof GdVoidType) {
+            return null;
+        }
+        return publishedType;
     }
 
     record ProbeSnapshot(@NotNull List<ProbeEntry> entries) {
@@ -286,6 +342,11 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                 probes.add(new ProbeEntry(variableDeclaration, initializer, typeMetaFailure));
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
+            var assignmentInitializerFailure = assignmentOrdinaryValueInitializerFailure(initializer);
+            if (assignmentInitializerFailure != null) {
+                probes.add(new ProbeEntry(variableDeclaration, initializer, assignmentInitializerFailure));
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             var initializerType = silentExpressionResolver.resolveExpressionType(initializer);
             probes.add(new ProbeEntry(variableDeclaration, initializer, initializerType));
             if (writeBackStableSlots) {
@@ -422,31 +483,6 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                     "Type-meta initializer '" + identifierExpression.name()
                             + "' cannot stabilize an inferred local because it is not an ordinary value"
             );
-        }
-
-        private void stabilizeLocalSlot(
-                @NotNull BlockScope blockScope,
-                @NotNull VariableDeclaration variableDeclaration,
-                @NotNull FrontendExpressionType initializerType
-        ) {
-            var stableType = stableLocalTypeOrNull(initializerType);
-            if (stableType == null) {
-                return;
-            }
-            blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, stableType);
-        }
-
-        private @Nullable GdType stableLocalTypeOrNull(
-                @NotNull FrontendExpressionType initializerType
-        ) {
-            if (initializerType.status() != FrontendExpressionTypeStatus.RESOLVED) {
-                return null;
-            }
-            var publishedType = initializerType.publishedType();
-            if (publishedType instanceof GdVoidType) {
-                return null;
-            }
-            return publishedType;
         }
 
         private boolean isNotPublished(@Nullable Node node) {

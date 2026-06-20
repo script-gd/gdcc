@@ -292,6 +292,8 @@ public final class FrontendAssignmentSemanticSupport {
             return rootOutcome(compatibilityIssue);
         }
         if (usage == AssignmentUsage.VALUE_REQUIRED) {
+            // Local `:=` stabilization has its own slot-boundary guard for assignment initializers;
+            // this branch remains the shared value-context failure for ordinary expression analysis.
             return rootOutcome(FrontendExpressionType.failed(
                     "Assignment expressions do not produce an ordinary value in this position"
             ));

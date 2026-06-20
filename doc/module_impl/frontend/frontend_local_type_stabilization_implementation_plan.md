@@ -13,6 +13,7 @@
 - 已补阶段 1 单测，锁定 silent resolver 的正向求型、true dynamic fail-closed、unsupported subtree 不泄漏 shared facts/diagnostics。
 - 已完成阶段 2 source-order `BlockScope.resetLocalType(...)` 写回，并已完成阶段 3 主 pipeline 接入与 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 收口。
 - 已完成阶段 4 回归硬化，覆盖 true dynamic fail-closed、非目标结构封口、`FrontendVarTypePostAnalyzer` republish 与 bounded retry 验收。
+- 已补充 assignment initializer slot 写回边界检查：`var x := (a = b)` 这类 value-required assignment initializer 由局部类型稳定化阶段显式 fail-closed，保持变量清单阶段最初登记的 `Variant`，不再依赖 assignment helper 间接拒绝。
 
 ---
 
@@ -90,7 +91,7 @@ var tail := make_point()
 
 本计划必须遵守以下 frontend 事实所有权：
 
-- `FrontendVariableAnalyzer` 负责 declaration inventory seed。
+- `FrontendVariableAnalyzer` 负责声明清单的初始登记。
 - `FrontendTopBindingAnalyzer` 负责 `symbolBindings()`。
 - `FrontendChainBindingAnalyzer` 负责 `resolvedMembers()` 和 chain-step `resolvedCalls()`。
 - `FrontendExprTypeAnalyzer` 负责 `expressionTypes()` 和 bare-call `resolvedCalls()`。
@@ -297,7 +298,7 @@ src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendChainBindingAnalyzer
 - 不修改 `publishReduction(...)` 的 owner 语义。
 - 只更新注释或测试，确认 chain binding 依赖上游 local slot 已稳定。
 
-### 5.5 保持 `FrontendVariableAnalyzer` seed 行为不变
+### 5.5 保持 `FrontendVariableAnalyzer` 初始登记行为不变
 
 修改点：
 
@@ -307,9 +308,9 @@ src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendVariableAnalyzer.jav
 
 实施要求：
 
-- `:=` local 继续通过 `FrontendDeclaredTypeSupport.resolveTypeOrVariant(...)` 以 `Variant` seed 入 `BlockScope`。
+- `:=` local 继续通过 `FrontendDeclaredTypeSupport.resolveTypeOrVariant(...)` 以 `Variant` 作为初始类型写入 `BlockScope`。
 - 不在 variable phase 中读取 initializer。
-- 可更新注释，明确 variable analyzer 只负责 inventory seed，不负责 inferred local final type。
+- 可更新注释，明确 variable analyzer 只负责变量清单阶段的初始登记，不负责 inferred local final type。
 
 ### 5.6 保持 `FrontendVarTypePostAnalyzer` republish 行为不变
 
@@ -409,7 +410,7 @@ return c.marker
 
 若未来确实需要 bounded retry，应仍限制在单个 supported block 的 eligible declarations 集合内，并保持以下收敛规则：
 
-- 每个 eligible declaration 最多从 seed 类型稳定一次。
+- 每个 eligible declaration 最多从初始登记类型稳定一次。
 - 只允许 `Variant -> exact type` 的单调收敛。
 - 不允许 exact type 之间来回覆盖。
 - 最大有效更新次数不超过 eligible declarations 数量。
@@ -434,9 +435,12 @@ return c.marker
 - `publishedType() == null`
 - value-required `void`
 - bare `TYPE_META` ordinary-value initializer
+- assignment expression ordinary-value initializer
 - route-head-only `TYPE_META`
 
 其中 bare `TYPE_META` ordinary-value initializer 必须由 local stabilization 在 slot 写回边界显式排除，不依赖 silent resolver / `FrontendExpressionSemanticSupport.resolveIdentifierExpressionType(...)` 返回 `FAILED` 的间接效果。top binding 仍拥有首条 `sema.binding` 诊断；本 pass 只负责保持 inferred local slot 为 `Variant`。
+
+assignment expression initializer 也必须由 local stabilization 在同一 slot 写回边界显式排除。`FrontendAssignmentSemanticSupport` 仍是 assignment statement/value-required 语义真源，但 `var x := (a = b)` 的 local-slot 结果不能只靠 helper 返回 `FAILED` 间接维持；本 pass 直接记录 transient `FAILED` probe 并保留 `x` 最初登记的 `Variant`。
 
 ### 6.5 Fail-closed 边界
 
@@ -451,6 +455,7 @@ return c.marker
 - class `const`
 - control-flow merge / join
 - true dynamic receiver
+- assignment expression initializer
 - initializer 中无法稳定解析的 call/member/subscript
 
 ---
@@ -470,7 +475,7 @@ silent resolver 是本 pass 内部的 provisional evaluator。
 - bare call
 - subscript
 - unary/binary
-- assignment expression 的 value-required 结果
+- statement-position assignment expression 的 helper 语义；assignment initializer 在进入 silent resolver 前已由 slot 写回边界检查显式 fail-closed
 - remaining explicit expression 的已支持部分
 
 它不能：
@@ -507,6 +512,7 @@ silent resolver 是本 pass 内部的 provisional evaluator。
 - 对 `LOCAL_VAR` / `PARAMETER` / `CAPTURE` 等值 binding，读取当前 scope 中的 `ScopeValue.type()`。
 - 因为本 pass 会立即 `resetLocalType(...)`，后续 alias 可读取前序 local 的最新类型。
 - 对 bare `TYPE_META` binding，不把它当成 local alias 或 ordinary runtime value；`var x := Worker` 这类 initializer 在本 pass 内显式 fail-closed，保持 slot 为 `Variant`。
+- 对 assignment expression initializer，不把它当成 ordinary runtime value；`var x := (a = b)` 在本 pass 内显式 fail-closed，`x` 与后续 `var alias := x` 都继续读取 `Variant`。
 
 ---
 
@@ -526,6 +532,7 @@ src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendLocalTypeStabilizati
 - 复杂 initializer。
 - true dynamic fail-closed。
 - bare `TYPE_META` ordinary-value initializer 不写回 local slot，且不新增诊断。
+- assignment expression initializer 不写回 local slot，且不新增诊断。
 - unsupported subtree 不发最终 diagnostics。
 
 ### 8.2 扩展 semantic analyzer tests
@@ -908,6 +915,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
   - 复杂 initializer 可在单元层被静默求出暂态 `RESOLVED` type。
   - true dynamic receiver 保持 `DYNAMIC(Variant)`，不被误收窄。
   - `for` / `match` 等当前非目标子树不会被静默打开。
+  - assignment initializer 由 slot 写回边界检查显式 fail-closed，保持 local slot 为 `Variant`。
   - `analysisData.resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()` 不被写入。
   - 共享 `DiagnosticManager` 不泄漏新 diagnostics。
 
@@ -942,6 +950,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
   - source-order alias 链：`a := make_point(); b := a; c := b` 应在同一 block 内从前到后稳定为 `Point`。
   - 复杂 initializer + alias：`p := factory.make_point(seed).next; q := p` 应稳定为 `Point`，同时不发布 `resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` / `slotTypes()`。
   - true dynamic fail-closed：`dynamic_host.next` 和后续 alias 继续保持 `Variant`。
+  - assignment initializer fail-closed：`var x := (a = b); var alias := x` 继续保持 `Variant`，同时不依赖 assignment helper 的 value-required 失败结果来间接阻止写回。
   - unsupported control-flow subtree：`for` / `match` 内 local 在前置 variable phase 中本就不绑定，因此阶段 2 断言它们不会进入 stabilization probe/writeback；普通 supported block 与 `if` block 仍可稳定写回。
 - [x] 任务 2.2：`FrontendLocalTypeStabilizationAnalyzer.analyze(...)` 已启用 source-order writeback，`probe(...)` 继续保持阶段 1 的只读探针合同。
 - [x] 任务 2.3：eligible `var :=` initializer 求型后会立即按稳定结果写回当前 `BlockScope`，因此同一 supported block 后续 `b := a` / `c := b` 能读到前序 local 的最新 exact type。
@@ -983,7 +992,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 - [x] 任务 3.1：已在 `FrontendSemanticAnalyzer` 中新增 `localTypeStabilizationAnalyzer` 字段，并保持既有构造器签名兼容；默认构造路径会创建 `FrontendLocalTypeStabilizationAnalyzer`，测试可通过新增长构造器注入 recording analyzer。
 - [x] 任务 3.2：主 shared semantic pipeline 已调整为 `FrontendTopBindingAnalyzer -> FrontendLocalTypeStabilizationAnalyzer -> FrontendChainBindingAnalyzer`，并在 local stabilization 后继续刷新 diagnostics snapshot，保持 phase boundary 形式一致。
 - [x] 任务 3.3：已更新 `FrontendSemanticAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、`FrontendExprTypeAnalyzer` 与 `FrontendVarTypePostAnalyzer` 的注释，明确 chain binding 消费已稳定 local slot，var type post 只 republish 已 settle 的 lexical inventory。
-- [x] 任务 3.4：`FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 已降级为 guarded fallback：只允许 untouched `Variant` slot 被补写；非 `Variant` slot 与 initializer final type 相同则 no-op，不一致则 fail-fast，避免 silent double-owner overwrite。
+- [x] 任务 3.4：`FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 已降级为受限兜底回填：只允许 untouched `Variant` slot 被补写；非 `Variant` slot 与 initializer final type 相同则 no-op，不一致则 fail-fast，避免 silent double-owner overwrite。
 - [x] 任务 3.5：已补阶段 3 单元测试与集成断言：
   - `FrontendChainBindingAnalyzerTest` 翻转 #40 write path/read path/alias 链/复杂 initializer 旧漂移基线，确认 chain binding 看到稳定 receiver。
   - `FrontendSemanticAnalyzerFrameworkTest` 新增 local stabilization phase-boundary recording，并补完整 pipeline 的 typed local write/read 集成断言。
@@ -1002,7 +1011,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 阶段验收：
 
 - `FrontendSemanticAnalyzerFrameworkTest` 能确认 phase 顺序正确。
-- `FrontendChainBindingAnalyzer` 看到的是稳定 local slot，而不是 `Variant` seed。
+- `FrontendChainBindingAnalyzer` 看到的是稳定 local slot，而不是最初登记的 `Variant`。
 - `FrontendExprTypeAnalyzer` 不再静默改写已经稳定的 local slot。
 
 ### 13.5 阶段 4: 回归硬化与边界验证

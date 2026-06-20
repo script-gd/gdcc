@@ -49,10 +49,11 @@
 2. scope
 3. variable inventory
 4. top binding
-5. chain binding
-6. expr typing
-7. annotation usage
-8. type check
+5. local type stabilization
+6. chain binding
+7. expr typing
+8. annotation usage
+9. type check
 
 每个 phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断边界快照；`FrontendTypeCheckAnalyzer` 与 `FrontendAnnotationUsageAnalyzer` 都运行在已发布的 frontend 事实之上，而不是在自己的 analyze 过程中重新建模更早 phase 的语义。
 
@@ -185,7 +186,7 @@ ordinary local initializer 当前合同是：
 - RHS root 只有在 `RESOLVED` / `DYNAMIC` 时才进入 compatibility check
 - 若 initializer root 为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`，当前 phase 保持跳过
 
-`:=` local 不在这里生成新的 compatibility diagnostic；它继续沿用已有的 variable/expr contract。
+`:=` local 不在这里生成新的 compatibility diagnostic；local slot 推断由 `FrontendLocalTypeStabilizationAnalyzer` 在更早 phase 处理，assignment initializer / bare `TYPE_META` / true dynamic 等 fail-closed 场景继续保持最初登记的 `Variant`。
 
 ### 3.4 class property initializer 与 `sema.type_hint`
 

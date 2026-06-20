@@ -1,23 +1,34 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.TypeRef;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.scope.BlockScopeKind;
+import gd.script.gdcc.frontend.scope.CallableScope;
+import gd.script.gdcc.frontend.scope.CallableScopeKind;
+import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -37,6 +48,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLocalTypeStabilizationAnalyzerTest {
+    private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
     @Test
     void probeResolvesComplexInitializerAndLeavesPublishedFactsUntouched() throws Exception {
         var prepared = prepareProbeInput(
@@ -136,6 +149,34 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 () -> assertEquals(diagnosticsBeforeAnalyze, prepared.diagnosticManager().snapshot()),
                 () -> assertEquals(1, prepared.diagnosticManager().snapshot().asList().size()),
                 () -> assertEquals("sema.binding", prepared.diagnosticManager().snapshot().asList().getFirst().category())
+        );
+    }
+
+    @Test
+    void probeKeepsAssignmentExpressionInitializerAsVariantFallback() throws Exception {
+        var xDeclaration = variable("x", assignment(identifier("a"), identifier("b")));
+        var bodyScope = newBodyScope();
+        bodyScope.defineLocal("x", GdVariantType.VARIANT, xDeclaration);
+
+        var initializerType = FrontendLocalTypeStabilizationAnalyzer.probeAssignmentOrdinaryValueInitializerFailure(
+                Objects.requireNonNull(xDeclaration.value())
+        );
+        assertNotNull(initializerType);
+        FrontendLocalTypeStabilizationAnalyzer.probeStabilizeLocalSlot(
+                bodyScope,
+                xDeclaration,
+                initializerType
+        );
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.FAILED, initializerType.status()),
+                () -> assertTrue(Objects.requireNonNull(initializerType.detailReason()).contains(
+                        "Assignment initializer"
+                )),
+                () -> assertEquals(GdVariantType.VARIANT, Objects.requireNonNull(bodyScope.resolveValue("x")).type()),
+                () -> assertNull(FrontendLocalTypeStabilizationAnalyzer.probeAssignmentOrdinaryValueInitializerFailure(
+                        identifier("plain")
+                ))
         );
     }
 
@@ -684,6 +725,40 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
         var value = bodyScope.resolveValue(variableName);
         assertNotNull(value);
         return value.type();
+    }
+
+    private static @NotNull BlockScope newBodyScope() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var ownerClass = new LirClassDef("SyntheticOwner", "RefCounted");
+        var classScope = new ClassScope(registry, registry, ownerClass);
+        var callableScope = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
+        return new BlockScope(callableScope, BlockScopeKind.FUNCTION_BODY);
+    }
+
+    private static @NotNull VariableDeclaration variable(
+            @NotNull String name,
+            @NotNull AssignmentExpression initializer
+    ) {
+        return new VariableDeclaration(
+                DeclarationKind.VAR,
+                name,
+                new TypeRef(":=", SYNTHETIC_RANGE),
+                initializer,
+                false,
+                "variable_declaration",
+                SYNTHETIC_RANGE
+        );
+    }
+
+    private static @NotNull AssignmentExpression assignment(
+            @NotNull IdentifierExpression left,
+            @NotNull IdentifierExpression right
+    ) {
+        return new AssignmentExpression("=", left, right, SYNTHETIC_RANGE);
+    }
+
+    private static @NotNull IdentifierExpression identifier(@NotNull String name) {
+        return new IdentifierExpression(name, SYNTHETIC_RANGE);
     }
 
     private static void assertTypeNameEndsWith(@NotNull GdType type, @NotNull String suffix) {
