@@ -67,7 +67,9 @@ import java.util.function.Supplier;
 ///
 /// The shared semantic pipeline runs this phase after top binding and before chain binding so member
 /// resolution consumes exact receiver slots for source-order `:=` aliases, including parameter-to-local
-/// aliases such as `var alias := typed_parameter`.
+/// aliases such as `var alias := typed_parameter`. Nested supported blocks keep the same contract:
+/// child blocks may read parent locals after they have stabilized, but a child declaration only rewrites
+/// its own `BlockScope` slot and never backwrites a parent scope.
 ///
 /// This phase deliberately does not:
 /// - update `resolvedMembers()`, `resolvedCalls()`, `expressionTypes()`, or `slotTypes()`

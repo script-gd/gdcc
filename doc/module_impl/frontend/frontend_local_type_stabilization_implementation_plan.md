@@ -630,7 +630,55 @@ func ping(factory: Factory, arg: int) -> int:
 - `p` / `q` 的最终 slot type 是 `Point`。
 - `q.marker` 是 `RESOLVED` member。
 
-#### 用例 E：true dynamic fail-closed
+#### 用例 E：子 block 读取父 block 已稳定 local
+
+```gdscript
+class Point:
+    var marker: int = -1
+
+func make_point() -> Point:
+    return Point.new()
+
+func ping(toggle: bool):
+    var a := make_point()
+    if toggle:
+        var b := a
+        return b.marker
+    return a.marker
+```
+
+验收：
+
+- 父 block 中 `a` 会先稳定为 `Point`。
+- `if` body 中 `b := a` 能直接读取父 block 已稳定的 `Point`，不会回退成 `Variant`。
+- `b.marker` 与 block 外 `a.marker` 都继续走 `RESOLVED` member 路径。
+
+#### 用例 F：子 block shadow 不污染父 block
+
+```gdscript
+class Point:
+    var marker: int = -1
+
+func make_point() -> Point:
+    return Point.new()
+
+func ping(toggle: bool, dynamic_host):
+    var a := make_point()
+    if toggle:
+        var a := dynamic_host.next
+        a
+    var after := a
+    return after.marker
+```
+
+验收：
+
+- 父 block 的 `a` 保持 `Point`。
+- `if` body 内 same-callable shadow declaration 继续由 variable phase 发出 `sema.variable_binding` 并跳过绑定。
+- local stabilization 不额外发布 diagnostics，也不会因为该 rejected shadow 去改写父 block slot。
+- `var after := a` 读取的仍然是父 block 已稳定的 `a`，不会被子 block shadow 污染。
+
+#### 用例 G：true dynamic fail-closed
 
 ```gdscript
 func ping(dynamic_host):
@@ -693,6 +741,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 - true dynamic receiver 仍保持 `DYNAMIC` / `Variant` 路径。
 - unsupported subtree 不被新 pass 打开。
 - control-flow merge 不做推断。
+- 子 block 可以读取父 block 已稳定 local，但 child-local writeback 不回写父 block。
 - route-head-only `TYPE_META` 不进入 ordinary `:=` value backfill。
 
 ---
@@ -972,6 +1021,9 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
   - `script/run-gradle-targeted-tests.sh --tests FrontendChainBindingAnalyzerTest`
 - [x] 任务 4.2：已增补 lambda body 非目标结构封口测试，确认 local stabilization 不进入 lambda 内部局部、不收窄 lambda initializer，并已运行：
   - `script/run-gradle-targeted-tests.sh --tests FrontendLocalTypeStabilizationAnalyzerTest`
+- [x] 任务 4.2a：已补子 block 边界回归测试，直接锁定两条 block-scope 合同：
+  - `if` body 可读取父 block 已稳定 local，例如 `var b := a`
+  - 被 variable phase 拒绝的子 block 同名 shadow declaration 不污染父 block，后续 `var after := a` 仍读取父 block slot
 - [x] 任务 4.3：已增补 `FrontendVarTypePostAnalyzer` republish 预期，确认陈旧 slot facts 会被清理后重发稳定 alias type，true dynamic local 最终仍发布为 `Variant`，并已运行：
   - `script/run-gradle-targeted-tests.sh --tests FrontendVarTypePostAnalyzerTest`
 - [x] 任务 4.4：已复核 bounded retry 验收，现有 `FrontendChainBindingAnalyzerTest` 覆盖一次 finalize-window retry 成功与 retry 后仍 deferred 的封口路径，并已补测试注释说明对应合同。
@@ -992,6 +1044,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 - 不新增重复 diagnostics。
 - 不把 `DYNAMIC` 真语义误收窄成 exact type。
 - 不把 control-flow merge / lambda / `for` / `match` 等 MVP 外场景悄悄打开。
+- `if` / `while` 等 supported child block 能消费父 block 已稳定 local，且 rejected shadow declaration 不影响父 block slot。
 - 仍然保持 side-table owner 不变。
 
 ### 13.6 阶段间切换条件

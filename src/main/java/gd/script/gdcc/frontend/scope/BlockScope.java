@@ -86,11 +86,14 @@ public final class BlockScope extends AbstractFrontendScope {
 
     /// Rewrites the type of an already-published mutable local binding.
     ///
-    /// The update is intentionally narrow:
     /// - only an existing block-local `LOCAL` binding with the same declaration identity can be rewritten
     /// - missing, mismatched, or non-local names remain a quiet no-op because earlier phases may
     ///   already have rejected the declaration with a source diagnostic, and the expression-typing
     ///   phase must stay fail-closed instead of mutating some other surviving binding
+    /// - nested same-name shadow locals stay isolated because child blocks own a different
+    ///   `BlockScope`; same-callable shadows that earlier phases reject therefore leave no current-layer
+    ///   binding to rewrite, and even within one block declaration-identity matching prevents mutating a
+    ///   sibling binding that happens to share the same source name
     /// - preserving the original declaration object keeps later use-site bindings pointing at the
     ///   same `VariableDeclaration`, so initializer provenance remains recoverable after backfill
     public void resetLocalType(

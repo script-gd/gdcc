@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Statement;
@@ -164,6 +165,98 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 () -> assertTrue(prepared.analysisData().expressionTypes().isEmpty()),
                 () -> assertTrue(prepared.analysisData().slotTypes().isEmpty()),
                 () -> assertEquals(0, prepared.diagnosticManager().snapshot().asList().size())
+        );
+    }
+
+    @Test
+    void analyzeLetsChildBlockReadParentStabilizedLocal() throws Exception {
+        var prepared = prepareProbeInput(
+                "local_type_stabilization_nested_alias.gd",
+                """
+                        class_name LocalTypeStabilizationNestedAlias
+                        extends RefCounted
+
+                        class Point:
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func ping(toggle: bool):
+                            var a := make_point()
+                            if toggle:
+                                var b := a
+                                b
+                            a
+                        """
+        );
+
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+        var ifStatement = findNode(pingFunction, IfStatement.class, _ -> true);
+
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+
+        assertAll(
+                () -> assertTypeNameEndsWith(currentLocalType(prepared.analysisData(), pingFunction.body(), "a"), "Point"),
+                () -> assertTypeNameEndsWith(currentLocalType(prepared.analysisData(), ifStatement.body(), "b"), "Point"),
+                () -> assertTrue(prepared.analysisData().resolvedMembers().isEmpty()),
+                () -> assertTrue(prepared.analysisData().resolvedCalls().isEmpty()),
+                () -> assertTrue(prepared.analysisData().expressionTypes().isEmpty()),
+                () -> assertTrue(prepared.analysisData().slotTypes().isEmpty()),
+                () -> assertEquals(0, prepared.diagnosticManager().snapshot().asList().size())
+        );
+    }
+
+    @Test
+    void analyzeKeepsShadowedChildBlockLocalFromPollutingParentSlot() throws Exception {
+        var prepared = prepareProbeInput(
+                "local_type_stabilization_shadow_boundary.gd",
+                """
+                        class_name LocalTypeStabilizationShadowBoundary
+                        extends RefCounted
+
+                        class Point:
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func ping(toggle: bool, dynamic_host):
+                            var a := make_point()
+                            if toggle:
+                                var a := dynamic_host.next
+                                a
+                            var after := a
+                            after
+                        """
+        );
+
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+        var ifStatement = findNode(pingFunction, IfStatement.class, _ -> true);
+        var ifBodyScope = assertInstanceOf(BlockScope.class, prepared.analysisData().scopesByAst().get(ifStatement.body()));
+        var diagnosticsBeforeAnalyze = prepared.diagnosticManager().snapshot();
+
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+
+        assertAll(
+                () -> assertTypeNameEndsWith(currentLocalType(prepared.analysisData(), pingFunction.body(), "a"), "Point"),
+                () -> assertNull(ifBodyScope.resolveValueHere("a")),
+                () -> assertTypeNameEndsWith(currentLocalType(prepared.analysisData(), pingFunction.body(), "after"), "Point"),
+                () -> assertTrue(prepared.analysisData().resolvedMembers().isEmpty()),
+                () -> assertTrue(prepared.analysisData().resolvedCalls().isEmpty()),
+                () -> assertTrue(prepared.analysisData().expressionTypes().isEmpty()),
+                () -> assertTrue(prepared.analysisData().slotTypes().isEmpty()),
+                () -> assertEquals(diagnosticsBeforeAnalyze, prepared.diagnosticManager().snapshot()),
+                () -> assertEquals(1, prepared.diagnosticManager().snapshot().asList().size()),
+                () -> assertEquals("sema.variable_binding", prepared.diagnosticManager().snapshot().asList().getFirst().category())
         );
     }
 
