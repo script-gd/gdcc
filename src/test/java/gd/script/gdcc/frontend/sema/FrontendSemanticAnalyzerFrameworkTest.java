@@ -1509,8 +1509,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
     }
 
-    /// Scope-phase probe used to prove that the framework refreshes diagnostics before the
-    /// variable phase starts.
+    /// Test double that records the diagnostics snapshot and published skeleton boundary visible
+    /// to scope analysis.
     private static final class RecordingScopeAnalyzer extends FrontendScopeAnalyzer {
         private boolean invoked;
         private boolean moduleSkeletonPublished;
@@ -1537,7 +1537,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    /// Variable-phase probe used to lock the new `scope -> variable` hand-off contract.
+    /// Test double that records the diagnostics snapshot and published scope boundary visible to
+    /// variable inventory analysis.
     private static final class RecordingVariableAnalyzer extends FrontendVariableAnalyzer {
         private boolean invoked;
         private boolean scopeBoundaryPublished;
@@ -1564,8 +1565,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
         }
     }
 
-    /// Top-binding probe used to prove that the framework publishes the new phase boundary by
-    /// rebuilding `symbolBindings()` instead of leaving bootstrap leftovers in place.
+    /// Test double that records the diagnostics snapshot and `symbolBindings()` publication
+    /// boundary visible to top-binding analysis.
     private static final class RecordingTopBindingAnalyzer extends FrontendTopBindingAnalyzer {
         private boolean invoked;
         private boolean scopeBoundaryPublished;

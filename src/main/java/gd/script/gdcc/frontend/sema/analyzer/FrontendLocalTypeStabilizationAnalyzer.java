@@ -87,7 +87,7 @@ public class FrontendLocalTypeStabilizationAnalyzer {
         run(classRegistry, analysisData, diagnosticManager, true);
     }
 
-    /// Package-private probe surface for stage-1 tests.
+    /// Package-private test helper for observing transient initializer typing.
     ///
     /// The contract stays intentionally narrow:
     /// - run the same walker/resolver path as `analyze(...)`
