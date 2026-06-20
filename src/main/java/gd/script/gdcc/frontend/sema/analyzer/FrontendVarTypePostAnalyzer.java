@@ -41,6 +41,10 @@ import java.util.Objects;
 
 /// Publishes final callable-local slot types after local stabilization and expression typing have
 /// settled the lexical inventory.
+///
+/// This phase intentionally republishes the current callable-local inventory into `slotTypes()`.
+/// It does not infer initializer types; local stabilization and expression typing have already
+/// settled the source slots that lowering is allowed to consume.
 public class FrontendVarTypePostAnalyzer {
     public static final @NotNull String VARIABLE_SLOT_PUBLICATION_CATEGORY = "sema.variable_slot_publication";
 
@@ -78,7 +82,8 @@ public class FrontendVarTypePostAnalyzer {
     }
 
     /// Traverses only the current supported executable surface and republishes the already-settled
-    /// inventory slot types on declaration-site AST identities.
+    /// inventory slot types on declaration-site AST identities, clearing any stale slot table facts
+    /// from earlier publication attempts.
     private static final class SlotTypePublisher implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;

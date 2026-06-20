@@ -61,6 +61,8 @@ import java.util.Objects;
 ///
 /// The analyzer keeps ordinary expression publication in `FrontendExprTypeAnalyzer`.
 /// It only performs the local dependency typing needed to keep one chain reducing left-to-right.
+/// Local `:=` receiver slots are expected to be settled by `FrontendLocalTypeStabilizationAnalyzer`
+/// before this phase; chain binding consumes those slots but does not own slot inference.
 public class FrontendChainBindingAnalyzer {
     private static final @NotNull String MEMBER_RESOLUTION_CATEGORY = "sema.member_resolution";
     private static final @NotNull String CALL_RESOLUTION_CATEGORY = "sema.call_resolution";

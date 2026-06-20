@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -30,6 +31,7 @@ import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -110,10 +112,99 @@ class FrontendVarTypePostAnalyzerTest {
                 variableDeclaration -> variableDeclaration.name().equals("alias")
         );
 
-        assertTrue(analyzed.analysisData().slotTypes().get(point).getTypeName().endsWith("Point"));
-        assertTrue(analyzed.analysisData().slotTypes().get(alias).getTypeName().endsWith("Point"));
+        var pointType = analyzed.analysisData().slotTypes().get(point);
+        var aliasType = analyzed.analysisData().slotTypes().get(alias);
+        assertNotNull(pointType);
+        assertNotNull(aliasType);
+        assertTypeNameEndsWith(pointType, "Point");
+        assertTypeNameEndsWith(aliasType, "Point");
         assertTrue(analyzed.diagnostics().asList().stream()
                 .noneMatch(diagnostic -> diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY)));
+    }
+
+    @Test
+    void analyzeRepublishesSettledAliasSlotsAndClearsStaleSlotFacts() throws Exception {
+        var prepared = preparePublishedInput(
+                "var_type_post_republish_settled_alias_slots.gd",
+                """
+                        class_name VarTypePostRepublishSettledAliasSlots
+                        extends RefCounted
+
+                        class Point:
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func ping():
+                            var point := make_point()
+                            var alias := point
+                            return alias.marker
+                        """
+        );
+
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+        var point = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("point")
+        );
+        var alias = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("alias")
+        );
+        prepared.analysisData().slotTypes().put(point, GdVariantType.VARIANT);
+        prepared.analysisData().slotTypes().put(alias, GdVariantType.VARIANT);
+
+        new FrontendVarTypePostAnalyzer().analyze(prepared.analysisData(), prepared.diagnosticManager());
+
+        var pointType = prepared.analysisData().slotTypes().get(point);
+        var aliasType = prepared.analysisData().slotTypes().get(alias);
+        assertNotNull(pointType);
+        assertNotNull(aliasType);
+        assertTypeNameEndsWith(pointType, "Point");
+        assertTypeNameEndsWith(aliasType, "Point");
+        assertTrue(prepared.diagnosticManager().snapshot().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals(
+                        FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                )));
+    }
+
+    @Test
+    void analyzePublishesTrueDynamicInferredLocalSlotsAsVariant() throws Exception {
+        var analyzed = analyzeShared(
+                "var_type_post_dynamic_fail_closed_slots.gd",
+                """
+                        class_name VarTypePostDynamicFailClosedSlots
+                        extends RefCounted
+
+                        func ping(dynamic_host):
+                            var point := dynamic_host.next
+                            var alias := point
+                            return alias.member
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast().statements(), "ping");
+        var point = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("point")
+        );
+        var alias = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("alias")
+        );
+
+        assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(point));
+        assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(alias));
+        assertFalse(analyzed.diagnostics().hasErrors(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
+        assertTrue(analyzed.diagnostics().asList().stream()
+                .noneMatch(diagnostic -> diagnostic.category().equals(
+                        FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                )));
     }
 
     @Test
@@ -355,6 +446,14 @@ class FrontendVarTypePostAnalyzerTest {
             }
         }
         throw new AssertionError("Node not found: " + nodeType.getSimpleName());
+    }
+
+    private static void assertTypeNameEndsWith(@NotNull GdType type, @NotNull String suffix) {
+        assertNotNull(type);
+        assertTrue(
+                type.getTypeName().endsWith(suffix),
+                () -> "Expected type ending with '" + suffix + "', but was '" + type.getTypeName() + "'"
+        );
     }
 
     private record AnalyzedScript(

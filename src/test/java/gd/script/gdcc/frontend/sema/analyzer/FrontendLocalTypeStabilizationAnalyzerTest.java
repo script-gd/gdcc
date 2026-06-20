@@ -43,17 +43,17 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationComplexInitializer
                         extends RefCounted
-                        
+
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-                        
+
                         class Factory:
                             var cached: Point = null
-                        
+
                             func make_point(seed: int) -> Point:
                                 return cached if cached != null else Point.new()
-                        
+
                         func ping(factory: Factory, seed: int):
                             var point := factory.make_point(seed).next
                             point
@@ -94,7 +94,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     void analyzeStabilizesSourceOrderAliasChainInBlockScope() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_alias_chain.gd",
-                        """
+                """
                         class_name LocalTypeStabilizationAliasChain
                         extends RefCounted
 
@@ -136,7 +136,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     void analyzeStabilizesComplexInitializerThenAliasInBlockScope() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_complex_alias.gd",
-                        """
+                """
                         class_name LocalTypeStabilizationComplexAlias
                         extends RefCounted
 
@@ -180,7 +180,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     void analyzeKeepsTrueDynamicInitializerAsVariantInBlockScope() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_dynamic_fail_closed.gd",
-                        """
+                """
                         class_name LocalTypeStabilizationDynamicFailClosed
                         extends RefCounted
 
@@ -211,13 +211,66 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     }
 
     @Test
+    void analyzeKeepsLambdaBodyOutsideSupportedStabilizationSurface() throws Exception {
+        var prepared = prepareProbeInput(
+                "local_type_stabilization_lambda_boundary.gd",
+                """
+                        class_name LocalTypeStabilizationLambdaBoundary
+                        extends RefCounted
+
+                        class Point:
+                            var marker: int = -1
+
+                        func make_point() -> Point:
+                            return Point.new()
+
+                        func ping():
+                            var before := make_point()
+                            var maker := func():
+                                var inside_lambda := make_point()
+                                return inside_lambda
+                            before
+                        """
+        );
+
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+        var diagnosticsBeforeAnalyze = prepared.diagnosticManager().snapshot().asList().size();
+
+        var analyzer = new FrontendLocalTypeStabilizationAnalyzer();
+        var snapshot = analyzer.probe(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+        analyzer.analyze(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+
+        var makerEntry = snapshot.findVariable("maker");
+        assertNotNull(makerEntry);
+        assertAll(
+                () -> assertTypeNameEndsWith(currentLocalType(prepared.analysisData(), pingFunction.body(), "before"), "Point"),
+                () -> assertEquals(GdVariantType.VARIANT, currentLocalType(prepared.analysisData(), pingFunction.body(), "maker")),
+                () -> assertEquals(FrontendExpressionTypeStatus.UNSUPPORTED, makerEntry.initializerType().status()),
+                () -> assertNull(snapshot.findVariable("inside_lambda")),
+                () -> assertTrue(prepared.analysisData().resolvedMembers().isEmpty()),
+                () -> assertTrue(prepared.analysisData().resolvedCalls().isEmpty()),
+                () -> assertTrue(prepared.analysisData().expressionTypes().isEmpty()),
+                () -> assertTrue(prepared.analysisData().slotTypes().isEmpty()),
+                () -> assertEquals(diagnosticsBeforeAnalyze, prepared.diagnosticManager().snapshot().asList().size())
+        );
+    }
+
+    @Test
     void probeKeepsTrueDynamicInitializerAsDynamicWithoutWritingSharedFacts() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_dynamic_initializer.gd",
                 """
                         class_name LocalTypeStabilizationDynamicInitializer
                         extends RefCounted
-                        
+
                         func ping(dynamic_host):
                             var point := dynamic_host.next
                             point
@@ -246,7 +299,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     void analyzeLeavesUnsupportedControlFlowSubtreeLocalsUnchanged() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_unsupported_subtrees_writeback.gd",
-                        """
+                """
                         class_name LocalTypeStabilizationUnsupportedSubtreesWriteback
                         extends RefCounted
 
@@ -316,13 +369,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationUnsupportedSubtrees
                         extends RefCounted
-                        
+
                         class Point:
                             var marker: int = -1
-                        
+
                         func make_point() -> Point:
                             return Point.new()
-                        
+
                         func ping(toggle, choice, items):
                             var before_loop := make_point()
                             for item in items:

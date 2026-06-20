@@ -2,7 +2,7 @@
 
 - 日期：2026-06-17
 - 目标 issue：#40 `frontend: static property chain can degrade to DYNAMIC for typed local aliases`
-- 状态：阶段 0-3 已完成；阶段 4 未开始
+- 状态：阶段 0-4 已完成
 - 范围：frontend semantic phase 中 `:=` local slot type 稳定化
 
 当前进度摘要：
@@ -12,6 +12,7 @@
 - 已补阶段 0 回归基线测试，固定 write path、read path、alias 链、复杂 initializer 在当前 shared semantic 下的漂移现状。
 - 已补阶段 1 单测，锁定 silent resolver 的正向求型、true dynamic fail-closed、unsupported subtree 不泄漏 shared facts/diagnostics。
 - 已完成阶段 2 source-order `BlockScope.resetLocalType(...)` 写回，并已完成阶段 3 主 pipeline 接入与 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 收口。
+- 已完成阶段 4 回归硬化，覆盖 true dynamic fail-closed、非目标结构封口、`FrontendVarTypePostAnalyzer` republish 与 bounded retry 验收。
 
 ---
 
@@ -949,6 +950,8 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 
 ### 13.5 阶段 4: 回归硬化与边界验证
 
+状态：已完成
+
 目标：
 
 - 防止新 pass 只修了主样例，却引入新的边界回归。
@@ -961,10 +964,26 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 4. 根据需要加 bounded retry 验收。
 5. 运行 targeted tests 并清理注释歧义。
 
+当前执行状态：
+
+- [x] 任务 4.1：已增补 true dynamic fail-closed 的完整 pipeline 覆盖，确认 initializer 与后续 alias member route 均保持 `DYNAMIC` / `Variant`，并已运行：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendChainBindingAnalyzerTest`
+- [x] 任务 4.2：已增补 lambda body 非目标结构封口测试，确认 local stabilization 不进入 lambda 内部局部、不收窄 lambda initializer，并已运行：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLocalTypeStabilizationAnalyzerTest`
+- [x] 任务 4.3：已增补 `FrontendVarTypePostAnalyzer` republish 预期，确认陈旧 slot facts 会被清理后重发稳定 alias type，true dynamic local 最终仍发布为 `Variant`，并已运行：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendVarTypePostAnalyzerTest`
+- [x] 任务 4.4：已复核 bounded retry 验收，现有 `FrontendChainBindingAnalyzerTest` 覆盖一次 finalize-window retry 成功与 retry 后仍 deferred 的封口路径，并已补测试注释说明对应合同。
+- [x] 任务 4.5：已清理 `FrontendChainBindingAnalyzer` / `FrontendVarTypePostAnalyzer` 注释歧义，并完成阶段 4 targeted 验证：
+  - `script/run-gradle-targeted-tests.sh --tests FrontendLocalTypeStabilizationAnalyzerTest,FrontendChainBindingAnalyzerTest,FrontendExprTypeAnalyzerTest,FrontendVarTypePostAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest`
+  - `git diff --check`
+
 阶段产出：
 
 - 计划中的最小样例与边界样例均已稳定。
 - 计划与测试之间没有语义歧义。
+- 完整 pipeline 下，true dynamic local initializer 与 alias member access 均保持 `DYNAMIC` / `Variant`。
+- lambda body、`for`、`match` 等非目标结构不会被 local stabilization 悄悄打开。
+- `FrontendVarTypePostAnalyzer` 只 republish settled callable-local inventory，陈旧 `slotTypes()` facts 会被清理后重发。
 
 阶段验收：
 
