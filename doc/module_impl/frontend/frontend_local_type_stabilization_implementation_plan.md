@@ -433,7 +433,10 @@ return c.marker
 - `UNSUPPORTED`
 - `publishedType() == null`
 - value-required `void`
+- bare `TYPE_META` ordinary-value initializer
 - route-head-only `TYPE_META`
+
+其中 bare `TYPE_META` ordinary-value initializer 必须由 local stabilization 在 slot 写回边界显式排除，不依赖 silent resolver / `FrontendExpressionSemanticSupport.resolveIdentifierExpressionType(...)` 返回 `FAILED` 的间接效果。top binding 仍拥有首条 `sema.binding` 诊断；本 pass 只负责保持 inferred local slot 为 `Variant`。
 
 ### 6.5 Fail-closed 边界
 
@@ -503,6 +506,7 @@ silent resolver 是本 pass 内部的 provisional evaluator。
 - 通过既有 `symbolBindings()` 确认 binding kind。
 - 对 `LOCAL_VAR` / `PARAMETER` / `CAPTURE` 等值 binding，读取当前 scope 中的 `ScopeValue.type()`。
 - 因为本 pass 会立即 `resetLocalType(...)`，后续 alias 可读取前序 local 的最新类型。
+- 对 bare `TYPE_META` binding，不把它当成 local alias 或 ordinary runtime value；`var x := Worker` 这类 initializer 在本 pass 内显式 fail-closed，保持 slot 为 `Variant`。
 
 ---
 
@@ -521,6 +525,7 @@ src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendLocalTypeStabilizati
 - source-order local alias。
 - 复杂 initializer。
 - true dynamic fail-closed。
+- bare `TYPE_META` ordinary-value initializer 不写回 local slot，且不新增诊断。
 - unsupported subtree 不发最终 diagnostics。
 
 ### 8.2 扩展 semantic analyzer tests
@@ -742,6 +747,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendSemanticAnalyzerFrameworkTes
 - unsupported subtree 不被新 pass 打开。
 - control-flow merge 不做推断。
 - 子 block 可以读取父 block 已稳定 local，但 child-local writeback 不回写父 block。
+- bare `TYPE_META` ordinary-value initializer 由 local stabilization 显式拦截，保持 `Variant`。
 - route-head-only `TYPE_META` 不进入 ordinary `:=` value backfill。
 
 ---

@@ -486,7 +486,8 @@ public class FrontendExprTypeAnalyzer {
 
         /// Bare `TYPE_META` identifiers are valid chain heads such as `Worker.build()` but they are
         /// not first-class ordinary value expressions. Skipping publication keeps static-route heads
-        /// out of ordinary `expressionTypes()` consumers and out of `:=` backfill.
+        /// out of ordinary `expressionTypes()` consumers and the legacy `:=` backfill. Local
+        /// stabilization has its own bare-`TYPE_META` initializer guard at the slot-write boundary.
         private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {
             if (!(expression instanceof IdentifierExpression identifierExpression)) {
                 return false;

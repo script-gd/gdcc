@@ -294,6 +294,7 @@ BlockScope.resetLocalType(...)
   - 按 supported executable body 的 source order 处理 `var x := initializer`
   - 支持 local alias 链式传播
   - 支持复杂链式 initializer 的 provisional type calculation
+  - 在 slot 写回边界显式拒绝 bare `TYPE_META` ordinary-value initializer，不能依赖 expression helper 返回 `FAILED` 来间接维持该合同
   - 不发布正式 facts
   - 不发最终 diagnostics
 

@@ -92,6 +92,54 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     }
 
     @Test
+    void analyzeKeepsBareTypeMetaInitializerOutOfLocalStabilization() throws Exception {
+        var prepared = prepareProbeInput(
+                "local_type_stabilization_type_meta_guard.gd",
+                """
+                        class_name LocalTypeStabilizationTypeMetaGuard
+                        extends RefCounted
+
+                        class Worker:
+                            static func build() -> int:
+                                return 1
+
+                        func ping():
+                            var bad := Worker
+                            bad
+                        """
+        );
+
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+        var diagnosticsBeforeAnalyze = prepared.diagnosticManager().snapshot();
+
+        var snapshot = new FrontendLocalTypeStabilizationAnalyzer().probe(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+        var entry = snapshot.findVariable("bad");
+        assertNotNull(entry);
+
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(
+                prepared.classRegistry(),
+                prepared.analysisData(),
+                prepared.diagnosticManager()
+        );
+
+        assertAll(
+                () -> assertEquals(FrontendExpressionTypeStatus.FAILED, entry.initializerType().status()),
+                () -> assertEquals(GdVariantType.VARIANT, currentLocalType(prepared.analysisData(), pingFunction.body(), "bad")),
+                () -> assertTrue(prepared.analysisData().resolvedMembers().isEmpty()),
+                () -> assertTrue(prepared.analysisData().resolvedCalls().isEmpty()),
+                () -> assertTrue(prepared.analysisData().expressionTypes().isEmpty()),
+                () -> assertTrue(prepared.analysisData().slotTypes().isEmpty()),
+                () -> assertEquals(diagnosticsBeforeAnalyze, prepared.diagnosticManager().snapshot()),
+                () -> assertEquals(1, prepared.diagnosticManager().snapshot().asList().size()),
+                () -> assertEquals("sema.binding", prepared.diagnosticManager().snapshot().asList().getFirst().category())
+        );
+    }
+
+    @Test
     void analyzeStabilizesSourceOrderAliasChainInBlockScope() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_alias_chain.gd",

@@ -25,6 +25,7 @@
   - loop-control analyzer 负责 `sema.loop_control_flow`
   - compile-only `FrontendCompileCheckAnalyzer` 负责 `sema.compile_check`
   - 若同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得再补第二条同级错误
+- `FrontendLocalTypeStabilizationAnalyzer` 可以在 slot 写回边界显式拒绝 bare `TYPE_META` ordinary-value initializer，但不拥有诊断；首条 `sema.binding` 仍由 top binding 发出。
 - 命中父类 engine virtual 名称的 source method，必须在 shared semantic 路径上通过独立 `FrontendVirtualOverrideAnalyzer` 按 metadata 精确校验：
   - 必须是 instance method
   - 参数个数、参数类型、返回类型必须与 engine virtual 完全一致

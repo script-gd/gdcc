@@ -255,7 +255,8 @@
 
 - 作为合法 static-route head 使用的 bare `TYPE_META`，例如 `Worker.build()`、`EnumType.VALUE`
 - 只参与当前 chain reduction，不作为 ordinary value expression 写入 `expressionTypes()`
-- 这样可以避免 static-route head 污染普通 `expressionTypes()` 消费者与 `:=` backfill
+- 这样可以避免 static-route head 污染普通 `expressionTypes()` 消费者与 legacy `:=` backfill
+- local type stabilization 另有 slot 写回边界 guard，显式拒绝 `var x := Worker` 这类 bare `TYPE_META` ordinary-value initializer；该 guard 不依赖 expression helper 的 `FAILED` 结果来维持合同
 
 ---
 

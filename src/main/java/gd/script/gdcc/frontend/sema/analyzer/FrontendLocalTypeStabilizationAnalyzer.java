@@ -32,6 +32,8 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
@@ -63,6 +65,7 @@ import java.util.function.Supplier;
 /// - walk supported callable executable bodies
 /// - find eligible local `var := initializer`
 /// - resolve initializer types through a silent local resolver
+/// - explicitly exclude bare `TYPE_META` ordinary-value initializers
 /// - write back only exact stable local slot types
 ///
 /// The shared semantic pipeline runs this phase after top binding and before chain binding so member
@@ -166,6 +169,7 @@ public class FrontendLocalTypeStabilizationAnalyzer {
 
     private static final class AstWalkerLocalTypeStabilizer implements ASTNodeHandler {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+        private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull SilentExpressionResolver silentExpressionResolver;
         private final @NotNull List<ProbeEntry> probes;
@@ -182,14 +186,16 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                 @NotNull List<ProbeEntry> probes,
                 boolean writeBackStableSlots
         ) {
+            var checkedAnalysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+            symbolBindings = checkedAnalysisData.symbolBindings();
             this.probes = Objects.requireNonNull(probes, "probes must not be null");
             this.writeBackStableSlots = writeBackStableSlots;
             astWalker = new ASTWalker(this);
             silentExpressionResolver = new SilentExpressionResolver(
                     Objects.requireNonNull(sourcePath, "sourcePath must not be null"),
                     Objects.requireNonNull(classRegistry, "classRegistry must not be null"),
-                    Objects.requireNonNull(analysisData, "analysisData must not be null"),
+                    checkedAnalysisData,
                     scopesByAst,
                     () -> currentRestriction,
                     () -> currentStaticContext
@@ -275,6 +281,11 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                     variableDeclaration.value(),
                     "eligible inferred local initializer must not be null"
             );
+            var typeMetaFailure = typeMetaOrdinaryValueInitializerFailure(initializer);
+            if (typeMetaFailure != null) {
+                probes.add(new ProbeEntry(variableDeclaration, initializer, typeMetaFailure));
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
             var initializerType = silentExpressionResolver.resolveExpressionType(initializer);
             probes.add(new ProbeEntry(variableDeclaration, initializer, initializerType));
             if (writeBackStableSlots) {
@@ -392,6 +403,25 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                 return null;
             }
             return blockScope;
+        }
+
+        /// Bare `TYPE_META` is a route head, not an ordinary runtime value. Keep this guard at the
+        /// slot-stabilization boundary so `var x := Worker` never depends on the silent resolver's
+        /// identifier failure to avoid rewriting `x` away from `Variant`.
+        private @Nullable FrontendExpressionType typeMetaOrdinaryValueInitializerFailure(
+                @NotNull Expression initializer
+        ) {
+            if (!(initializer instanceof IdentifierExpression identifierExpression)) {
+                return null;
+            }
+            var binding = symbolBindings.get(identifierExpression);
+            if (binding == null || binding.kind() != FrontendBindingKind.TYPE_META) {
+                return null;
+            }
+            return FrontendExpressionType.failed(
+                    "Type-meta initializer '" + identifierExpression.name()
+                            + "' cannot stabilize an inferred local because it is not an ordinary value"
+            );
         }
 
         private void stabilizeLocalSlot(
