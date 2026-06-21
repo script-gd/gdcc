@@ -184,6 +184,8 @@ DYNAMIC member  -> Variant named route
 
 ### Step 1：冻结 dynamic member result type 真源
 
+状态：已完成（2026-06-21）。
+
 修改目标：
 
 - `FrontendBodyLoweringSupport`
@@ -200,6 +202,13 @@ DYNAMIC member  -> Variant named route
 - `dynamic_host.marker` 的 `MemberLoadItem` result materialization 类型为 `Variant`。
 - `RESOLVED member` 仍 materialize 为 exact result type。
 - `DYNAMIC member` 不再因 `resultType == null` 在 body lowering 阶段崩溃。
+
+产出说明：
+
+- `FrontendBodyLoweringSupport.requireMemberResultType(...)` 已改为优先消费 member anchor 对应的 `expressionTypes()`；这是 `DYNAMIC member` 的唯一值类型真源，也会沿用既有 lowering-ready expression type helper 的状态检查。
+- 如果 member fact 是 `DYNAMIC` 但缺少对应 expression fact，现在会在 body materialization 边界 fail-fast，错误信息明确指出 dynamic member value type 必须来自 `expressionTypes()`。
+- `RESOLVED member` 仍保留 `FrontendResolvedMember.resultType()` 兼容 fallback，避免旧式 exact member fact publication 被误降级为 `Variant`。
+- `FrontendBodyLoweringSupportTest` 已覆盖 dynamic member 正向 materialization、resolved member exact fallback、dynamic member 缺 expression fact 的负向 fail-fast 三类行为。
 
 ### Step 2：统一 body lowering-ready member surface
 

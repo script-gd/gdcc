@@ -6,11 +6,14 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraphBuilder;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -31,6 +34,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -150,6 +154,142 @@ class FrontendBodyLoweringSupportTest {
         );
 
         assertEquals(GdVariantType.VARIANT, valueTypes.get(compoundItem.resultValueId()));
+    }
+
+    @Test
+    void collectCfgValueMaterializationsUsesExpressionTypesForDynamicMemberLoadItems() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_dynamic_member_type.gd",
+                """
+                        class_name BodyLoweringSupportDynamicMemberType
+                        extends RefCounted
+                        
+                        func ping(dynamic_host) -> Variant:
+                            return dynamic_host.marker
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportDynamicMemberType",
+                        "RuntimeBodyLoweringSupportDynamicMemberType"
+                )
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var memberLoad = requireMemberLoadItem(graph, "marker");
+        var publishedMember = Objects.requireNonNull(analyzed.analysisData().resolvedMembers().get(memberLoad.anchor()));
+        var publishedExpressionType = Objects.requireNonNull(
+                analyzed.analysisData().expressionTypes().get(memberLoad.anchor())
+        );
+        var materialization = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        ).get(memberLoad.resultValueId());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, publishedMember.status()),
+                () -> assertNull(publishedMember.resultType()),
+                () -> assertEquals(FrontendExpressionTypeStatus.DYNAMIC, publishedExpressionType.status()),
+                () -> assertEquals(GdVariantType.VARIANT, publishedExpressionType.publishedType()),
+                () -> assertEquals(GdVariantType.VARIANT, materialization.type()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.CfgValueMaterializationKind.TEMP_SLOT,
+                        materialization.kind()
+                )
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsKeepsResolvedMemberExactResultTypeFallback() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_resolved_member_fallback.gd",
+                """
+                        class_name BodyLoweringSupportResolvedMemberFallback
+                        extends RefCounted
+                        
+                        var payload: int
+                        
+                        func ping(box: BodyLoweringSupportResolvedMemberFallback) -> int:
+                            return box.payload
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportResolvedMemberFallback",
+                        "RuntimeBodyLoweringSupportResolvedMemberFallback"
+                )
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var memberLoad = requireMemberLoadItem(graph, "payload");
+        var publishedMember = Objects.requireNonNull(analyzed.analysisData().resolvedMembers().get(memberLoad.anchor()));
+        var removedExpressionFact = Objects.requireNonNull(
+                analyzed.analysisData().expressionTypes().remove(memberLoad.anchor())
+        );
+        var materialization = FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                graph,
+                analyzed.analysisData(),
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        ).get(memberLoad.resultValueId());
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, publishedMember.status()),
+                () -> assertEquals(GdIntType.INT, publishedMember.resultType()),
+                () -> assertEquals(GdIntType.INT, removedExpressionFact.publishedType()),
+                () -> assertEquals(GdIntType.INT, materialization.type())
+        );
+    }
+
+    @Test
+    void collectCfgValueMaterializationsFailsFastWhenDynamicMemberExpressionFactIsMissing() throws Exception {
+        var analyzed = analyzeFunction(
+                "body_lowering_support_dynamic_member_missing_expression_fact.gd",
+                """
+                        class_name BodyLoweringSupportDynamicMemberMissingExpressionFact
+                        extends RefCounted
+                        
+                        func ping(dynamic_host) -> Variant:
+                            return dynamic_host.marker
+                        """,
+                "ping",
+                Map.of(
+                        "BodyLoweringSupportDynamicMemberMissingExpressionFact",
+                        "RuntimeBodyLoweringSupportDynamicMemberMissingExpressionFact"
+                )
+        );
+
+        var graph = new FrontendCfgGraphBuilder()
+                .buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+                .graph();
+        var memberLoad = requireMemberLoadItem(graph, "marker");
+        var publishedMember = Objects.requireNonNull(analyzed.analysisData().resolvedMembers().get(memberLoad.anchor()));
+        var removedExpressionFact = Objects.requireNonNull(
+                analyzed.analysisData().expressionTypes().remove(memberLoad.anchor())
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyLoweringSupport.collectCfgValueMaterializations(
+                        graph,
+                        analyzed.analysisData(),
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                )
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors(), analyzed.diagnostics().snapshot()::toString),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, publishedMember.status()),
+                () -> assertNull(publishedMember.resultType()),
+                () -> assertEquals(GdVariantType.VARIANT, removedExpressionFact.publishedType()),
+                () -> assertTrue(exception.getMessage().contains("DYNAMIC member"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("marker"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("expressionTypes()"), exception.getMessage())
+        );
     }
 
     @Test
@@ -445,6 +585,18 @@ class FrontendBodyLoweringSupportTest {
             }
         }
         return List.copyOf(items);
+    }
+
+    private static @NotNull MemberLoadItem requireMemberLoadItem(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String memberName
+    ) {
+        return collectReachableValueItems(graph).stream()
+                .filter(MemberLoadItem.class::isInstance)
+                .map(MemberLoadItem.class::cast)
+                .filter(item -> item.memberName().equals(memberName))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing MemberLoadItem " + memberName));
     }
 
     private static @NotNull AnalyzedFunction analyzeFunction(
