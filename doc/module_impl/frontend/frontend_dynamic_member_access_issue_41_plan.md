@@ -212,6 +212,8 @@ DYNAMIC member  -> Variant named route
 
 ### Step 2：统一 body lowering-ready member surface
 
+状态：已完成（2026-06-21）。
+
 修改目标：
 
 - `FrontendBodyLoweringSession`
@@ -227,6 +229,15 @@ DYNAMIC member  -> Variant named route
 - body lowering 不再在 `DYNAMIC member` 入口处拒绝。
 - 非 lowering-ready member 状态仍被拒绝。
 - dynamic call 相关行为不变。
+
+产出说明：
+
+- `FrontendBodyLoweringSession.requireResolvedMember(...)` 已与 CFG builder/call lowering-ready surface 对齐，允许 `FrontendResolvedMember.status()` 为 `RESOLVED` 或 `DYNAMIC` 的 published member fact 进入 body lowering。
+- 方法注释已明确 `DYNAMIC member` 只携带 route/provenance fact，值类型仍由 `expressionTypes()` 独立发布；body lowering 这里只消费 frozen facts，不回头推导或把 dynamic route 缩回 resolved-only。
+- `BLOCKED`、`DEFERRED`、`FAILED`、`UNSUPPORTED` 继续作为非 lowering-ready 状态 fail-fast，错误信息仍包含 anchor 类型与具体状态。
+- `FrontendBodyLoweringSessionTest` 已新增 session 边界测试，覆盖 `DYNAMIC` member 正向放行、缺失 published member fact 负向 fail-fast、非 lowering-ready member 状态负向 fail-fast。
+- `FrontendResolvedMemberTest` 已补齐 `FrontendResolvedMember.dynamic(...)` 正向模型测试，固定 `DYNAMIC member` 的 `resultType == null`、detail reason 与 receiver provenance。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendBodyLoweringSessionTest --tests FrontendResolvedMemberTest --tests FrontendBodyLoweringSupportTest --tests FrontendCompileCheckAnalyzerTest --tests FrontendChainReductionHelperTest`，通过。
 
 ### Step 3：实现 dynamic member read 的统一 Variant named lowering
 

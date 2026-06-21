@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdVariantType;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -50,6 +51,29 @@ class FrontendResolvedMemberTest {
         assertEquals(FrontendMemberResolutionStatus.BLOCKED, result.status());
         assertEquals(GdIntType.INT, result.resultType());
         assertEquals("instance member is blocked in static context", result.detailReason());
+    }
+
+    @Test
+    void dynamicFactoryPublishesRuntimeOpenMemberRouteWithoutResultType() {
+        var result = FrontendResolvedMember.dynamic(
+                "marker",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.BUILTIN,
+                GdVariantType.VARIANT,
+                "Variant.marker",
+                "runtime-dynamic property access"
+        );
+
+        assertEquals("marker", result.memberName());
+        assertEquals(FrontendBindingKind.PROPERTY, result.bindingKind());
+        assertEquals(FrontendMemberResolutionStatus.DYNAMIC, result.status());
+        assertEquals(FrontendReceiverKind.INSTANCE, result.receiverKind());
+        assertEquals(ScopeOwnerKind.BUILTIN, result.ownerKind());
+        assertEquals(GdVariantType.VARIANT, result.receiverType());
+        assertNull(result.resultType());
+        assertEquals("Variant.marker", result.declarationSite());
+        assertEquals("runtime-dynamic property access", result.detailReason());
     }
 
     @Test

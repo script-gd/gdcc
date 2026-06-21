@@ -10,6 +10,10 @@ import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringClassSkeletonPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringFunctionPreparationPass;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
@@ -19,6 +23,7 @@ import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -32,6 +37,9 @@ import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.Point;
+import dev.superice.gdparser.frontend.ast.Range;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -51,6 +59,125 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendBodyLoweringSessionTest {
+    private static final Range SYNTHETIC_RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
+
+    @Test
+    void requireResolvedMemberAcceptsDynamicPublishedFacts() throws Exception {
+        var fixture = prepareSessionFixture();
+        var anchor = property("marker");
+        var publishedMember = FrontendResolvedMember.dynamic(
+                "marker",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.BUILTIN,
+                GdVariantType.VARIANT,
+                "Variant.marker",
+                "runtime-dynamic property access"
+        );
+        fixture.context().analysisData().resolvedMembers().put(anchor, publishedMember);
+
+        var actualMember = fixture.session().requireResolvedMember(anchor);
+
+        assertAll(
+                () -> assertSame(publishedMember, actualMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.DYNAMIC, actualMember.status()),
+                () -> assertEquals(GdVariantType.VARIANT, actualMember.receiverType()),
+                () -> assertEquals("runtime-dynamic property access", actualMember.detailReason())
+        );
+    }
+
+    @Test
+    void requireResolvedMemberRejectsNonLoweringReadyMemberStatuses() throws Exception {
+        var fixture = prepareSessionFixture();
+        var cases = List.of(
+                new MemberStatusCase(
+                        "blocked",
+                        FrontendResolvedMember.blocked(
+                                "blocked",
+                                FrontendBindingKind.PROPERTY,
+                                FrontendReceiverKind.INSTANCE,
+                                ScopeOwnerKind.GDCC,
+                                new GdObjectType("Player"),
+                                GdIntType.INT,
+                                "Player.blocked",
+                                "instance member is blocked in static context"
+                        )
+                ),
+                new MemberStatusCase(
+                        "deferred",
+                        FrontendResolvedMember.deferred(
+                                "deferred",
+                                FrontendBindingKind.PROPERTY,
+                                FrontendReceiverKind.INSTANCE,
+                                ScopeOwnerKind.GDCC,
+                                new GdObjectType("Player"),
+                                "Player.deferred",
+                                "receiver typing is not ready"
+                        )
+                ),
+                new MemberStatusCase(
+                        "failed",
+                        FrontendResolvedMember.failed(
+                                "failed",
+                                FrontendBindingKind.PROPERTY,
+                                FrontendReceiverKind.INSTANCE,
+                                ScopeOwnerKind.GDCC,
+                                new GdObjectType("Player"),
+                                "Player.failed",
+                                "member does not exist"
+                        )
+                ),
+                new MemberStatusCase(
+                        "unsupported",
+                        FrontendResolvedMember.unsupported(
+                                "unsupported",
+                                FrontendBindingKind.PROPERTY,
+                                FrontendReceiverKind.TYPE_META,
+                                ScopeOwnerKind.GDCC,
+                                new GdObjectType("Player"),
+                                "Player.unsupported",
+                                "static dynamic member route is unsupported"
+                        )
+                )
+        );
+
+        for (var testCase : cases) {
+            var anchor = property(testCase.member().memberName());
+            fixture.context().analysisData().resolvedMembers().put(anchor, testCase.member());
+
+            var exception = assertThrows(
+                    IllegalStateException.class,
+                    () -> fixture.session().requireResolvedMember(anchor)
+            );
+
+            assertAll(
+                    testCase.label(),
+                    () -> assertTrue(
+                            exception.getMessage().contains("Member anchor AttributePropertyStep is not lowering-ready"),
+                            exception.getMessage()
+                    ),
+                    () -> assertTrue(
+                            exception.getMessage().contains(testCase.member().status().name()),
+                            exception.getMessage()
+                    )
+            );
+        }
+    }
+
+    @Test
+    void requireResolvedMemberFailsFastWhenMemberFactIsMissing() throws Exception {
+        var fixture = prepareSessionFixture();
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> fixture.session().requireResolvedMember(property("missing"))
+        );
+
+        assertTrue(
+                exception.getMessage().contains("Missing published resolved member for AttributePropertyStep"),
+                exception.getMessage()
+        );
+    }
+
     @Test
     void materializeFrontendBoundaryValuePacksConcreteSourcesForVariantTargets() throws Exception {
         var session = prepareSession();
@@ -562,6 +689,10 @@ class FrontendBodyLoweringSessionTest {
     }
 
     private static @NotNull FrontendBodyLoweringSession prepareSession() throws Exception {
+        return prepareSessionFixture().session();
+    }
+
+    private static @NotNull SessionFixture prepareSessionFixture() throws Exception {
         var diagnostics = new DiagnosticManager();
         var module = parseModule(
                 List.of(new SourceFixture(
@@ -586,10 +717,30 @@ class FrontendBodyLoweringSessionTest {
         new FrontendLoweringFunctionPreparationPass().run(context);
         new FrontendLoweringBuildCfgPass().run(context);
         assertFalse(diagnostics.hasErrors(), () -> "Unexpected lowering diagnostics: " + diagnostics.snapshot());
-        return new FrontendBodyLoweringSession(
-                requireContext(context.requireFunctionLoweringContexts()),
-                context.classRegistry()
+        var functionContext = requireContext(context.requireFunctionLoweringContexts());
+        return new SessionFixture(
+                new FrontendBodyLoweringSession(
+                        functionContext,
+                        context.classRegistry()
+                ),
+                functionContext
         );
+    }
+
+    private static @NotNull AttributePropertyStep property(@NotNull String name) {
+        return new AttributePropertyStep(name, SYNTHETIC_RANGE);
+    }
+
+    private record SessionFixture(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull FunctionLoweringContext context
+    ) {
+    }
+
+    private record MemberStatusCase(
+            @NotNull String label,
+            @NotNull FrontendResolvedMember member
+    ) {
     }
 
     private static @NotNull FrontendModule parseModule(

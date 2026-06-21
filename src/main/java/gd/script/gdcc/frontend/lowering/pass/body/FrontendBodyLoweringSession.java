@@ -164,6 +164,12 @@ public final class FrontendBodyLoweringSession {
         return resolvedCall;
     }
 
+    /// Consumes one lowering-ready published member fact.
+    ///
+    /// CFG publication already admits exact `RESOLVED` routes and runtime-open `DYNAMIC`
+    /// member routes. `DYNAMIC` keeps route/provenance only; its value type is published
+    /// separately through `expressionTypes()`, so this gate must not narrow the surface back
+    /// to resolved-only.
     @NotNull FrontendResolvedMember requireResolvedMember(@NotNull Node memberAnchor) {
         var resolvedMember = analysisData.resolvedMembers().get(
                 Objects.requireNonNull(memberAnchor, "memberAnchor must not be null")
@@ -173,7 +179,8 @@ public final class FrontendBodyLoweringSession {
                     "Missing published resolved member for " + memberAnchor.getClass().getSimpleName()
             );
         }
-        if (resolvedMember.status() != FrontendMemberResolutionStatus.RESOLVED) {
+        if (resolvedMember.status() != FrontendMemberResolutionStatus.RESOLVED
+                && resolvedMember.status() != FrontendMemberResolutionStatus.DYNAMIC) {
             throw new IllegalStateException(
                     "Member anchor " + memberAnchor.getClass().getSimpleName()
                             + " is not lowering-ready: "
@@ -700,7 +707,8 @@ public final class FrontendBodyLoweringSession {
                 yield nullSlotId;
             }
             case ALLOW_WITH_INTRINSIC_CAST -> materializeIntrinsicCast(block, sourceSlot, source, target, use);
-            case ALLOW_WITH_BUILTIN_CONSTRUCTOR -> materializeBuiltinConstructorBoundary(block, sourceSlot, target, use);
+            case ALLOW_WITH_BUILTIN_CONSTRUCTOR ->
+                    materializeBuiltinConstructorBoundary(block, sourceSlot, target, use);
             case REJECT -> throw new IllegalStateException(
                     "Frontend boundary '"
                             + use
