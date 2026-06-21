@@ -241,6 +241,8 @@ DYNAMIC member  -> Variant named route
 
 ### Step 3：实现 dynamic member read 的统一 Variant named lowering
 
+状态：已完成（2026-06-21）。
+
 修改目标：
 
 - `FrontendSequenceItemInsnLoweringProcessors.FrontendMemberLoadInsnLoweringProcessor`
@@ -266,6 +268,18 @@ DYNAMIC member  -> Variant named route
 - dynamic read result temp slot 是 `Variant`，不是从 `FrontendResolvedMember.resultType()` 获取。
 - 不出现 `DYNAMIC member` 下的 `LoadPropertyInsn`。
 - 非 `Variant` 且非 `GdObjectType` receiver 的 `DYNAMIC member` fail-fast。
+
+产出说明：
+
+- `FrontendMemberLoadInsnLoweringProcessor` 已在普通 `receiverKind` 分流前先检查 `FrontendResolvedMember.status()`；当状态为 `DYNAMIC` 时进入专用 read lowering，避免 `DYNAMIC + INSTANCE` 被误降为普通 `LoadPropertyInsn`。
+- dynamic read 只接受 `receiverKind == INSTANCE` 且存在 `baseValueIdOrNull` 的 published fact；`TYPE_META + DYNAMIC`、缺 receiver value id、以及非 `Variant`/非 `GdObjectType` receiver 都会在 body lowering 边界 fail-fast，错误信息包含 dynamic member load 与实际 receiver 类型/route。
+- `Variant` receiver 直接复用已发布 receiver value slot；`GdObjectType` receiver 复用既有 `materializeFrontendBoundaryValue(...)` 普通 boundary helper 先生成 `PackVariantInsn`，再生成 `LiteralStringNameInsn + VariantGetNamedInsn`。本步没有扩展 `FrontendWritableRouteSupport`，write/reverse commit 仍留给 Step 4。
+- `RESOLVED` member read 的现有路径保持不变：instance member 继续经 `FrontendWritableRouteSupport.materializeLeafReadInto(...)` 生成 `LoadPropertyInsn`，type-meta member 继续生成 `LoadStaticInsn`。实现和测试都不把 “receiver 是 Object/GdObjectType” 当成 dynamic route selector。
+- `FrontendLoweringBodyInsnPassTest` 已新增 Step 3 指令级测试，覆盖 `Variant` receiver dynamic read 生成 `VariantGetNamedInsn` 且不重复 pack、synthetic metadata-unknown `GdObjectType` receiver dynamic read 先 pack 再 named get、resolved builtin/Object-family ordinary property read 不生成 `VariantGetNamedInsn`、非法 non-Variant/non-Object receiver dynamic fact fail-fast、`TYPE_META + DYNAMIC` fail-fast、以及缺 receiver value id 的 dynamic read fail-fast。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest`，通过。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest,FrontendBodyLoweringSupportTest,FrontendWritableRouteSupportTest,FrontendChainReductionHelperTest,FrontendCompileCheckAnalyzerTest`，通过。
+- 已运行 `./gradlew classes --no-daemon --info --console=plain`，通过。
+- 已运行 `git diff --check`，通过。
 
 ### Step 4：实现 dynamic member write / reverse commit 的统一 Variant named lowering
 

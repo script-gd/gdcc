@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
@@ -24,6 +25,7 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
+import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
@@ -61,8 +63,10 @@ import gd.script.gdcc.lir.insn.VariantSetIndexedInsn;
 import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
@@ -1130,11 +1134,11 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilySubscriptKeyBoundary
                         extends RefCounted
-
+                        
                         func name_key_ops(box: Dictionary[StringName, int], key: String) -> int:
                             box[key] = 7
                             return box[key]
-
+                        
                         func text_key_ops(box: Dictionary[String, int], key: StringName) -> int:
                             box[key] = 11
                             return box[key]
@@ -1223,10 +1227,10 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilySubscriptValueBoundary
                         extends RefCounted
-
+                        
                         func name_value_ops(box: Dictionary[int, StringName], value: String) -> void:
                             box[1] = value
-
+                        
                         func text_value_ops(box: Dictionary[int, String], value: StringName) -> void:
                             box[2] = value
                         """,
@@ -1565,7 +1569,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilyLocalInit
                         extends RefCounted
-
+                        
                         func ping(text: String) -> StringName:
                             var from_text: StringName = text
                             var from_literal: StringName = "line\\nbreak"
@@ -1618,10 +1622,10 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilyAssignment
                         extends RefCounted
-
+                        
                         var prop_name: StringName = &""
                         var prop_text: String = ""
-
+                        
                         func ping(text: String, name: StringName) -> void:
                             var local_name: StringName = &""
                             var local_text: String = ""
@@ -1691,22 +1695,22 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilyCallArgs
                         extends RefCounted
-
+                        
                         func take_name(value: StringName) -> StringName:
                             return value
-
+                        
                         func take_text(value: String) -> String:
                             return value
-
+                        
                         func from_text(text: String) -> StringName:
                             return take_name(text)
-
+                        
                         func from_name(name: StringName) -> String:
                             return take_text(name)
-
+                        
                         func from_literal() -> StringName:
                             return take_name("call\\nname")
-
+                        
                         func from_direct_literal() -> StringName:
                             return take_name(&"call_name")
                         """,
@@ -1798,16 +1802,16 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilyReturn
                         extends RefCounted
-
+                        
                         func ret_name(text: String) -> StringName:
                             return text
-
+                        
                         func ret_text(name: StringName) -> String:
                             return name
-
+                        
                         func ret_name_literal() -> StringName:
                             return "return\\nvalue"
-
+                        
                         func ret_name_direct_literal() -> StringName:
                             return &"return_name"
                         """,
@@ -1884,11 +1888,11 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnStringFamilyPropertyInit
                         extends RefCounted
-
+                        
                         var name_from_text: StringName = "field\\nname"
                         var name_direct: StringName = &"field_name"
                         var text_from_name: String = &"field_text"
-
+                        
                         func ping() -> int:
                             return 1
                         """,
@@ -4050,6 +4054,338 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersVariantDynamicMemberReadIntoVariantNamedGet() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_variant_dynamic_member_read.gd",
+                """
+                        class_name BodyInsnVariantDynamicMemberRead
+                        extends RefCounted
+                        
+                        func marker(host: Variant) -> Variant:
+                            return host.marker
+                        """,
+                Map.of("BodyInsnVariantDynamicMemberRead", "RuntimeBodyInsnVariantDynamicMemberRead"),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantDynamicMemberRead",
+                "marker"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(markerContext.targetFunction());
+        var memberLoad = requireSingleMemberLoadItem(markerContext.requireFrontendCfgGraph(), "marker");
+        var receiverValueId = memberLoad.baseValueIdOrNull();
+        assertNotNull(receiverValueId);
+        var getNamedInsn = requireOnlyInstruction(markerContext.targetFunction(), VariantGetNamedInsn.class);
+        var getNamedResultId = getNamedInsn.resultId();
+        assertNotNull(getNamedResultId);
+        var nameLiteral = requireOnlyInstruction(markerContext.targetFunction(), LiteralStringNameInsn.class);
+        var returnInsn = requireOnlyReturnInsn(markerContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertEquals("marker", nameLiteral.value()),
+                () -> assertEquals(nameLiteral.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(receiverValueId),
+                        getNamedInsn.namedVariantId()
+                ),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(memberLoad.resultValueId()),
+                        getNamedResultId
+                ),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
+                        markerContext.targetFunction(),
+                        getNamedResultId
+                )),
+                () -> assertEquals(getNamedResultId, returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runPacksObjectDynamicMemberReadBeforeVariantNamedGet() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_dynamic_member_read.gd",
+                """
+                        class_name BodyInsnObjectDynamicMemberRead
+                        extends RefCounted
+                        
+                        func marker(host: Variant) -> Variant:
+                            return host.marker
+                        """,
+                Map.of("BodyInsnObjectDynamicMemberRead", "RuntimeBodyInsnObjectDynamicMemberRead"),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectDynamicMemberRead",
+                "marker"
+        );
+        var memberLoad = requireSingleMemberLoadItem(markerContext.requireFrontendCfgGraph(), "marker");
+        var receiverValueId = memberLoad.baseValueIdOrNull();
+        assertNotNull(receiverValueId);
+        var hostProducer = requireValueProducerByResultId(
+                markerContext.requireFrontendCfgGraph(),
+                receiverValueId
+        );
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                hostProducer.anchor(),
+                FrontendExpressionType.resolved(new GdObjectType("MissingWorker"))
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        "marker",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("MissingWorker"),
+                        "MissingWorker.marker",
+                        "synthetic metadata-unknown object dynamic member"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(markerContext.targetFunction());
+        var packInsn = requireOnlyInstruction(markerContext.targetFunction(), PackVariantInsn.class);
+        var getNamedInsn = requireOnlyInstruction(markerContext.targetFunction(), VariantGetNamedInsn.class);
+        var getNamedResultId = getNamedInsn.resultId();
+        assertNotNull(getNamedResultId);
+        var nameLiteral = requireOnlyInstruction(markerContext.targetFunction(), LiteralStringNameInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(FrontendBodyLoweringSupport.cfgTempSlotId(receiverValueId), packInsn.valueId()),
+                () -> assertEquals(packInsn.resultId(), getNamedInsn.namedVariantId()),
+                () -> assertEquals("marker", nameLiteral.value()),
+                () -> assertEquals(nameLiteral.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
+                        markerContext.targetFunction(),
+                        packInsn.resultId()
+                )),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
+                        markerContext.targetFunction(),
+                        getNamedResultId
+                ))
+        );
+    }
+
+    @Test
+    void runKeepsResolvedBuiltinPropertyReadOnOrdinaryPropertyRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_resolved_property_route_guard.gd",
+                """
+                        class_name BodyInsnResolvedPropertyRouteGuard
+                        extends RefCounted
+                        
+                        func axis_x(vector: Vector3) -> float:
+                            return vector.x
+                        """,
+                Map.of("BodyInsnResolvedPropertyRouteGuard", "RuntimeBodyInsnResolvedPropertyRouteGuard"),
+                true
+        );
+        var axisContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnResolvedPropertyRouteGuard",
+                "axis_x"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(axisContext.targetFunction());
+        var loadInsn = requireOnlyInstruction(axisContext.targetFunction(), LoadPropertyInsn.class);
+        var memberLoad = requireSingleMemberLoadItem(axisContext.requireFrontendCfgGraph(), "x");
+        var receiverValueId = memberLoad.baseValueIdOrNull();
+        assertNotNull(receiverValueId);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("x", loadInsn.propertyName()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(receiverValueId),
+                        loadInsn.objectId()
+                ),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, LiteralStringNameInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDynamicMemberReadHasNonVariantNonObjectReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_invalid_receiver.gd",
+                """
+                        class_name BodyInsnDynamicMemberInvalidReceiver
+                        extends RefCounted
+                        
+                        func axis_x(vector: Vector3) -> float:
+                            return vector.x
+                        """,
+                Map.of("BodyInsnDynamicMemberInvalidReceiver", "RuntimeBodyInsnDynamicMemberInvalidReceiver"),
+                true
+        );
+        var axisContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberInvalidReceiver",
+                "axis_x"
+        );
+        var memberLoad = requireSingleMemberLoadItem(axisContext.requireFrontendCfgGraph(), "x");
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                memberLoad.anchor(),
+                FrontendExpressionType.dynamic("synthetic illegal dynamic member receiver")
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        "x",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.BUILTIN,
+                        GdFloatVectorType.VECTOR3,
+                        "Vector3.x",
+                        "synthetic illegal dynamic member receiver"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("dynamic member load"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("Variant or Object-family receiver"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("Vector3"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDynamicMemberReadUsesTypeMetaRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_type_meta_route.gd",
+                """
+                        class_name BodyInsnDynamicMemberTypeMetaRoute
+                        extends RefCounted
+                        
+                        func zero() -> Vector3:
+                            return Vector3.ZERO
+                        """,
+                Map.of("BodyInsnDynamicMemberTypeMetaRoute", "RuntimeBodyInsnDynamicMemberTypeMetaRoute"),
+                true
+        );
+        var zeroContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberTypeMetaRoute",
+                "zero"
+        );
+        var memberLoad = requireSingleMemberLoadItem(zeroContext.requireFrontendCfgGraph(), "ZERO");
+        var originalMember = prepared.context().requireAnalysisData().resolvedMembers().get(memberLoad.anchor());
+        assertNotNull(originalMember);
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        originalMember.memberName(),
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.TYPE_META,
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic type-meta dynamic member route"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("dynamic member load"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("instance receiver route"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("TYPE_META"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDynamicMemberReadLosesReceiverValueId() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_missing_receiver_id.gd",
+                """
+                        class_name BodyInsnDynamicMemberMissingReceiverId
+                        extends RefCounted
+                        
+                        func marker(host: Variant) -> Variant:
+                            return host.marker
+                        """,
+                Map.of("BodyInsnDynamicMemberMissingReceiverId", "RuntimeBodyInsnDynamicMemberMissingReceiverId"),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberMissingReceiverId",
+                "marker"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var originalMemberLoad = requireSingleMemberLoadItem(originalGraph, "marker");
+        var entryNode = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                originalGraph.requireNode(originalGraph.entryNodeId())
+        );
+        var mutatedMemberLoad = new MemberLoadItem(
+                originalMemberLoad.anchor(),
+                originalMemberLoad.memberName(),
+                null,
+                originalMemberLoad.resultValueId()
+        );
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalMemberLoad ? mutatedMemberLoad : item)
+                .toList();
+        var mutatedNodes = new LinkedHashMap<>(originalGraph.nodes());
+        mutatedNodes.put(
+                entryNode.id(),
+                new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId())
+        );
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(new FrontendCfgGraph(originalGraph.entryNodeId(), mutatedNodes));
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendBodyLoweringSession(
+                        mutatedContext,
+                        new ClassRegistry(ExtensionApiLoader.loadDefault())
+                ).run()
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("dynamic member load"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("missing a receiver value id"), exception.getMessage())
+        );
+    }
+
+    @Test
     void runKeepsGenericSubscriptInstructionsWhenOnlyVariantKeyKindIsKnown() throws Exception {
         var prepared = prepareContext(
                 "body_insn_subscript_variant_key.gd",
@@ -4212,7 +4548,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnGlobalConstant
                         extends RefCounted
-
+                        
                         func ping() -> int:
                             return GDCC_TEST_BIG_FLAG
                         """,
@@ -4950,6 +5286,26 @@ class FrontendLoweringBodyInsnPassTest {
             }
         }
         assertEquals(1, matches.size(), () -> "Expected exactly one " + itemType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull MemberLoadItem requireSingleMemberLoadItem(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String memberName
+    ) {
+        var matches = new ArrayList<MemberLoadItem>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (item instanceof MemberLoadItem memberLoadItem
+                        && memberLoadItem.memberName().equals(memberName)) {
+                    matches.add(memberLoadItem);
+                }
+            }
+        }
+        assertEquals(1, matches.size(), () -> "Expected exactly one MemberLoadItem for " + memberName);
         return matches.getFirst();
     }
 

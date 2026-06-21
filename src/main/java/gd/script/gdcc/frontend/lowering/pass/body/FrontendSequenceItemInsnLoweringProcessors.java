@@ -17,7 +17,9 @@ import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.TypeTestItem;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirInstruction;
@@ -30,11 +32,14 @@ import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
+import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
+import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import dev.superice.gdparser.frontend.ast.ArrayExpression;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -613,6 +618,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
         ) {
             var resolvedMember = session.requireResolvedMember(node.anchor());
             var resultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            if (resolvedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
+                lowerDynamicMemberLoad(session, block, node, resolvedMember, resultSlotId);
+                return block;
+            }
             switch (resolvedMember.receiverKind()) {
                 case INSTANCE -> {
                     if (node.baseValueIdOrNull() == null) {
@@ -662,6 +671,59 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 );
             }
             return block;
+        }
+
+        private void lowerDynamicMemberLoad(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull MemberLoadItem node,
+                @NotNull FrontendResolvedMember resolvedMember,
+                @NotNull String resultSlotId
+        ) {
+            // Dynamic member reads are selected by the published status, not by receiver family.
+            // Object-family receivers are only packed after the DYNAMIC route fact is already frozen.
+            if (resolvedMember.receiverKind() != FrontendReceiverKind.INSTANCE) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "dynamic member load requires an instance receiver route, but got "
+                                + resolvedMember.receiverKind()
+                );
+            }
+            if (node.baseValueIdOrNull() == null) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "dynamic member load is missing a receiver value id"
+                );
+            }
+
+            var receiverValueId = node.baseValueIdOrNull();
+            var receiverSlotId = session.slotIdForValue(receiverValueId);
+            var receiverType = session.requireValueType(receiverValueId);
+            if (!(receiverType instanceof GdVariantType) && !(receiverType instanceof GdObjectType)) {
+                throw session.unsupportedSequenceItem(
+                        node,
+                        "dynamic member load requires Variant or Object-family receiver, but got "
+                                + receiverType.getTypeName()
+                );
+            }
+
+            var receiverVariantSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    receiverSlotId,
+                    receiverType,
+                    GdVariantType.VARIANT,
+                    "dynamic_member_read_receiver"
+            );
+            var nameSlotId = session.allocateWritableRouteTemp(
+                    "dynamic_member_read_name",
+                    GdStringNameType.STRING_NAME
+            );
+            block.appendNonTerminatorInstruction(new LiteralStringNameInsn(nameSlotId, node.memberName()));
+            block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
+                    resultSlotId,
+                    receiverVariantSlotId,
+                    nameSlotId
+            ));
         }
     }
 
