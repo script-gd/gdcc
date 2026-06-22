@@ -447,6 +447,21 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
 
 ### Step 5：保留 Object property fallback，但移出 dynamic member 合同
 
+状态：已完成（2026-06-22）。
+
+进展记录：
+
+- 已完成 Step 5 文档收口：`doc/gdcc_c_backend.md` 中 unknown object fallback 现在明确限定为普通 `LoadPropertyInsn` / `StorePropertyInsn` 的 backend fallback，并说明 `godot_Object_get` / `godot_Object_set` 薄包装没有 `r_valid` 或其他成功判定，不能作为 frontend `DYNAMIC member` route；runtime-open dynamic member 仍由 Java `IndexLoadInsnGen` / `IndexStoreInsnGen` 生成 `VariantGetNamedInsn` / `VariantSetNamedInsn` 的 valid-checked 路径。
+- 已补 backend focused tests：`IndexLoadInsnGenTest` 现在直接覆盖 `variant_get_named` 的 `idx_valid` 检查、runtime error 分支与失败分支按 `retTemp -> selfTemp` 清理；`IndexStoreInsnGenTest` 现在直接覆盖 `variant_set_named` 的 `idx_valid` 检查、runtime error 分支、失败分支按 `valueTemp -> selfTemp` 清理，以及 value-semantic receiver 成功路径的 named set 后 writeback/cleanup 顺序。`CLoadPropertyInsnGenTest` / `CStorePropertyInsnGenTest` 的 unknown object fallback 测试也新增负向断言，固定普通 `godot_Object_get` / `godot_Object_set` fallback 不生成 `idx_valid`、runtime error 或 `godot_variant_*_named` 路径。
+- 首轮 backend targeted test 暴露 `variantSetNamedValueSemanticSelfWritesBack` 的测试预期顺序不准确：成功路径实际复用既有非对象 slot write 语义，`godot_variant_set_named(...)` 成功后先销毁旧 `$self`，再把 packed self carrier unpack 写回，最后销毁 self temp；测试需要锚定这个既有 writeback 顺序，而不是假定 assignment 先于旧值销毁。
+- 已修正 `variantSetNamedValueSemanticSelfWritesBack` 断言顺序并运行 `script/run-gradle-targeted-tests.sh --tests IndexLoadInsnGenTest --tests IndexStoreInsnGenTest --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest`，通过，确认 named get/set valid-checked backend path 与 Object fallback no-valid path 均被 focused tests 固定。
+- 已补前端 Step 5 边界断言：`FrontendLoweringBodyInsnPassTest.runLowersObjectDynamicMemberCompoundAssignmentThroughPackedVariantNamedRoute` 现在在已有 `StorePropertyInsn == 0` 断言外，额外固定 `LoadPropertyInsn == 0`，确保 metadata-unknown `GdObjectType` 的 dynamic compound current read 不会回退到普通 Object property fallback。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest.runLowersObjectDynamicMemberCompoundAssignmentThroughPackedVariantNamedRoute`，通过，确认新增 front-end no-`LoadPropertyInsn` 断言稳定。
+- 已格式化修改过的 Java 测试文件，并运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest --tests FrontendWritableRouteSupportTest --tests IndexLoadInsnGenTest --tests IndexStoreInsnGenTest --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest`，通过，覆盖 Step 5 的 frontend dynamic/resolved route 边界、writable route helper、backend named valid path 与 Object fallback no-valid path。
+- 已运行 IDE `get_file_problems` 检查修改过的 Java 测试文件，未发现 error；剩余均为既有测试文件中的 warning/weak warning（如 helper 参数恒定、长测试方法可提取、可空性提示），本步骤不做无关重构。
+- 已运行 `./gradlew classes --no-daemon --info --console=plain`，通过。
+- 已运行 `git diff --check`，通过。
+
 修改目标：
 
 - 文档与测试断言

@@ -282,7 +282,12 @@ Object category rules:
   - Use owner-type pointer cast emitted by cast helper path.
 - Unknown object (no class metadata):
   - This is not an owner-aligned receiver path.
-  - Property access falls back to dynamic/general runtime calls (`godot_Object_get` / `godot_Object_set`).
+  - `LoadPropertyInsn` / `StorePropertyInsn` may still fall back to the ordinary
+    `godot_Object_get` / `godot_Object_set` thin wrappers.
+  - These wrappers do not expose a valid flag or any other success signal, so they
+    must not be used as the frontend `DYNAMIC member` route. Runtime-open member
+    access must lower to `VariantGetNamedInsn` / `VariantSetNamedInsn`, whose Java
+    instruction generators emit the observable `r_valid` checks.
 
 ### Implementing a New Instruction Generator
 

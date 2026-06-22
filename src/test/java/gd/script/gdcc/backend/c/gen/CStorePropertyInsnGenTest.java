@@ -359,6 +359,10 @@ public class CStorePropertyInsnGenTest {
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_new_Variant_with_String("));
         assertTrue(body.contains("godot_Object_set($obj, GD_STATIC_SN(u8\"name\"), &__gdcc_tmp_variant_0);"));
+        assertFalse(body.contains("__gdcc_tmp_idx_valid_"), body);
+        assertFalse(body.contains("GDCC_PRINT_RUNTIME_ERROR"), body);
+        assertFalse(body.contains("godot_variant_get_named"), body);
+        assertFalse(body.contains("godot_variant_set_named"), body);
         assertFalse(body.contains("godot_UnknownType_set_name("));
     }
 

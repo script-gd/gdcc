@@ -4427,6 +4427,7 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertTrue(packInsns.stream().map(PackVariantInsn::resultId).toList().contains(setNamedInsn.namedVariantId())),
                 () -> assertEquals(getNamedInsn.resultId(), compoundInsn.leftId()),
                 () -> assertEquals(compoundInsn.resultId(), setNamedInsn.valueId()),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
                 () -> assertTrue(instructionIndex(instructions, getNamedInsn) < instructionIndex(instructions, compoundInsn)),
                 () -> assertTrue(instructionIndex(instructions, compoundInsn) < instructionIndex(instructions, setNamedInsn))

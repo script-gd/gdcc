@@ -222,6 +222,25 @@ class IndexLoadInsnGenTest {
     }
 
     @Test
+    @DisplayName("variant_get_named should emit r_valid check and runtime error branch")
+    void variantGetNamedEmitsValidCheck() {
+        var body = generateBody(
+                new VariantGetNamedInsn("result", "self", "name"),
+                List.of(
+                        new VariableSpec("self", GdVariantType.VARIANT, false),
+                        new VariableSpec("name", GdStringNameType.STRING_NAME, false),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertTrue(body.contains("if (!__gdcc_tmp_idx_valid_"), body);
+        assertTrue(body.contains(
+                "GDCC_PRINT_RUNTIME_ERROR(\"variant_get_named failed: self=$self, name=$name, result=$result\""
+        ), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+    }
+
+    @Test
     @DisplayName("variant_get_named should support ref StringName variable without extra address-of")
     void variantGetNamedRefNameVar() {
         var body = generateBody(
@@ -250,6 +269,27 @@ class IndexLoadInsnGenTest {
 
         assertTrue(body.contains("godot_new_Variant_with_Dictionary(&$self)"), body);
         assertTrue(body.contains("$result = godot_new_int_with_Variant(&__gdcc_tmp_idx_ret_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_get_named invalid branch should destroy return then self temp")
+    void variantGetNamedInvalidBranchDestroyOrder() {
+        var body = generateBody(
+                new VariantGetNamedInsn("result", "self", "name"),
+                List.of(
+                        new VariableSpec("self", new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT), false),
+                        new VariableSpec("name", GdStringNameType.STRING_NAME, false),
+                        new VariableSpec("result", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertInOrder(
+                body,
+                "GDCC_PRINT_RUNTIME_ERROR(\"variant_get_named failed: self=$self, name=$name, result=$result\"",
+                "godot_Variant_destroy(&__gdcc_tmp_idx_ret_",
+                "godot_Variant_destroy(&__gdcc_tmp_idx_self_variant_",
+                "goto __finally__;"
+        );
     }
 
     @Test

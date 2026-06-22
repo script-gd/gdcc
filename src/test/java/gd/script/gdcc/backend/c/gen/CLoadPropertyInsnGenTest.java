@@ -350,6 +350,10 @@ public class CLoadPropertyInsnGenTest {
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("__gdcc_tmp_variant_0 = godot_Object_get($obj, GD_STATIC_SN(u8\"name\"));"));
         assertTrue(body.contains("$tmp = godot_new_String_with_Variant(&__gdcc_tmp_variant_0);"));
+        assertFalse(body.contains("__gdcc_tmp_idx_valid_"), body);
+        assertFalse(body.contains("GDCC_PRINT_RUNTIME_ERROR"), body);
+        assertFalse(body.contains("godot_variant_get_named"), body);
+        assertFalse(body.contains("godot_variant_set_named"), body);
         assertFalse(body.contains("godot_UnknownType_get_name("));
     }
 

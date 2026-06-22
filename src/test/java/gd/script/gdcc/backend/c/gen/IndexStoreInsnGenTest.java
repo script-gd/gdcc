@@ -327,6 +327,25 @@ class IndexStoreInsnGenTest {
     }
 
     @Test
+    @DisplayName("variant_set_named should emit r_valid check and runtime error branch")
+    void variantSetNamedEmitsValidCheck() {
+        var body = generateBody(
+                new VariantSetNamedInsn("self", "name", "value"),
+                List.of(
+                        new VariableSpec("self", GdVariantType.VARIANT, false),
+                        new VariableSpec("name", GdStringNameType.STRING_NAME, false),
+                        new VariableSpec("value", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertTrue(body.contains("if (!__gdcc_tmp_idx_valid_"), body);
+        assertTrue(body.contains(
+                "GDCC_PRINT_RUNTIME_ERROR(\"variant_set_named failed: self=$self, name=$name, value=$value\""
+        ), body);
+        assertTrue(body.contains("goto __finally__;"), body);
+    }
+
+    @Test
     @DisplayName("variant_set_named should pack non-Variant value operand")
     void variantSetNamedNonVariantValue() {
         var body = generateBody(
@@ -340,6 +359,48 @@ class IndexStoreInsnGenTest {
 
         assertTrue(body.contains("godot_new_Variant_with_int($value)"), body);
         assertTrue(body.contains("godot_Variant_destroy(&__gdcc_tmp_idx_val_variant_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_set_named invalid branch should destroy value then self temp")
+    void variantSetNamedInvalidBranchDestroyOrder() {
+        var body = generateBody(
+                new VariantSetNamedInsn("self", "name", "value"),
+                List.of(
+                        new VariableSpec("self", GdStringType.STRING, false),
+                        new VariableSpec("name", GdStringNameType.STRING_NAME, false),
+                        new VariableSpec("value", GdIntType.INT, false)
+                )
+        );
+
+        assertInOrder(
+                body,
+                "GDCC_PRINT_RUNTIME_ERROR(\"variant_set_named failed: self=$self, name=$name, value=$value\"",
+                "godot_Variant_destroy(&__gdcc_tmp_idx_val_variant_",
+                "godot_Variant_destroy(&__gdcc_tmp_idx_self_variant_",
+                "goto __finally__;"
+        );
+    }
+
+    @Test
+    @DisplayName("variant_set_named should write back value-semantic self after valid named set")
+    void variantSetNamedValueSemanticSelfWritesBack() {
+        var body = generateBody(
+                new VariantSetNamedInsn("self", "name", "value"),
+                List.of(
+                        new VariableSpec("self", GdStringType.STRING, false),
+                        new VariableSpec("name", GdStringNameType.STRING_NAME, false),
+                        new VariableSpec("value", GdVariantType.VARIANT, false)
+                )
+        );
+
+        assertInOrder(
+                body,
+                "godot_variant_set_named(&__gdcc_tmp_idx_self_variant_",
+                "godot_String_destroy(&$self);",
+                "$self = godot_new_String_with_Variant(&__gdcc_tmp_idx_self_variant_",
+                "godot_Variant_destroy(&__gdcc_tmp_idx_self_variant_"
+        );
     }
 
     @Test
