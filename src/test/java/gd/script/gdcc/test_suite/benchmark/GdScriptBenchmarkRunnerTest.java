@@ -34,6 +34,7 @@ class GdScriptBenchmarkRunnerTest {
     private static final List<String> BASELINE_BENCHMARK_SCRIPT_PATHS = List.of(
             "algorithm/int_loop.gd",
             "collection/array_mutation.gd",
+            "collection/quadtree_lookup.gd",
             "math/newton_sqrt.gd",
             "runtime/stringname_roundtrip.gd"
     );
