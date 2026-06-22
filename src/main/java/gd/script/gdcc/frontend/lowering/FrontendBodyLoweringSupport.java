@@ -309,12 +309,9 @@ public final class FrontendBodyLoweringSupport {
                             + "'; dynamic member value type must come from expressionTypes() before body lowering"
             );
         }
-        // Compatibility fallback for older exact-member publication shapes:
-        // this branch is reached only when the member anchor has no step-scoped
-        // `expressionTypes()` fact, but `resolvedMembers()` still carries a non-dynamic member fact
-        // with an exact `resultType()`. New member-load publications should provide the expression
-        // fact even for RESOLVED members so all body materialization consumes one type source.
-        // Once those remaining publishers are migrated, this fallback should be removed.
+        // RESOLVED member anchors can still arrive without a step-scoped `expressionTypes()` fact.
+        // In that publication shape, `resolvedMembers().resultType()` remains the exact type source
+        // for ordinary member materialization. Only `DYNAMIC` members are forbidden from using it.
         if (publishedMember == null || publishedMember.resultType() == null) {
             throw new IllegalStateException(
                     "Missing published member result type for " + describeMemberAnchor(anchor)
