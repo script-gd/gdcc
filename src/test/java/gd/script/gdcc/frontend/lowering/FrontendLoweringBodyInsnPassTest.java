@@ -4109,6 +4109,59 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLetsDynamicMemberReadCrossTypedReturnBoundary() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_typed_return_boundary.gd",
+                """
+                        class_name BodyInsnDynamicMemberTypedReturnBoundary
+                        extends RefCounted
+                        
+                        func marker(host: Variant) -> int:
+                            return host.marker
+                        """,
+                Map.of(
+                        "BodyInsnDynamicMemberTypedReturnBoundary",
+                        "RuntimeBodyInsnDynamicMemberTypedReturnBoundary"
+                ),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberTypedReturnBoundary",
+                "marker"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(markerContext.targetFunction());
+        var getNamedInsn = requireOnlyInstruction(markerContext.targetFunction(), VariantGetNamedInsn.class);
+        var getNamedResultId = getNamedInsn.resultId();
+        assertNotNull(getNamedResultId);
+        var unpackInsn = requireOnlyInstruction(markerContext.targetFunction(), UnpackVariantInsn.class);
+        var nameLiteral = requireOnlyInstruction(markerContext.targetFunction(), LiteralStringNameInsn.class);
+        var returnInsn = requireOnlyReturnInsn(markerContext.targetFunction());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("marker", nameLiteral.value()),
+                () -> assertEquals(nameLiteral.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
+                        markerContext.targetFunction(),
+                        getNamedResultId
+                )),
+                () -> assertEquals(getNamedResultId, unpackInsn.variantId()),
+                () -> assertEquals(GdIntType.INT, requireVariableType(
+                        markerContext.targetFunction(),
+                        unpackInsn.resultId()
+                )),
+                () -> assertEquals(unpackInsn.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertTrue(instructionIndex(instructions, getNamedInsn) < instructionIndex(instructions, unpackInsn))
+        );
+    }
+
+    @Test
     void runPacksObjectDynamicMemberReadBeforeVariantNamedGet() throws Exception {
         var prepared = prepareContext(
                 "body_insn_object_dynamic_member_read.gd",
@@ -4290,6 +4343,92 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
                         markerContext.targetFunction(),
                         packInsn.resultId()
+                )),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class))
+        );
+    }
+
+    @Test
+    void runPacksObjectDynamicMemberAssignmentWithConcreteValueBeforeVariantNamedSet() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_dynamic_member_concrete_write.gd",
+                """
+                        class_name BodyInsnObjectDynamicMemberConcreteWrite
+                        extends RefCounted
+                        
+                        func marker(host: Variant, value: int) -> void:
+                            host.marker = value
+                        """,
+                Map.of(
+                        "BodyInsnObjectDynamicMemberConcreteWrite",
+                        "RuntimeBodyInsnObjectDynamicMemberConcreteWrite"
+                ),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectDynamicMemberConcreteWrite",
+                "marker"
+        );
+        var assignmentItem = requireSingleSequenceItem(markerContext.requireFrontendCfgGraph(), AssignmentItem.class);
+        var receiverValueId = assignmentItem.targetOperandValueIds().getFirst();
+        var hostProducer = requireValueProducerByResultId(markerContext.requireFrontendCfgGraph(), receiverValueId);
+        var objectType = new GdObjectType("MissingWorker");
+        replaceParameterType(markerContext, "host", objectType);
+        var leafAnchor = assignmentItem.writableRoutePayload().leaf().anchor();
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                hostProducer.anchor(),
+                FrontendExpressionType.resolved(objectType)
+        );
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                leafAnchor,
+                FrontendExpressionType.dynamic("synthetic metadata-unknown object dynamic member concrete write")
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                leafAnchor,
+                FrontendResolvedMember.dynamic(
+                        "marker",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        objectType,
+                        "MissingWorker.marker",
+                        "synthetic metadata-unknown object dynamic member concrete write"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(markerContext.targetFunction());
+        var packInsns = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        var setNamedInsn = requireOnlyInstruction(markerContext.targetFunction(), VariantSetNamedInsn.class);
+        var nameLiteral = requireOnlyInstruction(markerContext.targetFunction(), LiteralStringNameInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, packInsns.size()),
+                () -> assertTrue(packInsns.stream().map(PackVariantInsn::valueId).toList().contains("host")),
+                () -> assertTrue(packInsns.stream()
+                        .map(PackVariantInsn::valueId)
+                        .toList()
+                        .contains(FrontendBodyLoweringSupport.cfgTempSlotId(assignmentItem.rhsValueId()))),
+                () -> assertTrue(packInsns.stream().map(PackVariantInsn::resultId).toList().contains(
+                        setNamedInsn.namedVariantId()
+                )),
+                () -> assertTrue(packInsns.stream().map(PackVariantInsn::resultId).toList().contains(
+                        setNamedInsn.valueId()
+                )),
+                () -> assertEquals("marker", nameLiteral.value()),
+                () -> assertEquals(nameLiteral.resultId(), setNamedInsn.nameId()),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
+                        markerContext.targetFunction(),
+                        setNamedInsn.valueId()
                 )),
                 () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
                 () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),

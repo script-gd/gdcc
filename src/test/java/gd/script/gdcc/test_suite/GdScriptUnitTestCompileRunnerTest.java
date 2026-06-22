@@ -70,6 +70,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/array_void_return_push_back_size.gd",
             "runtime/comment_statement_control_flow_surface.gd",
             "runtime/dynamic_call.gd",
+            "runtime/dynamic_member_variant_named_access.gd",
+            "runtime/dynamic_member_variant_named_access_missing.gd",
             "runtime/engine_array_mesh_exact_default_args.gd",
             "runtime/engine_node_add_child_exact_explicit_internal_args.gd",
             "runtime/engine_node_add_child_exact_typed_receiver.gd",

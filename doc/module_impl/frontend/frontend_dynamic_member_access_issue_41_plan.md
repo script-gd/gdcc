@@ -518,7 +518,83 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
 
 ## 6. 测试计划
 
-建议优先补在 `FrontendLoweringBodyInsnPassTest`：
+### 6.1 测试矩阵与去重结论
+
+本节只列 issue #41 需要新增或保留的 focused tests。测试应按事实发布、CFG/compile gate、body lowering、writable route、backend generator、runtime resource 分层；不要把 `:=` 局部类型稳定、builtin ordinary property、visible value 解析、dynamic call lowering 的独立合同混进同一个断言场景。
+
+落地前必须先对照现有测试，已经覆盖的条目只作为回归锚点保留，不重复新增同义测试。本轮对照后的最小新增项是：
+
+- `FrontendExprTypeAnalyzerTest.analyzePublishesDynamicMemberAccessAsVariantForVariantReceiver`
+- `FrontendLoweringBodyInsnPassTest.runLetsDynamicMemberReadCrossTypedReturnBoundary`
+- `FrontendLoweringBodyInsnPassTest.runPacksObjectDynamicMemberAssignmentWithConcreteValueBeforeVariantNamedSet`
+- `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_named_access.gd`
+- `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_named_access_missing.gd`
+
+以下条目中，已有覆盖的测试仍保留在矩阵中，用于说明该层合同已经被哪个 focused test 固定；后续新增测试时应优先补缺口，而不是复制已有断言。
+
+#### 6.1.1 语义事实发布与 result type 真源
+
+覆盖锚点在 `FrontendResolvedMemberTest`、`FrontendChainReductionHelperTest`、`FrontendExprTypeAnalyzerTest`、`FrontendLocalTypeStabilizationAnalyzerTest`：
+
+1. `dynamicFactoryPublishesRuntimeOpenMemberRouteWithoutResultType`
+   - 断言：`FrontendResolvedMember.dynamic(...)` 发布 `Status.DYNAMIC`、保留 member name / receiver kind / provenance，但 `resultType()` 为 `null`。
+   - 目的：固定 `resolvedMembers()` 只表达 route fact，不承担 dynamic member value type 真源。
+
+2. `reducePublishesDynamicMemberWhenObjectReceiverMetadataIsUnknown`
+   - 输入：`worker.marker`，测试 fixture 让 `worker` 的 slot type 是 `GdObjectType("MissingWorker")`，且 registry 缺少 `MissingWorker` metadata。
+   - 断言：chain reduction 发布 `DYNAMIC member`，receiver kind 是 `INSTANCE`，member name 是 `marker`。
+
+3. `analyzePublishesDynamicMemberAccessAsVariantForVariantReceiver`
+   - 输入：`func read_path(dynamic_host): return dynamic_host.marker`
+   - 断言：member fact 为 `DYNAMIC`，同一 anchor 的 `expressionTypes()` 发布 `FrontendExpressionType.DYNAMIC`，published type 是 `GdVariantType.VARIANT`。
+   - 状态：本轮新增，补齐直接 dynamic property step 的 expression type 锚点；已有 `dynamic_host.payloads[seed]` 子脚本链测试不能替代该用例。
+
+4. 可选：`analyzePublishesDynamicMemberAccessAsVariantForObjectReceiverWithUnknownMetadata`
+   - 输入：`func read_marker(worker: MissingWorker): return worker.marker`，fixture 让 `MissingWorker` 对应 metadata unknown。
+   - 断言：`DYNAMIC member` 的可消费 expression type 是 `Variant`，不得从 `resolvedMembers().resultType()` 读取值类型。
+   - 状态：本轮不新增，避免与 `reducePublishesDynamicMemberWhenObjectReceiverMetadataIsUnknown` 和 body lowering 的 object pack tests 重复。
+
+5. `analyzeKeepsDynamicMemberDerivedInferredLocalAsVariant`
+   - 输入：`var marker := dynamic_host.marker` 或等价 fixture。
+   - 断言：局部类型稳定阶段把 dynamic member 派生的 inferred local 保持为 `Variant`，不因为后续使用点误收敛成具体 Object / builtin 类型。
+   - 状态：已有 `analyzeKeepsTrueDynamicInitializerAsVariantInBlockScope` 覆盖同类局部稳定合同。
+
+6. `reduceKeepsKnownObjectMissingPropertyAsFailedMember`
+   - 输入：receiver 是 metadata 已知的 Object / object-derived type，但成员确实不存在。
+   - 断言：发布 `FAILED` 或对应 failed member fact，不得误转成 `DYNAMIC`。
+
+7. `analyzeKeepsResolvedObjectPropertyAccessOnOrdinaryRoute`
+   - 输入：metadata 已知且成员可解析的普通 Object property read/write。
+   - 断言：member fact 保持 `RESOLVED`，expression type 来自 resolved property；该 guard 用来防止实现把 “receiver 是 Object” 错当成 dynamic route selector。
+
+#### 6.1.2 CFG / compile gate 边界保护
+
+覆盖锚点在 `FrontendCfgGraphBuilderTest`、`FrontendCompileCheckAnalyzerTest`：
+
+1. `buildExecutableBodyAllowsDynamicInstanceMemberReads`
+   - 输入：合法 `Variant` receiver 或 metadata-unknown `GdObjectType` receiver 的 `DYNAMIC + INSTANCE` member fact。
+   - 断言：CFG builder 接受该 member 进入 lowering-ready surface，不把 `DYNAMIC` 当 compile gate blocker。
+   - 状态：已有覆盖，本轮不重复新增。
+
+2. `buildExecutableBodyFailsFastWhenDynamicMemberUsesTypeMetaRoute`
+   - 输入：synthetic `FrontendResolvedMember.dynamic(...)` 携带 `FrontendReceiverKind.TYPE_META`。
+   - 断言：CFG/body boundary fail-fast，错误信息包含 `Frontend publication contract drift`，不继续进入 body lowering。
+   - 状态：已有覆盖，本轮不重复新增。
+
+3. `analyzeKeepsDynamicMemberPublicationDriftOutOfCompileGate`
+   - 输入：同一类 `TYPE_META + DYNAMIC` synthetic fact。
+   - 断言：`FrontendCompileCheckAnalyzer` 不把它包装成普通 `sema.compile_check` diagnostic；这是 implementation invariant，不是源码语义错误。
+   - 状态：已有覆盖，本轮不重复新增。
+
+4. 非 `Variant` / 非 `GdObjectType` receiver 的 dynamic member
+   - 状态：已有 `FrontendLoweringBodyInsnPassTest.runFailsFastWhenDynamicMemberReadHasNonVariantNonObjectReceiver` 覆盖 body boundary fail-fast；不再新增 CFG 级 synthetic 重复测试。
+
+5. compile-check sibling 行为
+   - 状态：本轮不新增。`FrontendCompileCheckAnalyzer` 已通过 side table scan 独立处理 compile-surface facts，且 type-meta drift 已被固定为“不进入 compile_check”；除非后续出现具体回归，不额外构造脆弱 synthetic sibling fixture。
+
+#### 6.1.3 Body lowering read/write 与 typed boundary
+
+覆盖锚点主要在 `FrontendLoweringBodyInsnPassTest`：
 
 1. `runLowersVariantDynamicMemberReadIntoVariantNamedGet`
    - 输入：`func read_path(dynamic_host): return dynamic_host.marker`
@@ -531,6 +607,7 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
 3. `runLetsDynamicMemberReadCrossTypedReturnBoundary`
    - 输入：`func read_marker(dynamic_host) -> int: return dynamic_host.marker`
    - 断言：dynamic member read result 先是 `Variant`，return boundary 使用 `UnpackVariantInsn`，不读取 `FrontendResolvedMember.resultType()`。
+   - 状态：本轮新增，补齐 read-side typed boundary 缺口。
 
 4. `runLowersDynamicMemberCompoundAssignmentThroughVariantNamedRoute`
    - 输入：`func write_path(dynamic_host): dynamic_host.count += 1`
@@ -552,14 +629,38 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
    - 输入：`func write_path(dynamic_host, value): dynamic_host.box.value = value; after_write()`
    - 断言：如果 dynamic owner reverse commit 插入 runtime gate synthetic blocks，`after_write()` 的 lowering 必须接在 returned continuation block 上，而不是原 lexical block。
 
-建议补在 semantic / chain reduction tests：
+9. `runPacksObjectDynamicMemberReadBeforeVariantNamedGet`
+   - 输入：`func read_marker(worker: MissingWorker): return worker.marker`，fixture 让 `MissingWorker` 为 metadata unknown `GdObjectType`。
+   - 断言：先生成 `PackVariantInsn(worker_variant_slot, worker_slot)`，再生成 `LiteralStringNameInsn("marker") + VariantGetNamedInsn`；不生成 `LoadPropertyInsn`。
+   - 状态：已有覆盖，本轮不重复新增。
 
-1. 保留或新增 `GdObjectType("MissingWorker")` + 缺 metadata registry 的测试，断言 `worker.marker` 发布为 `DYNAMIC member`。
-2. 断言该 dynamic member 的 expression type 是 `DYNAMIC(Variant)`。
-3. 增加或保留已知 Object metadata 存在但成员不存在的负向测试，断言该场景发布为 `FAILED` 而不是 `DYNAMIC`。
-4. 明确该 Object metadata unknown 场景是 focused test 锚点，不要求、也不允许通过 `test_suite` runtime resource 以 `host: Object` 作为主锚点复现。
+10. `runPacksObjectDynamicMemberAssignmentBeforeVariantNamedSet`
+    - 输入：`func write_marker(worker: MissingWorker, value): worker.marker = value`
+    - 断言：先 pack object receiver，再生成 `VariantSetNamedInsn`；不生成 `StorePropertyInsn`。
+    - 状态：已有覆盖，固定 object receiver route；本轮新增的 concrete value 变体只补 RHS typed boundary。
 
-建议补在 writable route focused tests：
+11. `runPacksObjectDynamicMemberAssignmentWithConcreteValueBeforeVariantNamedSet`
+    - 输入：`func write_marker(worker: MissingWorker, value: int): worker.marker = value`
+    - 断言：metadata-unknown `GdObjectType` receiver 先 pack 成 `Variant`，`int` RHS 也经 boundary materialization 成 `Variant` 后进入 `VariantSetNamedInsn`。
+    - 状态：本轮新增，补齐 write-side typed value boundary 缺口。
+
+12. `runKeepsResolvedObjectPropertyCompoundAssignmentOnOrdinaryRoute`
+    - 输入：metadata 已知且成员已解析的 Object property read/write。
+    - 断言：仍生成 `LoadPropertyInsn` / `StorePropertyInsn` 或对应 static route；不因 receiver family 是 Object 误生成 Variant named route。
+
+13. `collectCfgValueMaterializationsFailsFastWhenDynamicMemberExpressionFactIsMissing`
+    - 输入：synthetic CFG 中 member fact 为 `DYNAMIC`，但同一 anchor 缺少 expression type。
+    - 断言：body lowering fail-fast，错误信息说明 dynamic member value type 必须来自 `expressionTypes()`。
+    - 状态：已有 `FrontendBodyLoweringSupportTest` 覆盖，不在 body instruction pass 中重复新增。
+
+14. `collectCfgValueMaterializationsUsesExpressionTypesForDynamicMemberLoadItems`
+    - 输入：synthetic `DYNAMIC member`，`resolvedMembers().resultType()` 保持 `null`。
+    - 断言：lowering 仍通过 expression type 取得 `Variant` value type；不得抛出 `Missing published member result type`。
+    - 状态：已有 `FrontendBodyLoweringSupportTest` 覆盖，不重复新增。
+
+#### 6.1.4 Writable route focused coverage
+
+已对照 `FrontendWritableRouteSupportTest`；以下 helper-level 覆盖已经存在，后续不应复制到同层测试：
 
 1. 手工注入 `FrontendResolvedMember.dynamic(...)` 的 instance property leaf read 生成 `VariantGetNamedInsn`，不生成 `LoadPropertyInsn`。
 2. 手工注入 `FrontendResolvedMember.dynamic(...)` 的 instance property leaf write/reverse commit 生成 `VariantSetNamedInsn`，不生成 `StorePropertyInsn`。
@@ -567,20 +668,45 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
 4. 覆盖 `RESOLVED member` + `GdObjectType` receiver 的 read/write/compound write 仍走 ordinary property route；该 guard test 用来防止实现把 “Object receiver” 误当成 dynamic route selector。
 5. 覆盖 attribute-subscript named-base 的 `SubscriptLeaf.memberNameOrNull != null` leaf read 分支：`worker.payloads[i]` 的 effective receiver 只能在 `worker.payloads` 被 materialize 为 `Variant` 后产生，metadata-unknown `GdObjectType` receiver 必须先 pack，再用 packed carrier 执行 `VariantGetNamedInsn("payloads")`，随后 subscript load 以 named-base temp 为 receiver。
 6. 覆盖 attribute-subscript named-base 的 `SubscriptCommitStep.memberNameOrNull != null` reverse-commit 分支：`worker.payloads[i].value = rhs` 写回 `payloads[i]` 时必须重建同一 named-base，subscript store 消费 named-base temp，最终 `VariantSetNamedInsn("payloads")` 仍使用 packed object receiver carrier，不能直接使用 object receiver slot。
+7. 覆盖 dynamic property leaf 与 reverse commit 的 route fact 是 frozen payload 的一部分，`FrontendAssignmentTargetInsnLoweringProcessors` 只消费 payload，不在末端重新猜测 receiver family。
+8. 覆盖 dynamic writable chain 中间 owner 的 runtime-gated reverse commit 返回 continuation block，调用方必须使用返回 block 继续 lower 后续 sequence item。
 
-建议补在 backend Java generator focused tests：
+#### 6.1.5 Backend Java generator focused coverage
+
+已对照现有 backend Java generator focused tests；以下覆盖已经存在，后续不应重复新增同义测试：
 
 1. `IndexLoadInsnGenTest` 覆盖 `VariantGetNamedInsn` 生成 `godot_variant_get_named(...)`、`r_valid` 检查和 runtime error/cleanup。
 2. `IndexStoreInsnGenTest` 覆盖 `VariantSetNamedInsn` 生成 `godot_variant_set_named(...)`、`r_valid` 检查和 runtime error/cleanup。
-3. 若需要对照 dynamic call 行为，使用 `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest`；审查入口是 `CallMethodInsnGen.java`，不是 `call_method.ftl`。
+3. `IndexLoadInsnGenTest` 的失败路径断言 cleanup 顺序：失败分支清理 return temp / receiver temp，不泄漏 named get 中间值。
+4. `IndexStoreInsnGenTest` 的失败路径断言 cleanup 顺序：失败分支清理 value temp / receiver temp，value-semantic receiver 成功路径仍执行 writeback。
+5. `CLoadPropertyInsnGenTest` / `CStorePropertyInsnGenTest` 保留 unknown object fallback 对照测试，但必须断言 `godot_Object_get(...)` / `godot_Object_set(...)` fallback 不生成 `r_valid` / runtime named-access error 路径。
+6. 若需要对照 dynamic call 行为，使用 `CallMethodInsnGenTest` / `CallMethodInsnGenEngineTest`；审查入口是 `CallMethodInsnGen.java`，不是 `call_method.ftl`。
 
-### 6.1 Engine/runtime 行为锚点
+#### 6.1.6 Runtime resource coverage
+
+runtime resource 只锚定真实 Godot runtime 行为，不断言 LIR 指令名：
+
+1. 正向 resource：`dynamic_member_variant_named_access.gd`
+   - compiled source 使用未标注参数或显式 `Variant` 参数触发 `DYNAMIC member` read/write。
+   - validation 侧可传入真实 Object / RefCounted 派生实例作为 Variant payload，并验证 read/write 结果。
+   - 状态：本轮新增，补齐 Variant receiver dynamic member named get/set 的真实 runtime 锚点。
+
+2. 负向 resource：`dynamic_member_variant_named_access_missing.gd` 或同目录等价命名。
+   - compiled source 访问不存在的 dynamic member。
+   - runner output directive 断言输出包含 `variant_get_named failed` 或 Godot 侧等价 Variant named access 失败信号。
+   - 状态：本轮新增，补齐 Variant named valid flag/runtime error 的可观察失败锚点。
+
+3. 不添加 `host: Object` 主锚点。
+   - `GdObjectType` metadata unknown / pack-to-Variant 行为保留在 semantic、CFG、body lowering、backend focused tests 中验证。
+   - runtime resource 中真实 Object 只作为 Variant payload，不作为 lowering route selector。
+
+### 6.2 Engine/runtime 行为锚点
 
 仅有 frontend lowering 单测不足以冻结本 issue 的真实行为。统一走 Variant named route 的动机来自 runtime 成功/失败语义，因此必须增加 `test_suite` 资源级锚点，覆盖 compile -> native build -> Godot runtime validation 的完整链路。
 
 runtime resource 必须选择能稳定命中 issue #41 真实触发面的 source surface。不要用 `host: Object` 作为 runtime resource 主锚点：当前完整 pipeline 下，`Object` 注解是否进入 `DYNAMIC member` 取决于 registry metadata 与 object resolver 结果，容易变成 `RESOLVED`、`FAILED` 或其他 compile-surface 行为，不能稳定代表 #41 的 dynamic member lowering。更重要的是，`host: Object` 这种 fixture 容易把实现者引向错误语义面：为了让 runtime case 通过而把所有 Object member access 都改成 Variant named route。`GdObjectType` metadata unknown 场景应保留在 semantic / CFG / body focused tests 中用 synthetic registry 或直接注入 facts 覆盖。
 
-建议新增 `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_named_access.gd` 与配套 validation script：
+已新增 `src/test/test_suite/unit_test/script/runtime/dynamic_member_variant_named_access.gd` 与配套 validation script：
 
 - compiled source 暴露 `read_marker(host) -> Variant`，函数体执行 `return host.marker`；未标注参数稳定按 `Variant` receiver 进入 `DYNAMIC member`。
 - compiled source 暴露 `write_marker(host, value: Variant) -> void`，函数体执行 `host.marker = value`。
@@ -592,11 +718,10 @@ runtime resource 必须选择能稳定命中 issue #41 真实触发面的 source
 
 这条 resource case 的作用不是重复断言 LIR 指令名，而是锚定 “frontend 发布为 `Variant` receiver 的 `DYNAMIC member` 后，`godot_variant_get_named/set_named` 在真实引擎里能按 Godot 规则访问对象属性”。这里传入真实 Object 实例只是 Godot runtime 的 Variant payload，不是 lowering route selector；`GdObjectType` receiver pack 成 `Variant` 的行为由 focused lowering/codegen tests 覆盖，不作为 runtime resource 的主触发面。
 
-还应补一个负向 runtime 锚点，建议使用 `test_suite` 的 runner output directive：
+已新增一个负向 runtime 锚点，使用 `test_suite` 的 runner output directive：
 
 ```gdscript
-# gdcc-test: output_contains_any=Variant named member access failed || Invalid get index || Invalid set index
-# gdcc-test: output_not_contains=Reached after invalid dynamic member access.
+# gdcc-test: output_contains_any=variant_get_named failed || Invalid get index || Invalid set index
 ```
 
 负向 case 可以让 compiled source 对 `Variant` receiver 访问不存在的成员，例如：
@@ -606,20 +731,20 @@ func read_missing(host) -> Variant:
     return host.missing_marker
 ```
 
-validation script 在调用失败前打印 pass marker，再让 runner 断言 Godot/gdcc runtime 输出包含动态 named access 失败信号，且不可到达的 marker 没有出现。这样可以固定本次从 Object fallback 迁移到 Variant named route 的核心价值：失败应沿 Variant named valid flag/runtime error 路径可观察，而不是静默走无 `r_valid` 的 Object fallback。
+validation script 调用该函数并验证返回值为 `null`，再让 runner 断言 Godot/gdcc runtime 输出包含动态 named access 失败信号。这样可以固定本次从 Object fallback 迁移到 Variant named route 的核心价值：失败应沿 Variant named valid flag/runtime error 路径可观察，而不是静默走无 `r_valid` 的 Object fallback。
 
-### 6.2 回归命令
+### 6.3 回归命令
 
 回归命令：
 
 ```bash
-script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest --tests FrontendBodyLoweringSupportTest --tests FrontendWritableRouteSupportTest --tests FrontendChainReductionHelperTest --tests FrontendCompileCheckAnalyzerTest
+script/run-gradle-targeted-tests.sh --tests FrontendResolvedMemberTest --tests FrontendChainReductionHelperTest --tests FrontendExprTypeAnalyzerTest --tests FrontendLocalTypeStabilizationAnalyzerTest --tests FrontendCfgGraphBuilderTest --tests FrontendCompileCheckAnalyzerTest --tests FrontendLoweringBodyInsnPassTest --tests FrontendBodyLoweringSupportTest --tests FrontendBodyLoweringSessionTest --tests FrontendWritableRouteSupportTest
 ```
 
 如果补 named get/set backend Java generator focused tests，再追加：
 
 ```bash
-script/run-gradle-targeted-tests.sh --tests IndexLoadInsnGenTest --tests IndexStoreInsnGenTest
+script/run-gradle-targeted-tests.sh --tests IndexLoadInsnGenTest --tests IndexStoreInsnGenTest --tests CLoadPropertyInsnGenTest --tests CStorePropertyInsnGenTest
 ```
 
 如果同时对照 dynamic call / `call_method` backend 行为，再追加：

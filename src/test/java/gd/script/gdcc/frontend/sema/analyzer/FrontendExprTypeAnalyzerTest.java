@@ -10,6 +10,8 @@ import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
@@ -618,6 +620,41 @@ class FrontendExprTypeAnalyzerTest {
         assertEquals(FrontendExpressionTypeStatus.DYNAMIC, dynamicType.status());
         assertEquals(GdVariantType.VARIANT, dynamicType.publishedType());
         assertNotNull(dynamicType.detailReason());
+    }
+
+    @Test
+    void analyzePublishesDynamicMemberAccessAsVariantForVariantReceiver() throws Exception {
+        var analyzed = analyze(
+                "expr_type_dynamic_member_variant_receiver.gd",
+                """
+                        class_name ExprTypeDynamicMemberVariantReceiver
+                        extends RefCounted
+                        
+                        func read_path(dynamic_host):
+                            dynamic_host.marker
+                        """
+        );
+
+        var readPathFunction = findFunction(analyzed.ast(), "read_path");
+        var statement = assertInstanceOf(ExpressionStatement.class, readPathFunction.body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, statement.expression());
+        var markerStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+
+        var member = analyzed.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(member);
+        var stepType = analyzed.analysisData().expressionTypes().get(markerStep);
+        assertNotNull(stepType);
+        var expressionType = analyzed.analysisData().expressionTypes().get(expression);
+        assertNotNull(expressionType);
+
+        assertEquals(FrontendMemberResolutionStatus.DYNAMIC, member.status());
+        assertEquals(FrontendReceiverKind.INSTANCE, member.receiverKind());
+        assertEquals(GdVariantType.VARIANT, member.receiverType());
+        assertNull(member.resultType());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, stepType.status());
+        assertEquals(GdVariantType.VARIANT, stepType.publishedType());
+        assertEquals(FrontendExpressionTypeStatus.DYNAMIC, expressionType.status());
+        assertEquals(GdVariantType.VARIANT, expressionType.publishedType());
     }
 
     @Test
@@ -2233,13 +2270,13 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypePreStabilizedBackfill
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping():
                             var point := make_point()
                             point
@@ -2273,7 +2310,7 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeConflictingPreStabilizedBackfill
                         extends RefCounted
-
+                        
                         func ping():
                             var value := 1
                             value
@@ -2516,7 +2553,7 @@ class FrontendExprTypeAnalyzerTest {
             @NotNull String source,
             @NotNull ClassRegistry registry,
             @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) throws Exception {
+    ) {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
