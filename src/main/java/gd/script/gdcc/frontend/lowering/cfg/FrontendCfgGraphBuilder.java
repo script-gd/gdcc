@@ -29,6 +29,7 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.util.StringUtil;
@@ -2193,6 +2194,11 @@ public final class FrontendCfgGraphBuilder {
                             + publishedMember.status()
             );
         }
+        checkDynamicMemberPublicationContract(
+                attributePropertyStep,
+                publishedMember,
+                "compound-assignment member read during " + contractDetail
+        );
     }
 
     private static @NotNull GodotOperator requireShortCircuitBinaryOperator(
@@ -2423,7 +2429,28 @@ public final class FrontendCfgGraphBuilder {
                             + publishedMember.status()
             );
         }
+        checkDynamicMemberPublicationContract(attributePropertyStep, publishedMember, "CFG member lowering");
         return publishedMember;
+    }
+
+    /// Dynamic members are runtime-open instance routes. A TYPE_META dynamic fact means the static
+    /// member resolver published an impossible surface, so CFG must stop before creating fake values.
+    private static void checkDynamicMemberPublicationContract(
+            @NotNull AttributePropertyStep attributePropertyStep,
+            @NotNull FrontendResolvedMember publishedMember,
+            @NotNull String context
+    ) {
+        if (publishedMember.status() != FrontendMemberResolutionStatus.DYNAMIC
+                || publishedMember.receiverKind() != FrontendReceiverKind.TYPE_META) {
+            return;
+        }
+        throw new IllegalStateException(
+                "Frontend publication contract drift: DYNAMIC member AttributePropertyStep '"
+                        + attributePropertyStep.name()
+                        + "' cannot use TYPE_META receiver route during "
+                        + StringUtil.requireNonBlank(context, "context")
+                        + "; static/type-meta members must resolve before CFG lowering"
+        );
     }
 
     private static @NotNull IllegalStateException unsupportedReachableStatement(@NotNull Statement statement) {

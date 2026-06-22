@@ -25,11 +25,14 @@ import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -467,6 +470,91 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(FrontendWritableRoutePayload.RootKind.DIRECT_SLOT, callPayload.root().kind()),
                 () -> assertEquals(FrontendWritableRoutePayload.LeafKind.DIRECT_SLOT, callPayload.leaf().kind()),
                 () -> assertTrue(callPayload.reverseCommitSteps().isEmpty())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyAllowsDynamicInstanceMemberReads() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_dynamic_instance_member_read.gd",
+                """
+                        class_name CfgBuilderDynamicInstanceMemberRead
+                        extends RefCounted
+                        
+                        func marker(host):
+                            return host.marker
+                        """,
+                "marker",
+                Map.of("CfgBuilderDynamicInstanceMemberRead", "RuntimeCfgBuilderDynamicInstanceMemberRead")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var entryNode = assertInstanceOf(FrontendCfgGraph.SequenceNode.class, build.graph().requireNode("seq_0"));
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var receiver = assertInstanceOf(IdentifierExpression.class, expression.base());
+        var markerStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+
+        var items = entryNode.items();
+        var receiverValue = assertInstanceOf(OpaqueExprValueItem.class, items.get(0));
+        var markerLoad = assertInstanceOf(MemberLoadItem.class, items.get(1));
+        var publishedMember = Objects.requireNonNull(analyzed.analysisData().resolvedMembers().get(markerStep));
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, publishedMember.receiverKind()),
+                () -> assertEquals(GdVariantType.VARIANT, publishedMember.receiverType()),
+                () -> assertEquals(2, items.size()),
+                () -> assertSame(receiver, receiverValue.expression()),
+                () -> assertSame(markerStep, markerLoad.anchor()),
+                () -> assertEquals("marker", markerLoad.memberName()),
+                () -> assertEquals(List.of(receiverValue.resultValueId()), markerLoad.operandValueIds())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyFailsFastWhenDynamicMemberUsesTypeMetaRoute() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_dynamic_member_type_meta_route.gd",
+                """
+                        class_name CfgBuilderDynamicMemberTypeMetaRoute
+                        extends RefCounted
+                        
+                        func zero() -> Vector3:
+                            return Vector3.ZERO
+                        """,
+                "zero",
+                Map.of("CfgBuilderDynamicMemberTypeMetaRoute", "RuntimeCfgBuilderDynamicMemberTypeMetaRoute")
+        );
+        var returnStatement = assertInstanceOf(ReturnStatement.class, analyzed.function().body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var zeroStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+        var originalMember = analyzed.analysisData().resolvedMembers().get(zeroStep);
+        assertNotNull(originalMember);
+        analyzed.analysisData().resolvedMembers().put(
+                zeroStep,
+                FrontendResolvedMember.dynamic(
+                        originalMember.memberName(),
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.TYPE_META,
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic type-meta dynamic member route"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendCfgGraphBuilder().buildExecutableBody(analyzed.function().body(), analyzed.analysisData())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("publication contract drift"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("DYNAMIC member"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("TYPE_META"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("CFG member lowering"), exception.getMessage())
         );
     }
 

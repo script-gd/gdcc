@@ -485,6 +485,19 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
 
 ### Step 6：补 compile gate / CFG 边界保护
 
+状态：已完成（2026-06-22）。
+
+进展记录：
+
+- 已在 `FrontendCfgGraphBuilder` 增加 `DYNAMIC member` publication contract 检查：`resolvedMembers()` 中已发布为 `DYNAMIC` 的 `AttributePropertyStep` 如果携带 `FrontendReceiverKind.TYPE_META`，会在 CFG member lowering / compound-assignment current-value read 边界 fail-fast，错误信息明确标记为 `Frontend publication contract drift`。合法 `DYNAMIC + INSTANCE` member 仍保持 lowering-ready，`RESOLVED` static/type-meta member 也不受影响。
+- 已补 Step 6 focused tests：`FrontendCfgGraphBuilderTest` 新增合法 `Variant` receiver dynamic instance member read 正向用例，以及 synthetic `TYPE_META + DYNAMIC` member fact 的 CFG fail-fast 负向用例；`FrontendCompileCheckAnalyzerTest` 新增 `TYPE_META + DYNAMIC` publication drift 不被误包装成 `sema.compile_check` 的合同测试，固定 `DYNAMIC` 本身仍不是 compile gate blocker。
+- `FrontendCompileCheckAnalyzer` 行为保持不变：compile gate 继续只把 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 当作普通 compile blocker，`DYNAMIC` 不被诊断化。`TYPE_META + DYNAMIC` 属于 published fact 形态漂移，由 CFG/body boundary 作为实现不变量 fail-fast；明确非 `Variant`/非 `GdObjectType` receiver 的 runtime 类型约束继续由 body lowering 的 actual value-type boundary 精确检查。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendCfgGraphBuilderTest --tests FrontendCompileCheckAnalyzerTest`，通过。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest --tests FrontendBodyLoweringSupportTest --tests FrontendBodyLoweringSessionTest --tests FrontendWritableRouteSupportTest --tests FrontendChainReductionHelperTest --tests FrontendCompileCheckAnalyzerTest --tests FrontendCfgGraphBuilderTest`，通过。
+- 已运行 IDE `get_file_problems` 检查修改过的 Java/文档文件，未发现 error；剩余为既有 warning/weak warning，本步骤不做无关重构。
+- 已运行 `./gradlew classes --no-daemon --info --console=plain`，通过。
+- 已运行 `git diff --check`，通过。
+
 修改目标：
 
 - `FrontendCompileCheckAnalyzer`

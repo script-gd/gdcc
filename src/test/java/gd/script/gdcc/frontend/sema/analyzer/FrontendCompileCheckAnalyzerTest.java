@@ -9,6 +9,7 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
@@ -1007,6 +1008,39 @@ class FrontendCompileCheckAnalyzerTest {
                         originalCall.argumentTypes(),
                         originalCall.declarationSite(),
                         "synthetic dynamic call"
+                )
+        );
+
+        runCompileCheck(preparedInput);
+
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsDynamicMemberPublicationDriftOutOfCompileGate() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_dynamic_member_publication_drift.gd", """
+                class_name CompileCheckDynamicMemberPublicationDrift
+                extends RefCounted
+                
+                func zero() -> Vector3:
+                    return Vector3.ZERO
+                """);
+        var zeroFunction = findFunction(preparedInput.unit().ast().statements(), "zero");
+        var returnStatement = assertInstanceOf(dev.superice.gdparser.frontend.ast.ReturnStatement.class,
+                zeroFunction.body().statements().getFirst());
+        var expression = assertInstanceOf(AttributeExpression.class, returnStatement.value());
+        var zeroStep = assertInstanceOf(AttributePropertyStep.class, expression.steps().getFirst());
+        var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(zeroStep));
+        preparedInput.analysisData().resolvedMembers().put(
+                zeroStep,
+                FrontendResolvedMember.dynamic(
+                        originalMember.memberName(),
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.TYPE_META,
+                        originalMember.ownerKind(),
+                        originalMember.receiverType(),
+                        originalMember.declarationSite(),
+                        "synthetic type-meta dynamic publication drift"
                 )
         );
 
