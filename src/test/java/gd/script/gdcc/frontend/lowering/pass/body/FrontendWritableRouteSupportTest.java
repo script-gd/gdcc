@@ -22,8 +22,10 @@ import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
+import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
 import gd.script.gdcc.lir.insn.VariantGetKeyedInsn;
+import gd.script.gdcc.lir.insn.VariantGetIndexedInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import gd.script.gdcc.lir.insn.VariantSetIndexedInsn;
 import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
@@ -137,6 +139,52 @@ class FrontendWritableRouteSupportTest {
     }
 
     @Test
+    void materializeLeafReadPacksObjectReceiverBeforeNamedSubscriptRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        var objectType = new GdObjectType("MissingWorker");
+        session.ensureVariable("receiver_slot", objectType);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("leaf_result", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("payloads"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "attribute-subscript receiver",
+                        "receiver_slot",
+                        objectType
+                ),
+                new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "receiver_slot",
+                        objectType,
+                        "payloads",
+                        "key_slot",
+                        GdIntType.INT,
+                        GdVariantType.VARIANT
+                ),
+                List.of()
+        );
+
+        var slotId = FrontendWritableRouteSupport.materializeLeafReadInto(session, block, chain, "leaf_result");
+        var instructions = block.getNonTerminatorInstructions();
+        var packInsn = assertInstanceOf(PackVariantInsn.class, instructions.get(0));
+        var nameInsn = assertInstanceOf(LiteralStringNameInsn.class, instructions.get(1));
+        var getNamedInsn = assertInstanceOf(VariantGetNamedInsn.class, instructions.get(2));
+        var getIndexedInsn = assertInstanceOf(VariantGetIndexedInsn.class, instructions.get(3));
+
+        assertAll(
+                () -> assertEquals("leaf_result", slotId),
+                () -> assertEquals(4, instructions.size()),
+                () -> assertEquals("receiver_slot", packInsn.valueId()),
+                () -> assertEquals("payloads", nameInsn.value()),
+                () -> assertEquals(packInsn.resultId(), getNamedInsn.namedVariantId()),
+                () -> assertEquals(nameInsn.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals("leaf_result", getIndexedInsn.resultId()),
+                () -> assertEquals(getNamedInsn.resultId(), getIndexedInsn.variantId()),
+                () -> assertEquals("key_slot", getIndexedInsn.indexId())
+        );
+    }
+
+    @Test
     void writeLeafCommitsNamedSubscriptThroughSharedNamedBaseRoute() throws Exception {
         var session = prepareSession();
         var block = new LirBasicBlock("entry");
@@ -176,6 +224,119 @@ class FrontendWritableRouteSupportTest {
                 () -> assertEquals("key_slot", setIndexedInsn.indexId()),
                 () -> assertEquals("rhs_slot", setIndexedInsn.valueId()),
                 () -> assertEquals("receiver_slot", setNamedInsn.namedVariantId()),
+                () -> assertEquals(nameInsn.resultId(), setNamedInsn.nameId()),
+                () -> assertEquals(getNamedInsn.resultId(), setNamedInsn.valueId())
+        );
+    }
+
+    @Test
+    void writeLeafPacksObjectReceiverBeforeNamedSubscriptRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        var objectType = new GdObjectType("MissingWorker");
+        session.ensureVariable("receiver_slot", objectType);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("rhs_slot", GdVariantType.VARIANT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("payloads"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "attribute-subscript receiver",
+                        "receiver_slot",
+                        objectType
+                ),
+                new FrontendWritableRouteSupport.SubscriptLeaf(
+                        "receiver_slot",
+                        objectType,
+                        "payloads",
+                        "key_slot",
+                        GdIntType.INT,
+                        GdVariantType.VARIANT
+                ),
+                List.of()
+        );
+
+        var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, "rhs_slot");
+        var instructions = block.getNonTerminatorInstructions();
+        var packInsn = assertInstanceOf(PackVariantInsn.class, instructions.get(0));
+        var nameInsn = assertInstanceOf(LiteralStringNameInsn.class, instructions.get(1));
+        var getNamedInsn = assertInstanceOf(VariantGetNamedInsn.class, instructions.get(2));
+        var setIndexedInsn = assertInstanceOf(VariantSetIndexedInsn.class, instructions.get(3));
+        var setNamedInsn = assertInstanceOf(VariantSetNamedInsn.class, instructions.get(4));
+
+        assertAll(
+                () -> assertEquals("receiver_slot", carrierSlotId),
+                () -> assertEquals(5, instructions.size()),
+                () -> assertEquals("receiver_slot", packInsn.valueId()),
+                () -> assertEquals("payloads", nameInsn.value()),
+                () -> assertEquals(packInsn.resultId(), getNamedInsn.namedVariantId()),
+                () -> assertEquals("key_slot", setIndexedInsn.indexId()),
+                () -> assertEquals("rhs_slot", setIndexedInsn.valueId()),
+                () -> assertEquals(packInsn.resultId(), setNamedInsn.namedVariantId()),
+                () -> assertEquals(nameInsn.resultId(), setNamedInsn.nameId()),
+                () -> assertEquals(getNamedInsn.resultId(), setNamedInsn.valueId())
+        );
+    }
+
+    @Test
+    void reverseCommitPacksObjectReceiverBeforeNamedSubscriptRoute() throws Exception {
+        var session = prepareSession();
+        var block = new LirBasicBlock("entry");
+        var objectType = new GdObjectType("MissingWorker");
+        session.ensureVariable("element_slot", GdVariantType.VARIANT);
+        session.ensureVariable("receiver_slot", objectType);
+        session.ensureVariable("key_slot", GdIntType.INT);
+        session.ensureVariable("rhs_slot", GdIntType.INT);
+        var chain = new FrontendWritableRouteSupport.FrontendWritableAccessChain(
+                identifier("value"),
+                new FrontendWritableRouteSupport.FrontendWritableRoot(
+                        "named-base subscript owner",
+                        "receiver_slot",
+                        objectType
+                ),
+                new FrontendWritableRouteSupport.InstancePropertyLeaf(
+                        "element_slot",
+                        "value",
+                        GdIntType.INT
+                ),
+                List.of(new FrontendWritableRouteSupport.SubscriptCommitStep(
+                        "receiver_slot",
+                        objectType,
+                        "payloads",
+                        "key_slot",
+                        GdIntType.INT
+                ))
+        );
+
+        var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, "rhs_slot");
+        FrontendWritableRouteSupport.reverseCommit(
+                session,
+                block,
+                chain,
+                carrierSlotId,
+                FrontendWritableRouteSupport.ALWAYS_APPLY
+        );
+        var instructions = block.getNonTerminatorInstructions();
+        var leafStore = assertInstanceOf(StorePropertyInsn.class, instructions.get(0));
+        var packInsn = assertInstanceOf(PackVariantInsn.class, instructions.get(1));
+        var nameInsn = assertInstanceOf(LiteralStringNameInsn.class, instructions.get(2));
+        var getNamedInsn = assertInstanceOf(VariantGetNamedInsn.class, instructions.get(3));
+        var setIndexedInsn = assertInstanceOf(VariantSetIndexedInsn.class, instructions.get(4));
+        var setNamedInsn = assertInstanceOf(VariantSetNamedInsn.class, instructions.get(5));
+
+        assertAll(
+                () -> assertEquals("element_slot", carrierSlotId),
+                () -> assertEquals(6, instructions.size()),
+                () -> assertEquals("value", leafStore.propertyName()),
+                () -> assertEquals("element_slot", leafStore.objectId()),
+                () -> assertEquals("rhs_slot", leafStore.valueId()),
+                () -> assertEquals("receiver_slot", packInsn.valueId()),
+                () -> assertEquals("payloads", nameInsn.value()),
+                () -> assertEquals(packInsn.resultId(), getNamedInsn.namedVariantId()),
+                () -> assertEquals(nameInsn.resultId(), getNamedInsn.nameId()),
+                () -> assertEquals(getNamedInsn.resultId(), setIndexedInsn.variantId()),
+                () -> assertEquals("key_slot", setIndexedInsn.indexId()),
+                () -> assertEquals("element_slot", setIndexedInsn.valueId()),
+                () -> assertEquals(packInsn.resultId(), setNamedInsn.namedVariantId()),
                 () -> assertEquals(nameInsn.resultId(), setNamedInsn.nameId()),
                 () -> assertEquals(getNamedInsn.resultId(), setNamedInsn.valueId())
         );

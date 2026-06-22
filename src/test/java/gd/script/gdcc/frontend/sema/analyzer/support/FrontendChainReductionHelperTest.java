@@ -149,7 +149,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 blockedHead,
                 newRegistry(List.of(stringBuiltinWithLength()), List.of(worker)),
-                (expression, finalizeWindow) -> expression == seed
+                (expression, _) -> expression == seed
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -170,7 +170,7 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
-    void reduceRetriesDeferredCallArgumentsInsideFinalizeWindowAndContinuesExactSuffix() {
+    void reduceRetriesDeferredCallArgumentsInside_AndContinuesExactSuffix() {
         var worker = newClass("Worker");
         worker.addFunction(newMethod("make", GdStringType.STRING, false, GdIntType.INT));
         var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
@@ -198,7 +198,7 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
-    void reducePublishesDeferredStepAfterFinalizeWindowMissAndStopsSuffix() {
+    void reducePublishesDeferredStepAfter_MissAndStopsSuffix() {
         var worker = newClass("Worker");
         worker.addFunction(newMethod("make", GdStringType.STRING, false, GdIntType.INT));
         var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
@@ -209,7 +209,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
                 registry,
-                (expression, finalizeWindow) -> expression == seed
+                (expression, _) -> expression == seed
                         ? FrontendChainReductionHelper.ExpressionTypeResult.deferred("seed type pending")
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -240,6 +240,15 @@ class FrontendChainReductionHelperTest {
         assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_METHOD, result.stepTraces().getFirst().routeKind());
         assertEquals(FrontendChainReductionHelper.Status.DYNAMIC, result.stepTraces().get(1).status());
         assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_DYNAMIC, result.stepTraces().get(1).routeKind());
+        var lengthMember = result.stepTraces().get(1).suggestedMember();
+        assertNotNull(lengthMember);
+        assertAll(
+                () -> assertEquals("length", lengthMember.memberName()),
+                () -> assertEquals(FrontendBindingKind.UNKNOWN, lengthMember.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, lengthMember.receiverKind()),
+                () -> assertEquals(GdVariantType.VARIANT, lengthMember.receiverType()),
+                () -> assertNull(lengthMember.resultType())
+        );
     }
 
     @Test
@@ -254,7 +263,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
                 registry,
-                (expression, finalizeWindow) -> expression == seed
+                (expression, _) -> expression == seed
                         ? FrontendChainReductionHelper.ExpressionTypeResult.dynamic("seed routes through runtime-dynamic semantics")
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -278,7 +287,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(typeMeta("Worker")),
                 registry,
-                (expression, finalizeWindow) -> expression == seed
+                (expression, _) -> expression == seed
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -303,7 +312,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
                 registry,
-                (expression, finalizeWindow) -> expression == seed
+                (expression, _) -> expression == seed
                         ? FrontendChainReductionHelper.ExpressionTypeResult.blocked(
                         null,
                         "seed is blocked by upstream restriction"
@@ -399,7 +408,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
                 registry,
-                (expression, finalizeWindow) -> expression == literal
+                (expression, _) -> expression == literal
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression"),
                 noteSinkCalls::add
@@ -427,7 +436,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Holder")),
                 registry,
-                (expression, finalizeWindow) -> expression == index
+                (expression, _) -> expression == index
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -461,7 +470,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Holder")),
                 registry,
-                (expression, finalizeWindow) -> expression == index
+                (expression, _) -> expression == index
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -487,7 +496,7 @@ class FrontendChainReductionHelperTest {
                 chain,
                 FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(workerTypeMeta),
                 registry,
-                (expression, finalizeWindow) -> expression == literal
+                (expression, _) -> expression == literal
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -593,6 +602,15 @@ class FrontendChainReductionHelperTest {
         assertEquals(FrontendChainReductionHelper.RouteKind.INSTANCE_PROPERTY, result.stepTraces().getFirst().routeKind());
         assertEquals(FrontendChainReductionHelper.Status.DYNAMIC, result.stepTraces().get(1).status());
         assertEquals(FrontendChainReductionHelper.RouteKind.UPSTREAM_DYNAMIC, result.stepTraces().get(1).routeKind());
+        var lengthMember = result.stepTraces().get(1).suggestedMember();
+        assertNotNull(lengthMember);
+        assertAll(
+                () -> assertEquals("length", lengthMember.memberName()),
+                () -> assertEquals(FrontendBindingKind.UNKNOWN, lengthMember.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, lengthMember.receiverKind()),
+                () -> assertEquals(GdVariantType.VARIANT, lengthMember.receiverType()),
+                () -> assertNull(lengthMember.resultType())
+        );
     }
 
     @Test
@@ -608,7 +626,7 @@ class FrontendChainReductionHelperTest {
                         typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
                 ),
                 registry,
-                (expression, finalizeWindow) -> expression == constructorArgument
+                (expression, _) -> expression == constructorArgument
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -641,7 +659,7 @@ class FrontendChainReductionHelperTest {
                         typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
                 ),
                 registry,
-                (expression, finalizeWindow) -> expression == constructorArgument
+                (expression, _) -> expression == constructorArgument
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -667,7 +685,7 @@ class FrontendChainReductionHelperTest {
                         typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
                 ),
                 registry,
-                (expression, finalizeWindow) -> expression == constructorArgument
+                (expression, _) -> expression == constructorArgument
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -696,7 +714,7 @@ class FrontendChainReductionHelperTest {
                         typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
                 ),
                 registry,
-                (expression, finalizeWindow) -> expression == first || expression == second
+                (expression, _) -> expression == first || expression == second
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdVariantType.VARIANT)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -720,7 +738,7 @@ class FrontendChainReductionHelperTest {
                         typeMeta("String", GdStringType.STRING, ScopeTypeMetaKind.BUILTIN, null, false)
                 ),
                 registry,
-                (expression, finalizeWindow) -> expression == constructorArgument
+                (expression, _) -> expression == constructorArgument
                         ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdStringType.STRING)
                         : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression")
         ));
@@ -882,7 +900,7 @@ class FrontendChainReductionHelperTest {
     }
 
     private static @NotNull FrontendChainReductionHelper.ExpressionTypeResolver noExpressionTypes() {
-        return (expression, finalizeWindow) -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
+        return (expression, _) -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
                 "unexpected expression type lookup for " + expression.getClass().getSimpleName()
         );
     }

@@ -18,7 +18,8 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
     /// - body lowering may still use `targetOperandValueIds` for earlier sequencing/current-value reads
     /// - but the final store itself must consume only the payload, otherwise legacy ad-hoc writeback
     ///   patches could coexist with shared reverse commit and silently double-store
-    static void lowerPublishedWritableRoute(
+    /// - runtime-gated reverse commit may splice blocks, so the returned block is the active continuation
+    static @NotNull LirBasicBlock lowerPublishedWritableRoute(
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
             @NotNull AssignmentItem item,
@@ -37,12 +38,17 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
                 writeLeafPurpose(chain.leaf())
         );
         var carrierSlotId = FrontendWritableRouteSupport.writeLeaf(session, block, chain, materializedRhsSlotId);
-        FrontendWritableRouteSupport.reverseCommit(
+        return FrontendWritableRouteSupport.reverseCommitWithRuntimeGate(
                 session,
                 block,
                 chain,
                 carrierSlotId,
-                FrontendWritableRouteSupport.createStaticCarrierWritebackGate(session)
+                (_, gateBlock, _, currentCarrierSlotId) ->
+                        FrontendSequenceItemInsnLoweringProcessors.emitVariantRequiresWritebackCondition(
+                                session,
+                                gateBlock,
+                                currentCarrierSlotId
+                        )
         );
     }
 
@@ -50,8 +56,10 @@ final class FrontendAssignmentTargetInsnLoweringProcessors {
         return switch (Objects.requireNonNull(leaf, "leaf must not be null")) {
             case FrontendWritableRouteSupport.DirectSlotLeaf _ -> "assign_slot";
             case FrontendWritableRouteSupport.InstancePropertyLeaf _,
+                 FrontendWritableRouteSupport.DynamicPropertyLeaf _,
                  FrontendWritableRouteSupport.StaticPropertyLeaf _ -> "store_property";
             case FrontendWritableRouteSupport.SubscriptLeaf _ -> "store_subscript";
         };
     }
+
 }

@@ -644,16 +644,31 @@ public class FrontendExprTypeAnalyzer {
         /// can consume the same frozen `expressionTypes()` table as ordinary `self.member` reads.
         private void publishAssignmentTargetPrefixTypes(@NotNull AssignmentExpression assignmentExpression) {
             if (!"=".equals(assignmentExpression.operator())) {
+                if (assignmentExpression.left() instanceof AttributeExpression attributeExpression) {
+                    // Compound assignment reads the current target before writing it back. Publish
+                    // only the step facts needed by that current-value load; full expression
+                    // publication would also widen the explicit-self assignment prefix surface.
+                    publishAttributeStepExpressionTypes(reduceAttributeExpression(attributeExpression));
+                }
                 return;
             }
-            if (!(assignmentExpression.left() instanceof AttributeExpression attributeExpression)) {
+            if (!(assignmentExpression.left() instanceof AttributeExpression(
+                    var base, var steps, var range
+            ))) {
                 return;
             }
-            if (attributeExpression.steps().size() != 1
-                    || !(attributeExpression.steps().getFirst() instanceof AttributePropertyStep)) {
+            if (steps.size() > 1) {
+                publishAttributeStepExpressionTypes(reduceAttributeExpression(new AttributeExpression(
+                        base,
+                        List.copyOf(steps.subList(0, steps.size() - 1)),
+                        range
+                )));
                 return;
             }
-            if (attributeExpression.base() instanceof SelfExpression selfExpression) {
+            if (steps.size() != 1 || !(steps.getFirst() instanceof AttributePropertyStep)) {
+                return;
+            }
+            if (base instanceof SelfExpression selfExpression) {
                 publishExpressionType(selfExpression);
             }
         }

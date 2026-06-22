@@ -70,6 +70,23 @@ final class FrontendSequenceItemInsnLoweringProcessors {
     private FrontendSequenceItemInsnLoweringProcessors() {
     }
 
+    /// Emits the runtime-open writeback predicate for one current carrier slot.
+    /// The helper name and positive `requires_writeback` polarity are part of the frozen
+    /// frontend/backend contract and must stay aligned with `gdcc_helper.h`.
+    static @NotNull String emitVariantRequiresWritebackCondition(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull LirBasicBlock block,
+            @NotNull String currentCarrierSlotId
+    ) {
+        var gateSlotId = session.allocateWritableRouteTemp("variant_requires_writeback", GdBoolType.BOOL);
+        block.appendNonTerminatorInstruction(new CallGlobalInsn(
+                gateSlotId,
+                "gdcc_variant_requires_writeback",
+                List.of(new LirInstruction.VariableOperand(currentCarrierSlotId))
+        ));
+        return gateSlotId;
+    }
+
     static @NotNull FrontendInsnLoweringProcessorRegistry<SequenceItem, Void> createRegistry() {
         return FrontendInsnLoweringProcessorRegistry.of(
                 "sequence item",
@@ -457,11 +474,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var arguments = session.materializeCallArguments(block, node, resolvedCall);
             switch (constructorResultType) {
                 // Builtin/container constructors materialize directly from the published call route.
-                case GdObjectType _ ->
-                        block.appendNonTerminatorInstruction(new ConstructObjectInsn(
-                                resultSlotId,
-                                session.requireClassName(constructorResultType)
-                        ));
+                case GdObjectType _ -> block.appendNonTerminatorInstruction(new ConstructObjectInsn(
+                        resultSlotId,
+                        session.requireClassName(constructorResultType)
+                ));
                 default -> block.appendNonTerminatorInstruction(new ConstructBuiltinInsn(resultSlotId, arguments));
             }
             return block;
@@ -556,7 +572,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                     block,
                     mutatingReceiverRoute,
                     receiverSlotId,
-                    this::emitVariantRequiresWritebackCondition
+                    (_, gateBlock, _, currentCarrierSlotId) -> emitVariantRequiresWritebackCondition(
+                            session,
+                            gateBlock,
+                            currentCarrierSlotId
+                    )
             );
         }
 
@@ -577,23 +597,6 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return session.requireWritableAccessChain(node.writableRoutePayloadOrNull());
         }
 
-        /// Emits the runtime-open writeback predicate for one current carrier slot.
-        /// The helper name and positive `requires_writeback` polarity are part of the frozen
-        /// frontend/backend contract and must stay aligned with `gdcc_helper.h`.
-        private @NotNull String emitVariantRequiresWritebackCondition(
-                @NotNull FrontendBodyLoweringSession session,
-                @NotNull LirBasicBlock block,
-                @SuppressWarnings("unused") @NotNull FrontendWritableRouteSupport.FrontendWritableCommitStep step,
-                @NotNull String currentCarrierSlotId
-        ) {
-            var gateSlotId = session.allocateWritableRouteTemp("variant_requires_writeback", GdBoolType.BOOL);
-            block.appendNonTerminatorInstruction(new CallGlobalInsn(
-                    gateSlotId,
-                    "gdcc_variant_requires_writeback",
-                    List.of(new LirInstruction.VariableOperand(currentCarrierSlotId))
-            ));
-            return gateSlotId;
-        }
     }
 
     /// Emits one property/static-member read from the published member-resolution result.
@@ -845,14 +848,14 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @Nullable Void context
         ) {
             var rhsSlotId = session.slotIdForValue(node.rhsValueId());
-            session.lowerAssignmentTarget(block, node, rhsSlotId);
+            var currentBlock = session.lowerAssignmentTarget(block, node, rhsSlotId);
             if (node.resultValueIdOrNull() != null) {
-                block.appendNonTerminatorInstruction(new AssignInsn(
+                currentBlock.appendNonTerminatorInstruction(new AssignInsn(
                         FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueIdOrNull()),
                         rhsSlotId
                 ));
             }
-            return block;
+            return currentBlock;
         }
     }
 

@@ -12,6 +12,7 @@ import gd.script.gdcc.lir.insn.StorePropertyInsn;
 import gd.script.gdcc.lir.insn.StoreStaticInsn;
 import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -107,6 +108,22 @@ final class FrontendWritableRouteSupport {
                 ));
                 yield actualResultSlotId;
             }
+            case DynamicPropertyLeaf leaf -> {
+                var scratch = materializeVariantNamedMemberReceiver(
+                        session,
+                        block,
+                        leaf.receiverSlotId(),
+                        leaf.receiverType(),
+                        leaf.propertyName(),
+                        "dynamic_leaf_read"
+                );
+                block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
+                        actualResultSlotId,
+                        scratch.receiverVariantSlotId(),
+                        scratch.nameSlotId()
+                ));
+                yield actualResultSlotId;
+            }
             case StaticPropertyLeaf leaf -> {
                 block.appendNonTerminatorInstruction(new LoadStaticInsn(
                         actualResultSlotId,
@@ -145,6 +162,22 @@ final class FrontendWritableRouteSupport {
                 block.appendNonTerminatorInstruction(new StorePropertyInsn(
                         leaf.propertyName(),
                         leaf.receiverSlotId(),
+                        actualWrittenValueSlotId
+                ));
+                yield leaf.receiverSlotId();
+            }
+            case DynamicPropertyLeaf leaf -> {
+                var scratch = materializeVariantNamedMemberReceiver(
+                        session,
+                        block,
+                        leaf.receiverSlotId(),
+                        leaf.receiverType(),
+                        leaf.propertyName(),
+                        "dynamic_leaf_write"
+                );
+                block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
+                        scratch.receiverVariantSlotId(),
+                        scratch.nameSlotId(),
                         actualWrittenValueSlotId
                 ));
                 yield leaf.receiverSlotId();
@@ -318,6 +351,7 @@ final class FrontendWritableRouteSupport {
                 session,
                 block,
                 leaf.baseOrReceiverSlotId(),
+                leaf.receiverType(),
                 leaf.memberNameOrNull(),
                 "leaf_read"
         );
@@ -361,6 +395,7 @@ final class FrontendWritableRouteSupport {
                 session,
                 block,
                 leaf.baseOrReceiverSlotId(),
+                leaf.receiverType(),
                 leaf.memberNameOrNull(),
                 "leaf_write"
         );
@@ -372,7 +407,7 @@ final class FrontendWritableRouteSupport {
                 key.accessKind()
         );
         block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
-                leaf.baseOrReceiverSlotId(),
+                scratch.receiverVariantSlotId(),
                 scratch.nameSlotId(),
                 scratch.namedBaseSlotId()
         ));
@@ -402,6 +437,22 @@ final class FrontendWritableRouteSupport {
                 block.appendNonTerminatorInstruction(new StorePropertyInsn(
                         propertyStep.propertyName(),
                         propertyStep.receiverSlotId(),
+                        writtenBackValueSlotId
+                ));
+                yield nextOuterCarrierSlotId(propertyStep, writtenBackValueSlotId, terminalStep);
+            }
+            case DynamicPropertyCommitStep propertyStep -> {
+                var scratch = materializeVariantNamedMemberReceiver(
+                        session,
+                        block,
+                        propertyStep.receiverSlotId(),
+                        propertyStep.receiverType(),
+                        propertyStep.propertyName(),
+                        "dynamic_reverse_commit"
+                );
+                block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
+                        scratch.receiverVariantSlotId(),
+                        scratch.nameSlotId(),
                         writtenBackValueSlotId
                 ));
                 yield nextOuterCarrierSlotId(propertyStep, writtenBackValueSlotId, terminalStep);
@@ -444,6 +495,7 @@ final class FrontendWritableRouteSupport {
                         session,
                         block,
                         subscriptStep.baseOrReceiverSlotId(),
+                        subscriptStep.receiverType(),
                         subscriptStep.memberNameOrNull(),
                         "reverse_commit"
                 );
@@ -455,7 +507,7 @@ final class FrontendWritableRouteSupport {
                         key.accessKind()
                 );
                 block.appendNonTerminatorInstruction(new VariantSetNamedInsn(
-                        subscriptStep.baseOrReceiverSlotId(),
+                        scratch.receiverVariantSlotId(),
                         scratch.nameSlotId(),
                         scratch.namedBaseSlotId()
                 ));
@@ -514,6 +566,7 @@ final class FrontendWritableRouteSupport {
     ) {
         return switch (step) {
             case InstancePropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
+            case DynamicPropertyCommitStep propertyStep -> propertyStep.receiverSlotId();
             case StaticPropertyCommitStep _ -> {
                 if (!terminalStep) {
                     throw new IllegalStateException(
@@ -530,22 +583,61 @@ final class FrontendWritableRouteSupport {
             @NotNull FrontendBodyLoweringSession session,
             @NotNull LirBasicBlock block,
             @NotNull String receiverSlotId,
+            @NotNull GdType receiverType,
             @NotNull String memberName,
             @NotNull String purpose
     ) {
         var actualPurpose = StringUtil.requireNonBlank(purpose, "purpose");
-        var nameSlotId = session.allocateWritableRouteTemp(actualPurpose + "_named_key", GdStringNameType.STRING_NAME);
         var namedBaseSlotId = session.allocateWritableRouteTemp(actualPurpose + "_named_base", GdVariantType.VARIANT);
+        var scratch = materializeVariantNamedMemberReceiver(
+                session,
+                block,
+                receiverSlotId,
+                receiverType,
+                memberName,
+                actualPurpose + "_named"
+        );
+        block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
+                namedBaseSlotId,
+                scratch.receiverVariantSlotId(),
+                scratch.nameSlotId()
+        ));
+        return new NamedMemberScratch(scratch.receiverVariantSlotId(), scratch.nameSlotId(), namedBaseSlotId);
+    }
+
+    /// Materializes the receiver side of a Variant named member route.
+    ///
+    /// This is shared by true `DYNAMIC member` property routes and by attribute-subscript named-base
+    /// routes such as `receiver.member[key]`. The latter still needs the same Object-to-Variant pack
+    /// before `VariantGetNamedInsn` / `VariantSetNamedInsn`; the subscript's effective receiver only
+    /// becomes `Variant` after this named base has been read.
+    private static @NotNull VariantNamedMemberScratch materializeVariantNamedMemberReceiver(
+            @NotNull FrontendBodyLoweringSession session,
+            @NotNull LirBasicBlock block,
+            @NotNull String receiverSlotId,
+            @NotNull GdType receiverType,
+            @NotNull String memberName,
+            @NotNull String purpose
+    ) {
+        if (!(receiverType instanceof GdVariantType) && !(receiverType instanceof GdObjectType)) {
+            throw new IllegalStateException(
+                    "Variant named member route requires Variant or Object-family receiver, but got "
+                            + receiverType.getTypeName()
+            );
+        }
+        var receiverVariantSlotId = session.materializeFrontendBoundaryValue(
+                block,
+                StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId"),
+                receiverType,
+                GdVariantType.VARIANT,
+                purpose + "_receiver"
+        );
+        var nameSlotId = session.allocateWritableRouteTemp(purpose + "_name", GdStringNameType.STRING_NAME);
         block.appendNonTerminatorInstruction(new LiteralStringNameInsn(
                 nameSlotId,
                 StringUtil.requireNonBlank(memberName, "memberName")
         ));
-        block.appendNonTerminatorInstruction(new VariantGetNamedInsn(
-                namedBaseSlotId,
-                StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId"),
-                nameSlotId
-        ));
-        return new NamedMemberScratch(nameSlotId, namedBaseSlotId);
+        return new VariantNamedMemberScratch(receiverVariantSlotId, nameSlotId);
     }
 
     /// The dynamic gate path only needs runtime branching for carriers whose writeback requirement
@@ -702,7 +794,12 @@ final class FrontendWritableRouteSupport {
     /// This separation prevents a common source of drift: if the support had to infer reverse
     /// writeback from the leaf shape, then attribute-subscript and future mutating-call cases would
     /// gradually accumulate special-case logic in multiple places.
-    sealed interface FrontendWritableLeaf permits DirectSlotLeaf, InstancePropertyLeaf, StaticPropertyLeaf, SubscriptLeaf {
+    sealed interface FrontendWritableLeaf permits
+            DirectSlotLeaf,
+            InstancePropertyLeaf,
+            DynamicPropertyLeaf,
+            StaticPropertyLeaf,
+            SubscriptLeaf {
         @NotNull GdType valueType();
     }
 
@@ -737,6 +834,24 @@ final class FrontendWritableRouteSupport {
         }
     }
 
+    /// Runtime-open property leaf selected from `FrontendResolvedMember.status() == DYNAMIC`.
+    ///
+    /// The receiver is stored with its original static type so write/read lowering can pack object
+    /// family receivers into a temporary `Variant` only after the dynamic route fact is frozen.
+    record DynamicPropertyLeaf(
+            @NotNull String receiverSlotId,
+            @NotNull GdType receiverType,
+            @NotNull String propertyName,
+            @NotNull GdType valueType
+    ) implements FrontendWritableLeaf {
+        DynamicPropertyLeaf {
+            receiverSlotId = StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId");
+            Objects.requireNonNull(receiverType, "receiverType must not be null");
+            propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
+            Objects.requireNonNull(valueType, "valueType must not be null");
+        }
+    }
+
     /// A leaf addressed as `TypeName.property`.
     ///
     /// Static property writes have no enclosing runtime owner slot to carry forward, so `writeLeaf`
@@ -757,7 +872,9 @@ final class FrontendWritableRouteSupport {
     /// `memberNameOrNull` freezes the attribute-subscript named-base contract:
     /// - `null` means a plain `base[key]`
     /// - non-null means `receiver.member[key]`, so the support must materialize one named-base temp
-    ///   and write it back into the outer receiver as part of the same leaf operation
+    ///   through the Variant named route and write it back into the outer receiver as part of the same
+    ///   leaf operation. Object-family receivers are packed before named get/set; the later subscript
+    ///   still operates on the materialized Variant named base.
     record SubscriptLeaf(
             @NotNull String baseOrReceiverSlotId,
             @NotNull GdType receiverType,
@@ -795,6 +912,7 @@ final class FrontendWritableRouteSupport {
     /// steps describe the outer owners that must observe the already-mutated carrier value.
     sealed interface FrontendWritableCommitStep permits
             InstancePropertyCommitStep,
+            DynamicPropertyCommitStep,
             StaticPropertyCommitStep,
             SubscriptCommitStep {
     }
@@ -806,6 +924,22 @@ final class FrontendWritableRouteSupport {
     ) implements FrontendWritableCommitStep {
         InstancePropertyCommitStep {
             receiverSlotId = StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId");
+            propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
+        }
+    }
+
+    /// Writes a mutated carrier back into a runtime-open `receiver.property` owner.
+    ///
+    /// Unlike `InstancePropertyCommitStep`, this never emits `StorePropertyInsn`; it always uses
+    /// Variant named set after materializing the receiver carrier to `Variant`.
+    record DynamicPropertyCommitStep(
+            @NotNull String receiverSlotId,
+            @NotNull GdType receiverType,
+            @NotNull String propertyName
+    ) implements FrontendWritableCommitStep {
+        DynamicPropertyCommitStep {
+            receiverSlotId = StringUtil.requireNonBlank(receiverSlotId, "receiverSlotId");
+            Objects.requireNonNull(receiverType, "receiverType must not be null");
             propertyName = StringUtil.requireNonBlank(propertyName, "propertyName");
         }
     }
@@ -827,8 +961,9 @@ final class FrontendWritableRouteSupport {
     /// This is used both for plain `base[key]` routes and for attribute-subscript cases where the
     /// effective subscript base first comes from `receiver.member`. In the latter case the step keeps
     /// `memberNameOrNull` so reverse commit can rebuild the same named-base writeback shape instead of
-    /// assuming the base was already a standalone slot. After the write completes, the next carrier is
-    /// always the owning base/receiver slot itself.
+    /// assuming the base was already a standalone slot. That rebuilt named-base route uses the original
+    /// receiver type to pack Object-family receivers before the Variant named set. After the write
+    /// completes, the next carrier is always the owning base/receiver slot itself.
     record SubscriptCommitStep(
             @NotNull String baseOrReceiverSlotId,
             @NotNull GdType receiverType,
@@ -848,12 +983,24 @@ final class FrontendWritableRouteSupport {
     }
 
     private record NamedMemberScratch(
+            @NotNull String receiverVariantSlotId,
             @NotNull String nameSlotId,
             @NotNull String namedBaseSlotId
     ) {
         private NamedMemberScratch {
+            receiverVariantSlotId = StringUtil.requireNonBlank(receiverVariantSlotId, "receiverVariantSlotId");
             nameSlotId = StringUtil.requireNonBlank(nameSlotId, "nameSlotId");
             namedBaseSlotId = StringUtil.requireNonBlank(namedBaseSlotId, "namedBaseSlotId");
+        }
+    }
+
+    private record VariantNamedMemberScratch(
+            @NotNull String receiverVariantSlotId,
+            @NotNull String nameSlotId
+    ) {
+        private VariantNamedMemberScratch {
+            receiverVariantSlotId = StringUtil.requireNonBlank(receiverVariantSlotId, "receiverVariantSlotId");
+            nameSlotId = StringUtil.requireNonBlank(nameSlotId, "nameSlotId");
         }
     }
 }

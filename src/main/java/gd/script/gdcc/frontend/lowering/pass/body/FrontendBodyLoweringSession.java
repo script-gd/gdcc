@@ -116,8 +116,12 @@ public final class FrontendBodyLoweringSession {
         return opaqueExprProcessors.lower(this, block, item.expression(), new OpaqueExprLoweringContext(item));
     }
 
-    void lowerAssignmentTarget(@NotNull LirBasicBlock block, @NotNull AssignmentItem item, @NotNull String rhsSlotId) {
-        FrontendAssignmentTargetInsnLoweringProcessors.lowerPublishedWritableRoute(this, block, item, rhsSlotId);
+    @NotNull LirBasicBlock lowerAssignmentTarget(
+            @NotNull LirBasicBlock block,
+            @NotNull AssignmentItem item,
+            @NotNull String rhsSlotId
+    ) {
+        return FrontendAssignmentTargetInsnLoweringProcessors.lowerPublishedWritableRoute(this, block, item, rhsSlotId);
     }
 
     @NotNull FrontendBinding requireBinding(@NotNull Node useSite) {
@@ -315,6 +319,15 @@ public final class FrontendBodyLoweringSession {
             );
             case PROPERTY -> {
                 var propertyName = Objects.requireNonNull(leaf.memberNameOrNull(), "PROPERTY leaf must publish memberNameOrNull");
+                var dynamicMember = dynamicWritableMemberOrNull(leaf.anchor(), "property leaf");
+                if (dynamicMember != null) {
+                    yield new FrontendWritableRouteSupport.DynamicPropertyLeaf(
+                            resolveWritableContainerSlot(root, leaf.containerValueIdOrNull()),
+                            requireWritableContainerType(root, leaf.containerValueIdOrNull()),
+                            dynamicMember.memberName(),
+                            leafType
+                    );
+                }
                 if (isStaticWritablePropertyRoute(root, leaf.anchor())) {
                     yield new FrontendWritableRouteSupport.StaticPropertyLeaf(
                             requireStaticWritableReceiverName(root, leaf.anchor()),
@@ -349,6 +362,14 @@ public final class FrontendBodyLoweringSession {
         return switch (Objects.requireNonNull(step, "step must not be null").kind()) {
             case PROPERTY -> {
                 var propertyName = Objects.requireNonNull(step.memberNameOrNull(), "PROPERTY step must publish memberNameOrNull");
+                var dynamicMember = dynamicWritableMemberOrNull(step.anchor(), "reverse-commit property step");
+                if (dynamicMember != null) {
+                    yield new FrontendWritableRouteSupport.DynamicPropertyCommitStep(
+                            resolveWritableContainerSlot(root, step.containerValueIdOrNull()),
+                            requireWritableContainerType(root, step.containerValueIdOrNull()),
+                            dynamicMember.memberName()
+                    );
+                }
                 if (isStaticWritablePropertyRoute(root, step.anchor())) {
                     yield new FrontendWritableRouteSupport.StaticPropertyCommitStep(
                             requireStaticWritableReceiverName(root, step.anchor()),
@@ -472,10 +493,42 @@ public final class FrontendBodyLoweringSession {
         };
     }
 
+    private @Nullable FrontendResolvedMember dynamicWritableMemberOrNull(
+            @NotNull Node propertyAnchor,
+            @NotNull String routeDescription
+    ) {
+        if (!(Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")
+                instanceof dev.superice.gdparser.frontend.ast.AttributePropertyStep)) {
+            return null;
+        }
+        var resolvedMember = requireResolvedMember(propertyAnchor);
+        if (resolvedMember.status() != FrontendMemberResolutionStatus.DYNAMIC) {
+            return null;
+        }
+        // Dynamic member writes are selected only by the frozen member status. Once selected, only
+        // instance receivers may enter the Variant named route; type-meta dynamic publication is drift.
+        if (resolvedMember.receiverKind() != FrontendReceiverKind.INSTANCE) {
+            throw new IllegalStateException(
+                    "Dynamic writable "
+                            + StringUtil.requireNonBlank(routeDescription, "routeDescription")
+                            + " requires an instance receiver route, but got "
+                            + resolvedMember.receiverKind()
+            );
+        }
+        return resolvedMember;
+    }
+
     private @NotNull GdType requireWritableLeafType(@NotNull FrontendWritableRoutePayload payload) {
         var published = analysisData.expressionTypes().get(payload.leaf().anchor());
         if (published != null && published.publishedType() != null) {
             return published.publishedType();
+        }
+        if (payload.leaf().kind() == FrontendWritableRoutePayload.LeafKind.PROPERTY
+                && dynamicWritableMemberOrNull(payload.leaf().anchor(), "property leaf") != null) {
+            // Assignment targets do not always publish the final left-value property as an
+            // expression value. Once the frozen member fact says DYNAMIC, the writable surface is
+            // the same runtime-open Variant member slot used by assignment semantic checking.
+            return GdVariantType.VARIANT;
         }
         return switch (payload.leaf().kind()) {
             case DIRECT_SLOT -> requireWritableDirectLeafType(payload.root());
@@ -506,10 +559,18 @@ public final class FrontendBodyLoweringSession {
     private @NotNull GdType requireWritablePropertyLeafType(@NotNull Node propertyAnchor) {
         return switch (Objects.requireNonNull(propertyAnchor, "propertyAnchor must not be null")) {
             case IdentifierExpression _ -> requireWritableBindingStorageType(requireBinding(propertyAnchor));
-            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> Objects.requireNonNull(
-                    requireResolvedMember(propertyAnchor).resultType(),
-                    "Resolved property leaf must publish resultType"
-            );
+            case dev.superice.gdparser.frontend.ast.AttributePropertyStep _ -> {
+                var resolvedMember = requireResolvedMember(propertyAnchor);
+                if (resolvedMember.status() == FrontendMemberResolutionStatus.DYNAMIC) {
+                    throw new IllegalStateException(
+                            "Dynamic writable property leaf type must come from expressionTypes(), not resolvedMembers()"
+                    );
+                }
+                yield Objects.requireNonNull(
+                        resolvedMember.resultType(),
+                        "Resolved property leaf must publish resultType"
+                );
+            }
             default -> throw new IllegalStateException(
                     "Writable property leaf type requires IdentifierExpression or AttributePropertyStep anchor"
             );

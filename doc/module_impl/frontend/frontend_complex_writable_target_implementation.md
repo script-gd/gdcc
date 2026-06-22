@@ -114,6 +114,8 @@ route payload”和当前 identifier/self 的 published binding。这个 carrier
 - payload 不能表达 AST fallback、备用求值路径或“需要时再重读”。
 - `SUBSCRIPT` leaf/step 当前固定只支持一个 key operand。
 - `AttributeSubscriptStep` 的 access family 必须在 publication 阶段冻结，不能在 body lowering 按 prefix 类型事后猜。
+- `AttributeSubscriptStep` 的 named base 仍属于 Variant named member route：body lowering 先用 frozen receiver slot 与原始 receiver type materialize `receiver.member`，`GdObjectType` receiver 必须先 pack 成 `Variant` carrier，然后才把该 named-base `Variant` 用作 subscript effective receiver。Reverse commit 重建同一 named-base 写回形状，不能直接把 object receiver slot 传给 `VariantSetNamedInsn`。
+- focused tests 必须分别覆盖 `SubscriptLeaf.memberNameOrNull != null` 的 leaf read 与 `SubscriptCommitStep.memberNameOrNull != null` 的 reverse-commit 分支，避免只通过 final write 或端到端 body lowering 间接覆盖 named-base route。
 - `StaticPropertyCommitStep` 只能作为 terminal step；non-terminal static step 必须 fail-fast。
 
 ## 2. Assignment 与 compound assignment 合同

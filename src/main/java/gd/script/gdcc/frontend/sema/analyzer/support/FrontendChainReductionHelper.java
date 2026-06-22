@@ -1819,9 +1819,20 @@ public final class FrontendChainReductionHelper {
             case UNSUPPORTED -> ReceiverState.unsupportedFrom(incomingReceiver, detailReason);
             case RESOLVED -> throw new IllegalStateException("upstream cause cannot be resolved");
         };
-        var suggestedMember = upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()
-                ? headFailureSuggestedMember(step, incomingReceiver, detailReason)
-                : null;
+        FrontendResolvedMember suggestedMember = null;
+        if (upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()) {
+            suggestedMember = headFailureSuggestedMember(step, incomingReceiver, detailReason);
+        } else if (upstreamCause.status() == Status.DYNAMIC && step instanceof AttributePropertyStep propertyStep) {
+            suggestedMember = FrontendResolvedMember.dynamic(
+                    propertyStep.name(),
+                    FrontendBindingKind.UNKNOWN,
+                    FrontendReceiverKind.INSTANCE,
+                    null,
+                    GdVariantType.VARIANT,
+                    null,
+                    detailReason
+            );
+        }
         var suggestedCall = upstreamCause.status() == Status.FAILED && upstreamCause.sourceStepIndex().isEmpty()
                 ? headFailureSuggestedCall(step, incomingReceiver, detailReason)
                 : null;

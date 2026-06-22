@@ -547,6 +547,12 @@ public final class FrontendAssignmentSemanticSupport {
 
         var finalTrace = reduced.stepTraces().getLast();
         if (finalTrace.upstreamCause() != null) {
+            if (finalTrace.status() == FrontendChainReductionHelper.Status.DYNAMIC) {
+                return AssignmentTargetResult.dynamic(
+                        targetKind,
+                        Objects.requireNonNull(finalTrace.detailReason(), "detailReason must not be null")
+                );
+            }
             return targetFromReductionStatus(targetKind, finalTrace.status(), false, finalTrace.detailReason());
         }
         return switch (finalTrace.status()) {

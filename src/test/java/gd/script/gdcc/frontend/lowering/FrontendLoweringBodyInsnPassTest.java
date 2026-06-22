@@ -4180,6 +4180,814 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersVariantDynamicMemberAssignmentIntoVariantNamedSet() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_variant_dynamic_member_write.gd",
+                """
+                        class_name BodyInsnVariantDynamicMemberWrite
+                        extends RefCounted
+                        
+                        func marker(host: Variant, value: Variant) -> void:
+                            host.marker = value
+                        """,
+                Map.of("BodyInsnVariantDynamicMemberWrite", "RuntimeBodyInsnVariantDynamicMemberWrite"),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantDynamicMemberWrite",
+                "marker"
+        );
+        var assignmentItem = requireSingleSequenceItem(markerContext.requireFrontendCfgGraph(), AssignmentItem.class);
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(markerContext.targetFunction());
+        var setNamedInsn = requireOnlyInstruction(markerContext.targetFunction(), VariantSetNamedInsn.class);
+        var nameLiteral = requireOnlyInstruction(markerContext.targetFunction(), LiteralStringNameInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("marker", nameLiteral.value()),
+                () -> assertEquals(nameLiteral.resultId(), setNamedInsn.nameId()),
+                () -> assertEquals("host", setNamedInsn.namedVariantId()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(assignmentItem.rhsValueId()),
+                        setNamedInsn.valueId()
+                ),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class))
+        );
+    }
+
+    @Test
+    void runPacksObjectDynamicMemberAssignmentBeforeVariantNamedSet() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_dynamic_member_write.gd",
+                """
+                        class_name BodyInsnObjectDynamicMemberWrite
+                        extends RefCounted
+                        
+                        func marker(host: Variant, value: Variant) -> void:
+                            host.marker = value
+                        """,
+                Map.of("BodyInsnObjectDynamicMemberWrite", "RuntimeBodyInsnObjectDynamicMemberWrite"),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectDynamicMemberWrite",
+                "marker"
+        );
+        var assignmentItem = requireSingleSequenceItem(markerContext.requireFrontendCfgGraph(), AssignmentItem.class);
+        var receiverValueId = assignmentItem.targetOperandValueIds().getFirst();
+        var hostProducer = requireValueProducerByResultId(markerContext.requireFrontendCfgGraph(), receiverValueId);
+        var objectType = new GdObjectType("MissingWorker");
+        replaceParameterType(markerContext, "host", objectType);
+        var leafAnchor = assignmentItem.writableRoutePayload().leaf().anchor();
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                hostProducer.anchor(),
+                FrontendExpressionType.resolved(objectType)
+        );
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                leafAnchor,
+                FrontendExpressionType.dynamic("synthetic metadata-unknown object dynamic member write")
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                leafAnchor,
+                FrontendResolvedMember.dynamic(
+                        "marker",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        objectType,
+                        "MissingWorker.marker",
+                        "synthetic metadata-unknown object dynamic member write"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(markerContext.targetFunction());
+        var packInsn = requireOnlyInstruction(markerContext.targetFunction(), PackVariantInsn.class);
+        var setNamedInsn = requireOnlyInstruction(markerContext.targetFunction(), VariantSetNamedInsn.class);
+        var nameLiteral = requireOnlyInstruction(markerContext.targetFunction(), LiteralStringNameInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("host", packInsn.valueId()),
+                () -> assertEquals(packInsn.resultId(), setNamedInsn.namedVariantId()),
+                () -> assertEquals("marker", nameLiteral.value()),
+                () -> assertEquals(nameLiteral.resultId(), setNamedInsn.nameId()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(assignmentItem.rhsValueId()),
+                        setNamedInsn.valueId()
+                ),
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(
+                        markerContext.targetFunction(),
+                        packInsn.resultId()
+                )),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersVariantDynamicMemberCompoundAssignmentThroughVariantNamedRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_variant_dynamic_member_compound_write.gd",
+                """
+                        class_name BodyInsnVariantDynamicMemberCompoundWrite
+                        extends RefCounted
+                        
+                        func bump(host: Variant) -> void:
+                            host.count += 1
+                        """,
+                Map.of(
+                        "BodyInsnVariantDynamicMemberCompoundWrite",
+                        "RuntimeBodyInsnVariantDynamicMemberCompoundWrite"
+                ),
+                true
+        );
+        var bumpContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnVariantDynamicMemberCompoundWrite",
+                "bump"
+        );
+        var graph = bumpContext.requireFrontendCfgGraph();
+        var memberLoad = requireSingleMemberLoadItem(graph, "count");
+        var assignmentItem = requireSingleSequenceItem(graph, AssignmentItem.class);
+        var receiverValueId = assignmentItem.targetOperandValueIds().getFirst();
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var getNamedInsn = requireOnlyInstruction(bumpContext.targetFunction(), VariantGetNamedInsn.class);
+        var setNamedInsn = requireOnlyInstruction(bumpContext.targetFunction(), VariantSetNamedInsn.class);
+        var compoundInsn = requireOnlyInstruction(bumpContext.targetFunction(), BinaryOpInsn.class);
+        var stringNames = stringNameValuesByResultId(instructions);
+        var frozenReceiverSlot = FrontendBodyLoweringSupport.cfgTempSlotId(receiverValueId);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.ADD, compoundInsn.op()),
+                () -> assertEquals(receiverValueId, memberLoad.baseValueIdOrNull()),
+                () -> assertEquals("count", stringNames.get(getNamedInsn.nameId())),
+                () -> assertEquals("count", stringNames.get(setNamedInsn.nameId())),
+                () -> assertEquals(frozenReceiverSlot, getNamedInsn.namedVariantId()),
+                () -> assertEquals("host", setNamedInsn.namedVariantId()),
+                () -> assertEquals(getNamedInsn.resultId(), compoundInsn.leftId()),
+                () -> assertEquals(compoundInsn.resultId(), setNamedInsn.valueId()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertTrue(instructionIndex(instructions, getNamedInsn) < instructionIndex(instructions, compoundInsn)),
+                () -> assertTrue(instructionIndex(instructions, compoundInsn) < instructionIndex(instructions, setNamedInsn))
+        );
+    }
+
+    @Test
+    void runLowersObjectDynamicMemberCompoundAssignmentThroughPackedVariantNamedRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_dynamic_member_compound_write.gd",
+                """
+                        class_name BodyInsnObjectDynamicMemberCompoundWrite
+                        extends RefCounted
+                        
+                        func bump(host: Variant) -> void:
+                            host.count += 1
+                        """,
+                Map.of(
+                        "BodyInsnObjectDynamicMemberCompoundWrite",
+                        "RuntimeBodyInsnObjectDynamicMemberCompoundWrite"
+                ),
+                true
+        );
+        var bumpContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectDynamicMemberCompoundWrite",
+                "bump"
+        );
+        var graph = bumpContext.requireFrontendCfgGraph();
+        var memberLoad = requireSingleMemberLoadItem(graph, "count");
+        var assignmentItem = requireSingleSequenceItem(graph, AssignmentItem.class);
+        var receiverValueId = assignmentItem.targetOperandValueIds().getFirst();
+        var hostProducer = requireValueProducerByResultId(graph, receiverValueId);
+        var objectType = new GdObjectType("MissingWorker");
+        replaceParameterType(bumpContext, "host", objectType);
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                hostProducer.anchor(),
+                FrontendExpressionType.resolved(objectType)
+        );
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                memberLoad.anchor(),
+                FrontendExpressionType.dynamic("synthetic metadata-unknown object dynamic compound member")
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                memberLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        "count",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        objectType,
+                        "MissingWorker.count",
+                        "synthetic metadata-unknown object dynamic compound member"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var packInsns = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        var getNamedInsn = requireOnlyInstruction(bumpContext.targetFunction(), VariantGetNamedInsn.class);
+        var setNamedInsn = requireOnlyInstruction(bumpContext.targetFunction(), VariantSetNamedInsn.class);
+        var compoundInsn = requireOnlyInstruction(bumpContext.targetFunction(), BinaryOpInsn.class);
+        var stringNames = stringNameValuesByResultId(instructions);
+        var packValueIds = packInsns.stream().map(PackVariantInsn::valueId).toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.ADD, compoundInsn.op()),
+                () -> assertEquals(2, packInsns.size()),
+                () -> assertTrue(packValueIds.contains(FrontendBodyLoweringSupport.cfgTempSlotId(receiverValueId))),
+                () -> assertTrue(packValueIds.contains("host")),
+                () -> assertEquals("count", stringNames.get(getNamedInsn.nameId())),
+                () -> assertEquals("count", stringNames.get(setNamedInsn.nameId())),
+                () -> assertTrue(packInsns.stream().map(PackVariantInsn::resultId).toList().contains(getNamedInsn.namedVariantId())),
+                () -> assertTrue(packInsns.stream().map(PackVariantInsn::resultId).toList().contains(setNamedInsn.namedVariantId())),
+                () -> assertEquals(getNamedInsn.resultId(), compoundInsn.leftId()),
+                () -> assertEquals(compoundInsn.resultId(), setNamedInsn.valueId()),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertTrue(instructionIndex(instructions, getNamedInsn) < instructionIndex(instructions, compoundInsn)),
+                () -> assertTrue(instructionIndex(instructions, compoundInsn) < instructionIndex(instructions, setNamedInsn))
+        );
+    }
+
+    @Test
+    void runKeepsResolvedObjectPropertyCompoundAssignmentOnOrdinaryRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_resolved_object_property_write_guard.gd",
+                """
+                        class_name BodyInsnResolvedObjectPropertyWriteGuard
+                        extends RefCounted
+                        
+                        var hp: int = 0
+                        
+                        func bump(box: BodyInsnResolvedObjectPropertyWriteGuard, delta: int) -> int:
+                            box.hp += delta
+                            return box.hp
+                        """,
+                Map.of(
+                        "BodyInsnResolvedObjectPropertyWriteGuard",
+                        "RuntimeBodyInsnResolvedObjectPropertyWriteGuard"
+                ),
+                true
+        );
+        var bumpContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnResolvedObjectPropertyWriteGuard",
+                "bump"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(bumpContext.targetFunction());
+        var stores = instructions.stream()
+                .filter(StorePropertyInsn.class::isInstance)
+                .map(StorePropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("hp"))
+                .toList();
+        var loads = instructions.stream()
+                .filter(LoadPropertyInsn.class::isInstance)
+                .map(LoadPropertyInsn.class::cast)
+                .filter(instruction -> instruction.propertyName().equals("hp"))
+                .toList();
+        var compoundInsn = requireOnlyInstruction(bumpContext.targetFunction(), BinaryOpInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GodotOperator.ADD, compoundInsn.op()),
+                () -> assertEquals(1, stores.size()),
+                () -> assertEquals(2, loads.size()),
+                () -> assertEquals(compoundInsn.resultId(), stores.getFirst().valueId()),
+                () -> assertEquals(0, countInstructions(instructions, VariantGetNamedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, VariantSetNamedInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, LiteralStringNameInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runThreadsContinuationBlockAfterRuntimeGatedDynamicOwnerWriteback() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_owner_writeback.gd",
+                """
+                        class_name BodyInsnDynamicMemberOwnerWriteback
+                        extends RefCounted
+                        
+                        func write_path(host: Variant, value: Variant, next: Variant) -> void:
+                            host.box.value = value
+                            host.after = next
+                        """,
+                Map.of("BodyInsnDynamicMemberOwnerWriteback", "RuntimeBodyInsnDynamicMemberOwnerWriteback"),
+                true
+        );
+        var writePathContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberOwnerWriteback",
+                "write_path"
+        );
+        var afterAssignmentItem = requireAssignmentItemForLeafMember(
+                writePathContext.requireFrontendCfgGraph(),
+                "after"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = writePathContext.targetFunction();
+        var instructions = allInstructions(function);
+        var stringNames = stringNameValuesByResultId(instructions);
+        var boxGets = variantGetNamedInsnsForName(instructions, "box");
+        var boxSets = variantSetNamedInsnsForName(instructions, "box");
+        var valueSets = variantSetNamedInsnsForName(instructions, "value");
+        var afterSets = variantSetNamedInsnsForName(instructions, "after");
+        var entryBlock = requireBlock(function, "seq_0");
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var skipBlock = requireBlock(function, gateBranch.falseBbId());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        var continuationNameIds = continuationBlock.getNonTerminatorInstructions().stream()
+                .filter(LiteralStringNameInsn.class::isInstance)
+                .map(LiteralStringNameInsn.class::cast)
+                .map(LiteralStringNameInsn::resultId)
+                .toList();
+        var entryNameIds = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(LiteralStringNameInsn.class::isInstance)
+                .map(LiteralStringNameInsn.class::cast)
+                .map(LiteralStringNameInsn::resultId)
+                .toList();
+        var gateCallInsn = gateCalls.getFirst();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(1, boxGets.size()),
+                () -> assertEquals(1, boxSets.size()),
+                () -> assertEquals(1, valueSets.size()),
+                () -> assertEquals(1, afterSets.size()),
+                () -> assertEquals("box", stringNames.get(boxGets.getFirst().nameId())),
+                () -> assertEquals("box", stringNames.get(boxSets.getFirst().nameId())),
+                () -> assertEquals("value", stringNames.get(valueSets.getFirst().nameId())),
+                () -> assertEquals("after", stringNames.get(afterSets.getFirst().nameId())),
+                () -> assertEquals(valueSets.getFirst().namedVariantId(), boxSets.getFirst().valueId()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(afterAssignmentItem.rhsValueId()),
+                        afterSets.getFirst().valueId()
+                ),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCallInsn.functionName()),
+                () -> assertEquals(valueSets.getFirst().namedVariantId(), onlyVariableOperandId(gateCallInsn.args())),
+                () -> assertEquals(gateCallInsn.resultId(), gateBranch.conditionVarId()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId()),
+                () -> assertTrue(applyBlock.getNonTerminatorInstructions().stream().anyMatch(boxSets.getFirst()::equals)),
+                () -> assertTrue(continuationBlock.getNonTerminatorInstructions().stream().anyMatch(afterSets.getFirst()::equals)),
+                () -> assertTrue(continuationNameIds.stream().anyMatch(id -> stringNames.get(id).equals("after"))),
+                () -> assertTrue(entryNameIds.stream().noneMatch(id -> stringNames.get(id).equals("after"))),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertTrue(instructionIndex(instructions, boxGets.getFirst()) < instructionIndex(instructions, valueSets.getFirst())),
+                () -> assertTrue(instructionIndex(instructions, valueSets.getFirst()) < instructionIndex(instructions, gateCallInsn)),
+                () -> assertTrue(instructionIndex(instructions, gateCallInsn) < instructionIndex(instructions, boxSets.getFirst())),
+                () -> assertTrue(instructionIndex(instructions, boxSets.getFirst()) < instructionIndex(instructions, afterSets.getFirst()))
+        );
+    }
+
+    @Test
+    void runAppendsDynamicMemberAssignmentValueAfterRuntimeGatedOwnerWriteback() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_assignment_value_writeback.gd",
+                """
+                        class_name BodyInsnDynamicMemberAssignmentValueWriteback
+                        extends RefCounted
+                        
+                        func write_path(host: Variant, value: Variant) -> void:
+                            host.box.value = value
+                        """,
+                Map.of(
+                        "BodyInsnDynamicMemberAssignmentValueWriteback",
+                        "RuntimeBodyInsnDynamicMemberAssignmentValueWriteback"
+                ),
+                true
+        );
+        var originalContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberAssignmentValueWriteback",
+                "write_path"
+        );
+        var originalGraph = originalContext.requireFrontendCfgGraph();
+        var entryNode = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                originalGraph.requireNode(originalGraph.entryNodeId())
+        );
+        var originalAssignment = requireAssignmentItemForLeafMember(originalGraph, "value");
+        var assignmentResultValueId = "v_assignment_value";
+        var mutatedAssignment = new AssignmentItem(
+                originalAssignment.assignment(),
+                originalAssignment.targetOperandValueIds(),
+                originalAssignment.rhsValueId(),
+                assignmentResultValueId,
+                originalAssignment.writableRoutePayload()
+        );
+        // Source assignment statements are void today; this mutation models a value-producing
+        // assignment while preserving the same frozen dynamic writable route payload.
+        originalContext.analysisData().expressionTypes().put(
+                originalAssignment.assignment(),
+                FrontendExpressionType.dynamic("synthetic assignment-as-value dynamic writable route")
+        );
+        var mutatedItems = entryNode.items().stream()
+                .map(item -> item == originalAssignment ? mutatedAssignment : item)
+                .toList();
+        var mutatedNodes = new LinkedHashMap<>(originalGraph.nodes());
+        mutatedNodes.put(
+                entryNode.id(),
+                new FrontendCfgGraph.SequenceNode(entryNode.id(), mutatedItems, entryNode.nextId())
+        );
+        var mutatedContext = new FunctionLoweringContext(
+                originalContext.kind(),
+                originalContext.sourcePath(),
+                originalContext.sourceClassRelation(),
+                originalContext.owningClass(),
+                originalContext.targetFunction(),
+                originalContext.sourceOwner(),
+                originalContext.loweringRoot(),
+                originalContext.analysisData()
+        );
+        mutatedContext.publishFrontendCfgGraph(new FrontendCfgGraph(originalGraph.entryNodeId(), mutatedNodes));
+
+        new FrontendBodyLoweringSession(
+                mutatedContext,
+                new ClassRegistry(ExtensionApiLoader.loadDefault())
+        ).run();
+
+        var function = mutatedContext.targetFunction();
+        var entryBlock = requireBlock(function, "seq_0");
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var skipBlock = requireBlock(function, gateBranch.falseBbId());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var skipGoto = assertInstanceOf(GotoInsn.class, skipBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+        var assignmentResultSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(assignmentResultValueId);
+        var continuationAssigns = continuationBlock.getNonTerminatorInstructions().stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .toList();
+        var allAssignSources = assignSourcesByTarget(allInstructions(function));
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(applyGoto.targetBbId(), skipGoto.targetBbId()),
+                () -> assertEquals(
+                        FrontendBodyLoweringSupport.cfgTempSlotId(originalAssignment.rhsValueId()),
+                        allAssignSources.get(assignmentResultSlotId)
+                ),
+                () -> assertTrue(continuationAssigns.stream()
+                        .anyMatch(assign -> assign.resultId().equals(assignmentResultSlotId))),
+                () -> assertTrue(entryBlock.getNonTerminatorInstructions().stream()
+                        .filter(AssignInsn.class::isInstance)
+                        .map(AssignInsn.class::cast)
+                        .noneMatch(assign -> assign.resultId().equals(assignmentResultSlotId))),
+                () -> assertEquals(1, variantSetNamedInsnsForName(allInstructions(function), "box").size()),
+                () -> assertEquals(1, variantSetNamedInsnsForName(allInstructions(function), "value").size())
+        );
+    }
+
+    @Test
+    void runPacksObjectDynamicOwnerBeforeRuntimeGatedReverseCommit() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_dynamic_member_owner_writeback.gd",
+                """
+                        class_name BodyInsnObjectDynamicMemberOwnerWriteback
+                        extends RefCounted
+                        
+                        func write_path(host: Variant, value: Variant) -> void:
+                            host.box.value = value
+                        """,
+                Map.of(
+                        "BodyInsnObjectDynamicMemberOwnerWriteback",
+                        "RuntimeBodyInsnObjectDynamicMemberOwnerWriteback"
+                ),
+                true
+        );
+        var writePathContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectDynamicMemberOwnerWriteback",
+                "write_path"
+        );
+        var graph = writePathContext.requireFrontendCfgGraph();
+        var boxLoad = requireSingleMemberLoadItem(graph, "box");
+        var assignmentItem = requireAssignmentItemForLeafMember(graph, "value");
+        var hostValueId = boxLoad.baseValueIdOrNull();
+        assertNotNull(hostValueId);
+        var hostProducer = requireValueProducerByResultId(graph, hostValueId);
+        var objectType = new GdObjectType("MissingWorker");
+        replaceParameterType(writePathContext, "host", objectType);
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                hostProducer.anchor(),
+                FrontendExpressionType.resolved(objectType)
+        );
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                boxLoad.anchor(),
+                FrontendExpressionType.dynamic("synthetic metadata-unknown object dynamic owner")
+        );
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                assignmentItem.writableRoutePayload().leaf().anchor(),
+                FrontendExpressionType.dynamic("synthetic metadata-unknown object dynamic leaf")
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                boxLoad.anchor(),
+                FrontendResolvedMember.dynamic(
+                        "box",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        objectType,
+                        "MissingWorker.box",
+                        "synthetic metadata-unknown object dynamic owner"
+                )
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                assignmentItem.writableRoutePayload().leaf().anchor(),
+                FrontendResolvedMember.dynamic(
+                        "value",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        GdVariantType.VARIANT,
+                        "Variant.value",
+                        "synthetic metadata-unknown object dynamic leaf"
+                )
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = writePathContext.targetFunction();
+        var instructions = allInstructions(function);
+        var packInsns = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        var packValueIds = packInsns.stream().map(PackVariantInsn::valueId).toList();
+        var packedResultIds = packInsns.stream().map(PackVariantInsn::resultId).toList();
+        var boxGets = variantGetNamedInsnsForName(instructions, "box");
+        var boxSets = variantSetNamedInsnsForName(instructions, "box");
+        var valueSets = variantSetNamedInsnsForName(instructions, "value");
+        var entryBlock = requireBlock(function, "seq_0");
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(2, packInsns.size()),
+                () -> assertTrue(packValueIds.contains(FrontendBodyLoweringSupport.cfgTempSlotId(hostValueId))),
+                () -> assertTrue(packValueIds.contains("host")),
+                () -> assertEquals(1, boxGets.size()),
+                () -> assertEquals(1, boxSets.size()),
+                () -> assertEquals(1, valueSets.size()),
+                () -> assertTrue(packedResultIds.contains(boxGets.getFirst().namedVariantId())),
+                () -> assertTrue(packedResultIds.contains(boxSets.getFirst().namedVariantId())),
+                () -> assertEquals(valueSets.getFirst().namedVariantId(), boxSets.getFirst().valueId()),
+                () -> assertTrue(applyBlock.getNonTerminatorInstructions().stream().anyMatch(boxSets.getFirst()::equals)),
+                () -> assertTrue(continuationBlock.getNonTerminatorInstructions().stream()
+                        .noneMatch(boxSets.getFirst()::equals)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runPacksObjectDynamicAttributeSubscriptReceiverBeforeNamedBaseWriteback() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_object_dynamic_attribute_subscript_writeback.gd",
+                """
+                        class_name BodyInsnObjectDynamicAttributeSubscriptWriteback
+                        extends RefCounted
+                        
+                        func write_path(host: Variant, index: int, value: Variant) -> void:
+                            host.payloads[index].value = value
+                        """,
+                Map.of(
+                        "BodyInsnObjectDynamicAttributeSubscriptWriteback",
+                        "RuntimeBodyInsnObjectDynamicAttributeSubscriptWriteback"
+                ),
+                true
+        );
+        var writePathContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnObjectDynamicAttributeSubscriptWriteback",
+                "write_path"
+        );
+        var graph = writePathContext.requireFrontendCfgGraph();
+        var payloadsLoad = requireSingleSequenceItem(graph, SubscriptLoadItem.class);
+        assertEquals("payloads", payloadsLoad.memberNameOrNull());
+        var assignmentItem = requireAssignmentItemForLeafMember(graph, "value");
+        var hostValueId = payloadsLoad.baseValueId();
+        var hostProducer = requireValueProducerByResultId(graph, hostValueId);
+        var objectType = new GdObjectType("MissingWorker");
+        replaceParameterType(writePathContext, "host", objectType);
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                hostProducer.anchor(),
+                FrontendExpressionType.resolved(objectType)
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = writePathContext.targetFunction();
+        var instructions = allInstructions(function);
+        var packInsns = instructions.stream()
+                .filter(PackVariantInsn.class::isInstance)
+                .map(PackVariantInsn.class::cast)
+                .toList();
+        var payloadsGets = variantGetNamedInsnsForName(instructions, "payloads");
+        var payloadsSets = variantSetNamedInsnsForName(instructions, "payloads");
+        var valueSets = variantSetNamedInsnsForName(instructions, "value");
+        var indexedStores = instructions.stream()
+                .filter(VariantSetIndexedInsn.class::isInstance)
+                .map(VariantSetIndexedInsn.class::cast)
+                .toList();
+        var hostPrefixPackResults = packInsns.stream()
+                .filter(pack -> pack.valueId().equals(FrontendBodyLoweringSupport.cfgTempSlotId(hostValueId)))
+                .map(PackVariantInsn::resultId)
+                .toList();
+        var hostSlotPackResults = packInsns.stream()
+                .filter(pack -> pack.valueId().equals("host"))
+                .map(PackVariantInsn::resultId)
+                .toList();
+        var entryBlock = requireBlock(function, "seq_0");
+        var gateCalls = entryBlock.getNonTerminatorInstructions().stream()
+                .filter(CallGlobalInsn.class::isInstance)
+                .map(CallGlobalInsn.class::cast)
+                .toList();
+        var gateBranch = assertInstanceOf(GoIfInsn.class, entryBlock.getTerminator());
+        var applyBlock = requireBlock(function, gateBranch.trueBbId());
+        var applyGoto = assertInstanceOf(GotoInsn.class, applyBlock.getTerminator());
+        var continuationBlock = requireBlock(function, applyGoto.targetBbId());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("value", assignmentItem.writableRoutePayload().leaf().memberNameOrNull()),
+                () -> assertEquals(2, packInsns.size()),
+                () -> assertEquals(1, hostPrefixPackResults.size()),
+                () -> assertEquals(1, hostSlotPackResults.size()),
+                () -> assertEquals(2, payloadsGets.size()),
+                () -> assertEquals(1, payloadsSets.size()),
+                () -> assertEquals(1, valueSets.size()),
+                () -> assertEquals(1, indexedStores.size()),
+                () -> assertTrue(payloadsGets.stream()
+                        .anyMatch(get -> get.namedVariantId().equals(hostPrefixPackResults.getFirst()))),
+                () -> assertTrue(payloadsGets.stream()
+                        .anyMatch(get -> get.namedVariantId().equals(hostSlotPackResults.getFirst()))),
+                () -> assertEquals(hostSlotPackResults.getFirst(), payloadsSets.getFirst().namedVariantId()),
+                () -> assertEquals(payloadsSets.getFirst().valueId(), indexedStores.getFirst().variantId()),
+                () -> assertEquals(valueSets.getFirst().namedVariantId(), indexedStores.getFirst().valueId()),
+                () -> assertEquals(1, gateCalls.size()),
+                () -> assertEquals("gdcc_variant_requires_writeback", gateCalls.getFirst().functionName()),
+                () -> assertEquals(valueSets.getFirst().namedVariantId(), onlyVariableOperandId(gateCalls.getFirst().args())),
+                () -> assertTrue(applyBlock.getNonTerminatorInstructions().stream()
+                        .anyMatch(payloadsSets.getFirst()::equals)),
+                () -> assertTrue(continuationBlock.getNonTerminatorInstructions().stream()
+                        .noneMatch(payloadsSets.getFirst()::equals)),
+                () -> assertEquals(0, countInstructions(instructions, LoadPropertyInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, StorePropertyInsn.class))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDynamicMemberWriteHasNonVariantNonObjectReceiver() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_write_invalid_receiver.gd",
+                """
+                        class_name BodyInsnDynamicMemberWriteInvalidReceiver
+                        extends RefCounted
+                        
+                        func axis_x(vector: Vector3, value: float) -> void:
+                            vector.x = value
+                        """,
+                Map.of(
+                        "BodyInsnDynamicMemberWriteInvalidReceiver",
+                        "RuntimeBodyInsnDynamicMemberWriteInvalidReceiver"
+                ),
+                true
+        );
+        var axisContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberWriteInvalidReceiver",
+                "axis_x"
+        );
+        var assignmentItem = requireSingleSequenceItem(axisContext.requireFrontendCfgGraph(), AssignmentItem.class);
+        var leafAnchor = assignmentItem.writableRoutePayload().leaf().anchor();
+        prepared.context().requireAnalysisData().expressionTypes().put(
+                leafAnchor,
+                FrontendExpressionType.dynamic("synthetic illegal dynamic writable member receiver")
+        );
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                leafAnchor,
+                FrontendResolvedMember.dynamic(
+                        "x",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.BUILTIN,
+                        GdFloatVectorType.VECTOR3,
+                        "Vector3.x",
+                        "synthetic illegal dynamic writable member receiver"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("Variant named member route"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("Variant or Object-family receiver"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("Vector3"), exception.getMessage())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenDynamicMemberWriteUsesTypeMetaRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_dynamic_member_write_type_meta_route.gd",
+                """
+                        class_name BodyInsnDynamicMemberWriteTypeMetaRoute
+                        extends RefCounted
+                        
+                        func marker(host: Variant, value: Variant) -> void:
+                            host.marker = value
+                        """,
+                Map.of(
+                        "BodyInsnDynamicMemberWriteTypeMetaRoute",
+                        "RuntimeBodyInsnDynamicMemberWriteTypeMetaRoute"
+                ),
+                true
+        );
+        var markerContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnDynamicMemberWriteTypeMetaRoute",
+                "marker"
+        );
+        var assignmentItem = requireSingleSequenceItem(markerContext.requireFrontendCfgGraph(), AssignmentItem.class);
+        var leafAnchor = assignmentItem.writableRoutePayload().leaf().anchor();
+        prepared.context().requireAnalysisData().resolvedMembers().put(
+                leafAnchor,
+                FrontendResolvedMember.dynamic(
+                        "marker",
+                        FrontendBindingKind.UNKNOWN,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        GdVariantType.VARIANT,
+                        "Variant.marker",
+                        "synthetic type-meta dynamic writable member route"
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertTrue(exception.getMessage().contains("Dynamic writable"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("instance receiver route"), exception.getMessage()),
+                () -> assertTrue(exception.getMessage().contains("TYPE_META"), exception.getMessage())
+        );
+    }
+
+    @Test
     void runKeepsResolvedBuiltinPropertyReadOnOrdinaryPropertyRoute() throws Exception {
         var prepared = prepareContext(
                 "body_insn_resolved_property_route_guard.gd",
@@ -5107,6 +5915,63 @@ class FrontendLoweringBodyInsnPassTest {
         return Map.copyOf(assignSources);
     }
 
+    private static void replaceParameterType(
+            @NotNull FunctionLoweringContext context,
+            @NotNull String parameterName,
+            @NotNull GdType newType
+    ) {
+        var function = context.targetFunction();
+        var parameters = List.copyOf(function.getParameters());
+        function.clearParameters();
+        var replaced = false;
+        for (var parameterDef : parameters) {
+            var parameter = assertInstanceOf(LirParameterDef.class, parameterDef);
+            var type = parameter.name().equals(parameterName) ? newType : parameter.type();
+            function.addParameter(new LirParameterDef(
+                    parameter.name(),
+                    type,
+                    parameter.defaultValueFunc(),
+                    function
+            ));
+            replaced = replaced || parameter.name().equals(parameterName);
+        }
+        assertTrue(replaced, () -> "Expected parameter to exist: " + parameterName);
+    }
+
+    private static @NotNull Map<String, String> stringNameValuesByResultId(@NotNull List<LirInstruction> instructions) {
+        var values = new LinkedHashMap<String, String>();
+        for (var instruction : instructions) {
+            if (instruction instanceof LiteralStringNameInsn(var resultId, var value)) {
+                values.put(resultId, value);
+            }
+        }
+        return Map.copyOf(values);
+    }
+
+    private static @NotNull List<VariantGetNamedInsn> variantGetNamedInsnsForName(
+            @NotNull List<LirInstruction> instructions,
+            @NotNull String memberName
+    ) {
+        var stringNames = stringNameValuesByResultId(instructions);
+        return instructions.stream()
+                .filter(VariantGetNamedInsn.class::isInstance)
+                .map(VariantGetNamedInsn.class::cast)
+                .filter(instruction -> memberName.equals(stringNames.get(instruction.nameId())))
+                .toList();
+    }
+
+    private static @NotNull List<VariantSetNamedInsn> variantSetNamedInsnsForName(
+            @NotNull List<LirInstruction> instructions,
+            @NotNull String memberName
+    ) {
+        var stringNames = stringNameValuesByResultId(instructions);
+        return instructions.stream()
+                .filter(VariantSetNamedInsn.class::isInstance)
+                .map(VariantSetNamedInsn.class::cast)
+                .filter(instruction -> memberName.equals(stringNames.get(instruction.nameId())))
+                .toList();
+    }
+
     private static @NotNull List<String> storeValueIdsForProperty(
             @NotNull List<LirInstruction> instructions,
             @NotNull String propertyName
@@ -5267,6 +6132,26 @@ class FrontendLoweringBodyInsnPassTest {
             }
         }
         assertEquals(1, matches.size(), () -> "Expected exactly one " + itemType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull AssignmentItem requireAssignmentItemForLeafMember(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull String memberName
+    ) {
+        var matches = new ArrayList<AssignmentItem>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (item instanceof AssignmentItem assignmentItem
+                        && memberName.equals(assignmentItem.writableRoutePayload().leaf().memberNameOrNull())) {
+                    matches.add(assignmentItem);
+                }
+            }
+        }
+        assertEquals(1, matches.size(), () -> "Expected exactly one assignment leaf for " + memberName);
         return matches.getFirst();
     }
 

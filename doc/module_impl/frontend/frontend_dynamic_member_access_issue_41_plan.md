@@ -2,7 +2,7 @@
 
 - 日期：2026-06-21
 - 范围：修复 issue #41，允许 frontend 已发布为 `DYNAMIC member` 的成员读写进入 body lowering，并把所有动态成员读写统一降低为 `Variant` named get/set 路径。
-- 状态：实施计划与调查结论；本文件只更新文档合同，代码实现需按本文后续步骤执行。
+- 状态：Step 1-4 已按本文记录实施；后续步骤仍需按计划继续执行。
 
 ---
 
@@ -283,6 +283,37 @@ DYNAMIC member  -> Variant named route
 
 ### Step 4：实现 dynamic member write / reverse commit 的统一 Variant named lowering
 
+状态：已完成（2026-06-21）。
+
+该内容步骤较多，需要多次更改，每完成一项更改就记录回此处。
+
+进展记录：
+
+- 已完成并行文档/代码调研，确认 Step 4 的关键边界是：assignment lowering 只消费 frozen writable-route payload；dynamic leaf/commit 必须显式走 `VariantSetNamedInsn`；runtime-gated reverse commit 必须把后续 sequence item 接到 returned continuation block。
+- 已在 `FrontendWritableRouteSupport` / `FrontendBodyLoweringSession` 中接通 dynamic writable leaf 与 dynamic reverse commit：`DYNAMIC member` 的 property leaf/commit 会显式 materialize 成 dynamic route，`Variant` receiver 直接复用，`GdObjectType` receiver 先 pack 成 `Variant`，非法 receiver/type-meta dynamic route fail-fast。
+- 已在 `FrontendAssignmentTargetInsnLoweringProcessors` 与 `FrontendSequenceItemInsnLoweringProcessors` 中线程化 assignment final-store 的 active continuation block，确保 runtime-gated reverse commit 生成 `apply / skip / continue` block 后，后续 sequence item 继续接到 returned continuation。
+- 已补 `FrontendExprTypeAnalyzer` / `FrontendAssignmentSemanticSupport` 的 writable target publication：compound assignment current-value read 发布 step facts；plain nested assignment 只发布去掉最终 leaf 的 prefix step facts；upstream dynamic assignment target 保留 dynamic target 语义。
+- 已修复 `dynamic_host.box.value = rhs` 的 upstream dynamic suffix fact 缺口：`FrontendChainReductionHelper.propagateStep(...)` 现在会为 upstream `DYNAMIC` 后续 `AttributePropertyStep` 发布 `FrontendResolvedMember.dynamic(...)`，receiver type 固定为 `Variant`，供 body lowering 消费 frozen member fact。
+- 初轮 targeted tests 暴露 `FrontendExprTypeAnalyzerTest.analyzeKeepsExplicitSelfAssignmentTargetPrefixPublicationNarrow()` 失败：assignment-prefix expression fact publication 为 Step 4 的 nested owner 提供了必要 step facts，但也把 explicit `self` compound/container target 的 base 发布进 `expressionTypes()`，超过既有 explicit-self 窄合同。已将 `FrontendExprTypeAnalyzer` 收窄为 step-only publication，保留 direct `self.<property> = value` 既有特例，不再顺带发布 compound/container target 的 explicit `self` base。
+- 已新增 Step 4 focused lowering tests，覆盖 direct dynamic write、object metadata-unknown dynamic write、Variant/Object compound dynamic write、resolved object guard、dynamic owner writeback continuation、非法 receiver fail-fast、type-meta dynamic write fail-fast。
+- 已补 assignment-as-value continuation 回归测试：手工将 dynamic owner writeback 的 `AssignmentItem` 改造成带 `resultValueIdOrNull` 的 CFG 形态，断言 assignment result `AssignInsn` 追加到 runtime-gated reverse commit 返回的 continuation block，而不是旧 entry block。
+- 首次运行新增 assignment-as-value 测试时暴露 fixture 漏洞：手工 CFG 只改了 `AssignmentItem.resultValueIdOrNull`，但 assignment anchor 仍保留 statement-position `void` expression type，body materialization 正确拒绝 void standalone temp slot。测试需同步发布非 void assignment expression type，才能模拟未来 assignment-as-value CFG surface。
+- 已修正 assignment-as-value 测试 fixture：在手工 CFG mutation 同时将同一 assignment anchor 的 `expressionTypes()` 覆盖为 dynamic `Variant` surface，使测试聚焦验证 continuation block threading，而不是触发 void materialization 边界。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest.runAppendsDynamicMemberAssignmentValueAfterRuntimeGatedOwnerWriteback`，通过，确认 assignment result `AssignInsn` 会落到 runtime-gated reverse commit 的 continuation block。
+- 已新增 chain reduction focused assertions，覆盖 upstream dynamic 后续 property step 会发布 dynamic member fact，避免 nested writable owner 在 body lowering 阶段缺少 frozen member fact。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest --tests FrontendBodyLoweringSupportTest --tests FrontendWritableRouteSupportTest --tests FrontendChainReductionHelperTest --tests FrontendCompileCheckAnalyzerTest --tests FrontendExprTypeAnalyzerTest`，通过，覆盖 Step 4 lowering 主链、writable route helper、compile gate、expr type publication 与 chain reduction 相关回归。
+- 已新增 metadata-unknown `GdObjectType` receiver 的 nested dynamic owner writeback 回归测试，合成 `MissingWorker.box.value = value` 的 frozen facts，验证外层 dynamic read/reverse commit 均先 pack Object receiver 再使用 Variant named route，并且 reverse commit 的 `VariantSetNamedInsn("box")` 留在 runtime-gated apply block。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest.runPacksObjectDynamicOwnerBeforeRuntimeGatedReverseCommit`，通过，确认 object metadata-unknown nested owner writeback 的 pack + `VariantSetNamedInsn` 路径稳定。
+- 已修复 object dynamic attribute-subscript named-base 漏 pack 的合同漂移：`FrontendWritableRouteSupport` 的 attribute-subscript leaf/reverse-commit named-base 现在复用同一条 Variant named receiver materialization，`GdObjectType` receiver 会先 `PackVariantInsn`，再执行 `VariantGetNamedInsn` / `VariantSetNamedInsn("payloads")`。新增 `host.payloads[index].value = value` 回归测试，覆盖 `payloads` named-base 读与 reverse commit 写回均使用 packed receiver carrier。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendWritableRouteSupportTest.writeLeafPacksObjectReceiverBeforeNamedSubscriptRoute --tests FrontendLoweringBodyInsnPassTest.runPacksObjectDynamicAttributeSubscriptReceiverBeforeNamedBaseWriteback`，通过，确认 attribute-subscript named-base object receiver pack 路径稳定。
+- 已补齐 `FrontendWritableRouteSupportTest` 中 attribute-subscript named-base 的 focused branch coverage：`materializeLeafReadPacksObjectReceiverBeforeNamedSubscriptRoute` 直接覆盖 `SubscriptLeaf.memberNameOrNull != null` 的 leaf read 分支，`reverseCommitPacksObjectReceiverBeforeNamedSubscriptRoute` 直接覆盖 `SubscriptCommitStep.memberNameOrNull != null` 的 reverse-commit 分支，均断言 metadata-unknown `GdObjectType` receiver 先 pack，再由 packed carrier 执行 `VariantGetNamedInsn` / `VariantSetNamedInsn("payloads")`。
+- 补齐 assignment-as-value 与 object metadata-unknown nested owner 覆盖后，已重跑 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest --tests FrontendBodyLoweringSupportTest --tests FrontendWritableRouteSupportTest --tests FrontendChainReductionHelperTest --tests FrontendCompileCheckAnalyzerTest --tests FrontendExprTypeAnalyzerTest`，通过。
+- 已运行 `script/run-gradle-targeted-tests.sh --tests FrontendAssignmentSemanticSupportTest --tests FrontendChainReductionFacadeTest --tests FrontendCfgGraphBuilderTest --tests FrontendExprTypeAnalyzerTest`，通过，补充覆盖 assignment semantic、chain facade、CFG publication 与 explicit-self 窄合同。
+- 已运行 IDE `get_file_problems` 检查所有修改过的 Java 文件，未发现 error；仅剩既有长测试/重复片段/可空性等 warning。已清理 `FrontendLoweringBodyInsnPassTest` 中一个明确未使用的局部变量，避免第 4 阶段 diff 留下可直接消除的 warning。
+- 已运行 `./gradlew classes --no-daemon --info --console=plain`，通过。随后 `git diff --check` 暴露新增 GDScript text block 空白行存在尾随空格；这是格式问题，不是 lowering 行为问题，需清理后重跑 diff check。
+- 已清理新增 GDScript text block 空白行的尾随空格并重跑 `git diff --check`，通过。
+- 清理格式问题后已重跑 `script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest --tests FrontendBodyLoweringSupportTest --tests FrontendWritableRouteSupportTest --tests FrontendChainReductionHelperTest --tests FrontendCompileCheckAnalyzerTest --tests FrontendExprTypeAnalyzerTest`，通过，作为 Step 4 完成前的最终 targeted lowering/semantic 验证。
+
 修改目标：
 
 - `FrontendBodyLoweringSession.requireWritableAccessChain(...)`
@@ -312,6 +343,7 @@ DYNAMIC member  -> Variant named route
 - compound assignment 的 current read 与 final write 都必须走同一条 dynamic Variant named 合同。
 - `FrontendWritableRouteSupport.writeLeaf(...)` / `reverseCommit(...)` 可以负责最终发指令，但它们应消费已经显式标记为 dynamic 的 leaf/step，不应成为判断 dynamic route 的唯一位置。
 - dynamic member 不只可能是最终 leaf，也可能是 writable chain 的中间 owner；例如 `dynamic_host.box.value = rhs` 中，`dynamic_host.box` 是后续 `.value` 的 owner carrier，最终 reverse commit 还必须把 mutated `box` 写回 `dynamic_host.box`。
+- attribute-subscript named-base 也是同一条 named route 合同：`worker.payloads[i].value = rhs` 中 `payloads` 的 subscript effective receiver 是 materialized `Variant` named base，但读取/写回这个 named base 时仍必须用 `worker` 的 frozen receiver slot 与原始 receiver type；若 `worker` 是 metadata-unknown `GdObjectType`，必须先 pack 成 `Variant` carrier，再执行 `VariantGetNamedInsn` / `VariantSetNamedInsn("payloads")`。
 - 一旦 dynamic member 作为中间 owner，writeback 是否需要 runtime gate 不能只靠静态 family 处理；assignment lowering 必须像 dynamic receiver writeback 一样允许 reverse commit 插入 `apply / skip / continue` block。
 - 因此 `FrontendAssignmentTargetInsnLoweringProcessors.lowerPublishedWritableRoute(...)` 不能继续只返回 `void` 或隐含“后续仍挂在原 block”；它应返回 active continuation `LirBasicBlock`，并让 sequence item lowering 把后续 item 继续接到返回 block 上。
 
@@ -505,6 +537,8 @@ VariantSetNamedInsn(worker_variant_slot_for_write, box_name_for_write, mutated_b
 2. 手工注入 `FrontendResolvedMember.dynamic(...)` 的 instance property leaf write/reverse commit 生成 `VariantSetNamedInsn`，不生成 `StorePropertyInsn`。
 3. 覆盖 `GdObjectType` receiver 先 pack 成 `Variant` 再走 named get/set；该行为适合在 lowering/codegen focused tests 中断言，不作为 runtime resource 的主触发面。
 4. 覆盖 `RESOLVED member` + `GdObjectType` receiver 的 read/write/compound write 仍走 ordinary property route；该 guard test 用来防止实现把 “Object receiver” 误当成 dynamic route selector。
+5. 覆盖 attribute-subscript named-base 的 `SubscriptLeaf.memberNameOrNull != null` leaf read 分支：`worker.payloads[i]` 的 effective receiver 只能在 `worker.payloads` 被 materialize 为 `Variant` 后产生，metadata-unknown `GdObjectType` receiver 必须先 pack，再用 packed carrier 执行 `VariantGetNamedInsn("payloads")`，随后 subscript load 以 named-base temp 为 receiver。
+6. 覆盖 attribute-subscript named-base 的 `SubscriptCommitStep.memberNameOrNull != null` reverse-commit 分支：`worker.payloads[i].value = rhs` 写回 `payloads[i]` 时必须重建同一 named-base，subscript store 消费 named-base temp，最终 `VariantSetNamedInsn("payloads")` 仍使用 packed object receiver carrier，不能直接使用 object receiver slot。
 
 建议补在 backend Java generator focused tests：
 
