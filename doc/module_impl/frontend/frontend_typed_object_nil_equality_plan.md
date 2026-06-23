@@ -266,12 +266,17 @@ object / `null` 的缺口。
 
 ### Phase 0：实施前确认
 
-- [ ] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具要求
-- [ ] 使用 MCP `list_directory_tree` 列出 `doc` 与 `doc/module_impl`
-- [ ] 完成并关闭文档、代码、测试调研子代理
-- [ ] 重新确认 issue #44 的当前描述与验收期望未变更
+- [x] 重新读取 `AGENTS.md`，确认并行子代理、文档先行、targeted test 与工具要求
+- [x] 使用 MCP `list_directory_tree` 列出 `doc` 与 `doc/module_impl`
+- [x] 完成并关闭文档、代码、测试调研子代理
+- [x] 重新确认 issue #44 的当前描述与验收期望未变更
 
 ### Phase 1：前端 binary semantic 特例落地
+
+状态：已完成（2026-06-23）。实现落点保持在
+`FrontendExpressionSemanticSupport.resolveBinarySpecialReturnType(...)`，新增的私有 helper 只识别
+`Nil/Nil`、`Object/Nil`、`Nil/Object` 的 `==` / `!=`，没有改动 type-check、compile-check、
+assignment compatibility 或 backend 路由。
 
 修改位置：
 
@@ -297,6 +302,10 @@ object / `null` 的缺口。
 - 不为了对齐 backend 更宽接受面而顺手放行 primitive / string-like / container 与 `null`
 
 ### Phase 2：前端语义 focused tests
+
+状态：已完成（2026-06-23）。新增 `FrontendExpressionSemanticSupportTest`
+覆盖 typed inner object / `null` 双向 `==` / `!=`、`null` / `null`、runtime-open
+`Variant` / `DYNAMIC` 回归，以及 object/nil ordering 负例。
 
 优先修改测试：
 
@@ -331,6 +340,10 @@ object / `null` 的缺口。
 
 ### Phase 3：compile-check 回归测试
 
+状态：已完成（2026-06-23）。新增 `FrontendCompileCheckAnalyzerTest` 回归，覆盖
+`return point.next != null` 与 `while current != null` 不再产生
+`sema.expression_resolution` / `sema.compile_check`。
+
 修改测试：
 
 - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendCompileCheckAnalyzerTest.java`
@@ -348,6 +361,9 @@ object / `null` 的缺口。
 - Phase 1 修复后，现有 compile gate 会自然放行这类 binary fact
 
 ### Phase 4：lowering / backend 路由验证
+
+状态：已完成（2026-06-23）。新增 lowering 回归确认 typed object / `null` equality 继续降为
+`BinaryOpInsn`，并新增 backend 反向顺序 `Object == Nil` / `Object != Nil` codegen 覆盖。
 
 建议至少覆盖两层：
 
@@ -374,6 +390,10 @@ object / `null` 的缺口。
 - 若测试基础设施更适合从 C 输出断言 specialization 结果，可继续沿用 backend 现有风格
 
 ### Phase 5：文档同步
+
+状态：已完成（2026-06-23）。已同步
+`doc/module_impl/frontend/frontend_unary_binary_expr_semantic_implementation.md`；compile-check 与
+type-check 文档经复核仍只描述消费已发布稳定事实的现有合同，无需新增逻辑说明。
 
 本计划落地后，至少应同步复核以下事实源：
 
@@ -440,6 +460,14 @@ script/run-gradle-targeted-tests.sh --tests COperatorInsnGenTest
 
 如果 lowering 侧最终落点不在 `FrontendLoweringBodyInsnPassTest`，则将第三条替换为实际承载
 `BinaryOpInsn` / compile-lowering continuity 的 focused test 类。
+
+本次实际执行：
+
+```bash
+script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTest,FrontendCompileCheckAnalyzerTest,FrontendLoweringBodyInsnPassTest,COperatorInsnGenTest
+```
+
+结果：通过。
 
 ## 8. 风险点
 

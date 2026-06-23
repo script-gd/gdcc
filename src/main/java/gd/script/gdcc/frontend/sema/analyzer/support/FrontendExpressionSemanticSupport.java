@@ -22,6 +22,7 @@ import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -1120,6 +1121,10 @@ public final class FrontendExpressionSemanticSupport {
         if (operator == GodotOperator.AND || operator == GodotOperator.OR) {
             return GdBoolType.BOOL;
         }
+        if ((operator == GodotOperator.EQUAL || operator == GodotOperator.NOT_EQUAL)
+                && isObjectNilEqualityPair(publishedLeftType, publishedRightType)) {
+            return GdBoolType.BOOL;
+        }
         if (operator == GodotOperator.ADD
                 && publishedLeftType instanceof GdArrayType leftArrayType
                 && publishedRightType instanceof GdArrayType rightArrayType
@@ -1128,6 +1133,12 @@ public final class FrontendExpressionSemanticSupport {
             return leftArrayType;
         }
         return null;
+    }
+
+    private static boolean isObjectNilEqualityPair(@NotNull GdType leftType, @NotNull GdType rightType) {
+        return leftType instanceof GdNilType && rightType instanceof GdNilType
+                || leftType instanceof GdObjectType && rightType instanceof GdNilType
+                || leftType instanceof GdNilType && rightType instanceof GdObjectType;
     }
 
     private static boolean isRuntimeOpenOperatorOperand(

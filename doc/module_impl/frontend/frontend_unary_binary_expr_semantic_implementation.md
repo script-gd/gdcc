@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（unary/binary shared semantic、analyzer 集成、type-check / compile-gate 消费路径已落地）
-- 更新时间：2026-03-20
+- 更新时间：2026-06-23
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -199,7 +199,7 @@ unary 当前有意保持保守精度：
 
 ### 4.2 当前 source-level special rule
 
-binary 当前有两类 source-level special rule，不得强行回退到 extension metadata：
+binary 当前有三类 source-level special rule，不得强行回退到 extension metadata：
 
 1. `and/or`
    - 同时覆盖源码别名 `&&/||`
@@ -211,6 +211,13 @@ binary 当前有两类 source-level special rule，不得强行回退到 extensi
    - 仅在两侧都为 typed array、元素类型相同、且元素类型不是 exact `Variant` 时命中
    - 命中后保留 `Array[T]`
    - 其他情况必须回退普通 binary route，不能凭空扩张更多保型规则
+3. object/nil equality
+   - 只锚定 `==` / `!=`
+   - 只覆盖 `Nil/Nil`、`Object/Nil`、`Nil/Object`
+   - 命中后固定发布 `RESOLVED(bool)`
+   - 该规则属于 binary semantic，不是 ordinary typed-boundary widening；不得据此扩张
+     `ClassRegistry.checkAssignable(...)`、type-check slot compatibility 或 compile gate
+   - exact `Variant` / `DYNAMIC` operand 继续保持 runtime-open `DYNAMIC(Variant)` 路由，不被该规则提前收窄
 
 ### 4.3 typed container 元数据匹配
 

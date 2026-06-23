@@ -45,6 +45,7 @@ import gd.script.gdcc.lir.insn.GotoInsn;
 import gd.script.gdcc.lir.insn.LineNumberInsn;
 import gd.script.gdcc.lir.insn.LiteralBoolInsn;
 import gd.script.gdcc.lir.insn.LiteralIntInsn;
+import gd.script.gdcc.lir.insn.LiteralNilInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LiteralStringNameInsn;
@@ -221,6 +222,49 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(1, indexedStores.size()),
                 () -> assertEquals(compoundInsn.resultId(), indexedStores.getFirst().valueId()),
                 () -> assertEquals(2, countInstructions(instructions, VariantGetIndexedInsn.class))
+        );
+    }
+
+    @Test
+    void runKeepsTypedObjectNilEqualityOnBinaryOpRoute() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_typed_object_nil_equality.gd",
+                """
+                        class_name BodyInsnTypedObjectNilEquality
+                        extends RefCounted
+                        
+                        class Point extends RefCounted:
+                            var next: Point = null
+                        
+                        func has_next(point: Point) -> bool:
+                            var current: Point = point
+                            return current != null
+                        """,
+                Map.of("BodyInsnTypedObjectNilEquality", "RuntimeBodyInsnTypedObjectNilEquality"),
+                true
+        );
+        var hasNextContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnTypedObjectNilEquality",
+                "has_next"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(hasNextContext.targetFunction());
+        var comparisonInsn = requireOnlyInstruction(hasNextContext.targetFunction(), BinaryOpInsn.class);
+        var nilIds = literalNilResultIds(instructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors(), () -> "Unexpected diagnostics: "
+                        + prepared.diagnostics().snapshot().asList()),
+                () -> assertEquals(GodotOperator.NOT_EQUAL, comparisonInsn.op()),
+                () -> assertTrue(comparisonInsn.leftId().startsWith("cfg_tmp_"), comparisonInsn.leftId()),
+                () -> assertEquals(nilIds.getFirst(), comparisonInsn.rightId()),
+                () -> assertEquals(1, nilIds.size()),
+                () -> assertEquals(0, countInstructions(instructions, PackVariantInsn.class)),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
         );
     }
 
@@ -6042,6 +6086,14 @@ class FrontendLoweringBodyInsnPassTest {
                 .filter(LiteralNullInsn.class::isInstance)
                 .map(LiteralNullInsn.class::cast)
                 .map(LiteralNullInsn::resultId)
+                .toList();
+    }
+
+    private static @NotNull List<String> literalNilResultIds(@NotNull List<LirInstruction> instructions) {
+        return instructions.stream()
+                .filter(LiteralNilInsn.class::isInstance)
+                .map(LiteralNilInsn.class::cast)
+                .map(LiteralNilInsn::resultId)
                 .toList();
     }
 

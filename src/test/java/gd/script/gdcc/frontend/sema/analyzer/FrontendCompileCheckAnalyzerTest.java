@@ -384,6 +384,40 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileLeavesTypedObjectNilEqualityOutOfCompileBlocks() throws Exception {
+        var source = """
+                class_name CompileCheckTypedObjectNilEquality
+                extends RefCounted
+                
+                class Point extends RefCounted:
+                    var next: Point = null
+                
+                func has_next(point: Point) -> bool:
+                    return point.next != null
+                
+                func count(point: Point) -> int:
+                    var total := 0
+                    var current: Point = point
+                    while current != null:
+                        total += 1
+                        current = current.next
+                    return total
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_typed_object_nil_equality.gd", source);
+        assertFalse(sharedAnalyzed.diagnostics().hasErrors(), () -> "Unexpected shared diagnostics: "
+                + sharedAnalyzed.diagnostics().asList());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_typed_object_nil_equality.gd", source);
+        assertFalse(compiled.diagnostics().hasErrors(), () -> "Unexpected compile diagnostics: "
+                + compiled.diagnostics().asList());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.expression_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+    }
+
+    @Test
     void analyzeForCompileLeavesShortCircuitBinaryExpressionsOnCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckShortCircuitBinary

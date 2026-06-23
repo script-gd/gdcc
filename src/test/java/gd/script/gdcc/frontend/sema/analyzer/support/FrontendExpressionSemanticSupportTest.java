@@ -25,6 +25,7 @@ import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -184,7 +185,7 @@ class FrontendExpressionSemanticSupportTest {
                 () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status()),
                 () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind()),
                 () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind()),
-                () -> assertEquals(List.of("int"), resolvedCall.argumentTypes().stream().map(type -> type.getTypeName()).toList()),
+                () -> assertEquals(List.of("int"), resolvedCall.argumentTypes().stream().map(GdType::getTypeName).toList()),
                 () -> assertEquals("int", resolvedCall.returnType().getTypeName()),
                 () -> assertNotNull(resolvedCall.declarationSite())
         );
@@ -205,7 +206,7 @@ class FrontendExpressionSemanticSupportTest {
                 () -> assertEquals(FrontendCallResolutionStatus.BLOCKED, blockedCall.status()),
                 () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, blockedCall.callKind()),
                 () -> assertEquals(FrontendReceiverKind.INSTANCE, blockedCall.receiverKind()),
-                () -> assertEquals(List.of("int"), blockedCall.argumentTypes().stream().map(type -> type.getTypeName()).toList()),
+                () -> assertEquals(List.of("int"), blockedCall.argumentTypes().stream().map(GdType::getTypeName).toList()),
                 () -> assertEquals("int", blockedCall.returnType().getTypeName()),
                 () -> assertNotNull(blockedCall.declarationSite())
         );
@@ -285,7 +286,7 @@ class FrontendExpressionSemanticSupportTest {
                 () -> assertEquals(FrontendReceiverKind.TYPE_META, vectorResult.publishedCallOrNull().receiverKind()),
                 () -> assertEquals(
                         List.of("int", "int", "int"),
-                        vectorResult.publishedCallOrNull().argumentTypes().stream().map(type -> type.getTypeName()).toList()
+                        vectorResult.publishedCallOrNull().argumentTypes().stream().map(GdType::getTypeName).toList()
                 ),
                 () -> assertNotNull(vectorResult.publishedCallOrNull().declarationSite()),
                 () -> assertTrue(nodeResult.rootOwnsOutcome()),
@@ -966,6 +967,75 @@ class FrontendExpressionSemanticSupportTest {
         assertTrue(invalidResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.FAILED, invalidResult.expressionType().status());
         assertTrue(invalidResult.expressionType().detailReason().contains("not defined for operand types 'String' and 'int'"));
+    }
+
+    @Test
+    void resolveBinaryExpressionTypeAcceptsOnlyNarrowObjectNilEqualitySpecialRule() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_object_nil_binary.gd",
+                """
+                        class_name ExpressionSemanticSupportObjectNilBinary
+                        extends RefCounted
+                        
+                        class Point extends RefCounted:
+                            var next: Point = null
+                        
+                        func ping(point: Point, typed_variant: Variant, dynamic_value):
+                            point != null
+                            point == null
+                            null != point
+                            null == point
+                            null == null
+                            null != null
+                            typed_variant == null
+                            null == typed_variant
+                            dynamic_value == null
+                            null == dynamic_value
+                            point < null
+                            null < point
+                        """
+        );
+
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var publishedResolver = publishedExpressionResolver(analyzed);
+        var expressions = findFunction(analyzed.ast(), "ping").body().statements().stream()
+                .map(ExpressionStatement.class::cast)
+                .map(ExpressionStatement::expression)
+                .map(BinaryExpression.class::cast)
+                .toList();
+        var pointType = publishedResolver.resolve(((BinaryExpression) expressions.getFirst()).left(), false);
+        assertEquals(
+                new GdObjectType("ExpressionSemanticSupportObjectNilBinary__sub__Point"),
+                pointType.publishedType()
+        );
+
+        // These are the only source-level nil equality pairs Phase 1 intentionally publishes as bool.
+        for (var index : List.of(0, 1, 2, 3, 4, 5)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertAll(
+                    () -> assertTrue(result.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status()),
+                    () -> assertEquals("bool", result.expressionType().publishedType().getTypeName())
+            );
+        }
+
+        for (var index : List.of(6, 7, 8, 9)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertAll(
+                    () -> assertTrue(result.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.DYNAMIC, result.expressionType().status()),
+                    () -> assertEquals(GdVariantType.VARIANT, result.expressionType().publishedType())
+            );
+        }
+
+        for (var index : List.of(10, 11)) {
+            var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
+            assertAll(
+                    () -> assertTrue(result.rootOwnsOutcome()),
+                    () -> assertEquals(FrontendExpressionTypeStatus.FAILED, result.expressionType().status()),
+                    () -> assertTrue(result.expressionType().detailReason().contains("not defined for operand types"))
+            );
+        }
     }
 
     @Test

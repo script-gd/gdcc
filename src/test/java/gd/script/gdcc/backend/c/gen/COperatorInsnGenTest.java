@@ -178,6 +178,38 @@ class COperatorInsnGenTest {
     }
 
     @Test
+    @DisplayName("Object == Nil should compare object with NULL")
+    void objectEqualNilUsesNullCompare() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "obj", "right_nil"),
+                List.of(
+                        new VariableSpec("obj", new GdObjectType("Node"), false),
+                        new VariableSpec("right_nil", GdNilType.NIL, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = ($obj == NULL);"), body);
+    }
+
+    @Test
+    @DisplayName("Object != Nil should negate NULL compare")
+    void objectNotEqualNilNegatesNullCompare() {
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.NOT_EQUAL, "obj", "right_nil"),
+                List.of(
+                        new VariableSpec("obj", new GdObjectType("Node"), false),
+                        new VariableSpec("right_nil", GdNilType.NIL, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                )
+        );
+
+        assertTrue(body.contains("$result = (!($obj == NULL));"), body);
+    }
+
+    @Test
     @DisplayName("Nil == non-Object should emit false")
     void nilEqualNonObjectEmitsFalse() {
         var body = generateBody(
