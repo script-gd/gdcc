@@ -411,6 +411,29 @@ type-check 文档经复核仍只描述消费已发布稳定事实的现有合同
 - 明确其职责属于 binary semantic，而不是 typed boundary widening
 - compile-check 文档不需要描述新逻辑，只需确保其“`RESOLVED` 不拦截”的事实与实现一致
 
+### Phase 6：端到端 test_suite 验收
+
+状态：已完成（2026-06-23）。本轮复核发现前端语义、compile-check、lowering 与 backend
+focused tests 已覆盖计划边界；剩余缺口是 `test_suite` 中缺少直接锚定 object/nil equality
+运行时结果的资源用例。已新增 smoke 资源对：
+
+- `src/test/test_suite/unit_test/script/smoke/object_nil_equality.gd`
+- `src/test/test_suite/unit_test/validation/smoke/object_nil_equality.gd`
+
+覆盖内容：
+
+- typed inner object 为 `null` 时，`object == null` 与 `null == object` 为 true
+- typed inner object 非 `null` 时，`object != null` 与 `null != object` 为 true
+- typed property `next: Point = null` 的双向 equality 为 true
+- `null == null` 为 true
+- 对应 false 分支不会误计入 mask，包括 `present == null`、`null == present`、
+  `missing != null`、`null != missing`、`null != null`
+
+同步项：
+
+- 已更新 `GdScriptUnitTestCompileRunnerTest.EXPECTED_SCRIPT_PATHS`，保持资源发现列表与新增
+  fixture 对齐
+
 ## 6. 验收细则
 
 ### 6.1 语义层验收
@@ -460,6 +483,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTes
 script/run-gradle-targeted-tests.sh --tests FrontendCompileCheckAnalyzerTest
 script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest
 script/run-gradle-targeted-tests.sh --tests COperatorInsnGenTest
+script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest
 ```
 
 如果 lowering 侧最终落点不在 `FrontendLoweringBodyInsnPassTest`，则将第三条替换为实际承载
@@ -469,6 +493,14 @@ script/run-gradle-targeted-tests.sh --tests COperatorInsnGenTest
 
 ```bash
 script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTest,FrontendCompileCheckAnalyzerTest,FrontendLoweringBodyInsnPassTest,COperatorInsnGenTest
+```
+
+结果：通过。
+
+本轮再次验收执行：
+
+```bash
+script/run-gradle-targeted-tests.sh --tests FrontendExpressionSemanticSupportTest,FrontendCompileCheckAnalyzerTest,FrontendLoweringBodyInsnPassTest,COperatorInsnGenTest,GdScriptUnitTestCompileRunnerTest
 ```
 
 结果：通过。

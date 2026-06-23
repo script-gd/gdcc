@@ -24,12 +24,9 @@ class QuadNode extends RefCounted:
     var south_east: QuadNode = null
 
 var _root: QuadNode = null
-var _nil_point: Point = Point.new()
 var _point_count: int = 0
 
 func prepare() -> void:
-    _nil_point.slot = -1
-    _nil_point.next = _nil_point
     _root = _new_node(0, 0, 64, 64)
     _point_count = 0
 
@@ -82,7 +79,7 @@ func _new_point(x: int, y: int, weight: int) -> Point:
     point.x = x
     point.y = y
     point.weight = weight
-    point.next = _nil_point
+    point.next = null
     return point
 
 func _new_node(min_x: int, min_y: int, max_x: int, max_y: int) -> QuadNode:
@@ -95,7 +92,7 @@ func _new_node(min_x: int, min_y: int, max_x: int, max_y: int) -> QuadNode:
     node.mid_y = (min_y + max_y) / 2
     node.is_leaf = true
     node.point_count = 0
-    node.points = _nil_point
+    node.points = null
     return node
 
 func _insert_point(x: int, y: int, weight: int) -> void:
@@ -125,11 +122,11 @@ func _subdivide(node: QuadNode) -> void:
     node.south_east = _new_node(node.mid_x, node.min_y, node.max_x, node.mid_y)
 
     var current: Point = node.points
-    node.points = _nil_point
+    node.points = null
     node.point_count = 0
-    while current.slot != -1:
+    while current != null:
         var next: Point = current.next
-        current.next = _nil_point
+        current.next = null
         _insert(_select_child(node, current), current)
         current = next
 
@@ -159,7 +156,7 @@ func _query(node: QuadNode, min_x: int, min_y: int, max_x: int, max_y: int) -> i
 func _query_points(point: Point, min_x: int, min_y: int, max_x: int, max_y: int) -> int:
     var total := 0
     var current: Point = point
-    while current.slot != -1:
+    while current != null:
         if current.x >= min_x and current.x < max_x and current.y >= min_y and current.y < max_y:
             total += current.weight
         current = current.next

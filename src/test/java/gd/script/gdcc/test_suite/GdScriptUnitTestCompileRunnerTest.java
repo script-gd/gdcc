@@ -95,6 +95,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/virtual/ready_called_once.gd",
             "scene/nested_node_refcounted_scene.gd",
             "smoke/basic_arithmetic.gd",
+            "smoke/object_nil_equality.gd",
             "subscript/array_roundtrip.gd",
             "subscript/dictionary_float_key_roundtrip.gd",
             "subscript/packed_array_mutation_roundtrip.gd",
