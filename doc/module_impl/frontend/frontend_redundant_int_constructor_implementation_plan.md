@@ -8,7 +8,7 @@
 
 ## 文档状态
 
-- 状态：Phase A/B 已完成并通过 targeted 测试，Phase C-F 待实施
+- 状态：Phase A-F 已完成并通过 targeted 测试
 - 更新时间：2026-06-24
 - 适用范围：
   - `src/main/c/codegen/include_451/gdcc/**`
@@ -27,6 +27,8 @@
   - `doc/gdcc_ownership_lifecycle_spec.md`
 - 相关 issue：
   - `https://github.com/script-gd/gdcc/issues/46`
+- 最终验证命令已通过：
+  `script/run-gradle-targeted-tests.sh --tests "CConstructInsnGenTest,GodotBindingUsageSessionTest,CProjectBuilderSharedIncludeTest,GodotAbiHeaderCompileTest"`
 
 ---
 
@@ -253,6 +255,18 @@ constructor route，问题在 backend helper surface 闭合。
 
 ### Phase C：同步 backend provided symbol 集合
 
+状态：已完成。
+
+产出：
+
+- `GodotBindingProvidedSymbols` 中的显式 helper 集合已从 `GDCC_HELPER_C_FUNCTION_NAMES`
+  重命名为 `GDCC_RUNTIME_C_FUNCTION_NAMES`，避免把符号来源错误限定为 `gdcc_helper.h`。
+- provided set 已纳入 `gdcc_builtin_ctor.h` 提供的 14 个 atomic constructor helper：
+  `Nil`、`bool`、`int`、`float` 的默认、同型与 atomic-to-atomic constructor helper。
+- provided set 继续包含 `godot_new_gdcc_Object_with_Variant`、`godot_Variant_call`
+  以及迁移后的 4 个 Transform/Basis/Projection flat-float shim。
+- 没有把这些 GDCC-owned helper 加入 `GodotBuiltinGenerator.collectSymbols(...)`。
+
 目标：usage scanner / module-local binding collector 认识新 helper，避免把它们误判为待生成或未提供符号。
 
 实施步骤：
@@ -276,6 +290,17 @@ constructor route，问题在 backend helper surface 闭合。
 
 ### Phase D：保持 `CBuiltinBuilder` 合同并更新注释
 
+状态：已完成。
+
+产出：
+
+- `CBuiltinBuilder.constructRegularBuiltin(...)` 继续保持 exact metadata matching，没有为
+  atomic constructor 新增特殊分支。
+- `constructBuiltin(...)` 注释已明确 flat-float fallback helper shim 来自
+  `gdcc_builtin_ctor.h`，且只覆盖 `Transform2D(6 x float)`、`Transform3D(12 x float)`、
+  `Basis(9 x float)`、`Projection(16 x float)`。
+- 未新增 `CIntToIntIntrinsic`，未修改 `CIntrinsicManager` 或 frontend lowering。
+
 目标：让 backend constructor route 自然使用新 helper surface，不引入新的分支。
 
 实施步骤：
@@ -297,6 +322,23 @@ constructor route，问题在 backend helper surface 闭合。
 - 现有 `c_int_to_float` 测试不因新增 helper 被迫重写。
 
 ### Phase E：同步测试
+
+状态：已完成。
+
+产出：
+
+- `GodotBindingUsageSessionTest.gdccHelperWrappersShouldBeRuntimeProvided` 已覆盖 14 个
+  atomic constructor helper 与 4 个 flat-float shim，确保 usage session 不把它们当作
+  module-local missing symbol。
+- `CConstructInsnGenTest.constructBuiltinShouldEmitMetadataBackedAtomicCtorHelpers` 已覆盖
+  `int(int)`、`bool(int)`、`float(bool)` 这些 metadata-backed atomic constructor route。
+- `CConstructInsnGenTest.constructBuiltinShouldEmitFlatFloatHelperCtorForAllShimTypes` 已覆盖
+  Transform/Basis/Projection flat-float shim 全量正向路径。
+- `CConstructInsnGenTest` 已新增 helper shim arity/type mismatch 负例，以及
+  missing/unknown/ref result slot 与 unknown argument variable 的指令结构负例。
+- Phase A/B 已有 `GodotAbiHeaderCompileTest.gdccBuiltinCtorHeaderShouldCompileAndExposeRuntimeHelpers`
+  和 `CProjectBuilderSharedIncludeTest` 覆盖 header 编译、间接 include 与 shared/project-local
+  include 复制行为。
 
 目标：用 focused tests 锁住 helper surface、迁移和 issue #46 关键链路。
 
@@ -329,6 +371,20 @@ constructor route，问题在 backend helper surface 闭合。
 - 新增测试均为 targeted，不跑全量 suite 作为日常迭代入口。
 
 ### Phase F：同步文档
+
+状态：已完成。
+
+产出：
+
+- `doc/module_impl/backend/godot_binding_implementation.md` 已记录
+  `gdcc_builtin_ctor.h` 是 GDCC-owned builtin constructor helper surface，并说明
+  `entry.h` 通过 `<gdcc_helper.h>` 间接获得该头文件。
+- `doc/module_impl/backend/godot_binding_implementation.md` 已记录
+  `GodotBindingProvidedSymbols` 必须纳入 `gdcc_builtin_ctor.h` 提供的 runtime helper。
+- `doc/module_impl/backend/builtin_builder_implementation.md` 已记录 exact metadata constructor
+  helper 不只来自 `godot_builtin.h/.c`，atomic constructors 由 GDCC-owned helper 补齐。
+- `doc/module_impl/backend/builtin_builder_implementation.md` 已明确 flat-float shim 来自
+  `gdcc_builtin_ctor.h`，并且不要把 atomic constructors 扩入 helper shim 白名单。
 
 目标：把 helper surface 归口规则写入长期事实源。
 

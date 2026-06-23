@@ -47,7 +47,8 @@
 1. 解析 LIR 指令操作数。指令级 result/operand 校验由 `ConstructInsnGen` 负责。
 2. 管理变量槽位生命周期。写槽、destroy、own/release、stable carrier 由 `CBodyBuilder` 负责。
 3. 生成 builtin wrapper 本体。wrapper 符号与 ABI 由 `GodotBuiltinGenerator`、`GodotUtilityGenerator`
-   和 `src/main/c/codegen/include_451/godot/godot_builtin.*` 维护。
+   和 `src/main/c/codegen/include_451/godot/godot_builtin.*` 维护；GDCC-owned constructor
+   helper 补齐面由 `src/main/c/codegen/include_451/gdcc/gdcc_builtin_ctor.h` 维护。
 4. 承载 frontend overload 或 implicit conversion 规则。普通构造匹配保持 exact type；需要 widening 的场景必须在上游 lowering 或 intrinsic 中显式物化。
 
 `CGenHelper` 持有并发布 `builtinBuilder()`，同时继续负责通用 C 渲染、registry/context 访问、类型名渲染和 binding 数据装配。
@@ -81,6 +82,9 @@ metadata 中的参数类型通过 `ScopeTypeParsers.parseExtensionTypeMetadata(.
 无法解析的 constructor metadata 不参与匹配，不应被当作隐式兼容候选。
 
 helper shim constructor 是显式白名单例外，可以跳过 API metadata 校验，但仍要求实参类型精确匹配白名单签名。
+此外，metadata 中已经存在、但 `godot_builtin.h/.c` 生成器故意跳过的 atomic constructor
+helper 由 `gdcc_builtin_ctor.h` 提供；例如 `int(int)` 仍按普通 exact metadata route
+生成 `godot_new_int_with_int`，不是 helper shim，也不是 backend intrinsic。
 
 ## 3. 构造分发
 
@@ -143,7 +147,11 @@ helper shim constructor 是显式白名单例外，可以跳过 API metadata 校
 | `Projection` | 16 x `float` | `godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float` |
 
 不要为普通 numeric constructor 继续扩展硬编码表。
+这些 shim 由 `gdcc_builtin_ctor.h` 提供，并通过 `<gdcc_helper.h>` 间接暴露给生成代码。
 可维护路径是优先使用 API metadata；helper shim 只用于 Godot metadata 不提供但 GDCC runtime 明确提供的版本化兼容函数。
+不要把 atomic constructor 加进 shim 白名单：`bool/int/float` 的默认、同型和 atomic-to-atomic
+constructor 已经是 metadata-backed 普通 constructor，只是 runtime helper surface 由
+`gdcc_builtin_ctor.h` 补齐。
 
 ## 4. Typed Container 构造
 
@@ -259,13 +267,15 @@ constructor literal 流程：
    `construct_array_implementation.md`、本文档和测试。
 8. 与模块语义无关的纯字符串处理优先复用 `StringUtil`。constructor 参数切分保留在 builder 内部，
    因为它直接承载 default literal 语义。
-9. 新增 helper shim 时必须同时更新 runtime helper、binding usage tracking、本文档和正反向测试。
+9. 新增 GDCC runtime constructor helper 或 helper shim 时必须同时更新 runtime helper、
+   binding usage tracking、本文档和正反向测试。
 
 ## 7. 回归测试基线
 
 ### 7.1 单元生成测试
 
 - `src/test/java/gd/script/gdcc/backend/c/gen/CConstructInsnGenTest.java`
+  - metadata-backed atomic constructor helper 路径，如 `godot_new_int_with_int`
   - `construct_builtin` helper shim 路径
   - 非 variable operand fail-fast
   - exact metadata matching 与 Variant operand 拒绝
@@ -285,7 +295,7 @@ constructor literal 流程：
 - `src/test/java/gd/script/gdcc/backend/c/gen/CGenHelperTest.java`
   - extension type 文本解析与 container hint 兼容规则
 - `src/test/java/gd/script/gdcc/backend/c/gen/binding/usage/GodotBindingUsageSessionTest.java`
-  - helper shim constructor 被 binding usage session 覆盖
+  - `gdcc_builtin_ctor.h` constructor helper 与 helper shim 被 binding usage session 覆盖
 - `src/test/java/gd/script/gdcc/backend/c/gen/binding/GodotBuiltinGeneratorTest.java`
   - generated builtin wrapper contract
 - `src/test/java/gd/script/gdcc/backend/c/gen/binding/GodotUtilityGeneratorTest.java`

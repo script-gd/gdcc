@@ -20,7 +20,21 @@ import java.util.Set;
 public final class GodotBindingProvidedSymbols {
     private static final @NotNull String INTERFACE_HEADER_RESOURCE =
             "/include_451/godot/gdextension/gdextension_interface.h";
-    private static final @NotNull List<String> GDCC_HELPER_C_FUNCTION_NAMES = List.of(
+    private static final @NotNull List<String> GDCC_RUNTIME_C_FUNCTION_NAMES = List.of(
+            "godot_new_Nil",
+            "godot_new_Nil_with_Variant",
+            "godot_new_bool",
+            "godot_new_bool_with_bool",
+            "godot_new_bool_with_int",
+            "godot_new_bool_with_float",
+            "godot_new_int",
+            "godot_new_int_with_int",
+            "godot_new_int_with_float",
+            "godot_new_int_with_bool",
+            "godot_new_float",
+            "godot_new_float_with_float",
+            "godot_new_float_with_int",
+            "godot_new_float_with_bool",
             "godot_new_gdcc_Object_with_Variant",
             "godot_new_Transform2D_with_float_float_float_float_float_float",
             "godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float",
@@ -93,7 +107,7 @@ public final class GodotBindingProvidedSymbols {
             FixedGodotBindings.symbols(api).stream()
                     .map(GodotBindingSymbol::cFunctionName)
                     .forEach(provided::add);
-            provided.addAll(GDCC_HELPER_C_FUNCTION_NAMES);
+            provided.addAll(GDCC_RUNTIME_C_FUNCTION_NAMES);
             return Set.copyOf(provided);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to load default Godot binding provided set", exception);

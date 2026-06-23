@@ -110,7 +110,7 @@ native input。
 - builtin wrappers
 - utility wrappers
 - fixed wrappers
-- 少量明确登记的 GDCC helper `godot_*` symbol
+- 少量明确登记的 GDCC runtime helper `godot_*` symbol
 
 非 provided 的 `godot_*` 调用只有在同一使用集 buffer 中显式登记为 module-local 后才允许
 发射。当前 module-local family 只包含：
@@ -121,6 +121,14 @@ native input。
 不再保留 generic module-local class method family。exact engine method 使用
 `EngineMethodUsageSession`，engine object constructor 使用 `EngineConstructorUsageSession`，
 都不归入 `ModuleLocalGodotBinding`。
+
+`src/main/c/codegen/include_451/gdcc/gdcc_builtin_ctor.h` 是 GDCC-owned builtin
+constructor helper surface。它补齐 Extension API metadata 已声明、但
+`godot_builtin.h/.c` 生成器当前跳过的 constructor helper，例如 `godot_new_int_with_int`，
+并集中承载 Transform/Basis/Projection flat-float constructor shim。生成的 `entry.h`
+通过 `<gdcc_helper.h>` 间接获得该头文件；`GodotBindingProvidedSymbols` 必须把其中提供的
+`godot_*` helper 纳入 runtime-provided set，避免 usage collector 把这些 runtime helper
+误判为 module-local missing symbol。
 
 新增固定 wrapper 时：
 

@@ -114,8 +114,8 @@ public final class CBuiltinBuilder {
     /// This API is shared for construct_builtin and container constructions:
     /// - Array / Dictionary follow dedicated typed-constructor path.
     /// - Other builtin types resolve constructor metadata by exact argument type match.
-    /// - If API metadata has no exact constructor, fallback to gdcc helper shims:
-    ///   Transform2D, Transform3D, Basis, Projection.
+    /// - If API metadata has no exact constructor, fallback to gdcc_builtin_ctor.h helper shims
+    ///   for Transform2D(6 x float), Transform3D(12 x float), Basis(9 x float), Projection(16 x float).
     public void constructBuiltin(@NotNull CBodyBuilder bodyBuilder,
                                  @NotNull CBodyBuilder.TargetRef target,
                                  @NotNull List<CBodyBuilder.ValueRef> args) {

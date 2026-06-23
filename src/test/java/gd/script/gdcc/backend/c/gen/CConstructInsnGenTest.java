@@ -24,6 +24,8 @@ import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBasisType;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
@@ -31,12 +33,15 @@ import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPackedStringArrayType;
 import gd.script.gdcc.type.GdPackedVectorArrayType;
+import gd.script.gdcc.type.GdProjectionType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdTransform2DType;
+import gd.script.gdcc.type.GdTransform3DType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -52,6 +57,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class CConstructInsnGenTest {
+    @Test
+    @DisplayName("construct_builtin should emit metadata-backed atomic constructor helpers")
+    void constructBuiltinShouldEmitMetadataBackedAtomicCtorHelpers() {
+        assertAtomicConstructorCall(GdIntType.INT, List.of(GdIntType.INT), "godot_new_int_with_int");
+        assertAtomicConstructorCall(GdBoolType.BOOL, List.of(GdIntType.INT), "godot_new_bool_with_int");
+        assertAtomicConstructorCall(GdFloatType.FLOAT, List.of(GdBoolType.BOOL), "godot_new_float_with_bool");
+    }
+
     @Test
     @DisplayName("construct_builtin should emit helper-shim constructor call for Transform2D with 6 float args")
     void constructBuiltinShouldEmitTransform2DHelperCtor() {
@@ -80,6 +93,118 @@ class CConstructInsnGenTest {
 
         var body = generateBody(clazz, func);
         assertTrue(body.contains("godot_new_Transform2D_with_float_float_float_float_float_float"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should emit all flat-float helper-shim constructor calls")
+    void constructBuiltinShouldEmitFlatFloatHelperCtorForAllShimTypes() {
+        for (var helperCase : flatFloatHelperCtorCases()) {
+            var clazz = newTestClass();
+            var func = newFunction("construct_" + helperCase.label());
+            var args = addFloatArgs(func, helperCase.argCount());
+            func.createAndAddVariable("result", helperCase.targetType());
+
+            entry(func).appendInstruction(new ConstructBuiltinInsn("result", args));
+            clazz.addFunction(func);
+
+            var body = generateBody(clazz, func);
+            assertTrue(
+                    body.contains(helperCase.constructorName()),
+                    () -> "Expected helper constructor missing for " + helperCase.targetType().getTypeName() + ".\nBody:\n" + body
+            );
+        }
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject helper-shim arity mismatches")
+    void constructBuiltinShouldRejectHelperShimArityMismatch() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_transform2d_bad_arity");
+        var args = addFloatArgs(func, 5);
+        func.createAndAddVariable("result", GdTransform2DType.TRANSFORM2D);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn("result", args));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Builtin constructor validation failed"));
+        assertTrue(ex.getMessage().contains("'Transform2D' with args [float, float, float, float, float]"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject helper-shim type mismatches")
+    void constructBuiltinShouldRejectHelperShimTypeMismatch() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_transform2d_bad_type");
+        var args = addFloatArgs(func, 5);
+        func.createAndAddVariable("bad", GdIntType.INT);
+        args.add(new LirInstruction.VariableOperand("bad"));
+        func.createAndAddVariable("result", GdTransform2DType.TRANSFORM2D);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn("result", args));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Builtin constructor validation failed"));
+        assertTrue(ex.getMessage().contains("'Transform2D' with args [float, float, float, float, float, int]"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject missing result variable ID")
+    void constructBuiltinShouldRejectMissingResultId() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_missing_result");
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(null, List.of()));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Construction instruction missing result variable ID"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject unknown result variables")
+    void constructBuiltinShouldRejectUnknownResultVariable() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_unknown_result");
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn("missing", List.of()));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Result variable ID 'missing' does not exist"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject ref result variables")
+    void constructBuiltinShouldRejectRefResultVariable() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_ref_result");
+        var result = func.createAndAddRefVariable("result", GdIntType.INT);
+        assertNotNull(result);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn("result", List.of()));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Result variable ID 'result' cannot be a reference"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject unknown argument variables")
+    void constructBuiltinShouldRejectUnknownArgumentVariable() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_unknown_arg");
+        func.createAndAddVariable("result", GdIntType.INT);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn(
+                "result",
+                List.of(new LirInstruction.VariableOperand("missing"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("construct_builtin argument variable ID 'missing' not found"));
     }
 
     @Test
@@ -906,6 +1031,36 @@ class CConstructInsnGenTest {
         assertTrue(ex.getMessage().contains("construct_array '" + hintText + "' is not a valid type"));
     }
 
+    private void assertAtomicConstructorCall(@NotNull GdType targetType,
+                                             @NotNull List<GdType> argTypes,
+                                             @NotNull String constructorName) {
+        var clazz = newTestClass();
+        var func = newFunction("construct_" + targetType.getTypeName() + "_atomic");
+        var operands = new ArrayList<LirInstruction.Operand>(argTypes.size());
+        for (var i = 0; i < argTypes.size(); i++) {
+            var argId = "arg_" + i;
+            func.createAndAddVariable(argId, argTypes.get(i));
+            operands.add(new LirInstruction.VariableOperand(argId));
+        }
+        func.createAndAddVariable("result", targetType);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn("result", operands));
+        clazz.addFunction(func);
+
+        var body = generateBody(clazz, func, apiWithAtomicConstructors());
+        assertTrue(body.contains(constructorName), body);
+    }
+
+    private ArrayList<LirInstruction.Operand> addFloatArgs(@NotNull LirFunctionDef func, int count) {
+        var args = new ArrayList<LirInstruction.Operand>(count);
+        for (var i = 0; i < count; i++) {
+            var argId = "arg_" + i;
+            func.createAndAddVariable(argId, GdFloatType.FLOAT);
+            args.add(new LirInstruction.VariableOperand(argId));
+        }
+        return args;
+    }
+
     private LirFunctionDef findFunctionByName(LirClassDef clazz, String functionName) {
         for (var function : clazz.getFunctions()) {
             if (functionName.equals(function.getName())) {
@@ -926,6 +1081,35 @@ class CConstructInsnGenTest {
                 new PackedCtorCase("packed_vector2", "PackedVector2Array", GdPackedVectorArrayType.PACKED_VECTOR2_ARRAY),
                 new PackedCtorCase("packed_vector3", "PackedVector3Array", GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY),
                 new PackedCtorCase("packed_vector4", "PackedVector4Array", GdPackedVectorArrayType.PACKED_VECTOR4_ARRAY)
+        );
+    }
+
+    private List<FlatFloatHelperCtorCase> flatFloatHelperCtorCases() {
+        return List.of(
+                new FlatFloatHelperCtorCase(
+                        "transform2d",
+                        GdTransform2DType.TRANSFORM2D,
+                        6,
+                        "godot_new_Transform2D_with_float_float_float_float_float_float"
+                ),
+                new FlatFloatHelperCtorCase(
+                        "transform3d",
+                        GdTransform3DType.TRANSFORM3D,
+                        12,
+                        "godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float"
+                ),
+                new FlatFloatHelperCtorCase(
+                        "basis",
+                        GdBasisType.BASIS,
+                        9,
+                        "godot_new_Basis_with_float_float_float_float_float_float_float_float_float"
+                ),
+                new FlatFloatHelperCtorCase(
+                        "projection",
+                        GdProjectionType.PROJECTION,
+                        16,
+                        "godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float"
+                )
         );
     }
 
@@ -981,6 +1165,35 @@ class CConstructInsnGenTest {
         return apiWithBuiltins(List.of(
                 newBuiltinClass("String", List.of()),
                 newBuiltinClass("StringName", List.of())
+        ));
+    }
+
+    private ExtensionAPI apiWithAtomicConstructors() {
+        return apiWithBuiltins(List.of(
+                newBuiltinClass(
+                        "bool",
+                        List.of(
+                                newConstructor("bool", "bool"),
+                                newConstructor("bool", "int"),
+                                newConstructor("bool", "float")
+                        )
+                ),
+                newBuiltinClass(
+                        "int",
+                        List.of(
+                                newConstructor("int", "int"),
+                                newConstructor("int", "float"),
+                                newConstructor("int", "bool")
+                        )
+                ),
+                newBuiltinClass(
+                        "float",
+                        List.of(
+                                newConstructor("float", "float"),
+                                newConstructor("float", "int"),
+                                newConstructor("float", "bool")
+                        )
+                )
         ));
     }
 
@@ -1049,6 +1262,14 @@ class CConstructInsnGenTest {
         private String constructorCall() {
             return "godot_new_" + typeName + "()";
         }
+    }
+
+    private record FlatFloatHelperCtorCase(
+            String label,
+            GdType targetType,
+            int argCount,
+            String constructorName
+    ) {
     }
 
     private record PackedPropertyCase(String propertyName, PackedCtorCase packedCase) {

@@ -38,6 +38,20 @@ class GodotBindingUsageSessionTest {
         var buffer = session.newFunctionBuffer();
 
         for (var functionName : List.of(
+                "godot_new_Nil",
+                "godot_new_Nil_with_Variant",
+                "godot_new_bool",
+                "godot_new_bool_with_bool",
+                "godot_new_bool_with_int",
+                "godot_new_bool_with_float",
+                "godot_new_int",
+                "godot_new_int_with_int",
+                "godot_new_int_with_float",
+                "godot_new_int_with_bool",
+                "godot_new_float",
+                "godot_new_float_with_float",
+                "godot_new_float_with_int",
+                "godot_new_float_with_bool",
                 "godot_new_gdcc_Object_with_Variant",
                 "godot_new_Transform2D_with_float_float_float_float_float_float",
                 "godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float",
