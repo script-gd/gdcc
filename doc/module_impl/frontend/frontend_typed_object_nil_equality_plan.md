@@ -342,7 +342,9 @@ assignment compatibility 或 backend 路由。
 
 状态：已完成（2026-06-23）。新增 `FrontendCompileCheckAnalyzerTest` 回归，覆盖
 `return point.next != null` 与 `while current != null` 不再产生
-`sema.expression_resolution` / `sema.compile_check`。
+`sema.expression_resolution` / `sema.compile_check`；同时补充
+`point < null` 反例，锚定 object/nil 的放行范围只限 `==` / `!=`，且 shared
+`sema.expression_resolution` 已解释失败时 compile gate 不重复追加 `sema.compile_check`。
 
 修改测试：
 
@@ -355,6 +357,8 @@ assignment compatibility 或 backend 路由。
 - shared semantic 发布 `RESOLVED(bool)` 后，compile-check 不产生
   `sema.compile_check`
 - 不因同一 anchor 产生重复 diagnostic
+- `typed object < null` 仍保留 shared expression-resolution 失败，不被 compile-check
+  误当成 equality 放行面或重复报告
 
 这一步的目标不是新增 compile-check 逻辑，而是证明：
 

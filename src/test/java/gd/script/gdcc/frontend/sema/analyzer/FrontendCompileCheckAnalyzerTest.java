@@ -418,6 +418,41 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeForCompileKeepsNonEqualityObjectNilComparisonBlocked() throws Exception {
+        var source = """
+                class_name CompileCheckObjectNilOrdering
+                extends RefCounted
+                
+                class Point extends RefCounted:
+                    pass
+                
+                func ping(point: Point):
+                    return point < null
+                """;
+
+        var sharedAnalyzed = analyzeShared("compile_check_object_nil_ordering.gd", source);
+        var sharedExpressionDiagnostics = diagnosticsByCategory(
+                sharedAnalyzed.diagnostics(),
+                "sema.expression_resolution"
+        );
+
+        assertTrue(sharedAnalyzed.diagnostics().hasErrors());
+        assertEquals(1, sharedExpressionDiagnostics.size());
+        assertTrue(sharedExpressionDiagnostics.getFirst().message().contains("not defined for operand types"));
+        assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
+
+        var compiled = analyzeForCompile("compile_check_object_nil_ordering.gd", source);
+        var compiledExpressionDiagnostics = diagnosticsByCategory(
+                compiled.diagnostics(),
+                "sema.expression_resolution"
+        );
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+
+        assertEquals(1, compiledExpressionDiagnostics.size());
+        assertTrue(compileDiagnostics.isEmpty());
+    }
+
+    @Test
     void analyzeForCompileLeavesShortCircuitBinaryExpressionsOnCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckShortCircuitBinary
