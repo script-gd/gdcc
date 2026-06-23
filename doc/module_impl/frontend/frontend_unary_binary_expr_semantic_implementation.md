@@ -39,6 +39,10 @@
   - 不在这里引入 numeric promotion 或 typed-boundary widening；`StringName` / `String` 互转由 ordinary typed boundary helper 管理，unary / binary 语义不拥有这条规则
   - 不在这里把 compile-only blocker 反向回灌到 shared semantic 路径
   - 不在这里把 `not in` 提升为已支持语义；当前版本仍保持显式 unsupported 边界
+  - 不在这里放宽 object/nil ordering，如 `<`、`>`、`<=`、`>=`
+  - 不在这里把 object/nil equality 扩张成 assignment compatibility、parameter compatibility 或 slot compatibility 规则
+  - 不在这里把 `object == null` 改写成 object validity 语义
+  - 不在这里把 backend 更宽的 nil equality 接受面整体上提为 frontend source-level 合同
 
 ---
 
@@ -214,10 +218,15 @@ binary 当前有三类 source-level special rule，不得强行回退到 extensi
 3. object/nil equality
    - 只锚定 `==` / `!=`
    - 只覆盖 `Nil/Nil`、`Object/Nil`、`Nil/Object`
+   - `Nil/Nil` 仅作为同一窄规则的伴随 case 保留，用来维持既有 `NIL_COMPARISON` 一致性；它不表示 frontend 已支持“任意类型与 `null` 可比较”
    - 命中后固定发布 `RESOLVED(bool)`
+   - 实现入口固定在 `FrontendExpressionSemanticSupport.resolveBinarySpecialReturnType(...)`
+   - 对象侧判断只允许基于 `publishedType instanceof GdObjectType`，不得依赖 source-facing 类名文本
    - 该规则属于 binary semantic，不是 ordinary typed-boundary widening；不得据此扩张
      `ClassRegistry.checkAssignable(...)`、type-check slot compatibility 或 compile gate
    - exact `Variant` / `DYNAMIC` operand 继续保持 runtime-open `DYNAMIC(Variant)` 路由，不被该规则提前收窄
+   - backend 已有更宽 `NIL_COMPARISON` 接受面，但 frontend 当前合同不因此顺手放宽 `int == null`、
+     `String == null` 或 container 与 `null` 的 equality
 
 ### 4.3 typed container 元数据匹配
 
@@ -246,6 +255,37 @@ binary metadata 路由当前统一按 raw builtin 名称参与匹配：
 - 不引入新的 `NOT_IN` metadata/operator 枚举
 
 当前版本尚未落地这条复合规则，因此 `not in` 仍是明确 feature boundary，而不是模糊 TODO。
+
+### 4.5 object/nil equality 的 lowering / backend 合同
+
+object/nil equality 当前必须继续沿用既有 binary compare 主路径：
+
+- lowering 继续产出 `BinaryOpInsn`
+- backend 继续复用 `OperatorPath.NIL_COMPARISON`
+- 本合同不切换到 `variant_is_nil` / `object_is_null` 路线
+
+保持这条路由的原因是：
+
+- `BinaryOpInsn` 已经是当前 binary compare 的稳定主路径
+- `NIL_COMPARISON` 已覆盖 `Nil/Nil`、`Nil/Object`、`Object/Nil` 与 `!=` 取反语义
+- runtime-open `Variant == null` 不能被简化成“只做 nil tag 检查”的更窄规则
+- 若切换到独立 low IR 路线，会把当前窄修复扩张成新的 rewrite / codegen 工程
+
+### 4.6 object/nil equality 的 Godot 语义边界
+
+当前 object/nil equality 文档只保留对实现边界有长期价值的 Godot 结论：
+
+- `null` 是 literal，不是 ordinary builtin type
+- `Object` 作为 class family 参与语义，不是 ordinary builtin type name 映射的一部分
+- Godot/Variant runtime 为 `Object/Nil`、`Nil/Object`、`Nil/Nil` 注册了 equality / inequality evaluator
+- backend 对部分非 object 类型与 `Nil` 也有既有运行时语义，但这不自动提升为 frontend 当前支持面
+- `object == null` 合法，不等于推荐用它判断对象是否已释放；对象有效性判断仍应与 equality 语义分离
+
+因此后续实现、注释或文档不得把当前合同反向改写成：
+
+- “Godot 只允许 object/null 与 `null` 比较”
+- “`== null` 等价 object validity 检查”
+- “backend 既然更宽，frontend 当前也应一起放宽”
 
 ---
 
@@ -314,6 +354,7 @@ compile gate 当前只把以下状态视为 blocker：
   - binary 正反例
   - `and/or` 合同
   - typed array preserve 正反例
+  - object/nil equality 正反例
   - `not in` unsupported 边界
 - `FrontendExprTypeAnalyzerTest`
   - unary / binary 结果发布
@@ -322,7 +363,14 @@ compile gate 当前只把以下状态视为 blocker：
   - unary / binary 稳定结果进入 condition / initializer / return 消费面
 - `FrontendCompileCheckAnalyzerTest`
   - unary / binary resolved / dynamic route 不再触发 compile blocker
+  - object/nil equality 不再触发 compile blocker
   - `ConditionalExpression` 继续被 compile-only block
+- `FrontendLoweringBodyInsnPassTest`
+  - object/nil equality 继续进入 ordinary `BinaryOpInsn` lowering 路由
+- `COperatorInsnGenTest`
+  - `Object/Nil`、`Nil/Object`、`Nil/Nil` 继续走 nil specialization codegen
+- `GdScriptUnitTestCompileRunnerTest`
+  - `object_nil_equality` smoke 资源保持端到端可编译与结果对齐
 
 后续若扩张 unary / binary 行为，测试必须继续同时覆盖：
 
@@ -355,7 +403,33 @@ compile gate 当前只把以下状态视为 blocker：
 - 不阻断 downstream 消费 stable fact
 - 不把当前事实源重新拉回“为实现阶段服务的计划文档”
 
-### 7.3 `not in` 的真实成本高于 alias
+### 7.3 object/nil equality 仍是窄规则
+
+当前 object/nil equality 的工程价值在于补齐 frontend 对已知静态安全组合的缺口，而不是把 backend
+更宽的 nil equality 运行时语义整体上提为 source-level 合同。
+
+后续若继续扩张这条规则，必须先重新论证：
+
+- 是否仍属于 binary semantic，而不是 typed-boundary widening
+- 是否会误伤 `Variant` / `DYNAMIC` 的 runtime-open 路由
+- 是否需要同步扩大 lowering、backend 与 smoke test 锚点
+
+### 7.4 smoke / end-to-end 锚点也属于合同的一部分
+
+object/nil equality 当前不只依赖 shared semantic 与 focused unit tests，还要求以下 smoke 事实继续成立：
+
+- `src/test/test_suite/unit_test/script/smoke/object_nil_equality.gd`
+- `src/test/test_suite/unit_test/validation/smoke/object_nil_equality.gd`
+
+这些资源用于锚定：
+
+- typed object / `null` 双向 `==` / `!=` 的端到端结果
+- `null == null` / `null != null` 的稳定行为
+- 已存在对象与缺失对象的 true/false 分支不被误翻转
+
+后续若调整 object/nil equality 支持面，必须同步复核这些 smoke 资源，而不是只更新语义单测。
+
+### 7.5 `not in` 的真实成本高于 alias
 
 `not in` 后续若要转正，至少同时涉及：
 
@@ -366,7 +440,7 @@ compile gate 当前只把以下状态视为 blocker：
 
 因此它不能被当成“多映射一个别名”的小修。当前文档明确保留这条工程反思，目的是防止后续实现又把它错误简化回 alias。
 
-### 7.4 文档维护约束
+### 7.6 文档维护约束
 
 后续若继续扩张 unary / binary 支持面，应优先更新：
 

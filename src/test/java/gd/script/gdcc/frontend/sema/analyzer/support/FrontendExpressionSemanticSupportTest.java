@@ -1009,7 +1009,7 @@ class FrontendExpressionSemanticSupportTest {
                 pointType.publishedType()
         );
 
-        // These are the only source-level nil equality pairs Phase 1 intentionally publishes as bool.
+        // These are the only source-level nil equality pairs that the current helper publishes as bool.
         for (var index : List.of(0, 1, 2, 3, 4, 5)) {
             var result = support.resolveBinaryExpressionType(expressions.get(index), publishedResolver, false);
             assertAll(

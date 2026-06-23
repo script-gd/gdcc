@@ -130,18 +130,18 @@ public class FrontendCompileCheckAnalyzer {
     }
 
     private static @NotNull String assertCompileBlockedMessage() {
-        return "assert statement is recognized by the frontend but is temporarily blocked in compile mode until "
+        return "assert statement is recognized by the frontend but is blocked in compile mode because "
                 + "lowering/backend support lands";
     }
 
     private static @NotNull String conditionalCompileBlockedMessage() {
-        return "Conditional expression is recognized by the frontend but is temporarily blocked in compile mode until "
+        return "Conditional expression is recognized by the frontend but is blocked in compile mode because "
                 + "lowering CFG support lands";
     }
 
     private static @NotNull String expressionCompileBlockedMessage(@NotNull String expressionKind) {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
-                + " is recognized by the frontend but is temporarily blocked in compile mode until "
+                + " is recognized by the frontend but is blocked in compile mode because "
                 + "lowering support lands";
     }
 

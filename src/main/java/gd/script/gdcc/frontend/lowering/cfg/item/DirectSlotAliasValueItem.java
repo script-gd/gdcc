@@ -19,8 +19,8 @@ import java.util.Objects;
 /// - identifier-backed roots are published only after builder proves that later argument evaluation
 ///   stays inside the current no-rebinding subset; otherwise builder keeps the ordinary
 ///   `OpaqueExprValueItem(identifier)` snapshot instead of publishing a live-slot alias
-/// - capture-backed identifiers are intentionally excluded for now because lambda/capture lowering
-///   is still deferred and the storage semantics have not been frozen yet
+/// - capture-backed identifiers are excluded because current lambda/capture lowering does not publish
+///   a stable direct-slot storage contract for them
 /// - ordinary identifier/self reads keep using `OpaqueExprValueItem`; only the direct-slot mutating
 ///   receiver path is allowed to publish this alias item today
 public record DirectSlotAliasValueItem(

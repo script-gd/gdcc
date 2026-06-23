@@ -37,7 +37,7 @@ import java.util.Objects;
 /// - scope side-table entries for parameters, return types, default-value expressions,
 ///   control-flow conditions, loop iterables, and match patterns/guards
 ///
-/// It still intentionally defers:
+/// It currently leaves these concerns to later semantic stages:
 /// - parameter prefill, captures, and other bindings
 ///
 /// Keeping this class separate from `frontend.scope` preserves the layering boundary between
@@ -89,7 +89,7 @@ public class FrontendScopeAnalyzer {
     ///
     /// Everything else is either:
     /// - visited under the current already-established lexical scope, or
-    /// - skipped on purpose because its dedicated scope semantics are still deferred to later work.
+    /// - skipped on purpose because this analyzer only publishes lexical-scope facts.
     private static final class ScopeBuildingHandler implements ASTNodeHandler {
         private final @NotNull ClassRegistry classRegistry;
         private final @NotNull FrontendAstSideTable<Boolean> skippedSubtreeRoots;

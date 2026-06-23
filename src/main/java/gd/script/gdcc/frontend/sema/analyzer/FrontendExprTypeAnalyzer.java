@@ -70,7 +70,7 @@ import java.util.Objects;
 /// `expressionTypes()` is not expression-only: besides ordinary expression roots, this phase also
 /// publishes attribute property/call/subscript steps when downstream compile/lowering needs the step
 /// itself as the stable fact anchor. Inferred local slot stabilization is owned by the earlier local
-/// stabilization phase; the legacy backfill path below is now only a guarded fallback.
+/// stabilization phase; the backfill path below exists only for still-unstabilized local `:=` slots.
 public class FrontendExprTypeAnalyzer {
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
@@ -407,8 +407,8 @@ public class FrontendExprTypeAnalyzer {
             }
         }
 
-        /// Property initializers reuse ordinary expression typing, but the temporary restriction must
-        /// come from the declaring property rather than from an executable-body context.
+        /// Property initializers reuse ordinary expression typing, but their restriction context comes
+        /// from the declaring property instead of an executable-body context.
         private void publishPropertyInitializerExpressionType(@NotNull VariableDeclaration variableDeclaration) {
             var initializer = Objects.requireNonNull(
                     variableDeclaration.value(),
@@ -486,7 +486,7 @@ public class FrontendExprTypeAnalyzer {
 
         /// Bare `TYPE_META` identifiers are valid chain heads such as `Worker.build()` but they are
         /// not first-class ordinary value expressions. Skipping publication keeps static-route heads
-        /// out of ordinary `expressionTypes()` consumers and the legacy `:=` backfill. Local
+        /// out of ordinary `expressionTypes()` consumers and the local `:=` backfill guard. Local
         /// stabilization has its own bare-`TYPE_META` initializer guard at the slot-write boundary.
         private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {
             if (!(expression instanceof IdentifierExpression identifierExpression)) {
@@ -502,9 +502,9 @@ public class FrontendExprTypeAnalyzer {
         }
 
         /// Supported local `:=` declarations should already have been stabilized before chain
-        /// binding. This legacy path is kept as a narrow fallback for unsupported MVP gaps: it can
-        /// still fill an untouched `Variant` slot, but it must never silently override a slot that an
-        /// earlier phase already stabilized.
+        /// binding. This fallback only fills an untouched `Variant` slot when no earlier phase has
+        /// published a narrower local type, and it must never silently override an already
+        /// stabilized slot.
         ///
         /// The check keeps inferred local ownership explicit while preserving initializer provenance
         /// through the local use-site's `declarationSite()` plus the initializer expression's own
