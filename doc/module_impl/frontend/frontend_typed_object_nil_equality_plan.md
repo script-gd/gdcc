@@ -5,10 +5,13 @@
 > 本文档记录 GitHub issue #44 的调研结论、职责边界、分阶段实施步骤与验收细则。
 > 问题现状是：frontend 在 lowering 前错误拒绝 typed object 与 `null` 的 `==` / `!=`，
 > 但 backend 已经具备对应的 `NIL_COMPARISON` 路径。
+>
+> 本 issue-fix 的范围是故意收窄的：只修 typed object 与 `null` 的 equality 语义，
+> 不追求 Godot/backend 已支持的 `int == null`、`String == null` 等更宽 nil equality 接受面。
 
 ## 1. 范围
 
-本计划只覆盖 source-level binary equality 语义中的以下组合：
+本计划只覆盖 source-level binary equality 语义中的 typed object / `null` 放行：
 
 - `GdObjectType == GdNilType`
 - `GdNilType == GdObjectType`
@@ -16,6 +19,9 @@
 - `GdNilType != GdObjectType`
 - `GdNilType == GdNilType`
 - `GdNilType != GdNilType`
+
+其中 `GdNilType == GdNilType` / `!=` 只是同一窄规则的伴随 case，用来保持现有 backend
+nil compare 行为稳定；它不表示本 issue 要实现通用 “任意类型与 `null` 可比较” 语义。
 
 完成条件是：
 
@@ -30,6 +36,8 @@
 - 修改 `ClassRegistry.checkAssignable(...)`
 - 把 `Nil -> object` 扩张成通用赋值或参数兼容规则
 - 修改 backend `OperatorResolver` / `OperatorInsnGen` 的既有 nil compare 语义
+- 在 frontend 扩张到 `int == null`、`String == null`、container 与 `null` 比较等更宽 nil equality
+  接受面
 - 扩大到所有 object comparison contract 的重构
 - 把 object validity 语义改成 “`== null` 等价 `is_instance_valid`”
 
@@ -63,7 +71,7 @@
 
 ### 2.2 当前 backend 已经具备的能力
 
-backend 侧已存在与本计划目标一致的现成路由：
+backend 侧已存在可承载本计划目标的现成路由：
 
 - `OperatorResolver.resolveBinaryPath(...)`：
   - 任一侧是 `GdNilType` 时，仅允许 `==` / `!=`
@@ -77,6 +85,11 @@ backend 侧已存在与本计划目标一致的现成路由：
 
 因此本任务不应绕过 frontend 直接改 backend；正确做法是让 frontend 放行已知静态可接受的
 object/nil equality，使其能够抵达已有 lowering/backend 合同。
+
+注意：backend 当前 `NIL_COMPARISON` 的接受面比本 issue-fix 更宽，非 object 类型与 `Nil`
+配对时也有既有落地语义，例如 `int == null` 会被 backend 接受并落成 false。本计划不把这部分
+backend 能力提升为 frontend 本次必须放行的 source-level 语义；frontend 本次只补齐 typed
+object / `null` 的缺口。
 
 ### 2.3 文档与分层边界结论
 
@@ -100,25 +113,45 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 
 ## 3. Godot 依据
 
-已确认的外部依据包括：
+已确认的 Godot 4.5.2-stable 依据不是 “只有 `Object` / `null` 合法”，而是：
 
-- Godot 官方 `Object` 文档说明：
-  - object reference 可能在未变成 `null` 时失效
-  - 判断对象是否被释放不应写成 `== null`
-  - 应使用 `is_instance_valid(...)`
-  - 这说明 `== null` 是被识别的语言路径，但它不承担 object validity 语义
-- Godot 上游 `script_language.cpp` 注释说明：
-  - `Variant::evaluate(Variant::OP_EQUAL, ...)` 会让 `NIL` 与某些值按比较语义相等
-  - 不能简单用裸 `==` 代替
+- `GDScriptParser::get_builtin_type(...)` 明确把 `Variant::NIL` 与 `Variant::OBJECT` 排除在
+  builtin type name 映射之外：
+  - `Variant::NIL`：`null` 是 literal，不是 type
+  - `Variant::OBJECT`：`Object` 应作为 class 处理，不是 ordinary builtin type
+- `GDScriptAnalyzer::get_operation_type(...)` 通过
+  `Variant::get_validated_operator_evaluator(...)` 判断 `(operator, lhs, rhs)` 是否有合法运算符，
+  并通过 `Variant::get_operator_return_type(...)` 取得返回类型；analyzer 的 operation typing
+  不是硬编码成 “只有 object/null 可比较”
+- `Variant::_register_variant_operators()` 注册具体 `(operator, lhs_type, rhs_type)` 组合：
+  - `Object == Nil` / `Nil == Object` 与 `Object != Nil` / `Nil != Object` 有专门 evaluator
+  - `Nil == Nil` / `Nil != Nil` 有专门 constant evaluator
+  - 多个非 object 类型与 `Nil` 的 equality / inequality 也有注册结果，例如 `Int == Nil`
+    是 false、`Int != Nil` 是 true
+
+辅助依据仍然成立，但不能当作 equality 合法性的主来源：
+
+- Godot 官方 `Object` 文档只说明 `== null` 不承担 object validity 语义；判断对象是否被释放仍应使用
+  `is_instance_valid(...)`
+- Godot 上游 `script_language.cpp` 关于 `Variant::evaluate(Variant::OP_EQUAL, ...)` 的注释只说明
+  比较语义是 Variant/runtime 驱动的，不能单独推出 “只有 object/null 合法”
+- `GDScriptAnalyzer::check_type_compatibility(...)` 中 `null is acceptable in object` 的分支属于
+  assignment / compatibility 边界，不是 binary equality 规则本身
 
 本计划据此采用以下边界：
 
-- source-level `==` / `!=` 的 object/nil 比较应视为合法比较语义
-- 但不把它解释为 “对象是否仍然存活” 的推荐写法
-- 不据此扩张到 ordering operator
+- source-level `==` / `!=` 的 typed object / `null` 比较是 frontend 当前需要补齐的静态缺口
+- 但这不是 Godot 全量 equality 语义规格，也不能反向写成 “Godot 只允许 object/null 与 `null` 比较”
+- 本 issue 不把 `== null` 解释为 “对象是否仍然存活” 的推荐写法
+- 本 issue 不据此扩张到 ordering operator
+- 本 issue 不据此扩张为 Godot/backend 全量 nil equality 语义对齐；`int == null` 等非 object
+  与 `null` 的比较虽然在 Godot/backend 中有既有语义，但不在本 issue 范围内
 
 参考：
 
+- <https://github.com/godotengine/godot/blob/6ce3de25aa58466e14ef354703ba8d9791a417da/modules/gdscript/gdscript_parser.cpp>
+- <https://github.com/godotengine/godot/blob/6ce3de25aa58466e14ef354703ba8d9791a417da/modules/gdscript/gdscript_analyzer.cpp>
+- <https://github.com/godotengine/godot/blob/6ce3de25aa58466e14ef354703ba8d9791a417da/core/variant/variant_op.cpp>
 - <https://github.com/godotengine/godot-docs/blob/5a9c5b241271a75cb564f37ed2af63e976499585/classes/class_object.rst>
 - <https://github.com/godotengine/godot/blob/28db2de289b3eb8dbc193b9fa5fdf012aed12da7/core/object/script_language.cpp>
 
@@ -162,9 +195,16 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 
 - `Object` / `Object` 暂不纳入本 issue 的计划范围
 - `Variant` / `DYNAMIC` 继续走 runtime-open route
+  - `Variant` / `DYNAMIC` 不属于本次 special rule，即使另一侧是 `Nil` 也不能被提前发布为
+    `RESOLVED(bool)`
 - mixed numeric promotion 继续保持当前 reject contract
+- 非 object 类型与 `Nil` 的 `==` / `!=` 继续保持 frontend 当前行为，即使 backend 已有更宽
+  `NIL_COMPARISON` 落点
 
 ### 4.3 为什么本次不改用 `variant_is_nil` / `object_is_null`
+
+本节只解释为什么本 issue 继续复用现有 `BinaryOpInsn` + backend `NIL_COMPARISON` 主路径，
+不是在承诺跟进 Godot/backend 更宽的 nil comparison 接受面。
 
 仓库当前确实已经定义了两条 low IR 指令：
 
@@ -203,6 +243,7 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - frontend semantic 放行 `typed object` / `null` 的 `==` / `!=`
 - lowering 继续产出 `BinaryOpInsn`
 - backend 继续复用现有 `NIL_COMPARISON`
+- `int == null` / `null == int` / 其它非 object 类型与 `null` 的比较不纳入本 issue
 
 如果未来要把 low IR `variant_is_nil` / `object_is_null` 真正纳入正式路线，应另立任务，
 讨论它们与 `BinaryOpInsn` compare family 的职责分工，而不是在本 issue 中顺手切换实现模型。
@@ -253,6 +294,7 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - 不新增 type-check/compile-check 层的补丁式分支
 - 不新增新的 public abstraction
 - 不把规则写成泛化 “任意 type 与 nil 都可比较”
+- 不为了对齐 backend 更宽接受面而顺手放行 primitive / string-like / container 与 `null`
 
 ### Phase 2：前端语义 focused tests
 
@@ -268,6 +310,11 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - `null == typed inner object` -> `RESOLVED(bool)`
 - `null == null` -> `RESOLVED(bool)`
 - `null != null` -> `RESOLVED(bool)`
+- `Variant == null` -> `DYNAMIC(Variant)`
+- `null == Variant` -> `DYNAMIC(Variant)`
+- `DYNAMIC == null` -> `DYNAMIC(Variant)`
+- `null == DYNAMIC` -> `DYNAMIC(Variant)`
+- 非 object 类型与 `null` 的 `==` / `!=` 保持 frontend 现状，不因本 issue 被新增放行
 - `typed inner object < null` 继续 `FAILED`
 - `null < typed inner object` 继续 `FAILED`
 
@@ -278,6 +325,8 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - 断言里同时覆盖：
   - `status == RESOLVED`
   - `publishedType == bool`
+  - runtime-open 回归用例的 `status == DYNAMIC`
+  - runtime-open 回归用例的 `publishedType == Variant`
   - 负例 detail reason 仍保持 “operator not defined”
 
 ### Phase 3：compile-check 回归测试
@@ -316,6 +365,8 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - 生成出的 LIR 中存在 `BinaryOpInsn`，operator 为 `EQUAL` 或 `NOT_EQUAL`
 - backend 对 `Object != Nil`、`Nil != Object` 的 C codegen 继续走 nil specialization
 - 现有 `Nil == Object`、`Nil == Nil` 行为不回退
+- backend 已支持的非 object / `Nil` 比较行为只作为既有 backend 事实保留，不要求 frontend
+  本次新增对应放行
 
 说明：
 
@@ -348,7 +399,10 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - `null != null` 发布为 `RESOLVED(bool)`
 - operand order 不影响结果类别
 - `typed object < null`、`null < typed object` 仍失败
-- `Variant` / `DYNAMIC` 的 runtime-open 语义不发生回退
+- `int == null`、`null == int` 以及其它非 object 类型与 `null` 的 equality 不属于本 issue
+  验收目标，应保持 frontend 当前行为
+- `Variant == null`、`null == Variant`、`DYNAMIC == null`、`null == DYNAMIC` 继续发布为
+  `DYNAMIC(Variant)`，不被 object/nil special rule 抢先发布为 `RESOLVED(bool)`
 
 ### 6.2 compile-check / lowering 验收
 
@@ -371,6 +425,7 @@ object/nil equality，使其能够抵达已有 lowering/backend 合同。
 - ordinary typed boundary 文档与实现不新增 “比较语义式的 Nil widening”
 - `FrontendTypeCheckAnalyzer` 未新增 object/nil 比较专用分支
 - `FrontendCompileCheckAnalyzer` 未新增掩盖式放宽逻辑
+- 非 object 类型与 `null` 的 equality 未被本 issue 顺手放行
 
 ## 7. 建议的 targeted tests
 
@@ -399,6 +454,11 @@ script/run-gradle-targeted-tests.sh --tests COperatorInsnGenTest
   typed fact。
 - **Godot 语义误读**：`object == null` 合法，不等于推荐用它判断对象是否被释放；实现与文档都不应暗示
   validity semantics。
+- **backend 能力误读**：backend 已有 `NIL_COMPARISON` 接受面比本 issue 更宽，不代表 frontend
+  本次也要放行 `int == null` 等非 object / `null` equality；本文档只描述 object/nil issue-fix。
+- **runtime-open 路由被抢跑**：`resolveBinarySpecialReturnType(...)` 位于 runtime-open operand 检查之前，
+  若 special rule 写成“遇到 `Nil` equality 就返回 `bool`”，会把 `Variant == null`、`DYNAMIC == null`
+  等本应保持 `DYNAMIC(Variant)` 的表达式提前收窄。
 
 ## 9. 完成标准
 
