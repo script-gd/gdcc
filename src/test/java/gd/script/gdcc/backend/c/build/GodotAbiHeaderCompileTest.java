@@ -23,7 +23,7 @@ class GodotAbiHeaderCompileTest {
         Files.writeString(source, """
                 #include <godot_abi.h>
                 #include <stddef.h>
-
+                
                 static_assert(GDEXTENSION_VARIANT_TYPE_VECTOR3 == 9, "variant enum should come from gdextension_interface.h");
                 static_assert(GDEXTENSION_VARIANT_OP_ADD == 6, "operator enum should come from gdextension_interface.h");
                 static_assert(GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS == 4, "call error enum should be visible");
@@ -41,12 +41,12 @@ class GodotAbiHeaderCompileTest {
                 static_assert(sizeof(GDCC_GODOT_META_Color_r) == sizeof(float), "Color.r meta should stay float");
                 static_assert(sizeof(GDCC_GODOT_META_Vector3_z) == sizeof(float), "Vector3.z should be float-backed");
                 static_assert(GDCC_GODOT_OFFSET_Vector3_z == 8, "Vector3.z float_64 offset should be preserved");
-
+                
                 static godot_AudioFrame audio_frame;
                 static godot_Glyph glyph;
                 static godot_ObjectID object_id;
                 static godot_CaretInfo caret_info;
-
+                
                 int gdcc_probe(void) {
                     return (int)(audio_frame.left + glyph.advance + (float)object_id.id)
                             + (int)caret_info.leading_direction;
@@ -83,7 +83,7 @@ class GodotAbiHeaderCompileTest {
                 #include <godot_binding.h>
                 static GDExtensionClassLibraryPtr class_library = NULL;
                 #include <gdcc_bind.h>
-
+                
                 GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(
                         gdcc_probe_method_bind_with_fallbacks,
                         u8"Node",
@@ -95,7 +95,7 @@ class GodotAbiHeaderCompileTest {
                         (GDExtensionInt)654,
                         (GDExtensionInt)987
                 )
-
+                
                 GDCC_DEFINE_ENGINE_METHOD_BIND_ACCESSOR(
                         gdcc_probe_method_bind_without_fallbacks,
                         u8"Object",
@@ -106,7 +106,7 @@ class GodotAbiHeaderCompileTest {
                         (GDExtensionInt)0,
                         (GDExtensionInt)0
                 )
-
+                
                 static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
                     (void)p_function_name;
                     return NULL;
@@ -155,7 +155,7 @@ class GodotAbiHeaderCompileTest {
         var cxxSource = tempDir.resolve("godot_binding_cpp_probe.cpp");
         Files.writeString(cxxSource, """
                 #include <godot_binding.h>
-
+                
                 extern "C" int gdcc_probe_cpp(void) {
                     return !godot_initialize_interface(nullptr);
                 }
@@ -184,6 +184,84 @@ class GodotAbiHeaderCompileTest {
     }
 
     @Test
+    void gdccBuiltinCtorHeaderShouldCompileAndExposeRuntimeHelpers(@TempDir Path tempDir)
+            throws IOException, InterruptedException {
+        var zig = ZigUtil.findZig();
+        Assumptions.assumeTrue(zig != null, "Zig executable is required for gdcc_builtin_ctor compile smoke");
+        var source = tempDir.resolve("gdcc_builtin_ctor_probe.c");
+        Files.writeString(source, """
+                #include <gdcc_builtin_ctor.h>
+                
+                int gdcc_probe_atomic_helpers(void) {
+                    godot_Variant nil = godot_new_Nil();
+                    godot_Variant nil_from_variant = godot_new_Nil_with_Variant(&nil);
+                    godot_bool default_bool = godot_new_bool();
+                    godot_bool copied_bool = godot_new_bool_with_bool(true);
+                    godot_bool int_bool = godot_new_bool_with_int(2);
+                    godot_bool float_bool = godot_new_bool_with_float(3.0);
+                    godot_int default_int = godot_new_int();
+                    godot_int copied_int = godot_new_int_with_int(4);
+                    godot_int float_int = godot_new_int_with_float(5.0);
+                    godot_int bool_int = godot_new_int_with_bool(true);
+                    godot_float default_float = godot_new_float();
+                    godot_float copied_float = godot_new_float_with_float(6.0);
+                    godot_float int_float = godot_new_float_with_int(7);
+                    godot_float bool_float = godot_new_float_with_bool(true);
+                    (void)nil_from_variant;
+                    godot_variant_destroy(&nil);
+                    godot_variant_destroy(&nil_from_variant);
+                    return default_bool + copied_bool + int_bool + float_bool
+                            + (int)(default_int + copied_int + float_int + bool_int)
+                            + (int)(default_float + copied_float + int_float + bool_float);
+                }
+                
+                int gdcc_probe_flat_float_helpers(void) {
+                    godot_Transform2D transform2d = godot_new_Transform2D_with_float_float_float_float_float_float(
+                            1.0, 0.0, 0.0, 1.0, 2.0, 3.0
+                    );
+                    godot_Transform3D transform3d = godot_new_Transform3D_with_float_float_float_float_float_float_float_float_float_float_float_float(
+                            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0
+                    );
+                    godot_Basis basis = godot_new_Basis_with_float_float_float_float_float_float_float_float_float(
+                            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0
+                    );
+                    godot_Projection projection = godot_new_Projection_with_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float_float(
+                            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
+                            9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0
+                    );
+                    return (int)(transform2d.x.x + transform3d.basis.x.x + basis.x.x + projection.x.x);
+                }
+                """);
+
+        var gdccIncludeDir = Path.of("src/main/c/codegen/include_451/gdcc").toAbsolutePath().normalize();
+        var probe = compileObject(
+                zig,
+                source,
+                List.of("-I" + gdccIncludeDir),
+                tempDir.resolve("gdcc_builtin_ctor_probe.o")
+        );
+        assertEquals(0, probe.exitCode(), probe::diagnostic);
+
+        var helperSource = tempDir.resolve("gdcc_helper_ctor_probe.c");
+        Files.writeString(helperSource, """
+                #include <gdcc_builtin_ctor.h>
+                static GDExtensionClassLibraryPtr class_library = NULL;
+                #include <gdcc_helper.h>
+                
+                int gdcc_probe_helper_reexport(void) {
+                    return (int)godot_new_int_with_int(42);
+                }
+                """);
+        var helperProbe = compileObject(
+                zig,
+                helperSource,
+                List.of("-I" + gdccIncludeDir),
+                tempDir.resolve("gdcc_helper_ctor_probe.o")
+        );
+        assertEquals(0, helperProbe.exitCode(), helperProbe::diagnostic);
+    }
+
+    @Test
     void bindingLookupFailShouldReturnFalseAndRespectInternalReportFlag(@TempDir Path tempDir)
             throws IOException, InterruptedException {
         var zig = ZigUtil.findZig();
@@ -191,7 +269,7 @@ class GodotAbiHeaderCompileTest {
         var source = tempDir.resolve("lookup_fail_probe.c");
         Files.writeString(source, """
                 #include <godot_binding.h>
-
+                
                 int main(void) {
                     gdcc_binding_lookup_context default_context = {
                             .kind = "utility",
@@ -203,7 +281,7 @@ class GodotAbiHeaderCompileTest {
                     if (gdcc_binding_lookup_fail(&default_context)) {
                         return 10;
                     }
-
+                
                     gdcc_binding_lookup_context suppressed_context = {
                             .kind = "utility",
                             .function_name = "godot_utility_suppressed",
@@ -245,9 +323,9 @@ class GodotAbiHeaderCompileTest {
         var source = tempDir.resolve("interface_lookup_fail_probe.c");
         Files.writeString(source, """
                 #include <godot_binding.h>
-
+                
                 #include <string.h>
-
+                
                 static void gdcc_fake_print_error_with_message(
                         const char *p_description,
                         const char *p_message,
@@ -263,7 +341,7 @@ class GodotAbiHeaderCompileTest {
                     (void)p_line;
                     (void)p_editor_notify;
                 }
-
+                
                 static void gdcc_fake_print_error(
                         const char *p_description,
                         const char *p_function,
@@ -277,10 +355,10 @@ class GodotAbiHeaderCompileTest {
                     (void)p_line;
                     (void)p_editor_notify;
                 }
-
+                
                 static void gdcc_fake_unused_interface(void) {
                 }
-
+                
                 static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
                     if (strcmp(p_function_name, "print_error_with_message") == 0) {
                         return (GDExtensionInterfaceFunctionPtr)gdcc_fake_print_error_with_message;
@@ -293,7 +371,7 @@ class GodotAbiHeaderCompileTest {
                     }
                     return (GDExtensionInterfaceFunctionPtr)gdcc_fake_unused_interface;
                 }
-
+                
                 int main(void) {
                     if (godot_initialize_interface(gdcc_fake_get_proc_address)) {
                         return 10;
@@ -331,30 +409,30 @@ class GodotAbiHeaderCompileTest {
         var mainSource = tempDir.resolve("interface_probe_main.c");
         Files.writeString(mainSource, """
                 #include <godot_binding.h>
-
+                
                 #include <stdint.h>
                 #include <string.h>
-
+                
                 int gdcc_mem_alloc_calls = 0;
                 int gdcc_variant_destroy_calls = 0;
-
+                
                 int gdcc_call_mem_alloc_from_other_tu(void);
                 void gdcc_call_variant_destroy_from_other_tu(void);
-
+                
                 static void *gdcc_fake_mem_alloc(size_t p_bytes) {
                     gdcc_mem_alloc_calls += (int)p_bytes;
                     return (void *)(uintptr_t)0x1;
                 }
-
+                
                 static void gdcc_fake_variant_destroy(GDExtensionVariantPtr p_self) {
                     if (p_self == NULL) {
                         gdcc_variant_destroy_calls++;
                     }
                 }
-
+                
                 static void gdcc_fake_unused_interface(void) {
                 }
-
+                
                 static GDExtensionInterfaceFunctionPtr gdcc_fake_get_proc_address(const char *p_function_name) {
                     if (strcmp(p_function_name, "mem_alloc") == 0) {
                         return (GDExtensionInterfaceFunctionPtr)gdcc_fake_mem_alloc;
@@ -364,7 +442,7 @@ class GodotAbiHeaderCompileTest {
                     }
                     return (GDExtensionInterfaceFunctionPtr)gdcc_fake_unused_interface;
                 }
-
+                
                 int main(void) {
                     if (!godot_initialize_interface(gdcc_fake_get_proc_address)) {
                         return 10;
@@ -382,9 +460,9 @@ class GodotAbiHeaderCompileTest {
         var memAllocTu = tempDir.resolve("interface_probe_mem_alloc.c");
         Files.writeString(memAllocTu, """
                 #include <godot_binding.h>
-
+                
                 extern int gdcc_mem_alloc_calls;
-
+                
                 int gdcc_call_mem_alloc_from_other_tu(void) {
                     void *result = godot_mem_alloc(8);
                     return result != NULL ? gdcc_mem_alloc_calls : -1;
@@ -393,7 +471,7 @@ class GodotAbiHeaderCompileTest {
         var variantTu = tempDir.resolve("interface_probe_variant.c");
         Files.writeString(variantTu, """
                 #include <godot_interface.h>
-
+                
                 void gdcc_call_variant_destroy_from_other_tu(void) {
                     godot_variant_destroy((GDExtensionVariantPtr)0);
                 }

@@ -8,8 +8,8 @@
 
 ## 文档状态
 
-- 状态：实施前计划
-- 更新时间：2026-06-23
+- 状态：Phase A/B 已完成并通过 targeted 测试，Phase C-F 待实施
+- 更新时间：2026-06-24
 - 适用范围：
   - `src/main/c/codegen/include_451/gdcc/**`
   - `src/main/c/codegen/template_451/**`
@@ -180,6 +180,20 @@ constructor route，问题在 backend helper surface 闭合。
 
 ### Phase A：新增 `gdcc_builtin_ctor.h`
 
+状态：已完成。
+
+产出：
+
+- 新增 `src/main/c/codegen/include_451/gdcc/gdcc_builtin_ctor.h`，使用独立
+  `GDCC_BUILTIN_CTOR_H` include guard，并直接包含 `<godot_binding.h>`。
+- 14 个 metadata 已声明但 `godot_builtin.h` 生成器跳过的 helper 已集中放入新头：
+  `Nil`、`bool`、`int`、`float` 的默认、同型与 atomic-to-atomic constructor helper。
+- 4 个 Transform/Basis/Projection flat-float shim 已从 `gdcc_helper.h` 迁移到新头。
+- 新增 `GodotAbiHeaderCompileTest.gdccBuiltinCtorHeaderShouldCompileAndExposeRuntimeHelpers`
+  直接 include `<gdcc_builtin_ctor.h>` 并调用上述 18 个 helper，锁定独立 include 和符号可见性。
+- 验证命令已通过：
+  `script/run-gradle-targeted-tests.sh --tests "GodotAbiHeaderCompileTest,CProjectBuilderSharedIncludeTest"`。
+
 目标：新增一个 GDCC-owned builtin constructor helper header，集中承载缺失 constructor helper
 与既有 flat-float shim。
 
@@ -202,6 +216,18 @@ constructor route，问题在 backend helper surface 闭合。
 - `gdcc_helper.h` 中不再直接定义上述 4 个 flat-float shim。
 
 ### Phase B：include 接线
+
+状态：已完成。
+
+产出：
+
+- `src/main/c/codegen/include_451/gdcc/gdcc_helper.h` 已在 `<godot_binding.h>` 之后 include
+  `<gdcc_builtin_ctor.h>`，`entry.h.ftl` 保持只 include `<gdcc_helper.h>`。
+- 新头不反向依赖 `gdcc_helper.h`，也不依赖 module-local class declaration。
+- `CProjectBuilderSharedIncludeTest` 已断言 shared include 与 project-local include 都会复制
+  `gdcc/gdcc_builtin_ctor.h`，避免资源抽取遗漏。
+- 验证命令已通过：
+  `script/run-gradle-targeted-tests.sh --tests "GodotAbiHeaderCompileTest,CProjectBuilderSharedIncludeTest"`。
 
 目标：保证现有生成出来的 module C code 不需要额外修改就能看到新 helper。
 

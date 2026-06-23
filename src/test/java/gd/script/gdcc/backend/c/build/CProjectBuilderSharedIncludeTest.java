@@ -44,6 +44,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         assertFalse(Files.exists(projectDir.resolve("include")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_bind.h")));
+        assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_builtin_ctor.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("gdcc/gdcc_intrinsic.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_interface.h")));
         assertTrue(Files.isRegularFile(sharedIncludeDir.resolve("godot/godot_fixed_binding.h")));
@@ -151,6 +152,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         builder.initProject(projectInfo);
 
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_builtin_ctor.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/godot/godot_binding.c")));
@@ -171,6 +173,7 @@ public class CProjectBuilderSharedIncludeTest {
 
         builder.initProject(projectInfo);
 
+        assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_builtin_ctor.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_helper.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/gdcc/gdcc_intrinsic.h")));
         assertTrue(Files.isRegularFile(projectDir.resolve("include/godot/godot_binding.c")));
