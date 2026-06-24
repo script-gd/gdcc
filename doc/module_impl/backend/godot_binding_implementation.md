@@ -1,7 +1,8 @@
-# Godot Binding 生成与使用集实现说明
+# Godot Binding 生成、使用集与 Runtime Helper 实现说明
 
 > 本文档是 C Backend 中 Godot binding 静态 runtime support、模块级动态使用集、
-> `engine_method_binds.h` 生成和 exact engine method-bind route 的长期事实源。
+> `engine_method_binds.h` 生成、builtin constructor runtime helper surface 和 exact
+> engine method-bind route 的长期事实源。
 > 本文整合原迁移计划与 exact route 说明，只保留当前事实、长期约定和后续工程边界。
 
 ## 文档状态
@@ -129,6 +130,25 @@ constructor helper surface。它补齐 Extension API metadata 已声明、但
 通过 `<gdcc_helper.h>` 间接获得该头文件；`GodotBindingProvidedSymbols` 必须把其中提供的
 `godot_*` helper 纳入 runtime-provided set，避免 usage collector 把这些 runtime helper
 误判为 module-local missing symbol。
+
+这条 runtime helper surface 的当前合同固定如下：
+
+- frontend 对 `int(value)`、`float(value)`、`bool(value)` 等 bare builtin constructor call
+  继续发布普通 builtin constructor route；不为 `int(int)` 这类 metadata-backed atomic
+  constructor 新增 frontend intrinsic 或 backend intrinsic。
+- lowering 继续把这类调用 materialize 为普通 `ConstructBuiltinInsn`；backend 通过
+  `CBuiltinBuilder.constructRegularBuiltin(...)` 做 exact metadata matching，并按现有命名规则
+  渲染 `godot_new_<Type>_with_<Arg...>`。
+- `gdcc_builtin_ctor.h` 的职责是补齐“metadata 已声明但 `godot_builtin.h/.c` 当前不生成”的
+  constructor helper surface，而不是接管普通 constructor 选择逻辑。
+- `bool` / `int` / `float` 的默认、同型与 atomic-to-atomic constructor helper 都属于这条
+  metadata-backed runtime helper surface；`godot_new_int_with_int` 是其合法成员。
+- Transform/Basis/Projection 的 flat-float constructor helper 是另一组显式 GDCC-owned
+  helper shim，也统一归口到 `gdcc_builtin_ctor.h`，但它们不改变 `CBuiltinBuilder` 对普通
+  metadata-backed constructor 与 helper shim 的分层。
+- 不把 `int(int)` 改写成 cast、direct alias、ordinary assignment route 或新的
+  `c_int_to_int` intrinsic；typed boundary widening 规则也不因此扩展到 backend constructor
+  matcher。
 
 新增固定 wrapper 时：
 
