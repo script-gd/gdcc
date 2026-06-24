@@ -303,16 +303,27 @@ constructor wrapper 不属于 fixed runtime wrapper，也不属于 `ModuleLocalG
 module-local wrapper 只输出 `providedByRuntime = false` 的 symbol。当前两个 family 的行为为：
 
 - singleton getter：
-  - `static inline <returnType> godot_<Class>_singleton(void)`
-  - 使用 `godot_global_get_singleton(GD_STATIC_SN(u8"<Class>"))`
+  - `static inline godot_<returnTypeName> * godot_<lookupName>_singleton(void)`
+  - 使用 `godot_global_get_singleton(GD_STATIC_SN(u8"<lookupName>"))`
+  - `lookupName` 来自 `ExtensionSingleton.name()` / `LoadStaticInsn.staticName()`，只用于 Godot singleton registry
+    lookup、cache/C function identity 和 lookup diagnostic
+  - `returnTypeName` 来自已验证的 `ExtensionSingleton.type()`，用于 C return type、cast type、cache pointer type
+    和 diagnostic `context.type`
+  - symbol owner 固定为 `"@GlobalScope"`，symbol name 固定为 `lookupName`
   - 只缓存非空结果；`NULL` 走 `gdcc_binding_lookup_fail(...)`
 - class constant：
   - `static inline godot_int godot_<Class>_<CONSTANT>(void)`
   - 返回当前 metadata 中的 constant value
 
 module-local key 由 family、owner、name、C function name 和 signature 组成。同一 canonical
-binding 的 metadata 必须兼容；当前 class constant value 漂移会 fail-fast。同一 C function
-name 对应不同结构性 signature 或 ABI 也必须 fail-fast。
+binding 的 metadata 必须兼容；当前 singleton `returnTypeName`、class constant value 漂移都会
+fail-fast。同一 C function name 对应不同结构性 signature 或 ABI 也必须 fail-fast。
+
+`Engine`、`ClassDB` 等 fixed singleton wrappers 属于 runtime-provided symbol set。发射
+`godot_Engine_singleton()` 这类调用的路径仍可以显式记录对应 module-local binding，但 usage session
+会在提交前过滤 provided C function name，避免 `engine_method_binds.h` 再输出同名 `static inline`
+wrapper。`GameSingleton -> Node` 这类 runtime 未提供的 singleton 才进入 module-local snapshot，并生成
+按 `GameSingleton` lookup、按 `Node` 返回的 wrapper。
 
 ## 动态路径与固定 Helper 边界
 

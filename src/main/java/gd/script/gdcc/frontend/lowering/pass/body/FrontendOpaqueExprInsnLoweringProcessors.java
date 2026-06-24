@@ -46,8 +46,8 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
     /// Resolves a bare identifier leaf through the already-published binding table.
     ///
     /// This processor is allowed to choose only among binding-backed runtime load routes
-    /// (local/parameter/capture/property/self); it must not re-run any scope lookup or member
-    /// inference.
+    /// (local/parameter/capture/property/self/singleton); it must not re-run any scope lookup or
+    /// member inference.
     ///
     /// `FrontendTopBindingAnalyzer` publishes `FrontendBindingKind.SELF` only for explicit
     /// `SelfExpression`. If an `IdentifierExpression` arrives here with binding kind `SELF`, some
@@ -85,6 +85,14 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     }
                     session.requireSelfSlot();
                     block.appendNonTerminatorInstruction(new LoadPropertyInsn(resultSlotId, binding.symbolName(), "self"));
+                }
+                case SINGLETON -> {
+                    session.requireSingletonType(binding);
+                    block.appendNonTerminatorInstruction(new LoadStaticInsn(
+                            resultSlotId,
+                            "@GlobalScope",
+                            binding.symbolName()
+                    ));
                 }
                 case CONSTANT -> {
                     if (binding.declarationSite() instanceof ExtensionGlobalConstant globalConstant) {

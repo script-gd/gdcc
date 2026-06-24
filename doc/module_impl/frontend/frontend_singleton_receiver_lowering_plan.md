@@ -171,6 +171,10 @@ fixed wrapper 与 module-local wrapper 的边界是 backend binding 层的前置
 
 ### Step 1: 先补回归测试骨架
 
+状态（2026-06-24）：已完成。新增/扩展了 frontend body、property-init preparation、CFG build、
+pass-manager end-to-end、registry metadata validation、backend `load_static`、binding usage/template 和
+codegen snapshot 测试，覆盖 positive / negative path 以及 fixed-provided vs module-local singleton wrapper 边界。
+
 目标是在任何实现前先钉住当前失败和期望形态。
 
 改动范围：
@@ -285,6 +289,9 @@ fixed wrapper 与 module-local wrapper 的边界是 backend binding 层的前置
 
 ### Step 2: 固定 `ClassRegistry` 的 singleton metadata validation owner
 
+状态（2026-06-24）：已完成。`ClassRegistry` 现在预计算 valid singleton object type cache 与
+registry-owned invalid metadata facts；`findSingletonType(...)` 只返回 strict validated object type。
+
 目标是把 invalid singleton metadata 的责任落到一个地方，而不是继续保留多个候选 owner 的开放表述。
 
 改动范围：
@@ -337,6 +344,10 @@ fixed wrapper 与 module-local wrapper 的边界是 backend binding 层的前置
   `FrontendIdentifierOpaqueExprInsnLoweringProcessor` 的 generic unsupported identifier，也不能等 backend `LoadStaticInsnGen` 首次发现。
 
 ### Step 3: 扩展 `load_static` 的 `@GlobalScope` 语义
+
+状态（2026-06-24）：已完成。`LoadStaticInsnGen` 先处理 `@GlobalScope` singleton property，再回退
+global constant；singleton getter 通过 `ModuleLocalGodotBinding.singleton(lookupName, returnTypeName)` 登记，
+并按 borrowed object source 写入 receiver slot。
 
 改动范围：
 
@@ -416,6 +427,9 @@ fixed wrapper 与 module-local wrapper 的边界是 backend binding 层的前置
 
 ### Step 4: 接入 frontend body lowering
 
+状态（2026-06-24）：已完成。`FrontendBindingKind.SINGLETON` opaque identifier materialization 现在发射
+`LoadStaticInsn(result, "@GlobalScope", binding.symbolName())`，并复用既有 `CallMethodInsn` receiver 路径。
+
 改动范围：
 
 - `src/main/java/gd/script/gdcc/frontend/lowering/pass/body/FrontendOpaqueExprInsnLoweringProcessors.java`
@@ -445,6 +459,9 @@ fixed wrapper 与 module-local wrapper 的边界是 backend binding 层的前置
 
 ### Step 5: 保持 semantic / CFG 边界稳定
 
+状态（2026-06-24）：已完成。semantic / receiver kind 边界保持不变；CFG builder 仅补齐 singleton
+opaque value publication 的窄缺口，没有新增 singleton-specific call route 或 type-meta route。
+
 改动范围：
 
 - 默认不修改 semantic analyzer。
@@ -468,6 +485,13 @@ backend/lowering 成为首个用户可见失败点。body lowering 只保留“�
 
 ### Step 6: 文档和测试收尾
 
+状态（2026-06-24）：已完成。已同步 `doc/gdcc_low_ir.md`、
+`doc/module_impl/backend/load_static_implementation.md` 和
+`doc/module_impl/backend/godot_binding_implementation.md` 的长期语义。
+验证（2026-06-24）：frontend singleton lowering / property-init pipeline / LIR round-trip targeted
+tests、registry/backend/binding targeted tests、`git diff --check` 与 `./gradlew classes --no-daemon --info --console=plain`
+均已通过。
+
 需要同步更新：
 
 - `doc/gdcc_low_ir.md`：更新 `load_static` 描述，说明 `@GlobalScope` owner 可表示 top-level global constants 与 singleton properties。
@@ -487,6 +511,7 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest.run
 script/run-gradle-targeted-tests.sh --tests FrontendLoweringFunctionPreparationPassTest.runPublishesSingletonBackedPropertyInitContextAndKeepsShellOnly
 script/run-gradle-targeted-tests.sh --tests FrontendLoweringBuildCfgPassTest.runPublishesSingletonBackedPropertyInitCfgGraph
 script/run-gradle-targeted-tests.sh --tests FrontendLoweringPassManagerTest.lowerToContextHandlesSingletonBackedPropertyInitializerEndToEnd
+script/run-gradle-targeted-tests.sh --tests SimpleLirBlockInsnParserTest.parse_loadStaticGlobalScopeSingletonSurfaceRoundTripsThroughSerializer
 script/run-gradle-targeted-tests.sh --tests ClassRegistryTest,ClassRegistryScopeTest
 script/run-gradle-targeted-tests.sh --tests CLoadStaticInsnGenTest
 script/run-gradle-targeted-tests.sh --tests FixedGodotBindingsTest,GodotBindingUsageSessionTest,ModuleLocalGodotBindingTemplateTest,CCodegenEngineMethodUsageSessionTest

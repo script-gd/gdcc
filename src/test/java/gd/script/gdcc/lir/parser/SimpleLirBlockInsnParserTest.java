@@ -223,6 +223,26 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_loadStaticGlobalScopeSingletonSurfaceRoundTripsThroughSerializer() throws Exception {
+        var input = "$engine = load_static \"@GlobalScope\" \"Engine\";\n";
+        var parsed = parse(input);
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var out = new StringWriter();
+
+        serializer.serialize(parsed, out);
+        var reparsed = parse(out.toString());
+        var loadStatic = assertInstanceOf(LoadStaticInsn.class, reparsed.getFirst());
+
+        assertAll(
+                () -> assertEquals(input, out.toString()),
+                () -> assertEquals(1, reparsed.size()),
+                () -> assertEquals("engine", loadStatic.resultId()),
+                () -> assertEquals("@GlobalScope", loadStatic.className()),
+                () -> assertEquals("Engine", loadStatic.staticName())
+        );
+    }
+
+    @Test
     public void parse_callIntrinsicRequiresQuotedIntrinsicName() {
         var line = "$f = call_intrinsic c_int_to_float $i;";
         var col = line.indexOf("c_int_to_float") + 1;

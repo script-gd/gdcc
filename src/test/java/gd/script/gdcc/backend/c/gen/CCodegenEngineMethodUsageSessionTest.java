@@ -1,5 +1,6 @@
 package gd.script.gdcc.backend.c.gen;
 
+import gd.script.gdcc.backend.GeneratedFile;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.backend.c.gen.binding.EngineMethodSymbolKey;
@@ -11,6 +12,7 @@ import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -20,6 +22,7 @@ import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.StorePropertyInsn;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -41,6 +44,7 @@ import java.util.Objects;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -255,6 +259,49 @@ class CCodegenEngineMethodUsageSessionTest {
     }
 
     @Test
+    @DisplayName("generate should filter fixed singleton wrappers and render only non-provided singleton wrappers")
+    void generateShouldFilterFixedSingletonWrappersAndRenderOnlyNonProvidedSingletonWrappers() {
+        var hostClass = newClass("SingletonUsageWorker", "RefCounted");
+
+        var loadEngine = newVoidFunction("load_engine");
+        loadEngine.createAndAddVariable("engine", new GdObjectType("Engine"));
+        entry(loadEngine).appendInstruction(new LoadStaticInsn("engine", "@GlobalScope", "Engine"));
+        entry(loadEngine).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(loadEngine);
+
+        var loadClassDb = newVoidFunction("load_class_db");
+        loadClassDb.createAndAddVariable("class_db", new GdObjectType("ClassDB"));
+        entry(loadClassDb).appendInstruction(new LoadStaticInsn("class_db", "@GlobalScope", "ClassDB"));
+        entry(loadClassDb).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(loadClassDb);
+
+        var loadGameSingleton = newVoidFunction("load_game_singleton");
+        loadGameSingleton.createAndAddVariable("game", new GdObjectType("Node"));
+        entry(loadGameSingleton).appendInstruction(new LoadStaticInsn("game", "@GlobalScope", "GameSingleton"));
+        entry(loadGameSingleton).setTerminator(new ReturnInsn(null));
+        hostClass.addFunction(loadGameSingleton);
+
+        var module = new LirModule("singleton_usage_module", List.of(hostClass));
+        var codegen = newCodegen(module, singletonUsageApi(), List.of(hostClass));
+
+        var files = codegen.generate();
+        var entrySource = generatedFileText(files, "entry.c");
+        var bindHeader = generatedFileText(files, "engine_method_binds.h");
+
+        assertTrue(entrySource.contains("godot_Engine_singleton()"), entrySource);
+        assertTrue(entrySource.contains("godot_ClassDB_singleton()"), entrySource);
+        assertTrue(entrySource.contains("godot_GameSingleton_singleton()"), entrySource);
+        assertFalse(bindHeader.contains("static inline godot_Engine * godot_Engine_singleton(void)"), bindHeader);
+        assertFalse(bindHeader.contains("static inline godot_ClassDB * godot_ClassDB_singleton(void)"), bindHeader);
+        assertTrue(bindHeader.contains("static inline godot_Node * godot_GameSingleton_singleton(void)"), bindHeader);
+        assertTrue(bindHeader.contains("godot_global_get_singleton(GD_STATIC_SN(u8\"GameSingleton\"))"), bindHeader);
+        assertTrue(bindHeader.contains("context.lookup_name = \"GameSingleton\";"), bindHeader);
+        assertTrue(bindHeader.contains("context.owner = \"@GlobalScope\";"), bindHeader);
+        assertTrue(bindHeader.contains("context.type = \"Node\";"), bindHeader);
+        assertFalse(bindHeader.contains("godot_Node_singleton"), bindHeader);
+    }
+
+    @Test
     @DisplayName("public generateFuncBody should stay deterministic and side-effect free")
     void publicGenerateFuncBodyShouldStayDeterministicAndSideEffectFree() {
         var hostClass = newClass("Worker", "RefCounted");
@@ -325,6 +372,17 @@ class CCodegenEngineMethodUsageSessionTest {
         assertIterableEquals(expected, actual);
     }
 
+    private static @NotNull String generatedFileText(
+            @NotNull List<GeneratedFile> files,
+            @NotNull String filePath
+    ) {
+        return files.stream()
+                .filter(file -> file.filePath().equals(filePath))
+                .findFirst()
+                .map(file -> new String(file.contentWriter()))
+                .orElseThrow(() -> new AssertionError("Missing generated file " + filePath));
+    }
+
     private static @NotNull CCodegen newCodegen(
             @NotNull LirModule module,
             @NotNull ExtensionAPI api,
@@ -355,6 +413,28 @@ class CCodegenEngineMethodUsageSessionTest {
                 builtinClasses,
                 gdClasses,
                 List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionAPI singletonUsageApi() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(
+                        singletonClass("Engine"),
+                        singletonClass("ClassDB"),
+                        nodeClass()
+                ),
+                List.of(
+                        new ExtensionSingleton("Engine", "Engine"),
+                        new ExtensionSingleton("ClassDB", "ClassDB"),
+                        new ExtensionSingleton("GameSingleton", "Node")
+                ),
                 List.of()
         );
     }
@@ -452,6 +532,21 @@ class CCodegenEngineMethodUsageSessionTest {
     private static @NotNull ExtensionGdClass nodeClass() {
         return new ExtensionGdClass(
                 "Node",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+    }
+
+    private static @NotNull ExtensionGdClass singletonClass(@NotNull String name) {
+        return new ExtensionGdClass(
+                name,
                 false,
                 true,
                 "Object",

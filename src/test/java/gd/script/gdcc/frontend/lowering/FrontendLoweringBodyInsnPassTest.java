@@ -2704,6 +2704,84 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersSingletonValueReceiverAsInstanceReceiverInExecutableBody() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_singleton_receiver_call.gd",
+                        """
+                        class_name BodyInsnSingletonReceiverCall
+                        extends RefCounted
+
+                        func frames() -> int:
+                            return Engine.get_frames_drawn()
+
+                        func pressed() -> bool:
+                            return Input.is_action_pressed(&"ui_accept", true)
+
+                        func scale() -> void:
+                            Engine.set_time_scale(1.0)
+                        """,
+                Map.of("BodyInsnSingletonReceiverCall", "RuntimeBodyInsnSingletonReceiverCall"),
+                true
+        );
+        var framesContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverCall",
+                "frames"
+        );
+        var pressedContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverCall",
+                "pressed"
+        );
+        var scaleContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverCall",
+                "scale"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var framesInstructions = allInstructions(framesContext.targetFunction());
+        var framesReceiver = requireOnlyInstruction(framesContext.targetFunction(), LoadStaticInsn.class);
+        var framesCall = requireOnlyInstruction(framesContext.targetFunction(), CallMethodInsn.class);
+        var framesReturn = requireOnlyReturnInsn(framesContext.targetFunction());
+        var pressedReceiver = requireOnlyInstruction(pressedContext.targetFunction(), LoadStaticInsn.class);
+        var pressedCall = requireOnlyInstruction(pressedContext.targetFunction(), CallMethodInsn.class);
+        var pressedName = requireOnlyInstruction(pressedContext.targetFunction(), LiteralStringNameInsn.class);
+        var pressedExactMatch = requireOnlyInstruction(pressedContext.targetFunction(), LiteralBoolInsn.class);
+        var pressedArgIds = pressedCall.args().stream()
+                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                .toList();
+        var scaleInstructions = allInstructions(scaleContext.targetFunction());
+        var scaleReceiver = requireOnlyInstruction(scaleContext.targetFunction(), LoadStaticInsn.class);
+        var scaleCall = requireOnlyInstruction(scaleContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("@GlobalScope", framesReceiver.className()),
+                () -> assertEquals("Engine", framesReceiver.staticName()),
+                () -> assertEquals("get_frames_drawn", framesCall.methodName()),
+                () -> assertEquals(framesReceiver.resultId(), framesCall.objectId()),
+                () -> assertEquals(framesCall.resultId(), framesReturn.returnValueId()),
+                () -> assertEquals(0, countInstructions(framesInstructions, CallGlobalInsn.class)),
+                () -> assertEquals("@GlobalScope", pressedReceiver.className()),
+                () -> assertEquals("Input", pressedReceiver.staticName()),
+                () -> assertEquals("is_action_pressed", pressedCall.methodName()),
+                () -> assertEquals(pressedReceiver.resultId(), pressedCall.objectId()),
+                () -> assertEquals(List.of(pressedName.resultId(), pressedExactMatch.resultId()), pressedArgIds),
+                () -> assertEquals("@GlobalScope", scaleReceiver.className()),
+                () -> assertEquals("Engine", scaleReceiver.staticName()),
+                () -> assertEquals("set_time_scale", scaleCall.methodName()),
+                () -> assertEquals(scaleReceiver.resultId(), scaleCall.objectId()),
+                () -> assertNull(scaleCall.resultId()),
+                () -> assertEquals(0, countInstructions(scaleInstructions, CallGlobalInsn.class))
+        );
+    }
+
+    @Test
     void runLowersDynamicInstanceCallsIntoCallMethodInsnWithVariantResultSlot() throws Exception {
         var prepared = prepareContext(
                 "body_insn_dynamic_call.gd",
@@ -5834,6 +5912,53 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(packInsn.resultId(), onlyVariableOperandId(globalInsn.args())),
                 () -> assertEquals(globalInsn.resultId(), unpackInsn.variantId()),
                 () -> assertEquals(unpackInsn.resultId(), returnInsn.returnValueId())
+        );
+    }
+
+    @Test
+    void runLowersSingletonReceiverPropertyInitializerIntoExecutableInitFunction() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_property_singleton_receiver_call.gd",
+                        """
+                        class_name BodyInsnPropertySingletonReceiverCall
+                        extends RefCounted
+
+                        var frames: int = Engine.get_frames_drawn()
+
+                        func ping() -> int:
+                            return frames
+                        """,
+                Map.of(
+                        "BodyInsnPropertySingletonReceiverCall",
+                        "RuntimeBodyInsnPropertySingletonReceiverCall"
+                ),
+                true
+        );
+        var initContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBodyInsnPropertySingletonReceiverCall",
+                "_field_init_frames"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var initFunction = initContext.targetFunction();
+        var instructions = allInstructions(initFunction);
+        var receiverLoad = requireOnlyInstruction(initFunction, LoadStaticInsn.class);
+        var methodCall = requireOnlyInstruction(initFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyReturnInsn(initFunction);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("seq_0", initFunction.getEntryBlockId()),
+                () -> assertTrue(initFunction.getBasicBlockCount() > 0),
+                () -> assertEquals("@GlobalScope", receiverLoad.className()),
+                () -> assertEquals("Engine", receiverLoad.staticName()),
+                () -> assertEquals("get_frames_drawn", methodCall.methodName()),
+                () -> assertEquals(receiverLoad.resultId(), methodCall.objectId()),
+                () -> assertEquals(methodCall.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(instructions, CallGlobalInsn.class))
         );
     }
 

@@ -1015,6 +1015,17 @@ public final class FrontendBodyLoweringSession {
         );
     }
 
+    @NotNull GdObjectType requireSingletonType(@NotNull FrontendBinding binding) {
+        var singletonType = classRegistry.findSingletonType(binding.symbolName());
+        if (singletonType == null) {
+            throw new IllegalStateException(
+                    "Published singleton binding '" + binding.symbolName()
+                            + "' is missing registry-validated object metadata"
+            );
+        }
+        return singletonType;
+    }
+
     /// Allocates one body-local helper temp owned by writable-route lowering.
     ///
     /// Ordinary CFG value slots continue to use `cfgTempSlotId(...)` / `mergeSlotId(...)`. This

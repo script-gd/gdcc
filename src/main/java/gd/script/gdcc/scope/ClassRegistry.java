@@ -39,6 +39,8 @@ public final class ClassRegistry implements Scope {
     private final Map<String, ExtensionGlobalEnum> globalEnumByName = new HashMap<>();
     private final Map<String, ExtensionGlobalConstant> globalConstantByName = new HashMap<>();
     private final Map<String, ExtensionSingleton> singletonByName = new HashMap<>();
+    private final Map<String, GdObjectType> singletonTypeByName = new HashMap<>();
+    private final Map<String, InvalidSingletonMetadata> invalidSingletonMetadataByName = new HashMap<>();
     /// User-defined classes keyed strictly by canonical registration name.
     private final Map<String, ClassDef> gdccClassByName = new HashMap<>();
     /// Source-facing alias side table for canonical gdcc registrations whose source name differs.
@@ -73,6 +75,62 @@ public final class ClassRegistry implements Scope {
         }
         for (var s : api.singletons()) {
             if (s != null && s.name() != null) singletonByName.put(s.name(), s);
+        }
+        validateSingletonMetadata();
+    }
+
+    /// Registry-owned singleton metadata failure.
+    ///
+    /// Frontend diagnostics translate these facts later; scope lookup and backend codegen only need a
+    /// stable query surface that distinguishes valid singleton object receivers from bad metadata.
+    public record InvalidSingletonMetadata(
+            @NotNull String lookupName,
+            @Nullable String rawType,
+            @NotNull Reason reason
+    ) {
+        public InvalidSingletonMetadata {
+            Objects.requireNonNull(lookupName, "lookupName");
+            Objects.requireNonNull(reason, "reason");
+        }
+
+        public enum Reason {
+            MISSING_TYPE,
+            UNRESOLVED_TYPE,
+            NON_OBJECT_TYPE
+        }
+    }
+
+    private void validateSingletonMetadata() {
+        for (var entry : singletonByName.entrySet()) {
+            var lookupName = entry.getKey();
+            var rawType = entry.getValue().type();
+            if (rawType == null || rawType.isBlank()) {
+                invalidSingletonMetadataByName.put(lookupName, new InvalidSingletonMetadata(
+                        lookupName,
+                        rawType,
+                        InvalidSingletonMetadata.Reason.MISSING_TYPE
+                ));
+                continue;
+            }
+
+            var declaredType = tryResolveDeclaredType(rawType);
+            if (declaredType == null) {
+                invalidSingletonMetadataByName.put(lookupName, new InvalidSingletonMetadata(
+                        lookupName,
+                        rawType,
+                        InvalidSingletonMetadata.Reason.UNRESOLVED_TYPE
+                ));
+                continue;
+            }
+            if (!(declaredType instanceof GdObjectType objectType)) {
+                invalidSingletonMetadataByName.put(lookupName, new InvalidSingletonMetadata(
+                        lookupName,
+                        rawType,
+                        InvalidSingletonMetadata.Reason.NON_OBJECT_TYPE
+                ));
+                continue;
+            }
+            singletonTypeByName.put(lookupName, objectType);
         }
     }
 
@@ -667,11 +725,17 @@ public final class ClassRegistry implements Scope {
 
     /// Return the singleton's object type for a singleton name.
     public @Nullable GdObjectType findSingletonType(@NotNull String name) {
-        var s = singletonByName.get(name);
-        if (s == null) return null;
-        var t = s.type();
-        if (t == null) return null;
-        return new GdObjectType(t);
+        return singletonTypeByName.get(name);
+    }
+
+    /// Return registry-owned invalid singleton metadata, if the API declared a singleton that cannot
+    /// become an object receiver.
+    public @Nullable InvalidSingletonMetadata findInvalidSingletonMetadata(@NotNull String name) {
+        return invalidSingletonMetadataByName.get(name);
+    }
+
+    public @NotNull @UnmodifiableView Map<String, InvalidSingletonMetadata> invalidSingletonMetadata() {
+        return Collections.unmodifiableMap(invalidSingletonMetadataByName);
     }
 
     public @NotNull @UnmodifiableView Map<String, VirtualMethodInfo> getVirtualMethods(@NotNull String className) {

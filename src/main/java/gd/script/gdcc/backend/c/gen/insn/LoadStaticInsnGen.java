@@ -2,6 +2,7 @@ package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CInsnGen;
+import gd.script.gdcc.backend.c.gen.binding.ModuleLocalGodotBinding;
 import gd.script.gdcc.enums.GdInstruction;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
@@ -45,6 +46,25 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
         var staticName = insn.staticName();
 
         if (GLOBAL_SCOPE_RECEIVER.equals(className)) {
+            var singletonType = classRegistry.findSingletonType(staticName);
+            if (singletonType != null) {
+                if (!classRegistry.checkAssignable(singletonType, resultVar.type())) {
+                    throw bodyBuilder.invalidInsn(
+                            "Static load target type '" + resultVar.type().getTypeName()
+                                    + "' is not assignable from singleton type '" + singletonType.getTypeName() + "'"
+                    );
+                }
+                var binding = ModuleLocalGodotBinding.singleton(staticName, singletonType.getTypeName());
+                bodyBuilder.recordModuleLocalGodotBinding(binding);
+                bodyBuilder.recordUsedGodotBindingCall(binding.cFunctionName());
+                bodyBuilder.assignExpr(
+                        target,
+                        binding.cFunctionName() + "()",
+                        singletonType,
+                        CBodyBuilder.PtrKind.GODOT_PTR
+                );
+                return;
+            }
             if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
                 throw bodyBuilder.invalidInsn(
                         "Static load target type '" + resultVar.type().getTypeName() +

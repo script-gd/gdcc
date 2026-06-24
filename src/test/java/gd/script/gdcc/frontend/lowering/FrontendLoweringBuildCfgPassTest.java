@@ -199,6 +199,56 @@ class FrontendLoweringBuildCfgPassTest {
     }
 
     @Test
+    void runPublishesSingletonBackedPropertyInitCfgGraph() throws Exception {
+        var prepared = prepareContext(
+                "build_cfg_property_init_singleton_receiver.gd",
+                        """
+                        class_name BuildCfgPropertyInitSingletonReceiver
+                        extends RefCounted
+
+                        var frames: int = Engine.get_frames_drawn()
+                        """,
+                Map.of(
+                        "BuildCfgPropertyInitSingletonReceiver",
+                        "RuntimeBuildCfgPropertyInitSingletonReceiver"
+                )
+        );
+        var propertyContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeBuildCfgPropertyInitSingletonReceiver",
+                "_field_init_frames"
+        );
+
+        new FrontendLoweringBuildCfgPass().run(prepared.context());
+
+        var propertyGraph = propertyContext.requireFrontendCfgGraph();
+        var propertyEntry = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                propertyGraph.requireNode(propertyGraph.entryNodeId())
+        );
+        var propertyStop = assertInstanceOf(
+                FrontendCfgGraph.StopNode.class,
+                propertyGraph.requireNode(propertyEntry.nextId())
+        );
+        var singletonReceiver = assertInstanceOf(OpaqueExprValueItem.class, propertyEntry.items().getFirst());
+        var methodCall = assertInstanceOf(CallItem.class, propertyEntry.items().getLast());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(List.of("seq_0", "stop_0"), propertyGraph.nodeIds()),
+                () -> assertEquals(2, propertyEntry.items().size()),
+                () -> assertEquals(List.of(), singletonReceiver.operandValueIds()),
+                () -> assertEquals("get_frames_drawn", methodCall.callableName()),
+                () -> assertEquals(singletonReceiver.resultValueId(), methodCall.receiverValueIdOrNull()),
+                () -> assertEquals(List.of(singletonReceiver.resultValueId()), methodCall.operandValueIds()),
+                () -> assertEquals(methodCall.resultValueId(), propertyStop.returnValueIdOrNull()),
+                () -> assertEquals(0, propertyContext.targetFunction().getBasicBlockCount()),
+                () -> assertTrue(propertyContext.targetFunction().getEntryBlockId().isEmpty())
+        );
+    }
+
+    @Test
     void runFailsFastWhenPropertyInitializerExpressionFactIsMissing() throws Exception {
         var prepared = prepareContext(
                 "build_cfg_property_init_missing_fact.gd",

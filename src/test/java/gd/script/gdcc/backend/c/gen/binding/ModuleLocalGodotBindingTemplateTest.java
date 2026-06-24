@@ -36,10 +36,33 @@ class ModuleLocalGodotBindingTemplateTest {
                 () -> assertTrue(header.contains("gdcc_binding_lookup_context context = { 0 };"), header),
                 () -> assertTrue(header.contains("context.kind = \"module_singleton\";"), header),
                 () -> assertTrue(header.contains("context.function_name = \"godot_SceneTree_singleton\";"), header),
+                () -> assertTrue(header.contains("context.lookup_name = \"SceneTree\";"), header),
+                () -> assertTrue(header.contains("context.owner = \"@GlobalScope\";"), header),
+                () -> assertTrue(header.contains("context.type = \"SceneTree\";"), header),
                 () -> assertFalse(header.contains("gdcc_binding_lookup_fail(&(gdcc_binding_lookup_context){"), header),
                 () -> assertFalse(header.contains("\n                .kind = \"module_singleton\""), header),
                 () -> assertFalse(header.contains("godot_classdb_get_method_bind("), header),
                 () -> assertFalse(header.contains("return (godot_int)"), header)
+        );
+    }
+
+    @Test
+    void singletonWrapperShouldKeepLookupNameSeparateFromReturnTypeName() throws Exception {
+        var header = render(
+                List.of(ModuleLocalGodotBinding.singleton("GameSingleton", "Node")),
+                List.of()
+        );
+
+        assertAll(
+                () -> assertTrue(header.contains("static inline godot_Node * godot_GameSingleton_singleton(void)"), header),
+                () -> assertTrue(header.contains("static godot_Node * gdcc_module_singleton_GameSingleton = NULL;"), header),
+                () -> assertTrue(header.contains("godot_global_get_singleton(GD_STATIC_SN(u8\"GameSingleton\"))"), header),
+                () -> assertTrue(header.contains("context.function_name = \"godot_GameSingleton_singleton\";"), header),
+                () -> assertTrue(header.contains("context.lookup_name = \"GameSingleton\";"), header),
+                () -> assertTrue(header.contains("context.owner = \"@GlobalScope\";"), header),
+                () -> assertTrue(header.contains("context.type = \"Node\";"), header),
+                () -> assertFalse(header.contains("godot_Node_singleton"), header),
+                () -> assertFalse(header.contains("godot_GameSingleton *"), header)
         );
     }
 

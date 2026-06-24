@@ -68,6 +68,21 @@ class GodotBindingUsageSessionTest {
     }
 
     @Test
+    void providedFixedSingletonsShouldBeAcceptedButNotCommitted() {
+        var session = new GodotBindingUsageSession(Set.of("godot_Engine_singleton", "godot_ClassDB_singleton"));
+        var buffer = session.newFunctionBuffer();
+
+        buffer.recordModuleLocalGodotBinding(ModuleLocalGodotBinding.singleton("Engine", "Engine"));
+        buffer.recordGodotCall("godot_Engine_singleton");
+        buffer.recordModuleLocalGodotBinding(ModuleLocalGodotBinding.singleton("ClassDB", "ClassDB"));
+        buffer.recordGodotCall("godot_ClassDB_singleton");
+        session.commit(buffer);
+
+        assertTrue(session.moduleLocalBindings().isEmpty());
+        assertTrue(session.moduleLocalCFunctionNames().isEmpty());
+    }
+
+    @Test
     void moduleLocalBindingsShouldKeepFirstUseOrderAndMergeCompatibleConstants() {
         var session = new GodotBindingUsageSession(Set.of());
         var first = ModuleLocalGodotBinding.singleton("SceneTree");
@@ -87,6 +102,25 @@ class GodotBindingUsageSessionTest {
                 .map(binding -> binding.symbol().cFunctionName())
                 .toList());
         assertEquals(Set.of("godot_SceneTree_singleton", "godot_Probe_READY"), session.moduleLocalCFunctionNames());
+    }
+
+    @Test
+    void nonProvidedSingletonShouldCommitLookupAndReturnTypeSeparately() {
+        var session = new GodotBindingUsageSession(Set.of());
+        var buffer = session.newFunctionBuffer();
+
+        buffer.recordModuleLocalGodotBinding(ModuleLocalGodotBinding.singleton("GameSingleton", "Node"));
+        buffer.recordGodotCall("godot_GameSingleton_singleton");
+        session.commit(buffer);
+
+        var singleton = (ModuleLocalGodotBinding.Singleton) session.moduleLocalBindings().getFirst();
+        assertEquals("godot_GameSingleton_singleton", singleton.cFunctionName());
+        assertEquals("@GlobalScope", singleton.symbol().owner());
+        assertEquals("GameSingleton", singleton.lookupName());
+        assertEquals("GameSingleton", singleton.symbol().name());
+        assertEquals("Node", singleton.returnTypeName());
+        assertEquals("godot_Node *", singleton.returnType());
+        assertEquals(Set.of("godot_GameSingleton_singleton"), session.moduleLocalCFunctionNames());
     }
 
     @Test
@@ -124,6 +158,19 @@ class GodotBindingUsageSessionTest {
         );
 
         assertTrue(failure.getMessage().contains("Godot binding C name conflict for 'godot_Probe_READY'"));
+    }
+
+    @Test
+    void sameSingletonCNameWithDifferentReturnTypeShouldFailFast() {
+        var buffer = new GodotBindingUsageSession(Set.of()).newFunctionBuffer();
+
+        buffer.recordModuleLocalGodotBinding(ModuleLocalGodotBinding.singleton("GameSingleton", "Node"));
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> buffer.recordModuleLocalGodotBinding(ModuleLocalGodotBinding.singleton("GameSingleton", "Object"))
+        );
+
+        assertTrue(failure.getMessage().contains("Godot binding C name conflict for 'godot_GameSingleton_singleton'"));
     }
 
     @Test
@@ -169,6 +216,7 @@ class GodotBindingUsageSessionTest {
                         null,
                         List.of()
                 ),
+                className,
                 className
         );
     }

@@ -6,6 +6,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
+import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -24,6 +25,7 @@ import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -164,6 +166,60 @@ public class ClassRegistryTest {
     }
 
     @Test
+    void singletonMetadataShouldResolveLookupNameToDeclaredObjectType() {
+        var registry = new ClassRegistry(singletonValidationFixtureApi(List.of(
+                new ExtensionSingleton("GameSingleton", "Node")
+        )));
+
+        var singletonType = registry.findSingletonType("GameSingleton");
+        var singletonValue = registry.resolveValue("GameSingleton");
+
+        assertAll(
+                () -> assertNotNull(singletonType),
+                () -> assertEquals("Node", singletonType.getTypeName()),
+                () -> assertNotNull(singletonValue),
+                () -> assertEquals(ScopeValueKind.SINGLETON, singletonValue.kind()),
+                () -> assertEquals("Node", singletonValue.type().getTypeName()),
+                () -> assertNull(registry.findType("GameSingleton")),
+                () -> assertNull(registry.resolveTypeMeta("GameSingleton")),
+                () -> assertTrue(registry.invalidSingletonMetadata().isEmpty())
+        );
+    }
+
+    @Test
+    void invalidSingletonMetadataShouldNotPublishSingletonValue() {
+        var registry = new ClassRegistry(singletonValidationFixtureApi(List.of(
+                new ExtensionSingleton("MissingTypeSingleton", null),
+                new ExtensionSingleton("BlankTypeSingleton", " "),
+                new ExtensionSingleton("UnknownTypeSingleton", "FutureNode"),
+                new ExtensionSingleton("BuiltinTypeSingleton", "int")
+        )));
+
+        assertAll(
+                () -> assertInvalidSingleton(
+                        registry,
+                        "MissingTypeSingleton",
+                        ClassRegistry.InvalidSingletonMetadata.Reason.MISSING_TYPE
+                ),
+                () -> assertInvalidSingleton(
+                        registry,
+                        "BlankTypeSingleton",
+                        ClassRegistry.InvalidSingletonMetadata.Reason.MISSING_TYPE
+                ),
+                () -> assertInvalidSingleton(
+                        registry,
+                        "UnknownTypeSingleton",
+                        ClassRegistry.InvalidSingletonMetadata.Reason.UNRESOLVED_TYPE
+                ),
+                () -> assertInvalidSingleton(
+                        registry,
+                        "BuiltinTypeSingleton",
+                        ClassRegistry.InvalidSingletonMetadata.Reason.NON_OBJECT_TYPE
+                )
+        );
+    }
+
+    @Test
     void findTypeShouldReuseStrictResolverBeforeCompatibilityFallback() throws IOException {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         registry.addGdccClass(new LirClassDef("InventoryItem", "Object"));
@@ -174,6 +230,46 @@ public class ClassRegistryTest {
         assertNull(registry.tryResolveDeclaredType("FutureEnemy"));
         assertEquals(new GdObjectType("FutureEnemy"), registry.findType("FutureEnemy"));
         assertEquals(new GdArrayType(new GdObjectType("FutureEnemy")), registry.findType("Array[FutureEnemy]"));
+    }
+
+    private static void assertInvalidSingleton(
+            @NotNull ClassRegistry registry,
+            @NotNull String lookupName,
+            @NotNull ClassRegistry.InvalidSingletonMetadata.Reason reason
+    ) {
+        var invalidMetadata = registry.findInvalidSingletonMetadata(lookupName);
+        assertAll(
+                () -> assertNull(registry.findSingletonType(lookupName)),
+                () -> assertNull(registry.resolveValue(lookupName)),
+                () -> assertNotNull(invalidMetadata),
+                () -> assertEquals(reason, invalidMetadata.reason())
+        );
+    }
+
+    private static @NotNull ExtensionAPI singletonValidationFixtureApi(@NotNull List<ExtensionSingleton> singletons) {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass(
+                        "Node",
+                        false,
+                        true,
+                        "Object",
+                        "core",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of()
+                )),
+                singletons,
+                List.of()
+        );
     }
 
     @Test

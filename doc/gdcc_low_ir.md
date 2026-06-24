@@ -413,7 +413,10 @@ Loads a static variable/property by name.
 ```
 $<result_id> = load_static "<class_name>" "<static_name>"
 ```
-`<class_name>` may be `@GlobalScope` for top-level Godot global constants.
+`<class_name>` may be `@GlobalScope` for top-level Godot global constants and
+Godot singleton properties such as `Engine` or `Input`. A singleton property read
+materializes the engine-owned singleton object; method calls on that receiver still
+use ordinary `call_method`.
 
 #### store_static
 Stores a value to a static variable/property by name.

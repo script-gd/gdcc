@@ -20,6 +20,12 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
+import gd.script.gdcc.lir.LirFunctionDef;
+import gd.script.gdcc.lir.LirInstruction;
+import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.LoadStaticInsn;
+import gd.script.gdcc.lir.insn.ReturnInsn;
 
 import java.util.ArrayDeque;
 import java.lang.reflect.Method;
@@ -215,6 +221,60 @@ class FrontendLoweringPassManagerTest {
         var xml = new DomLirSerializer().serializeToString(lowered);
         assertTrue(xml.contains("<basic_block id="), xml);
         assertTrue(xml.contains("<basic_blocks entry="), xml);
+    }
+
+    @Test
+    void lowerToContextHandlesSingletonBackedPropertyInitializerEndToEnd() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var manager = new FrontendLoweringPassManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "lowering_manager_singleton_property_init.gd",
+                        """
+                        class_name ManagerSingletonPropertyInit
+                        extends RefCounted
+
+                        var frames: int = Engine.get_frames_drawn()
+
+                        func ping() -> int:
+                            return frames
+                        """
+                )),
+                Map.of(
+                        "ManagerSingletonPropertyInit",
+                        "RuntimeManagerSingletonPropertyInit"
+                )
+        );
+
+        var context = manager.lowerToContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+
+        var propertyContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimeManagerSingletonPropertyInit",
+                "_field_init_frames"
+        );
+        var initFunction = propertyContext.targetFunction();
+        var receiverLoad = requireOnlyInstruction(initFunction, LoadStaticInsn.class);
+        var methodCall = requireOnlyInstruction(initFunction, CallMethodInsn.class);
+        var returnInsn = requireOnlyInstruction(initFunction, ReturnInsn.class);
+
+        assertAll(
+                () -> assertFalse(diagnostics.hasErrors()),
+                () -> assertTrue(propertyContext.hasFrontendCfgGraph()),
+                () -> assertTrue(initFunction.getBasicBlockCount() > 0),
+                () -> assertFalse(initFunction.getEntryBlockId().isEmpty()),
+                () -> assertEquals("@GlobalScope", receiverLoad.className()),
+                () -> assertEquals("Engine", receiverLoad.staticName()),
+                () -> assertEquals("get_frames_drawn", methodCall.methodName()),
+                () -> assertEquals(receiverLoad.resultId(), methodCall.objectId()),
+                () -> assertEquals(methodCall.resultId(), returnInsn.returnValueId()),
+                () -> assertEquals(0, countInstructions(initFunction, CallGlobalInsn.class))
+        );
     }
 
     @Test
@@ -509,6 +569,35 @@ class FrontendLoweringPassManagerTest {
             }
         }
         throw new AssertionError("Missing reachable branch for condition root " + conditionRoot.getClass().getSimpleName());
+    }
+
+    private static int countInstructions(
+            @NotNull LirFunctionDef function,
+            @NotNull Class<? extends LirInstruction> instructionType
+    ) {
+        return (int) allInstructions(function).stream()
+                .filter(instructionType::isInstance)
+                .count();
+    }
+
+    private static <T extends LirInstruction> @NotNull T requireOnlyInstruction(
+            @NotNull LirFunctionDef function,
+            @NotNull Class<T> instructionType
+    ) {
+        var matches = allInstructions(function).stream()
+                .filter(instructionType::isInstance)
+                .map(instructionType::cast)
+                .toList();
+        assertEquals(1, matches.size(), () -> "Expected exactly one " + instructionType.getSimpleName());
+        return matches.getFirst();
+    }
+
+    private static @NotNull List<LirInstruction> allInstructions(@NotNull LirFunctionDef function) {
+        var instructions = new ArrayList<LirInstruction>();
+        for (var block : function) {
+            instructions.addAll(block.getInstructions());
+        }
+        return instructions;
     }
 
     private static @NotNull FunctionDeclaration requireFunctionDeclaration(

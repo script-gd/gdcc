@@ -254,6 +254,69 @@ class FrontendLoweringFunctionPreparationPassTest {
     }
 
     @Test
+    void runPublishesSingletonBackedPropertyInitContextAndKeepsShellOnly() throws Exception {
+        var diagnostics = new DiagnosticManager();
+        var module = parseModule(
+                List.of(new SourceFixture(
+                        "preparation_singleton_property_init.gd",
+                        """
+                        class_name PreparationSingletonPropertyInit
+                        extends RefCounted
+
+                        var frames: int = Engine.get_frames_drawn()
+
+                        func ping() -> int:
+                            return frames
+                        """
+                )),
+                Map.of(
+                        "PreparationSingletonPropertyInit",
+                        "RuntimePreparationSingletonPropertyInit"
+                )
+        );
+        var context = new FrontendLoweringContext(
+                module,
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
+        );
+        new FrontendLoweringAnalysisPass().run(context);
+        new FrontendLoweringClassSkeletonPass().run(context);
+        var sourceFile = module.units().getFirst().ast();
+        var property = requireStatement(
+                sourceFile.statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("frames")
+        );
+
+        new FrontendLoweringFunctionPreparationPass().run(context);
+
+        var lirModule = context.requireLirModule();
+        var owningClass = requireClass(lirModule, "RuntimePreparationSingletonPropertyInit");
+        var propertyDef = requireProperty(owningClass, "frames");
+        var propertyContext = requireContext(
+                context.requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.PROPERTY_INIT,
+                "RuntimePreparationSingletonPropertyInit",
+                "_field_init_frames"
+        );
+
+        assertFalse(diagnostics.hasErrors());
+        assertSame(property, propertyContext.sourceOwner());
+        assertSame(property.value(), propertyContext.loweringRoot());
+        assertInstanceOf(AttributeExpression.class, propertyContext.loweringRoot());
+        assertSame(requireFunction(owningClass, "_field_init_frames"), propertyContext.targetFunction());
+        assertTrue(propertyContext.targetFunction().isHidden());
+        assertEquals("int", propertyContext.targetFunction().getReturnType().getTypeName());
+        assertEquals(1, propertyContext.targetFunction().getParameterCount());
+        assertEquals("self", propertyContext.targetFunction().getParameter(0).name());
+        assertEquals("_field_init_frames", propertyDef.getInitFunc());
+        for (var function : owningClass.getFunctions()) {
+            assertEquals(0, function.getBasicBlockCount(), function.getName());
+            assertTrue(function.getEntryBlockId().isEmpty(), function.getName());
+        }
+    }
+
+    @Test
     void functionLoweringContextCanRepresentFutureParameterDefaultInitWithoutShapeChanges() throws Exception {
         var analyzed = analyzeSharedModule(
                 List.of(new SourceFixture(

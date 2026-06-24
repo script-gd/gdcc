@@ -1324,7 +1324,9 @@ public final class CBodyBuilder {
                 funcName.equals("gdcc_cmp_object");
     }
 
-    private void recordUsedGodotBindingCall(@NotNull String funcName) {
+    /// Verifies that an emitted `godot_*` wrapper call is either runtime-provided or has already
+    /// been registered as module-local by the current lowering path.
+    public void recordUsedGodotBindingCall(@NotNull String funcName) {
         try {
             usageBuffer.recordGodotCall(funcName);
         } catch (IllegalStateException exception) {

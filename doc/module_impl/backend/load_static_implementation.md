@@ -6,7 +6,7 @@
 ## 文档状态
 
 - 状态：Implemented / Maintained
-- 更新时间：2026-02-26
+- 更新时间：2026-06-24
 - 适用范围：`C backend` 对 `load_static` / `store_static` 的生成与校验
 
 ---
@@ -17,12 +17,13 @@
 
 `$r = load_static "<class_name>" "<static_name>"`
 
-当前后端只支持四类静态读取：
+当前后端支持五类静态读取：
 
-1. `@GlobalScope` 顶层 global constants
-2. global enum 项
-3. builtin class constants
-4. engine class integer constants
+1. `@GlobalScope` singleton properties
+2. `@GlobalScope` 顶层 global constants
+3. global enum 项
+4. builtin class constants
+5. engine class integer constants
 
 不支持：
 
@@ -69,6 +70,23 @@
   `literal_int`。
 - `ExtensionGlobalConstant.value` 使用 Java `long` 保存 Godot int64 metadata；后端输出十进制 `godot_int`
   literal，不按 Java `int` 截断。
+
+### 3.0.1 singleton properties
+
+- 从顶层 `singletons[]` 读取，`ExtensionSingleton.name()` 是 `@GlobalScope` property lookup name，
+  `ExtensionSingleton.type()` 是 declared object return type。
+- `ClassRegistry` 预先验证 singleton metadata。只有 `type` 能 strict resolve 为 `GdObjectType` 时，
+  `findSingletonType(lookupName)` 才返回有效类型；缺失、空白、unknown 或非 object type 都不会发布为
+  singleton value。
+- Backend IR 使用 `load_static "@GlobalScope" "<singleton_name>"` 显式表示 singleton property read。
+  `LoadStaticInsnGen` 先检查 singleton property，再回退 global constant，避免 object singleton 被旧的
+  global-constant-only `int` 校验误拒绝。
+- C backend 发射 `godot_<lookupName>_singleton()` wrapper 调用。`Engine`、`ClassDB` 等 fixed-provided
+  wrappers 只作为 provided symbol 使用，不重复输出到 `engine_method_binds.h`；非 provided singleton 才生成
+  module-local wrapper。
+- singleton getter 返回 Godot engine registry 中已存在的 object pointer，是 borrowed source。
+  `LoadStaticInsnGen` 必须用 borrowed object assignment 路径，不能走 `callAssign(...)` 或任何 owned-result
+  producer 路径。
 
 ### 3.1 global enum values
 
@@ -141,14 +159,16 @@
 
 建议长期保留以下测试关注点：
 
-1. `@GlobalScope` global constant 成功/失败
-2. global enum 成功/失败
-3. builtin constant 成功（普通值 + `INF`）
-4. engine class integer constant 成功
-5. engine class non-integer constant 失败
-6. result 变量非法（缺失 / ref）
-7. `store_static` 统一拒绝
-8. builtin constant `type` 元数据解析正确
+1. `@GlobalScope` singleton property 成功/失败
+2. `@GlobalScope` global constant 成功/失败
+3. global enum 成功/失败
+4. builtin constant 成功（普通值 + `INF`）
+5. engine class integer constant 成功
+6. engine class non-integer constant 失败
+7. result 变量非法（缺失 / ref）
+8. `store_static` 统一拒绝
+9. builtin constant `type` 元数据解析正确
+10. fixed-provided singleton wrapper 不进入 module-local header，non-provided singleton 才进入
 
 建议命令（按需 targeted）：
 

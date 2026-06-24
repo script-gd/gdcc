@@ -10,6 +10,7 @@ import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.gdextension.ExtensionGlobalEnum;
+import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.lir.LirBasicBlock;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
@@ -19,6 +20,7 @@ import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
@@ -100,6 +102,21 @@ class CLoadStaticInsnGenTest {
     }
 
     @Test
+    @DisplayName("load_static should load @GlobalScope singleton property as borrowed object receiver")
+    void shouldLoadGlobalScopeSingletonPropertyValue() {
+        var body = generateBody(
+                singletonFixtureApi(),
+                setupLoadStaticFunction(
+                        new GdObjectType("Node"),
+                        new LoadStaticInsn("out", "@GlobalScope", "GameSingleton")
+                )
+        );
+
+        assertTrue(body.contains("godot_GameSingleton_singleton()"));
+        assertFalse(body.contains("godot_Node_singleton()"));
+    }
+
+    @Test
     @DisplayName("load_static should materialize builtin Vector3 constant")
     void shouldLoadBuiltinVector3Constant() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
@@ -176,6 +193,18 @@ class CLoadStaticInsnGenTest {
     }
 
     @Test
+    @DisplayName("load_static should reject singleton property with incompatible target type")
+    void shouldRejectIncompatibleSingletonTargetType() {
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(
+                singletonFixtureApi(),
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "@GlobalScope", "GameSingleton"))
+        ));
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not assignable from singleton type 'Node'"));
+    }
+
+    @Test
     @DisplayName("load_static should reject missing @GlobalScope global constant")
     void shouldRejectMissingGlobalScopeGlobalConstant() {
         var api = new ExtensionAPI(
@@ -232,6 +261,32 @@ class CLoadStaticInsnGenTest {
         func.addBasicBlock(entry);
         func.setEntryBlockId("entry");
         return func;
+    }
+
+    private ExtensionAPI singletonFixtureApi() {
+        return new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass(
+                        "Node",
+                        false,
+                        true,
+                        "Object",
+                        "core",
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of(),
+                        List.of()
+                )),
+                List.of(new ExtensionSingleton("GameSingleton", "Node")),
+                List.of()
+        );
     }
 
     private String generateBody(ExtensionAPI api, LirFunctionDef func) {

@@ -1560,7 +1560,7 @@ public final class FrontendCfgGraphBuilder {
                     ),
                     List.of()
             );
-            case CONSTANT -> null;
+            case CONSTANT, SINGLETON -> null;
             default -> throw new IllegalStateException(
                     "Identifier writable-route publication is not supported for binding kind " + binding.kind()
             );
