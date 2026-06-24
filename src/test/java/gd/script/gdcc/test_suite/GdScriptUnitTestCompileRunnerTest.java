@@ -46,6 +46,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "algorithm/graph_traversal.gd",
             "collection/array_sum_and_mutation.gd",
             "collection/dictionary_mutation_and_lookup.gd",
+            "constructor/atomic_builtin_constructor_roundtrip.gd",
             "constructor/builtin_variant_container_roundtrip.gd",
             "constructor/builtin_variant_scalar_roundtrip.gd",
             "constructor/int_to_float_builtin_constructor.gd",

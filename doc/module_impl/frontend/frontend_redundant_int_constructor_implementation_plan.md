@@ -330,6 +330,10 @@ constructor route，问题在 backend helper surface 闭合。
 - `GodotBindingUsageSessionTest.gdccHelperWrappersShouldBeRuntimeProvided` 已覆盖 14 个
   atomic constructor helper 与 4 个 flat-float shim，确保 usage session 不把它们当作
   module-local missing symbol。
+- `GdScriptUnitTestCompileRunnerTest` 已纳入
+  `constructor/atomic_builtin_constructor_roundtrip.gd` 端到端资源用例，从 GDScript 源码到
+  原生构建与 Godot 运行覆盖 `int(int)` 主路径，并同时锚定 `bool(int)`、`int(bool)`、
+  `float(bool/int)`、`int(float)` 的运行结果。
 - `CConstructInsnGenTest.constructBuiltinShouldEmitMetadataBackedAtomicCtorHelpers` 已覆盖
   `int(int)`、`bool(int)`、`float(bool)` 这些 metadata-backed atomic constructor route。
 - `CConstructInsnGenTest.constructBuiltinShouldEmitFlatFloatHelperCtorForAllShimTypes` 已覆盖
