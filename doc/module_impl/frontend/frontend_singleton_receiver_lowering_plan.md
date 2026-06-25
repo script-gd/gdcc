@@ -358,6 +358,8 @@ deferred boundary 合同，导致同一个 bare identifier 在 top binding 与�
 - [x] 更新 expression type 与 chain head receiver 消费路径，禁止 value-kind binding 回退到
   `currentScope.resolveValue(...)` 重新竞争。
 - [x] 增加 later-local、initializer self-reference、missing resolved value、lowering alignment 回归测试。
+- [x] 参考 `doc/test_suite.md` 增加端到端资源，覆盖 Step 3 的 later-local 与 initializer self-reference drift
+  场景经过 frontend lowering、C backend、Godot runtime 后仍按 singleton receiver 执行。
 - [x] 运行 targeted tests 并记录验证结果。
 
 问题背景：
@@ -463,6 +465,10 @@ body lowering
 
 - `script/run-gradle-targeted-tests.sh --tests FrontendTopBindingAnalyzerTest,FrontendExpressionSemanticSupportTest,FrontendChainHeadReceiverSupportTest,FrontendChainReductionFacadeTest,FrontendChainBindingAnalyzerTest,FrontendExprTypeAnalyzerTest,FrontendLoweringBodyInsnPassTest`
   通过。
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.listsExpectedBundledUnitScripts`
+  通过，确认新增 `runtime/singleton_receiver_binding_drift.gd` 被 test-suite 资源清单收录。
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`
+  通过，确认新增 drift fixture 可完整经过 frontend lowering、C backend build 与 Godot runtime validation。
 
 ### Step 4: 扩展 `load_static` 的 `@GlobalScope` 语义
 
@@ -619,6 +625,11 @@ singleton-backed property initializer、`Engine.get_frames_drawn()` 返回值调
 statement-position void 调用，以及 `Input.is_action_pressed(...)` 带参调用；同时补充 body-lowering focused
 negative test，钉住“已发布 `SINGLETON` binding 但 registry metadata 缺失”时必须在 `requireSingletonType(...)`
 边界 fail-fast，不能漂移成 unknown/unsupported identifier。
+
+补充（2026-06-25）：已按 `doc/test_suite.md` 的资源配对规则新增
+`runtime/singleton_receiver_binding_drift.gd` 端到端用例，专门锚定 Step 3 的 resolved value payload 合同：
+同一方法内先调用 `Engine.get_frames_drawn()` 再声明同名 local，以及 `var Engine := Engine.get_frames_drawn()`
+initializer 自引用场景，都必须在完整编译运行链路中继续消费 top binding 发布的 singleton receiver。
 
 验证（2026-06-24）：frontend singleton lowering / property-init pipeline / LIR round-trip targeted
 tests、registry/backend/binding targeted tests、`git diff --check` 与 `./gradlew classes --no-daemon --info --console=plain`

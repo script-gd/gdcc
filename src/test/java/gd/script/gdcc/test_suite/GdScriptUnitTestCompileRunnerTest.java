@@ -85,6 +85,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/int_to_float_engine_class.gd",
             "runtime/int_to_float_inbound_dynamic_call.gd",
             "runtime/rect2i_to_rect2_call_guard.gd",
+            "runtime/singleton_receiver_binding_drift.gd",
             "runtime/singleton_receiver_calls.gd",
             "runtime/string_literal_escape_unicode_surface.gd",
             "runtime/string_literal_internal_surface.gd",
