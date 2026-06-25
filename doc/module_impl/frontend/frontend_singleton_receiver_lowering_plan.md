@@ -488,6 +488,13 @@ backend/lowering 成为首个用户可见失败点。body lowering 只保留“�
 状态（2026-06-24）：已完成。已同步 `doc/gdcc_low_ir.md`、
 `doc/module_impl/backend/load_static_implementation.md` 和
 `doc/module_impl/backend/godot_binding_implementation.md` 的长期语义。
+
+状态（2026-06-25）：已补充 test-suite 端到端资源 `runtime/singleton_receiver_calls.gd`，覆盖
+singleton-backed property initializer、`Engine.get_frames_drawn()` 返回值调用、`Engine.set_time_scale(...)`
+statement-position void 调用，以及 `Input.is_action_pressed(...)` 带参调用；同时补充 body-lowering focused
+negative test，钉住“已发布 `SINGLETON` binding 但 registry metadata 缺失”时必须在 `requireSingletonType(...)`
+边界 fail-fast，不能漂移成 unknown/unsupported identifier。
+
 验证（2026-06-24）：frontend singleton lowering / property-init pipeline / LIR round-trip targeted
 tests、registry/backend/binding targeted tests、`git diff --check` 与 `./gradlew classes --no-daemon --info --console=plain`
 均已通过。

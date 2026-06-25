@@ -505,6 +505,64 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runFailsFastWhenPublishedSingletonBindingLosesRegistryMetadata() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_singleton_missing_registry_metadata.gd",
+                """
+                        class_name BodyInsnSingletonMissingRegistryMetadata
+                        extends RefCounted
+                        
+                        func ping(value: int) -> int:
+                            return value
+                        """,
+                Map.of(
+                        "BodyInsnSingletonMissingRegistryMetadata",
+                        "RuntimeBodyInsnSingletonMissingRegistryMetadata"
+                ),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonMissingRegistryMetadata",
+                "ping"
+        );
+        var rootBlock = assertInstanceOf(dev.superice.gdparser.frontend.ast.Block.class, pingContext.loweringRoot());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, rootBlock.statements().getFirst());
+        var value = assertInstanceOf(IdentifierExpression.class, returnStatement.value());
+        var originalBinding = pingContext.analysisData().symbolBindings().get(value);
+        assertNotNull(originalBinding);
+        // Simulate a broken upstream publication so this test stays focused on the body-lowering guard.
+        pingContext.analysisData().symbolBindings().put(
+                value,
+                new FrontendBinding(
+                        "MissingRegistrySingleton",
+                        FrontendBindingKind.SINGLETON,
+                        originalBinding.declarationSite()
+                )
+        );
+
+        var exception = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(
+                        exception.getMessage().contains(
+                                "Published singleton binding 'MissingRegistrySingleton'"
+                        ),
+                        exception.getMessage()
+                ),
+                () -> assertTrue(
+                        exception.getMessage().contains("missing registry-validated object metadata"),
+                        exception.getMessage()
+                )
+        );
+    }
+
+    @Test
     void runFailsFastWhenDirectSlotReceiverIdentifierPretendsToBeSelf() throws Exception {
         var prepared = prepareContext(
                 "body_insn_identifier_self_binding_receiver.gd",
@@ -2707,16 +2765,16 @@ class FrontendLoweringBodyInsnPassTest {
     void runLowersSingletonValueReceiverAsInstanceReceiverInExecutableBody() throws Exception {
         var prepared = prepareContext(
                 "body_insn_singleton_receiver_call.gd",
-                        """
+                """
                         class_name BodyInsnSingletonReceiverCall
                         extends RefCounted
-
+                        
                         func frames() -> int:
                             return Engine.get_frames_drawn()
-
+                        
                         func pressed() -> bool:
                             return Input.is_action_pressed(&"ui_accept", true)
-
+                        
                         func scale() -> void:
                             Engine.set_time_scale(1.0)
                         """,
@@ -5919,12 +5977,12 @@ class FrontendLoweringBodyInsnPassTest {
     void runLowersSingletonReceiverPropertyInitializerIntoExecutableInitFunction() throws Exception {
         var prepared = prepareContext(
                 "body_insn_property_singleton_receiver_call.gd",
-                        """
+                """
                         class_name BodyInsnPropertySingletonReceiverCall
                         extends RefCounted
-
+                        
                         var frames: int = Engine.get_frames_drawn()
-
+                        
                         func ping() -> int:
                             return frames
                         """,
