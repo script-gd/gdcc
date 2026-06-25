@@ -17,8 +17,10 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.ForStatement;
@@ -47,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -243,6 +246,64 @@ class FrontendTopBindingAnalyzerTest {
                 () -> assertInstanceOf(ExtensionGlobalConstant.class, binding.declarationSite()),
                 () -> assertNull(preparedInput.classRegistry().resolveTypeMeta("GDCC_TEST_BIG_FLAG")),
                 () -> assertTrue(preparedInput.diagnosticManager().snapshot().isEmpty())
+        );
+    }
+
+    @Test
+    void analyzePublishesStableSingletonResolvedValueForLaterLocalShadowing() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "singleton_later_local_resolved_value.gd",
+                """
+                        class_name SingletonLaterLocalResolvedValue
+                        extends RefCounted
+
+                        func ping():
+                            Engine.get_frames_drawn()
+                            var Engine: String = ""
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var engineHead = findIdentifierExpression(pingFunction.body(), "Engine");
+        var binding = assertBinding(preparedInput.analysisData(), engineHead, FrontendBindingKind.SINGLETON);
+
+        assertAll(
+                () -> assertEquals(ScopeLookupStatus.FOUND_ALLOWED, binding.valueAccessStatus()),
+                () -> assertNotNull(binding.resolvedValue()),
+                () -> assertEquals(ScopeValueKind.SINGLETON, binding.resolvedValue().kind()),
+                () -> assertEquals("Engine", binding.resolvedValue().name())
+        );
+    }
+
+    @Test
+    void analyzeKeepsInitializerSelfReferenceBoundToSingletonResolvedValue() throws Exception {
+        var preparedInput = prepareBindingInput(
+                "singleton_initializer_self_reference_resolved_value.gd",
+                """
+                        class_name SingletonInitializerSelfReferenceResolvedValue
+                        extends RefCounted
+
+                        func ping():
+                            var Engine: String = Engine
+                        """
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var engineDeclaration = findVariable(pingFunction.body().statements(), "Engine");
+        var initializerEngine = findIdentifierExpression(engineDeclaration.value(), "Engine");
+        var binding = assertBinding(preparedInput.analysisData(), initializerEngine, FrontendBindingKind.SINGLETON);
+
+        assertAll(
+                () -> assertEquals(ScopeLookupStatus.FOUND_ALLOWED, binding.valueAccessStatus()),
+                () -> assertNotNull(binding.resolvedValue()),
+                () -> assertEquals(ScopeValueKind.SINGLETON, binding.resolvedValue().kind()),
+                () -> assertEquals("Engine", binding.resolvedValue().name())
         );
     }
 
@@ -1453,7 +1514,7 @@ class FrontendTopBindingAnalyzerTest {
             @NotNull String source,
             @NotNull ClassRegistry classRegistry,
             @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) throws Exception {
+    ) {
         var parserService = new GdScriptParserService();
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnosticManager);

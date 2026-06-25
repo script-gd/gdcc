@@ -706,9 +706,17 @@ public class FrontendTopBindingAnalyzer {
                 @NotNull FrontendVisibleValueResolution resolution
         ) {
             switch (resolution.status()) {
-                case FOUND_ALLOWED -> publishScopeValueBinding(identifierExpression, resolution.visibleValue());
+                case FOUND_ALLOWED -> publishScopeValueBinding(
+                        identifierExpression,
+                        resolution.visibleValue(),
+                        ScopeLookupStatus.FOUND_ALLOWED
+                );
                 case FOUND_BLOCKED -> {
-                    publishScopeValueBinding(identifierExpression, resolution.visibleValue());
+                    publishScopeValueBinding(
+                            identifierExpression,
+                            resolution.visibleValue(),
+                            ScopeLookupStatus.FOUND_BLOCKED
+                    );
                     reportBindingError(
                             identifierExpression,
                             "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
@@ -950,14 +958,20 @@ public class FrontendTopBindingAnalyzer {
 
         private void publishScopeValueBinding(
                 @NotNull IdentifierExpression identifierExpression,
-                @Nullable ScopeValue scopeValue
+                @Nullable ScopeValue scopeValue,
+                @NotNull ScopeLookupStatus accessStatus
         ) {
             var resolvedValue = Objects.requireNonNull(scopeValue, "scopeValue must not be null");
+            if (accessStatus == ScopeLookupStatus.NOT_FOUND) {
+                throw new IllegalArgumentException("scope value binding must be a found result");
+            }
             publishBinding(
                     identifierExpression,
                     identifierExpression.name(),
                     toBindingKind(resolvedValue.kind()),
-                    resolvedValue.declaration()
+                    resolvedValue.declaration(),
+                    resolvedValue,
+                    accessStatus
             );
         }
 
@@ -1069,12 +1083,25 @@ public class FrontendTopBindingAnalyzer {
                 @NotNull FrontendBindingKind kind,
                 @Nullable Object declarationSite
         ) {
+            publishBinding(useSite, symbolName, kind, declarationSite, null, null);
+        }
+
+        private void publishBinding(
+                @NotNull Node useSite,
+                @NotNull String symbolName,
+                @NotNull FrontendBindingKind kind,
+                @Nullable Object declarationSite,
+                @Nullable ScopeValue resolvedValue,
+                @Nullable ScopeLookupStatus valueAccessStatus
+        ) {
             symbolBindings.put(
                     useSite,
                     new FrontendBinding(
                             Objects.requireNonNull(symbolName, "symbolName must not be null"),
                             Objects.requireNonNull(kind, "kind must not be null"),
-                            declarationSite
+                            declarationSite,
+                            resolvedValue,
+                            valueAccessStatus
                     )
             );
         }

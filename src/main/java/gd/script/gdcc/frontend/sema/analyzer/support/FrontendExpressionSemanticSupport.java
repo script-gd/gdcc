@@ -186,7 +186,7 @@ public final class FrontendExpressionSemanticSupport {
         return propagated(switch (binding.kind()) {
             case SELF -> resolveSelfExpressionType(identifierExpression).expressionType();
             case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM ->
-                    resolveValueIdentifierExpressionType(identifierExpression);
+                    resolveValueIdentifierExpressionType(identifierExpression, binding);
             case TYPE_META -> FrontendExpressionType.failed(
                     "Type-meta identifier '" + identifierExpression.name()
                             + "' cannot be consumed as an ordinary value; use a static route such as '"
@@ -632,7 +632,8 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private @NotNull FrontendExpressionType resolveValueIdentifierExpressionType(
-            @NotNull IdentifierExpression identifierExpression
+            @NotNull IdentifierExpression identifierExpression,
+            @NotNull FrontendBinding binding
     ) {
         var currentScope = scopesByAst.get(identifierExpression);
         if (currentScope == null) {
@@ -640,19 +641,27 @@ public final class FrontendExpressionSemanticSupport {
                     "Identifier '" + identifierExpression.name() + "' is inside a skipped subtree"
             );
         }
-        var valueResult = currentScope.resolveValue(identifierExpression.name(), currentRestriction());
-        if (valueResult.isAllowed()) {
-            return FrontendExpressionType.resolved(valueResult.requireValue().type());
-        }
-        if (valueResult.isBlocked()) {
-            return FrontendExpressionType.blocked(
-                    valueResult.requireValue().type(),
-                    "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
+        var resolvedValue = binding.resolvedValue();
+        if (resolvedValue == null) {
+            return FrontendExpressionType.failed(
+                    "Published value binding '" + identifierExpression.name()
+                            + "' is missing its top-binding resolved value payload"
             );
         }
-        return FrontendExpressionType.failed(
-                "Published value binding '" + identifierExpression.name() + "' is no longer visible"
-        );
+        return switch (Objects.requireNonNull(
+                binding.valueAccessStatus(),
+                "valueAccessStatus must not be null when resolvedValue is present"
+        )) {
+            case FOUND_ALLOWED -> FrontendExpressionType.resolved(resolvedValue.type());
+            case FOUND_BLOCKED -> FrontendExpressionType.blocked(
+                    resolvedValue.type(),
+                    "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
+            );
+            case NOT_FOUND -> FrontendExpressionType.failed(
+                    "Published value binding '" + identifierExpression.name()
+                            + "' carries an invalid not-found resolved value status"
+            );
+        };
     }
 
     private @NotNull FrontendExpressionType resolveCallableIdentifierExpressionType(

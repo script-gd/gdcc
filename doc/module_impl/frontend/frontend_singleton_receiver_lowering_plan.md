@@ -49,7 +49,7 @@ Godot 文档和源码文档都把 engine singletons 建模在 `@GlobalScope` 上
   module-local singleton wrapper 也会按 `godot_<lookupName>_singleton()` 形成 C function name；因此
   `Engine`、`ClassDB` 这类既是 `@GlobalScope` singleton、又已有 fixed wrapper 的名字，不能等到最终 C
   编译/验收才发现重复声明或重复定义。实现前必须先把 provided symbol 过滤、module-local C-name 冲突检查和
-  usage session commit 语义作为 Step 1 / Step 3 的前置合同固定下来。
+  usage session commit 语义作为 Step 1 / Step 4 的前置合同固定下来。
 
 需要特别固定的负路径事实：
 
@@ -343,7 +343,128 @@ registry-owned invalid metadata facts；`findSingletonType(...)` 只返回 stric
 - compile/lowering 入口对 invalid singleton metadata 的用户可见失败发生在 lowering 前；不能表现为
   `FrontendIdentifierOpaqueExprInsnLoweringProcessor` 的 generic unsupported identifier，也不能等 backend `LoadStaticInsnGen` 首次发现。
 
-### Step 3: 扩展 `load_static` 的 `@GlobalScope` 语义
+### Step 3: 修复 top binding resolved value 与 expression/chain receiver 解析漂移
+
+状态（2026-06-25）：已完成。当前 `symbolBindings()` 发布的 resolved value 是稳定的 use-site fact，但后续
+expression type 与 chain receiver 解析只读取 `FrontendBindingKind` 后，会在 ordinary value receiver 路径重新执行
+`currentScope.resolveValue(...)`。这会绕过 `FrontendVisibleValueResolver` 的 declaration-order、自引用过滤和
+deferred boundary 合同，导致同一个 bare identifier 在 top binding 与后续语义阶段恢复出不同 value。
+
+实施清单：
+
+- [x] 扩展 `FrontendBinding`，显式记录 top binding 阶段的 resolved value 与 allowed/blocked 状态。
+- [x] 更新 `FrontendTopBindingAnalyzer` 的 ordinary value 发布路径，让 `FOUND_ALLOWED` / `FOUND_BLOCKED`
+  写入同一份 resolved value payload。
+- [x] 更新 expression type 与 chain head receiver 消费路径，禁止 value-kind binding 回退到
+  `currentScope.resolveValue(...)` 重新竞争。
+- [x] 增加 later-local、initializer self-reference、missing resolved value、lowering alignment 回归测试。
+- [x] 运行 targeted tests 并记录验证结果。
+
+问题背景：
+
+- `FrontendVariableAnalyzer` 会在 callable-local inventory 阶段提前把 supported ordinary local 写入 `BlockScope`；
+  这保证后续 phase 看到稳定 scope graph，但也意味着 shared `Scope.resolveValue(...)` 本身不表达 statement-order。
+- `FrontendTopBindingAnalyzer` 在 executable body 中通过 `FrontendVisibleValueResolver` 解析 bare value name。
+  resolver 会过滤 declaration-after-use local、自引用 initializer local，并在 filtered hit 之后继续向 outer/class/global
+  scope 查找；因此 `Engine.get_frames_drawn()` 前方若存在 later local `var Engine`，top binding 仍可正确发布
+  `FrontendBindingKind.SINGLETON`。
+- `FrontendExpressionSemanticSupport.resolveValueIdentifierExpressionType(...)` 与
+  `FrontendChainHeadReceiverSupport.resolveValueReceiver(...)` 当前会重新调用 `currentScope.resolveValue(...)`。
+  shared scope lookup 命中当前 `BlockScope` 的同名 local 后立即停止，无法知道该 local 对 use-site 来说其实是 future
+  declaration 或 initializer self-reference。
+- CFG / body lowering 侧又按 `symbolBindings()` materialize identifier：`SINGLETON` 会降成
+  `load_static "@GlobalScope" "Engine"`。如果 chain semantic 已经按 later local 类型解析 member/call，最终会出现
+  `resolvedCalls()` / `expressionTypes()` 与实际 receiver materialization 不一致。
+
+成因链路摘要：
+
+```text
+variable inventory
+  -> BlockScope already contains later local Engine
+top binding
+  -> FrontendVisibleValueResolver filters later/self local
+  -> symbolBindings()[Engine use-site] = SINGLETON
+expression type / chain receiver
+  -> reads binding.kind() only
+  -> currentScope.resolveValue("Engine") returns local Engine
+  -> receiver type/member/call facts drift away from top binding resolved value
+body lowering
+  -> requireBinding(Engine use-site) still materializes @GlobalScope.Engine
+```
+
+修复方向：
+
+- `FrontendBinding` 必须记录 top binding 阶段已经解析出的 resolved value，而不是只记录 `symbolName`、`kind` 与
+  `declarationSite`。
+- 对 ordinary value binding（`PARAMETER`、`LOCAL_VAR`、`CAPTURE`、`PROPERTY`、`SIGNAL`、`CONSTANT`、
+  `SINGLETON`、`GLOBAL_ENUM`），`FrontendTopBindingAnalyzer` 在 `publishScopeValueBinding(...)` /
+  `publishValueResolution(...)` 中把 `ScopeValue resolvedValue` 与 allowed/blocked 状态写进 `FrontendBinding`。
+  这可以是 `@Nullable ScopeValue resolvedValue` 加一个直接的 access flag；不要新增一层只有一个实现的 resolver
+  abstraction，也不要让后续阶段从 `declarationSite` 反推类型。
+- `FrontendExpressionSemanticSupport.resolveValueIdentifierExpressionType(...)` 必须优先消费 binding 中的
+  `resolvedValue.type()` 与 access 状态。若 value-kind binding 缺少 resolved value，说明上游 publication contract 被破坏，
+  应发布 `FAILED` / fail-fast detail，而不是回退到 `currentScope.resolveValue(...)`。
+- `FrontendChainHeadReceiverSupport.resolveValueReceiver(...)` 必须同样消费 binding 中的 exact resolved value 来构造
+  `ReceiverState.resolvedInstance(...)` / `blockedFrom(...)`。该 helper 只允许使用 `scopesByAst` 判断 skipped subtree
+  这类缺失上下文；不能再把 scope lookup 当成 resolved value 恢复机制。
+- `FrontendBinding.declarationSite()` 继续保留给诊断和测试断言使用，但 value type / receiver type 的真源必须是
+  top binding 发布的 resolved value。这样 later local、initializer self-reference local、outer fallback、singleton/global enum
+  等路径都复用同一份 resolved value。
+- local `:=` slot 类型稳定化与 expression type fallback backfill 若改写 `BlockScope` 中的 local `ScopeValue`，必须按
+  declaration identity 刷新已发布 binding payload；这不是重新解析 use-site，而是让同一个 resolved value slot 的类型与
+  后续 slot writeback 保持同步。
+  需要这一步的原因是 `BlockScope.resetLocalType(...)` 会替换 immutable `ScopeValue`；Step 3 之后
+  expression type / chain receiver 不再用 `currentScope.resolveValue(...)` 重新读取当前 slot，而是直接消费
+  `FrontendBinding.resolvedValue()`。如果 fallback backfill 不调用
+  `FrontendExprTypeAnalyzer.refreshPublishedLocalValues(...)`，已发布 use-site binding 会继续指向 backfill 前的
+  `Variant` payload，导致 `BlockScope` 中的 local slot 已经变窄、但后续语义仍按旧 payload 分析。
+- body lowering 仍按 `symbolBindings()` materialize runtime receiver，不新增 singleton-specific call route，也不重跑
+  callable signature 推导。
+
+改动范围：
+
+- `src/main/java/gd/script/gdcc/frontend/sema/FrontendBinding.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendTopBindingAnalyzer.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendLocalTypeStabilizationAnalyzer.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzer.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendExpressionSemanticSupport.java`
+- `src/main/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendChainHeadReceiverSupport.java`
+- focused tests:
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendExprTypeAnalyzerTest.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/FrontendChainBindingAnalyzerTest.java`
+  - `src/test/java/gd/script/gdcc/frontend/sema/analyzer/support/FrontendChainHeadReceiverSupportTest.java`
+  - 必要时补 `src/test/java/gd/script/gdcc/frontend/lowering/FrontendLoweringBodyInsnPassTest.java`
+
+测试要求：
+
+- later local 遮蔽 singleton：在同一 block 中先使用 `Engine.get_frames_drawn()`，再声明 `var Engine: String = ""`
+  或等价非 Engine receiver。断言 chain head binding 是 `SINGLETON`，base expression type 是 registry 中的 singleton
+  declared object type，`resolvedCalls()` 按 `Engine.get_frames_drawn()` 发布，而不是按 local `String` / `Variant`
+  receiver 失败或转动态。
+- initializer 自引用 local：`var Engine: String = Engine` 或等价场景中，右侧 `Engine` 的 binding resolved value 必须是
+  `SINGLETON`，expression type 必须来自 singleton resolved value，而不是当前 local slot 的 declared type。
+- chain head support focused test：手工构造一个 published `SINGLETON` binding，同时在当前 `BlockScope` 中放入同名
+  local，`resolveHeadReceiver(...)` 仍必须使用 binding 携带的 singleton `ScopeValue.type()`。
+- negative contract test：若 value-kind `FrontendBinding` 缺少 resolved value，expression/chain semantic 必须产生精确
+  `FAILED` detail；不得悄悄退回 `currentScope.resolveValue(...)`。
+- lowering 回归可以复用现有 singleton receiver shape 断言，只需补一个 later-local 版本证明 semantic fact 与
+  `LoadStaticInsn("@GlobalScope", "Engine")` materialization 对齐。
+
+验收：
+
+- 后续 semantic 阶段不再因为 later local、initializer self-reference local 或同名 current-scope value 重新解析 resolved value。
+- `FrontendVisibleValueResolver` 仍是 executable body bare value 可见性合同的唯一 owner；shared `Scope.resolveValue(...)`
+  继续只表达 lexical inventory lookup。
+- `symbolBindings()`、`expressionTypes()`、`resolvedMembers()`、`resolvedCalls()` 与 CFG/body lowering 使用同一个
+  top binding resolved value。
+- 不新增独立 public binding-resolution service，不新增 singleton-specific semantic route，不改变 `TYPE_META` 静态 route。
+
+验证（2026-06-25）：
+
+- `script/run-gradle-targeted-tests.sh --tests FrontendTopBindingAnalyzerTest,FrontendExpressionSemanticSupportTest,FrontendChainHeadReceiverSupportTest,FrontendChainReductionFacadeTest,FrontendChainBindingAnalyzerTest,FrontendExprTypeAnalyzerTest,FrontendLoweringBodyInsnPassTest`
+  通过。
+
+### Step 4: 扩展 `load_static` 的 `@GlobalScope` 语义
 
 状态（2026-06-24）：已完成。`LoadStaticInsnGen` 先处理 `@GlobalScope` singleton property，再回退
 global constant；singleton getter 通过 `ModuleLocalGodotBinding.singleton(lookupName, returnTypeName)` 登记，
@@ -425,7 +546,7 @@ global constant；singleton getter 通过 `ModuleLocalGodotBinding.singleton(loo
 - `doc/gdcc_low_ir.md` 和 `doc/module_impl/backend/load_static_implementation.md` 明确 `@GlobalScope` owner 同时覆盖 global
   constants 与 singleton properties。
 
-### Step 4: 接入 frontend body lowering
+### Step 5: 接入 frontend body lowering
 
 状态（2026-06-24）：已完成。`FrontendBindingKind.SINGLETON` opaque identifier materialization 现在发射
 `LoadStaticInsn(result, "@GlobalScope", binding.symbolName())`，并复用既有 `CallMethodInsn` receiver 路径。
@@ -457,14 +578,18 @@ global constant；singleton getter 通过 `ModuleLocalGodotBinding.singleton(loo
 - implicit self fallback、direct-slot alias、writable-route payload 逻辑不被修改。
 - `SELF` contract violation 仍保持 fail-fast，不能因为新增 `SINGLETON` 分支而放宽。
 
-### Step 5: 保持 semantic / CFG 边界稳定
+### Step 6: 保持 semantic / CFG 边界稳定
 
 状态（2026-06-24）：已完成。semantic / receiver kind 边界保持不变；CFG builder 仅补齐 singleton
 opaque value publication 的窄缺口，没有新增 singleton-specific call route 或 type-meta route。
 
+补充（2026-06-25）：Step 3 会修改 semantic fact 的 payload，让后续 receiver/type 恢复消费 top binding resolved value。
+本阶段的“保持边界稳定”仍指不新增 singleton-specific route、不让 CFG builder 重跑 chain reduction；不再表示
+semantic analyzer 完全不需要改动。
+
 改动范围：
 
-- 默认不修改 semantic analyzer。
+- 除 Step 3 的 `FrontendBinding` resolved value payload 修复外，默认不修改其他 semantic analyzer。
 - 默认不修改 CFG builder。
 - 仅在测试显示缺口时补 focused semantic/CFG tests。
 
@@ -483,7 +608,7 @@ singleton 事实。如果 `type` 字符串存在但不能被 strict type namespa
 backend/lowering 成为首个用户可见失败点。body lowering 只保留“已发布 `SINGLETON` binding 却无法取得已验证 declared type”
 这一协议不变量的 fail-fast。
 
-### Step 6: 文档和测试收尾
+### Step 7: 文档和测试收尾
 
 状态（2026-06-24）：已完成。已同步 `doc/gdcc_low_ir.md`、
 `doc/module_impl/backend/load_static_implementation.md` 和
@@ -564,7 +689,7 @@ issue #36 可关闭的条件：
 - C backend 把 singleton getter 结果作为 `BORROWED` source materialize 到 receiver slot，不走
   `CBodyBuilder.callAssign(...)` / `OwnershipKind.OWNED` / `valueOfOwnedExpr(...)` 的 fresh-result 合同。
 - 对 runtime-provided fixed singleton wrapper，C backend 接受 provided symbol，但不把它重复提交到 module-local header；
-  `godot_Engine_singleton()` / `godot_ClassDB_singleton()` 这类 C name 的去重必须由 Step 1/Step 3 的
+  `godot_Engine_singleton()` / `godot_ClassDB_singleton()` 这类 C name 的去重必须由 Step 1/Step 4 的
   usage-session tests 与 provided-symbol filtering 提前保证，不能只作为最终生成物验收项。
 - `@GlobalScope` global constant 的既有 integer literal lowering 不回归。
 - metadata 有 singleton lookup name 但 `type` 字段缺失/为空，或 `type` 字符串存在但不可严格解析时，`ClassRegistry`

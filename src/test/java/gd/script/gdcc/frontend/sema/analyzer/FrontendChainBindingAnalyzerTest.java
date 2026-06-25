@@ -20,6 +20,7 @@ import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
@@ -92,6 +93,42 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(1, analyzed.analysisData().resolvedMembers().size());
         assertEquals(1, analyzed.analysisData().resolvedCalls().size());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsSingletonCallReceiverStableAgainstLaterLocalShadowing() throws Exception {
+        var analyzed = analyze(
+                "singleton_call_later_local_shadow.gd",
+                """
+                        class_name SingletonCallLaterLocalShadow
+                        extends RefCounted
+
+                        func ping():
+                            Engine.get_frames_drawn()
+                            var Engine: String = ""
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var engineHead = findNode(pingFunction, IdentifierExpression.class, identifier -> identifier.name().equals("Engine"));
+        var framesStep = findNode(pingFunction, AttributeCallStep.class, step -> step.name().equals("get_frames_drawn"));
+        var binding = analyzed.analysisData().symbolBindings().get(engineHead);
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(framesStep);
+
+        assertAll(
+                () -> assertNotNull(binding),
+                () -> assertEquals(FrontendBindingKind.SINGLETON, binding.kind()),
+                () -> assertNotNull(binding.resolvedValue()),
+                () -> assertEquals("Engine", binding.resolvedValue().type().getTypeName()),
+                () -> assertNotNull(resolvedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind()),
+                () -> assertNotNull(resolvedCall.receiverType()),
+                () -> assertEquals("Engine", resolvedCall.receiverType().getTypeName()),
+                () -> assertNotNull(resolvedCall.returnType()),
+                () -> assertEquals("int", resolvedCall.returnType().getTypeName())
+        );
     }
 
     @Test
@@ -241,7 +278,7 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedRead.callKind());
         assertEquals(FrontendReceiverKind.INSTANCE, resolvedRead.receiverKind());
 
-        assertTrue(analyzed.analysisData().resolvedCalls().get(aliasBuildStep) == null);
+        assertNull(analyzed.analysisData().resolvedCalls().get(aliasBuildStep));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
@@ -543,7 +580,7 @@ class FrontendChainBindingAnalyzerTest {
         );
         var payloadStep = findNode(copyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
 
-        assertTrue(analyzed.analysisData().resolvedMembers().get(payloadStep) == null);
+        assertNull(analyzed.analysisData().resolvedMembers().get(payloadStep));
         assertEquals(1, diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_binding_subtree").size());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_binding_subtree")
                 .getFirst()
@@ -1011,7 +1048,7 @@ class FrontendChainBindingAnalyzerTest {
                 () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedVector.receiverKind()),
                 () -> assertEquals(
                         List.of("int", "int", "int"),
-                        resolvedVector.argumentTypes().stream().map(type -> type.getTypeName()).toList()
+                        resolvedVector.argumentTypes().stream().map(GdType::getTypeName).toList()
                 ),
                 () -> assertNotNull(resolvedNode),
                 () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedNode.status()),
@@ -1762,16 +1799,16 @@ class FrontendChainBindingAnalyzerTest {
         assertEquals(FrontendCallResolutionStatus.BLOCKED, publishedBlockedBareCall.status());
         assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, publishedBlockedBareCall.callKind());
         assertEquals(FrontendReceiverKind.INSTANCE, publishedBlockedBareCall.receiverKind());
-        assertEquals(List.of("int"), publishedBlockedBareCall.argumentTypes().stream().map(type -> type.getTypeName()).toList());
+        assertEquals(List.of("int"), publishedBlockedBareCall.argumentTypes().stream().map(GdType::getTypeName).toList());
         assertEquals("int", publishedBlockedBareCall.returnType().getTypeName());
 
         var outerChainType = analyzed.analysisData().expressionTypes().get(chainExpression);
         assertNotNull(outerChainType);
         assertEquals(FrontendExpressionTypeStatus.BLOCKED, outerChainType.status());
-        assertTrue(outerChainType.publishedType() == null);
+        assertNull(outerChainType.publishedType());
         assertTrue(outerChainType.detailReason().contains("Argument #1 is blocked"));
 
-        assertTrue(analyzed.analysisData().resolvedCalls().get(consumeStep) == null);
+        assertNull(analyzed.analysisData().resolvedCalls().get(consumeStep));
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.call_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.deferred_chain_resolution").isEmpty());
         assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
@@ -2055,7 +2092,7 @@ class FrontendChainBindingAnalyzerTest {
             @NotNull String source,
             @NotNull ClassRegistry registry,
             @NotNull Map<String, String> topLevelCanonicalNameMap
-    ) throws Exception {
+    ) {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);

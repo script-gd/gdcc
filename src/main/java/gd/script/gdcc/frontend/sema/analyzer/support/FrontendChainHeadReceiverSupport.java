@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
@@ -33,7 +34,7 @@ import java.util.Objects;
 /// - both `FrontendChainBindingAnalyzer` and `FrontendExprTypeAnalyzer` need the same rules for
 ///   turning a chain head into `ReceiverState`
 /// - those rules are not the chain-reduction core itself; they are the glue that bridges already
-///   published binding/scope facts into a stable receiver model
+///   published binding facts into a stable receiver model
 /// - keeping this logic in one place reduces the risk that `self`, `TYPE_META`, literal heads, or
 ///   blocked value bindings drift apart between the two analyzers
 ///
@@ -89,7 +90,8 @@ public final class FrontendChainHeadReceiverSupport {
     /// The constructor arguments intentionally mirror the minimal inputs that may change while an
     /// analyzer walks the AST:
     /// - `analysisData` gives access to already published binding facts
-    /// - `scopesByAst` and `currentRestriction` drive current-scope lookup
+    /// - `scopesByAst` identifies skipped subtrees; `currentRestriction` still applies to
+    ///   type-meta and callable recovery paths
     /// - `staticContext` controls policies such as `self` becoming `BLOCKED`
     /// - the two callbacks let analyzers plug in their own nested-chain and fallback-expression
     ///   strategies without duplicating the atomic head rules
@@ -192,7 +194,7 @@ public final class FrontendChainHeadReceiverSupport {
             case TYPE_META -> resolveTypeMetaReceiver(identifier);
             case SELF -> resolveSelfReceiver(identifier);
             case PARAMETER, LOCAL_VAR, CAPTURE, PROPERTY, SIGNAL, CONSTANT, SINGLETON, GLOBAL_ENUM ->
-                    resolveValueReceiver(identifier);
+                    resolveValueReceiver(identifier, binding);
             case METHOD, STATIC_METHOD, UTILITY_FUNCTION -> resolveCallableReceiver(identifier);
             case UNKNOWN -> failedHeadReceiver(
                     identifier,
@@ -208,9 +210,9 @@ public final class FrontendChainHeadReceiverSupport {
     /// Resolves a published `TYPE_META` identifier into a type-meta receiver.
     ///
     /// This path is used for class-style chain heads such as `Worker.build()` or `Vector3.BACK`.
-    /// It re-checks the current lexical scope because the helper is consuming published facts, not
-    /// owning them: if the AST node is inside a skipped subtree we publish `UNSUPPORTED`; if the
-    /// previously published type-meta winner is no longer reachable, we publish `FAILED`.
+    /// It re-checks the current lexical scope because type-meta bindings do not yet carry typed
+    /// binding payloads. If the AST node is inside a skipped subtree we publish `UNSUPPORTED`; if the
+    /// previously published type-meta binding is no longer reachable, we publish `FAILED`.
     public @NotNull FrontendChainReductionHelper.ReceiverState resolveTypeMetaReceiver(
             @NotNull IdentifierExpression identifierExpression
     ) {
@@ -244,11 +246,12 @@ public final class FrontendChainHeadReceiverSupport {
 
     /// Resolves a published ordinary value identifier into an instance receiver.
     ///
-    /// The result preserves the important distinction between:
+    /// The result consumes the exact `ScopeValue` resolved by top binding and preserves the important
+    /// distinction between:
     /// - `RESOLVED`: a usable value receiver exists
-    /// - `BLOCKED`: a winner exists, but the current restriction forbids its use here
+    /// - `BLOCKED`: a resolved value exists, but the current restriction forbids its use here
     /// - `UNSUPPORTED`: the subtree has no stable scope fact
-    /// - `FAILED`: the previously published winner can no longer be recovered from scope lookup
+    /// - `FAILED`: the published value binding is missing the required resolved value payload
     public @NotNull FrontendChainReductionHelper.ReceiverState resolveValueReceiver(
             @NotNull IdentifierExpression identifierExpression
     ) {
@@ -263,24 +266,53 @@ public final class FrontendChainHeadReceiverSupport {
                     "Value receiver '" + identifier.name() + "' is inside a skipped subtree"
             );
         }
-        var valueResult = currentScope.resolveValue(identifier.name(), currentRestriction);
-        if (valueResult.isAllowed()) {
-            return FrontendChainReductionHelper.ReceiverState.resolvedInstance(valueResult.requireValue().type());
-        }
-        if (valueResult.isBlocked()) {
-            var winner = valueResult.requireValue();
-            return FrontendChainReductionHelper.ReceiverState.blockedFrom(
-                    FrontendChainReductionHelper.ReceiverState.resolvedInstance(winner.type()),
-                    "Binding '" + identifier.name() + "' is not accessible in the current context"
+        var binding = analysisData.symbolBindings().get(identifier);
+        if (binding == null) {
+            return new FrontendChainReductionHelper.ReceiverState(
+                    FrontendChainReductionHelper.Status.FAILED,
+                    FrontendReceiverKind.UNKNOWN,
+                    null,
+                    null,
+                    "No published value receiver binding fact is available for identifier '" + identifier.name() + "'"
             );
         }
-        return new FrontendChainReductionHelper.ReceiverState(
-                FrontendChainReductionHelper.Status.FAILED,
-                FrontendReceiverKind.UNKNOWN,
-                null,
-                null,
-                "Published value receiver '" + identifier.name() + "' is no longer visible"
-        );
+        return resolveValueReceiver(identifier, binding);
+    }
+
+    private @NotNull FrontendChainReductionHelper.ReceiverState resolveValueReceiver(
+            @NotNull IdentifierExpression identifierExpression,
+            @NotNull FrontendBinding binding
+    ) {
+        var identifier = Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
+        var resolvedValue = Objects.requireNonNull(binding, "binding must not be null").resolvedValue();
+        if (resolvedValue == null) {
+            return new FrontendChainReductionHelper.ReceiverState(
+                    FrontendChainReductionHelper.Status.FAILED,
+                    FrontendReceiverKind.UNKNOWN,
+                    null,
+                    null,
+                    "Published value receiver '" + identifier.name()
+                            + "' is missing its top-binding resolved value payload"
+            );
+        }
+        return switch (Objects.requireNonNull(
+                binding.valueAccessStatus(),
+                "valueAccessStatus must not be null when resolvedValue is present"
+        )) {
+            case FOUND_ALLOWED -> FrontendChainReductionHelper.ReceiverState.resolvedInstance(resolvedValue.type());
+            case FOUND_BLOCKED -> FrontendChainReductionHelper.ReceiverState.blockedFrom(
+                    FrontendChainReductionHelper.ReceiverState.resolvedInstance(resolvedValue.type()),
+                    "Binding '" + identifier.name() + "' is not accessible in the current context"
+            );
+            case NOT_FOUND -> new FrontendChainReductionHelper.ReceiverState(
+                    FrontendChainReductionHelper.Status.FAILED,
+                    FrontendReceiverKind.UNKNOWN,
+                    null,
+                    null,
+                    "Published value receiver '" + identifier.name()
+                            + "' carries an invalid not-found resolved value status"
+            );
+        };
     }
 
     /// Resolves a published bare callable symbol into a `Callable` value receiver.

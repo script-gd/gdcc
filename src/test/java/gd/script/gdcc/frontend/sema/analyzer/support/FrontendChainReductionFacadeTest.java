@@ -13,6 +13,9 @@ import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.ScopeLookupStatus;
+import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
@@ -30,7 +33,6 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -116,7 +118,21 @@ class FrontendChainReductionFacadeTest {
         context.bodyScope().defineLocal("worker", new GdObjectType("Worker"), workerIdentifier);
         context.analysisData().symbolBindings().put(
                 workerIdentifier,
-                new FrontendBinding("worker", FrontendBindingKind.LOCAL_VAR, workerIdentifier)
+                new FrontendBinding(
+                        "worker",
+                        FrontendBindingKind.LOCAL_VAR,
+                        workerIdentifier,
+                        new ScopeValue(
+                                "worker",
+                                new GdObjectType("Worker"),
+                                ScopeValueKind.LOCAL,
+                                workerIdentifier,
+                                false,
+                                true,
+                                false
+                        ),
+                        ScopeLookupStatus.FOUND_ALLOWED
+                )
         );
         context.analysisData().scopesByAst().put(workerIdentifier, context.bodyScope());
     }

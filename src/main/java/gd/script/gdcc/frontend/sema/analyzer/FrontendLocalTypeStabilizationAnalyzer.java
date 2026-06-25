@@ -46,6 +46,7 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticS
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
@@ -164,16 +165,18 @@ public class FrontendLocalTypeStabilizationAnalyzer {
         );
     }
 
-    private static void stabilizeLocalSlot(
+    private static @Nullable ScopeValue stabilizeLocalSlot(
             @NotNull BlockScope blockScope,
             @NotNull VariableDeclaration variableDeclaration,
             @NotNull FrontendExpressionType initializerType
     ) {
         var stableType = stableLocalTypeOrNull(initializerType);
         if (stableType == null) {
-            return;
+            return null;
         }
-        blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, stableType);
+        var localName = variableDeclaration.name().trim();
+        blockScope.resetLocalType(localName, variableDeclaration, stableType);
+        return blockScope.resolveValueHere(localName);
     }
 
     private static @Nullable GdType stableLocalTypeOrNull(
@@ -350,9 +353,28 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             var initializerType = silentExpressionResolver.resolveExpressionType(initializer);
             probes.add(new ProbeEntry(variableDeclaration, initializer, initializerType));
             if (writeBackStableSlots) {
-                stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
+                var updatedValue = stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
+                if (updatedValue != null) {
+                    refreshPublishedLocalValues(variableDeclaration, updatedValue);
+                }
             }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// Keep published use-site values aligned with the slot type rewrite while preserving the
+        /// original top-binding identity by declaration.
+        private void refreshPublishedLocalValues(
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull ScopeValue updatedValue
+        ) {
+            for (var entry : symbolBindings.entrySet()) {
+                var binding = entry.getValue();
+                var resolvedValue = binding.resolvedValue();
+                if (resolvedValue == null || resolvedValue.declaration() != variableDeclaration) {
+                    continue;
+                }
+                entry.setValue(binding.withResolvedValue(updatedValue));
+            }
         }
 
         @Override

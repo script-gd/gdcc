@@ -129,6 +129,36 @@ class FrontendExpressionSemanticSupportTest {
     }
 
     @Test
+    void resolveIdentifierExpressionTypeFailsWhenValueBindingMissesResolvedValuePayload() throws Exception {
+        var analyzed = analyze(
+                "expression_semantic_support_missing_resolved_value.gd",
+                """
+                        class_name ExpressionSemanticSupportMissingResolvedValue
+                        extends RefCounted
+
+                        func ping(seed):
+                            seed
+                        """
+        );
+        var support = createSupport(analyzed, ResolveRestriction.instanceContext(), false);
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var seed = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst()).expression()
+        );
+        analyzed.analysisData().symbolBindings().put(
+                seed,
+                new FrontendBinding("seed", FrontendBindingKind.PARAMETER, seed)
+        );
+
+        var seedResult = support.resolveIdentifierExpressionType(seed);
+
+        assertFalse(seedResult.rootOwnsOutcome());
+        assertEquals(FrontendExpressionTypeStatus.FAILED, seedResult.expressionType().status());
+        assertTrue(seedResult.expressionType().detailReason().contains("missing its top-binding resolved value payload"));
+    }
+
+    @Test
     void resolveCallExpressionTypeDistinguishesResolvedBlockedAndUnsupportedCalls() throws Exception {
         var analyzed = analyze(
                 "expression_semantic_support_calls.gd",

@@ -2840,6 +2840,45 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runLowersSingletonReceiverBeforeLaterLocalShadowAsGlobalScopeLoad() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_singleton_receiver_later_local.gd",
+                """
+                        class_name BodyInsnSingletonReceiverLaterLocal
+                        extends RefCounted
+
+                        func frames() -> int:
+                            var frames := Engine.get_frames_drawn()
+                            var Engine: String = ""
+                            return frames
+                        """,
+                Map.of("BodyInsnSingletonReceiverLaterLocal", "RuntimeBodyInsnSingletonReceiverLaterLocal"),
+                true
+        );
+        var framesContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnSingletonReceiverLaterLocal",
+                "frames"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var instructions = allInstructions(framesContext.targetFunction());
+        var receiver = requireOnlyInstruction(framesContext.targetFunction(), LoadStaticInsn.class);
+        var call = requireOnlyInstruction(framesContext.targetFunction(), CallMethodInsn.class);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals("@GlobalScope", receiver.className()),
+                () -> assertEquals("Engine", receiver.staticName()),
+                () -> assertEquals("get_frames_drawn", call.methodName()),
+                () -> assertEquals(receiver.resultId(), call.objectId()),
+                () -> assertEquals(0, countInstructions(instructions, CallGlobalInsn.class))
+        );
+    }
+
+    @Test
     void runLowersDynamicInstanceCallsIntoCallMethodInsnWithVariantResultSlot() throws Exception {
         var prepared = prepareContext(
                 "body_insn_dynamic_call.gd",

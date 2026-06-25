@@ -17,6 +17,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -546,7 +547,34 @@ public class FrontendExprTypeAnalyzer {
                 }
                 return;
             }
-            blockScope.resetLocalType(variableDeclaration.name().trim(), variableDeclaration, backfilledType);
+            var localName = variableDeclaration.name().trim();
+            blockScope.resetLocalType(localName, variableDeclaration, backfilledType);
+            var updatedValue = blockScope.resolveValueHere(localName);
+            if (updatedValue != null) {
+                refreshPublishedLocalValues(variableDeclaration, updatedValue);
+            }
+        }
+
+        /// Mirrors local type stabilization writeback.
+        ///
+        /// Step 3 made downstream expression and receiver analysis consume `FrontendBinding`'s
+        /// published `resolvedValue` instead of re-running scope lookup. `BlockScope.resetLocalType`
+        /// replaces the immutable local `ScopeValue`, so this fallback would otherwise leave earlier
+        /// use-site bindings pointing at the pre-backfill `Variant` slot while the block scope holds
+        /// the narrowed type. Refreshing by declaration identity keeps the same top-binding choice and
+        /// only updates that choice's rewritten slot payload.
+        private void refreshPublishedLocalValues(
+                @NotNull VariableDeclaration variableDeclaration,
+                @NotNull ScopeValue updatedValue
+        ) {
+            for (var entry : analysisData.symbolBindings().entrySet()) {
+                var binding = entry.getValue();
+                var resolvedValue = binding.resolvedValue();
+                if (resolvedValue == null || resolvedValue.declaration() != variableDeclaration) {
+                    continue;
+                }
+                entry.setValue(binding.withResolvedValue(updatedValue));
+            }
         }
 
         private boolean sameType(@NotNull GdType first, @NotNull GdType second) {

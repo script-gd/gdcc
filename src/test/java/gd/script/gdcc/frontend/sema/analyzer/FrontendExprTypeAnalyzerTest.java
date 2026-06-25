@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -144,6 +145,58 @@ class FrontendExprTypeAnalyzerTest {
         assertEquals(FrontendExpressionTypeStatus.RESOLVED, buildType.status());
         assertEquals("String", buildType.publishedType().getTypeName());
         assertTrue(diagnosticsByCategory(analyzed, "sema.expression_resolution").isEmpty());
+    }
+
+    @Test
+    void analyzeKeepsSingletonResolvedValueForLaterLocalAndInitializerSelfReferenceTypes() throws Exception {
+        var analyzed = analyze(
+                "expr_type_singleton_resolved_value_stability.gd",
+                """
+                        class_name ExprTypeSingletonResolvedValueStability
+                        extends RefCounted
+
+                        func ping():
+                            Engine
+                            Engine.get_frames_drawn()
+                            var Engine: String = Engine
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.ast(), "ping");
+        var bareEngineStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var framesStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var engineDeclaration = findVariable(pingFunction.body().statements(), "Engine");
+        var bareEngine = assertInstanceOf(IdentifierExpression.class, bareEngineStatement.expression());
+        var framesExpression = assertInstanceOf(AttributeExpression.class, framesStatement.expression());
+        var initializerEngine = assertInstanceOf(IdentifierExpression.class, engineDeclaration.value());
+
+        var bareEngineBinding = analyzed.analysisData().symbolBindings().get(bareEngine);
+        var initializerEngineBinding = analyzed.analysisData().symbolBindings().get(initializerEngine);
+        assertAll(
+                () -> assertNotNull(bareEngineBinding),
+                () -> assertEquals(FrontendBindingKind.SINGLETON, bareEngineBinding.kind()),
+                () -> assertNotNull(bareEngineBinding.resolvedValue()),
+                () -> assertEquals("Engine", bareEngineBinding.resolvedValue().type().getTypeName()),
+                () -> assertNotNull(initializerEngineBinding),
+                () -> assertEquals(FrontendBindingKind.SINGLETON, initializerEngineBinding.kind()),
+                () -> assertNotNull(initializerEngineBinding.resolvedValue()),
+                () -> assertEquals("Engine", initializerEngineBinding.resolvedValue().type().getTypeName())
+        );
+
+        var bareEngineType = analyzed.analysisData().expressionTypes().get(bareEngine);
+        var framesType = analyzed.analysisData().expressionTypes().get(framesExpression);
+        var initializerEngineType = analyzed.analysisData().expressionTypes().get(initializerEngine);
+        assertAll(
+                () -> assertNotNull(bareEngineType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, bareEngineType.status()),
+                () -> assertEquals("Engine", bareEngineType.publishedType().getTypeName()),
+                () -> assertNotNull(framesType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, framesType.status()),
+                () -> assertEquals("int", framesType.publishedType().getTypeName()),
+                () -> assertNotNull(initializerEngineType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerEngineType.status()),
+                () -> assertEquals("Engine", initializerEngineType.publishedType().getTypeName())
+        );
     }
 
     @Test
@@ -2264,6 +2317,51 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
+    void analyzeBackfillRefreshesPublishedLocalResolvedValuePayload() throws Exception {
+        var input = prepareInputBeforeExpressionTyping(
+                "expr_type_backfill_refreshes_binding_resolved_value.gd",
+                """
+                        class_name ExprTypeBackfillRefreshesBindingResolvedValue
+                        extends RefCounted
+
+                        func ping():
+                            var value := 1
+                            value
+                        """,
+                false
+        );
+        var pingFunction = findFunction(input.unit().ast(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, input.analysisData().scopesByAst().get(pingFunction.body()));
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
+        var valueUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var staleResolvedValue = input.analysisData().symbolBindings().get(valueUse).resolvedValue();
+        assertNotNull(staleResolvedValue);
+        assertEquals(GdVariantType.VARIANT, staleResolvedValue.type());
+
+        new FrontendExprTypeAnalyzer().analyze(
+                input.classRegistry(),
+                input.analysisData(),
+                input.diagnosticManager()
+        );
+
+        var refreshedBinding = input.analysisData().symbolBindings().get(valueUse);
+        var valueUseType = input.analysisData().expressionTypes().get(valueUse);
+        assertAll(
+                () -> assertNotNull(refreshedBinding),
+                () -> assertNotNull(refreshedBinding.resolvedValue()),
+                () -> assertSame(valueDeclaration, refreshedBinding.resolvedValue().declaration()),
+                () -> assertEquals("int", refreshedBinding.resolvedValue().type().getTypeName()),
+                () -> assertEquals("int", bodyScope.resolveValue("value").type().getTypeName()),
+                () -> assertNotNull(valueUseType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, valueUseType.status()),
+                () -> assertEquals("int", valueUseType.publishedType().getTypeName())
+        );
+    }
+
+    @Test
     void analyzeLeavesPreStabilizedInferredLocalSlotTypesUntouched() throws Exception {
         var analyzed = analyze(
                 "expr_type_pre_stabilized_backfill.gd",
@@ -2544,7 +2642,7 @@ class FrontendExprTypeAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry registry
-    ) throws Exception {
+    ) {
         return analyze(fileName, source, registry, Map.of());
     }
 
@@ -2569,6 +2667,14 @@ class FrontendExprTypeAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source
     ) throws Exception {
+        return prepareInputBeforeExpressionTyping(fileName, source, true);
+    }
+
+    private static @NotNull PreparedExpressionInput prepareInputBeforeExpressionTyping(
+            @NotNull String fileName,
+            @NotNull String source,
+            boolean runLocalTypeStabilization
+    ) throws Exception {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
@@ -2588,8 +2694,10 @@ class FrontendExprTypeAnalyzerTest {
         analysisData.updateDiagnostics(diagnostics.snapshot());
         new FrontendTopBindingAnalyzer().analyze(analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
-        new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnostics);
-        analysisData.updateDiagnostics(diagnostics.snapshot());
+        if (runLocalTypeStabilization) {
+            new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+            analysisData.updateDiagnostics(diagnostics.snapshot());
+        }
         new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
         return new PreparedExpressionInput(unit, classRegistry, analysisData, diagnostics);

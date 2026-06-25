@@ -16,12 +16,16 @@ import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
+import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.CallExpression;
@@ -54,7 +58,10 @@ class FrontendChainHeadReceiverSupportTest {
 
         context.bodyScope().defineLocal("worker", new GdObjectType("Worker"), workerValue);
         context.classScope().defineTypeMeta(innerTypeMeta("Hero__sub__Worker", "Worker"));
-        context.analysisData().symbolBindings().put(workerValue, new FrontendBinding("worker", FrontendBindingKind.LOCAL_VAR, workerValue));
+        context.analysisData().symbolBindings().put(
+                workerValue,
+                valueBinding("worker", FrontendBindingKind.LOCAL_VAR, new GdObjectType("Worker"), ScopeValueKind.LOCAL, workerValue)
+        );
         context.analysisData().symbolBindings().put(workerType, new FrontendBinding("Worker", FrontendBindingKind.TYPE_META, null));
         context.analysisData().scopesByAst().put(workerValue, context.bodyScope());
         context.analysisData().scopesByAst().put(workerType, context.bodyScope());
@@ -152,7 +159,7 @@ class FrontendChainHeadReceiverSupportTest {
     }
 
     @Test
-    void resolveHeadReceiverShouldFailWhenPublishedBindingCannotBeRecoveredFromCurrentScope() throws Exception {
+    void resolveHeadReceiverShouldFailWhenPublishedValueBindingLacksResolvedValuePayload() throws Exception {
         var context = newTestContext();
         var missingValue = identifier("worker");
         var missingTypeMeta = identifier("Worker");
@@ -167,11 +174,36 @@ class FrontendChainHeadReceiverSupportTest {
 
         assertNotNull(valueReceiver);
         assertEquals(FrontendChainReductionHelper.Status.FAILED, valueReceiver.status());
-        assertTrue(valueReceiver.detailReason().contains("no longer visible"));
+        assertTrue(valueReceiver.detailReason().contains("missing its top-binding resolved value payload"));
 
         assertNotNull(typeReceiver);
         assertEquals(FrontendChainReductionHelper.Status.FAILED, typeReceiver.status());
         assertTrue(typeReceiver.detailReason().contains("no longer visible"));
+    }
+
+    @Test
+    void resolveValueReceiverShouldUsePublishedResolvedValueDespiteCurrentScopeShadow() throws Exception {
+        var context = newTestContext();
+        var engine = identifier("Engine");
+        context.bodyScope().defineLocal("Engine", GdStringType.STRING, engine);
+        context.analysisData().symbolBindings().put(
+                engine,
+                valueBinding(
+                        "Engine",
+                        FrontendBindingKind.SINGLETON,
+                        new GdObjectType("Engine"),
+                        ScopeValueKind.SINGLETON,
+                        "singleton:Engine"
+                )
+        );
+        context.analysisData().scopesByAst().put(engine, context.bodyScope());
+
+        var receiver = newSupport(context, ResolveRestriction.unrestricted(), false).resolveHeadReceiver(engine);
+
+        assertNotNull(receiver);
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, receiver.status());
+        assertEquals(FrontendReceiverKind.INSTANCE, receiver.receiverKind());
+        assertEquals(new GdObjectType("Engine"), receiver.receiverType());
     }
 
     @Test
@@ -318,6 +350,22 @@ class FrontendChainHeadReceiverSupportTest {
 
     private static @NotNull IdentifierExpression identifier(@NotNull String name) {
         return new IdentifierExpression(name, TINY);
+    }
+
+    private static @NotNull FrontendBinding valueBinding(
+            @NotNull String name,
+            @NotNull FrontendBindingKind bindingKind,
+            @NotNull GdType type,
+            @NotNull ScopeValueKind valueKind,
+            Object declaration
+    ) {
+        return new FrontendBinding(
+                name,
+                bindingKind,
+                declaration,
+                new ScopeValue(name, type, valueKind, declaration, false, true, false),
+                ScopeLookupStatus.FOUND_ALLOWED
+        );
     }
 
     private static @NotNull ScopeTypeMeta innerTypeMeta(
