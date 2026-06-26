@@ -1577,6 +1577,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
 
         @Override
         public void analyze(
+                @NotNull ClassRegistry classRegistry,
                 @NotNull FrontendAnalysisData analysisData,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
@@ -1589,7 +1590,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
             var probeNode = new PassStatement(SYNTHETIC_RANGE);
             publishedSymbolBindings.put(probeNode, new FrontendBinding("__probe__", FrontendBindingKind.UNKNOWN, null));
 
-            super.analyze(analysisData, diagnosticManager);
+            super.analyze(classRegistry, analysisData, diagnosticManager);
 
             stableSymbolBindingsReferencePreserved = publishedSymbolBindings == analysisData.symbolBindings();
             symbolBindingsPublicationClearedProbeEntry = analysisData.symbolBindings().isEmpty()

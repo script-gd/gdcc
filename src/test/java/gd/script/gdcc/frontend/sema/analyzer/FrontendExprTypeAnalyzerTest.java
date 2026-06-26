@@ -2692,7 +2692,7 @@ class FrontendExprTypeAnalyzerTest {
         analysisData.updateDiagnostics(diagnostics.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(analysisData, diagnostics);
+        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
         analysisData.updateDiagnostics(diagnostics.snapshot());
         if (runLocalTypeStabilization) {
             new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnostics);

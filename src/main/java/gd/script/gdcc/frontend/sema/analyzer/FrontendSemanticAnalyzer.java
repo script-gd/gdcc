@@ -484,7 +484,7 @@ public final class FrontendSemanticAnalyzer {
         // Top-binding analysis classifies supported use-sites into stable symbol categories while
         // still keeping member/call resolution out of scope. Keeping it separate from variable
         // analysis preserves a clean hand-off between declaration inventory and use-site binding.
-        topBindingAnalyzer.analyze(analysisData, diagnosticManager);
+        topBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Local type stabilization updates only block-local `:=` slot types. It runs after use-site

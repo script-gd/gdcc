@@ -661,7 +661,7 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(analysisData, diagnosticManager);
+        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return new PreparedProbeInput(unit, analysisData, diagnosticManager, classRegistry);
     }

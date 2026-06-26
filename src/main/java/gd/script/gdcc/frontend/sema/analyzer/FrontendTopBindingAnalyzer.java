@@ -15,17 +15,23 @@ import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolution;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueStatus;
+import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
+import gd.script.gdcc.scope.ClassDef;
+import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
@@ -57,6 +63,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.IdentityHashMap;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 
@@ -72,9 +79,11 @@ public class FrontendTopBindingAnalyzer {
 
     /// Runs top-binding analysis and refreshes `symbolBindings()` from scratch.
     public void analyze(
+            @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
@@ -100,7 +109,8 @@ public class FrontendTopBindingAnalyzer {
                     scopesByAst,
                     symbolBindings,
                     diagnosticManager,
-                    visibleValueResolver
+                    visibleValueResolver,
+                    classRegistry
             ).walk(sourceClassRelation.unit().ast());
         }
         analysisData.updateSymbolBindings(symbolBindings);
@@ -121,6 +131,7 @@ public class FrontendTopBindingAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull FrontendVisibleValueResolver visibleValueResolver;
+        private final @NotNull ClassRegistry classRegistry;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull IdentityHashMap<Node, Boolean> reportedUnsupportedRoots = new IdentityHashMap<>();
         private int supportedExecutableBlockDepth;
@@ -135,7 +146,8 @@ public class FrontendTopBindingAnalyzer {
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
                 @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
                 @NotNull DiagnosticManager diagnosticManager,
-                @NotNull FrontendVisibleValueResolver visibleValueResolver
+                @NotNull FrontendVisibleValueResolver visibleValueResolver,
+                @NotNull ClassRegistry classRegistry
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
             this.moduleSkeleton = Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
@@ -146,6 +158,7 @@ public class FrontendTopBindingAnalyzer {
                     visibleValueResolver,
                     "visibleValueResolver must not be null"
             );
+            this.classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
             astWalker = new ASTWalker(this);
         }
 
@@ -484,7 +497,16 @@ public class FrontendTopBindingAnalyzer {
         private void walkAttributeExpression(@NotNull AttributeExpression attributeExpression) {
             // Only the outermost chain head is bound here, but arguments nested inside
             // attribute-call/subscript steps still belong to the executable expression tree.
-            walkChainHeadBaseExpression(attributeExpression.base());
+            //
+            // Dual-role bias: when the base is a bare IdentifierExpression whose value namespace
+            // resolves to SINGLETON and whose type-meta namespace also resolves to ENGINE_CLASS,
+            // inspect the first suffix step to decide whether the head should publish TYPE_META
+            // (static/constructor route) or stay on the ordinary SINGLETON value path. This runs
+            // before walking the base so the ordinary identifier handler never publishes a
+            // SINGLETON binding that would then need to be overwritten.
+            if (!tryApplyDualRoleTypeMetaBias(attributeExpression)) {
+                walkChainHeadBaseExpression(attributeExpression.base());
+            }
             for (var step : attributeExpression.steps()) {
                 switch (step) {
                     case AttributeCallStep attributeCallStep -> walkExpressionList(attributeCallStep.arguments());
@@ -996,6 +1018,277 @@ public class FrontendTopBindingAnalyzer {
             return typeMetaResult.isAllowed()
                     && typeMetaResult.requireValue().kind() == ScopeTypeMetaKind.GLOBAL_ENUM
                     && supportsTopLevelTypeMeta(typeMetaResult.requireValue());
+        }
+
+        /// Dual-role chain-head route bias entry point.
+        ///
+        /// When the `AttributeExpression` base is a bare `IdentifierExpression` whose value
+        /// namespace resolves to `SINGLETON` (via `resolveVisibleValue`, which honors
+        /// declaration-order filtering and self-reference sealing) and whose type-meta
+        /// namespace also resolves to `ENGINE_CLASS`, inspect the first suffix step to decide
+        /// whether the head should publish `TYPE_META` (for static constant / enum value /
+        /// static method / constructor `.new()` routes) or stay on the ordinary `SINGLETON`
+        /// value path (for instance method / property routes).
+        ///
+        /// This method MUST consume `resolveVisibleValue(...)` as the value-winner authority,
+        /// matching the contract of `bindTopLevelTypeMetaCandidate(...)`: if a local, parameter,
+        /// property, or other non-singleton value wins the visible-value resolution, the bias
+        /// must not override it — the caller falls through to the ordinary
+        /// `bindTopLevelTypeMetaCandidate(...)` flow which publishes the value winner and
+        /// reports shadowing diagnostics. Similarly, `FOUND_BLOCKED` and `DEFERRED_UNSUPPORTED`
+        /// value states are handled by the ordinary flow, not here.
+        ///
+        /// The decision is fail-closed: if the first suffix can be satisfied by both the
+        /// singleton instance namespace (instance method, instance property, or signal) and the
+        /// type-meta static namespace, the head keeps `SINGLETON` to avoid silently changing the
+        /// route based on registry traversal order.
+        ///
+        /// Returns `true` when a `TYPE_META` binding was published and the caller must skip the
+        /// ordinary base walk; returns `false` when the ordinary walk should proceed.
+        private boolean tryApplyDualRoleTypeMetaBias(@NotNull AttributeExpression attributeExpression) {
+            if (!(attributeExpression.base() instanceof IdentifierExpression identifierExpression)) {
+                return false;
+            }
+            if (attributeExpression.steps().isEmpty()) {
+                return false;
+            }
+            var currentScope = findCurrentScope(identifierExpression);
+            if (currentScope == null) {
+                return false;
+            }
+            var name = identifierExpression.name();
+
+            // Value-winner authority: resolveVisibleValue honors declaration-order filtering,
+            // self-reference sealing, and deferred boundaries. Only a FOUND_ALLOWED SINGLETON
+            // value winner is eligible for the dual-role bias. All other value states (local,
+            // parameter, property, blocked, deferred, not-found) must fall through to the
+            // ordinary bindTopLevelTypeMetaCandidate flow.
+            if (trySealPropertyInitializerValueBoundary(identifierExpression)) {
+                return false;
+            }
+            var valueResolution = resolveVisibleValue(identifierExpression);
+            if (valueResolution.status() != FrontendVisibleValueStatus.FOUND_ALLOWED) {
+                return false;
+            }
+            var visibleValue = valueResolution.visibleValue();
+            if (visibleValue == null || visibleValue.kind() != ScopeValueKind.SINGLETON) {
+                return false;
+            }
+            var singletonType = classRegistry.findSingletonType(name);
+            if (singletonType == null) {
+                return false;
+            }
+
+            // Type-meta namespace must also resolve the same name to ENGINE_CLASS (or GDCC_CLASS).
+            var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+                    currentScope,
+                    name,
+                    currentRestriction
+            );
+            if (!typeMetaResult.isAllowed()) {
+                return false;
+            }
+            var typeMeta = typeMetaResult.requireValue();
+            if (typeMeta.kind() != ScopeTypeMetaKind.ENGINE_CLASS
+                    && typeMeta.kind() != ScopeTypeMetaKind.GDCC_CLASS) {
+                return false;
+            }
+            if (!supportsTopLevelTypeMeta(typeMeta)) {
+                return false;
+            }
+
+            var firstStep = attributeExpression.steps().getFirst();
+            var stepName = extractStepName(firstStep);
+            if (stepName == null) {
+                return false;
+            }
+
+            // Constructor-like `.new()` route: prefer TYPE_META, but still respect fail-closed.
+            // If the singleton declared type has an instance method, instance property, or signal
+            // named "new", the suffix resolves in the singleton instance namespace, so the head
+            // must stay SINGLETON to avoid silently stealing an instance-member route. Only when
+            // "new" does NOT resolve as a singleton instance member do we switch to TYPE_META and
+            // let the downstream constructor route decide legality.
+            if (firstStep instanceof AttributeCallStep && stepName.equals("new")) {
+                if (!resolvesInSingletonInstanceNamespace(singletonType, stepName)) {
+                    publishBinding(
+                            identifierExpression,
+                            name,
+                            FrontendBindingKind.TYPE_META,
+                            typeMeta.declaration()
+                    );
+                    return true;
+                }
+                return false;
+            }
+
+            // For property steps, check whether the suffix only resolves in the type-meta static
+            // namespace (engine class constant, class enum value, or static method reference).
+            // For call steps (non-`new`), check whether the suffix only resolves as a static method.
+            boolean inTypeMetaStatic = resolvesInTypeMetaStaticNamespace(typeMeta, stepName);
+            boolean inSingletonInstance = resolvesInSingletonInstanceNamespace(singletonType, stepName);
+
+            // Fail-closed: only switch to TYPE_META when the suffix is NOT available as a
+            // singleton instance member (instance method, instance property, or signal). This
+            // prevents silently changing the route when both namespaces can satisfy the same
+            // suffix name.
+            if (inTypeMetaStatic && !inSingletonInstance) {
+                publishBinding(
+                        identifierExpression,
+                        name,
+                        FrontendBindingKind.TYPE_META,
+                        typeMeta.declaration()
+                );
+                return true;
+            }
+            return false;
+        }
+
+        /// Extracts the member name from the first attribute step, or `null` for unknown step types.
+        private @Nullable String extractStepName(@NotNull AttributeStep step) {
+            return switch (step) {
+                case AttributePropertyStep propertyStep -> propertyStep.name();
+                case AttributeCallStep callStep -> callStep.name();
+                case AttributeSubscriptStep subscriptStep -> subscriptStep.name();
+                default -> null;
+            };
+        }
+
+        /// Checks whether `stepName` resolves in the type-meta static namespace: engine class
+        /// constant, class enum value, or static method (walking the class hierarchy).
+        private boolean resolvesInTypeMetaStaticNamespace(
+                @NotNull ScopeTypeMeta typeMeta,
+                @NotNull String stepName
+        ) {
+            if (typeMeta.declaration() instanceof ExtensionGdClass engineClass) {
+                if (hasEngineClassConstant(engineClass, stepName)) {
+                    return true;
+                }
+                if (hasEngineClassEnumValue(engineClass, stepName)) {
+                    return true;
+                }
+            } else if (classRegistry.getClassDef(
+                    typeMeta.instanceType() instanceof GdObjectType ot ? ot : new GdObjectType(typeMeta.canonicalName())
+            ) instanceof ExtensionGdClass engineClass) {
+                if (hasEngineClassConstant(engineClass, stepName)) {
+                    return true;
+                }
+                if (hasEngineClassEnumValue(engineClass, stepName)) {
+                    return true;
+                }
+            }
+            return hasStaticMethodInHierarchy(typeMeta, stepName);
+        }
+
+        /// Checks whether `stepName` resolves as a singleton instance member: instance method,
+        /// instance property, or signal (walking the class hierarchy of the singleton declared
+        /// type). Signal is included defensively so that when signal chain access enters the
+        /// supported grammar, the fail-closed rule already covers it instead of silently
+        /// switching the head to TYPE_META.
+        private boolean resolvesInSingletonInstanceNamespace(
+                @NotNull GdObjectType singletonType,
+                @NotNull String stepName
+        ) {
+            return hasInstanceMethodInHierarchy(singletonType, stepName)
+                    || hasInstancePropertyInHierarchy(singletonType, stepName)
+                    || hasSignalInHierarchy(singletonType, stepName);
+        }
+
+        private boolean hasEngineClassConstant(@NotNull ExtensionGdClass engineClass, @NotNull String name) {
+            return engineClass.constants().stream().anyMatch(c -> c.name().equals(name));
+        }
+
+        private boolean hasEngineClassEnumValue(@NotNull ExtensionGdClass engineClass, @NotNull String name) {
+            return engineClass.enums().stream()
+                    .flatMap(e -> e.values().stream())
+                    .anyMatch(v -> v.name().equals(name));
+        }
+
+        /// Walks the class hierarchy starting from `typeMeta` to check if a static method named
+        /// `stepName` exists. Covers both ENGINE_CLASS and GDCC_CLASS.
+        private boolean hasStaticMethodInHierarchy(@NotNull ScopeTypeMeta typeMeta, @NotNull String stepName) {
+            ClassDef current = resolveClassDefFromTypeMeta(typeMeta);
+            var visited = new HashSet<String>();
+            while (current != null && visited.add(current.getName())) {
+                var found = current.getFunctions().stream()
+                        .anyMatch(fn -> fn.getName().equals(stepName) && fn.isStatic());
+                if (found) {
+                    return true;
+                }
+                current = resolveSuperclass(current);
+            }
+            return false;
+        }
+
+        /// Walks the class hierarchy of the singleton declared type to check if an instance method
+        /// named `stepName` exists.
+        private boolean hasInstanceMethodInHierarchy(@NotNull GdObjectType singletonType, @NotNull String stepName) {
+            ClassDef current = classRegistry.getClassDef(singletonType);
+            var visited = new HashSet<String>();
+            while (current != null && visited.add(current.getName())) {
+                var found = current.getFunctions().stream()
+                        .anyMatch(fn -> fn.getName().equals(stepName) && !fn.isStatic());
+                if (found) {
+                    return true;
+                }
+                current = resolveSuperclass(current);
+            }
+            return false;
+        }
+
+        /// Walks the class hierarchy of the singleton declared type to check if an instance
+        /// property named `stepName` exists.
+        private boolean hasInstancePropertyInHierarchy(@NotNull GdObjectType singletonType, @NotNull String stepName) {
+            ClassDef current = classRegistry.getClassDef(singletonType);
+            var visited = new HashSet<String>();
+            while (current != null && visited.add(current.getName())) {
+                var found = current.getProperties().stream()
+                        .anyMatch(prop -> prop.getName().equals(stepName));
+                if (found) {
+                    return true;
+                }
+                current = resolveSuperclass(current);
+            }
+            return false;
+        }
+
+        /// Walks the class hierarchy of the singleton declared type to check if a signal named
+        /// `stepName` exists. Signal is checked defensively so the fail-closed rule covers it
+        /// even before signal chain access enters the supported grammar.
+        private boolean hasSignalInHierarchy(@NotNull GdObjectType singletonType, @NotNull String stepName) {
+            ClassDef current = classRegistry.getClassDef(singletonType);
+            var visited = new HashSet<String>();
+            while (current != null && visited.add(current.getName())) {
+                var found = current.getSignals().stream()
+                        .anyMatch(signal -> signal.getName().equals(stepName));
+                if (found) {
+                    return true;
+                }
+                current = resolveSuperclass(current);
+            }
+            return false;
+        }
+
+        private @Nullable ClassDef resolveClassDefFromTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
+            if (typeMeta.declaration() instanceof ClassDef classDef) {
+                return classDef;
+            }
+            if (typeMeta.instanceType() instanceof GdObjectType objectType) {
+                return classRegistry.getClassDef(objectType);
+            }
+            return null;
+        }
+
+        private @Nullable ClassDef resolveSuperclass(@NotNull ClassDef current) {
+            var superName = current.getSuperName();
+            if (superName.isBlank()) {
+                return null;
+            }
+            var builtinSuper = classRegistry.findBuiltinClass(superName);
+            if (builtinSuper != null) {
+                return builtinSuper;
+            }
+            return classRegistry.getClassDef(new GdObjectType(superName));
         }
 
         private @Nullable Scope findCurrentScope(@NotNull IdentifierExpression identifierExpression) {

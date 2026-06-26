@@ -403,7 +403,7 @@ class FrontendVarTypePostAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(analysisData, diagnosticManager);
+        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());

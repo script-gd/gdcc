@@ -672,6 +672,183 @@ script/run-gradle-targeted-tests.sh --tests FrontendLoweringBodyInsnPassTest,Fro
 ./gradlew classes --no-daemon --info --console=plain
 ```
 
+### Step 8: 明确 dual-role 名称的 value / type-meta route 风险
+
+状态（2026-06-26）：问题陈述已确认，route 策略由 Step 9 窄化方案落地。本 Step 保留成因链路和影响分类
+作为 Step 9 的前置背景；Godot 引擎行为已在实现前通过 `godotengine/godot` 源码确认（见下文补充）。
+
+Godot 引擎行为确认（2026-06-26）：
+
+- `GDScriptLanguage::init()` 先注册所有 ClassDB 类为 `GDScriptNativeClass`，再用 singleton 对象指针覆盖同名条目。
+  因此全局映射中 `Input` 最终指向 singleton 对象指针，而非 `GDScriptNativeClass`。
+- `GDScriptAnalyzer::reduce_identifier()` 对存在 `class_exists(name)` 的名称一律标记为 `NATIVE_CLASS`（`is_meta_type = true`），
+  即分析器把 `Input` 当作类引用而非 singleton 值。
+- singleton 方法通过 `get_function_signature()` 被假装标记为 `METHOD_FLAG_STATIC`，使 `Input.is_action_pressed()`
+  在 meta type 上通过静态检查。
+- `Input.new()` / `Engine.new()` 在 `reduce_call()` 中被明确拒绝：若 `Engine::get_singleton()->has_singleton(base_type.native_type)`
+  为真，直接报 "Cannot construct native class because it is an engine singleton"。
+- `Input.MOUSE_MODE_VISIBLE` 等常量/枚举值通过 `ClassDB::get_integer_constant()` 在分析时解析为整数常量。
+- 编译器对 `NATIVE_CLASS` 标识符回退到全局数组中的 singleton 对象指针作为常量嵌入。
+
+结论：Godot 的实际行为是"分析器始终按 meta type 处理 dual-role 名称，运行时回退到 singleton 对象"。
+本仓库 Step 9 选择了不同模型：instance call 保持 `SINGLETON`（instance receiver），仅 static/constant/constructor
+route 切换到 `TYPE_META`。该选择已在 Step 9 的 fail-closed 规则中固定，不追求与 Godot 分析器逐字对齐。
+
+问题背景：
+
+- Godot extension API 中存在 dual-role 名称：同一个 source-facing 名称既是 `singletons` 里的 top-level value，
+  又是 `classes` 里的 engine class / type-meta。例如 `Engine`、`Input`。
+- `Engine.get_frames_drawn()`、`Input.is_action_pressed(...)` 这类调用应继续按 singleton instance receiver 处理：
+  receiver 先 materialize 为 `load_static "@GlobalScope" "Engine"` / `load_static "@GlobalScope" "Input"`，
+  再走普通 `CallMethodInsn`。
+- 同一个名称在其他使用形态下可能需要 class/type-meta route，例如 engine class enum/int constant、static method
+  或 constructor-like `.new()`。这些 route 与 singleton receiver route 消费的是同一个 chain head 文本。
+- 当前 `FrontendBinding` / chain-head binding 仍以单一 winner 发布 use-site fact。若同名 value winner 先命中，
+  后续阶段通常只能看到 `SINGLETON` / ordinary value receiver，而不是同名 `TYPE_META`。
+
+成因链路摘要：
+
+```text
+extension_api
+  -> "Engine" / "Input" 同时存在于 classes 与 singletons
+ClassRegistry.resolveValueHere("Engine")
+  -> singleton 命中，发布 ScopeValueKind.SINGLETON
+ClassRegistry.resolveTypeMetaHere("Engine")
+  -> engine class type-meta 也可命中，但在另一命名空间
+FrontendTopBindingAnalyzer.bindTopLevelTypeMetaCandidate(...)
+  -> 先 resolveVisibleValue(...)
+  -> 再 resolveSourceFacingTypeMeta(...)
+  -> 只有 GLOBAL_ENUM value 有 shouldPreferGlobalEnumTypeMeta(...) 特例
+  -> SINGLETON value 命中后 publishValueResolution(...) 并 return
+FrontendChainHeadReceiverSupport
+  -> FrontendBindingKind.SINGLETON 被当作 ordinary value receiver
+  -> receiverKind = INSTANCE
+FrontendChainReductionHelper
+  -> TYPE_META 才能进入 static load / constructor primary route
+  -> INSTANCE 进入 instance property / instance method route
+```
+
+影响分类：
+
+- 正向且必须保留：`Engine.get_frames_drawn()` / `Input.is_action_pressed(...)` 这类 singleton instance method call
+  被 value route 吃掉是期望行为。它们不应变成 `CallGlobalInsn`，也不应被强行塞入 `TYPE_META`。
+- 高风险：engine class static constant / enum value access 可能不可达。例如 `Input.MOUSE_MODE_VISIBLE`、
+  `Input.CURSOR_ARROW` 这类本应消费 `Input` type-meta 的 static load，如果 chain head 先发布为 `SINGLETON`，
+  后续会进入 instance property route；而 `ScopePropertyResolver` 明确不处理 enum item、builtin constant
+  或 engine integer constant 这类 type-meta static access。
+- 高风险：constructor-like `.new()` route 可能不可达。`FrontendChainReductionHelper` 只有在
+  `receiverKind == TYPE_META && step.name().equals("new")` 时进入 constructor route；若同名 singleton value
+  先赢，`Engine.new()` 这类表达式不会进入 constructor primary route。
+- 中风险：static method route 可能丢失原始 type-meta provenance，但当前 instance-call 解析中存在
+  “instance-style syntax resolved to static method” 的回退路径；因此部分 static method 可能最终仍能 lowering
+  为 `CallStaticMethodInsn`。这条可用性依赖 method resolver 是否能从 singleton declared type 找到 static method，
+  不等同于 type-meta route 本身可达。
+- 已有特例不覆盖本问题：global enum 在 top-level chain head 上有 `GLOBAL_ENUM` value 优先转 `TYPE_META`
+  的特例；`SINGLETON` 没有对应特例，因此 global enum 的安全性不能外推到 `Engine` / `Input`。
+
+当前覆盖缺口：
+
+- 已有测试覆盖了 `Engine.get_frames_drawn()` / `Input.is_action_pressed(...)` 作为 singleton receiver lowering。
+- 已有测试覆盖了 later-local / initializer self-reference drift，即已发布 `SINGLETON` binding 后必须稳定消费 top binding
+  的 resolved value payload。
+- Step 9 已覆盖 dual-role 名称下的 static constant / enum value、static method、constructor-like `.new()` 分流边界。
+- Step 9 已补充测试明确 `Input.MOUSE_MODE_VISIBLE`、`Engine.new()` 这类表达式以 `TYPE_META` head 进入 static/constructor route，
+  而 `Engine.get_frames_drawn()` 保持 `SINGLETON`。
+
+### Step 9: 固化 TopBinding 内 dual-role chain-head route bias 方案
+
+状态（2026-06-26）：已实现。`FrontendTopBindingAnalyzer` 现在在 walk `AttributeExpression` base
+之前完成 dual-role 判断；当 base 是裸 `IdentifierExpression`、value namespace 命中 `SINGLETON`、
+type-meta namespace 命中 `ENGINE_CLASS`，且 first suffix 只在 type-meta static namespace 可达时，
+head 发布 `TYPE_META` 并跳过普通 identifier binding 路径。fail-closed 规则保证 suffix 同时命中
+singleton instance 与 type-meta static 时保持 `SINGLETON`。该方案只解决 Step 8 中 dual-role
+singleton/type-meta 名称的 chain-head 分流缺口，不把 `FrontendTopBindingAnalyzer` 扩展为完整 chain analyzer。
+
+方案决策：
+
+- 不新增独立 semantic pass。dual-role 名称的 head-level route bias 合并进 `FrontendTopBindingAnalyzer`，
+  使 `symbolBindings()` 在首次发布时就给出后续 pass 应消费的 chain-head namespace。
+- 新增或扩展 `AttributeExpression` 相关 AST node handler，在 walk chain head base 之前识别：
+  base 是裸 `IdentifierExpression`、该名称按 value namespace 可解析为 `SINGLETON`，并且同名 source-facing
+  type-meta 也可解析。
+- 该 handler 只做 head-level namespace bias：决定当前 chain head use-site 发布 `SINGLETON` 还是 `TYPE_META`。
+  它不发布 `resolvedMembers()`、`resolvedCalls()`、`expressionTypes()`，也不接管 suffix 诊断 owner。
+- 小规模复制 chain analyzer 功能的边界限定为“第一个 suffix 是否明确要求 type-meta primary route”。
+  不复制 overload 选择、参数类型匹配、deferred/dynamic/unsupported 状态传播、writable target 规则或完整 chain
+  reduction。
+
+发布规则：
+
+```text
+AttributeExpression(base = IdentifierExpression(name), firstStep = step)
+  -> resolveVisibleValue(name)
+  -> 若 value 不是 SINGLETON：保持现有 TopBinding 规则
+  -> 若 value 是 SINGLETON：再尝试 resolveSourceFacingTypeMeta(name)
+  -> 若 type-meta 不存在：保持 SINGLETON
+  -> 若 firstStep 明确只应走 type-meta static/constructor route：发布 TYPE_META
+  -> 否则保持 SINGLETON
+```
+
+`firstStep` 的判定必须 fail-closed：
+
+- `Input.MOUSE_MODE_VISIBLE` / `Input.CURSOR_ARROW` 这类 static constant / enum value access：
+  若只在 type-meta static namespace 命中，head 发布 `TYPE_META`。
+- `Engine.new()` / `Input.new()` 这类 constructor-like route：head 发布 `TYPE_META`，构造合法性、不可构造诊断
+  仍由后续 chain/type-check route 决定。但 `.new()` 同样必须遵守 fail-closed：若 singleton declared type 上存在
+  名为 `new` 的实例方法或 property，suffix 在 singleton instance namespace 命中，head 保持 `SINGLETON`。
+- `Engine.get_frames_drawn()` / `Input.is_action_pressed(...)` 这类 singleton instance call：保持 `SINGLETON`。
+- 若 singleton instance route 与 type-meta static route 对同一 suffix 都可命中，不能静默改判为 `TYPE_META`。
+  初始实现应保持 `SINGLETON` 或报告专门歧义诊断；具体诊断 owner 若未冻结，先 fail-closed 保持既有路径。
+  "singleton instance route" 覆盖 instance method、instance property 和 signal 三类成员；signal 当前虽不在
+  chain access 支持语法中，但 fail-closed 检查已预防性覆盖，避免未来 signal 进入支持范围时遗漏。
+- 裸 `Engine` / `Input` 不属于 `AttributeExpression` chain head，不受本 Step 影响，仍发布 `SINGLETON` value binding。
+
+实现边界：
+
+- 不允许先让普通 identifier handler 发布 `SINGLETON`，再由 `AttributeExpression` handler 覆盖为 `TYPE_META`。
+  handler 应在 walk base 前完成 dual-role 判断；若决定发布 `TYPE_META`，应跳过该 base 的普通 identifier binding 路径，
+  只继续 walk step arguments。
+- **value-winner 权威**：dual-role bias handler 必须先调用 `resolveVisibleValue(...)` 判定 value winner，与
+  `bindTopLevelTypeMetaCandidate(...)` 的关键合同一致。只有当 value resolution 状态为 `FOUND_ALLOWED` 且
+  `ScopeValueKind.SINGLETON` 时才继续 bias 判断。若 value winner 是 local / parameter / property / capture /
+  signal / constant / global_enum，或状态为 `FOUND_BLOCKED` / `DEFERRED_UNSUPPORTED` / `NOT_FOUND`，bias 必须
+  return false 并回退到普通 `bindTopLevelTypeMetaCandidate(...)` 流程，由该流程通过 `publishValueResolution(...)`
+  固化 value winner 并报告遮蔽诊断。不得用 `classRegistry.isSingleton(name)` 绕过 visible-value 解析。
+- 不改变 `GLOBAL_ENUM` 现有 prefer-type-meta 特例。该特例仍是 value/type-meta 竞争中的独立规则，不能外推为
+  所有 singleton 都 type-meta 优先。
+- 不改变 later-local / initializer self-reference drift 合同。非 `AttributeExpression` 的 singleton use-site 仍按
+  ordinary value binding 稳定消费 top binding 的 `resolvedValue` payload。later-local 被
+  `FrontendVisibleValueResolver` 过滤后 value winner 仍为 `SINGLETON`，bias 正常适用。
+- 不新增 source-level `@GlobalScope` / `GlobalScope` type-meta receiver。`@GlobalScope` 仍只作为 LIR/backend owner string。
+- 若该 handler 需要查询 static constant / enum / static method 的存在性，应使用现有 registry / type metadata 入口，
+  并把查询结果限定为 head bias 输入；完整成员绑定仍由 `FrontendChainBindingAnalyzer` 负责。
+
+后续 pass 预期：
+
+- `FrontendChainHeadReceiverSupport` 继续只消费已发布的 `symbolBindings()`：
+  - `SINGLETON` -> ordinary value receiver / `receiverKind = INSTANCE`
+  - `TYPE_META` -> type-meta receiver / static load、static method、constructor primary route
+- `FrontendCfgGraphBuilder.isTypeMetaHeadAttributeExpression(...)` 继续可通过 head binding 判断 type-meta CFG 形状；
+  本 Step 的目标正是让 dual-role static route 在进入 CFG 前已经具备一致的 `TYPE_META` head fact。
+- 本 Step 不引入独立 final route fact。若后续 dual-role 规则继续扩展到更复杂语法，再重新评估是否拆出一等
+  use-site route fact。
+
+测试与验收：
+
+- 保留并继续要求：`Engine.get_frames_drawn()`、`Input.is_action_pressed(...)` 作为 singleton instance receiver lowering
+  不回归。
+- 新增 dual-role static load 覆盖：`Input.MOUSE_MODE_VISIBLE`、`Input.CURSOR_ARROW` 或等价 engine class constant/enum
+  访问应以 `TYPE_META` head 进入 static load route，不应 materialize singleton receiver。
+- 新增 constructor-like route 覆盖：`Engine.new()` 或可构造 dual-role engine class `.new()` 应以 `TYPE_META` head
+  进入 constructor primary route；若 Godot metadata 标记不可构造，诊断应来自 constructor/type-check route，而不是
+  被 singleton instance method route 吃掉。
+- 新增混用覆盖：同一函数内同时出现裸 `Input`、`Input.is_action_pressed(...)`、`Input.MOUSE_MODE_VISIBLE` 时，
+  三个 use-site 的 binding 互不污染。
+- 新增 property initializer 覆盖：dual-role static constant / enum route 在 property initializer 中也应与 executable body
+  保持一致。
+- 若存在同名 suffix 同时命中 singleton instance 与 type-meta static 的 fixture，应覆盖 fail-closed 行为，避免依赖
+  registry 遍历顺序静默选路。
+
 ## 4. 总体验收细则
 
 issue #36 可关闭的条件：
@@ -707,6 +884,41 @@ issue #36 可关闭的条件：
   必须暴露 invalid singleton metadata fact，并由 frontend compile/lowering 入口在进入 lowering 前报告并停止；它不再表现为
   opaque identifier unsupported、unknown identifier 或 body-lowering 归属漂移。
 - 现有 local/property/global constant/type-meta lowering tests 不回归。
+
+验证（2026-06-26）：
+
+- `script/run-gradle-targeted-tests.sh --tests FrontendTopBindingAnalyzerTest,FrontendChainBindingAnalyzerTest,FrontendLoweringBodyInsnPassTest,FrontendLoweringPassManagerTest,FrontendLoweringBuildCfgPassTest,FrontendLoweringFunctionPreparationPassTest,FrontendExprTypeAnalyzerTest,FrontendSemanticAnalyzerFrameworkTest,FrontendChainHeadReceiverSupportTest`
+  全部通过。
+- `script/run-gradle-targeted-tests.sh --tests FrontendVirtualOverrideAnalyzerTest,FrontendVarTypePostAnalyzerTest,FrontendLocalTypeStabilizationAnalyzerTest,FrontendCompileCheckAnalyzerTest,FrontendTypeCheckAnalyzerTest`
+  全部通过，确认 `FrontendTopBindingAnalyzer.analyze(...)` 签名扩展未引入回归。
+- `FrontendTopBindingAnalyzerTest` 新增 10 个 dual-role 测试覆盖：
+  - 正向：singleton instance call 保持 `SINGLETON`（`Engine.get_frames_drawn()`、`Input.is_action_pressed(...)`）。
+  - 正向：constructor-like `.new()` 发布 `TYPE_META`（`Engine.new()`）。
+  - 负向（`.new()` fail-closed）：当 singleton declared type 存在名为 `new` 的实例方法时，`.new()` 保持 `SINGLETON`，
+    不被无条件切为 `TYPE_META`。
+  - 负向（signal fail-closed）：当 singleton declared type 存在与 type-meta static member 同名的 signal 时，
+    head 保持 `SINGLETON`，不被切为 `TYPE_META`。signal 当前虽不在 chain access 支持语法中，但 fail-closed
+    检查已预防性覆盖。
+  - 正向：engine class constant 发布 `TYPE_META`（`IP.RESOLVER_MAX_QUERIES`）。
+  - 正向：class enum value 发布 `TYPE_META`（`Input.MOUSE_MODE_VISIBLE`）。
+  - 正向：static method 发布 `TYPE_META`（`ResourceUID.path_to_uid(...)`）。
+  - 正向：混用场景下三个 use-site 互不污染（bare `Input`、`Input.is_action_pressed(...)`、`Input.MOUSE_MODE_VISIBLE`）。
+  - 负向：fail-closed — suffix 同时命中 singleton instance 与 type-meta static 时保持 `SINGLETON`。
+  - 正向：非 dual-role engine class static 不受影响（`Node.NOTIFICATION_ENTER_TREE`）。
+  - 正向：property initializer 中 dual-role static constant 也发布 `TYPE_META`。
+  - 负向（value-winner 遮蔽）：prior-declared local 遮蔽 dual-role singleton 时，head 保持 `LOCAL_VAR`，
+    不被 bias 覆盖为 `SINGLETON` 或 `TYPE_META`。覆盖 instance call、static constant、constructor `.new()` 三类 suffix。
+  - 负向（value-winner 遮蔽）：parameter 遮蔽 dual-role singleton 时，head 保持 `PARAMETER`。
+  - 正向（later-local 不遮蔽）：later-declared local 不影响 bias — `resolveVisibleValue` 过滤 later local 后
+    value winner 仍为 `SINGLETON`，instance call 保持 `SINGLETON`，static constant 切换为 `TYPE_META`。
+- `FrontendChainBindingAnalyzerTest` 新增 4 个 downstream 测试确认：
+  - singleton instance call 进入 `INSTANCE_METHOD` route。
+  - engine class constant 进入 `TYPE_META` static load member resolution。
+  - static method 进入 `STATIC_METHOD` route。
+  - class enum value head binding 为 `TYPE_META`（member resolution 的 enum-value 支持是下游 chain reduction 的独立缺口）。
+- 已知边界：`reduceEngineStaticLoad` 当前只处理 `constants()`，不处理 class enum values。因此 `Input.MOUSE_MODE_VISIBLE`
+  的 head binding 正确切换为 `TYPE_META`，但 member resolution 状态为 `FAILED`。这属于 chain reduction 的后续扩展，
+  不在 Step 9 head-bias 范围内。
 
 ## 5. 风险与边界
 

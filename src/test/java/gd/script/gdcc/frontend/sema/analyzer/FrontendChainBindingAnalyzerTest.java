@@ -57,13 +57,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ResolvedRoutes
                         extends Node
-
+                        
                         var payload: int = 1
-
+                        
                         class Worker:
                             static func build(seed):
                                 return ""
-
+                        
                         func ping(seed):
                             self.payload
                             Worker.build(seed)
@@ -102,7 +102,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name SingletonCallLaterLocalShadow
                         extends RefCounted
-
+                        
                         func ping():
                             Engine.get_frames_drawn()
                             var Engine: String = ""
@@ -131,6 +131,132 @@ class FrontendChainBindingAnalyzerTest {
         );
     }
 
+    // ------------------------------------------------------------------
+    // Step 9: dual-role chain-head route bias downstream behavior
+    // ------------------------------------------------------------------
+
+    /// `Engine.get_frames_drawn()` must produce an INSTANCE-method resolved call with
+    /// SINGLETON head binding, confirming the dual-role bias does not steal instance calls.
+    @Test
+    void analyzeDualRoleSingletonInstanceCallStaysInstanceRoute() throws Exception {
+        var analyzed = analyze(
+                "dual_role_singleton_instance_route.gd",
+                """
+                        class_name DualRoleSingletonInstanceRoute
+                        extends RefCounted
+                        
+                        func ping():
+                            Engine.get_frames_drawn()
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var engineHead = findNode(pingFunction, IdentifierExpression.class, identifier -> identifier.name().equals("Engine"));
+        var framesStep = findNode(pingFunction, AttributeCallStep.class, step -> step.name().equals("get_frames_drawn"));
+        var binding = analyzed.analysisData().symbolBindings().get(engineHead);
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(framesStep);
+
+        assertAll(
+                () -> assertNotNull(binding),
+                () -> assertEquals(FrontendBindingKind.SINGLETON, binding.kind()),
+                () -> assertNotNull(resolvedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, resolvedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.INSTANCE, resolvedCall.receiverKind())
+        );
+    }
+
+    /// `IP.RESOLVER_MAX_QUERIES` must produce a TYPE_META head binding and a resolved static
+    /// load member, confirming the dual-role bias routes engine class constants through the
+    /// static-load path.
+    @Test
+    void analyzeDualRoleEngineClassConstantRoutesToTypeMetaStaticLoad() throws Exception {
+        var analyzed = analyze(
+                "dual_role_engine_constant_route.gd",
+                """
+                        class_name DualRoleEngineConstantRoute
+                        extends RefCounted
+                        
+                        func ping():
+                            IP.RESOLVER_MAX_QUERIES
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var ipHead = findNode(pingFunction, IdentifierExpression.class, identifier -> identifier.name().equals("IP"));
+        var constantStep = findNode(pingFunction, AttributePropertyStep.class, step -> step.name().equals("RESOLVER_MAX_QUERIES"));
+        var binding = analyzed.analysisData().symbolBindings().get(ipHead);
+        var resolvedMember = analyzed.analysisData().resolvedMembers().get(constantStep);
+
+        assertAll(
+                () -> assertNotNull(binding),
+                () -> assertEquals(FrontendBindingKind.TYPE_META, binding.kind()),
+                () -> assertNotNull(resolvedMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, resolvedMember.status()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedMember.receiverKind())
+        );
+    }
+
+    /// `ResourceUID.path_to_uid("res://foo.gd")` must produce a TYPE_META head binding and a
+    /// resolved static method call, confirming the dual-role bias routes static methods through
+    /// the type-meta static-method path.
+    @Test
+    void analyzeDualRoleStaticMethodRoutesToTypeMetaStaticCall() throws Exception {
+        var analyzed = analyze(
+                "dual_role_static_method_route.gd",
+                """
+                        class_name DualRoleStaticMethodRoute
+                        extends RefCounted
+                        
+                        func ping():
+                            ResourceUID.path_to_uid("res://foo.gd")
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var uidHead = findNode(pingFunction, IdentifierExpression.class, identifier -> identifier.name().equals("ResourceUID"));
+        var callStep = findNode(pingFunction, AttributeCallStep.class, step -> step.name().equals("path_to_uid"));
+        var binding = analyzed.analysisData().symbolBindings().get(uidHead);
+        var resolvedCall = analyzed.analysisData().resolvedCalls().get(callStep);
+
+        assertAll(
+                () -> assertNotNull(binding),
+                () -> assertEquals(FrontendBindingKind.TYPE_META, binding.kind()),
+                () -> assertNotNull(resolvedCall),
+                () -> assertEquals(FrontendCallResolutionStatus.RESOLVED, resolvedCall.status()),
+                () -> assertEquals(FrontendCallResolutionKind.STATIC_METHOD, resolvedCall.callKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, resolvedCall.receiverKind())
+        );
+    }
+
+    /// `Input.MOUSE_MODE_VISIBLE` must produce a TYPE_META head binding, confirming the
+    /// dual-role bias routes class enum values through the static-load path. Full enum-value
+    /// member resolution is a downstream chain-reduction concern; here we only assert that the
+    /// head binding switches to TYPE_META (the Step 9 scope) and does not materialize a
+    /// singleton receiver.
+    @Test
+    void analyzeDualRoleClassEnumValueRoutesToTypeMetaStaticLoad() throws Exception {
+        var analyzed = analyze(
+                "dual_role_class_enum_route.gd",
+                """
+                        class_name DualRoleClassEnumRoute
+                        extends RefCounted
+                        
+                        func ping():
+                            Input.MOUSE_MODE_VISIBLE
+                        """
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var inputHead = findNode(pingFunction, IdentifierExpression.class, identifier -> identifier.name().equals("Input"));
+        var binding = analyzed.analysisData().symbolBindings().get(inputHead);
+
+        assertAll(
+                () -> assertNotNull(binding),
+                () -> assertEquals(FrontendBindingKind.TYPE_META, binding.kind())
+        );
+    }
+
     @Test
     void analyzeAcceptsStableVariantSourcesForInstanceAndStaticCallsAfterZeroArgCustomConstruction() throws Exception {
         var analyzed = analyze(
@@ -138,17 +264,17 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name VariantCallRoutes
                         extends RefCounted
-
+                        
                         class Worker:
                             func _init():
                                 pass
-
+                        
                             static func build_count(value: int):
                                 return 1
-
+                        
                             func consume(value: int):
                                 return 1
-
+                        
                         func ping(seed):
                             Worker.new().consume(seed.anything())
                             Worker.build_count(seed.anything())
@@ -187,14 +313,14 @@ class FrontendChainBindingAnalyzerTest {
         var workerUnit = parserService.parseUnit(Path.of("tmp", "mapped_worker_chain.gd"), """
                 class_name MappedWorker
                 extends RefCounted
-
+                
                 static func build(seed) -> String:
                     return ""
                 """, diagnostics);
         var consumerUnit = parserService.parseUnit(Path.of("tmp", "mapped_consumer_chain.gd"), """
                 class_name Consumer
                 extends RefCounted
-
+                
                 func ping(seed):
                     MappedWorker.build(seed)
                 """, diagnostics);
@@ -228,17 +354,17 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerRoutes
                         extends RefCounted
-
+                        
                         class Handle:
                             func read() -> int:
                                 return 1
-
+                        
                         class Worker:
                             var handle: Handle
-
+                        
                             static func build() -> Worker:
                                 return null
-
+                        
                         var ready_value := Worker.build().handle.read()
                         const Alias = Worker.build()
                         """
@@ -291,11 +417,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerFailedCall
                         extends RefCounted
-
+                        
                         class Worker:
                             func read() -> int:
                                 return 1
-
+                        
                         static var failed_call := Worker.read()
                         """
         );
@@ -325,14 +451,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name TypedLocalPropertyWritePathBaseline
                         extends RefCounted
-
+                        
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func write_path(point: Point) -> void:
                             var tail := make_point()
                             tail.next = point
@@ -374,14 +500,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name TypedLocalPropertyReadPathBaseline
                         extends RefCounted
-
+                        
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func read_path() -> bool:
                             var point := make_point()
                             return point.marker != -1
@@ -418,14 +544,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name TypedLocalAliasChainBaseline
                         extends RefCounted
-
+                        
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func read_path() -> bool:
                             var a := make_point()
                             var b := a
@@ -469,18 +595,18 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name TypedLocalComplexInitializerBaseline
                         extends RefCounted
-
+                        
                         class Point:
                             var next: Point = null
                             var marker: int = -1
-
+                        
                         class Box:
                             var next: Point = Point.new()
-
+                        
                         class Factory:
                             func make_point(seed: int) -> Box:
                                 return Box.new()
-
+                        
                         func read_path(factory: Factory, seed: int) -> bool:
                             var p := factory.make_point(seed).next
                             var q := p
@@ -520,7 +646,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name TypedLocalDynamicFailClosedPipeline
                         extends RefCounted
-
+                        
                         func ping(dynamic_host):
                             var point := dynamic_host.next
                             return point.member
@@ -567,7 +693,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerHeadOwnedByTopBinding
                         extends RefCounted
-
+                        
                         var payload: int = 1
                         var copy := self.payload
                         """
@@ -598,13 +724,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerSameClassTypeMetaCall
                         extends RefCounted
-
+                        
                         signal changed
                         var payload: int = 1
-
+                        
                         func read() -> int:
                             return 1
-
+                        
                         static var blocked_value := PropertyInitializerSameClassTypeMetaCall.payload
                         static var blocked_signal := PropertyInitializerSameClassTypeMetaCall.changed
                         static var blocked_call := PropertyInitializerSameClassTypeMetaCall.read()
@@ -673,7 +799,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerInheritedTypeMetaCall
                         extends PropertyInitializerBase
-
+                        
                         static var blocked_value := PropertyInitializerBase.payload
                         static var blocked_signal := PropertyInitializerBase.changed
                         static var blocked_call := PropertyInitializerBase.read()
@@ -754,16 +880,16 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerSameClassSuffixRoutes
                         extends RefCounted
-
+                        
                         signal changed
                         var payload: int = 1
-
+                        
                         func read() -> int:
                             return 1
-
+                        
                         static func build() -> PropertyInitializerSameClassSuffixRoutes:
                             return null
-
+                        
                         var blocked_value := build().payload
                         var blocked_call := build().read()
                         var blocked_signal := build().changed
@@ -823,10 +949,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name PropertyInitializerInheritedSuffixRoutes
                         extends PropertyInitializerBase
-
+                        
                         static func build_base() -> PropertyInitializerBase:
                             return null
-
+                        
                         var blocked_value := build_base().payload
                         var blocked_call := build_base().read()
                         var blocked_signal := build_base().changed
@@ -901,17 +1027,17 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ResolvedStaticRouteChain
                         extends RefCounted
-
+                        
                         class Handle:
                             func start() -> int:
                                 return 1
-
+                        
                         class Worker:
                             var handle: Handle = Handle.new()
-
+                        
                             static func build(seed) -> Worker:
                                 return Worker.new()
-
+                        
                         func ping(seed):
                             Worker.build(seed).handle.start()
                         """
@@ -961,11 +1087,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name InstanceStaticMethod
                         extends RefCounted
-
+                        
                         class Worker:
                             static func build():
                                 return 1
-
+                        
                         func ping():
                             Worker.new().build()
                         """
@@ -1000,11 +1126,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ConstructorSurfaceRoutes
                         extends RefCounted
-
+                        
                         class Worker:
                             func _init():
                                 pass
-
+                        
                         func ping():
                             Array()
                             Vector3i(1, 2, 3)
@@ -1071,11 +1197,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name ParameterizedGdccConstructorRoute
                         extends RefCounted
-
+                        
                         class Worker:
                             func _init(value: int):
                                 pass
-
+                        
                         func ping(seed):
                             Worker.new(seed)
                         """
@@ -1101,7 +1227,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name VariantBuiltinConstructorRoute
                         extends RefCounted
-
+                        
                         func ping(plain: Array, seed: Variant):
                             int(plain[0])
                             String(plain[0])
@@ -1232,7 +1358,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name AmbiguousMultiArgBuiltinConstructorRoute
                         extends RefCounted
-
+                        
                         func ping(first: Variant, second: Variant):
                             String(first, second)
                         """,
@@ -1277,7 +1403,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name SpecificBuiltinConstructorRoute
                         extends RefCounted
-
+                        
                         func ping():
                             String("seed")
                         """,
@@ -1321,7 +1447,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name NonInstantiableEngineConstructorRoute
                         extends RefCounted
-
+                        
                         func ping():
                             Node.new()
                         """,
@@ -1354,10 +1480,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DeferredSuffix
                         extends RefCounted
-
+                        
                         func build(value: int) -> String:
                             return ""
-
+                        
                         func ping():
                             self.build(1 + 2).length
                         """
@@ -1392,10 +1518,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DeferredSuffixRemainingGap
                         extends RefCounted
-
+                        
                         func build(value: int) -> String:
                             return ""
-
+                        
                         func ping(flag):
                             self.build(1 if flag else 2).length
                         """
@@ -1431,10 +1557,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DynamicArgumentRoute
                         extends RefCounted
-
+                        
                         func consume(value) -> int:
                             return 1
-
+                        
                         func ping(worker):
                             self.consume(worker.ping())
                         """
@@ -1467,10 +1593,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name SubscriptArgumentRoute
                         extends RefCounted
-
+                        
                         func consume(value: int) -> int:
                             return value
-
+                        
                         func ping(items: Array[int]):
                             self.consume(items[0])
                         """
@@ -1495,10 +1621,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name DynamicAssignmentArgumentRoute
                         extends RefCounted
-
+                        
                         func consume(value: int) -> int:
                             return value
-
+                        
                         func ping(dynamic_value):
                             self.consume(dynamic_value[0] = 1)
                         """
@@ -1529,13 +1655,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name AttributeSubscriptSuffix
                         extends RefCounted
-
+                        
                         class Item:
                             var payload: int = 1
-
+                        
                         class Holder:
                             var items: Array[Item] = []
-
+                        
                         func ping(holder: Holder):
                             holder.items[0].payload
                         """
@@ -1565,10 +1691,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name AttributeSubscriptKeyedUnsupported
                         extends RefCounted
-
+                        
                         class Holder:
                             var text: String = ""
-
+                        
                         func ping(holder: Holder):
                             holder.text[0].length
                         """,
@@ -1594,14 +1720,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name MethodReferenceMembers
                         extends RefCounted
-
+                        
                         class Worker:
                             static func build() -> int:
                                 return 1
-
+                        
                         func helper() -> int:
                             return 1
-
+                        
                         func ping():
                             self.helper
                             Worker.build
@@ -1645,10 +1771,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name CallableHeadChain
                         extends RefCounted
-
+                        
                         func helper() -> int:
                             return 1
-
+                        
                         func ping():
                             helper.call()
                         """
@@ -1676,14 +1802,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name CallableBindAndHeadVariants
                         extends RefCounted
-
+                        
                         class Worker:
                             static func build(value: int) -> int:
                                 return value
-
+                        
                         func helper(value: int) -> int:
                             return value
-
+                        
                         func ping(items: Array[Callable], dict: Dictionary[String, Callable]):
                             helper.bind(1)
                             self.helper.bind(1)
@@ -1763,14 +1889,14 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name BlockedBareCallChainPath
                         extends RefCounted
-
+                        
                         class Target:
                             func consume(value: int) -> int:
                                 return value
-
+                        
                         func helper(value: int) -> int:
                             return value
-
+                        
                         static func ping_static(target: Target, value: int):
                             target.consume(helper(value))
                         """
@@ -1821,13 +1947,13 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name BareCallChainArgument
                         extends RefCounted
-
+                        
                         func helper() -> int:
                             return 1
-
+                        
                         func consume(value: int) -> int:
                             return value
-
+                        
                         func ping():
                             self.consume(helper())
                         """
@@ -1868,7 +1994,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name StaticLoadRoutes
                         extends Node
-
+                        
                         func ping():
                             Side.SIDE_LEFT
                             Vector3.BACK
@@ -1921,7 +2047,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name BuiltinInstancePropertyRoutes
                         extends RefCounted
-
+                        
                         func ping(vector: Vector3):
                             vector.x
                             Basis.IDENTITY.x
@@ -1975,11 +2101,11 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name FailedStaticCall
                         extends RefCounted
-
+                        
                         class Worker:
                             func speak():
                                 return 1
-
+                        
                         func ping():
                             Worker.speak()
                         """
@@ -2007,10 +2133,10 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name UnsupportedStaticLoad
                         extends RefCounted
-
+                        
                         class Worker:
                             pass
-
+                        
                         func ping():
                             Worker.VALUE
                         """
@@ -2040,7 +2166,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name HeadFailureRoutes
                         extends RefCounted
-
+                        
                         func ping():
                             missing.payload
                             missing_call.speak()
