@@ -1161,7 +1161,7 @@ public class FrontendTopBindingAnalyzer {
                 @NotNull String stepName
         ) {
             if (typeMeta.declaration() instanceof ExtensionGdClass engineClass) {
-                if (hasEngineClassConstant(engineClass, stepName)) {
+                if (classRegistry.hasEngineClassConstant(engineClass.getName(), stepName)) {
                     return true;
                 }
                 if (hasEngineClassEnumValue(engineClass, stepName)) {
@@ -1170,7 +1170,7 @@ public class FrontendTopBindingAnalyzer {
             } else if (classRegistry.getClassDef(
                     typeMeta.instanceType() instanceof GdObjectType ot ? ot : new GdObjectType(typeMeta.canonicalName())
             ) instanceof ExtensionGdClass engineClass) {
-                if (hasEngineClassConstant(engineClass, stepName)) {
+                if (classRegistry.hasEngineClassConstant(engineClass.getName(), stepName)) {
                     return true;
                 }
                 if (hasEngineClassEnumValue(engineClass, stepName)) {
@@ -1194,10 +1194,6 @@ public class FrontendTopBindingAnalyzer {
                     || hasSignalInHierarchy(singletonType, stepName);
         }
 
-        private boolean hasEngineClassConstant(@NotNull ExtensionGdClass engineClass, @NotNull String name) {
-            return engineClass.constants().stream().anyMatch(c -> c.name().equals(name));
-        }
-
         private boolean hasEngineClassEnumValue(@NotNull ExtensionGdClass engineClass, @NotNull String name) {
             return engineClass.enums().stream()
                     .flatMap(e -> e.values().stream())
@@ -1207,7 +1203,7 @@ public class FrontendTopBindingAnalyzer {
         /// Walks the class hierarchy starting from `typeMeta` to check if a static method named
         /// `stepName` exists. Covers both ENGINE_CLASS and GDCC_CLASS.
         private boolean hasStaticMethodInHierarchy(@NotNull ScopeTypeMeta typeMeta, @NotNull String stepName) {
-            ClassDef current = resolveClassDefFromTypeMeta(typeMeta);
+            ClassDef current = classRegistry.resolveClassDefFromTypeMeta(typeMeta);
             var visited = new HashSet<String>();
             while (current != null && visited.add(current.getName())) {
                 var found = current.getFunctions().stream()
@@ -1215,7 +1211,7 @@ public class FrontendTopBindingAnalyzer {
                 if (found) {
                     return true;
                 }
-                current = resolveSuperclass(current);
+                current = classRegistry.resolveSuperclass(current);
             }
             return false;
         }
@@ -1231,7 +1227,7 @@ public class FrontendTopBindingAnalyzer {
                 if (found) {
                     return true;
                 }
-                current = resolveSuperclass(current);
+                current = classRegistry.resolveSuperclass(current);
             }
             return false;
         }
@@ -1247,7 +1243,7 @@ public class FrontendTopBindingAnalyzer {
                 if (found) {
                     return true;
                 }
-                current = resolveSuperclass(current);
+                current = classRegistry.resolveSuperclass(current);
             }
             return false;
         }
@@ -1264,31 +1260,9 @@ public class FrontendTopBindingAnalyzer {
                 if (found) {
                     return true;
                 }
-                current = resolveSuperclass(current);
+                current = classRegistry.resolveSuperclass(current);
             }
             return false;
-        }
-
-        private @Nullable ClassDef resolveClassDefFromTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
-            if (typeMeta.declaration() instanceof ClassDef classDef) {
-                return classDef;
-            }
-            if (typeMeta.instanceType() instanceof GdObjectType objectType) {
-                return classRegistry.getClassDef(objectType);
-            }
-            return null;
-        }
-
-        private @Nullable ClassDef resolveSuperclass(@NotNull ClassDef current) {
-            var superName = current.getSuperName();
-            if (superName.isBlank()) {
-                return null;
-            }
-            var builtinSuper = classRegistry.findBuiltinClass(superName);
-            if (builtinSuper != null) {
-                return builtinSuper;
-            }
-            return classRegistry.getClassDef(new GdObjectType(superName));
         }
 
         private @Nullable Scope findCurrentScope(@NotNull IdentifierExpression identifierExpression) {

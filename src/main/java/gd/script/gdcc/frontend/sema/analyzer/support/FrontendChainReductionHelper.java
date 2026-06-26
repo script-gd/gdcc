@@ -2094,7 +2094,7 @@ public final class FrontendChainReductionHelper {
                 yield builtinClass == null ? null : resolveMethodReference(classRegistry, builtinClass, memberName, true);
             }
             case ENGINE_CLASS, GDCC_CLASS -> {
-                var classDef = resolveDeclaredClass(classRegistry, receiverTypeMeta);
+                var classDef = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
                 yield classDef == null ? null : resolveMethodReference(classRegistry, classDef, memberName, true);
             }
         };
@@ -2127,23 +2127,9 @@ public final class FrontendChainReductionHelper {
                         List.copyOf(ownerMethods)
                 );
             }
-            current = resolveMethodReferenceSuperclass(classRegistry, current);
+            current = classRegistry.resolveSuperclass(current);
         }
         return null;
-    }
-
-    private static @Nullable ClassDef resolveMethodReferenceSuperclass(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ClassDef current
-    ) {
-        if (current.getSuperName().isBlank()) {
-            return null;
-        }
-        var builtinSuper = classRegistry.findBuiltinClass(current.getSuperName());
-        if (builtinSuper != null) {
-            return builtinSuper;
-        }
-        return classRegistry.getClassDef(new GdObjectType(current.getSuperName()));
     }
 
     private static @Nullable ScopeOwnerKind resolveMethodOwnerKind(
@@ -2164,19 +2150,6 @@ public final class FrontendChainReductionHelper {
         }
         if (classRegistry.isBuiltinClass(ownerClass.getName())) {
             return ScopeOwnerKind.BUILTIN;
-        }
-        return null;
-    }
-
-    private static @Nullable ClassDef resolveDeclaredClass(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta
-    ) {
-        if (receiverTypeMeta.declaration() instanceof ClassDef classDef) {
-            return classDef;
-        }
-        if (receiverTypeMeta.instanceType() instanceof GdObjectType objectType) {
-            return classRegistry.getClassDef(objectType);
         }
         return null;
     }

@@ -3,13 +3,11 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
-import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeTypeMeta;
-import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -81,7 +79,7 @@ final class FrontendConstructorResolutionSupport {
             @NotNull ScopeTypeMeta receiverTypeMeta,
             @NotNull List<GdType> argumentTypes
     ) {
-        if (!(resolveDeclaredClass(classRegistry, receiverTypeMeta) instanceof ExtensionGdClass engineClass)) {
+        if (!(classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta) instanceof ExtensionGdClass engineClass)) {
             return failed(
                     receiverTypeMeta.declaration(),
                     ScopeOwnerKind.ENGINE,
@@ -110,7 +108,7 @@ final class FrontendConstructorResolutionSupport {
             @NotNull ScopeTypeMeta receiverTypeMeta,
             @NotNull List<GdType> argumentTypes
     ) {
-        var classDef = resolveDeclaredClass(classRegistry, receiverTypeMeta);
+        var classDef = classRegistry.resolveClassDefFromTypeMeta(receiverTypeMeta);
         if (classDef == null) {
             return failed(
                     receiverTypeMeta.declaration(),
@@ -448,19 +446,6 @@ final class FrontendConstructorResolutionSupport {
             joiner.add(argumentType.getTypeName());
         }
         return joiner.toString();
-    }
-
-    private static @Nullable ClassDef resolveDeclaredClass(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull ScopeTypeMeta receiverTypeMeta
-    ) {
-        if (receiverTypeMeta.declaration() instanceof ClassDef classDef) {
-            return classDef;
-        }
-        if (receiverTypeMeta.instanceType() instanceof GdObjectType objectType) {
-            return classRegistry.getClassDef(objectType);
-        }
-        return null;
     }
 
     private static @Nullable ExtensionBuiltinClass resolveBuiltinStaticOwner(

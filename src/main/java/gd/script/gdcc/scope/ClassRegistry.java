@@ -902,4 +902,41 @@ public final class ClassRegistry implements Scope {
     public @NotNull @UnmodifiableView List<ExtensionUtilityFunction> getExtensionUtilityFunctionList() {
         return utilityByName.values().stream().toList();
     }
+
+    /// Resolves a [ClassDef] from type-meta metadata. If the meta carries a direct `declaration()`
+    /// that is already a `ClassDef`, returns it. Otherwise, attempts to find the `ClassDef` by
+    /// resolving the `instanceType()` via `getClassDef`.
+    public @Nullable ClassDef resolveClassDefFromTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
+        if (typeMeta.declaration() instanceof ClassDef classDef) {
+            return classDef;
+        }
+        if (typeMeta.instanceType() instanceof GdObjectType objectType) {
+            return getClassDef(objectType);
+        }
+        return null;
+    }
+
+    /// Resolves the immediate superclass of `current` from the registry.
+    /// Returns `null` when the super-name is blank or the class cannot be found.
+    public @Nullable ClassDef resolveSuperclass(@NotNull ClassDef current) {
+        var superName = current.getSuperName();
+        if (superName.isBlank()) {
+            return null;
+        }
+        var builtinSuper = findBuiltinClass(superName);
+        if (builtinSuper != null) {
+            return builtinSuper;
+        }
+        return getClassDef(new GdObjectType(superName));
+    }
+
+    /// Checks whether the engine class identified by `className` declares a constant whose name
+    /// equals `constantName`.
+    public boolean hasEngineClassConstant(@NotNull String className, @NotNull String constantName) {
+        var engineClass = gdClassByName.get(className);
+        if (engineClass == null) {
+            return false;
+        }
+        return engineClass.constants().stream().anyMatch(c -> c.name().equals(constantName));
+    }
 }
