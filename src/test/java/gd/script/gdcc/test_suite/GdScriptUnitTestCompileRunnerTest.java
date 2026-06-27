@@ -70,6 +70,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/array_void_return_helper_size.gd",
             "runtime/array_void_return_push_back_size.gd",
             "runtime/comment_statement_control_flow_surface.gd",
+            "runtime/dual_role_singleton_mixed_use_sites.gd",
+            "runtime/dual_role_singleton_static_constant.gd",
             "runtime/dynamic_call.gd",
             "runtime/dynamic_member_variant_named_access.gd",
             "runtime/dynamic_member_variant_named_access_missing.gd",

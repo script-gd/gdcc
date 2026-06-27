@@ -849,6 +849,29 @@ AttributeExpression(base = IdentifierExpression(name), firstStep = step)
 - 若存在同名 suffix 同时命中 singleton instance 与 type-meta static 的 fixture，应覆盖 fail-closed 行为，避免依赖
   registry 遍历顺序静默选路。
 
+补充（2026-06-27）：已按 `doc/test_suite.md` 的资源配对规则新增两组端到端用例，覆盖 Step 9 中
+runtime 可达的 dual-role route bias 行为经过 frontend lowering、C backend build 与 Godot runtime
+validation 后仍正确执行：
+
+- `runtime/dual_role_singleton_static_constant.gd`：覆盖 dual-role TYPE_META static load route。
+  包含 `IP.RESOLVER_MAX_QUERIES`（= 256）、`IP.RESOLVER_INVALID_ID`（= -1）、
+  `ResourceUID.INVALID_ID`（= -1）、`DisplayServer.MAIN_WINDOW_ID`（= 0）四组 engine class constant
+  访问，以及 property initializer `var startup_resolver_queries: int = IP.RESOLVER_MAX_QUERIES`。
+  这些 dual-role 名称同时存在于 `singletons` 与 `classes` 中；constant 只在 type-meta static namespace
+  可达，因此 chain head 必须发布 `TYPE_META`，不应 materialize singleton receiver。
+  `Input.MOUSE_MODE_VISIBLE`（class enum value）因 `reduceEngineStaticLoad` 当前不处理 enum values
+  而无法 runtime 到达，留在 focused frontend 测试中覆盖。
+- `runtime/dual_role_singleton_mixed_use_sites.gd`：覆盖同一函数体内 dual-role 名称的
+  SINGLETON 与 TYPE_META route 互不污染。`Input.is_action_pressed(...)` 保持 `SINGLETON` instance call
+  （`CallMethodInsn`），`IP.RESOLVER_MAX_QUERIES` 切换为 `TYPE_META` static load，两者在同一 body 中
+  同时 lower 并返回正确值。
+
+验证（2026-06-27）：
+
+- `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`
+  全部通过（32 个 runtime 动态测试，0 failures），确认两组新 fixture 可完整经过 frontend lowering、
+  C backend build 与 Godot runtime validation。
+
 ## 4. 总体验收细则
 
 issue #36 可关闭的条件：
