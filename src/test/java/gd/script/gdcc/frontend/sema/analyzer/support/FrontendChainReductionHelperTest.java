@@ -914,6 +914,200 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceResolvesInheritedEngineClassConstantAndEnumValue() {
+        var parentClass = new ExtensionGdClass(
+                "BaseInput",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("PARENT_MOUSE_MODE", 7))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("PARENT_LIMIT", "42"))
+        );
+        var childClass = new ExtensionGdClass(
+                "ChildInput",
+                false,
+                true,
+                "BaseInput",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(List.of(), List.of(parentClass, childClass), List.of(), List.of());
+        var childMeta = typeMeta("ChildInput", new GdObjectType("ChildInput"), ScopeTypeMetaKind.ENGINE_CLASS, childClass, false);
+
+        var constantResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("ChildInput"), property("PARENT_LIMIT")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(childMeta),
+                registry,
+                noExpressionTypes()
+        ));
+        var constantTrace = constantResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, constantTrace.status());
+        var constantMember = constantTrace.suggestedMember();
+        assertNotNull(constantMember);
+        assertEquals(FrontendBindingKind.CONSTANT, constantMember.bindingKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, constantMember.receiverKind());
+        assertSame(GdIntType.INT, constantMember.resultType());
+
+        var enumResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("ChildInput"), property("PARENT_MOUSE_MODE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(childMeta),
+                registry,
+                noExpressionTypes()
+        ));
+        var enumTrace = enumResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, enumTrace.status());
+        var enumMember = enumTrace.suggestedMember();
+        assertNotNull(enumMember);
+        assertEquals(FrontendBindingKind.CONSTANT, enumMember.bindingKind());
+        assertEquals(FrontendReceiverKind.TYPE_META, enumMember.receiverKind());
+        assertSame(GdIntType.INT, enumMember.resultType());
+    }
+
+    @Test
+    void reduceDirectEngineClassStaticMemberWinsOverInheritedStaticMember() {
+        var parentClass = new ExtensionGdClass(
+                "StaticParent",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "Mode", false, List.of(new ExtensionEnumValue("SHARED_ENUM", 1))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("SHARED_CONST", "11"))
+        );
+        var childClass = new ExtensionGdClass(
+                "StaticChild",
+                false,
+                true,
+                "StaticParent",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "Mode", false, List.of(new ExtensionEnumValue("SHARED_ENUM", 2))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("SHARED_CONST", "22"))
+        );
+        var registry = newRegistry(List.of(), List.of(parentClass, childClass), List.of(), List.of());
+
+        var constantLookup = registry.findEngineClassConstantInHierarchy("StaticChild", "SHARED_CONST");
+        var enumLookup = registry.findEngineClassEnumValueInHierarchy("StaticChild", "SHARED_ENUM");
+
+        assertAll(
+                () -> assertNotNull(constantLookup),
+                () -> assertEquals("StaticChild", constantLookup.ownerClass().getName()),
+                () -> assertEquals("22", constantLookup.constant().value()),
+                () -> assertNotNull(enumLookup),
+                () -> assertEquals("StaticChild", enumLookup.ownerClass().getName()),
+                () -> assertEquals(2, enumLookup.enumValue().value())
+        );
+    }
+
+    @Test
+    void reduceFailsWhenInheritedEngineStaticMemberMissingAcrossHierarchy() {
+        var parentClass = new ExtensionGdClass(
+                "StaticRoot",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var childClass = new ExtensionGdClass(
+                "StaticLeaf",
+                false,
+                true,
+                "StaticRoot",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(List.of(), List.of(parentClass, childClass), List.of(), List.of());
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("StaticLeaf"), property("MISSING_STATIC")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("StaticLeaf", new GdObjectType("StaticLeaf"), ScopeTypeMetaKind.ENGINE_CLASS, childClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+
+        var trace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, trace.status());
+        assertNotNull(trace.detailReason());
+        assertTrue(trace.detailReason().contains("MISSING_STATIC"));
+        assertTrue(trace.detailReason().contains("StaticLeaf"));
+    }
+
+    @Test
+    void reduceRejectsInheritedEngineClassNonIntegerConstant() {
+        var parentClass = new ExtensionGdClass(
+                "StaticBase",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("BAD", "3.14"))
+        );
+        var childClass = new ExtensionGdClass(
+                "StaticDerived",
+                false,
+                true,
+                "StaticBase",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(List.of(), List.of(parentClass, childClass), List.of(), List.of());
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("StaticDerived"), property("BAD")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("StaticDerived", new GdObjectType("StaticDerived"), ScopeTypeMetaKind.ENGINE_CLASS, childClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+
+        var trace = result.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, trace.status());
+        assertNotNull(trace.detailReason());
+        assertTrue(trace.detailReason().contains("BAD"));
+        assertTrue(trace.detailReason().contains("StaticBase"));
+        assertTrue(trace.detailReason().contains("not an integer literal"));
+    }
+
+    @Test
     void reduceFailsWhenEngineOrBuiltinClassEnumValueNotFound() {
         var engineClass = new ExtensionGdClass(
                 "Input",

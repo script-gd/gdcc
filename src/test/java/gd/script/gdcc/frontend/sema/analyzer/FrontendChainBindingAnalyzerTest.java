@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
+import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionFunctionArgument;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -2041,6 +2042,49 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     @Test
+    void analyzePublishesInheritedEngineStaticLoadFacts() throws Exception {
+        var analyzed = analyze(
+                "inherited_engine_static_load_routes.gd",
+                """
+                        class_name InheritedEngineStaticLoadRoutes
+                        extends RefCounted
+
+                        func ping():
+                            ChildInput.PARENT_LIMIT
+                            ChildInput.PARENT_MOUSE_MODE
+                        """,
+                new ClassRegistry(inheritedEngineStaticFixtureApi())
+        );
+
+        var pingFunction = findFunction(analyzed.unit().ast(), "ping");
+        var constantStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().getFirst());
+        var enumStatement = assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1));
+        var constantLoad = analyzed.analysisData().resolvedMembers().get(
+                findNode(constantStatement, AttributePropertyStep.class, step -> step.name().equals("PARENT_LIMIT"))
+        );
+        var enumLoad = analyzed.analysisData().resolvedMembers().get(
+                findNode(enumStatement, AttributePropertyStep.class, step -> step.name().equals("PARENT_MOUSE_MODE"))
+        );
+
+        assertAll(
+                () -> assertNotNull(constantLoad),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, constantLoad.status()),
+                () -> assertEquals(FrontendBindingKind.CONSTANT, constantLoad.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, constantLoad.receiverKind()),
+                () -> assertNotNull(constantLoad.resultType()),
+                () -> assertEquals("int", constantLoad.resultType().getTypeName()),
+                () -> assertNotNull(enumLoad),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, enumLoad.status()),
+                () -> assertEquals(FrontendBindingKind.CONSTANT, enumLoad.bindingKind()),
+                () -> assertEquals(FrontendReceiverKind.TYPE_META, enumLoad.receiverKind()),
+                () -> assertNotNull(enumLoad.resultType()),
+                () -> assertEquals("int", enumLoad.resultType().getTypeName())
+        );
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.member_resolution").isEmpty());
+        assertTrue(diagnosticsByCategory(analyzed.analysisData(), "sema.unsupported_chain_route").isEmpty());
+    }
+
+    @Test
     void analyzePublishesBuiltinInstancePropertyFactsAndKeepsMissingMemberAsFailure() throws Exception {
         var analyzed = analyze(
                 "builtin_instance_property_routes.gd",
@@ -2300,6 +2344,50 @@ class FrontendChainBindingAnalyzerTest {
                 api.singletons(),
                 api.nativeStructures()
         ));
+    }
+
+    private static @NotNull ExtensionAPI inheritedEngineStaticFixtureApi() throws Exception {
+        var api = ExtensionApiLoader.loadDefault();
+        var parentClass = new ExtensionGdClass(
+                "BaseInput",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("PARENT_MOUSE_MODE", 7))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("PARENT_LIMIT", "42"))
+        );
+        var childClass = new ExtensionGdClass(
+                "ChildInput",
+                false,
+                true,
+                "BaseInput",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var patchedClasses = new ArrayList<>(api.classes());
+        patchedClasses.add(parentClass);
+        patchedClasses.add(childClass);
+        return new ExtensionAPI(
+                api.header(),
+                api.builtinClassSizes(),
+                api.builtinClassMemberOffsets(),
+                api.globalEnums(),
+                api.utilityFunctions(),
+                api.builtinClasses(),
+                patchedClasses,
+                api.singletons(),
+                api.nativeStructures()
+        );
     }
 
     /// Keep one synthetic two-arg ambiguity alive so the future single-arg Variant constructor shortcut

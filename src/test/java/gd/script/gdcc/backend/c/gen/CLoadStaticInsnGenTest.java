@@ -171,6 +171,26 @@ class CLoadStaticInsnGenTest {
     }
 
     @Test
+    @DisplayName("load_static should load inherited engine class integer constants")
+    void shouldLoadInheritedEngineClassIntegerConstant() {
+        var api = inheritedEngineStaticFixtureApi();
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
+                new LoadStaticInsn("out", "ChildInput", "PARENT_LIMIT")));
+        assertTrue(body.contains("$out = 42;"));
+        assertFalse(body.contains("$out = 0;"));
+    }
+
+    @Test
+    @DisplayName("load_static should load inherited engine class enum values")
+    void shouldLoadInheritedEngineClassEnumValue() {
+        var api = inheritedEngineStaticFixtureApi();
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
+                new LoadStaticInsn("out", "ChildInput", "PARENT_MOUSE_MODE")));
+        assertTrue(body.contains("$out = 7;"));
+        assertFalse(body.contains("$out = 0;"));
+    }
+
+    @Test
     @DisplayName("load_static should load builtin class enum values as integer literals")
     void shouldLoadBuiltinClassEnumValue() throws IOException {
         var api = ExtensionApiLoader.loadDefault();
@@ -217,6 +237,27 @@ class CLoadStaticInsnGenTest {
         var api = ExtensionApiLoader.loadDefault();
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
                 setupLoadStaticFunction(GdStringType.STRING, new LoadStaticInsn("out", "Input", "MOUSE_MODE_VISIBLE"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not assignable"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject missing inherited engine static member")
+    void shouldRejectMissingInheritedEngineStaticMember() {
+        var api = inheritedEngineStaticFixtureApi();
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "ChildInput", "MISSING_STATIC"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not found"));
+        assertTrue(ex.getMessage().contains("ChildInput"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject inherited engine class enum value with incompatible target type")
+    void shouldRejectInheritedEngineClassEnumValueIncompatibleTargetType() {
+        var api = inheritedEngineStaticFixtureApi();
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdStringType.STRING, new LoadStaticInsn("out", "ChildInput", "PARENT_MOUSE_MODE"))));
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("not assignable"));
     }
@@ -304,6 +345,45 @@ class CLoadStaticInsnGenTest {
                 setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Node", "NOT_INT"))));
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("not an integer literal"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject inherited non-integer engine class constants")
+    void shouldRejectInheritedNonIntegerEngineClassConstant() {
+        var parentClass = new ExtensionGdClass(
+                "BadStaticParent",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("NOT_INT", "3.14"))
+        );
+        var childClass = new ExtensionGdClass(
+                "BadStaticChild",
+                false,
+                true,
+                "BadStaticParent",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(parentClass, childClass), List.of(), List.of()
+        );
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "BadStaticChild", "NOT_INT"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not an integer literal"));
+        assertTrue(ex.getMessage().contains("BadStaticParent"));
     }
 
     @Test
@@ -410,6 +490,39 @@ class CLoadStaticInsnGenTest {
                 )),
                 List.of(new ExtensionSingleton("GameSingleton", "Node")),
                 List.of()
+        );
+    }
+
+    private ExtensionAPI inheritedEngineStaticFixtureApi() {
+        var parentClass = new ExtensionGdClass(
+                "BaseInput",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("PARENT_MOUSE_MODE", 7))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("PARENT_LIMIT", "42"))
+        );
+        var childClass = new ExtensionGdClass(
+                "ChildInput",
+                false,
+                true,
+                "BaseInput",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        return new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(parentClass, childClass), List.of(), List.of()
         );
     }
 

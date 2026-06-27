@@ -84,6 +84,7 @@ public class GdScriptUnitTestCompileRunnerTest {
             "runtime/engine_node_refcounted_workflow.gd",
             "runtime/engine_option_button_default_args.gd",
             "runtime/engine_scene_tree_call_group_flags_exact_vararg.gd",
+            "runtime/inherited_engine_static_constant.gd",
             "runtime/int_to_float_engine_class.gd",
             "runtime/int_to_float_inbound_dynamic_call.gd",
             "runtime/rect2i_to_rect2_call_guard.gd",

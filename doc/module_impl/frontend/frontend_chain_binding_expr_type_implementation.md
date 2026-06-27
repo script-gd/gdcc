@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
-- 更新时间：2026-04-26
+- 更新时间：2026-06-27
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -293,6 +293,12 @@
   - `Type.func.bind(...)`
 
 这些 route 当前不仅可出现在 executable body，也可出现在 class property `var` initializer subtree；该支持岛会继承 property 自身的 static/instance restriction，但不会把整个 class body 打开成 executable region。
+
+engine `TYPE_META` static load 的 constant / enum value 查询必须走 `ClassRegistry` 的 inherited static lookup：
+直接类优先，随后沿 engine metadata 的 `inherits` 链近到远查找，并在 resolved member 的 declaration metadata /
+detail 中保留实际 owner。builtin metadata 当前没有 superclass edge，因此 builtin static load 继续 direct-only，
+但通过同形状 registry 入口接入，避免 frontend 与 backend 漂移。GDCC script class static load 与 class-level
+`const` / enum 继承仍不在当前支持面内，必须继续发布 `UNSUPPORTED`，不能回退成普通 miss 或 dynamic route。
 
 当前 constructor route 的事实源合同已经闭合到 downstream：
 

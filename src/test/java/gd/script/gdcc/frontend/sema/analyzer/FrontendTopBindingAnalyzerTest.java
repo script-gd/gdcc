@@ -14,6 +14,7 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.gdextension.ExtensionEnumValue;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionGlobalConstant;
 import gd.script.gdcc.gdextension.ExtensionSingleton;
@@ -1630,6 +1631,64 @@ class FrontendTopBindingAnalyzerTest {
         );
     }
 
+    /// Inherited static members must participate in the dual-role bias just like direct static
+    /// members: the singleton's class is `ChildInput`, but both suffixes are declared on `BaseInput`.
+    @Test
+    void analyzePublishesTypeMetaForDualRoleInheritedEngineStaticMembers() throws Exception {
+        var api = createDualRoleInheritedStaticFixtureApi(false);
+        var preparedInput = prepareBindingInput(
+                "dual_role_inherited_static_members.gd",
+                """
+                        class_name DualRoleInheritedStaticMembers
+                        extends RefCounted
+
+                        func ping():
+                            ChildInput.PARENT_LIMIT
+                            ChildInput.PARENT_MOUSE_MODE
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBindingsForName(
+                preparedInput.analysisData(),
+                pingFunction.body(),
+                "ChildInput",
+                FrontendBindingKind.TYPE_META,
+                2
+        );
+    }
+
+    /// Fail-closed still applies when both namespaces are satisfied only through inherited members.
+    @Test
+    void analyzeKeepsSingletonWhenInheritedInstanceMemberConflictsWithInheritedStaticMember() throws Exception {
+        var api = createDualRoleInheritedStaticFixtureApi(true);
+        var preparedInput = prepareBindingInput(
+                "dual_role_inherited_static_fail_closed.gd",
+                """
+                        class_name DualRoleInheritedStaticFailClosed
+                        extends RefCounted
+
+                        func ping():
+                            ChildInput.PARENT_LIMIT
+                        """,
+                new ClassRegistry(api)
+        );
+        var analyzer = new FrontendTopBindingAnalyzer();
+
+        analyzer.analyze(preparedInput.classRegistry(), preparedInput.analysisData(), preparedInput.diagnosticManager());
+
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        assertBinding(
+                preparedInput.analysisData(),
+                findIdentifierExpression(pingFunction.body(), "ChildInput"),
+                FrontendBindingKind.SINGLETON
+        );
+    }
+
     /// `ResourceUID.uid_to_path(...)` is a static method on a dual-role singleton: the suffix
     /// only resolves in the type-meta static namespace (static method), so the head `ResourceUID`
     /// must be published as `TYPE_META`.
@@ -2068,6 +2127,56 @@ class FrontendTopBindingAnalyzerTest {
         customClasses.add(ambiguousClass);
         var customSingletons = new java.util.ArrayList<>(defaultApi.singletons());
         customSingletons.add(new ExtensionSingleton("AmbiguousDual", "AmbiguousDual"));
+        return new ExtensionAPI(
+                defaultApi.header(),
+                defaultApi.builtinClassSizes(),
+                defaultApi.builtinClassMemberOffsets(),
+                defaultApi.globalConstants(),
+                defaultApi.globalEnums(),
+                defaultApi.utilityFunctions(),
+                defaultApi.builtinClasses(),
+                customClasses,
+                customSingletons,
+                defaultApi.nativeStructures()
+        );
+    }
+
+    private static @NotNull ExtensionAPI createDualRoleInheritedStaticFixtureApi(boolean inheritedInstanceConflict)
+            throws IOException {
+        var defaultApi = ExtensionApiLoader.loadDefault();
+        var parentClass = new ExtensionGdClass(
+                "BaseInput",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("PARENT_MOUSE_MODE", 7))
+                )),
+                List.of(),
+                inheritedInstanceConflict
+                        ? List.of(new ExtensionGdClass.SignalInfo("PARENT_LIMIT", List.of()))
+                        : List.of(),
+                List.of(),
+                List.of(new ExtensionGdClass.ConstantInfo("PARENT_LIMIT", "42"))
+        );
+        var childClass = new ExtensionGdClass(
+                "ChildInput",
+                false,
+                true,
+                "BaseInput",
+                "core",
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var customClasses = new java.util.ArrayList<>(defaultApi.classes());
+        customClasses.add(parentClass);
+        customClasses.add(childClass);
+        var customSingletons = new java.util.ArrayList<>(defaultApi.singletons());
+        customSingletons.add(new ExtensionSingleton("ChildInput", "ChildInput"));
         return new ExtensionAPI(
                 defaultApi.header(),
                 defaultApi.builtinClassSizes(),

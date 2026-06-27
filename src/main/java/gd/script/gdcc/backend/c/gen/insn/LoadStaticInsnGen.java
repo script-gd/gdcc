@@ -11,7 +11,6 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.regex.Pattern;
@@ -83,9 +82,11 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
 
         var builtinClass = classRegistry.findBuiltinClass(className);
         if (builtinClass != null) {
-            var constant = findBuiltinConstantOrNull(builtinClass, staticName);
-            if (constant != null) {
-                var declaredType = parseBuiltinConstantType(bodyBuilder, constant, className, staticName);
+            var constantLookup = classRegistry.findBuiltinClassConstantInHierarchy(className, staticName);
+            if (constantLookup != null) {
+                var constant = constantLookup.constant();
+                var constantOwnerName = constantLookup.ownerClass().name();
+                var declaredType = parseBuiltinConstantType(bodyBuilder, constant, constantOwnerName, staticName);
                 if (!classRegistry.checkAssignable(declaredType, resultVar.type())) {
                     throw bodyBuilder.invalidInsn(
                             "Static load target type '" + resultVar.type().getTypeName() +
@@ -102,20 +103,20 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
                         bodyBuilder,
                         target,
                         literalValue,
-                        className,
+                        constantOwnerName,
                         staticName
                 );
                 return;
             }
-            var enumValue = classRegistry.findBuiltinClassEnumValue(className, staticName);
-            if (enumValue != null) {
+            var enumValueLookup = classRegistry.findBuiltinClassEnumValueInHierarchy(className, staticName);
+            if (enumValueLookup != null) {
                 if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
                     throw bodyBuilder.invalidInsn(
                             "Static load target type '" + resultVar.type().getTypeName()
                                     + "' is not assignable from builtin class enum value"
                     );
                 }
-                bodyBuilder.assignExpr(target, Long.toString(enumValue.value()), GdIntType.INT);
+                bodyBuilder.assignExpr(target, Long.toString(enumValueLookup.enumValue().value()), GdIntType.INT);
                 return;
             }
             throw bodyBuilder.invalidInsn(
@@ -126,27 +127,25 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
 
         var classDef = classRegistry.getClassDef(new GdObjectType(className));
         if (classDef instanceof ExtensionGdClass engineClass) {
-            var engineConstant = engineClass.constants().stream()
-                    .filter(constant -> staticName.equals(constant.name()))
-                    .findFirst()
-                    .orElse(null);
-            if (engineConstant == null) {
-                var enumValue = classRegistry.findEngineClassEnumValue(className, staticName);
-                if (enumValue != null) {
+            var engineConstantLookup = classRegistry.findEngineClassConstantInHierarchy(engineClass.getName(), staticName);
+            if (engineConstantLookup == null) {
+                var enumValueLookup = classRegistry.findEngineClassEnumValueInHierarchy(className, staticName);
+                if (enumValueLookup != null) {
                     if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
                         throw bodyBuilder.invalidInsn(
                                 "Static load target type '" + resultVar.type().getTypeName()
                                         + "' is not assignable from engine class enum value"
                         );
                     }
-                    bodyBuilder.assignExpr(target, Long.toString(enumValue.value()), GdIntType.INT);
+                    bodyBuilder.assignExpr(target, Long.toString(enumValueLookup.enumValue().value()), GdIntType.INT);
                     return;
                 }
                 throw bodyBuilder.invalidInsn(
                         "Engine class constant or enum value '" + staticName
-                                + "' not found in class '" + className + "'"
+                                + "' not found in class '" + className + "' or its superclasses"
                 );
             }
+            var engineConstant = engineConstantLookup.constant();
             if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
                 throw bodyBuilder.invalidInsn(
                         "Static load target type '" + resultVar.type().getTypeName() +
@@ -156,7 +155,7 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
             var literal = engineConstant.value() == null ? "" : engineConstant.value().trim();
             if (!INTEGER_LITERAL_PATTERN.matcher(literal).matches()) {
                 throw bodyBuilder.invalidInsn(
-                        "Engine class constant '" + staticName + "' in class '" + className +
+                        "Engine class constant '" + staticName + "' in class '" + engineConstantLookup.ownerClass().getName() +
                                 "' is not an integer literal: '" + engineConstant.value() + "'"
                 );
             }
@@ -170,15 +169,6 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
                         + " builtin class enum values, engine class integer constants, and engine class enum values"
                         + " are allowed"
         );
-    }
-
-    private @Nullable ExtensionBuiltinClass.ConstantInfo findBuiltinConstantOrNull(
-            @NotNull ExtensionBuiltinClass builtinClass,
-            @NotNull String staticName) {
-        return builtinClass.constants().stream()
-                .filter(constant -> staticName.equals(constant.name()))
-                .findFirst()
-                .orElse(null);
     }
 
     private @NotNull GdType parseBuiltinConstantType(@NotNull CBodyBuilder bodyBuilder,

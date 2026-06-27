@@ -30,6 +30,30 @@ import java.util.*;
 ///   returns `FOUND_BLOCKED`
 /// - legacy `findXxx(...)` helpers stay available for compatibility callers
 public final class ClassRegistry implements Scope {
+    public record EngineClassConstantLookup(
+            @NotNull ExtensionGdClass ownerClass,
+            @NotNull ExtensionGdClass.ConstantInfo constant
+    ) {
+    }
+
+    public record EngineClassEnumValueLookup(
+            @NotNull ExtensionGdClass ownerClass,
+            @NotNull ExtensionEnumValue enumValue
+    ) {
+    }
+
+    public record BuiltinClassConstantLookup(
+            @NotNull ExtensionBuiltinClass ownerClass,
+            @NotNull ExtensionBuiltinClass.ConstantInfo constant
+    ) {
+    }
+
+    public record BuiltinClassEnumValueLookup(
+            @NotNull ExtensionBuiltinClass ownerClass,
+            @NotNull ExtensionEnumValue enumValue
+    ) {
+    }
+
     /// Built-in type are language built-in types, they are not engine defined types.
     private final Map<String, ExtensionBuiltinClass> builtinByName = new HashMap<>();
     /// Engine defined classes exposed to scripts via GDExtension API. Aka engine types.
@@ -930,33 +954,91 @@ public final class ClassRegistry implements Scope {
         return getClassDef(new GdObjectType(superName));
     }
 
-    /// Checks whether the engine class identified by `className` declares a constant whose name
-    /// equals `constantName`.
+    /// Checks whether the engine class identified by `className`, or one of its engine
+    /// superclasses, declares a constant whose name equals `constantName`.
     public boolean hasEngineClassConstant(@NotNull String className, @NotNull String constantName) {
-        var engineClass = gdClassByName.get(className);
-        if (engineClass == null) {
-            return false;
-        }
-        return engineClass.constants().stream().anyMatch(c -> c.name().equals(constantName));
+        return findEngineClassConstantInHierarchy(className, constantName) != null;
     }
 
-    /// Looks up the enum value named `valueName` declared inside the engine class named `className`.
-    /// Searches every enum of the class. Returns `null` when the class or the enum value is not found.
+    /// Looks up the constant named `constantName` in the queried engine class and then in its
+    /// superclasses. Direct class metadata wins over inherited metadata.
+    public @Nullable EngineClassConstantLookup findEngineClassConstantInHierarchy(
+            @NotNull String className,
+            @NotNull String constantName
+    ) {
+        var current = gdClassByName.get(className);
+        var visited = new HashSet<String>();
+        while (current != null && visited.add(current.getName())) {
+            var constant = current.constants().stream()
+                    .filter(candidate -> constantName.equals(candidate.name()))
+                    .findFirst()
+                    .orElse(null);
+            if (constant != null) {
+                return new EngineClassConstantLookup(current, constant);
+            }
+            current = resolveSuperclass(current) instanceof ExtensionGdClass superClass ? superClass : null;
+        }
+        return null;
+    }
+
+    /// Looks up the enum value named `valueName` inside the engine class named `className`.
+    /// Searches every enum on the direct class first, then walks engine superclasses.
     public @Nullable ExtensionEnumValue findEngineClassEnumValue(@NotNull String className, @NotNull String valueName) {
+        var lookup = findEngineClassEnumValueInHierarchy(className, valueName);
+        return lookup == null ? null : lookup.enumValue();
+    }
+
+    /// Looks up an engine class enum value and carries the class that actually declared it.
+    public @Nullable EngineClassEnumValueLookup findEngineClassEnumValueInHierarchy(
+            @NotNull String className,
+            @NotNull String valueName
+    ) {
         var engineClass = gdClassByName.get(className);
-        if (engineClass == null) {
+        var visited = new HashSet<String>();
+        while (engineClass != null && visited.add(engineClass.getName())) {
+            var enumValue = engineClass.enums().stream()
+                    .flatMap(e -> e.values().stream())
+                    .filter(v -> v.name().equals(valueName))
+                    .findFirst()
+                    .orElse(null);
+            if (enumValue != null) {
+                return new EngineClassEnumValueLookup(engineClass, enumValue);
+            }
+            engineClass = resolveSuperclass(engineClass) instanceof ExtensionGdClass superClass ? superClass : null;
+        }
+        return null;
+    }
+
+    /// Looks up the builtin constant named `constantName`. Builtin metadata currently has no
+    /// superclass edge in ExtensionAPI, so this shared helper intentionally remains direct-only.
+    public @Nullable BuiltinClassConstantLookup findBuiltinClassConstantInHierarchy(
+            @NotNull String className,
+            @NotNull String constantName
+    ) {
+        var builtinClass = builtinByName.get(className);
+        if (builtinClass == null) {
             return null;
         }
-        return engineClass.enums().stream()
-                .flatMap(e -> e.values().stream())
-                .filter(v -> v.name().equals(valueName))
+        return builtinClass.constants().stream()
+                .filter(candidate -> constantName.equals(candidate.name()))
                 .findFirst()
+                .map(constant -> new BuiltinClassConstantLookup(builtinClass, constant))
                 .orElse(null);
     }
 
     /// Looks up the enum value named `valueName` declared inside the builtin class named `className`.
     /// Searches every enum of the class. Returns `null` when the class or the enum value is not found.
     public @Nullable ExtensionEnumValue findBuiltinClassEnumValue(@NotNull String className, @NotNull String valueName) {
+        var lookup = findBuiltinClassEnumValueInHierarchy(className, valueName);
+        return lookup == null ? null : lookup.enumValue();
+    }
+
+    /// Looks up a builtin enum value and carries the builtin class that declared it. This matches
+    /// the engine lookup shape even though builtin metadata is direct-only today.
+    public @Nullable BuiltinClassEnumValueLookup findBuiltinClassEnumValueInHierarchy(
+            @NotNull String className,
+            @NotNull String valueName
+    ) {
         var builtinClass = builtinByName.get(className);
         if (builtinClass == null) {
             return null;
@@ -965,6 +1047,7 @@ public final class ClassRegistry implements Scope {
                 .flatMap(e -> e.values().stream())
                 .filter(v -> v.name().equals(valueName))
                 .findFirst()
+                .map(enumValue -> new BuiltinClassEnumValueLookup(builtinClass, enumValue))
                 .orElse(null);
     }
 }

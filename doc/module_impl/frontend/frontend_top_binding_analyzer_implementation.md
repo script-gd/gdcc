@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、class property initializer support island、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
-- 更新时间：2026-03-19
+- 更新时间：2026-06-27
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -242,12 +242,17 @@
   - 直接发 deferred / unsupported diagnostic
   - 不得继续尝试 `TYPE_META`
 
-唯一的当前例外是 global enum chain head：
+当前例外只允许出现在明确的 static-route head 竞争中：
 
 - 若 ordinary value resolution 的 winning value 是 `GLOBAL_ENUM`
 - 且 `Scope.resolveTypeMeta(...)` 同名命中受支持的 global enum type-meta
 - analyzer 必须优先发布 `TYPE_META`
 - 这样 `EnumType.VALUE` 才能进入后续 static-load route，而不会被 ordinary value binding 永久吃掉
+- 若 ordinary value resolution 的 winning value 是 dual-role engine singleton，且同名 `TYPE_META` 的 first suffix
+  只在 engine type-meta static namespace 命中 inherited constant / enum value / static method，analyzer 可以发布
+  `TYPE_META` 作为 chain head，使 `Node2D.NOTIFICATION_*` 这类 inherited static load 进入后续 route。
+  如果 singleton instance namespace 中也存在同名 member / method / signal，则必须 fail closed 保持 ordinary
+  singleton 路线，不能因为 inherited static member 而静默改路由。
 
 顶层 `global_constants[]` 不使用这个例外：
 
@@ -267,6 +272,10 @@
 - `ClassRegistry` 已注册的 builtin static receiver
 - `ClassRegistry` 已注册的 global enum
 - 当前 lexical scope 可见的 inner class
+
+对 engine class-like `TYPE_META`，first suffix 的 static namespace 判定必须使用 `ClassRegistry` 的
+inherited static lookup：constant / enum value 直接类优先，再沿 engine metadata `inherits` 链查父类。
+builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin metadata 没有 superclass edge。
 
 实现上，这对应以下约束：
 

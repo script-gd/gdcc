@@ -27,6 +27,11 @@
 6. engine class integer constants
 7. engine class enum values
 
+engine class constants / enum values 按 `ClassRegistry` 的 inherited static lookup 解析：先查 receiver class
+本身，再沿 `classes[].inherits` 近到远查父类，返回实际声明 owner 后再执行 literal materialization 与诊断。
+IR 中的 `class_name` 仍保留源码 receiver class，不在 frontend canonicalize 成 owner class。builtin metadata 当前没有
+superclass edge，因此 builtin constant / enum value 入口保持 direct-only。
+
 不支持：
 
 - 脚本类静态字段读写
@@ -113,14 +118,16 @@
 ### 3.2.1 builtin class enum values
 
 - 从 `builtin_classes[].enums[].values[]` 读取（`ExtensionBuiltinClass.ClassEnum` -> `ExtensionEnumValue`）。
-- 查找走 `ClassRegistry.findBuiltinClassEnumValue(className, valueName)`；`LoadStaticInsnGen` 在 builtin
-  constant 未命中后回退到 enum value 分支。
+- 查找走 `ClassRegistry.findBuiltinClassEnumValueInHierarchy(className, valueName)`；由于 ExtensionAPI builtin
+  metadata 当前没有 superclass edge，这条入口保持 direct-only。`LoadStaticInsnGen` 在 builtin constant 未命中后回退到 enum value 分支。
 - enum value 恒为整数：静态类型 `GdIntType.INT`，后端以 `Long.toString(value)` 输出十进制 `godot_int`
   literal，与 global enum value 路径一致，不经过 `CBuiltinBuilder.materializeStaticLiteralValue`。
 
 ### 3.3 engine class constants
 
 - 从 `classes[].constants[]` 读取
+- 查找走 `ClassRegistry.findEngineClassConstantInHierarchy(className, constantName)`，直接类优先，父类按
+  `inherits` 链近到远查找；缺失 superclass metadata 或循环继承时 fail closed。
 - 当前只接受可解析为整数的 `value`
 - 该值在模型中保持 Godot 原始字符串 literal；不要为了统一 enum value 宽度把 builtin / engine class
   constant 的 construct string 改成数值 carrier。
@@ -129,8 +136,8 @@
 ### 3.3.1 engine class enum values
 
 - 从 `classes[].enums[].values[]` 读取（`ExtensionGdClass.ClassEnum` -> `ExtensionEnumValue`）。
-- 查找走 `ClassRegistry.findEngineClassEnumValue(className, valueName)`；`LoadStaticInsnGen` 在 engine
-  integer constant 未命中后回退到 enum value 分支。
+- 查找走 `ClassRegistry.findEngineClassEnumValueInHierarchy(className, valueName)`；`LoadStaticInsnGen` 在 engine
+  integer constant 未命中后回退到 enum value 分支，并保留 source receiver class 作为 IR 操作数。
 - enum value 恒为整数：静态类型 `GdIntType.INT`，后端以 `Long.toString(value)` 输出十进制 `godot_int`
   literal，与 global enum value 路径一致。
 - 这与 engine class **常量** 的字符串 literal 校验（`INTEGER_LITERAL_PATTERN`）是两条独立分支；enum value
@@ -184,16 +191,18 @@
 3. global enum 成功/失败
 4. builtin constant 成功（普通值 + `INF`）
 5. engine class integer constant 成功
-6. engine class non-integer constant 失败
-7. result 变量非法（缺失 / ref）
-8. `store_static` 统一拒绝
-9. builtin constant `type` 元数据解析正确
-10. fixed-provided singleton wrapper 不进入 module-local header，non-provided singleton 才进入
+6. inherited engine class integer constant / enum value 成功，且直接类成员遮蔽父类成员
+7. engine class non-integer constant 失败
+8. inherited engine class non-integer constant 失败，诊断指向实际 owner class
+9. result 变量非法（缺失 / ref）
+10. `store_static` 统一拒绝
+11. builtin constant `type` 元数据解析正确
+12. fixed-provided singleton wrapper 不进入 module-local header，non-provided singleton 才进入
 
 建议命令（按需 targeted）：
 
 ```bash
-./gradlew test --tests CLoadStaticInsnGenTest --tests CStoreStaticInsnGenTest --tests ExtensionApiLoaderTest --no-daemon --info --console=plain
+script/run-gradle-targeted-tests.sh --tests CLoadStaticInsnGenTest,CStoreStaticInsnGenTest,ExtensionApiLoaderTest
 ```
 
 ---

@@ -1154,26 +1154,27 @@ public class FrontendTopBindingAnalyzer {
             };
         }
 
-        /// Checks whether `stepName` resolves in the type-meta static namespace: engine class
-        /// constant, class enum value, or static method (walking the class hierarchy).
+        /// Checks whether `stepName` resolves in the type-meta static namespace. Engine class
+        /// constants and class enum values use the registry's inherited lookup, while static
+        /// methods keep the existing hierarchy walk shared with GDCC classes.
         private boolean resolvesInTypeMetaStaticNamespace(
                 @NotNull ScopeTypeMeta typeMeta,
                 @NotNull String stepName
         ) {
             if (typeMeta.declaration() instanceof ExtensionGdClass engineClass) {
-                if (classRegistry.hasEngineClassConstant(engineClass.getName(), stepName)) {
+                if (classRegistry.findEngineClassConstantInHierarchy(engineClass.getName(), stepName) != null) {
                     return true;
                 }
-                if (hasEngineClassEnumValue(engineClass, stepName)) {
+                if (classRegistry.findEngineClassEnumValueInHierarchy(engineClass.getName(), stepName) != null) {
                     return true;
                 }
             } else if (classRegistry.getClassDef(
                     typeMeta.instanceType() instanceof GdObjectType ot ? ot : new GdObjectType(typeMeta.canonicalName())
             ) instanceof ExtensionGdClass engineClass) {
-                if (classRegistry.hasEngineClassConstant(engineClass.getName(), stepName)) {
+                if (classRegistry.findEngineClassConstantInHierarchy(engineClass.getName(), stepName) != null) {
                     return true;
                 }
-                if (hasEngineClassEnumValue(engineClass, stepName)) {
+                if (classRegistry.findEngineClassEnumValueInHierarchy(engineClass.getName(), stepName) != null) {
                     return true;
                 }
             }
@@ -1192,10 +1193,6 @@ public class FrontendTopBindingAnalyzer {
             return hasInstanceMethodInHierarchy(singletonType, stepName)
                     || hasInstancePropertyInHierarchy(singletonType, stepName)
                     || hasSignalInHierarchy(singletonType, stepName);
-        }
-
-        private boolean hasEngineClassEnumValue(@NotNull ExtensionGdClass engineClass, @NotNull String name) {
-            return classRegistry.findEngineClassEnumValue(engineClass.getName(), name) != null;
         }
 
         /// Walks the class hierarchy starting from `typeMeta` to check if a static method named
@@ -1237,7 +1234,7 @@ public class FrontendTopBindingAnalyzer {
             var visited = new HashSet<String>();
             while (current != null && visited.add(current.getName())) {
                 var found = current.getProperties().stream()
-                        .anyMatch(prop -> prop.getName().equals(stepName));
+                        .anyMatch(prop -> prop.getName().equals(stepName) && !prop.isStatic());
                 if (found) {
                     return true;
                 }
