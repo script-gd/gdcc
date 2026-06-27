@@ -6,7 +6,7 @@
 ## 文档状态
 
 - 状态：Implemented / Maintained
-- 更新时间：2026-06-24
+- 更新时间：2026-06-27
 - 适用范围：`C backend` 对 `load_static` / `store_static` 的生成与校验
 
 ---
@@ -17,13 +17,15 @@
 
 `$r = load_static "<class_name>" "<static_name>"`
 
-当前后端支持五类静态读取：
+ 当前后端支持七类静态读取：
 
 1. `@GlobalScope` singleton properties
 2. `@GlobalScope` 顶层 global constants
 3. global enum 项
 4. builtin class constants
-5. engine class integer constants
+5. builtin class enum values
+6. engine class integer constants
+7. engine class enum values
 
 不支持：
 
@@ -48,7 +50,7 @@
 
 - `LoadStaticInsnGen`：
   - 做 IR 层校验（result 存在、可写、非 ref）
-  - 完成四路分发（global constant / enum / builtin / engine-int）
+  - 完成多路分发（global constant / global enum / singleton / builtin constant / builtin enum / engine-int constant / engine enum）
   - 调用 `CBodyBuilder` 与 `CBuiltinBuilder` 发射代码
 - `StoreStaticInsnGen`：
   - 对 `STORE_STATIC` 统一抛 `InvalidInsnException`
@@ -108,6 +110,14 @@
 - 在 codegen 阶段做“常量声明类型 -> 目标变量类型”兼容校验
 - 错误信息可定位到“常量声明类型”而不是仅凭 literal 推断
 
+### 3.2.1 builtin class enum values
+
+- 从 `builtin_classes[].enums[].values[]` 读取（`ExtensionBuiltinClass.ClassEnum` -> `ExtensionEnumValue`）。
+- 查找走 `ClassRegistry.findBuiltinClassEnumValue(className, valueName)`；`LoadStaticInsnGen` 在 builtin
+  constant 未命中后回退到 enum value 分支。
+- enum value 恒为整数：静态类型 `GdIntType.INT`，后端以 `Long.toString(value)` 输出十进制 `godot_int`
+  literal，与 global enum value 路径一致，不经过 `CBuiltinBuilder.materializeStaticLiteralValue`。
+
 ### 3.3 engine class constants
 
 - 从 `classes[].constants[]` 读取
@@ -115,6 +125,16 @@
 - 该值在模型中保持 Godot 原始字符串 literal；不要为了统一 enum value 宽度把 builtin / engine class
   constant 的 construct string 改成数值 carrier。
 - 非整数常量直接 `InvalidInsnException`
+
+### 3.3.1 engine class enum values
+
+- 从 `classes[].enums[].values[]` 读取（`ExtensionGdClass.ClassEnum` -> `ExtensionEnumValue`）。
+- 查找走 `ClassRegistry.findEngineClassEnumValue(className, valueName)`；`LoadStaticInsnGen` 在 engine
+  integer constant 未命中后回退到 enum value 分支。
+- enum value 恒为整数：静态类型 `GdIntType.INT`，后端以 `Long.toString(value)` 输出十进制 `godot_int`
+  literal，与 global enum value 路径一致。
+- 这与 engine class **常量** 的字符串 literal 校验（`INTEGER_LITERAL_PATTERN`）是两条独立分支；enum value
+  走 long carrier，不经过该正则。
 
 ---
 

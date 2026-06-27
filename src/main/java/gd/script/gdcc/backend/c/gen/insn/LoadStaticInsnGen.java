@@ -11,6 +11,7 @@ import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
 import java.util.regex.Pattern;
@@ -82,28 +83,45 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
 
         var builtinClass = classRegistry.findBuiltinClass(className);
         if (builtinClass != null) {
-            var constant = findBuiltinConstant(bodyBuilder, builtinClass, staticName);
-            var declaredType = parseBuiltinConstantType(bodyBuilder, constant, className, staticName);
-            if (!classRegistry.checkAssignable(declaredType, resultVar.type())) {
-                throw bodyBuilder.invalidInsn(
-                        "Static load target type '" + resultVar.type().getTypeName() +
-                                "' is not assignable from builtin constant type '" + declaredType.getTypeName() + "'"
+            var constant = findBuiltinConstantOrNull(builtinClass, staticName);
+            if (constant != null) {
+                var declaredType = parseBuiltinConstantType(bodyBuilder, constant, className, staticName);
+                if (!classRegistry.checkAssignable(declaredType, resultVar.type())) {
+                    throw bodyBuilder.invalidInsn(
+                            "Static load target type '" + resultVar.type().getTypeName() +
+                                    "' is not assignable from builtin constant type '" + declaredType.getTypeName() + "'"
+                    );
+                }
+                var literalValue = constant.value();
+                if (literalValue == null || literalValue.isBlank()) {
+                    throw bodyBuilder.invalidInsn(
+                            "Builtin constant '" + staticName + "' not found in class '" + className + "'"
+                    );
+                }
+                bodyBuilder.helper().builtinBuilder().materializeStaticLiteralValue(
+                        bodyBuilder,
+                        target,
+                        literalValue,
+                        className,
+                        staticName
                 );
+                return;
             }
-            var literalValue = constant.value();
-            if (literalValue == null || literalValue.isBlank()) {
-                throw bodyBuilder.invalidInsn(
-                        "Builtin constant '" + staticName + "' not found in class '" + className + "'"
-                );
+            var enumValue = classRegistry.findBuiltinClassEnumValue(className, staticName);
+            if (enumValue != null) {
+                if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
+                    throw bodyBuilder.invalidInsn(
+                            "Static load target type '" + resultVar.type().getTypeName()
+                                    + "' is not assignable from builtin class enum value"
+                    );
+                }
+                bodyBuilder.assignExpr(target, Long.toString(enumValue.value()), GdIntType.INT);
+                return;
             }
-            bodyBuilder.helper().builtinBuilder().materializeStaticLiteralValue(
-                    bodyBuilder,
-                    target,
-                    literalValue,
-                    className,
-                    staticName
+            throw bodyBuilder.invalidInsn(
+                    "Builtin constant or enum value '" + staticName
+                            + "' not found in class '" + className + "'"
             );
-            return;
         }
 
         var classDef = classRegistry.getClassDef(new GdObjectType(className));
@@ -113,8 +131,20 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
                     .findFirst()
                     .orElse(null);
             if (engineConstant == null) {
+                var enumValue = classRegistry.findEngineClassEnumValue(className, staticName);
+                if (enumValue != null) {
+                    if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
+                        throw bodyBuilder.invalidInsn(
+                                "Static load target type '" + resultVar.type().getTypeName()
+                                        + "' is not assignable from engine class enum value"
+                        );
+                    }
+                    bodyBuilder.assignExpr(target, Long.toString(enumValue.value()), GdIntType.INT);
+                    return;
+                }
                 throw bodyBuilder.invalidInsn(
-                        "Engine class constant '" + staticName + "' not found in class '" + className + "'"
+                        "Engine class constant or enum value '" + staticName
+                                + "' not found in class '" + className + "'"
                 );
             }
             if (!classRegistry.checkAssignable(GdIntType.INT, resultVar.type())) {
@@ -136,23 +166,19 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
 
         throw bodyBuilder.invalidInsn(
                 "Static load target '" + className + "." + staticName +
-                        "' is unsupported; only @GlobalScope global constants, global enums, builtin constants, and engine class integer constants are allowed"
+                        "' is unsupported; only @GlobalScope global constants, global enums, builtin constants,"
+                        + " builtin class enum values, engine class integer constants, and engine class enum values"
+                        + " are allowed"
         );
     }
 
-    private @NotNull ExtensionBuiltinClass.ConstantInfo findBuiltinConstant(@NotNull CBodyBuilder bodyBuilder,
-                                                                            @NotNull ExtensionBuiltinClass builtinClass,
-                                                                            @NotNull String staticName) {
-        var matchedConstant = builtinClass.constants().stream()
+    private @Nullable ExtensionBuiltinClass.ConstantInfo findBuiltinConstantOrNull(
+            @NotNull ExtensionBuiltinClass builtinClass,
+            @NotNull String staticName) {
+        return builtinClass.constants().stream()
                 .filter(constant -> staticName.equals(constant.name()))
                 .findFirst()
                 .orElse(null);
-        if (matchedConstant == null) {
-            throw bodyBuilder.invalidInsn(
-                    "Builtin constant '" + staticName + "' not found in class '" + builtinClass.name() + "'"
-            );
-        }
-        return matchedConstant;
     }
 
     private @NotNull GdType parseBuiltinConstantType(@NotNull CBodyBuilder bodyBuilder,

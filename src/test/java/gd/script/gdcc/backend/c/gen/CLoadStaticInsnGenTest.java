@@ -21,6 +21,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
@@ -148,6 +149,129 @@ class CLoadStaticInsnGenTest {
         var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
                 new LoadStaticInsn("out", "Node", "NOTIFICATION_ENTER_TREE")));
         assertTrue(body.contains("$out = " + constant.value().trim() + ";"));
+    }
+
+    @Test
+    @DisplayName("load_static should load engine class enum values as integer literals")
+    void shouldLoadEngineClassEnumValue() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var inputClass = api.classes().stream()
+                .filter(clazz -> "Input".equals(clazz.name()))
+                .findFirst()
+                .orElseThrow();
+        var enumValue = inputClass.enums().stream()
+                .flatMap(e -> e.values().stream())
+                .filter(value -> "MOUSE_MODE_VISIBLE".equals(value.name()))
+                .findFirst()
+                .orElseThrow();
+
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
+                new LoadStaticInsn("out", "Input", "MOUSE_MODE_VISIBLE")));
+        assertTrue(body.contains("$out = " + enumValue.value() + ";"));
+    }
+
+    @Test
+    @DisplayName("load_static should load builtin class enum values as integer literals")
+    void shouldLoadBuiltinClassEnumValue() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var vector3Class = api.builtinClasses().stream()
+                .filter(clazz -> "Vector3".equals(clazz.name()))
+                .findFirst()
+                .orElseThrow();
+        var enumValue = vector3Class.enums().stream()
+                .flatMap(e -> e.values().stream())
+                .filter(value -> "AXIS_X".equals(value.name()))
+                .findFirst()
+                .orElseThrow();
+
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
+                new LoadStaticInsn("out", "Vector3", "AXIS_X")));
+        assertTrue(body.contains("$out = " + enumValue.value() + ";"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject missing engine class enum value")
+    void shouldRejectMissingEngineClassEnumValue() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Input", "MOUSE_MODE_MISSING"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not found"));
+        assertTrue(ex.getMessage().contains("Input"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject missing builtin class enum value")
+    void shouldRejectMissingBuiltinClassEnumValue() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdIntType.INT, new LoadStaticInsn("out", "Vector3", "AXIS_MISSING"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not found"));
+        assertTrue(ex.getMessage().contains("Vector3"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject engine class enum value with incompatible target type")
+    void shouldRejectEngineClassEnumValueIncompatibleTargetType() throws IOException {
+        var api = ExtensionApiLoader.loadDefault();
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(api,
+                setupLoadStaticFunction(GdStringType.STRING, new LoadStaticInsn("out", "Input", "MOUSE_MODE_VISIBLE"))));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not assignable"));
+    }
+
+    @Test
+    @DisplayName("load_static should preserve int64 engine class enum values")
+    void shouldLoadInt64EngineClassEnumValue() {
+        var engineClass = new ExtensionGdClass(
+                "WideFlags",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "WideFlag", true, List.of(new ExtensionEnumValue("WIDE_FLAG", 3_435_973_836_8L))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(engineClass), List.of(), List.of()
+        );
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
+                new LoadStaticInsn("out", "WideFlags", "WIDE_FLAG")));
+        assertTrue(body.contains("$out = 34359738368;"));
+        assertFalse(body.contains("$out = 0;"));
+    }
+
+    @Test
+    @DisplayName("load_static should render negative engine class enum values")
+    void shouldLoadNegativeEngineClassEnumValue() {
+        var engineClass = new ExtensionGdClass(
+                "ResourceUID",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "InvalidId", false, List.of(new ExtensionEnumValue("INVALID_ID", -1L))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var api = new ExtensionAPI(
+                null, List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(engineClass), List.of(), List.of()
+        );
+        var body = generateBody(api, setupLoadStaticFunction(GdIntType.INT,
+                new LoadStaticInsn("out", "ResourceUID", "INVALID_ID")));
+        assertTrue(body.contains("$out = -1;"));
     }
 
     @Test

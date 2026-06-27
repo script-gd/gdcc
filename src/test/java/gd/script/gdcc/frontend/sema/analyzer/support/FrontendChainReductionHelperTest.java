@@ -853,6 +853,179 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceResolvesEngineAndBuiltinClassEnumValues() {
+        var engineClass = new ExtensionGdClass(
+                "Input",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("MOUSE_MODE_VISIBLE", 0))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var builtinClass = new ExtensionBuiltinClass(
+                "Vector3",
+                false,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.ClassEnum(
+                        "Axis", false, List.of(new ExtensionEnumValue("AXIS_X", 0))
+                )),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(List.of(builtinClass), List.of(engineClass), List.of(), List.of());
+
+        var engineResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Input"), property("MOUSE_MODE_VISIBLE")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Input", new GdObjectType("Input"), ScopeTypeMetaKind.ENGINE_CLASS, engineClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, engineResult.stepTraces().getFirst().status());
+        var engineMember = engineResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(engineMember);
+        var engineResultType = engineMember.resultType();
+        assertNotNull(engineResultType);
+        assertEquals("int", engineResultType.getTypeName());
+
+        var builtinResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Vector3"), property("AXIS_X")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Vector3", GdFloatVectorType.VECTOR3, ScopeTypeMetaKind.BUILTIN, builtinClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, builtinResult.stepTraces().getFirst().status());
+        var builtinMember = builtinResult.stepTraces().getFirst().suggestedMember();
+        assertNotNull(builtinMember);
+        var builtinResultType = builtinMember.resultType();
+        assertNotNull(builtinResultType);
+        assertEquals("int", builtinResultType.getTypeName());
+    }
+
+    @Test
+    void reduceFailsWhenEngineOrBuiltinClassEnumValueNotFound() {
+        var engineClass = new ExtensionGdClass(
+                "Input",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "MouseMode", false, List.of(new ExtensionEnumValue("MOUSE_MODE_VISIBLE", 0))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var builtinClass = new ExtensionBuiltinClass(
+                "Vector3",
+                false,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.ClassEnum(
+                        "Axis", false, List.of(new ExtensionEnumValue("AXIS_X", 0))
+                )),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(List.of(builtinClass), List.of(engineClass), List.of(), List.of());
+
+        var engineResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Input"), property("MOUSE_MODE_MISSING")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Input", new GdObjectType("Input"), ScopeTypeMetaKind.ENGINE_CLASS, engineClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var engineTrace = engineResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, engineTrace.status());
+        assertNotNull(engineTrace.detailReason());
+        assertTrue(engineTrace.detailReason().contains("MOUSE_MODE_MISSING"));
+        assertTrue(engineTrace.detailReason().contains("Input"));
+
+        var builtinResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("Vector3"), property("AXIS_MISSING")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("Vector3", GdFloatVectorType.VECTOR3, ScopeTypeMetaKind.BUILTIN, builtinClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        var builtinTrace = builtinResult.stepTraces().getFirst();
+        assertEquals(FrontendChainReductionHelper.Status.FAILED, builtinTrace.status());
+        assertNotNull(builtinTrace.detailReason());
+        assertTrue(builtinTrace.detailReason().contains("AXIS_MISSING"));
+        assertTrue(builtinTrace.detailReason().contains("Vector3"));
+    }
+
+    @Test
+    void reduceResolvesNegativeAndInt64ClassEnumValues() {
+        var engineClass = new ExtensionGdClass(
+                "ResourceUID",
+                false,
+                true,
+                "Object",
+                "core",
+                List.of(new ExtensionGdClass.ClassEnum(
+                        "InvalidId", false, List.of(new ExtensionEnumValue("INVALID_ID", -1L))
+                )),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var builtinClass = new ExtensionBuiltinClass(
+                "WideFlags",
+                false,
+                List.of(),
+                List.of(),
+                List.of(new ExtensionBuiltinClass.ClassEnum(
+                        "WideFlag", true, List.of(new ExtensionEnumValue("WIDE_FLAG", 3_435_973_836_8L))
+                )),
+                List.of(),
+                List.of(),
+                List.of()
+        );
+        var registry = newRegistry(List.of(builtinClass), List.of(engineClass), List.of(), List.of());
+
+        var engineResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("ResourceUID"), property("INVALID_ID")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("ResourceUID", new GdObjectType("ResourceUID"), ScopeTypeMetaKind.ENGINE_CLASS, engineClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, engineResult.stepTraces().getFirst().status());
+        assertSame(GdIntType.INT, engineResult.stepTraces().getFirst().suggestedMember().resultType());
+
+        var builtinResult = FrontendChainReductionHelper.reduce(request(
+                chain(identifier("WideFlags"), property("WIDE_FLAG")),
+                FrontendChainReductionHelper.ReceiverState.resolvedTypeMeta(
+                        typeMeta("WideFlags", GdIntType.INT, ScopeTypeMetaKind.BUILTIN, builtinClass, false)
+                ),
+                registry,
+                noExpressionTypes()
+        ));
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, builtinResult.stepTraces().getFirst().status());
+        assertSame(GdIntType.INT, builtinResult.stepTraces().getFirst().suggestedMember().resultType());
+    }
+
+    @Test
     void reduceIsStableForRepeatedRuns() {
         var worker = newClass("Worker");
         worker.addProperty(new LirPropertyDef("payload", GdStringType.STRING));

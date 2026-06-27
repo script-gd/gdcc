@@ -939,4 +939,32 @@ public final class ClassRegistry implements Scope {
         }
         return engineClass.constants().stream().anyMatch(c -> c.name().equals(constantName));
     }
+
+    /// Looks up the enum value named `valueName` declared inside the engine class named `className`.
+    /// Searches every enum of the class. Returns `null` when the class or the enum value is not found.
+    public @Nullable ExtensionEnumValue findEngineClassEnumValue(@NotNull String className, @NotNull String valueName) {
+        var engineClass = gdClassByName.get(className);
+        if (engineClass == null) {
+            return null;
+        }
+        return engineClass.enums().stream()
+                .flatMap(e -> e.values().stream())
+                .filter(v -> v.name().equals(valueName))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /// Looks up the enum value named `valueName` declared inside the builtin class named `className`.
+    /// Searches every enum of the class. Returns `null` when the class or the enum value is not found.
+    public @Nullable ExtensionEnumValue findBuiltinClassEnumValue(@NotNull String className, @NotNull String valueName) {
+        var builtinClass = builtinByName.get(className);
+        if (builtinClass == null) {
+            return null;
+        }
+        return builtinClass.enums().stream()
+                .flatMap(e -> e.values().stream())
+                .filter(v -> v.name().equals(valueName))
+                .findFirst()
+                .orElse(null);
+    }
 }

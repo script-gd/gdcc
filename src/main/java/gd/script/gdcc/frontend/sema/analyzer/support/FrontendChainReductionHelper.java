@@ -764,7 +764,19 @@ public final class FrontendChainReductionHelper {
             if (methodReference != null) {
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
             }
-            var detailReason = "Builtin constant '" + step.name() + "' not found in class '" + builtinClass.name() + "'";
+            var enumValue = classRegistry.findBuiltinClassEnumValue(builtinClass.name(), step.name());
+            if (enumValue != null) {
+                return resolvedStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        ScopeOwnerKind.BUILTIN,
+                        GdIntType.INT,
+                        enumValue
+                );
+            }
+            var detailReason = "Builtin constant or enum value '" + step.name()
+                    + "' not found in class '" + builtinClass.name() + "'";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.BUILTIN, receiverTypeMeta, detailReason);
         }
         if (constant.type() == null || constant.type().isBlank()) {
@@ -810,7 +822,19 @@ public final class FrontendChainReductionHelper {
             if (methodReference != null) {
                 return resolvedMethodReferenceTrace(stepIndex, step, incomingReceiver, methodReference);
             }
-            var detailReason = "Engine class constant '" + step.name() + "' not found in class '" + engineClass.name() + "'";
+            var enumValue = classRegistry.findEngineClassEnumValue(engineClass.getName(), step.name());
+            if (enumValue != null) {
+                return resolvedStaticLoadTrace(
+                        stepIndex,
+                        step,
+                        incomingReceiver,
+                        ScopeOwnerKind.ENGINE,
+                        GdIntType.INT,
+                        enumValue
+                );
+            }
+            var detailReason = "Engine class constant or enum value '" + step.name()
+                    + "' not found in class '" + engineClass.name() + "'";
             return failedStaticLoadTrace(stepIndex, step, incomingReceiver, ScopeOwnerKind.ENGINE, receiverTypeMeta, detailReason);
         }
         var literal = constant.value() == null ? "" : constant.value().trim();

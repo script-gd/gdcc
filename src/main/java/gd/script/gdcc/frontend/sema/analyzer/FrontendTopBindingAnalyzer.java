@@ -1195,9 +1195,7 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private boolean hasEngineClassEnumValue(@NotNull ExtensionGdClass engineClass, @NotNull String name) {
-            return engineClass.enums().stream()
-                    .flatMap(e -> e.values().stream())
-                    .anyMatch(v -> v.name().equals(name));
+            return classRegistry.findEngineClassEnumValue(engineClass.getName(), name) != null;
         }
 
         /// Walks the class hierarchy starting from `typeMeta` to check if a static method named

@@ -859,8 +859,9 @@ validation 后仍正确执行：
   访问，以及 property initializer `var startup_resolver_queries: int = IP.RESOLVER_MAX_QUERIES`。
   这些 dual-role 名称同时存在于 `singletons` 与 `classes` 中；constant 只在 type-meta static namespace
   可达，因此 chain head 必须发布 `TYPE_META`，不应 materialize singleton receiver。
-  `Input.MOUSE_MODE_VISIBLE`（class enum value）因 `reduceEngineStaticLoad` 当前不处理 enum values
-  而无法 runtime 到达，留在 focused frontend 测试中覆盖。
+  `Input.MOUSE_MODE_VISIBLE`（class enum value）的 chain reduction 与 backend enum-value 分支已于
+  2026-06-27 补齐（见下方“已知边界”更新），可 runtime 到达；当前仍留在 focused 单元测试中分层覆盖
+  （top binding / chain reduction / C backend）。
 - `runtime/dual_role_singleton_mixed_use_sites.gd`：覆盖同一函数体内 dual-role 名称的
   SINGLETON 与 TYPE_META route 互不污染。`Input.is_action_pressed(...)` 保持 `SINGLETON` instance call
   （`CallMethodInsn`），`IP.RESOLVER_MAX_QUERIES` 切换为 `TYPE_META` static load，两者在同一 body 中
@@ -871,6 +872,73 @@ validation 后仍正确执行：
 - `script/run-gradle-targeted-tests.sh --tests GdScriptUnitTestCompileRunnerTest.compilesAndValidatesRuntimeScripts`
   全部通过（32 个 runtime 动态测试，0 failures），确认两组新 fixture 可完整经过 frontend lowering、
   C backend build 与 Godot runtime validation。
+
+### Step 10: 补齐继承静态成员解析
+
+状态（2026-06-27）：待实现。该问题经文档、代码与 Godot 行为核对后属实：Godot/GDScript 将
+class-level `const`、`enum`、`enum value` 视为类成员，子类应能通过继承链解析这些名字；脚本
+autoload/singleton 按其脚本类继承关系处理，引擎原生 singleton 则按 native class metadata / ClassDB
+处理。当前 gdcc 仍存在两个缺口：
+
+- 脚本类作用域：`ClassScope.resolveInheritedValueMember(...)` 只继承 property / signal，未把父类
+  class-level `const` 纳入 value lookup；父类 `enum` / `enum value` 的可见性合同也尚未在 scope/type-meta
+  路线中冻结。
+- engine/builtin type-meta static 路线：`hasEngineClassConstant(...)`、
+  `findEngineClassEnumValue(...)`、`findBuiltinClassEnumValue(...)` 只查直接类；`resolvesInTypeMetaStaticNamespace(...)`、
+  `reduceEngineStaticLoad(...)` / `reduceBuiltinStaticLoad(...)` 和 `LoadStaticInsnGen` 也跟随该直接类语义，
+  因此 `Node2D.NOTIFICATION_*` 这类“子类 type-meta 访问父类 static constant / enum value”的表达式仍可能
+  在 head bias、chain reduction 或 backend 任一层失败。
+
+实现分层：
+
+1. 冻结语义合同：
+   - 明确继承查找只发生在 class member / type-meta static namespace 内，不把父类 `const` / `enum` / `enum value`
+     提升为全局名字。
+   - 保留 local / parameter / block-local `const` 的可见性优先级；`FrontendVisibleValueResolver` 仍是
+     declaration-order 和 deferred boundary 的真源。
+   - 脚本 autoload/singleton 未来进入 first-class binding 时按脚本类处理；当前 engine singleton 不套用
+     GDScript 脚本类继承规则。
+
+2. 集中继承静态成员查询：
+   - 在 `ClassRegistry` 中补一个共享查询入口，沿 class metadata 的 superclass / `inherits` 链查找 static constant、
+     class enum value，并返回 owner class 与成员 payload；避免 top binding、chain reduction、backend 各自手写遍历。
+   - 直接类优先，父类按近到远顺序查找；缺失 superclass metadata 与循环继承必须 fail closed，不得静默掉到全局或 dynamic route。
+   - engine 与 builtin 入口要么共享同一个小型内部 helper，要么保持两个薄入口但复用同一遍历逻辑；不要新增只有一个实现的抽象层。
+
+3. 接入 top binding route bias：
+   - `resolvesInTypeMetaStaticNamespace(...)` 判断 dual-role singleton/type-meta first suffix 时，必须使用同一个继承静态成员查询入口。
+   - 若 first suffix 只在 type-meta static namespace 的父类 static constant / enum value 中命中，head 发布 `TYPE_META`。
+   - 若 singleton instance namespace 同名成员也命中，继续沿用 Step 9 fail-closed 行为，保持 `SINGLETON` 或后续专门诊断，不因继承静态成员而静默改路由。
+
+4. 接入 chain reduction 与 backend：
+   - `FrontendChainReductionHelper.reduceEngineStaticLoad(...)` / `reduceBuiltinStaticLoad(...)` 使用共享查询结果 materialize
+     inherited static constant / enum value，trace detail 中保留实际 owner class，便于诊断。
+   - `LoadStaticInsnGen` 使用同一查询语义生成 inherited static constant / enum value；constant 的类型检查和 literal materialization
+     继续复用直接类路径，enum value 继续以 `GdIntType.INT` 与十进制 literal 输出。
+   - 不改变 `@GlobalScope` singleton materialization，不让 inherited static load 走 singleton receiver 路线。
+
+5. 补脚本类 class-level 成员继承：
+   - `ClassScope.resolveInheritedValueMember(...)` 增加父类 class-level `const` 查找，并保持 direct member shadow inherited member、
+     inherited member shadow outer/global binding 的既有顺序。
+   - 如果当前 AST / skeleton 已能表达 class enum 或 enum value，按 Godot 语义将父类 enum type/value 作为 class members
+     纳入同一继承合同；若 enum declaration 尚未完整进入 scope model，本 Step 应在文档和测试中明确留下受阻边界，
+     不把它伪装成已支持。
+
+测试与验收：
+
+- `ClassScopeResolutionTest` 增加脚本类继承测试：子类 method/property initializer 中裸名访问父类 `const` 命中父类 class member；
+  同名 local / parameter / block-local `const` 仍按现有可见性规则遮蔽或 deferred。
+- 若 class enum 已在 frontend scope model 中可表达，增加 `E.X`、裸 enum value、`A.E.X` 或等价可支持语法的继承测试；
+  若暂不可表达，新增 pending 说明并把缺口写入相关 frontend enum/scope 文档。
+- `FrontendTopBindingAnalyzerTest` 增加 dual-role 继承静态成员测试：例如 `Node2D.NOTIFICATION_*` 或等价 fixture
+  在 first suffix 只命中父类 static constant / enum value 时发布 `TYPE_META`；同名 singleton instance member 场景继续 fail closed。
+- `FrontendChainBindingAnalyzerTest` / chain reduction focused test 增加 inherited engine/builtin static constant 与 enum value route，
+  要求 member resolution 为 `RESOLVED`，并能报告实际 owner class。
+- `CLoadStaticInsnGenTest` 增加 inherited static constant / enum value backend literal 输出，覆盖 engine 与 builtin 可用的最小组合。
+- 端到端 runtime fixture 至少覆盖一个 engine class inherited static member；如果 Godot metadata 中找不到稳定 builtin inherited
+  constant/enum fixture，builtin 可停留在 focused 单元测试。
+- 回归测试必须保留 Step 9 的 dual-role 混用场景：裸 `Input` / singleton instance call / type-meta static load 互不污染，
+  `@GlobalScope` global constant 与 singleton receiver lowering 不回归。
 
 ## 4. 总体验收细则
 
@@ -938,10 +1006,18 @@ issue #36 可关闭的条件：
   - singleton instance call 进入 `INSTANCE_METHOD` route。
   - engine class constant 进入 `TYPE_META` static load member resolution。
   - static method 进入 `STATIC_METHOD` route。
-  - class enum value head binding 为 `TYPE_META`（member resolution 的 enum-value 支持是下游 chain reduction 的独立缺口）。
-- 已知边界：`reduceEngineStaticLoad` 当前只处理 `constants()`，不处理 class enum values。因此 `Input.MOUSE_MODE_VISIBLE`
-  的 head binding 正确切换为 `TYPE_META`，但 member resolution 状态为 `FAILED`。这属于 chain reduction 的后续扩展，
-  不在 Step 9 head-bias 范围内。
+  - class enum value head binding 为 `TYPE_META`，member resolution 现经 chain reduction enum-value 分支解析为 `RESOLVED`。
+- 已知边界（已于 2026-06-27 修复）：`reduceEngineStaticLoad` / `reduceBuiltinStaticLoad` 原先只处理 `constants()`，
+  不处理 class enum values，导致 `Input.MOUSE_MODE_VISIBLE` 的 head binding 虽正确切换为 `TYPE_META`，但 member
+  resolution 状态为 `FAILED`。现已通过 `ClassRegistry.findEngineClassEnumValue` / `findBuiltinClassEnumValue`
+  在 chain reduction 与 `LoadStaticInsnGen` 两层补齐 enum-value 回退分支，enum value 以 `GdIntType.INT` 解析，
+  backend 以 `Long.toString(value)` 输出十进制 literal，与 global enum value 路径对齐。
+- 已知边界（未修复，与 engine/builtin class **constant** 既有行为对称）：`findEngineClassEnumValue` /
+  `findBuiltinClassEnumValue` 只查直接类，不遍历 `inherits` 链。因此子类访问父类定义的 enum value
+  （如 `Node2D.NOTIFICATION_*` 继承自 `Node`）仍会 FAILED。这与 `hasEngineClassConstant` 的既有行为一致，
+  且 `resolvesInTypeMetaStaticNamespace` 的 dual-role bias 也只查直接类，若单独扩展查找 helper 而不同步
+  bias 会造成 head 发布 TYPE_META 但 member resolution 未命中的更严重不一致。应作为独立的
+  "engine/builtin 静态成员继承遍历"任务统一处理 constant + enum + bias。
 
 ## 5. 风险与边界
 

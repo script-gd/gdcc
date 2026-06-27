@@ -281,7 +281,9 @@
 - static load route：
   - `EnumType.VALUE`
   - builtin constant
+  - builtin class enum value
   - engine integer constant
+  - engine class enum value
 - method-as-value route：
   - `obj.method`
   - `Type.static_func`
