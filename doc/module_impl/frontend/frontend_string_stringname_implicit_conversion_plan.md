@@ -350,7 +350,7 @@ helper 行为必须按 runtime tag 分流：
   - 同步 CFG/body lowering 对 ordinary boundary materialization 的说明。
   - 明确普通 `"..."` 仍先 lower 为 `String` literal；流入 `StringName` slot 时再通过
     `ConstructBuiltinInsn` 物化，只有 `&"..."` 才是 direct `StringName` literal route。
-- `doc/module_impl/frontend/frontend_builtin_constructor_variant_argument_plan.md`
+- `doc/module_impl/frontend/frontend_builtin_constructor_variant_implementation.md`
   - 删除把 `String <-> StringName` 作为永久非目标的旧描述。
   - 改写为：builtin unary stable-`Variant` constructor special route 与本计划的 ordinary boundary
     constructor materialization 是两条独立 feature gate，不互相替代。
@@ -884,7 +884,7 @@ materialization 细则：
   - `doc/module_impl/frontend/frontend_chain_binding_expr_type_implementation.md`
   - `doc/module_impl/frontend/frontend_type_check_analyzer_implementation.md`
   - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`
-  - `doc/module_impl/frontend/frontend_builtin_constructor_variant_argument_plan.md`
+  - `doc/module_impl/frontend/frontend_builtin_constructor_variant_implementation.md`
   - `doc/module_impl/frontend/frontend_unary_binary_expr_semantic_implementation.md`
   - `doc/module_impl/backend/implicit_conversion_implementation.md`
   - `doc/module_impl/backend/builtin_builder_implementation.md`

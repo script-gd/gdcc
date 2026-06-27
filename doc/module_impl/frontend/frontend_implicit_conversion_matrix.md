@@ -95,7 +95,7 @@ GDExtension `call_func` inbound wrapper 两条路径的完成度对齐；它不�
 这意味着：
 
 - `int(seed: Variant)` / `Array(seed: Variant)` 这类 builtin constructor special route 的接受与 lower 方式，不由本文矩阵定义
-- 若未来要调整这条 constructor special route，应同步更新 `frontend_builtin_constructor_variant_argument_plan.md` 及相关事实源文档，而不是把它误记成 matrix 扩面
+- 若未来要调整这条 constructor special route，应同步更新 `frontend_builtin_constructor_variant_implementation.md` 及相关事实源文档，而不是把它误记成 matrix 扩面
 
 这意味着 Godot 支持、但不属于以上显式列出的 builtin implicit conversion，在 GDCC 中默认都还是 `N`。
 

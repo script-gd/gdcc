@@ -2389,7 +2389,7 @@ class FrontendChainBindingAnalyzerTest {
         );
     }
 
-    /// Keep one synthetic two-arg ambiguity alive so the future single-arg Variant constructor shortcut
+    /// Keep one synthetic two-arg ambiguity alive so the single-arg Variant constructor shortcut
     /// stays tightly scoped and does not erase generic constructor-ranking failures.
     private static @NotNull ExtensionBuiltinClass withAmbiguousStringPairConstructors(
             @NotNull ExtensionBuiltinClass builtinClass

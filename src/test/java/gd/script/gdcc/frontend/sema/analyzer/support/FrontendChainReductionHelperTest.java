@@ -1423,7 +1423,7 @@ class FrontendChainReductionHelperTest {
         );
     }
 
-    /// Keep one synthetic multi-arg ambiguity in tests so the future single-arg Variant shortcut does
+    /// Keep one synthetic multi-arg ambiguity in tests so the single-arg Variant shortcut does
     /// not accidentally erase the ordinary constructor ranking fail-closed boundary.
     private static @NotNull ExtensionBuiltinClass stringBuiltinWithAmbiguousPairConstructors() {
         return new ExtensionBuiltinClass(
