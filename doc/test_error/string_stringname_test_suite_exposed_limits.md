@@ -3,8 +3,8 @@
 ## 背景
 
 本记录只收纳本轮为 `String <-> StringName` 隐式转换补充 `test_suite` 端到端资源时暴露出的
-fixture 与实现限制。长期支持范围仍以 `doc/module_impl/frontend/frontend_string_stringname_implicit_conversion_plan.md`
-与 `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md` 为准。
+fixture 与实现限制。长期支持范围以 `doc/module_impl/frontend/frontend_implicit_conversion_matrix.md`
+与 `doc/module_impl/backend/implicit_conversion_implementation.md` 为准。
 
 本轮新增 runtime anchors：
 

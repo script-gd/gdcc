@@ -133,6 +133,20 @@ ALLOW_WITH_BUILTIN_CONSTRUCTOR
 - `take("text")` 在 `take(StringName)` 与 `take(Variant)` 同时存在时选择 `take(StringName)`
 - `take(&"name")` 在 `take(String)` 与 `take(Variant)` 同时存在时选择 `take(String)`
 
+### Stable `Variant` source 与 string-family overload
+
+`String` / `StringName` 的 stable `Variant` source 遇到 string-family 候选时，不得被本文档的
+ordinary boundary widening 强行消歧。不同 call surface 的既有行为必须分别冻结：
+
+- bare call / global-like overload：若 `String` 与 `StringName` 候选都只通过
+  `Variant -> concrete` route 适用且互不支配，继续发布 ambiguous bare call，而不是固定选
+  `String` 或 `StringName`。
+- builtin unary stable-`Variant` constructor：继续走独立 shortcut，不参与本文档的 ordinary
+  boundary decision 排序。
+- object instance method resolver：若 ambiguous object overload 满足既有 dynamic fallback 条件，
+  继续发布 `DYNAMIC_FALLBACK`；不要把 bare call 的 ambiguous 规则套到 object method path，
+  也不要反过来把 object dynamic fallback 套到 bare / builtin overload。
+
 ## Constructor Route 合同
 
 Builtin constructor resolution 复用同一 shared boundary compatibility 与 specificity rank。它不是独立的
