@@ -557,7 +557,7 @@ public class FrontendExprTypeAnalyzer {
 
         /// Mirrors local type stabilization writeback.
         ///
-        /// Step 3 made downstream expression and receiver analysis consume `FrontendBinding`'s
+        /// Downstream expression and receiver analysis consume `FrontendBinding`'s
         /// published `resolvedValue` instead of re-running scope lookup. `BlockScope.resetLocalType`
         /// replaces the immutable local `ScopeValue`, so this fallback would otherwise leave earlier
         /// use-site bindings pointing at the pre-backfill `Variant` slot while the block scope holds

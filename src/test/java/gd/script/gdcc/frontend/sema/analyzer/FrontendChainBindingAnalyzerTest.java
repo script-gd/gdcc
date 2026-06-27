@@ -133,7 +133,7 @@ class FrontendChainBindingAnalyzerTest {
     }
 
     // ------------------------------------------------------------------
-    // Step 9: dual-role chain-head route bias downstream behavior
+    // Dual-role chain-head route bias downstream behavior
     // ------------------------------------------------------------------
 
     /// `Engine.get_frames_drawn()` must produce an INSTANCE-method resolved call with
@@ -233,8 +233,7 @@ class FrontendChainBindingAnalyzerTest {
     /// `Input.MOUSE_MODE_VISIBLE` must produce a TYPE_META head binding, confirming the
     /// dual-role bias routes class enum values through the static-load path. Full enum-value
     /// member resolution is a downstream chain-reduction concern; here we only assert that the
-    /// head binding switches to TYPE_META (the Step 9 scope) and does not materialize a
-    /// singleton receiver.
+    /// head binding switches to TYPE_META and does not materialize a singleton receiver.
     @Test
     void analyzeDualRoleClassEnumValueRoutesToTypeMetaStaticLoad() throws Exception {
         var analyzed = analyze(

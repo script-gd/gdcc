@@ -1433,7 +1433,7 @@ class FrontendTopBindingAnalyzerTest {
     }
 
     // ------------------------------------------------------------------
-    // Step 9: dual-role chain-head route bias tests
+    // Dual-role chain-head route bias tests
     // ------------------------------------------------------------------
 
     /// `Engine.get_frames_drawn()` is a singleton instance call: the head `Engine` must stay
