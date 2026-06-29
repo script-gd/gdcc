@@ -8,6 +8,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
@@ -142,6 +143,33 @@ class FrontendDeclaredTypeSupportTest {
         assertEquals(1, diagnostics.snapshot().size());
         assertEquals("sema.type_resolution", diagnostic.category());
         assertTrue(diagnostic.message().contains("Array[Array[int]]"));
+    }
+
+    @Test
+    void resolveTypeOrVariantWarnsAndFallsBackForCompilerOnlyDeclaredTypeTexts() throws IOException {
+        var diagnostics = new DiagnosticManager();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        var compilerPrefixedType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
+                new TypeRef(GdccForRangeIterType.LIR_TYPE_TEXT, SYNTHETIC_RANGE),
+                registry,
+                Map.of(),
+                SOURCE_PATH,
+                diagnostics
+        );
+        var bareCompilerType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
+                new TypeRef(GdccForRangeIterType.FOR_RANGE_ITER.getTypeName(), SYNTHETIC_RANGE),
+                registry,
+                Map.of(),
+                SOURCE_PATH,
+                diagnostics
+        );
+
+        assertEquals(GdVariantType.VARIANT, compilerPrefixedType);
+        assertEquals(GdVariantType.VARIANT, bareCompilerType);
+        assertEquals(2, diagnostics.snapshot().size());
+        assertTrue(diagnostics.snapshot().asList().getFirst().message().contains(GdccForRangeIterType.LIR_TYPE_TEXT));
+        assertTrue(diagnostics.snapshot().asList().getLast().message().contains(GdccForRangeIterType.FOR_RANGE_ITER.getTypeName()));
     }
 
     @Test

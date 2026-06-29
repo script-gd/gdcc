@@ -6,6 +6,7 @@ import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdObjectType;
 import org.junit.jupiter.api.Test;
 
@@ -92,5 +93,36 @@ public class DomLirSerializerTest {
         assertTrue(xml.contains("super=\"RuntimeBase\""), xml);
         assertFalse(xml.contains("MappedOuter"), xml);
         assertFalse(xml.contains("BaseBySource"), xml);
+    }
+
+    @Test
+    public void serialize_module_usesCompilerOnlyGrammarForFunctionVariables() throws Exception {
+        var fn = new LirFunctionDef("_init", "entry");
+        fn.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("RotatingCamera", "Camera3D", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var serializer = new DomLirSerializer();
+
+        var xml = serializer.serializeToString(module);
+
+        assertTrue(xml.contains("type=\"compiler::GdccForRangeIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForRangeIter\""), xml);
+    }
+
+    @Test
+    public void serialize_module_rejectsCompilerOnlyTypeOnFunctionReturnSurface() {
+        var fn = new LirFunctionDef("helper", "entry");
+        fn.setReturnType(GdccForRangeIterType.FOR_RANGE_ITER);
+        fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
+
+        var cls = new LirClassDef("RotatingCamera", "Camera3D", false, false, Map.of(), List.of(), List.of(), List.of(fn));
+        var module = new LirModule("m", List.of(cls));
+        var serializer = new DomLirSerializer();
+
+        var exception = assertThrows(IllegalArgumentException.class, () -> serializer.serializeToString(module));
+
+        assertTrue(exception.getMessage().contains("compiler-only type leaked into function return"), exception.getMessage());
     }
 }

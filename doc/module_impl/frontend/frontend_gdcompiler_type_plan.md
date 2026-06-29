@@ -190,6 +190,16 @@ MVP 采用以下策略：
 
 ### 5.2 阶段二：source-facing resolver 禁止与 LIR-only parser
 
+状态：已完成（2026-06-29）。
+
+产出：
+
+- `ClassRegistry.tryParseStrictTextType(...)`、`ScopeTypeResolver.tryResolveDeclaredType(...)` 与 `ClassRegistry.resolveTypeMetaHere(...)` 继续保持 source-facing strict namespace，不识别 `compiler::GdccForRangeIter` 或 bare `GdccForRangeIter`。
+- `DomLirParser` 新增按 use-site 区分的 LIR type parser：只有 function `<variables>` 可解析 `compiler::GdccForRangeIter`，其余 public ABI-like surface 统一以 `compiler-only type leaked into ...` fail-fast。
+- `DomLirSerializer` 新增对应的 compiler-only type text renderer：function local variable 稳定输出 `compiler::GdccForRangeIter`，同时拒绝把 compiler-only 类型序列化到 parameter / return / property / signal surface。
+- ordinary builtin / object / container 的 XML 解析与序列化继续复用既有 `ClassRegistry.findType(...)` / `getTypeName()` 路径，阶段二不改变非 compiler-only 类型行为。
+- 针对 source-facing declared type、registry type-meta、frontend declared type fallback、LIR parser/serializer round-trip 与 leak negative path 的测试已补齐，明确锚定“变量面可用、ABI 面禁止、未知 `compiler::` grammar 不退化为 object guess”。
+
 目标：
 
 - source-facing type namespace 完全看不到 compiler-only type。

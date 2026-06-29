@@ -8,6 +8,7 @@ import gd.script.gdcc.scope.ScopeTypeMeta;
 import gd.script.gdcc.scope.ScopeTypeMetaKind;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.scope.Scope;
@@ -118,6 +119,18 @@ class ScopeTypeResolverTest {
         assertNull(ScopeTypeResolver.tryResolveDeclaredType(scope, "Array[Array[int]]", mapper));
         assertNull(ScopeTypeResolver.tryResolveDeclaredType(scope, "Dictionary[String, Array[int]]", mapper));
         assertEquals(0, mapperCalls.get());
+    }
+
+    @Test
+    void declaredTypeResolutionKeepsCompilerOnlyTextsOutOfSourceFacingNamespace() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var ownerClass = new LirClassDef("Owner", "Object");
+        registry.addGdccClass(ownerClass);
+        var scope = new ClassScope(registry, registry, ownerClass);
+
+        assertNull(ScopeTypeResolver.tryResolveTypeMeta(scope, GdccForRangeIterType.LIR_TYPE_TEXT));
+        assertNull(ScopeTypeResolver.tryResolveDeclaredType(scope, GdccForRangeIterType.LIR_TYPE_TEXT));
+        assertNull(ScopeTypeResolver.tryResolveDeclaredType(scope, GdccForRangeIterType.FOR_RANGE_ITER.getTypeName()));
     }
 
     @Test

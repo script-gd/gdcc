@@ -4,6 +4,7 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
@@ -134,5 +135,13 @@ public class ClassRegistryTypeMetaTest {
             }
         }
         assertNull(registry.resolveTypeMeta("DefinitelyMissingType"));
+    }
+
+    @Test
+    void resolveTypeMetaDoesNotPublishCompilerOnlyTypeMeta() throws IOException {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+
+        assertNull(registry.resolveTypeMeta(GdccForRangeIterType.LIR_TYPE_TEXT));
+        assertNull(registry.resolveTypeMeta(GdccForRangeIterType.FOR_RANGE_ITER.getTypeName()));
     }
 }

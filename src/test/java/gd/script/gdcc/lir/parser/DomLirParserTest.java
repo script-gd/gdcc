@@ -3,6 +3,7 @@ package gd.script.gdcc.lir.parser;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.lir.LirModule;
@@ -216,5 +217,147 @@ public class DomLirParserTest {
         assertEquals("RuntimeBase", cls.getSuperName());
         assertNotEquals("MappedOuter", cls.getName());
         assertNotEquals("BaseBySource", cls.getSuperName());
+    }
+
+    @Test
+    public void parse_allowsCompilerOnlyTypeOnlyOnFunctionVariables() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables>
+                          <variable id="iter" type="compiler::GdccForRangeIter"/>
+                        </variables>
+                        <basic_blocks entry="entry">
+                          <basic_block id="entry">
+                            return;
+                          </basic_block>
+                        </basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var mod = parser.parse(new StringReader(xml));
+        var fn = mod.getClassDefs().getFirst().getFunctions().getFirst();
+
+        assertEquals(GdccForRangeIterType.FOR_RANGE_ITER, fn.getVariableById("iter").type());
+    }
+
+    @Test
+    public void parse_rejectsCompilerOnlyTypeOnPublicAbiAndLambdaCaptureSurfaces() throws Exception {
+        var surfaces = java.util.Map.of(
+                "signal parameter", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <signals>
+                              <signal name="changed">
+                                <parameter name="iter" type="compiler::GdccForRangeIter"/>
+                              </signal>
+                            </signals>
+                            <functions/>
+                          </class_def>
+                        </ir>
+                        """,
+                "property", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <properties>
+                              <property name="iter" type="compiler::GdccForRangeIter" is_static="false"/>
+                            </properties>
+                            <functions/>
+                          </class_def>
+                        </ir>
+                        """,
+                "function parameter", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <functions>
+                              <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                                <parameters>
+                                  <parameter name="iter" type="compiler::GdccForRangeIter"/>
+                                </parameters>
+                                <captures/>
+                                <return_type type="void"/>
+                                <variables/>
+                                <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                              </function>
+                            </functions>
+                          </class_def>
+                        </ir>
+                        """,
+                "function return", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <functions>
+                              <function name="step" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="true">
+                                <parameters/>
+                                <captures/>
+                                <return_type type="compiler::GdccForRangeIter"/>
+                                <variables/>
+                                <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                              </function>
+                            </functions>
+                          </class_def>
+                        </ir>
+                        """,
+                "function capture", """
+                        <ir>
+                          <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                            <functions>
+                              <function name="lambda0" is_static="false" is_abstract="false" is_lambda="true" is_vararg="false" is_hidden="false">
+                                <parameters/>
+                                <captures>
+                                  <capture name="iter" type="compiler::GdccForRangeIter"/>
+                                </captures>
+                                <return_type type="void"/>
+                                <variables/>
+                                <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                              </function>
+                            </functions>
+                          </class_def>
+                        </ir>
+                        """
+        );
+
+        for (var entry : surfaces.entrySet()) {
+            var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+            var exception = assertThrows(IllegalArgumentException.class, () -> parser.parse(new StringReader(entry.getValue())), entry.getKey());
+
+            assertTrue(exception.getMessage().contains("compiler-only type leaked into " + entry.getKey()), exception.getMessage());
+        }
+    }
+
+    @Test
+    public void parse_rejectsUnknownCompilerOnlyGrammarWithoutGuessingObjectType() throws Exception {
+        var xml = """
+                <ir>
+                  <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                    <functions>
+                      <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                        <parameters/>
+                        <captures/>
+                        <return_type type="void"/>
+                        <variables>
+                          <variable id="iter" type="compiler::UnknownIter"/>
+                        </variables>
+                        <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                      </function>
+                    </functions>
+                  </class_def>
+                </ir>
+                """;
+
+        var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+        var exception = assertThrows(IllegalArgumentException.class, () -> parser.parse(new StringReader(xml)));
+
+        assertTrue(exception.getMessage().contains("Unknown compiler-only type text: compiler::UnknownIter"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("GdObjectType"), exception.getMessage());
     }
 }
