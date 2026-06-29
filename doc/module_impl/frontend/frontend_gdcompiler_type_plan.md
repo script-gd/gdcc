@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：阶段一已完成，后续阶段计划维护中
+- 状态：阶段一已完成，抽象层阶段已补入，后续阶段计划维护中
 - 更新时间：2026-06-29
 - 适用范围：
   - `src/main/java/gd/script/gdcc/type/**`
@@ -101,7 +101,7 @@ Godot upstream 的对齐依据是：`GDScriptFunctionState` 注册为 internal c
 ## 3. 实施原则
 
 - 先定义边界，再放开路径。任何默认兼容、默认 C helper 命名、默认 metadata 生成都必须对 compiler-only type 显式处理。
-- 实现应从 `GdccForRangeIterType` 和一组 range iterator intrinsic 闭环开始。不要在只有一个实现时额外制造一层抽象；如果后续已经有两个以上具体 compiler-only 类型，才引入 `GdCompilerType` sealed interface。
+- 实现应从 `GdccForRangeIterType` 和一组 range iterator intrinsic 闭环开始；随后补入 `GdCompilerType` 作为 compiler-only 类型的共同抽象层，并把已实现的具体类型迁移到该层下。
 - compiler-only 类型不参与 ordinary frontend typed-boundary matrix。内部 LIR slot 的 direct assignment 由 backend/LIR 合同处理，不由 source-facing semantic compatibility 扩面。
 - helper 命名使用 `gdcc_*`，不得伪造 `godot_*` generated binding helper。
 - lifecycle 走非对象 destroyable value 路径，不走 object ownership。
@@ -283,7 +283,46 @@ MVP 采用以下策略：
 - `FrontendLoweringBodyInsnPassTest`
 - `FrontendWritableTypeWritebackSupportTest`
 
-### 5.4 阶段四：LIR public ABI validator
+### 5.4 阶段四：`GdCompilerType` 抽象层与既有实现回迁
+
+状态：计划中。
+
+产出：
+
+- 新增 `GdCompilerType` sealed interface，承载所有 compiler-only 类型的共同协议。
+- 将已实现的 `GdccForRangeIterType` 调整为 `GdCompilerType` 的具体实现，并保留其现有 internal name、LIR-only text、C helper 协议与 destroyable 语义。
+- 把 compiler-only 类型的共同约束从 `GdType` 直接实现中抽离到抽象层，避免后续新增 compiler-only 类型继续复制协议方法。
+- 更新相关既有实现，使 phase 1/2/3/5/6/7/8 继续以抽象层为事实源。
+
+目标：
+
+- 让 compiler-only 类型共享统一协议，而不再依赖单个 concrete type 直接承载所有约定。
+- 为后续新增第二个及以上 compiler-only 类型预留扩展点。
+- 保持现有 `GdccForRangeIterType` 的行为和边界不变，只改变它的类型归属与共同协议来源。
+
+建议实施内容：
+
+- 在 `src/main/java/gd/script/gdcc/type/` 中新增 `GdCompilerType` sealed interface，定义 compiler-only 类型共同协议。
+- 让 `GdccForRangeIterType` 实现 `GdCompilerType`，并把 shared contract 从 concrete type 的重复实现中收拢到接口默认实现或公共辅助方法中。
+- 更新 `GdType` permits，使其包含 `GdCompilerType`，而不是把 compiler-only concrete type 继续直接散落在根层 permits。
+- 调整阶段一里关于“暂不抽象化”的表述，改为“先完成首个 concrete type，再在当前计划中补入抽象层与迁移”。
+- 检查后续源码和测试中对 compiler-only 类型的判断，优先改为面向 `GdCompilerType` 的判断。
+
+验收细则：
+
+- happy path：
+  - `GdccForRangeIterType` 继续通过所有现有 type/backend/serialization 边界测试。
+  - 新增的抽象层测试覆盖 `GdCompilerType` 的共同契约。
+- negative path：
+  - 不再出现“所有 compiler-only 类型都必须直接挂到 `GdType` 根层”的实现假设。
+  - `GdccForRangeIterType` 仍不进入 source-facing type namespace、public ABI 或 ordinary boundary。
+
+测试锚点：
+
+- `GdType` / `GdccForRangeIterType` 相关单测。
+- 新增 `GdCompilerType` 契约测试。
+
+### 5.5 阶段五：LIR public ABI validator
 
 目标：
 
@@ -318,7 +357,7 @@ MVP 采用以下策略：
 - `CGenHelperTest`
 - backend integration shape tests 中加入 public ABI negative cases。
 
-### 5.5 阶段五：C 后端类型渲染、初始化、赋值与销毁
+### 5.6 阶段六：C 后端类型渲染、初始化、赋值与销毁
 
 目标：
 
@@ -361,7 +400,7 @@ MVP 采用以下策略：
 - `CBodyBuilderPhaseBTest`
 - `CBodyBuilderPhaseCTest`
 
-### 5.6 阶段六：`GdccForRangeIterType` intrinsic 最小闭环
+### 5.7 阶段七：`GdccForRangeIterType` intrinsic 最小闭环
 
 目标：
 
@@ -423,7 +462,7 @@ MVP 采用以下策略：
 - `CallIntrinsicInsnGenTest`
 - 新增 `GdccForRangeIter` intrinsic tests，覆盖正步长、负步长、exclusive end、zero step 策略和类型错误。
 
-### 5.7 阶段七：普通 Godot / Variant / engine 路径封堵
+### 5.8 阶段八：普通 Godot / Variant / engine 路径封堵
 
 目标：
 
@@ -459,7 +498,7 @@ MVP 采用以下策略：
 - `CStorePropertyInsnGenTest`
 - `CGenHelperTest`
 
-### 5.8 阶段八：文档同步与回归收口
+### 5.9 阶段九：文档同步与回归收口
 
 目标：
 
@@ -471,6 +510,7 @@ MVP 采用以下策略：
 - 更新 `doc/gdcc_type_system.md`：
   - 增加 compiler-only type 的定位。
   - 明确它不属于 GDScript source-facing type set。
+  - 明确 `GdCompilerType` 是 compiler-only 共同抽象层，`GdccForRangeIterType` 是其首个具体实现。
   - 明确 ordinary compatibility matrix 不接受它。
 - 更新 `doc/gdcc_low_ir.md`：
   - 记录 `compiler::<Name>` LIR-only type grammar。

@@ -24,6 +24,8 @@ manipulate variables.
 
 See [Types](gdcc_type_system.md) for details on the type system used in Low IR.
 
+Low IR can also carry backend-owned compiler-only types. They use the `compiler::<Name>` textual grammar and are only valid on backend-owned local variables unless a dedicated validator explicitly allows a wider surface.
+
 ## Instructions
 
 Each instruction has an optional return value, a string id, and a list of operands:

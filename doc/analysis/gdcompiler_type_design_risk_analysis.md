@@ -357,11 +357,12 @@ public sealed interface GdCompilerType extends GdType
 }
 ```
 
-这只是形态建议，不是实现要求。需要注意：
+当前实施计划已经把 `GdCompilerType` 抽象层纳入后续阶段，因此这里应视为目标协议而不是是否抽象的开放问题。需要注意：
 
-- 不要把只有一个实现的额外 interface 拆出来；如果短期只有一种 compiler-only 类型，可以先用一个 concrete type 承载，等第二种出现再抽出 sealed 分支。
 - 如果所有具体类型都必须 init/destroy，那么协议方法放在 `GdCompilerType` 上是合理的。
 - 如果某些 compiler-only 类型没有 destroy 语义，需要决定是返回 no-op helper，还是允许 `destroyFunctionName()` 为空。当前需求说“返回初始化函数名和销毁函数名”，报告按必有 helper 处理。
+
+计划文档已要求在首个 concrete compiler-only type 落地后补入该抽象层，因此后续实现应以 `GdCompilerType` 为准，不再沿用“只有一个实现时暂不抽象”的旧策略。
 
 ### 9.2 解析层
 

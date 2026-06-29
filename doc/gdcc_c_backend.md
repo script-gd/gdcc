@@ -31,6 +31,7 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   `REAL_T_IS_DOUBLE` and 32-bit Godot builds are outside the supported target matrix.
 - Any Object, including engine object and GDCC objects, are always passed as pointers, and the pointers are passed as values, usually we do not use pointers to pointers.
 - There are 3 types: built-in types, engine types, and GDCC types, see [gdcc_type_system.md](gdcc_type_system.md) for more details.
+- Compiler-only storage types are backend-owned `GdType` implementations that do not belong to the source-facing type namespace. They are rendered with explicit `gdcc_*` storage/helper names and must never fall back to the default `godot_*` naming path.
 - Engine types and GDCC types are all Objects, built-in types are not Objects.
 - Only `godot_bool`, `godot_int` and `godot_float` can be used directly as C primitive types, they are always passed by value.
 - Variable `ref` semantics in generated C (mandatory):
@@ -93,6 +94,7 @@ already exists, otherwise use the project's own `compiler-cache` directory.
   - If we can 100% sure that an object is ref-counted, we can use `own_object` and `release_object` directly, these 2 functions are faster.
 - For type mapping between compiler types and C types:
   - GDCC types are directly used as C types, e.g., `MyCustomGdClass` is used as `MyCustomGdClass*`.
+  - Compiler-only types are mapped to their own explicit C storage names and helper names, not to generated `godot_*` ABI symbols.
   - Other types are mapped with a `godot_` prefix, e.g., `int` is mapped to `godot_int`, `String` is mapped to `godot_String`.
 - Always remember GDExtension API does not receive GDCC object ptrs, convert them to `godot_Object*` using generated per-class helper functions first.
 - When receiving `godot_Object*` from GDExtension API that is actually a GDCC object, convert it to the correct GDCC type using `gdcc_object_from_godot_object_ptr(GDExtensionObjectPtr ptr)` if necessary.
