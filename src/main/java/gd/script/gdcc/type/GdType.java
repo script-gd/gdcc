@@ -4,7 +4,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 public sealed interface GdType
-        permits GdContainerType, GdMetaType, GdNilType, GdObjectType, GdPrimitiveType, GdRidType, GdStringLikeType, GdVariantType, GdVectorType, GdVoidType, GdccForRangeIterType {
+        permits GdContainerType, GdCompilerType, GdMetaType, GdNilType, GdObjectType, GdPrimitiveType, GdRidType, GdStringLikeType, GdVariantType, GdVectorType, GdVoidType {
     @NotNull String getTypeName();
 
     boolean isNullable();

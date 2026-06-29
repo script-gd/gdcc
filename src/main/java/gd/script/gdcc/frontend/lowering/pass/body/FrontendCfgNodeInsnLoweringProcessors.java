@@ -9,7 +9,7 @@ import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.type.GdBoolType;
-import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -109,7 +109,7 @@ final class FrontendCfgNodeInsnLoweringProcessors {
                     block.setTerminator(new GoIfInsn(boolSlotId, trueBlockId, falseBlockId));
                     return;
                 }
-                case GdccForRangeIterType compilerOnlyType -> throw new IllegalStateException(
+                case GdCompilerType compilerOnlyType -> throw new IllegalStateException(
                         "compiler-only type leaked into frontend condition normalization: "
                                 + compilerOnlyType.getTypeName()
                 );

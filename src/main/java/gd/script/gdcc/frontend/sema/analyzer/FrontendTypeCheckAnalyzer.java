@@ -18,7 +18,7 @@ import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
-import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -257,7 +257,7 @@ public class FrontendTypeCheckAnalyzer {
                 publishedConditionType.publishedType(),
                 "publishedType must not be null for stable condition expression"
         );
-        if (conditionType instanceof GdccForRangeIterType compilerOnlyType) {
+        if (conditionType instanceof GdCompilerType compilerOnlyType) {
             throw new IllegalStateException(
                     "compiler-only type leaked into frontend condition fact: "
                             + compilerOnlyType.getTypeName()

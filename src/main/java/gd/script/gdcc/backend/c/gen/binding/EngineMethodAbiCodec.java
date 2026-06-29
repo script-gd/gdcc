@@ -7,7 +7,7 @@ import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdColorType;
 import gd.script.gdcc.type.GdDictionaryType;
-import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -103,7 +103,7 @@ public final class EngineMethodAbiCodec {
                 }
                 builder.append('V');
             }
-            case GdccForRangeIterType _ -> throw new IllegalArgumentException(
+            case GdCompilerType _ -> throw new IllegalArgumentException(
                     "compiler-only type leaked into engine method ABI descriptor: " + type.getTypeName()
             );
             case GdVariantType _ -> builder.append('R');

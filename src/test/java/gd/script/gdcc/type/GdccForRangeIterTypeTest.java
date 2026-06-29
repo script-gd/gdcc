@@ -15,11 +15,15 @@ class GdccForRangeIterTypeTest {
     void exposesOnlyStableCompilerInternalProtocol() {
         var type = GdccForRangeIterType.FOR_RANGE_ITER;
 
+        // The concrete type must implement the GdCompilerType abstraction layer.
+        assertInstanceOf(GdCompilerType.class, type);
+
         assertEquals("GdccForRangeIter", type.getTypeName());
         assertEquals("compiler::GdccForRangeIter", type.getLirTypeText());
         assertEquals("gdcc_for_range_iter", type.getCStorageTypeName());
         assertEquals("gdcc_for_range_iter_init", type.getCInitHelperName());
         assertEquals("gdcc_for_range_iter_destroy", type.getCDestroyHelperName());
+        // isNullable, getGdExtensionType, and isDestroyable are inherited from GdCompilerType defaults.
         assertFalse(type.isNullable());
         assertNull(type.getGdExtensionType());
         assertTrue(type.isDestroyable());

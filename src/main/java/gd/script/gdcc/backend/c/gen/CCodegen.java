@@ -157,7 +157,7 @@ public class CCodegen implements Codegen {
                     var bb = new LirBasicBlock("entry");
                     func.addBasicBlock(bb);
                     switch (propertyDef.getType()) {
-                        case GdccForRangeIterType _ -> throw new IllegalStateException(
+                        case GdCompilerType _ -> throw new IllegalStateException(
                                 "compiler-only type leaked into property initializer: " + propertyDef.getType().getTypeName()
                         );
                         case GdObjectType _ -> bb.appendNonTerminatorInstruction(new LiteralNullInsn(tmpVar.id()));
@@ -212,7 +212,7 @@ public class CCodegen implements Codegen {
                         continue;
                     }
                     var initInsn = switch (variable.type()) {
-                        case GdccForRangeIterType _ -> throw new IllegalStateException(
+                        case GdCompilerType _ -> throw new IllegalStateException(
                                 "compiler-only type requires dedicated prepare initialization: " + variable.type().getTypeName()
                         );
                         case GdObjectType _ -> new LiteralNullInsn(variable.id());

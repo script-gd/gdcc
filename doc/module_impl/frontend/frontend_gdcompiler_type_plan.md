@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：阶段一已完成，抽象层阶段已补入，后续阶段计划维护中
+- 状态：阶段一至四已完成，后续阶段计划维护中
 - 更新时间：2026-06-29
 - 适用范围：
   - `src/main/java/gd/script/gdcc/type/**`
@@ -145,7 +145,7 @@ MVP 采用以下策略：
 
 产出：
 
-- `GdType` sealed hierarchy 已直接允许 `GdccForRangeIterType`，未新增 `GdCompilerType` 抽象层。
+- `GdType` sealed hierarchy 最初直接允许 `GdccForRangeIterType`，阶段四已补入 `GdCompilerType` 抽象层并完成回迁。
 - `GdccForRangeIterType` 固定内部名、LIR-only text、C storage/init/destroy helper、不可空、无 GDExtension metadata、destroyable 协议。
 - C helper 对该类型使用 `gdcc_for_range_iter` / `gdcc_for_range_iter_destroy`，Variant pack/unpack 和 default-value 路径 fail-fast，copy assignment 不走 `godot_new_*_with_*`。
 - Frontend ordinary boundary/writeback helper 对该类型显式拒绝，避免阶段一后由默认兼容路径泄漏到用户语义。
@@ -160,7 +160,7 @@ MVP 采用以下策略：
 建议实施内容：
 
 - 更新 `GdType` sealed permits。
-- 新增首个具体 compiler-only type：`GdccForRangeIterType`。在只有这一种具体类型时，优先让它直接进入 `GdType` sealed hierarchy；不要为了一个实现先制造单独 `GdCompilerType` 抽象层。
+- 新增首个具体 compiler-only type：`GdccForRangeIterType`。先完成首个 concrete type 再在阶段四补入 `GdCompilerType` 抽象层并回迁，避免为一个实现过早制造抽象层。
 - 类型协议至少覆盖：
   - `getTypeName()`：建议稳定为 `GdccForRangeIter`，用于内部 identity，不作为 source-facing declared type text。
   - LIR-only text：`compiler::GdccForRangeIter`。
@@ -285,14 +285,17 @@ MVP 采用以下策略：
 
 ### 5.4 阶段四：`GdCompilerType` 抽象层与既有实现回迁
 
-状态：计划中。
+状态：已完成（2026-06-29）。
 
 产出：
 
-- 新增 `GdCompilerType` sealed interface，承载所有 compiler-only 类型的共同协议。
-- 将已实现的 `GdccForRangeIterType` 调整为 `GdCompilerType` 的具体实现，并保留其现有 internal name、LIR-only text、C helper 协议与 destroyable 语义。
-- 把 compiler-only 类型的共同约束从 `GdType` 直接实现中抽离到抽象层，避免后续新增 compiler-only 类型继续复制协议方法。
-- 更新相关既有实现，使 phase 1/2/3/5/6/7/8 继续以抽象层为事实源。
+- 新增 `GdCompilerType` sealed interface，承载所有 compiler-only 类型的共同协议：`getLirTypeText()`、`getCStorageTypeName()`、`getCInitHelperName()`、`getCDestroyHelperName()`，以及共享默认实现 `isNullable() == false`、`getGdExtensionType() == null`、`isDestroyable() == true`。
+- `GdccForRangeIterType` 从直接 `implements GdType` 迁移为 `implements GdCompilerType`，移除了与抽象层默认实现重复的 `isNullable()`、`getGdExtensionType()`、`isDestroyable()` 覆写，保留其 internal name、LIR-only text、C helper 协议不变。
+- `GdType` permits 从直接包含 `GdccForRangeIterType` 改为包含 `GdCompilerType`，使 compiler-only 类型通过统一抽象层挂入 sealed hierarchy。
+- 所有 consumer 侧的 `instanceof GdccForRangeIterType` / `case GdccForRangeIterType` 判断已迁移为面向 `GdCompilerType` 的判断，覆盖 frontend leak guards（`FrontendVariantBoundaryCompatibility`、`FrontendExprTypeAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、`FrontendTypeCheckAnalyzer`、`FrontendBodyLoweringSession`、`FrontendCfgNodeInsnLoweringProcessors`、`FrontendWritableTypeWritebackSupport`）、C backend guards（`CGenHelper`、`CCodegen`、`CBodyBuilder`、`DestructInsnGen`、`EngineMethodAbiCodec`）和 LIR serializer（`DomLirSerializer`）。
+- `DomLirParser` 的 text-to-instance dispatch 保留对 `GdccForRangeIterType.LIR_TYPE_TEXT` 的引用，因为该路径是文本到具体实例的映射，不是类型判断。
+- 新增 `GdCompilerTypeTest` 契约测试，覆盖抽象层协议方法、共享默认值、sealed hierarchy 归属、user-facing family 排除和 `gdcc_*` helper 命名约束的正反两面。
+- `GdccForRangeIterTypeTest` 已更新，增加 `assertInstanceOf(GdCompilerType.class, type)` 断言以锚定抽象层归属。
 
 目标：
 
@@ -606,10 +609,11 @@ script/run-gradle-targeted-tests.sh --tests "gd.script.gdcc.frontend.sema.analyz
 1. 类型协议与 `GdccForRangeIterType`。
 2. LIR-only parser / serializer grammar，并先冻结 source-facing resolver 禁止。
 3. frontend ordinary typed-boundary、local stabilization、condition lowering、call materialization 的封堵。
-4. LIR public ABI validator。
-5. C 后端 C type / init / destroy / assignment / pack-unpack / metadata 封堵。
-6. `GdccForRangeIterType` 的 init / should_continue / next / get intrinsic 和 runtime `gdcc_for_range_iter_*` helper。
-7. 普通 method / global / operator / index / property / wrapper path 负例补齐。
-8. 文档同步和 targeted regression。
+4. `GdCompilerType` 抽象层与既有实现回迁（已完成）。
+5. LIR public ABI validator。
+6. C 后端 C type / init / destroy / assignment / pack-unpack / metadata 封堵。
+7. `GdccForRangeIterType` 的 init / should_continue / next / get intrinsic 和 runtime `gdcc_for_range_iter_*` helper。
+8. 普通 method / global / operator / index / property / wrapper path 负例补齐。
+9. 文档同步和 targeted regression。
 
 这条顺序的核心约束是：先让 compiler-only type 不能从用户世界进入，再允许它在 LIR/backend 内部出现；先封掉默认 `Variant` / `godot_*` 路径，再接入具体 intrinsic 成功路径。

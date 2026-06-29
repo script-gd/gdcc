@@ -265,7 +265,7 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeInC(@NotNull GdType gdType) {
         return switch (gdType) {
-            case GdccForRangeIterType forRangeIterType -> forRangeIterType.getCStorageTypeName();
+            case GdCompilerType compilerType -> compilerType.getCStorageTypeName();
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType gdArrayType -> {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
@@ -299,7 +299,7 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeRefInC(@NotNull GdType gdType) {
         return switch (gdType) {
-            case GdccForRangeIterType forRangeIterType -> forRangeIterType.getCStorageTypeName() + "*";
+            case GdCompilerType compilerType -> compilerType.getCStorageTypeName() + "*";
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType gdArrayType -> {
                     if (gdArrayType.getValueType() instanceof GdVariantType) {
@@ -469,7 +469,7 @@ public final class CGenHelper {
 
     public @NotNull String renderGdTypeName(@NotNull GdType gdType) {
         return switch (gdType) {
-            case GdccForRangeIterType _ -> gdType.getTypeName();
+            case GdCompilerType _ -> gdType.getTypeName();
             case GdContainerType gdContainerType -> switch (gdContainerType) {
                 case GdArrayType _ -> "Array";
                 case GdDictionaryType _ -> "Dictionary";
@@ -519,7 +519,7 @@ public final class CGenHelper {
     }
 
     public @NotNull String renderUnpackFunctionName(@NotNull GdType type) {
-        if (type instanceof GdccForRangeIterType) {
+        if (type instanceof GdCompilerType) {
             throw new IllegalArgumentException("compiler-only type leaked into Variant unpack: " + type.getTypeName());
         }
         if (type instanceof GdObjectType objectType) {
@@ -609,25 +609,26 @@ public final class CGenHelper {
     /// Ordinary pack helpers are the unary `godot_new_Variant_with_<Type>` family.
     /// `Nil` is excluded because it uses the dedicated nullary `godot_new_Variant_nil()`.
     public @NotNull String renderPackFunctionName(@NotNull GdType type) {
-        if (type instanceof GdccForRangeIterType) {
-            throw new IllegalArgumentException("compiler-only type leaked into Variant pack: " + type.getTypeName());
-        }
-        if (type instanceof GdNilType) {
-            throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
-        }
-        if (type instanceof GdObjectType objectType) {
-            if (objectType.checkGdccType(context.classRegistry())) {
-                return "gdcc_new_Variant_with_gdcc_Object";
+        switch (type) {
+            case GdCompilerType _ ->
+                    throw new IllegalArgumentException("compiler-only type leaked into Variant pack: " + type.getTypeName());
+            case GdNilType _ ->
+                    throw new IllegalArgumentException("Nil uses dedicated godot_new_Variant_nil() materialization");
+            case GdObjectType objectType -> {
+                if (objectType.checkGdccType(context.classRegistry())) {
+                    return "gdcc_new_Variant_with_gdcc_Object";
+                }
+                return "godot_new_Variant_with_Object";
             }
-            return "godot_new_Variant_with_Object";
-        } else {
-            return "godot_new_Variant_with_" + renderGdTypeName(type);
+            default -> {
+                return "godot_new_Variant_with_" + renderGdTypeName(type);
+            }
         }
     }
 
     public @NotNull String renderCopyAssignFunctionName(@NotNull GdType type) {
         return switch (type) {
-            case GdccForRangeIterType _ -> "";
+            case GdCompilerType _ -> "";
             case GdObjectType _, GdPrimitiveType _ -> "";
             case GdVoidType _, GdNilType _ ->
                     throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
@@ -642,8 +643,8 @@ public final class CGenHelper {
         if (!type.isDestroyable()) {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " is not destroyable");
         }
-        if (type instanceof GdccForRangeIterType forRangeIterType) {
-            return forRangeIterType.getCDestroyHelperName();
+        if (type instanceof GdCompilerType compilerType) {
+            return compilerType.getCDestroyHelperName();
         }
         if (type instanceof GdObjectType) {
             return "godot_object_destroy";

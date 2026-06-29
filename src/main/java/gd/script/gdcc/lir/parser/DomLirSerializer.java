@@ -194,7 +194,7 @@ public final class DomLirSerializer implements LirSerializer {
     /// Serializer keeps compiler-only types on the dedicated `compiler::...` grammar and rejects any
     /// attempt to leak them into outward-facing metadata surfaces.
     private @NotNull String renderTypeText(@NotNull GdType type, @NotNull TypeUseSite useSite) {
-        if (type instanceof GdccForRangeIterType compilerOnlyType) {
+        if (type instanceof GdCompilerType compilerOnlyType) {
             if (!useSite.allowCompilerOnlyType) {
                 throw new IllegalArgumentException(
                         "compiler-only type leaked into " + useSite.displayName + ": " + compilerOnlyType.getLirTypeText()
