@@ -75,9 +75,13 @@ import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.ExpressionStatement;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -993,6 +997,252 @@ class FrontendLoweringBodyInsnPassTest {
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
                 () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend condition normalization"))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenCompilerOnlyTypeLeaksIntoPropertyStoreValue() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_property_store.gd",
+                """
+                        class_name BodyInsnCompilerOnlyPropertyStore
+                        extends RefCounted
+                        
+                        var payload_int: int
+                        
+                        func ping(box: Variant) -> void:
+                            payload_int = box
+                        """,
+                Map.of("BodyInsnCompilerOnlyPropertyStore", "RuntimeBodyInsnCompilerOnlyPropertyStore"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlyPropertyStore",
+                "ping"
+        );
+        var root = assertInstanceOf(Block.class, functionContext.loweringRoot());
+        var statement = assertInstanceOf(ExpressionStatement.class, root.statements().getFirst());
+        var assignment = assertInstanceOf(AssignmentExpression.class, statement.expression());
+        functionContext.analysisData().expressionTypes().put(
+                assignment.right(),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(failure.getMessage().contains("store_property"))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenCompilerOnlyTypeLeaksIntoSubscriptStoreValue() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_subscript_store.gd",
+                """
+                        class_name BodyInsnCompilerOnlySubscriptStore
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], box: Variant) -> void:
+                            values[0] = box
+                        """,
+                Map.of("BodyInsnCompilerOnlySubscriptStore", "RuntimeBodyInsnCompilerOnlySubscriptStore"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlySubscriptStore",
+                "ping"
+        );
+        var root = assertInstanceOf(Block.class, functionContext.loweringRoot());
+        var statement = assertInstanceOf(ExpressionStatement.class, root.statements().getFirst());
+        var assignment = assertInstanceOf(AssignmentExpression.class, statement.expression());
+        functionContext.analysisData().expressionTypes().put(
+                assignment.right(),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(failure.getMessage().contains("store_subscript"))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenCompilerOnlyTypeLeaksIntoSubscriptReadKey() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_subscript_key.gd",
+                """
+                        class_name BodyInsnCompilerOnlySubscriptKey
+                        extends RefCounted
+                        
+                        func ping(values: Array[int], box: Variant) -> int:
+                            return values[box]
+                        """,
+                Map.of("BodyInsnCompilerOnlySubscriptKey", "RuntimeBodyInsnCompilerOnlySubscriptKey"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlySubscriptKey",
+                "ping"
+        );
+        var root = assertInstanceOf(Block.class, functionContext.loweringRoot());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, root.statements().getFirst());
+        var subscript = assertInstanceOf(SubscriptExpression.class, returnStatement.value());
+        functionContext.analysisData().expressionTypes().put(
+                subscript.arguments().getFirst(),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(failure.getMessage().contains("subscript_read_key"))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenCompilerOnlyTypeLeaksIntoFixedCallArgument() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_fixed_call_arg.gd",
+                """
+                        class_name BodyInsnCompilerOnlyFixedCallArg
+                        extends RefCounted
+                        
+                        func take_i(value: int) -> int:
+                            return value
+                        
+                        func call_concrete(box: Variant) -> int:
+                            return take_i(box)
+                        """,
+                Map.of("BodyInsnCompilerOnlyFixedCallArg", "RuntimeBodyInsnCompilerOnlyFixedCallArg"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlyFixedCallArg",
+                "call_concrete"
+        );
+        var root = assertInstanceOf(Block.class, functionContext.loweringRoot());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, root.statements().getFirst());
+        var callExpression = assertInstanceOf(CallExpression.class, returnStatement.value());
+        functionContext.analysisData().expressionTypes().put(
+                callExpression.arguments().getFirst(),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(failure.getMessage().contains("call_fixed_0"))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenCompilerOnlyTypeLeaksIntoVarargTailArgument() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_vararg_arg.gd",
+                """
+                        class_name BodyInsnCompilerOnlyVarargArg
+                        extends RefCounted
+                        
+                        func call_vararg(seed: int, box: Variant) -> void:
+                            print(seed, box)
+                        """,
+                Map.of("BodyInsnCompilerOnlyVarargArg", "RuntimeBodyInsnCompilerOnlyVarargArg"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlyVarargArg",
+                "call_vararg"
+        );
+        var root = assertInstanceOf(Block.class, functionContext.loweringRoot());
+        var statement = assertInstanceOf(ExpressionStatement.class, root.statements().getFirst());
+        var callExpression = assertInstanceOf(CallExpression.class, statement.expression());
+        functionContext.analysisData().expressionTypes().put(
+                callExpression.arguments().get(1),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(failure.getMessage().contains("call_vararg_1"), "Expected 'call_vararg_1' in: " + failure.getMessage())
+        );
+    }
+
+    @Test
+    void runFailsFastWhenCompilerOnlyTypeLeaksIntoReturnSlot() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_return_slot.gd",
+                """
+                        class_name BodyInsnCompilerOnlyReturnSlot
+                        extends RefCounted
+                        
+                        func ping(box: Variant) -> int:
+                            return box
+                        """,
+                Map.of("BodyInsnCompilerOnlyReturnSlot", "RuntimeBodyInsnCompilerOnlyReturnSlot"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlyReturnSlot",
+                "ping"
+        );
+        var root = assertInstanceOf(Block.class, functionContext.loweringRoot());
+        var returnStatement = assertInstanceOf(ReturnStatement.class, root.statements().getFirst());
+        var returnExpression = returnStatement.value();
+        assertNotNull(returnExpression);
+        functionContext.analysisData().expressionTypes().put(
+                returnExpression,
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(failure.getMessage().contains("return_value"))
         );
     }
 
