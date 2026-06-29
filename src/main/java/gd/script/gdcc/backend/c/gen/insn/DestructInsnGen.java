@@ -8,6 +8,7 @@ import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.scope.RefCountedStatus;
 import gd.script.gdcc.type.GdContainerType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdMetaType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringLikeType;
@@ -33,6 +34,10 @@ public final class DestructInsnGen implements CInsnGen<DestructInsn> {
             case GdVoidType _ ->
                     throw bodyBuilder.invalidInsn("Cannot destruct variable of type " + variable.type().getTypeName());
             case GdObjectType objectType -> generateObjectDestruct(bodyBuilder, insn, objectType, variable);
+            case GdccForRangeIterType _ -> {
+                var destroyFunc = bodyBuilder.helper().renderDestroyFunctionName(variable.type());
+                bodyBuilder.callVoid(destroyFunc, List.of(bodyBuilder.valueOfVar(variable)));
+            }
             case GdVariantType _, GdStringLikeType _, GdMetaType _, GdContainerType _ -> {
                 var destroyFunc = bodyBuilder.helper().renderDestroyFunctionName(variable.type());
                 bodyBuilder.callVoid(destroyFunc, List.of(bodyBuilder.valueOfVar(variable)));

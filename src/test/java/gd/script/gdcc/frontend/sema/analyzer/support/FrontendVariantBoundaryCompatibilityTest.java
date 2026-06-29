@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer.support;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -76,6 +77,47 @@ class FrontendVariantBoundaryCompatibilityTest {
                         classRegistry,
                         GdStringType.STRING,
                         GdIntType.INT
+                )
+        );
+    }
+
+    @Test
+    void compilerOnlyTypesAreRejectedAtOrdinaryFrontendBoundary() throws Exception {
+        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var compilerOnlyType = GdccForRangeIterType.FOR_RANGE_ITER;
+
+        assertAll(
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                compilerOnlyType,
+                                compilerOnlyType
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                compilerOnlyType,
+                                GdVariantType.VARIANT
+                        )
+                ),
+                () -> assertEquals(
+                        FrontendVariantBoundaryCompatibility.Decision.REJECT,
+                        FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(
+                                classRegistry,
+                                GdVariantType.VARIANT,
+                                compilerOnlyType
+                        )
+                ),
+                () -> assertEquals(
+                        0,
+                        FrontendVariantBoundaryCompatibility.frontendBoundarySpecificityRank(
+                                classRegistry,
+                                compilerOnlyType,
+                                compilerOnlyType
+                        )
                 )
         );
     }

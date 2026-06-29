@@ -1,6 +1,7 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -65,6 +66,9 @@ public final class FrontendVariantBoundaryCompatibility {
         var registry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         var source = Objects.requireNonNull(sourceType, "sourceType must not be null");
         var target = Objects.requireNonNull(targetType, "targetType must not be null");
+        if (source instanceof GdccForRangeIterType || target instanceof GdccForRangeIterType) {
+            return Decision.REJECT;
+        }
         if (target instanceof GdVariantType) {
             return source instanceof GdVariantType ? Decision.ALLOW_DIRECT : Decision.ALLOW_WITH_PACK;
         }

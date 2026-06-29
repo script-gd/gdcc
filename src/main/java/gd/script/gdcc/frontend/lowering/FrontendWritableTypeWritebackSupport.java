@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.lowering;
 
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPrimitiveType;
 import gd.script.gdcc.type.GdType;
@@ -23,6 +24,9 @@ public final class FrontendWritableTypeWritebackSupport {
 
     public static boolean requiresReverseCommitForCarrierType(@NotNull GdType carrierType) {
         return switch (Objects.requireNonNull(carrierType, "carrierType must not be null")) {
+            case GdccForRangeIterType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into frontend writeback analysis: " + carrierType.getTypeName()
+            );
             case GdPrimitiveType _, GdObjectType _, GdArrayType _, GdDictionaryType _ -> false;
             default -> true;
         };

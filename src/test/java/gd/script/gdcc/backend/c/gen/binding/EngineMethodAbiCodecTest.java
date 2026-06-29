@@ -7,6 +7,7 @@ import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdColorType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -61,6 +62,21 @@ class EngineMethodAbiCodecTest {
                         true
                 ))
         );
+    }
+
+    @Test
+    @DisplayName("codec should reject compiler-only types on engine helper ABI")
+    void codecShouldRejectCompilerOnlyTypesOnEngineHelperAbi() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> EngineMethodAbiCodec.generate(new EngineMethodAbiSignature(
+                        List.of(GdccForRangeIterType.FOR_RANGE_ITER),
+                        GdVoidType.VOID,
+                        false
+                ))
+        );
+
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into engine method ABI descriptor"), ex.getMessage());
     }
 
     @Test

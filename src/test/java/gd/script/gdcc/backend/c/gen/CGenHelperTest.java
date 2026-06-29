@@ -11,6 +11,7 @@ import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntVectorType;
@@ -58,6 +59,22 @@ class CGenHelperTest {
 
         var context = new CodegenContext(projectInfo, classRegistry);
         helper = new CGenHelper(context, List.of(gdccBase, gdccChild, gdccInner));
+    }
+
+    @Test
+    @DisplayName("compiler-only range iterator should use gdcc storage helpers and reject Variant helpers")
+    void compilerOnlyRangeIteratorShouldUseGdccHelpersAndRejectVariantHelpers() {
+        var type = GdccForRangeIterType.FOR_RANGE_ITER;
+
+        assertEquals("gdcc_for_range_iter", helper.renderGdTypeInC(type));
+        assertEquals("gdcc_for_range_iter*", helper.renderGdTypeRefInC(type));
+        assertEquals("GdccForRangeIter", helper.renderGdTypeName(type));
+        assertEquals("", helper.renderCopyAssignFunctionName(type));
+        assertEquals("gdcc_for_range_iter_destroy", helper.renderDestroyFunctionName(type));
+        assertFalse(helper.renderGdTypeInC(type).contains("godot_"));
+        assertFalse(helper.renderDestroyFunctionName(type).contains("godot_"));
+        assertThrows(IllegalArgumentException.class, () -> helper.renderPackFunctionName(type));
+        assertThrows(IllegalArgumentException.class, () -> helper.renderUnpackFunctionName(type));
     }
 
     @Test

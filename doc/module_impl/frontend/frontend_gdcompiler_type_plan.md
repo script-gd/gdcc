@@ -6,7 +6,7 @@
 
 ## 文档状态
 
-- 状态：计划维护中
+- 状态：阶段一已完成，后续阶段计划维护中
 - 更新时间：2026-06-29
 - 适用范围：
   - `src/main/java/gd/script/gdcc/type/**`
@@ -140,6 +140,16 @@ MVP 采用以下策略：
 ## 5. 分步骤实施计划
 
 ### 5.1 阶段一：类型协议与 `GdccForRangeIterType`
+
+状态：已完成（2026-06-29）。
+
+产出：
+
+- `GdType` sealed hierarchy 已直接允许 `GdccForRangeIterType`，未新增 `GdCompilerType` 抽象层。
+- `GdccForRangeIterType` 固定内部名、LIR-only text、C storage/init/destroy helper、不可空、无 GDExtension metadata、destroyable 协议。
+- C helper 对该类型使用 `gdcc_for_range_iter` / `gdcc_for_range_iter_destroy`，Variant pack/unpack 和 default-value 路径 fail-fast，copy assignment 不走 `godot_new_*_with_*`。
+- Frontend ordinary boundary/writeback helper 对该类型显式拒绝，避免阶段一后由默认兼容路径泄漏到用户语义。
+- 本阶段未新增任何 `for` parser / analyzer / lowering 行为；prepare 初始化仍按计划留给阶段五专用 init 路径。
 
 目标：
 

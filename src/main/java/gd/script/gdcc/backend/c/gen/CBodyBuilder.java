@@ -889,6 +889,9 @@ public final class CBodyBuilder {
     @NotNull
     public static String renderDefaultValueExpr(@NotNull GdType type) {
         return switch (type) {
+            case GdccForRangeIterType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into default value expression: " + type.getTypeName()
+            );
             case GdVoidType _ -> "";
             case GdBoolType _ -> "false";
             case GdIntType _ -> "0";
