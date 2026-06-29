@@ -9,6 +9,7 @@ import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -96,19 +97,24 @@ final class FrontendCfgNodeInsnLoweringProcessors {
         ) {
             var sourceSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(conditionValueId);
             session.ensureVariable(sourceSlotId, conditionType);
-            if (conditionType instanceof GdBoolType) {
-                block.setTerminator(new GoIfInsn(sourceSlotId, trueBlockId, falseBlockId));
-                return;
+            switch (conditionType) {
+                case GdBoolType _ -> {
+                    block.setTerminator(new GoIfInsn(sourceSlotId, trueBlockId, falseBlockId));
+                    return;
+                }
+                case GdVariantType _ -> {
+                    var boolSlotId = FrontendBodyLoweringSupport.conditionBoolSlotId(conditionValueId);
+                    session.ensureVariable(boolSlotId, GdBoolType.BOOL);
+                    block.appendNonTerminatorInstruction(new UnpackVariantInsn(boolSlotId, sourceSlotId));
+                    block.setTerminator(new GoIfInsn(boolSlotId, trueBlockId, falseBlockId));
+                    return;
+                }
+                case GdccForRangeIterType compilerOnlyType -> throw new IllegalStateException(
+                        "compiler-only type leaked into frontend condition normalization: "
+                                + compilerOnlyType.getTypeName()
+                );
+                default -> {}
             }
-
-            if (conditionType instanceof GdVariantType) {
-                var boolSlotId = FrontendBodyLoweringSupport.conditionBoolSlotId(conditionValueId);
-                session.ensureVariable(boolSlotId, GdBoolType.BOOL);
-                block.appendNonTerminatorInstruction(new UnpackVariantInsn(boolSlotId, sourceSlotId));
-                block.setTerminator(new GoIfInsn(boolSlotId, trueBlockId, falseBlockId));
-                return;
-            }
-
             var variantSlotId = FrontendBodyLoweringSupport.conditionVariantSlotId(conditionValueId);
             var boolSlotId = FrontendBodyLoweringSupport.conditionBoolSlotId(conditionValueId);
             session.ensureVariable(variantSlotId, GdVariantType.VARIANT);

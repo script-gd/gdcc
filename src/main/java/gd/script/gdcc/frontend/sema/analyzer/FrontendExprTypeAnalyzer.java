@@ -18,6 +18,7 @@ import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -468,6 +469,12 @@ public class FrontendExprTypeAnalyzer {
             }
             var published = expressionTypes.get(expression);
             if (published != null) {
+                if (published.publishedType() instanceof GdccForRangeIterType compilerOnlyType) {
+                    throw new IllegalStateException(
+                            "compiler-only type leaked into frontend expressionTypes(): "
+                                    + compilerOnlyType.getTypeName()
+                    );
+                }
                 return published;
             }
             var computed = resolveExpressionType(expression, allowStatementResult);
@@ -481,6 +488,12 @@ public class FrontendExprTypeAnalyzer {
         ) {
             if (isRouteHeadOnlyTypeMeta(expression)) {
                 return;
+            }
+            if (computed.publishedType() instanceof GdccForRangeIterType compilerOnlyType) {
+                throw new IllegalStateException(
+                        "compiler-only type leaked into frontend expressionTypes(): "
+                                + compilerOnlyType.getTypeName()
+                );
             }
             expressionTypes.put(expression, computed);
         }
@@ -533,6 +546,12 @@ public class FrontendExprTypeAnalyzer {
             };
             if (backfilledType == null || backfilledType instanceof GdVoidType) {
                 return;
+            }
+            if (backfilledType instanceof GdccForRangeIterType compilerOnlyType) {
+                throw new IllegalStateException(
+                        "compiler-only type leaked into frontend local backfill: "
+                                + compilerOnlyType.getTypeName()
+                );
             }
             if (!(existingLocal.type() instanceof GdVariantType)) {
                 if (!sameType(existingLocal.type(), backfilledType)) {

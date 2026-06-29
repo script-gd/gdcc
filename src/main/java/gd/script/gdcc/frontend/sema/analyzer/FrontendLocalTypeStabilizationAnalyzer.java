@@ -47,6 +47,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
@@ -190,6 +191,12 @@ public class FrontendLocalTypeStabilizationAnalyzer {
         var publishedType = initializerType.publishedType();
         if (publishedType instanceof GdVoidType) {
             return null;
+        }
+        if (publishedType instanceof GdccForRangeIterType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend local stabilization: "
+                            + compilerOnlyType.getTypeName()
+            );
         }
         return publishedType;
     }

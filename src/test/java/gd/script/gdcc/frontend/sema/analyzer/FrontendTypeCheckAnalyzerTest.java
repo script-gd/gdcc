@@ -15,6 +15,7 @@ import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
@@ -715,24 +716,24 @@ class FrontendTypeCheckAnalyzerTest {
         var preparedInput = prepareTypeCheckInput("type_check_string_family_boundaries.gd", """
                 class_name TypeCheckStringFamilyBoundaries
                 extends RefCounted
-
+                
                 var accepted_property_name: StringName = ""
                 var accepted_property_text: String = &"property_text"
                 var rejected_property: int = &"not_an_int"
-
+                
                 func ping(text: String, name: StringName) -> void:
                     var accepted_local_name: StringName = text
                     var accepted_local_text: String = name
                     var rejected_local: int = text
                     name = text
                     text = name
-
+                
                 func return_name(text: String) -> StringName:
                     return text
-
+                
                 func return_text(name: StringName) -> String:
                     return name
-
+                
                 func reject_return(text: String) -> int:
                     return text
                 """);
@@ -1209,6 +1210,39 @@ class FrontendTypeCheckAnalyzerTest {
                 FrontendExpressionTypeStatus.FAILED,
                 Objects.requireNonNull(preparedInput.analysisData().expressionTypes().get(ifStatements.get(6).condition())).status()
         );
+    }
+
+    @Test
+    void analyzeFailsFastWhenConditionFactLeaksCompilerOnlyType() throws Exception {
+        var preparedInput = prepareTypeCheckInput("type_check_compiler_only_condition.gd", """
+                class_name TypeCheckCompilerOnlyCondition
+                extends RefCounted
+                
+                func ping():
+                    if 1:
+                        pass
+                """);
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var ifStatement = findNode(
+                pingFunction,
+                dev.superice.gdparser.frontend.ast.IfStatement.class,
+                ignored -> true
+        );
+        preparedInput.analysisData().expressionTypes().put(
+                ifStatement.condition(),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendTypeCheckAnalyzer().analyze(
+                        preparedInput.classRegistry(),
+                        preparedInput.analysisData(),
+                        preparedInput.diagnosticManager()
+                )
+        );
+
+        assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend condition fact"));
     }
 
     private static void assertEvent(

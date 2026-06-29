@@ -26,10 +26,12 @@ import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
+import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
@@ -45,6 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendLocalTypeStabilizationAnalyzerTest {
@@ -177,6 +180,35 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 () -> assertNull(FrontendLocalTypeStabilizationAnalyzer.probeAssignmentOrdinaryValueInitializerFailure(
                         identifier("plain")
                 ))
+        );
+    }
+
+    @Test
+    void probeFailsFastWhenCompilerOnlyInitializerWouldStabilizeOrdinaryLocal() throws Exception {
+        var declaration = new VariableDeclaration(
+                DeclarationKind.VAR,
+                "iter",
+                new TypeRef(":=", SYNTHETIC_RANGE),
+                identifier("seed"),
+                false,
+                "variable_declaration",
+                SYNTHETIC_RANGE
+        );
+        var bodyScope = newBodyScope();
+        bodyScope.defineLocal("iter", GdVariantType.VARIANT, declaration);
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendLocalTypeStabilizationAnalyzer.probeStabilizeLocalSlot(
+                        bodyScope,
+                        declaration,
+                        FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend local stabilization")),
+                () -> assertEquals(GdVariantType.VARIANT, Objects.requireNonNull(bodyScope.resolveValue("iter")).type())
         );
     }
 

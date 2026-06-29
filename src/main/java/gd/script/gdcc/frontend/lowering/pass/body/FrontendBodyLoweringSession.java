@@ -31,6 +31,7 @@ import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.type.GdContainerType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -741,6 +742,22 @@ public final class FrontendBodyLoweringSession {
                     "Frontend boundary '"
                             + use
                             + "' must not materialize into target type void; value-required lowering sites must not request a concrete slot for void"
+            );
+        }
+        if (source instanceof GdccForRangeIterType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend boundary source '"
+                            + use
+                            + "': "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+        if (target instanceof GdccForRangeIterType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend boundary target '"
+                            + use
+                            + "': "
+                            + compilerOnlyType.getTypeName()
             );
         }
         return switch (FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(

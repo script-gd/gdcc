@@ -17,6 +17,8 @@ import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -154,7 +156,7 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeSingletonResolvedValueStability
                         extends RefCounted
-
+                        
                         func ping():
                             Engine
                             Engine.get_frames_drawn()
@@ -2323,7 +2325,7 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeBackfillRefreshesBindingResolvedValue
                         extends RefCounted
-
+                        
                         func ping():
                             var value := 1
                             value
@@ -2430,6 +2432,54 @@ class FrontendExprTypeAnalyzerTest {
 
         assertTrue(failure.getMessage().contains("Inferred local slot type changed after stabilization"));
         assertTrue(failure.getMessage().contains("value"));
+    }
+
+    @Test
+    void analyzeFailsFastWhenResolvedCompilerOnlyExpressionFactWouldBePublished() throws Exception {
+        var input = prepareInputBeforeExpressionTyping(
+                "expr_type_compiler_only_expression_fact.gd",
+                """
+                        class_name ExprTypeCompilerOnlyExpressionFact
+                        extends RefCounted
+
+                        func ping():
+                            var value: int = 1
+                            value
+                        """,
+                false
+        );
+        var pingFunction = findFunction(input.unit().ast(), "ping");
+        var valueUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var originalBinding = input.analysisData().symbolBindings().get(valueUse);
+        assertNotNull(originalBinding);
+        var originalValue = originalBinding.resolvedValue();
+        assertNotNull(originalValue);
+        input.analysisData().symbolBindings().put(
+                valueUse,
+                originalBinding.withResolvedValue(new ScopeValue(
+                        originalValue.name(),
+                        GdccForRangeIterType.FOR_RANGE_ITER,
+                        originalValue.kind(),
+                        originalValue.declaration(),
+                        originalValue.constant(),
+                        originalValue.writable(),
+                        originalValue.staticMember()
+                ))
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendExprTypeAnalyzer().analyze(
+                        input.classRegistry(),
+                        input.analysisData(),
+                        input.diagnosticManager()
+                )
+        );
+
+        assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend expressionTypes()"));
     }
 
     @Test

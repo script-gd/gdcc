@@ -236,6 +236,17 @@ MVP 采用以下策略：
 
 ### 5.3 阶段三：frontend semantic 与 lowering 边界封堵
 
+状态：已完成（2026-06-29）。
+
+产出：
+
+- `FrontendExprTypeAnalyzer` 在 `expressionTypes()` 发布入口与 inferred-local backfill 路径上对 compiler-only type fail-fast，避免 compiler-only published fact 进入用户 expression/local semantic facts。
+- `FrontendLocalTypeStabilizationAnalyzer` 在 local slot 写回前显式拒绝 compiler-only resolved initializer，保持 ordinary local `:=` 只接受用户语义类型。
+- `FrontendTypeCheckAnalyzer` 对 condition published fact 新增 compiler-only guard，防止 leaked compiler-only condition 静默通过 shared type-check 消费。
+- `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(...)` 新增 compiler-only source/target 二次防线；即使 shared boundary helper 未来回归或 synthetic CFG/value fact 被篡改，也不会生成 `PackVariantInsn`、`UnpackVariantInsn`、`ConstructBuiltinInsn` 或 intrinsic-cast boundary。
+- `FrontendCfgNodeInsnLoweringProcessors` 对 condition normalization 新增 compiler-only fail-fast，阻止 compiler-only condition 走 `pack_variant -> unpack_variant(bool)` lowering。
+- 针对 shared boundary、semantic facts、local stabilization、condition type-check、boundary materialization 与 condition lowering 的正反测试已补齐，并继续保留既有 ordinary boundary happy path。
+
 目标：
 
 - compiler-only type 不进入用户 semantic facts。

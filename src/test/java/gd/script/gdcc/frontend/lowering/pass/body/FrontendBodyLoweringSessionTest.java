@@ -25,6 +25,7 @@ import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
@@ -621,6 +622,45 @@ class FrontendBodyLoweringSessionTest {
                 () -> assertTrue(targetException.getMessage().contains("target type void"), targetException.getMessage()),
                 () -> assertTrue(sourceVoidBlock.getNonTerminatorInstructions().isEmpty()),
                 () -> assertTrue(targetVoidBlock.getNonTerminatorInstructions().isEmpty())
+        );
+    }
+
+    @Test
+    void materializeFrontendBoundaryValueFailsFastWhenCompilerOnlyTypeLeaksIntoBoundary() throws Exception {
+        var session = prepareSession();
+        var sourceLeakBlock = new LirBasicBlock("compiler_only_source");
+        var targetLeakBlock = new LirBasicBlock("compiler_only_target");
+        session.ensureVariable("iter_slot", GdccForRangeIterType.FOR_RANGE_ITER);
+        session.ensureVariable("value_slot", GdIntType.INT);
+
+        var sourceFailure = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        sourceLeakBlock,
+                        "iter_slot",
+                        GdccForRangeIterType.FOR_RANGE_ITER,
+                        GdVariantType.VARIANT,
+                        "compiler_only_source_boundary"
+                )
+        );
+        var targetFailure = assertThrows(
+                IllegalStateException.class,
+                () -> session.materializeFrontendBoundaryValue(
+                        targetLeakBlock,
+                        "value_slot",
+                        GdVariantType.VARIANT,
+                        GdccForRangeIterType.FOR_RANGE_ITER,
+                        "compiler_only_target_boundary"
+                )
+        );
+
+        assertAll(
+                () -> assertTrue(sourceFailure.getMessage().contains("compiler-only type leaked into frontend boundary source")),
+                () -> assertTrue(sourceFailure.getMessage().contains("compiler_only_source_boundary")),
+                () -> assertTrue(targetFailure.getMessage().contains("compiler-only type leaked into frontend boundary target")),
+                () -> assertTrue(targetFailure.getMessage().contains("compiler_only_target_boundary")),
+                () -> assertTrue(sourceLeakBlock.getNonTerminatorInstructions().isEmpty()),
+                () -> assertTrue(targetLeakBlock.getNonTerminatorInstructions().isEmpty())
         );
     }
 

@@ -65,6 +65,7 @@ import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdObjectType;
@@ -952,6 +953,46 @@ class FrontendLoweringBodyInsnPassTest {
                 () -> assertEquals(1, countInstructions(intInstructions, PackVariantInsn.class)),
                 () -> assertEquals(1, countInstructions(intInstructions, UnpackVariantInsn.class)),
                 () -> assertEquals(1, countInstructions(intInstructions, GoIfInsn.class))
+        );
+    }
+
+    @Test
+    void runFailsFastWhenConditionFactLeaksCompilerOnlyType() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_compiler_only_condition.gd",
+                """
+                        class_name BodyInsnCompilerOnlyCondition
+                        extends RefCounted
+                        
+                        func branch_on_int(count: int) -> int:
+                            if count:
+                                return 1
+                            return 2
+                        """,
+                Map.of("BodyInsnCompilerOnlyCondition", "RuntimeBodyInsnCompilerOnlyCondition"),
+                true
+        );
+        var functionContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnCompilerOnlyCondition",
+                "branch_on_int"
+        );
+        var root = assertInstanceOf(dev.superice.gdparser.frontend.ast.Block.class, functionContext.loweringRoot());
+        var ifStatement = assertInstanceOf(dev.superice.gdparser.frontend.ast.IfStatement.class, root.statements().getFirst());
+        functionContext.analysisData().expressionTypes().put(
+                ifStatement.condition(),
+                FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER)
+        );
+
+        var failure = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendLoweringBodyInsnPass().run(prepared.context())
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertTrue(failure.getMessage().contains("compiler-only type leaked into frontend condition normalization"))
         );
     }
 
@@ -2846,7 +2887,7 @@ class FrontendLoweringBodyInsnPassTest {
                 """
                         class_name BodyInsnSingletonReceiverLaterLocal
                         extends RefCounted
-
+                        
                         func frames() -> int:
                             var frames := Engine.get_frames_drawn()
                             var Engine: String = ""

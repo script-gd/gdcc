@@ -18,6 +18,7 @@ import gd.script.gdcc.scope.PropertyDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -252,10 +253,16 @@ public class FrontendTypeCheckAnalyzer {
         // Conditions only require a stable published typed fact here.
         // Godot-compatible truthiness stays a downstream lowering/runtime concern instead of being
         // reinterpreted here as a strict-bool source-language contract.
-        Objects.requireNonNull(
+        var conditionType = Objects.requireNonNull(
                 publishedConditionType.publishedType(),
                 "publishedType must not be null for stable condition expression"
         );
+        if (conditionType instanceof GdccForRangeIterType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend condition fact: "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
     }
 
     protected record TypeCheckAccess(
