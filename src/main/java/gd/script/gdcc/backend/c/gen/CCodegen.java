@@ -13,6 +13,7 @@ import gd.script.gdcc.enums.LifecycleProvenance;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.lir.validation.ControlFlowIntegrityValidator;
+import gd.script.gdcc.lir.validation.LirPublicAbiValidator;
 import gd.script.gdcc.lir.validation.LifecycleInstructionRestrictionValidator;
 import gd.script.gdcc.scope.ParameterDef;
 import gd.script.gdcc.scope.RefCountedStatus;
@@ -62,6 +63,8 @@ public class CCodegen implements Codegen {
     private CGenHelper helper;
     /// Validator for block layout and successor integrity.
     private final ControlFlowIntegrityValidator controlFlowValidator = new ControlFlowIntegrityValidator();
+    /// Validator for compiler-only type leaks on ABI-like LIR surfaces.
+    private final LirPublicAbiValidator publicAbiValidator = new LirPublicAbiValidator();
     /// Validator for lifecycle instruction usage restrictions.
     private final LifecycleInstructionRestrictionValidator lifecycleValidator = new LifecycleInstructionRestrictionValidator();
 
@@ -533,6 +536,8 @@ public class CCodegen implements Codegen {
         if (ctx == null || module == null) {
             throw new IllegalStateException("CCodegen not prepared. Call prepare() before generate().");
         }
+        // Validate ABI surfaces before backend synthesizes helpers or touches outward metadata.
+        publicAbiValidator.validateModule(module);
         this.generateDefaultGetterSetterInitialization();
         this.validatePropertyInitFunctionsReadyForCodegen();
         this.generateFunctionPrepareBlock();
