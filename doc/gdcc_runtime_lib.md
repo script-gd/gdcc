@@ -57,7 +57,17 @@ extend the runtime-provided `godot_*` surface.
 - `gdcc_intrinsic.h`: wrapper-only inbound materialization helpers for accepted Variant payloads whose
   runtime type differs from the published method metadata. It owns vector narrow-payload helpers
   and string-family `String` / `StringName` cross-case helpers; scalar `int -> float` inbound
-  materialization remains directly emitted by the generated wrapper code.
+  materialization remains directly emitted by the generated wrapper code. The same header also owns
+  compiler-only range-iterator runtime storage helpers:
+  - `gdcc_for_range_iter` is the backend-owned C storage struct for `compiler::GdccForRangeIter`
+  - `gdcc_for_range_iter_init()` is the prepare-block default initializer
+  - `gdcc_for_range_iter_destroy()` is the matching destroy hook; it is intentionally a no-op today
+  - `gdcc_for_range_iter_from_bounds()` materializes normalized `start/end/step` bounds and reports
+    `step == 0` through `godot_print_error(...)` before returning a non-looping fallback state
+  - `gdcc_for_range_iter_should_continue()`, `gdcc_for_range_iter_next()` and
+    `gdcc_for_range_iter_get()` implement the range intrinsic family
+  - these helpers are GDCC-owned runtime support and must keep the `gdcc_*` namespace instead of
+    pretending to be generated `godot_*` wrappers
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides
   runtime error printing, Object property get/set helpers, RefCounted ownership helpers, GDCC
   wrapper pointer conversion helpers, compatibility constructors, UTF-8 formatting helpers,

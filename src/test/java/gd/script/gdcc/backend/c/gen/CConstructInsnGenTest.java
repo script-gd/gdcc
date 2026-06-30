@@ -28,6 +28,7 @@ import gd.script.gdcc.type.GdBasisType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
@@ -188,6 +189,21 @@ class CConstructInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
         assertTrue(ex.getMessage().contains("Result variable ID 'result' cannot be a reference"));
+    }
+
+    @Test
+    @DisplayName("construct_builtin should reject compiler-only result types instead of inventing Godot helpers")
+    void constructBuiltinShouldRejectCompilerOnlyResultType() {
+        var clazz = newTestClass();
+        var func = newFunction("construct_builtin_compiler_only_result");
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        entry(func).appendInstruction(new ConstructBuiltinInsn("iter", List.of()));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func));
+        assertTrue(ex.getMessage().contains("Builtin constructor validation failed"), ex.getMessage());
+        assertFalse(ex.getMessage().contains("godot_new_GdccForRangeIter"), ex.getMessage());
     }
 
     @Test

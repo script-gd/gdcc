@@ -6,8 +6,8 @@
 
 ## 文档状态
 
-- 状态：阶段一至四已完成，后续阶段计划维护中
-- 更新时间：2026-06-29
+- 状态：阶段一至九已完成，进入维护中
+- 更新时间：2026-06-30
 - 适用范围：
     - `src/main/java/gd/script/gdcc/type/**`
     - `src/main/java/gd/script/gdcc/scope/**`
@@ -618,6 +618,16 @@ MVP 采用以下策略：
 - `CGenHelperTest`
 
 ### 5.9 阶段九：文档同步与回归收口
+
+状态：已完成（2026-06-30）。
+
+产出：
+
+- `doc/gdcc_type_system.md` 已补充 compiler-only type 的定位、`GdCompilerType` 抽象层归属以及 ordinary compatibility matrix exclusion。
+- `doc/gdcc_low_ir.md` 已补充 `compiler::<Name>` grammar 的 LIR-only 边界，并明确 MVP 仅允许 function `<variables>` 使用该语法。
+- `doc/gdcc_lir_intrinsic.md` 已收录 `gdcc.for_range_iter.init`、`gdcc.for_range_iter.should_continue`、`gdcc.for_range_iter.next`、`gdcc.for_range_iter.get` 四个 catalog 条目。
+- `doc/gdcc_c_backend.md` 与 `doc/gdcc_runtime_lib.md` 已同步 `gdcc_for_range_iter` C storage 与 `gdcc_for_range_iter_*` helper 的命名/边界，继续明确禁止回退到默认 `godot_*` helper 命名。
+- targeted regression 继续锚定 compiler-only type 只属于内部 storage typing，而不是 source-facing type。
 
 目标：
 

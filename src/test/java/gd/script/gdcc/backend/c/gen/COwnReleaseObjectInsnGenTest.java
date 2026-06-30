@@ -14,6 +14,7 @@ import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.TryOwnObjectInsn;
 import gd.script.gdcc.lir.insn.TryReleaseObjectInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVoidType;
@@ -128,6 +129,28 @@ public class COwnReleaseObjectInsnGenTest {
 
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
         assertInstanceOf(InvalidInsnException.class, ex);
+    }
+
+    @Test
+    @DisplayName("Compiler-only variable should be rejected before own/release object path")
+    void compilerOnlyVariableShouldThrow() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("invalid_compiler_only_own");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new TryOwnObjectInsn("iter", LifecycleProvenance.USER_EXPLICIT));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = new CCodegen();
+        codegen.prepare(newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()), List.of(workerClass)), module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertTrue(ex.getMessage().contains("not of object type"), ex.getMessage());
     }
 
     @Test

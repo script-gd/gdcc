@@ -11,6 +11,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -359,5 +360,39 @@ public class DomLirParserTest {
 
         assertTrue(exception.getMessage().contains("Unknown compiler-only type text: compiler::UnknownIter"), exception.getMessage());
         assertFalse(exception.getMessage().contains("GdObjectType"), exception.getMessage());
+    }
+
+    @Test
+    public void parse_rejectsMalformedCompilerOnlyGrammarWithoutGuessingObjectType() throws Exception {
+        var malformedTypeTexts = List.of("compiler::", "compiler:OnlyOneColon", "compiler ::GdccForRangeIter");
+
+        for (var typeText : malformedTypeTexts) {
+            var xml = """
+                    <ir>
+                      <class_def name="C" super="Object" is_abstract="false" is_tool="false">
+                        <functions>
+                          <function name="_init" is_static="false" is_abstract="false" is_lambda="false" is_vararg="false" is_hidden="false">
+                            <parameters/>
+                            <captures/>
+                            <return_type type="void"/>
+                            <variables>
+                              <variable id="iter" type="%s"/>
+                            </variables>
+                            <basic_blocks entry="entry"><basic_block id="entry">return;</basic_block></basic_blocks>
+                          </function>
+                        </functions>
+                      </class_def>
+                    </ir>
+                    """.formatted(typeText);
+
+            var parser = new DomLirParser(new ClassRegistry(ExtensionApiLoader.loadDefault()));
+            var exception = assertThrows(IllegalArgumentException.class, () -> parser.parse(new StringReader(xml)), typeText);
+
+            assertFalse(exception.getMessage().contains("GdObjectType"), exception.getMessage());
+            assertTrue(
+                    exception.getMessage().contains("compiler") || exception.getMessage().contains("Cannot parse type"),
+                    exception.getMessage()
+            );
+        }
     }
 }

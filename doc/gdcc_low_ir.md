@@ -24,7 +24,19 @@ manipulate variables.
 
 See [Types](gdcc_type_system.md) for details on the type system used in Low IR.
 
-Low IR can also carry backend-owned compiler-only types. They use the `compiler::<Name>` textual grammar and are only valid on backend-owned local variables unless a dedicated validator explicitly allows a wider surface.
+Low IR can also carry backend-owned compiler-only types. They use the `compiler::<Name>` textual grammar and are only valid on function-local `<variables>` storage unless a dedicated validator explicitly allows a wider surface.
+
+Current MVP contract:
+
+- Compiler-only type text is LIR-only and does not reuse source-facing declared-type parsing.
+- `compiler::<Name>` is accepted only for function `<variables>`.
+- Compiler-only types must not appear on:
+  - function `<parameters>`
+  - function `<return_type>`
+  - class `<properties>`
+  - signal parameters
+  - lambda captures
+- The first concrete grammar instance is `compiler::GdccForRangeIter`.
 
 ## Instructions
 
@@ -88,6 +100,7 @@ Current assignability rules in backend codegen are:
   - `Array[SubClass]` to `Array[SuperClass]`.
   - `Dictionary[K, V]` to `Dictionary` / `Dictionary[Variant, Variant]`.
   - `Dictionary[K1, V1]` to `Dictionary[K2, V2]` when `K1` is assignable to `K2` and `V1` is assignable to `V2`.
+- Compiler-only types are not widened into ordinary ABI-facing assignability. They stay on backend-owned local/intrinsic paths.
 ```
 $<result_id> = assign $<source_id>
 ```

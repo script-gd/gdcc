@@ -183,6 +183,17 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("Compiler-only iterator storage should be passed by reference (&)")
+        void testCompilerOnlyArgumentWithAddressOf() {
+            var iterVar = new LirVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER, lirFunctionDef);
+            var value = builder.valueOfVar(iterVar);
+
+            builder.callVoid("func", List.of(value));
+
+            assertEquals("func(&$iter);\n", builder.build());
+        }
+
+        @Test
         @DisplayName("Ref variable should not add extra &")
         void testRefVariableNoExtraAddressOf() {
             var refVar = new LirVariable("ref", GdStringType.STRING, true, lirFunctionDef);

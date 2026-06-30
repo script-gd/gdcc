@@ -10,6 +10,16 @@
 - Meta/extension types: `GdMetaType`, `GdExtensionTypeEnum` for annotations and extension points.
 - Compiler-only types: `GdCompilerType` as the shared abstraction for backend-only storage types, with `GdccForRangeIterType` as the first concrete example.
 
+## Compiler-only Types
+
+- `GdCompilerType` models GDCC-owned runtime storage that only exists inside compiler / lowering / LIR / backend pipelines.
+- Compiler-only types are not part of the GDScript source-facing type set:
+  - declared type parsers must not resolve them
+  - type-meta and outward ABI metadata must not publish them
+  - ordinary user-facing semantic facts such as `expressionTypes()` and ordinary slot typing must not expose them
+- `GdccForRangeIterType` is the first concrete `GdCompilerType`. It represents backend-owned range-iterator state storage, not a user-declarable `range(...)` result type.
+- Compiler-only types may participate in LIR/backend-local assignment and intrinsic contracts, but they are outside the ordinary frontend assignment/conversion matrix.
+
 ## Major Types (Summary)
 - `GdPrimitiveType`: atomic values.
     - `GdIntType`: integers.
