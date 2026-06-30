@@ -34,7 +34,7 @@
 
 ## 0. 维护合同
 
-- 本文档是 `GdCompilerType` 实施顺序、禁止边界和验收细则的计划事实源。
+- 本文档是 `GdccCompilerType` 实施顺序、禁止边界和验收细则的计划事实源。
 - `frontend_implicit_conversion_matrix.md` 仍是 ordinary typed-boundary compatibility 的唯一真源；本文档不得维护第二份
   source/target conversion 矩阵。
 - `gdcc_lir_intrinsic.md` 仍是 `call_intrinsic` surface、backend registry 和 intrinsic catalog 的事实源；本文档只规定
@@ -43,6 +43,7 @@
 - 实现时不得用 `Variant`、`DYNAMIC`、`TYPE_META` 或 Godot object metadata 伪装 compiler-only storage。
 - 若实现过程中发现某个计划项需要改变 source-facing typing、ordinary boundary、public ABI 或 runtime helper
   命名，必须先更新对应事实源文档，再修改代码与测试。
+- 参考`gdcompiler_type_design_risk_analysis.md`中的内容进行实施，`GdccCompilerType`是值语义类型，使用复制语义传参，必须使用intrinsic进行操作。
 
 ---
 
@@ -488,6 +489,20 @@ MVP 采用以下策略：
 - `CBodyBuilderPhaseCTest`
 
 ### 5.7 阶段七：`GdccForRangeIterType` intrinsic 最小闭环
+
+状态：已完成（2026-06-30）。
+
+产出：
+
+- 新增 `gdcc.for_range_iter.init`、`gdcc.for_range_iter.should_continue`、`gdcc.for_range_iter.next`、`gdcc.for_range_iter.get`
+  四个 backend-owned intrinsic，并在 `CIntrinsicManager` 注册白名单。
+- `init` 接受已归一化的 `start/end/step` 三个 `int` slot，返回非 ref `compiler::GdccForRangeIter`；`should_continue` 返回 `bool`；
+  `next` 返回推进后的新 iterator state；`get` 返回当前 `int` 值。
+- Runtime helper 使用 `gdcc_for_range_iter_from_bounds` / `gdcc_for_range_iter_should_continue` /
+  `gdcc_for_range_iter_next` / `gdcc_for_range_iter_get`，保留 `gdcc_for_range_iter_init()` 作为 prepare-block 默认初始化 helper。
+- `step == 0` 采用明确 runtime error helper 策略：`gdcc_for_range_iter_from_bounds(...)` 调用 `godot_print_error(...)` 后返回不可无限循环的 fallback state。
+- 测试覆盖 parser / serializer 文本保留、registry dispatch、完整 `CallIntrinsicInsnGen` codegen、正负合同错误、literal operand 拒绝、零步长策略和
+  `GdccForRangeIterType` 不能传给非 range intrinsic。
 
 目标：
 

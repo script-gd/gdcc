@@ -223,6 +223,32 @@ public class SimpleLirBlockInsnParserTest {
     }
 
     @Test
+    public void parse_callIntrinsicRangeIteratorInstructionsPreservesNamesAndVariableArgs() throws Exception {
+        var input = """
+                $iter = call_intrinsic "gdcc.for_range_iter.init" $start $end $step;
+                $cond = call_intrinsic "gdcc.for_range_iter.should_continue" $iter;
+                $value = call_intrinsic "gdcc.for_range_iter.get" $iter;
+                $iter2 = call_intrinsic "gdcc.for_range_iter.next" $iter;
+                """;
+        var parsed = parse(input);
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var out = new StringWriter();
+
+        serializer.serialize(parsed, out);
+        var reparsed = parse(out.toString());
+
+        assertEquals(input, out.toString());
+        assertEquals(4, reparsed.size());
+        var init = assertInstanceOf(CallIntrinsicInsn.class, reparsed.getFirst());
+        assertEquals("iter", init.resultId());
+        assertEquals("gdcc.for_range_iter.init", init.intrinsicName());
+        assertEquals(3, init.args().size());
+        assertCallIntrinsic(reparsed.get(1), "cond", "gdcc.for_range_iter.should_continue", "iter");
+        assertCallIntrinsic(reparsed.get(2), "value", "gdcc.for_range_iter.get", "iter");
+        assertCallIntrinsic(reparsed.get(3), "iter2", "gdcc.for_range_iter.next", "iter");
+    }
+
+    @Test
     public void parse_loadStaticGlobalScopeSingletonSurfaceRoundTripsThroughSerializer() throws Exception {
         var input = "$engine = load_static \"@GlobalScope\" \"Engine\";\n";
         var parsed = parse(input);
@@ -254,6 +280,13 @@ public class SimpleLirBlockInsnParserTest {
         // Intrinsic arguments are materialized LIR slots, not literal operands.
         var line = "$v = call_intrinsic \"c_vector3i_to_vector3\" 42;";
         var col = line.indexOf("42") + 1;
+        assertParseError(line, 1, col, "Expected variable operand");
+    }
+
+    @Test
+    public void parse_callIntrinsicRangeIteratorRejectsLiteralBounds() {
+        var line = "$iter = call_intrinsic \"gdcc.for_range_iter.init\" 0 $end $step;";
+        var col = line.indexOf("0") + 1;
         assertParseError(line, 1, col, "Expected variable operand");
     }
 

@@ -313,7 +313,7 @@ public class CCodegenTest {
         var cCode = generatedFileText(files, "entry.c");
 
         assertTrue(cCode.contains("gdcc_for_range_iter $iter;"), cCode);
-        assertTrue(cCode.contains("gdcc_for_range_iter_init(&$iter);"), cCode);
+        assertTrue(cCode.contains("$iter = gdcc_for_range_iter_init();"), cCode);
         assertFalse(cCode.contains("godot_new_GdccForRangeIter"), cCode);
     }
 

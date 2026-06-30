@@ -3,6 +3,51 @@
 
 #include <godot_binding.h>
 
+typedef struct gdcc_for_range_iter {
+    godot_int current;
+    godot_int end;
+    godot_int step;
+} gdcc_for_range_iter;
+
+static inline gdcc_for_range_iter gdcc_for_range_iter_init(void) {
+    return (gdcc_for_range_iter){ .current = 0, .end = 0, .step = 1 };
+}
+
+static inline void gdcc_for_range_iter_destroy(gdcc_for_range_iter *iter) {
+    (void)iter;
+}
+
+static inline gdcc_for_range_iter gdcc_for_range_iter_from_bounds(
+    godot_int start,
+    godot_int end,
+    godot_int step
+) {
+    if (step == 0) {
+        godot_print_error("range step argument is zero", "gdcc_for_range_iter_from_bounds", "<generated>", 0, true);
+        return (gdcc_for_range_iter){ .current = start, .end = end, .step = 1 };
+    }
+    return (gdcc_for_range_iter){ .current = start, .end = end, .step = step };
+}
+
+static inline godot_bool gdcc_for_range_iter_should_continue(const gdcc_for_range_iter *iter) {
+    if (iter->step > 0) {
+        return iter->current < iter->end;
+    }
+    return iter->current > iter->end;
+}
+
+static inline gdcc_for_range_iter gdcc_for_range_iter_next(const gdcc_for_range_iter *iter) {
+    return (gdcc_for_range_iter){
+        .current = iter->current + iter->step,
+        .end = iter->end,
+        .step = iter->step,
+    };
+}
+
+static inline godot_int gdcc_for_range_iter_get(const gdcc_for_range_iter *iter) {
+    return iter->current;
+}
+
 /// Wrapper-only inbound constructors for call_func arguments whose accepted Variant payload
 /// runtime type differs from the published method metadata.
 /// The generated wrapper must run its runtime type gate first; these helpers materialize the

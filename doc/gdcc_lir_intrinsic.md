@@ -170,6 +170,141 @@ $target = godot_new_Vector4_with_Vector4i(&$source);
 
 - `doc/module_impl/backend/implicit_conversion_implementation.md`
 
+### `gdcc.for_range_iter.init`
+
+状态：Implemented
+
+形态：
+
+```text
+$<iter_result> = call_intrinsic "gdcc.for_range_iter.init" $<start> $<end> $<step>;
+```
+
+合同：
+
+- result 必须存在。
+- result 必须是非 `ref` 的 `compiler::GdccForRangeIter` slot。
+- exactly three arguments。
+- arguments 必须依次是 `int`、`int`、`int` slot，分别表示已归一化的 `start`、`end`、`step`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_range_iter_from_bounds($start, $end, $step);
+```
+
+`step == 0` 策略：
+
+- `gdcc_for_range_iter_from_bounds(...)` 显式调用 runtime error helper（`godot_print_error(...)`）并返回不可无限循环的 fallback state。
+- 前端未来 lowering 仍应避免生成零步长；手写 LIR 不会静默获得无限循环语义。
+
+Lifecycle / ownership：
+
+- `compiler::GdccForRangeIter` 是 destroyable non-object value。
+- helper 返回按值 iterator state；slot 写入仍通过 `CBodyBuilder.callAssign(...)` 处理旧值 destroy 与 direct struct assignment。
+- 不产生 Godot object ownership，也不参与 Variant pack / unpack。
+
+长期事实源：
+
+- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+
+### `gdcc.for_range_iter.should_continue`
+
+状态：Implemented
+
+形态：
+
+```text
+$<bool_result> = call_intrinsic "gdcc.for_range_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在。
+- result 必须是非 `ref` 的 `bool` slot。
+- exactly one argument。
+- argument 必须是 `compiler::GdccForRangeIter` slot。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_range_iter_should_continue(&$iter);
+```
+
+Lifecycle / ownership：
+
+- 只读 iterator state，不销毁或转移 iterator ownership。
+- 正步长使用 `current < end`，负步长使用 `current > end`，end 为排他边界。
+
+长期事实源：
+
+- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+
+### `gdcc.for_range_iter.next`
+
+状态：Implemented
+
+形态：
+
+```text
+$<next_iter_result> = call_intrinsic "gdcc.for_range_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在。
+- result 必须是非 `ref` 的 `compiler::GdccForRangeIter` slot。
+- exactly one argument。
+- argument 必须是 `compiler::GdccForRangeIter` slot。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_range_iter_next(&$iter);
+```
+
+Lifecycle / ownership：
+
+- 输入 iterator 只读。
+- helper 返回新的按值 iterator state，语义为 `current + step`，保留原 `end` 与 `step`。
+- slot 写入仍通过 `CBodyBuilder.callAssign(...)` 处理旧值 destroy 与 direct struct assignment。
+
+长期事实源：
+
+- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+
+### `gdcc.for_range_iter.get`
+
+状态：Implemented
+
+形态：
+
+```text
+$<int_result> = call_intrinsic "gdcc.for_range_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在。
+- result 必须是非 `ref` 的 `int` slot。
+- exactly one argument。
+- argument 必须是 `compiler::GdccForRangeIter` slot。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_range_iter_get(&$iter);
+```
+
+Lifecycle / ownership：
+
+- 只读 iterator state，不销毁或转移 iterator ownership。
+- 返回当前迭代值，不推进 state。
+
+长期事实源：
+
+- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+
 ## 新增 Intrinsic Checklist
 
 新增 intrinsic 时按以下顺序维护：

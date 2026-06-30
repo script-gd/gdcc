@@ -2,7 +2,9 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForRangeIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.CIntToFloatIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForRangeIterRawInitIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.CVectorIToVectorIntrinsic;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionAPI;
@@ -25,6 +27,11 @@ class CIntrinsicManagerTest {
         var manager = new CIntrinsicManager();
 
         assertInstanceOf(CIntToFloatIntrinsic.class, manager.find(CIntToFloatIntrinsic.NAME));
+        assertInstanceOf(CForRangeIterRawInitIntrinsic.class, manager.find(CForRangeIterRawInitIntrinsic.NAME));
+        assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.INIT_NAME));
+        assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.SHOULD_CONTINUE_NAME));
+        assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.NEXT_NAME));
+        assertInstanceOf(CForRangeIterIntrinsic.class, manager.find(CForRangeIterIntrinsic.GET_NAME));
         assertInstanceOf(CVectorIToVectorIntrinsic.class,
                 manager.find(CVectorIToVectorIntrinsic.VECTOR2I_TO_VECTOR2_NAME));
         assertInstanceOf(CVectorIToVectorIntrinsic.class,
@@ -48,6 +55,8 @@ class CIntrinsicManagerTest {
         var helper = new CGenHelper(new CodegenContext(projectInfo, classRegistry), List.of(workerClass));
 
         assertInstanceOf(CIntToFloatIntrinsic.class, helper.intrinsicManager().find(CIntToFloatIntrinsic.NAME));
+        assertInstanceOf(CForRangeIterIntrinsic.class,
+                helper.intrinsicManager().find(CForRangeIterIntrinsic.SHOULD_CONTINUE_NAME));
         assertInstanceOf(CVectorIToVectorIntrinsic.class,
                 helper.intrinsicManager().find(CVectorIToVectorIntrinsic.VECTOR3I_TO_VECTOR3_NAME));
     }

@@ -119,6 +119,23 @@ public class SimpleLirBlockInsnSerializerTest {
     }
 
     @Test
+    public void serialize_callIntrinsicRangeIteratorInstructionMatchesTextShape() throws Exception {
+        var insnList = List.<LirInstruction>of(
+                new CallIntrinsicInsn("iter", "gdcc.for_range_iter.init", List.of(
+                        new LirInstruction.VariableOperand("start"),
+                        new LirInstruction.VariableOperand("end"),
+                        new LirInstruction.VariableOperand("step")
+                ))
+        );
+
+        var serializer = new SimpleLirBlockInsnSerializer();
+        var sw = new StringWriter();
+        serializer.serialize(insnList, sw);
+
+        assertEquals("$iter = call_intrinsic \"gdcc.for_range_iter.init\" $start $end $step;\n", sw.toString());
+    }
+
+    @Test
     public void serialize_assignInstruction() throws Exception {
         var insnList = List.<LirInstruction>of(new AssignInsn("a", "b"));
 

@@ -2,6 +2,7 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForRangeIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.CIntToFloatIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.CVectorIToVectorIntrinsic;
 import gd.script.gdcc.enums.GodotVersion;
@@ -22,6 +23,7 @@ import gd.script.gdcc.type.GdIntVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -71,6 +73,42 @@ class CallIntrinsicInsnGenTest {
 
         assertTrue(body.contains("$v = godot_new_Vector3_with_Vector3i(&$vi);"), body);
         assertTrue(body.contains("godot_new_Vector3_with_Vector3i"), body);
+    }
+
+    @Test
+    @DisplayName("CALL_INTRINSIC should dispatch range iterator closed-loop helpers")
+    void callIntrinsicShouldDispatchRangeIteratorClosedLoopHelpers() {
+        var initBody = generateBody(
+                new CallIntrinsicInsn(
+                        "iter",
+                        CForRangeIterIntrinsic.INIT_NAME,
+                        List.of(
+                                new LirInstruction.VariableOperand("start"),
+                                new LirInstruction.VariableOperand("end"),
+                                new LirInstruction.VariableOperand("step")
+                        )
+                ),
+                List.of(
+                        new VariableSpec("start", GdIntType.INT, false),
+                        new VariableSpec("end", GdIntType.INT, false),
+                        new VariableSpec("step", GdIntType.INT, false),
+                        new VariableSpec("iter", GdccForRangeIterType.FOR_RANGE_ITER, false)
+                )
+        );
+        assertTrue(initBody.contains("$iter = gdcc_for_range_iter_from_bounds($start, $end, $step);"), initBody);
+
+        var body = generateBody(
+                new CallIntrinsicInsn(
+                        "cond",
+                        CForRangeIterIntrinsic.SHOULD_CONTINUE_NAME,
+                        List.of(new LirInstruction.VariableOperand("iter"))
+                ),
+                List.of(
+                        new VariableSpec("iter", GdccForRangeIterType.FOR_RANGE_ITER, false),
+                        new VariableSpec("cond", GdBoolType.BOOL, false)
+                )
+        );
+        assertTrue(body.contains("$cond = gdcc_for_range_iter_should_continue(&$iter);"), body);
     }
 
     @Test

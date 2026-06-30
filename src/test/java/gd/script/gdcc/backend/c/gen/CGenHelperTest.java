@@ -797,6 +797,13 @@ class CGenHelperTest {
         assertTrue(source.contains("godot_StringName source = godot_new_StringName_with_Variant(value);"), source);
         assertTrue(source.contains("godot_String result = godot_new_String_with_StringName(&source);"), source);
         assertTrue(source.contains("godot_StringName_destroy(&source);"), source);
+
+        assertTrue(source.contains("typedef struct gdcc_for_range_iter"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_from_bounds"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_should_continue"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_next"), source);
+        assertTrue(source.contains("gdcc_for_range_iter_get"), source);
+        assertTrue(source.contains("godot_print_error(\"range step argument is zero\""), source);
     }
 
     @Test
