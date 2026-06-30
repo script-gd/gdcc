@@ -18,6 +18,7 @@ import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdVariantType;
@@ -72,6 +73,25 @@ public class CAssignInsnGenTest {
         assertTrue(body.contains("godot_new_String_with_String(&$b);"), body);
         assertTrue(body.contains("$a = godot_new_String_with_String(&$b);"), body);
         assertFalse(body.contains("__gdcc_tmp_string_"), body);
+    }
+
+    @Test
+    @DisplayName("assign compiler-only value should use direct struct assignment without copy helper")
+    void assignCompilerOnlyShouldUseDirectAssignment() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("assign_compiler_only");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("dst", GdccForRangeIterType.FOR_RANGE_ITER);
+        func.createAndAddVariable("src", GdccForRangeIterType.FOR_RANGE_ITER);
+        addEntryAssignAndReturn(func, new AssignInsn("dst", "src"));
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("$dst = $src;"), body);
+        assertFalse(body.contains("godot_new_GdccForRangeIter_with_GdccForRangeIter"), body);
     }
 
     @Test

@@ -15,6 +15,7 @@ import gd.script.gdcc.lir.insn.DestructInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVoidType;
 import org.junit.jupiter.api.DisplayName;
@@ -49,6 +50,28 @@ public class CDestructInsnGenTest {
 
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("godot_String_destroy(&$s);"));
+    }
+
+    @Test
+    @DisplayName("destruct compiler-only value should call gdcc destroy helper")
+    void destructCompilerOnlyShouldCallDestroyHelper() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("destruct_compiler_only");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new DestructInsn("iter", LifecycleProvenance.USER_EXPLICIT));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, List.of(workerClass), emptyApi());
+
+        var body = codegen.generateFuncBody(workerClass, func);
+        assertTrue(body.contains("gdcc_for_range_iter_destroy(&$iter);"), body);
+        assertFalse(body.contains("godot_GdccForRangeIter_destroy"), body);
     }
 
     @Test

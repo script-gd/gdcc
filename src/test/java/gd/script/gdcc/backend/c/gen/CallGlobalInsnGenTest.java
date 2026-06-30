@@ -17,6 +17,7 @@ import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -261,6 +262,26 @@ class CallGlobalInsnGenTest {
         var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("not found in registry"));
+    }
+
+    @Test
+    @DisplayName("CALL_GLOBAL should reject compiler-only init helper because it is intrinsic-only")
+    void callGlobalShouldRejectCompilerOnlyInitHelper() {
+        var clazz = newTestClass();
+        var func = newFunction("call_compiler_only_init_global");
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                null,
+                GdccForRangeIterType.C_INIT_HELPER_NAME,
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("not found in registry"), ex.getMessage());
+        assertTrue(ex.getMessage().contains(GdccForRangeIterType.C_INIT_HELPER_NAME), ex.getMessage());
     }
 
     @Test

@@ -434,6 +434,14 @@ MVP 采用以下策略：
 
 ### 5.6 阶段六：C 后端类型渲染、初始化、赋值与销毁
 
+状态：已完成（2026-06-30，脚手架版；不包含具体 compiler-only runtime helper 实现）。
+
+产出：
+
+- `CCodegen.generateFunctionPrepareBlock(...)` 对 compiler-only local 生成 `CALL_INTRINSIC` 初始化指令，禁止走 `CALL_GLOBAL`。
+- 新增 compiler-only range iterator init intrinsic 脚手架，只负责发出 `gdcc_*_init` 调用形状与窄类型校验，不实现具体运行时语义。
+- 赋值、显式销毁与 generated C shape 测试覆盖 direct struct assignment、`gdcc_*_destroy`、`gdcc_*_init` 以及 `godot_*` default helper negative path。
+
 目标：
 
 - compiler-only storage 在 C 中使用显式 `gdcc_*` helper 和 C type。

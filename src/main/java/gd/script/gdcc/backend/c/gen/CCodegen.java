@@ -215,8 +215,10 @@ public class CCodegen implements Codegen {
                         continue;
                     }
                     var initInsn = switch (variable.type()) {
-                        case GdCompilerType _ -> throw new IllegalStateException(
-                                "compiler-only type requires dedicated prepare initialization: " + variable.type().getTypeName()
+                        case GdCompilerType compilerType -> new CallIntrinsicInsn(
+                                variable.id(),
+                                compilerType.getCInitHelperName(),
+                                List.of()
                         );
                         case GdObjectType _ -> new LiteralNullInsn(variable.id());
                         case GdVariantType _, GdNilType _ -> new LiteralNilInsn(variable.id());
