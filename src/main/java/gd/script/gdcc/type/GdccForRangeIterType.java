@@ -36,4 +36,9 @@ public final class GdccForRangeIterType implements GdCompilerType {
     public @NotNull String getCDestroyHelperName() {
         return C_DESTROY_HELPER_NAME;
     }
+
+    @Override
+    public boolean isDirectStructAssignmentSafe() {
+        return true;
+    }
 }

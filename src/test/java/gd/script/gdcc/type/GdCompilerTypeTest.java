@@ -58,6 +58,20 @@ class GdCompilerTypeTest {
         assertEquals("gdcc_for_range_iter", type.getCStorageTypeName());
         assertEquals("gdcc_for_range_iter_init", type.getCInitHelperName());
         assertEquals("gdcc_for_range_iter_destroy", type.getCDestroyHelperName());
+        assertTrue(type.isPassedByPointerInC());
+        assertEquals("", type.getCCopyHelperName());
+        assertTrue(type.isDirectStructAssignmentSafe());
+    }
+
+    @Test
+    @org.junit.jupiter.api.DisplayName("compiler-only default copy contract is direct struct assignment")
+    void defaultCopyContractIsDirectStructAssignment() {
+        var type = (GdCompilerType) GdccForRangeIterType.FOR_RANGE_ITER;
+
+        assertTrue(type.isPassedByPointerInC(), "compiler-only helper ABI stays pointer-based by default");
+        assertEquals("", type.getCCopyHelperName(), "direct-assignment compiler-only types expose empty copy helper");
+        assertTrue(type.isDirectStructAssignmentSafe(), "compiler-only types default to direct struct assignment");
+        type.validateCStorageContract();
     }
 
     @Test

@@ -488,6 +488,61 @@ MVP 采用以下策略：
 - `CBodyBuilderPhaseBTest`
 - `CBodyBuilderPhaseCTest`
 
+### 5.6a 阶段六-a：`GdCompilerType` 协议显式化（传参、赋值、copy）
+
+状态：已完成（2026-06-30）。
+
+产出：
+
+- 在 `GdCompilerType` 中补充显式协议方法，描述 compiler-only 类型在 C 层是按引用传参还是按值传参、是否需要 deep copy helper，以及赋值是否可直接走 struct assignment。
+- 将 compiler-only 类型的 `init / copy / destroy` 三元组提升为接口级合同，避免 consumer 继续通过 `instanceof GdCompilerType` 加空字符串约定推导赋值语义。
+- `CGenHelper`、`CBodyBuilder`、`CBodyBuilderAliasSafetySupport` 等 consumer 迁移到新的接口语义，不再把“空 copy helper”当作唯一的 direct assignment 信号。
+- 新增 `GdCompilerType` 契约测试，覆盖默认传参与赋值行为。
+- 已完成：并行调研 `doc/gdcc_type_system.md`、`doc/gdcc_c_backend.md`、`doc/gdcc_ownership_lifecycle_spec.md`、`doc/analysis/gdcompiler_type_design_risk_analysis.md` 以及 backend 实现/测试，确认当前行为正确但依赖隐式协议。
+- 已完成：`GdCompilerType` 协议层已补入 `isPassedByPointerInC()`、`getCCopyHelperName()`、`isDirectStructAssignmentSafe()` 及一致性校验入口；`GdccForRangeIterType` 已显式声明当前合同，固定既有行为。
+- 已完成：`CGenHelper.renderCopyAssignFunctionName(...)`、`CBodyBuilder.needsAddressOf(...)`、`prepareRhsValue(...)`、`prepareReturnValue(...)` 与 `CBodyBuilderAliasSafetySupport.requiresStableCarrier(...)` 已迁移为优先读取 `GdCompilerType` 显式协议，不再把空 copy helper 当作唯一的 direct-assignment 语义来源。
+- 已完成：对 future compiler-only deep-copy 场景增加 fail-fast 防线；若 `isDirectStructAssignmentSafe()==false` 且缺少 copy helper，会在 helper / alias-safety 层直接报错，而不是静默落回 direct assignment。
+- 已完成：补充 builder / destroy 路径单测，锚定 compiler-only 传参仍走 `&slot`、赋值/返回仍走 direct assignment、`__prepare__` 首写不销毁旧值、`__finally__` auto-generated cleanup 仍调用 `gdcc_*_destroy`。
+- 已完成：新增 alias-safety 专项测试，确认 compiler-only direct assignment 不会误入 stable-carrier 路径，而 `String` / `Variant` 自赋值仍保持现有 stable-carrier 合同。
+- 已验证：`script/run-gradle-targeted-tests.sh --tests "gd.script.gdcc.type.GdCompilerTypeTest,gd.script.gdcc.backend.c.gen.CGenHelperTest,gd.script.gdcc.backend.c.gen.CBodyBuilderPhaseBTest,gd.script.gdcc.backend.c.gen.CBodyBuilderPhaseCTest,gd.script.gdcc.backend.c.gen.CDestructInsnGenTest,gd.script.gdcc.backend.c.gen.CBodyBuilderAliasSafetySupportTest,gd.script.gdcc.backend.c.gen.CCodegenTest"` 通过。
+
+目标：
+
+- 把 compiler-only 类型在 C 后端的传参与赋值语义从隐式约定提升为显式协议。
+- 允许未来新的 compiler-only 类型自行声明：是否使用 `&` 传参、是否需要 copy helper、是否允许 direct struct assignment。
+- 保持当前 `GdccForRangeIterType` 的行为不变，但把它所依赖的默认合同固定下来。
+
+建议实施内容：
+
+- 在 `GdCompilerType` 中增加方法，例如：
+    - `isPassedByPointerInC()`：是否在 C 参数位置使用引用传参。默认 `true`，匹配当前 compiler-only storage 作为 C struct 传入 helper 时使用 `&slot` 的行为。
+    - `getCCopyHelperName()`：返回赋值 / 拷贝 helper 名；默认空字符串，表示可直接 struct assignment。
+    - `isDirectStructAssignmentSafe()`：显式表达是否允许 direct assignment。默认可由 `getCCopyHelperName().isEmpty()` 派生，但 consumer 应优先读取该语义而不是直接解释空字符串。
+- 如需要保持 init 路径对称，可在 `CGenHelper` 增加 `renderCompilerOnlyInitFunctionName(GdCompilerType)`，使 init / copy / destroy helper 渲染统一经过 helper 层，同时避免误传普通 Godot 类型。
+- `CBodyBuilder.needsAddressOf(...)`、`prepareRhsValue(...)`、`prepareAssignedNonObjectRhs(...)`、`prepareReturnValue(...)` 改为优先读取 `GdCompilerType` 的显式协议。
+- `CBodyBuilderAliasSafetySupport.requiresStableCarrier(...)` 直接依据 compiler-only 的赋值合同判断，避免仅靠当前 `hasCopyHelper` 的间接推导。
+- 如果未来某个 compiler-only 类型需要 deep copy 或非引用传参，必须先在此阶段扩展接口合同，再改 consumer。
+
+验收细则：
+
+- happy path：
+    - `GdccForRangeIterType` 仍然按值语义存储、按引用传参、direct assignment、显式 destroy。
+    - 新增 compiler-only 类型时，可以只通过接口合同描述其传参/赋值行为。
+- negative path：
+    - consumer 不再仅依赖 `GdType` family 和空字符串约定推导 compiler-only 赋值/传参。
+    - 未声明协议的新增 compiler-only 类型必须 fail-fast。
+    - deep-copy compiler-only 类型如果没有提供 copy helper，不允许静默落回 direct assignment。
+
+测试锚点：
+
+- `GdCompilerTypeTest`
+- `CGenHelperTest`
+- `CBodyBuilderPhaseBTest`
+- `CBodyBuilderPhaseCTest`
+- `CAssignInsnGenTest`
+- `CDestructInsnGenTest`
+- `CBodyBuilderAliasSafetySupportTest`（如存在）
+
 ### 5.7 阶段七：`GdccForRangeIterType` intrinsic 最小闭环
 
 状态：已完成（2026-06-30）。

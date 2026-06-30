@@ -1,6 +1,8 @@
 package gd.script.gdcc.backend.c.gen;
 
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
@@ -26,6 +28,7 @@ final class CBodyBuilderAliasSafetySupport {
             boolean canDestroyOldValue,
             @NotNull CBodyBuilder.TargetRef target,
             @NotNull CBodyBuilder.ValueRef value,
+            @NotNull GdType valueType,
             boolean hasCopyHelper
     ) {
         if (inPrepareBlock || !canDestroyOldValue) {
@@ -35,7 +38,23 @@ final class CBodyBuilderAliasSafetySupport {
         if (!targetType.isDestroyable() || targetType instanceof GdObjectType) {
             return false;
         }
-        if (value.ownership() != CBodyBuilder.OwnershipKind.BORROWED || !hasCopyHelper) {
+        if (value.ownership() != CBodyBuilder.OwnershipKind.BORROWED) {
+            return false;
+        }
+        if (valueType instanceof GdCompilerType compilerType) {
+            compilerType.validateCStorageContract();
+            if (compilerType.isDirectStructAssignmentSafe()) {
+                return false;
+            }
+            if (compilerType.getCCopyHelperName().isBlank()) {
+                throw new IllegalStateException(
+                        "Compiler-only type '" + compilerType.getTypeName()
+                                + "' requires a copy helper before alias-safe overwrite"
+                );
+            }
+            return classifyNonObjectSlotWriteAliasSafety(target, value) == NonObjectSlotWriteAliasSafety.MAY_ALIAS;
+        }
+        if (!hasCopyHelper) {
             return false;
         }
         return classifyNonObjectSlotWriteAliasSafety(target, value) == NonObjectSlotWriteAliasSafety.MAY_ALIAS;

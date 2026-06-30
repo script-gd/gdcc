@@ -629,9 +629,22 @@ public final class CGenHelper {
         }
     }
 
+    /// Render the prepare-block init helper for compiler-only storage.
+    ///
+    /// This is intentionally narrower than ordinary constructor/default-value rendering:
+    /// only `GdCompilerType` may use this helper-name path, while regular Godot builtins keep
+    /// their existing `Construct*` / literal initialization flow in `CCodegen`.
+    public @NotNull String renderCompilerOnlyInitFunctionName(@NotNull GdCompilerType compilerType) {
+        compilerType.validateCStorageContract();
+        return compilerType.getCInitHelperName();
+    }
+
     public @NotNull String renderCopyAssignFunctionName(@NotNull GdType type) {
         return switch (type) {
-            case GdCompilerType _ -> "";
+            case GdCompilerType compilerType -> {
+                compilerType.validateCStorageContract();
+                yield compilerType.getCCopyHelperName();
+            }
             case GdObjectType _, GdPrimitiveType _ -> "";
             case GdVoidType _, GdNilType _ ->
                     throw new IllegalArgumentException("Type " + type.getTypeName() + " does not support copy assignment");
@@ -647,6 +660,7 @@ public final class CGenHelper {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " is not destroyable");
         }
         if (type instanceof GdCompilerType compilerType) {
+            compilerType.validateCStorageContract();
             return compilerType.getCDestroyHelperName();
         }
         if (type instanceof GdObjectType) {

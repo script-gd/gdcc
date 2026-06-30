@@ -217,7 +217,7 @@ public class CCodegen implements Codegen {
                     var initInsn = switch (variable.type()) {
                         case GdCompilerType compilerType -> new CallIntrinsicInsn(
                                 variable.id(),
-                                compilerType.getCInitHelperName(),
+                                helper.renderCompilerOnlyInitFunctionName(compilerType),
                                 List.of()
                         );
                         case GdObjectType _ -> new LiteralNullInsn(variable.id());

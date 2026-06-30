@@ -318,6 +318,44 @@ public class CCodegenTest {
     }
 
     @Test
+    public void generateShouldKeepCompilerOnlyPrepareInitOnExplicitHelperPath() {
+        var workerClass = new LirClassDef("Worker", "RefCounted");
+        var func = new LirFunctionDef("prepare_compiler_only_local_again");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entryBlock);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("compiler_only_prepare_again", List.of(workerClass));
+        var classRegistry = new ClassRegistry(new ExtensionAPI(
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()
+        ));
+        ProjectInfo projectInfo = new ProjectInfo("test", GodotVersion.V451, Path.of(".")) {
+        };
+        var ctx = new CodegenContext(projectInfo, classRegistry);
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var files = codegen.generate();
+        var cCode = generatedFileText(files, "entry.c");
+
+        assertTrue(cCode.contains("$iter = gdcc_for_range_iter_init();"), cCode);
+        assertFalse(cCode.contains("ConstructBuiltinInsn"), cCode);
+        assertFalse(cCode.contains("godot_new_GdccForRangeIter"), cCode);
+    }
+
+    @Test
     public void entryTemplateShouldSetMinimumInitializationLevelAndGuardLifecycleLevels() throws Exception {
         var workerClass = new LirClassDef("GDEntryWorker", "RefCounted");
         var module = new LirModule("entry_contract_module", List.of(workerClass));

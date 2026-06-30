@@ -69,12 +69,21 @@ class CGenHelperTest {
         assertEquals("gdcc_for_range_iter", helper.renderGdTypeInC(type));
         assertEquals("gdcc_for_range_iter*", helper.renderGdTypeRefInC(type));
         assertEquals("GdccForRangeIter", helper.renderGdTypeName(type));
+        assertEquals("gdcc_for_range_iter_init", helper.renderCompilerOnlyInitFunctionName(type));
         assertEquals("", helper.renderCopyAssignFunctionName(type));
         assertEquals("gdcc_for_range_iter_destroy", helper.renderDestroyFunctionName(type));
         assertFalse(helper.renderGdTypeInC(type).contains("godot_"));
         assertFalse(helper.renderDestroyFunctionName(type).contains("godot_"));
         assertThrows(IllegalArgumentException.class, () -> helper.renderPackFunctionName(type));
         assertThrows(IllegalArgumentException.class, () -> helper.renderUnpackFunctionName(type));
+    }
+
+    @Test
+    @DisplayName("compiler-only helper rendering should keep explicit direct-assignment contract")
+    void compilerOnlyHelperRenderingShouldKeepExplicitDirectAssignmentContract() {
+        var type = GdccForRangeIterType.FOR_RANGE_ITER;
+        assertTrue(type.isDirectStructAssignmentSafe(), "existing compiler-only type should stay on direct assignment path");
+        assertEquals("", helper.renderCopyAssignFunctionName(type), "consumer should still observe the explicit direct-assignment contract");
     }
 
     @Test

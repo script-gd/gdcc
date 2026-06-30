@@ -449,6 +449,38 @@ public class CBodyBuilderPhaseCTest {
         }
 
         @Test
+        @DisplayName("__prepare__ compiler-only assignment should keep first-write direct assignment without destroy")
+        void testPrepareBlockCompilerOnlyAssignSkipsDestroyAndCopyHelper() {
+            var prepareBlock = new LirBasicBlock("__prepare__");
+            builder.beginBasicBlock("__prepare__");
+            builder.setCurrentPosition(prepareBlock, 0, new NopInsn());
+            var target = new LirVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER, lirFunctionDef);
+            var source = new LirVariable("src", GdccForRangeIterType.FOR_RANGE_ITER, lirFunctionDef);
+
+            builder.assignVar(builder.targetOfVar(target), builder.valueOfVar(source));
+
+            var result = builder.build();
+            assertTrue(result.contains("$iter = $src;"), result);
+            assertFalse(result.contains("gdcc_for_range_iter_destroy(&$iter);"), result);
+            assertFalse(result.contains("godot_new_GdccForRangeIter_with_GdccForRangeIter"), result);
+            assertFalse(result.contains("__gdcc_tmp_"), result);
+        }
+
+        @Test
+        @DisplayName("self compiler-only assignment should stay on direct assignment path without stable carrier")
+        void testSelfCompilerOnlyAssignmentStaysDirect() {
+            var target = new LirVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER, lirFunctionDef);
+
+            builder.assignVar(builder.targetOfVar(target), builder.valueOfVar(target));
+
+            var result = builder.build();
+            assertTrue(result.contains("gdcc_for_range_iter_destroy(&$iter);"), result);
+            assertTrue(result.contains("$iter = $iter;"), result);
+            assertFalse(result.contains("__gdcc_tmp_gdccforrangeiter"), result);
+            assertFalse(result.contains("godot_new_GdccForRangeIter_with_GdccForRangeIter"), result);
+        }
+
+        @Test
         @DisplayName("RefCounted object assignment should capture old, own new, then release captured old")
         void testRefCountedObjectAssignment() {
             var target = new LirVariable("obj", new GdObjectType("RefCounted"), lirFunctionDef);
@@ -632,6 +664,21 @@ public class CBodyBuilderPhaseCTest {
             objectBuilder.returnValue(value);
 
             assertEquals("return $obj;\n", objectBuilder.build());
+        }
+
+        @Test
+        @DisplayName("Returning compiler-only value should stay on explicit direct assignment contract")
+        void testReturnCompilerOnlyDirect() {
+            var iterBuilder = createBuilderWithReturnType(GdccForRangeIterType.FOR_RANGE_ITER);
+            setFinallyBlockContext(iterBuilder);
+            var iterVar = new LirVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER, iterBuilder.func());
+
+            iterBuilder.returnValue(iterBuilder.valueOfVar(iterVar));
+
+            var result = iterBuilder.build();
+            assertEquals("return $iter;\n", result);
+            assertFalse(result.contains("godot_new_GdccForRangeIter_with_GdccForRangeIter"), result);
+            assertFalse(result.contains("__gdcc_tmp_"), result);
         }
 
         @Test
