@@ -16,23 +16,6 @@ import java.util.*;
 
 /// DOM-based implementation of LirParser. Parses the XML structure into LIR entities.
 public final class DomLirParser implements LirParser {
-    private enum TypeUseSite {
-        SIGNAL_PARAMETER("signal parameter", false),
-        PROPERTY("property", false),
-        FUNCTION_PARAMETER("function parameter", false),
-        FUNCTION_CAPTURE("function capture", false),
-        FUNCTION_RETURN("function return", false),
-        FUNCTION_VARIABLE("function variable", true);
-
-        private final @NotNull String displayName;
-        private final boolean allowCompilerOnlyType;
-
-        TypeUseSite(@NotNull String displayName, boolean allowCompilerOnlyType) {
-            this.displayName = displayName;
-            this.allowCompilerOnlyType = allowCompilerOnlyType;
-        }
-    }
-
     private ClassRegistry classRegistry;
 
     public DomLirParser(@NotNull ClassRegistry classRegistry) {
@@ -93,7 +76,7 @@ public final class DomLirParser implements LirParser {
                     for (int pi = 0; pi < params.getLength(); pi++) {
                         var pEl = (Element) params.item(pi);
                         var pname = pEl.getAttribute("name");
-                        var ptype = parseTypeText(pEl.getAttribute("type"), TypeUseSite.SIGNAL_PARAMETER);
+                        var ptype = parseTypeText(pEl.getAttribute("type"), LirTypeUseSite.SIGNAL_PARAMETER);
                         signal.addParameter(new LirParameterDef(pname, ptype, null, signal));
                     }
                     signals.add(signal);
@@ -109,7 +92,7 @@ public final class DomLirParser implements LirParser {
                 for (int pi = 0; pi < pList.getLength(); pi++) {
                     var pEl = (Element) pList.item(pi);
                     var pname = pEl.getAttribute("name");
-                    var ptype = parseTypeText(pEl.getAttribute("type"), TypeUseSite.PROPERTY);
+                    var ptype = parseTypeText(pEl.getAttribute("type"), LirTypeUseSite.PROPERTY);
                     var isStatic = Boolean.parseBoolean(pEl.getAttribute("is_static"));
                     var init = pEl.hasAttribute("init_func") ? pEl.getAttribute("init_func") : null;
                     var getter = pEl.hasAttribute("getter_func") ? pEl.getAttribute("getter_func") : null;
@@ -162,7 +145,7 @@ public final class DomLirParser implements LirParser {
                         for (int pi = 0; pi < pList.getLength(); pi++) {
                             var pEl = (Element) pList.item(pi);
                             var pname = pEl.getAttribute("name");
-                            var ptype = parseTypeText(pEl.getAttribute("type"), TypeUseSite.FUNCTION_PARAMETER);
+                            var ptype = parseTypeText(pEl.getAttribute("type"), LirTypeUseSite.FUNCTION_PARAMETER);
                             var defFunc = pEl.hasAttribute("default_value_func") ? pEl.getAttribute("default_value_func") : null;
                             fn.addParameter(new LirParameterDef(pname, ptype, defFunc, fn));
                         }
@@ -176,7 +159,7 @@ public final class DomLirParser implements LirParser {
                         for (int ci = 0; ci < cList.getLength(); ci++) {
                             var cEl = (Element) cList.item(ci);
                             var cname = cEl.getAttribute("name");
-                            var ctype = parseTypeText(cEl.getAttribute("type"), TypeUseSite.FUNCTION_CAPTURE);
+                            var ctype = parseTypeText(cEl.getAttribute("type"), LirTypeUseSite.FUNCTION_CAPTURE);
                             fn.addCapture(new LirCaptureDef(cname, ctype, fn));
                         }
                     }
@@ -185,7 +168,7 @@ public final class DomLirParser implements LirParser {
                     var retNodes = fEl.getElementsByTagName("return_type");
                     if (retNodes.getLength() > 0) {
                         var rEl = (Element) retNodes.item(0);
-                        var rtype = parseTypeText(rEl.getAttribute("type"), TypeUseSite.FUNCTION_RETURN);
+                        var rtype = parseTypeText(rEl.getAttribute("type"), LirTypeUseSite.FUNCTION_RETURN);
                         fn.setReturnType(rtype);
                     }
 
@@ -197,7 +180,7 @@ public final class DomLirParser implements LirParser {
                         for (int vi = 0; vi < vList.getLength(); vi++) {
                             var vEl = (Element) vList.item(vi);
                             var id = vEl.getAttribute("id");
-                            var t = parseTypeText(vEl.getAttribute("type"), TypeUseSite.FUNCTION_VARIABLE);
+                            var t = parseTypeText(vEl.getAttribute("type"), LirTypeUseSite.FUNCTION_VARIABLE);
                             fn.createAndAddVariable(id, t);
                         }
                     }
@@ -256,10 +239,10 @@ public final class DomLirParser implements LirParser {
 
     /// LIR XML keeps compiler-only types on a dedicated grammar and only accepts them for local
     /// function variables. All public ABI-like surfaces continue to reuse source-facing parsing.
-    private @NotNull GdType parseTypeText(@NotNull String rawTypeText, @NotNull TypeUseSite useSite) {
+    private @NotNull GdType parseTypeText(@NotNull String rawTypeText, @NotNull LirTypeUseSite useSite) {
         var typeText = rawTypeText.trim();
         if (typeText.isEmpty()) {
-            throw new IllegalArgumentException("Cannot parse type for " + useSite.displayName + ": blank type text");
+            throw new IllegalArgumentException("Cannot parse type for " + useSite.displayName() + ": blank type text");
         }
         var compilerOnlyType = tryParseCompilerOnlyType(typeText, useSite);
         if (compilerOnlyType != null) {
@@ -270,16 +253,16 @@ public final class DomLirParser implements LirParser {
         if (parsedType != null) {
             return parsedType;
         }
-        throw new IllegalArgumentException("Cannot parse type for " + useSite.displayName + ": " + rawTypeText);
+        throw new IllegalArgumentException("Cannot parse type for " + useSite.displayName() + ": " + rawTypeText);
     }
 
-    private @Nullable GdType tryParseCompilerOnlyType(@NotNull String typeText, @NotNull TypeUseSite useSite) {
+    private @Nullable GdType tryParseCompilerOnlyType(@NotNull String typeText, @NotNull LirTypeUseSite useSite) {
         if (!typeText.startsWith("compiler::")) {
             return null;
         }
-        if (!useSite.allowCompilerOnlyType) {
+        if (!useSite.allowCompilerOnlyType()) {
             throw new IllegalArgumentException(
-                    "compiler-only type leaked into " + useSite.displayName + ": " + typeText
+                    "compiler-only type leaked into " + useSite.displayName() + ": " + typeText
             );
         }
         if (GdccForRangeIterType.LIR_TYPE_TEXT.equals(typeText)) {

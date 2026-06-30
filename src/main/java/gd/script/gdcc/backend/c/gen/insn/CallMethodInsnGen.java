@@ -158,12 +158,12 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         var dynamicResultTemp = bodyBuilder.newTempVariable("dynamic_result", GdVariantType.VARIANT);
         bodyBuilder.declareTempVar(dynamicResultTemp);
         bodyBuilder.callAssign(dynamicResultTemp, cFunctionName, GdVariantType.VARIANT, fixedArgs, varargs);
-        var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
-        bodyBuilder.callAssign(
+        InsnGenSupport.unpackVariantAssign(
+                bodyBuilder,
                 bodyBuilder.targetOfVar(resultVar),
-                unpackFunctionName,
                 resultVar.type(),
-                List.of(dynamicResultTemp)
+                dynamicResultTemp,
+                "dynamic call result target"
         );
         bodyBuilder.destroyTempVar(dynamicResultTemp);
         destroyDefaultTemps(bodyBuilder, dynamicArgTemps);
@@ -463,6 +463,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         if (receiverVar.type() instanceof GdVoidType) {
             throw bodyBuilder.invalidInsn("Receiver variable '" + receiverId + "' cannot be void");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, receiverVar, "call_method receiver");
         return receiverVar;
     }
 
@@ -480,6 +481,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
             if (argVar == null) {
                 throw bodyBuilder.invalidInsn("Argument variable ID '" + argId + "' not found in function");
             }
+            InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, argVar, "call_method argument #" + (i + 1));
             out.add(argVar);
         }
         return out;
@@ -499,6 +501,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "method call result target");
         if (!bodyBuilder.classRegistry().checkAssignable(resolved.returnType(), resultVar.type())) {
             throw bodyBuilder.invalidInsn("Method '" + resolved.ownerClassName() + "." + resolved.methodName() +
                     "' returns '" + resolved.returnType().getTypeName() + "', but result variable '" + resultId +
@@ -520,6 +523,7 @@ public final class CallMethodInsnGen implements CInsnGen<CallMethodInsn> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "dynamic call result target");
         return resultVar;
     }
 }

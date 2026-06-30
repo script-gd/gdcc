@@ -17,6 +17,7 @@ import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.UnaryOpInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdArrayType;
@@ -459,6 +460,26 @@ class COperatorInsnGenTest {
         assertTrue(body.contains("GDEXTENSION_VARIANT_TYPE_BOOL"), body);
         assertTrue(body.contains("$result = godot_new_bool_with_Variant(&__gdcc_tmp_op_eval_result_"), body);
         assertTrue(body.contains("variant_evaluate type check failed for operator 'IN': expected bool"), body);
+    }
+
+    @Test
+    @DisplayName("variant_evaluate path should reject compiler-only result target")
+    void variantEvaluatePathRejectsCompilerOnlyResultTarget() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        emptyApi(),
+                        new BinaryOpInsn("result", GodotOperator.ADD, "left", "right"),
+                        List.of(
+                                new VariableSpec("left", GdVariantType.VARIANT, false),
+                                new VariableSpec("right", GdVariantType.VARIANT, false),
+                                new VariableSpec("result", GdccForRangeIterType.FOR_RANGE_ITER, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into operator result target variable 'result'"), ex.getMessage());
     }
 
     @Test

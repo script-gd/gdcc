@@ -49,6 +49,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
                            @NotNull UnaryOpInsn instruction) {
         var resultVar = resolveRequiredResultVariable(bodyBuilder, instruction.resultId());
         var operandVar = resolveOperandVariable(bodyBuilder, instruction.operandId(), "operand");
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, operandVar, "operator operand");
 
         var decision = resolver.resolveUnaryPath(bodyBuilder, instruction.op(), operandVar.type());
         if (decision.path() == OperatorResolver.OperatorPath.UNIMPLEMENTED) {
@@ -82,6 +83,8 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         var resultVar = resolveRequiredResultVariable(bodyBuilder, instruction.resultId());
         var leftVar = resolveOperandVariable(bodyBuilder, instruction.leftId(), "left");
         var rightVar = resolveOperandVariable(bodyBuilder, instruction.rightId(), "right");
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, leftVar, "operator left operand");
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, rightVar, "operator right operand");
 
         var decision = resolver.resolveBinaryPath(bodyBuilder, instruction.op(), leftVar.type(), rightVar.type());
         if (decision.path() == OperatorResolver.OperatorPath.UNIMPLEMENTED) {
@@ -521,6 +524,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         if (resultVar.type() instanceof GdVoidType) {
             throw bodyBuilder.invalidInsn("variant_evaluate result variable cannot be void");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "operator result target");
         if (resultVar.type() instanceof GdVariantType) {
             return;
         }
@@ -540,6 +544,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "operator result target");
         return resultVar;
     }
 
@@ -550,6 +555,7 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
         if (variable == null) {
             throw bodyBuilder.invalidInsn("Operator " + role + " operand variable ID '" + variableId + "' not found in function");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, variable, "operator " + role + " operand");
         return variable;
     }
 

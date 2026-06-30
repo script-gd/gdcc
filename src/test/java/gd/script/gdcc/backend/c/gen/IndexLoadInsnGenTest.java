@@ -17,6 +17,7 @@ import gd.script.gdcc.lir.insn.VariantGetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdType;
@@ -99,6 +100,25 @@ class IndexLoadInsnGenTest {
         );
 
         assertTrue(body.contains("$result = godot_new_int_with_Variant(&__gdcc_tmp_idx_ret_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_get should reject compiler-only result target")
+    void variantGetCompilerOnlyResultFails() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        new VariantGetInsn("result", "self", "key"),
+                        List.of(
+                                new VariableSpec("self", GdVariantType.VARIANT, false),
+                                new VariableSpec("key", GdVariantType.VARIANT, false),
+                                new VariableSpec("result", GdccForRangeIterType.FOR_RANGE_ITER, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into index load result target variable 'result'"), ex.getMessage());
     }
 
     @Test

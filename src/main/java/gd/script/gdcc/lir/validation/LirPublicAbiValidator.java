@@ -5,8 +5,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.LirPropertyDef;
 import gd.script.gdcc.lir.LirSignalDef;
-import gd.script.gdcc.type.GdCompilerType;
-import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.util.TypeCheckUtil;
 import org.jetbrains.annotations.NotNull;
 
 /// Validates that compiler-only types never leak into public ABI-like LIR surfaces.
@@ -36,53 +35,35 @@ public final class LirPublicAbiValidator {
 
     public void validateFunction(@NotNull LirClassDef classDef, @NotNull LirFunctionDef functionDef) {
         for (var parameterDef : functionDef.getParameters()) {
-            requireNoCompilerOnlyType(
+            TypeCheckUtil.requireNonCompilerOnly(
                     parameterDef.getType(),
-                    "function parameter",
-                    describeFunction(classDef, functionDef) + "(" + parameterDef.getName() + ")"
+                    "function parameter at " + describeFunction(classDef, functionDef) + "(" + parameterDef.getName() + ")"
             );
         }
         for (var captureDef : functionDef.getCaptures().values()) {
-            requireNoCompilerOnlyType(
+            TypeCheckUtil.requireNonCompilerOnly(
                     captureDef.getType(),
-                    "function capture",
-                    describeFunction(classDef, functionDef) + "(" + captureDef.getName() + ")"
+                    "function capture at " + describeFunction(classDef, functionDef) + "(" + captureDef.getName() + ")"
             );
         }
-        requireNoCompilerOnlyType(
+        TypeCheckUtil.requireNonCompilerOnly(
                 functionDef.getReturnType(),
-                "function return",
-                describeFunction(classDef, functionDef)
+                "function return at " + describeFunction(classDef, functionDef)
         );
     }
 
     private void validateProperty(@NotNull LirClassDef classDef, @NotNull LirPropertyDef propertyDef) {
-        requireNoCompilerOnlyType(
+        TypeCheckUtil.requireNonCompilerOnly(
                 propertyDef.getType(),
-                "property",
-                classDef.getName() + "." + propertyDef.getName()
+                "property at " + classDef.getName() + "." + propertyDef.getName()
         );
     }
 
     private void validateSignal(@NotNull LirClassDef classDef, @NotNull LirSignalDef signalDef) {
         for (var parameterDef : signalDef.getParameters()) {
-            requireNoCompilerOnlyType(
+            TypeCheckUtil.requireNonCompilerOnly(
                     parameterDef.getType(),
-                    "signal parameter",
-                    classDef.getName() + "." + signalDef.getName() + "(" + parameterDef.getName() + ")"
-            );
-        }
-    }
-
-    private void requireNoCompilerOnlyType(@NotNull GdType type,
-                                           @NotNull String surfaceName,
-                                           @NotNull String owner) {
-        if (type instanceof GdCompilerType compilerType) {
-            throw new IllegalArgumentException(
-                    "compiler-only type leaked into " + surfaceName + ": "
-                            + compilerType.getTypeName()
-                            + " at "
-                            + owner
+                    "signal parameter at " + classDef.getName() + "." + signalDef.getName() + "(" + parameterDef.getName() + ")"
             );
         }
     }

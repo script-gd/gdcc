@@ -285,6 +285,26 @@ class CallGlobalInsnGenTest {
     }
 
     @Test
+    @DisplayName("CALL_GLOBAL should reject compiler-only fixed argument")
+    void callGlobalShouldRejectCompilerOnlyFixedArgument() {
+        var clazz = newTestClass();
+        var func = newFunction("call_compiler_only_argument");
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        func.createAndAddVariable("ret", GdFloatType.FLOAT);
+
+        entry(func).appendInstruction(new CallGlobalInsn(
+                "ret",
+                "deg_to_rad",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> generateBody(clazz, func, utilityApi()));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into call_global argument #1 variable 'iter'"), ex.getMessage());
+    }
+
+    @Test
     @DisplayName("CALL_GLOBAL should reject resultId for void utility")
     void callGlobalVoidUtilityWithResultId() {
         var clazz = newTestClass();

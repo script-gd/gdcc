@@ -2,7 +2,9 @@ package gd.script.gdcc.backend.c.gen.insn;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.lir.LirVariable;
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -20,10 +22,32 @@ final class InsnGenSupport {
     private InsnGenSupport() {
     }
 
+    static void rejectCompilerOnlyVariable(@NotNull CBodyBuilder bodyBuilder,
+                                           @NotNull LirVariable variable,
+                                           @NotNull String useSite) {
+        if (variable.type() instanceof GdCompilerType compilerOnlyType) {
+            throw bodyBuilder.invalidInsn(
+                    "compiler-only type leaked into " + useSite + " variable '" + variable.id() +
+                            "': " + compilerOnlyType.getTypeName()
+            );
+        }
+    }
+
+    static void rejectCompilerOnlyType(@NotNull CBodyBuilder bodyBuilder,
+                                       @NotNull GdType type,
+                                       @NotNull String useSite) {
+        if (type instanceof GdCompilerType compilerOnlyType) {
+            throw bodyBuilder.invalidInsn(
+                    "compiler-only type leaked into " + useSite + ": " + compilerOnlyType.getTypeName()
+            );
+        }
+    }
+
     /// `Nil` does not belong to the unary `godot_new_Variant_with_<Type>` family.
     static void packVariantAssign(@NotNull CBodyBuilder bodyBuilder,
                                   @NotNull CBodyBuilder.TargetRef target,
                                   @NotNull LirVariable valueVar) {
+        rejectCompilerOnlyVariable(bodyBuilder, valueVar, "Variant pack source");
         if (valueVar.type() instanceof GdNilType) {
             bodyBuilder.callAssign(target, "godot_new_Variant_nil", GdVariantType.VARIANT, List.of());
             return;
@@ -31,6 +55,16 @@ final class InsnGenSupport {
 
         var packFunctionName = bodyBuilder.helper().renderPackFunctionName(valueVar.type());
         bodyBuilder.callAssign(target, packFunctionName, GdVariantType.VARIANT, List.of(bodyBuilder.valueOfVar(valueVar)));
+    }
+
+    static void unpackVariantAssign(@NotNull CBodyBuilder bodyBuilder,
+                                    @NotNull CBodyBuilder.TargetRef target,
+                                    @NotNull GdType targetType,
+                                    @NotNull CBodyBuilder.ValueRef variantValue,
+                                    @NotNull String useSite) {
+        rejectCompilerOnlyType(bodyBuilder, targetType, useSite);
+        var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(targetType);
+        bodyBuilder.callAssign(target, unpackFunctionName, targetType, List.of(variantValue));
     }
 
     static @NotNull VariantOperand materializeVariantOperand(@NotNull CBodyBuilder bodyBuilder,

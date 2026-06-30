@@ -21,22 +21,6 @@ import java.util.*;
 
 /// DOM-based implementation of LirSerializer.
 public final class DomLirSerializer implements LirSerializer {
-    private enum TypeUseSite {
-        SIGNAL_PARAMETER("signal parameter", false),
-        PROPERTY("property", false),
-        FUNCTION_PARAMETER("function parameter", false),
-        FUNCTION_RETURN("function return", false),
-        FUNCTION_VARIABLE("function variable", true);
-
-        private final @NotNull String displayName;
-        private final boolean allowCompilerOnlyType;
-
-        TypeUseSite(@NotNull String displayName, boolean allowCompilerOnlyType) {
-            this.displayName = displayName;
-            this.allowCompilerOnlyType = allowCompilerOnlyType;
-        }
-    }
-
     @Override
     public void serialize(@NotNull LirModule module, @NotNull Writer out) throws Exception {
         var docFactory = DocumentBuilderFactory.newInstance();
@@ -73,7 +57,7 @@ public final class DomLirSerializer implements LirSerializer {
                     var p = s.getParameter(i);
                     Element pEl = doc.createElement("parameter");
                     pEl.setAttribute("name", Objects.requireNonNull(p).name());
-                    pEl.setAttribute("type", renderTypeText(p.type(), TypeUseSite.SIGNAL_PARAMETER));
+                    pEl.setAttribute("type", renderTypeText(p.type(), LirTypeUseSite.SIGNAL_PARAMETER));
                     sEl.appendChild(pEl);
                 }
                 signalsEl.appendChild(sEl);
@@ -85,7 +69,7 @@ public final class DomLirSerializer implements LirSerializer {
             for (var prop : cls.getProperties()) {
                 Element pEl = doc.createElement("property");
                 pEl.setAttribute("name", prop.getName());
-                pEl.setAttribute("type", renderTypeText(prop.getType(), TypeUseSite.PROPERTY));
+                pEl.setAttribute("type", renderTypeText(prop.getType(), LirTypeUseSite.PROPERTY));
                 pEl.setAttribute("is_static", Boolean.toString(prop.isStatic()));
                 if (prop.getInitFunc() != null) pEl.setAttribute("init_func", prop.getInitFunc());
                 if (prop.getGetterFunc() != null) pEl.setAttribute("getter_func", prop.getGetterFunc());
@@ -127,7 +111,7 @@ public final class DomLirSerializer implements LirSerializer {
                     }
                     Element pEl = doc.createElement("parameter");
                     pEl.setAttribute("name", p.name());
-                    pEl.setAttribute("type", renderTypeText(p.type(), TypeUseSite.FUNCTION_PARAMETER));
+                    pEl.setAttribute("type", renderTypeText(p.type(), LirTypeUseSite.FUNCTION_PARAMETER));
                     if (p.defaultValueFunc() != null) pEl.setAttribute("default_value_func", p.defaultValueFunc());
                     paramsEl.appendChild(pEl);
                 }
@@ -139,7 +123,7 @@ public final class DomLirSerializer implements LirSerializer {
 
                 // return type
                 Element retEl = doc.createElement("return_type");
-                retEl.setAttribute("type", renderTypeText(fn.getReturnType(), TypeUseSite.FUNCTION_RETURN));
+                retEl.setAttribute("type", renderTypeText(fn.getReturnType(), LirTypeUseSite.FUNCTION_RETURN));
                 fEl.appendChild(retEl);
 
                 // variables
@@ -147,7 +131,7 @@ public final class DomLirSerializer implements LirSerializer {
                 for (var v : fn.getVariables().values()) {
                     Element vEl = doc.createElement("variable");
                     vEl.setAttribute("id", v.id());
-                    vEl.setAttribute("type", renderTypeText(v.type(), TypeUseSite.FUNCTION_VARIABLE));
+                    vEl.setAttribute("type", renderTypeText(v.type(), LirTypeUseSite.FUNCTION_VARIABLE));
                     varsEl.appendChild(vEl);
                 }
                 fEl.appendChild(varsEl);
@@ -193,11 +177,11 @@ public final class DomLirSerializer implements LirSerializer {
 
     /// Serializer keeps compiler-only types on the dedicated `compiler::...` grammar and rejects any
     /// attempt to leak them into outward-facing metadata surfaces.
-    private @NotNull String renderTypeText(@NotNull GdType type, @NotNull TypeUseSite useSite) {
+    private @NotNull String renderTypeText(@NotNull GdType type, @NotNull LirTypeUseSite useSite) {
         if (type instanceof GdCompilerType compilerOnlyType) {
-            if (!useSite.allowCompilerOnlyType) {
+            if (!useSite.allowCompilerOnlyType()) {
                 throw new IllegalArgumentException(
-                        "compiler-only type leaked into " + useSite.displayName + ": " + compilerOnlyType.getLirTypeText()
+                        "compiler-only type leaked into " + useSite.displayName() + ": " + compilerOnlyType.getLirTypeText()
                 );
             }
             return compilerOnlyType.getLirTypeText();

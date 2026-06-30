@@ -34,10 +34,12 @@ public final class StorePropertyInsnGen implements CInsnGen<StorePropertyInsn> {
         if (objectVar == null) {
             throw bodyBuilder.invalidInsn("Object variable ID " + insn.objectId() + " does not exist");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, objectVar, "property store receiver");
         var valueVar = func.getVariableById(insn.valueId());
         if (valueVar == null) {
             throw bodyBuilder.invalidInsn("Value variable ID " + insn.valueId() + " does not exist");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, valueVar, "property store value");
         if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
             throw bodyBuilder.invalidInsn("Object variable ID " + insn.objectId() +
                     " is not a valid property target type, but " + objectVar.type().getTypeName());

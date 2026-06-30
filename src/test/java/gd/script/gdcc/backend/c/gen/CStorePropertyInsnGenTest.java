@@ -26,6 +26,7 @@ import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdNilType;
 import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdStringNameType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
@@ -211,6 +212,30 @@ public class CStorePropertyInsnGenTest {
 
         var body = codegen.generateFuncBody(gdccClass, func);
         assertTrue(body.contains("MyClass__field_setter_value($obj, $value);"));
+    }
+
+    @Test
+    @DisplayName("store_property should reject compiler-only value before setter/property resolution")
+    void storePropertyShouldRejectCompilerOnlyValue() {
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        gdccClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, "_field_setter_value", Map.of()));
+
+        var func = new LirFunctionDef("set_value");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("MyClass"), null, func));
+        func.addParameter(new LirParameterDef("value", GdccForRangeIterType.FOR_RANGE_ITER, null, func));
+        addEntryStoreAndReturn(func, new StorePropertyInsn("value", "obj", "value"));
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(emptyApi(), List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into property store value variable 'value'"), ex.getMessage());
     }
 
     @Test

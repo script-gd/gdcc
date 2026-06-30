@@ -21,6 +21,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdColorType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdNilType;
@@ -287,6 +288,36 @@ public class CLoadPropertyInsnGenTest {
         var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
         assertTrue(ex.getMessage().contains("get_name"), ex.getMessage());
         assertTrue(ex.getMessage().contains("METHOD_MISSING"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("load_property should reject compiler-only result target")
+    void loadPropertyShouldRejectCompilerOnlyResultTarget() {
+        var gdccClass = new LirClassDef("MyClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        gdccClass.addProperty(new LirPropertyDef("value", GdStringType.STRING, false, null, null, null, Map.of()));
+
+        var func = new LirFunctionDef("use_value");
+        func.setReturnType(GdVoidType.VOID);
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("MyClass"), null, func));
+        func.createAndAddVariable("tmp", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new LoadPropertyInsn("tmp", "value", "obj"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        gdccClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(gdccClass));
+        var ctx = newContext(new ExtensionAPI(null, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()),
+                List.of(gdccClass));
+
+        var codegen = new CCodegen();
+        codegen.prepare(ctx, module);
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(gdccClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into property load result target variable 'tmp'"), ex.getMessage());
     }
 
     @Test

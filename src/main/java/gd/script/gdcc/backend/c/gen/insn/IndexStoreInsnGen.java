@@ -30,7 +30,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Objects;
 
 /// C code generator for indexing store instructions:
@@ -263,12 +262,12 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
         if (selfOperand.tempVar() == null) {
             throw bodyBuilder.invalidInsn("Internal error: missing self temp variant for writeback");
         }
-        var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(selfVar.type());
-        bodyBuilder.callAssign(
+        InsnGenSupport.unpackVariantAssign(
+                bodyBuilder,
                 bodyBuilder.targetOfVar(selfVar),
-                unpackFunctionName,
                 selfVar.type(),
-                List.of(selfOperand.tempVar())
+                selfOperand.tempVar(),
+                "index store self writeback"
         );
     }
 
@@ -407,6 +406,7 @@ public final class IndexStoreInsnGen implements CInsnGen<IndexingInstruction> {
             throw bodyBuilder.invalidInsn("Index store " + role + " operand variable ID '" + variableId +
                     "' not found in function");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, variable, "index store " + role + " operand");
         return variable;
     }
 

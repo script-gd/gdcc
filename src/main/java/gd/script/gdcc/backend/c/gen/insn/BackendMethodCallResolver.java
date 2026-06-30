@@ -163,9 +163,14 @@ public final class BackendMethodCallResolver {
                                                       @NotNull String methodName,
                                                       @NotNull List<LirVariable> argVars) {
         var receiverType = receiverVar.type();
+        InsnGenSupport.rejectCompilerOnlyType(bodyBuilder, receiverType, "call_method receiver");
         if (receiverType instanceof GdVoidType || receiverType instanceof GdNilType) {
             throw bodyBuilder.invalidInsn("Receiver variable '" + receiverVar.id() +
                     "' has invalid type '" + receiverType.getTypeName() + "' for call_method");
+        }
+
+        for (var i = 0; i < argVars.size(); i++) {
+            InsnGenSupport.rejectCompilerOnlyType(bodyBuilder, argVars.get(i).type(), "call_method argument #" + (i + 1));
         }
 
         var argTypes = argVars.stream().map(LirVariable::type).toList();

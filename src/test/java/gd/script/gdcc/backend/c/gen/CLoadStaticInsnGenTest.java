@@ -18,6 +18,7 @@ import gd.script.gdcc.lir.LirModule;
 import gd.script.gdcc.lir.insn.LoadStaticInsn;
 import gd.script.gdcc.lir.insn.ReturnInsn;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
@@ -218,6 +219,20 @@ class CLoadStaticInsnGenTest {
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("not found"));
         assertTrue(ex.getMessage().contains("Input"));
+    }
+
+    @Test
+    @DisplayName("load_static should reject compiler-only result target")
+    void shouldRejectCompilerOnlyResultTarget() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        singletonFixtureApi(),
+                        setupLoadStaticFunction(GdccForRangeIterType.FOR_RANGE_ITER, new LoadStaticInsn("out", "@GlobalScope", "GameSingleton"))
+                )
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into static load result target variable 'out'"), ex.getMessage());
     }
 
     @Test

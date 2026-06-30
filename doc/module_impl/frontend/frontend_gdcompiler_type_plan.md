@@ -573,6 +573,15 @@ MVP 采用以下策略：
 
 ### 5.8 阶段八：普通 Godot / Variant / engine 路径封堵
 
+状态：已完成（2026-06-30）。
+
+产出：
+
+- `InsnGenSupport` 新增统一 compiler-only 泄漏检测与 Variant unpack 辅助，普通 `Variant` pack/unpack、dynamic call result unpack、index/property writeback 统一走显式 fail-fast 边界。
+- `PackUnpackVariantInsnGen`、`CallMethodInsnGen`、`BackendMethodCallResolver`、`CallGlobalInsnGen`、`OperatorInsnGen`、`IndexLoadInsnGen`、`IndexStoreInsnGen`、property/static path 补齐 compiler-only receiver / operand / argument / result target 拒绝。
+- `CGenHelper` 对 outward metadata、typed container leaf、`call_func` wrapper type gate / unpack expression / destroy stmt 增加 compiler-only 显式拒绝，避免错误下沉成模糊 helper 失败。
+- targeted 单元测试覆盖 pack/unpack、dynamic call、utility call、operator、index、property、static load 与 metadata/wrapper negative path，并保留关键 happy path 回归锚点。
+
 目标：
 
 - 即使手写 LIR 绕过 frontend，compiler-only type 也不能进入普通 Godot runtime ABI。

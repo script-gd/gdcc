@@ -37,7 +37,6 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var insn = bodyBuilder.getCurrentInsn(this);
         var func = bodyBuilder.func();
-        var helper = bodyBuilder.helper();
 
         if (insn.resultId() == null) {
             throw bodyBuilder.invalidInsn("Load property instruction missing result variable ID");
@@ -47,6 +46,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         if (objectVar == null) {
             throw bodyBuilder.invalidInsn("Object variable ID " + insn.objectId() + " does not exist");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, objectVar, "property load receiver");
         var resultVar = func.getVariableById(insn.resultId());
         if (resultVar == null) {
             throw bodyBuilder.invalidInsn("Result variable ID " + insn.resultId() + " does not exist");
@@ -54,6 +54,7 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID " + insn.resultId() + " cannot be a reference that cannot be written into");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "property load result target");
         if (objectVar.type() instanceof GdVoidType || objectVar.type() instanceof GdNilType) {
             throw bodyBuilder.invalidInsn("Object variable ID " + insn.objectId() + " is not a valid property target type, but " + objectVar.type().getTypeName());
         }
@@ -116,8 +117,13 @@ public final class LoadPropertyInsnGen implements CInsnGen<LoadPropertyInsn> {
                 bodyBuilder.declareTempVar(tempVar);
                 bodyBuilder.callAssign(tempVar, "godot_Object_get", GdVariantType.VARIANT, List.of(objectValue, propertyName));
                 var resultType = resultVar.type();
-                var unpackFunc = helper.renderUnpackFunctionName(resultType);
-                bodyBuilder.callAssign(target, unpackFunc, resultType, List.of(tempVar));
+                InsnGenSupport.unpackVariantAssign(
+                        bodyBuilder,
+                        target,
+                        resultType,
+                        tempVar,
+                        "property load result target"
+                );
                 bodyBuilder.destroyTempVar(tempVar);
             }
         } else {

@@ -10,7 +10,6 @@ import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.EnumSet;
-import java.util.List;
 import java.util.Objects;
 
 public final class PackUnpackVariantInsnGen implements CInsnGen<TypeInstruction> {
@@ -23,8 +22,6 @@ public final class PackUnpackVariantInsnGen implements CInsnGen<TypeInstruction>
     public void generateCCode(@NotNull CBodyBuilder bodyBuilder) {
         var instruction = bodyBuilder.getCurrentInsn(this);
         var func = bodyBuilder.func();
-        var helper = bodyBuilder.helper();
-
         if (instruction.resultId() == null) {
             throw bodyBuilder.invalidInsn("Instruction does not have a result variable ID");
         }
@@ -44,8 +41,13 @@ public final class PackUnpackVariantInsnGen implements CInsnGen<TypeInstruction>
                         "' is not of variant type, but " + variantVar.type().getTypeName());
             }
 
-            var unpackFunc = helper.renderUnpackFunctionName(resultVar.type());
-            bodyBuilder.callAssign(target, unpackFunc, resultVar.type(), List.of(bodyBuilder.valueOfVar(variantVar)));
+            InsnGenSupport.unpackVariantAssign(
+                    bodyBuilder,
+                    target,
+                    resultVar.type(),
+                    bodyBuilder.valueOfVar(variantVar),
+                    "Variant unpack target"
+            );
             return;
         }
 

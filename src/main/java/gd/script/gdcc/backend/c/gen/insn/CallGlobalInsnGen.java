@@ -51,6 +51,7 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
                         "' has unresolved type metadata");
             }
             var argVar = argVars.get(i);
+            InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, argVar, "call_global argument #" + (i + 1));
             if (!bodyBuilder.classRegistry().checkAssignable(argVar.type(), paramType)) {
                 throw bodyBuilder.invalidInsn("Cannot assign value of type '" + argVar.type().getTypeName() +
                         "' to utility parameter #" + (i + 1) + " of type '" + paramType.getTypeName() + "'");
@@ -83,6 +84,7 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
         }
 
         for (var i = fixedCount; i < argVars.size(); i++) {
+            InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, argVars.get(i), "call_global vararg #" + (i + 1));
             varargs.add(bodyBuilder.valueOfVar(argVars.get(i)));
         }
         if (signature.isVararg()) {
@@ -122,6 +124,7 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "call_global result target");
         if (!bodyBuilder.classRegistry().checkAssignable(returnType, resultVar.type())) {
             throw bodyBuilder.invalidInsn("Utility function '" + utilityLookupName + "' returns '" +
                     returnType.getTypeName() + "', but result variable '" + resultId +
@@ -156,6 +159,7 @@ public final class CallGlobalInsnGen implements CInsnGen<CallGlobalInsn> {
             if (argVar == null) {
                 throw bodyBuilder.invalidInsn("Argument variable ID '" + argId + "' not found in function");
             }
+            InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, argVar, "call_global argument #" + (i + 1));
             argVars.add(argVar);
         }
         return argVars;

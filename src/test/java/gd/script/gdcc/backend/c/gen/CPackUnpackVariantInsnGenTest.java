@@ -3,6 +3,7 @@ package gd.script.gdcc.backend.c.gen;
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
 import gd.script.gdcc.enums.GodotVersion;
+import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.lir.LirBasicBlock;
@@ -15,6 +16,7 @@ import gd.script.gdcc.lir.insn.UnpackVariantInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringNameType;
@@ -28,6 +30,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -219,6 +223,54 @@ public class CPackUnpackVariantInsnGenTest {
         var body = codegen.generateFuncBody(workerClass, func);
         assertTrue(body.contains("$result = godot_new_Dictionary_with_Variant(&$variant);"));
         assertFalse(body.contains("godot_new_Dictionary["));
+    }
+
+    @Test
+    @DisplayName("pack_variant should reject compiler-only source")
+    void packVariantShouldRejectCompilerOnlySource() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("pack_compiler_only");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", GdVariantType.VARIANT);
+        func.createAndAddVariable("value", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new PackVariantInsn("result", "value"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into Variant pack source variable 'value'"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("unpack_variant should reject compiler-only target")
+    void unpackVariantShouldRejectCompilerOnlyTarget() {
+        var workerClass = new LirClassDef("Worker", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var func = new LirFunctionDef("unpack_compiler_only");
+        func.setReturnType(GdVoidType.VOID);
+        func.createAndAddVariable("result", GdccForRangeIterType.FOR_RANGE_ITER);
+        func.createAndAddVariable("variant", GdVariantType.VARIANT);
+
+        var entry = new LirBasicBlock("entry");
+        entry.appendInstruction(new UnpackVariantInsn("result", "variant"));
+        entry.appendInstruction(new ReturnInsn(null));
+        func.addBasicBlock(entry);
+        func.setEntryBlockId("entry");
+        workerClass.addFunction(func);
+
+        var module = new LirModule("test_module", List.of(workerClass));
+        var codegen = newCodegen(module, emptyApi(), List.of(workerClass));
+
+        var ex = assertThrows(InvalidInsnException.class, () -> codegen.generateFuncBody(workerClass, func));
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into Variant unpack target: GdccForRangeIter"), ex.getMessage());
     }
 
     private ExtensionAPI emptyApi() {

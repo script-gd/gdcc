@@ -39,6 +39,7 @@ public final class LoadStaticInsnGen implements CInsnGen<LoadStaticInsn> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "static load result target");
 
         var target = bodyBuilder.targetOfVar(resultVar);
         var classRegistry = bodyBuilder.classRegistry();

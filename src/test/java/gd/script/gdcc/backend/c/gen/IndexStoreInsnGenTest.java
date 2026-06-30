@@ -17,6 +17,7 @@ import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
@@ -103,6 +104,25 @@ class IndexStoreInsnGenTest {
 
         assertTrue(body.contains("godot_new_Variant_with_int($value)"), body);
         assertTrue(body.contains("godot_Variant_destroy(&__gdcc_tmp_idx_val_variant_"), body);
+    }
+
+    @Test
+    @DisplayName("variant_set should reject compiler-only value before Variant pack")
+    void variantSetRejectsCompilerOnlyValue() {
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(
+                        new VariantSetInsn("self", "key", "value"),
+                        List.of(
+                                new VariableSpec("self", GdVariantType.VARIANT, false),
+                                new VariableSpec("key", GdVariantType.VARIANT, false),
+                                new VariableSpec("value", GdccForRangeIterType.FOR_RANGE_ITER, false)
+                        )
+                )
+        );
+
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into index store value operand variable 'value'"), ex.getMessage());
     }
 
     @Test

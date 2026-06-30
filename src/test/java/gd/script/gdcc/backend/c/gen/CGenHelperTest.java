@@ -230,6 +230,20 @@ class CGenHelperTest {
     }
 
     @Test
+    @DisplayName("renderBoundMetadata should reject compiler-only metadata slots")
+    void renderBoundMetadataShouldRejectCompilerOnlySlot() {
+        var ex = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderBoundMetadata(GdccForRangeIterType.FOR_RANGE_ITER, "godot_PROPERTY_USAGE_DEFAULT")
+        );
+
+        assertEquals(
+                "compiler-only type leaked into bound slot metadata: GdccForRangeIter",
+                ex.getMessage()
+        );
+    }
+
+    @Test
     @DisplayName("renderBoundMetadata should add Variant usage flag without rewriting base usage")
     void renderBoundMetadataShouldAddVariantFlag() {
         var metadata = helper.renderBoundMetadata(GdVariantType.VARIANT, "godot_PROPERTY_USAGE_DEFAULT");
@@ -641,6 +655,37 @@ class CGenHelperTest {
     void renderCallWrapperDestroyStmtShouldSkipObjectAndPrimitiveLocals() {
         assertEquals("", helper.renderCallWrapperDestroyStmt(new GdObjectType("Node"), "value"));
         assertEquals("", helper.renderCallWrapperDestroyStmt(GdIntType.INT, "value"));
+    }
+
+    @Test
+    @DisplayName("call wrapper helpers should reject compiler-only types")
+    void callWrapperHelpersShouldRejectCompilerOnlyTypes() {
+        var typeGateEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderCallWrapperVariantTypeGate(GdccForRangeIterType.FOR_RANGE_ITER, "type")
+        );
+        assertEquals(
+                "compiler-only type leaked into call wrapper type gate: GdccForRangeIter",
+                typeGateEx.getMessage()
+        );
+
+        var unpackEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderCallWrapperUnpackExpr(GdccForRangeIterType.FOR_RANGE_ITER, "value_ptr", "value_type")
+        );
+        assertEquals(
+                "compiler-only type leaked into call wrapper unpack expression: GdccForRangeIter",
+                unpackEx.getMessage()
+        );
+
+        var destroyEx = assertThrows(
+                IllegalArgumentException.class,
+                () -> helper.renderCallWrapperDestroyStmt(GdccForRangeIterType.FOR_RANGE_ITER, "value")
+        );
+        assertEquals(
+                "compiler-only type leaked into call wrapper destroy stmt: GdccForRangeIter",
+                destroyEx.getMessage()
+        );
     }
 
     @Test

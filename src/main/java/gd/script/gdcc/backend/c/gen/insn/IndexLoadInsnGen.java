@@ -239,12 +239,12 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
             return;
         }
 
-        var unpackFunctionName = bodyBuilder.helper().renderUnpackFunctionName(resultVar.type());
-        bodyBuilder.callAssign(
+        InsnGenSupport.unpackVariantAssign(
+                bodyBuilder,
                 bodyBuilder.targetOfVar(resultVar),
-                unpackFunctionName,
                 resultVar.type(),
-                List.of(retTemp)
+                retTemp,
+                "index load result target"
         );
     }
 
@@ -285,6 +285,7 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
         if (resultVar.ref()) {
             throw bodyBuilder.invalidInsn("Result variable ID '" + resultId + "' cannot be a reference");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, resultVar, "index load result target");
         return resultVar;
     }
 
@@ -296,6 +297,7 @@ public final class IndexLoadInsnGen implements CInsnGen<IndexingInstruction> {
             throw bodyBuilder.invalidInsn("Index load " + role + " operand variable ID '" + variableId +
                     "' not found in function");
         }
+        InsnGenSupport.rejectCompilerOnlyVariable(bodyBuilder, variable, "index load " + role + " operand");
         return variable;
     }
 

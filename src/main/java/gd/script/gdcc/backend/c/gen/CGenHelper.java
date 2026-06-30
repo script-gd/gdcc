@@ -19,6 +19,7 @@ import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.resolver.ScopeTypeParsers;
 import gd.script.gdcc.type.*;
 import gd.script.gdcc.type.*;
+import gd.script.gdcc.util.TypeCheckUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -540,6 +541,7 @@ public final class CGenHelper {
     /// materialization in `renderCallWrapperUnpackExpr(...)`.
     public @NotNull String renderCallWrapperVariantTypeGate(@NotNull GdType paramType,
                                                             @NotNull String typeExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(paramType, "call wrapper type gate");
         switch (paramType) {
             case GdFloatType _ -> {
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_FLOAT || "
@@ -547,7 +549,7 @@ public final class CGenHelper {
             }
             case GdFloatVectorType vectorType -> {
                 vectorType.ensureValidBuiltinDim();
-                var targetType = requireBoundMetadataType(paramType);
+                var targetType = requireBoundMetadataType(paramType, "call wrapper type gate");
                 var vectorSourceType = new GdIntVectorType(vectorType.getDimension()).getGdExtensionType();
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + " || "
                         + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + vectorSourceType.name() + ")";
@@ -561,7 +563,7 @@ public final class CGenHelper {
                         + typeExpr + " == GDEXTENSION_VARIANT_TYPE_STRING_NAME)";
             }
             default -> {
-                var targetType = requireBoundMetadataType(paramType);
+                var targetType = requireBoundMetadataType(paramType, "call wrapper type gate");
                 return "(" + typeExpr + " == GDEXTENSION_VARIANT_TYPE_" + targetType.name() + ")";
             }
         }
@@ -579,6 +581,7 @@ public final class CGenHelper {
     public @NotNull String renderCallWrapperUnpackExpr(@NotNull GdType paramType,
                                                        @NotNull String variantPtrExpr,
                                                        @Nullable String typeExpr) {
+        TypeCheckUtil.requireNonCompilerOnly(paramType, "call wrapper unpack expression");
         switch (paramType) {
             case GdFloatType _ -> {
                 var actualTypeExpr = typeExpr != null ? typeExpr : "godot_variant_get_type(" + variantPtrExpr + ")";
@@ -659,6 +662,7 @@ public final class CGenHelper {
     /// - only destroyable non-object wrappers materialize an addressable local slot that the wrapper must destroy
     /// - object locals stay as plain pointers here, so they must not be blanket destroy/release'd at wrapper exit
     public @NotNull String renderCallWrapperDestroyStmt(@NotNull GdType type, @NotNull String varName) {
+        TypeCheckUtil.requireNonCompilerOnly(type, "call wrapper destroy stmt");
         if (type instanceof GdObjectType || !type.isDestroyable()) {
             return "";
         }
@@ -732,7 +736,7 @@ public final class CGenHelper {
     public @NotNull BoundMetadata renderBoundMetadata(@NotNull GdType type,
                                                       @NotNull String baseUsageExpr,
                                                       @NotNull String useSite) {
-        var extensionType = requireBoundMetadataType(type);
+        var extensionType = requireBoundMetadataType(type, useSite + " metadata");
         var usageExpr = type instanceof GdVariantType
                 ? baseUsageExpr + " | godot_PROPERTY_USAGE_NIL_IS_VARIANT"
                 : baseUsageExpr;
@@ -769,7 +773,9 @@ public final class CGenHelper {
         return "godot_PROPERTY_USAGE_NO_EDITOR";
     }
 
-    private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type) {
+    private @NotNull GdExtensionTypeEnum requireBoundMetadataType(@NotNull GdType type,
+                                                                  @NotNull String useSite) {
+        TypeCheckUtil.requireNonCompilerOnly(type, useSite);
         var extensionType = type.getGdExtensionType();
         if (extensionType == null) {
             throw new IllegalArgumentException("Type " + type.getTypeName() + " does not have outward GDExtension metadata");
@@ -794,6 +800,9 @@ public final class CGenHelper {
                                                     @NotNull String containerKind,
                                                     boolean allowVariantLeaf) {
         return switch (type) {
+            case GdCompilerType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into " + containerKind + " outward hint leaf at " + useSite + ": " + type.getTypeName()
+            );
             case GdVariantType _ -> {
                 if (allowVariantLeaf) {
                     yield type.getTypeName();
@@ -900,6 +909,9 @@ public final class CGenHelper {
                                                                               @NotNull String containerKind,
                                                                               boolean allowVariantLeaf) {
         return switch (type) {
+            case GdCompilerType _ -> throw new IllegalArgumentException(
+                    "compiler-only type leaked into " + containerKind + " runtime leaf at " + useSite + ": " + type.getTypeName()
+            );
             case GdVariantType _ -> {
                 if (allowVariantLeaf) {
                     yield GdExtensionTypeEnum.NIL;

@@ -22,6 +22,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedNumericArrayType;
 import gd.script.gdcc.type.GdPackedVectorArrayType;
@@ -940,6 +941,54 @@ class CallMethodInsnGenTest {
         );
         assertInstanceOf(InvalidInsnException.class, ex);
         assertTrue(ex.getMessage().contains("cannot be a reference"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should reject compiler-only dynamic argument before Variant pack")
+    void callMethodShouldRejectCompilerOnlyDynamicArgument() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_dynamic_with_compiler_only_arg");
+        func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
+        func.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                null,
+                "compute",
+                "obj",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz))
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into call_method argument #1"), ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("CALL_METHOD should reject compiler-only dynamic result target before Variant unpack")
+    void callMethodShouldRejectCompilerOnlyDynamicResultTarget() {
+        var clazz = newClass("Worker");
+        var func = newFunction("call_dynamic_into_compiler_only_result");
+        func.createAndAddVariable("obj", new GdObjectType("MysteryObject"));
+        func.createAndAddVariable("ret", GdccForRangeIterType.FOR_RANGE_ITER);
+
+        entry(func).appendInstruction(new CallMethodInsn(
+                "ret",
+                "compute",
+                "obj",
+                List.of()
+        ));
+        clazz.addFunction(func);
+
+        var ex = assertThrows(
+                InvalidInsnException.class,
+                () -> generateBody(clazz, func, newApi(List.of(), List.of()), List.of(clazz))
+        );
+        assertInstanceOf(InvalidInsnException.class, ex);
+        assertTrue(ex.getMessage().contains("compiler-only type leaked into dynamic call result target variable 'ret'"), ex.getMessage());
     }
 
     private LirClassDef newClass(String name) {
