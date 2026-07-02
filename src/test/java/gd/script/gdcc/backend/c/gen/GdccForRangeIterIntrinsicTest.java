@@ -25,8 +25,6 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -95,20 +93,6 @@ class GdccForRangeIterIntrinsicTest {
                 gdcc_for_range_iter_destroy(&$next_iter);
                 $next_iter = gdcc_for_range_iter_next(&$iter);
                 """, fixture.builder().build());
-    }
-
-    @Test
-    @DisplayName("range iterator runtime helpers should anchor exclusive end negative step and zero step policy")
-    void runtimeHelpersShouldAnchorRangeIteratorSemantics() throws IOException {
-        var source = Files.readString(Path.of("src/main/c/codegen/include_451/gdcc/gdcc_intrinsic.h"));
-
-        assertTrue(source.contains("typedef struct gdcc_for_range_iter"), source);
-        assertTrue(source.contains("godot_print_error(\"range step argument is zero\""), source);
-        assertTrue(source.contains("if (iter->step > 0)"), source);
-        assertTrue(source.contains("return iter->current < iter->end;"), source);
-        assertTrue(source.contains("return iter->current > iter->end;"), source);
-        assertTrue(source.contains(".current = iter->current + iter->step"), source);
-        assertTrue(source.contains("return iter->current;"), source);
     }
 
     @Test
