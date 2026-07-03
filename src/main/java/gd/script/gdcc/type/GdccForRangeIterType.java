@@ -2,8 +2,8 @@ package gd.script.gdcc.type;
 
 import org.jetbrains.annotations.NotNull;
 
-/// Compiler-only storage type for future lowered `for i in range(...)` iterator state.
-/// It is intentionally not source-facing and must only be serialized through LIR-only text.
+/// Compiler-only storage type for lowered `for i in range(...)` iterator state.
+/// It remains internal to GDCC and is serialized only through the LIR-only compiler type text.
 public final class GdccForRangeIterType implements GdCompilerType {
     public static final @NotNull GdccForRangeIterType FOR_RANGE_ITER = new GdccForRangeIterType();
 

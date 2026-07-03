@@ -206,7 +206,7 @@ Lifecycle / ownership：
 
 长期事实源：
 
-- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+- `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
 
 ### `gdcc.for_range_iter.should_continue`
 
@@ -238,7 +238,7 @@ Lifecycle / ownership：
 
 长期事实源：
 
-- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+- `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
 
 ### `gdcc.for_range_iter.next`
 
@@ -271,7 +271,7 @@ Lifecycle / ownership：
 
 长期事实源：
 
-- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+- `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
 
 ### `gdcc.for_range_iter.get`
 
@@ -303,7 +303,7 @@ Lifecycle / ownership：
 
 长期事实源：
 
-- `doc/module_impl/frontend/frontend_gdcompiler_type_plan.md`
+- `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
 
 ## 新增 Intrinsic Checklist
 
