@@ -1,24 +1,43 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.scope.BlockScopeKind;
+import gd.script.gdcc.frontend.scope.CallableScope;
+import gd.script.gdcc.frontend.scope.CallableScopeKind;
+import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeLookupStatus;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVoidType;
 import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
+import dev.superice.gdparser.frontend.ast.TypeRef;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -159,10 +178,11 @@ class FrontendAnalysisDataTest {
 
         analysisData.updateExpressionTypes(replacement);
 
+        var publishedExpressionType = analysisData.expressionTypes().get(freshNode);
         assertSame(originalSideTable, analysisData.expressionTypes());
         assertNull(analysisData.expressionTypes().get(staleNode));
-        assertSame(publishedType, analysisData.expressionTypes().get(freshNode));
-        assertEquals(GdVariantType.VARIANT, analysisData.expressionTypes().get(freshNode).publishedType());
+        assertSame(publishedType, publishedExpressionType);
+        assertSame(GdVariantType.VARIANT, publishedType.publishedType());
     }
 
     @Test
@@ -223,7 +243,470 @@ class FrontendAnalysisDataTest {
         assertEquals(GdIntType.INT, analysisData.slotTypes().get(freshNode));
     }
 
+    @Test
+    void analysisPatchCopiesSourceTablesAtConstructionTime() {
+        var bindingNode = identifier("value");
+        var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
+        var binding = new FrontendBinding("self", FrontendBindingKind.SELF, null);
+        symbolBindings.put(bindingNode, binding);
+
+        var patch = new FrontendAnalysisPatch(
+                FrontendSemanticStage.TOP_BINDING,
+                symbolBindings,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                List.of()
+        );
+        symbolBindings.clear();
+
+        assertSame(binding, patch.symbolBindings().get(bindingNode));
+        assertTrue(symbolBindings.isEmpty());
+    }
+
+    @Test
+    void applyPatchPublishesNewFactsWithoutReplacingStableSideTableReferences() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var symbolBindingsRef = analysisData.symbolBindings();
+        var resolvedMembersRef = analysisData.resolvedMembers();
+        var resolvedCallsRef = analysisData.resolvedCalls();
+        var expressionTypesRef = analysisData.expressionTypes();
+        var slotTypesRef = analysisData.slotTypes();
+
+        var bindingNode = identifier("local");
+        var binding = new FrontendBinding("self", FrontendBindingKind.SELF, null);
+        var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
+        symbolBindings.put(bindingNode, binding);
+        analysisData.applyPatch(patch(FrontendSemanticStage.TOP_BINDING, symbolBindings));
+
+        var memberNode = passNode();
+        var member = FrontendResolvedMember.resolved(
+                "hp",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Player"),
+                GdIntType.INT,
+                "Player.hp"
+        );
+        var resolvedMembers = new FrontendAstSideTable<FrontendResolvedMember>();
+        resolvedMembers.put(memberNode, member);
+
+        var callNode = identifier("move");
+        var resolvedCalls = new FrontendAstSideTable<FrontendResolvedCall>();
+        var call = FrontendResolvedCall.resolved(
+                "move",
+                FrontendCallResolutionKind.INSTANCE_METHOD,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Player"),
+                GdIntType.INT,
+                List.of(GdIntType.INT),
+                "Player.move"
+        );
+        resolvedCalls.put(callNode, call);
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.CHAIN_BINDING,
+                new FrontendAstSideTable<>(),
+                resolvedMembers,
+                resolvedCalls,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                List.of()
+        ));
+
+        var expressionNode = identifier("value");
+        var expressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        var expressionType = FrontendExpressionType.resolved(GdIntType.INT);
+        expressionTypes.put(expressionNode, expressionType);
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.EXPR_TYPE,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                expressionTypes,
+                new FrontendAstSideTable<>(),
+                List.of()
+        ));
+
+        var slotNode = variable("value");
+        var slotTypes = new FrontendAstSideTable<GdType>();
+        slotTypes.put(slotNode, GdIntType.INT);
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.VAR_TYPE_POST,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                slotTypes,
+                List.of()
+        ));
+
+        assertSame(symbolBindingsRef, analysisData.symbolBindings());
+        assertSame(resolvedMembersRef, analysisData.resolvedMembers());
+        assertSame(resolvedCallsRef, analysisData.resolvedCalls());
+        assertSame(expressionTypesRef, analysisData.expressionTypes());
+        assertSame(slotTypesRef, analysisData.slotTypes());
+        assertSame(binding, analysisData.symbolBindings().get(bindingNode));
+        assertSame(member, analysisData.resolvedMembers().get(memberNode));
+        assertSame(call, analysisData.resolvedCalls().get(callNode));
+        assertSame(expressionType, analysisData.expressionTypes().get(expressionNode));
+        assertSame(GdIntType.INT, expressionType.publishedType());
+        assertSame(GdIntType.INT, analysisData.slotTypes().get(slotNode));
+    }
+
+    @Test
+    void applyPatchAllowsIdempotentMergeForLogicallyEquivalentFacts() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var expressionNode = identifier("value");
+        var slotNode = variable("value");
+        analysisData.expressionTypes().put(expressionNode, FrontendExpressionType.resolved(GdIntType.INT));
+        analysisData.slotTypes().put(slotNode, GdIntType.INT);
+
+        var idempotentExpressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        idempotentExpressionTypes.put(expressionNode, FrontendExpressionType.resolved(new GdIntType()));
+        var idempotentSlotTypes = new FrontendAstSideTable<GdType>();
+        idempotentSlotTypes.put(slotNode, new GdIntType());
+
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.EXPR_TYPE,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                idempotentExpressionTypes,
+                new FrontendAstSideTable<>(),
+                List.of()
+        ));
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.VAR_TYPE_POST,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                idempotentSlotTypes,
+                List.of()
+        ));
+
+        var idempotentExpressionType = analysisData.expressionTypes().get(expressionNode);
+        assertSame(GdIntType.INT, Objects.requireNonNull(idempotentExpressionType).publishedType());
+        assertSame(GdIntType.INT, analysisData.slotTypes().get(slotNode));
+    }
+
+    @Test
+    void applyPatchRejectsConflictingExpressionAndSlotFacts() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var expressionNode = identifier("value");
+        var slotNode = variable("slot");
+        analysisData.expressionTypes().put(expressionNode, FrontendExpressionType.resolved(GdIntType.INT));
+        analysisData.slotTypes().put(slotNode, GdIntType.INT);
+
+        var conflictingExpressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        conflictingExpressionTypes.put(expressionNode, FrontendExpressionType.resolved(GdFloatType.FLOAT));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.EXPR_TYPE,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        conflictingExpressionTypes,
+                        new FrontendAstSideTable<>(),
+                        List.of()
+                ))
+        );
+
+        var failedExpressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        var failedNode = identifier("failed");
+        analysisData.expressionTypes().put(failedNode, FrontendExpressionType.failed("original failure"));
+        failedExpressionTypes.put(failedNode, FrontendExpressionType.resolved(GdIntType.INT));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.EXPR_TYPE,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        failedExpressionTypes,
+                        new FrontendAstSideTable<>(),
+                        List.of()
+                ))
+        );
+
+        var conflictingSlotTypes = new FrontendAstSideTable<GdType>();
+        conflictingSlotTypes.put(slotNode, new GdObjectType("Player"));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.VAR_TYPE_POST,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        conflictingSlotTypes,
+                        List.of()
+                ))
+        );
+    }
+
+    @Test
+    void applyPatchRefreshesPublishedLocalBindingsForMatchingDeclarationOnly() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var updatedScope = newBodyScope();
+        var untouchedScope = newBodyScope();
+        var targetDeclaration = variable("local");
+        var untouchedDeclaration = variable("local");
+        updatedScope.defineLocal("local", GdVariantType.VARIANT, targetDeclaration);
+        untouchedScope.defineLocal("local", GdVariantType.VARIANT, untouchedDeclaration);
+
+        var targetBindingNode = identifier("target_use");
+        var untouchedBindingNode = identifier("other_use");
+        var targetBinding = localBinding("local", targetDeclaration, requireLocal(updatedScope, "local"));
+        var untouchedBinding = localBinding("local", untouchedDeclaration, requireLocal(untouchedScope, "local"));
+        analysisData.symbolBindings().put(targetBindingNode, targetBinding);
+        analysisData.symbolBindings().put(untouchedBindingNode, untouchedBinding);
+
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                List.of(new FrontendLocalSlotTypeUpdate(updatedScope, "local", targetDeclaration, GdIntType.INT))
+        ));
+
+        var refreshedBinding = analysisData.symbolBindings().get(targetBindingNode);
+        var refreshedValue = Objects.requireNonNull(refreshedBinding).resolvedValue();
+        var untouchedValue = Objects.requireNonNull(analysisData.symbolBindings().get(untouchedBindingNode)).resolvedValue();
+        assertNotSame(targetBinding, refreshedBinding);
+        assertSame(targetDeclaration, refreshedBinding.declarationSite());
+        assertSame(targetDeclaration, Objects.requireNonNull(refreshedValue).declaration());
+        assertSame(GdIntType.INT, refreshedValue.type());
+        assertSame(untouchedBinding, analysisData.symbolBindings().get(untouchedBindingNode));
+        assertSame(GdVariantType.VARIANT, Objects.requireNonNull(untouchedValue).type());
+        assertSame(GdIntType.INT, requireLocal(updatedScope, "local").type());
+    }
+
+    @Test
+    void applyPatchSkipsBindingRefreshForNoOpUpdateAndExprTypeOnlyPatch() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var localScope = newBodyScope();
+        var declaration = variable("local");
+        localScope.defineLocal("local", GdIntType.INT, declaration);
+        var bindingNode = identifier("local_use");
+        var originalBinding = localBinding("local", declaration, requireLocal(localScope, "local"));
+        analysisData.symbolBindings().put(bindingNode, originalBinding);
+
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                List.of(new FrontendLocalSlotTypeUpdate(localScope, "local", declaration, GdIntType.INT))
+        ));
+        assertSame(originalBinding, analysisData.symbolBindings().get(bindingNode));
+
+        var expressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        expressionTypes.put(identifier("initializer"), FrontendExpressionType.resolved(GdFloatType.FLOAT));
+        analysisData.applyPatch(patch(
+                FrontendSemanticStage.EXPR_TYPE,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                expressionTypes,
+                new FrontendAstSideTable<>(),
+                List.of()
+        ));
+        assertSame(originalBinding, analysisData.symbolBindings().get(bindingNode));
+    }
+
+    @Test
+    void applyPatchRejectsWrongStageLocalSlotUpdatesAndSourceFacingCompilerOnlyLeaks() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var expressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        expressionTypes.put(identifier("iter"), FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.EXPR_TYPE,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        expressionTypes,
+                        new FrontendAstSideTable<>(),
+                        List.of()
+                ))
+        );
+
+        var slotTypes = new FrontendAstSideTable<GdType>();
+        slotTypes.put(variable("iter_slot"), GdccForRangeIterType.FOR_RANGE_ITER);
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.VAR_TYPE_POST,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        slotTypes,
+                        List.of()
+                ))
+        );
+
+        var localScope = newBodyScope();
+        var declaration = variable("local");
+        localScope.defineLocal("local", GdVariantType.VARIANT, declaration);
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.EXPR_TYPE,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(localScope, "local", declaration, GdIntType.INT))
+                ))
+        );
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(
+                                localScope,
+                                "local",
+                                declaration,
+                                GdccForRangeIterType.FOR_RANGE_ITER
+                        ))
+                ))
+        );
+    }
+
+    @Test
+    void applyPatchRejectsVoidAndConflictingLocalSlotUpdates() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var localScope = newBodyScope();
+        var declaration = variable("local");
+        localScope.defineLocal("local", GdVariantType.VARIANT, declaration);
+
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(localScope, "local", declaration, GdVoidType.VOID))
+                ))
+        );
+
+        localScope.resetLocalType("local", declaration, GdIntType.INT);
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(localScope, "local", declaration, GdFloatType.FLOAT))
+                ))
+        );
+    }
+
     private static PassStatement passNode() {
         return new PassStatement(RANGE);
+    }
+
+    private static @NotNull IdentifierExpression identifier(@NotNull String name) {
+        return new IdentifierExpression(name, RANGE);
+    }
+
+    private static @NotNull VariableDeclaration variable(@NotNull String name) {
+        return new VariableDeclaration(
+                DeclarationKind.VAR,
+                name,
+                new TypeRef(":=", RANGE),
+                null,
+                false,
+                "variable_declaration",
+                RANGE
+        );
+    }
+
+    private static @NotNull FrontendBinding localBinding(
+            @NotNull String name,
+            @NotNull Object declaration,
+            @NotNull ScopeValue value
+    ) {
+        return new FrontendBinding(
+                name,
+                FrontendBindingKind.LOCAL_VAR,
+                declaration,
+                value,
+                ScopeLookupStatus.FOUND_ALLOWED
+        );
+    }
+
+    private static @NotNull ScopeValue requireLocal(@NotNull BlockScope scope, @NotNull String name) {
+        var value = scope.resolveValueHere(name);
+        if (value == null) {
+            throw new IllegalStateException("missing local '" + name + "'");
+        }
+        return value;
+    }
+
+    private static @NotNull BlockScope newBodyScope() throws Exception {
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var ownerClass = new LirClassDef("SyntheticOwner", "RefCounted");
+        var classScope = new ClassScope(registry, registry, ownerClass);
+        var callableScope = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
+        return new BlockScope(callableScope, BlockScopeKind.FUNCTION_BODY);
+    }
+
+    private static @NotNull FrontendAnalysisPatch patch(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
+            @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
+            @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
+            @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
+            @NotNull FrontendAstSideTable<GdType> slotTypes,
+            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
+    ) {
+        return new FrontendAnalysisPatch(
+                stage,
+                symbolBindings,
+                resolvedMembers,
+                resolvedCalls,
+                expressionTypes,
+                slotTypes,
+                localSlotTypeUpdates
+        );
+    }
+
+    private static @NotNull FrontendAnalysisPatch patch(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings
+    ) {
+        return patch(
+                stage,
+                symbolBindings,
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                new FrontendAstSideTable<>(),
+                List.of()
+        );
     }
 }

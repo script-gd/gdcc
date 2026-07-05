@@ -32,12 +32,12 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
-import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
@@ -177,7 +177,8 @@ public class FrontendLocalTypeStabilizationAnalyzer {
         }
         var localName = variableDeclaration.name().trim();
         blockScope.resetLocalType(localName, variableDeclaration, stableType);
-        return blockScope.resolveValueHere(localName);
+        var updatedValue = blockScope.resolveValueHere(localName);
+        return updatedValue != null && updatedValue.declaration() == variableDeclaration ? updatedValue : null;
     }
 
     private static @Nullable GdType stableLocalTypeOrNull(
@@ -235,7 +236,7 @@ public class FrontendLocalTypeStabilizationAnalyzer {
 
     private static final class AstWalkerLocalTypeStabilizer implements ASTNodeHandler {
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
-        private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
+        private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull SilentExpressionResolver silentExpressionResolver;
         private final @NotNull List<ProbeEntry> probes;
@@ -253,8 +254,8 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                 boolean writeBackStableSlots
         ) {
             var checkedAnalysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
+            this.analysisData = checkedAnalysisData;
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
-            symbolBindings = checkedAnalysisData.symbolBindings();
             this.probes = Objects.requireNonNull(probes, "probes must not be null");
             this.writeBackStableSlots = writeBackStableSlots;
             astWalker = new ASTWalker(this);
@@ -362,26 +363,18 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             if (writeBackStableSlots) {
                 var updatedValue = stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
                 if (updatedValue != null) {
-                    refreshPublishedLocalValues(variableDeclaration, updatedValue);
+                    analysisData.refreshPublishedLocalBindingPayloads(
+                            new FrontendLocalSlotTypeUpdate(
+                                    blockScope,
+                                    variableDeclaration.name().trim(),
+                                    variableDeclaration,
+                                    updatedValue.type()
+                            ),
+                            updatedValue
+                    );
                 }
             }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
-        }
-
-        /// Keep published use-site values aligned with the slot type rewrite while preserving the
-        /// original top-binding identity by declaration.
-        private void refreshPublishedLocalValues(
-                @NotNull VariableDeclaration variableDeclaration,
-                @NotNull ScopeValue updatedValue
-        ) {
-            for (var entry : symbolBindings.entrySet()) {
-                var binding = entry.getValue();
-                var resolvedValue = binding.resolvedValue();
-                if (resolvedValue == null || resolvedValue.declaration() != variableDeclaration) {
-                    continue;
-                }
-                entry.setValue(binding.withResolvedValue(updatedValue));
-            }
         }
 
         @Override
@@ -504,7 +497,7 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             if (!(initializer instanceof IdentifierExpression identifierExpression)) {
                 return null;
             }
-            var binding = symbolBindings.get(identifierExpression);
+            var binding = analysisData.symbolBindings().get(identifierExpression);
             if (binding == null || binding.kind() != FrontendBindingKind.TYPE_META) {
                 return null;
             }

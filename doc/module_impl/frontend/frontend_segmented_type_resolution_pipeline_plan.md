@@ -377,6 +377,14 @@ record FrontendLocalSlotTypeUpdate(
 - 为 merge 加入冲突检测、idempotent 规则、compiler-only type 泄漏检查。
 - 为 `symbolBindings()` 的 local slot refresh 建立显式 helper，替代 analyzer 内到处分散的 `entry.setValue(...)`。
 
+当前状态（2026-07-05）：
+
+- [x] A1 新增 `FrontendSemanticStage`，并固定五个 segmented semantic stage 常量。
+- [x] A2 新增 `FrontendAnalysisPatch` 与 `FrontendLocalSlotTypeUpdate`，其中 patch 在创建时复制 side table，避免 drain 后被 scratch 二次污染。
+- [x] A3 在 `FrontendAnalysisData` 中新增 `applyPatch(...)`，并继续保留现有 `updateXxx(...)` whole-table publication API。
+- [x] A4 为 merge 加入冲突检测、idempotent 规则、`LOCAL_TYPE_STABILIZATION` owner 校验，以及 `expressionTypes()` / `slotTypes()` / local slot update 的 compiler-only type 泄漏检查。
+- [x] A5 为 `symbolBindings()` 的 local slot refresh 建立显式 helper，并让 `FrontendLocalTypeStabilizationAnalyzer` 与 `FrontendExprTypeAnalyzer` 复用该 helper，保持现有 analyzer 对外行为不变。
+
 验收细则：
 
 - `FrontendAnalysisDataTest` 继续通过现有 stable-reference / stale-clear 测试。
