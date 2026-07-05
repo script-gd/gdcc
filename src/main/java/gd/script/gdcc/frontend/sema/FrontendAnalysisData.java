@@ -396,7 +396,7 @@ public final class FrontendAnalysisData {
         }
     }
 
-    private void checkNoCompilerOnlyLeak(@Nullable GdType type, @NotNull String fieldName) {
+    static void checkNoCompilerOnlyLeak(@Nullable GdType type, @NotNull String fieldName) {
         if (type instanceof GdCompilerType compilerOnlyType) {
             throw patchFailure(
                     fieldName
@@ -406,13 +406,13 @@ public final class FrontendAnalysisData {
         }
     }
 
-    private void checkNoVoidLocalSlotType(@NotNull GdType type, @NotNull String localName) {
+    static void checkNoVoidLocalSlotType(@NotNull GdType type, @NotNull String localName) {
         if (type instanceof GdVoidType) {
             throw patchFailure("local slot update for '" + localName + "' must not publish void");
         }
     }
 
-    private static boolean sameBinding(@NotNull FrontendBinding first, @NotNull FrontendBinding second) {
+    static boolean sameBinding(@NotNull FrontendBinding first, @NotNull FrontendBinding second) {
         return first.kind() == second.kind()
                 && first.symbolName().equals(second.symbolName())
                 && first.declarationSite() == second.declarationSite()
@@ -420,7 +420,7 @@ public final class FrontendAnalysisData {
                 && sameScopeValue(first.resolvedValue(), second.resolvedValue());
     }
 
-    private static boolean sameResolvedMember(
+    static boolean sameResolvedMember(
             @NotNull FrontendResolvedMember first,
             @NotNull FrontendResolvedMember second
     ) {
@@ -435,7 +435,7 @@ public final class FrontendAnalysisData {
                 && Objects.equals(first.detailReason(), second.detailReason());
     }
 
-    private static boolean sameResolvedCall(@NotNull FrontendResolvedCall first, @NotNull FrontendResolvedCall second) {
+    static boolean sameResolvedCall(@NotNull FrontendResolvedCall first, @NotNull FrontendResolvedCall second) {
         return first.callKind() == second.callKind()
                 && first.status() == second.status()
                 && first.receiverKind() == second.receiverKind()
@@ -449,7 +449,7 @@ public final class FrontendAnalysisData {
                 && Objects.equals(first.detailReason(), second.detailReason());
     }
 
-    private static boolean sameExactCallableBoundary(
+    static boolean sameExactCallableBoundary(
             @Nullable FrontendResolvedCall.ExactCallableBoundary first,
             @Nullable FrontendResolvedCall.ExactCallableBoundary second
     ) {
@@ -460,7 +460,7 @@ public final class FrontendAnalysisData {
                 && sameTypeList(first.fixedParameterTypes(), second.fixedParameterTypes());
     }
 
-    private static boolean sameExpressionType(
+    static boolean sameExpressionType(
             @NotNull FrontendExpressionType first,
             @NotNull FrontendExpressionType second
     ) {
@@ -469,7 +469,7 @@ public final class FrontendAnalysisData {
                 && Objects.equals(first.detailReason(), second.detailReason());
     }
 
-    private static boolean sameScopeValue(@Nullable ScopeValue first, @Nullable ScopeValue second) {
+    static boolean sameScopeValue(@Nullable ScopeValue first, @Nullable ScopeValue second) {
         if (first == null || second == null) {
             return first == second;
         }
@@ -482,7 +482,7 @@ public final class FrontendAnalysisData {
                 && sameType(first.type(), second.type());
     }
 
-    private static boolean sameTypeList(@NotNull List<GdType> first, @NotNull List<GdType> second) {
+    static boolean sameTypeList(@NotNull List<GdType> first, @NotNull List<GdType> second) {
         if (first.size() != second.size()) {
             return false;
         }
@@ -494,7 +494,7 @@ public final class FrontendAnalysisData {
         return true;
     }
 
-    private static boolean sameType(@Nullable GdType first, @Nullable GdType second) {
+    static boolean sameType(@Nullable GdType first, @Nullable GdType second) {
         if (first == null || second == null) {
             return first == second;
         }
@@ -502,11 +502,11 @@ public final class FrontendAnalysisData {
                 || (first.getClass() == second.getClass() && first.getTypeName().equals(second.getTypeName()));
     }
 
-    private static @NotNull String describeNode(@NotNull Node node) {
+    static @NotNull String describeNode(@NotNull Node node) {
         return node.getClass().getSimpleName();
     }
 
-    private static @NotNull FrontendAnalysisPatchException patchFailure(@NotNull String message) {
+    static @NotNull FrontendAnalysisPatchException patchFailure(@NotNull String message) {
         return new FrontendAnalysisPatchException(message);
     }
 

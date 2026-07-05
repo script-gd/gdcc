@@ -407,6 +407,17 @@ record FrontendLocalSlotTypeUpdate(
 - 将 `finalizeWindow=true` 的 window 内含义固定为“bounded retry 的最后一次补全尝试，稳定结果写入 scratch”，不得在 surface 层写穿 stable。
 - 在 surface 层或 patch merge 层复用同一套 conflict / idempotent / compiler-only type guard，避免 scratch shadow stable 后把冲突延迟成静默覆盖。
 
+当前状态（2026-07-05）：
+
+- [x] B1 新增 `FrontendWindowPublicationSurface`，封装 `symbolBindings()`、`resolvedMembers()`、`resolvedCalls()`、`expressionTypes()`、`slotTypes()` 的 window-local scratch side table。
+- [x] B2 新增 `FrontendWindowAnalysisContext`，统一携带 stable `FrontendAnalysisData` 与 window-local publication surface。
+- [x] B3 为上述五张 side table 提供 scratch-over-stable effective read API，window 内读取统一先查 scratch、再查 stable。
+- [x] B4 为上述五张 side table 提供 scratch-only write API；所有 write 都固定只落到 scratch，不直接修改 stable side table。
+- [x] B5 提供 `toPatch(...)` / `drainPatch(...)`，并保证 patch 只包含当前 scratch facts，不复制 stable fallback entries。
+- [x] B6 提供 discard 语义；discard 后 scratch facts 与 pending local slot updates 都会被直接丢弃，不影响 stable publication surface。
+- [x] B7 固定 window 内 `finalizeWindow=true` 的基础设施语义为“最终稳定结果仍只写入 scratch，commit 前 stable 不可见”。
+- [x] B8 在 surface 写入路径与 patch merge 路径复用同一套冲突 / idempotent / compiler-only type guard，并为 local slot update 增加 pre-commit 隔离收集入口。
+
 验收细则：
 
 - 新增测试覆盖 effective read 顺序：同一 identity key 同时存在 stable 与 scratch 时，读取返回 scratch 值；scratch 缺失时回落 stable。
