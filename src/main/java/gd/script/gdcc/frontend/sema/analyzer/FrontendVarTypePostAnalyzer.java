@@ -7,6 +7,8 @@ import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
@@ -52,8 +54,24 @@ public class FrontendVarTypePostAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        analysisData.updateSlotTypes(new FrontendAstSideTable<>());
+        var window = new FrontendWindowAnalysisContext(analysisData);
+        analyzeInWindow(window, diagnosticManager);
+
+        // Slot types are a final whole-module snapshot for existing callers; incremental segmented
+        // execution should apply the drained patch instead of replacing the table.
+        var patch = window.drainPatch(FrontendSemanticStage.VAR_TYPE_POST);
+        analysisData.updateSlotTypes(patch.slotTypes());
+    }
+
+    void analyzeInWindow(
+            @NotNull FrontendWindowAnalysisContext window,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        Objects.requireNonNull(window, "window must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+
+        var analysisData = window.stableData();
 
         var moduleSkeleton = analysisData.moduleSkeleton();
         analysisData.diagnostics();
@@ -78,7 +96,9 @@ public class FrontendVarTypePostAnalyzer {
                     slotTypes
             ).walk(sourceClassRelation.unit().ast());
         }
-        analysisData.updateSlotTypes(slotTypes);
+        for (var entry : slotTypes.entrySet()) {
+            window.publications().slotTypes().put(entry.getKey(), entry.getValue());
+        }
     }
 
     /// Traverses only the current supported executable surface and republishes the already-settled

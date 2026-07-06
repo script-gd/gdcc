@@ -5,6 +5,8 @@ import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
@@ -74,9 +76,28 @@ public class FrontendChainBindingAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        analysisData.updateResolvedMembers(new FrontendAstSideTable<>());
+        analysisData.updateResolvedCalls(new FrontendAstSideTable<>());
+        var window = new FrontendWindowAnalysisContext(analysisData);
+        analyzeInWindow(classRegistry, window, diagnosticManager);
+
+        // Preserve whole-module replacement semantics for legacy callers; segmented callers commit
+        // the patch directly and therefore get conflict-checked incremental publication.
+        var patch = window.drainPatch(FrontendSemanticStage.CHAIN_BINDING);
+        analysisData.updateResolvedMembers(patch.resolvedMembers());
+        analysisData.updateResolvedCalls(patch.resolvedCalls());
+    }
+
+    void analyzeInWindow(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendWindowAnalysisContext window,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(window, "window must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+
+        var analysisData = window.stableData();
 
         var moduleSkeleton = analysisData.moduleSkeleton();
         analysisData.diagnostics();
@@ -104,8 +125,12 @@ public class FrontendChainBindingAnalyzer {
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
-        analysisData.updateResolvedMembers(resolvedMembers);
-        analysisData.updateResolvedCalls(resolvedCalls);
+        for (var entry : resolvedMembers.entrySet()) {
+            window.publications().resolvedMembers().put(entry.getKey(), entry.getValue());
+        }
+        for (var entry : resolvedCalls.entrySet()) {
+            window.publications().resolvedCalls().put(entry.getKey(), entry.getValue());
+        }
     }
 
     private static final class AstWalkerChainBinder implements ASTNodeHandler {

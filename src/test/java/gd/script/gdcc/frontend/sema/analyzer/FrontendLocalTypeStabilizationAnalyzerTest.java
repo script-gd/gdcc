@@ -28,6 +28,8 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -47,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -108,17 +111,61 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
     }
 
     @Test
+    void analyzeInWindowDefersLocalSlotRewriteUntilPatchCommit() throws Exception {
+        var prepared = prepareProbeInput(
+                "local_type_stabilization_window_commit.gd",
+                """
+                        class_name LocalTypeStabilizationWindowCommit
+                        extends RefCounted
+                        
+                        func ping():
+                            var value := 1
+                            value
+                        """
+        );
+        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
+        var bodyScope = assertInstanceOf(BlockScope.class, prepared.analysisData().scopesByAst().get(pingFunction.body()));
+        var valueUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        var originalBinding = prepared.analysisData().symbolBindings().get(valueUse);
+        assertNotNull(originalBinding);
+        var originalResolvedValue = originalBinding.resolvedValue();
+        assertNotNull(originalResolvedValue);
+        assertSame(GdVariantType.VARIANT, originalResolvedValue.type());
+
+        var window = new FrontendWindowAnalysisContext(prepared.analysisData());
+        new FrontendLocalTypeStabilizationAnalyzer().analyzeInWindow(
+                prepared.classRegistry(),
+                window,
+                prepared.diagnosticManager()
+        );
+
+        assertSame(GdVariantType.VARIANT, bodyScope.resolveValue("value").type());
+        assertSame(originalBinding, prepared.analysisData().symbolBindings().get(valueUse));
+
+        prepared.analysisData().applyPatch(window.drainPatch(FrontendSemanticStage.LOCAL_TYPE_STABILIZATION));
+
+        var refreshedBinding = prepared.analysisData().symbolBindings().get(valueUse);
+        assertNotNull(refreshedBinding);
+        assertNotNull(refreshedBinding.resolvedValue());
+        assertEquals("int", bodyScope.resolveValue("value").type().getTypeName());
+        assertEquals("int", refreshedBinding.resolvedValue().type().getTypeName());
+    }
+
+    @Test
     void analyzeKeepsBareTypeMetaInitializerOutOfLocalStabilization() throws Exception {
         var prepared = prepareProbeInput(
                 "local_type_stabilization_type_meta_guard.gd",
                 """
                         class_name LocalTypeStabilizationTypeMetaGuard
                         extends RefCounted
-
+                        
                         class Worker:
                             static func build() -> int:
                                 return 1
-
+                        
                         func ping():
                             var bad := Worker
                             bad
@@ -296,13 +343,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationNestedAlias
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping(toggle: bool):
                             var a := make_point()
                             if toggle:
@@ -339,13 +386,13 @@ class FrontendLocalTypeStabilizationAnalyzerTest {
                 """
                         class_name LocalTypeStabilizationShadowBoundary
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping(toggle: bool, dynamic_host):
                             var a := make_point()
                             if toggle:

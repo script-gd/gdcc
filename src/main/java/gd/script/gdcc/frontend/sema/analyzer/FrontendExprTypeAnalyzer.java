@@ -66,12 +66,12 @@ import java.util.Objects;
 
 /// Publishes frontend expression typing facts after chain/member/call results are already visible.
 ///
-/// The phase rebuilds `expressionTypes()` in place so nested chain reduction can immediately consume
-/// freshly published inner expression facts without introducing a second temporary table.
+/// The phase rebuilds `expressionTypes()` through a window scratch table so nested chain reduction can
+/// immediately consume freshly published inner expression facts without writing stable data early.
 /// `expressionTypes()` is not expression-only: besides ordinary expression roots, this phase also
 /// publishes attribute property/call/subscript steps when downstream compile/lowering needs the step
 /// itself as the stable fact anchor. Inferred local slot stabilization is owned by the earlier local
-/// stabilization phase; the backfill path below exists only for still-unstabilized local `:=` slots.
+/// stabilization phase; the backfill path below is now a guard-only protocol check.
 public class FrontendExprTypeAnalyzer {
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
@@ -86,9 +86,27 @@ public class FrontendExprTypeAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        analysisData.updateExpressionTypes(new FrontendAstSideTable<>());
+        var window = new FrontendWindowAnalysisContext(analysisData);
+        analyzeInWindow(classRegistry, window, diagnosticManager);
+
+        // Keep legacy whole-module expression typing as a complete snapshot replacement while bare
+        // call facts are merged incrementally into the resolvedCalls() table owned by this phase.
+        var patch = window.drainPatch(FrontendSemanticStage.EXPR_TYPE);
+        analysisData.updateExpressionTypes(patch.expressionTypes());
+        analysisData.applyPatch(patch);
+    }
+
+    void analyzeInWindow(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendWindowAnalysisContext window,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(window, "window must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+
+        var analysisData = window.stableData();
 
         var moduleSkeleton = analysisData.moduleSkeleton();
         analysisData.diagnostics();
@@ -103,8 +121,8 @@ public class FrontendExprTypeAnalyzer {
             }
         }
 
-        var expressionTypes = analysisData.expressionTypes();
-        expressionTypes.clear();
+        var expressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        var bareResolvedCalls = new FrontendAstSideTable<FrontendResolvedCall>();
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {
             new AstWalkerExprTypePublisher(
                     sourceClassRelation.unit().path(),
@@ -112,10 +130,16 @@ public class FrontendExprTypeAnalyzer {
                     analysisData,
                     scopesByAst,
                     expressionTypes,
+                    bareResolvedCalls,
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
-        analysisData.updateExpressionTypes(expressionTypes);
+        for (var entry : expressionTypes.entrySet()) {
+            window.publications().expressionTypes().put(entry.getKey(), entry.getValue());
+        }
+        for (var entry : bareResolvedCalls.entrySet()) {
+            window.publications().resolvedCalls().put(entry.getKey(), entry.getValue());
+        }
     }
 
     private static final class AstWalkerExprTypePublisher implements ASTNodeHandler {
@@ -124,6 +148,7 @@ public class FrontendExprTypeAnalyzer {
         private final @NotNull FrontendAnalysisData analysisData;
         private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
         private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes;
+        private final @NotNull FrontendAstSideTable<FrontendResolvedCall> bareResolvedCalls;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull FrontendChainReductionFacade chainReduction;
@@ -145,6 +170,7 @@ public class FrontendExprTypeAnalyzer {
                 @NotNull FrontendAnalysisData analysisData,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
                 @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
+                @NotNull FrontendAstSideTable<FrontendResolvedCall> bareResolvedCalls,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -152,6 +178,7 @@ public class FrontendExprTypeAnalyzer {
             this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
             this.expressionTypes = Objects.requireNonNull(expressionTypes, "expressionTypes must not be null");
+            this.bareResolvedCalls = Objects.requireNonNull(bareResolvedCalls, "bareResolvedCalls must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
             chainReduction = new FrontendChainReductionFacade(
@@ -514,14 +541,9 @@ public class FrontendExprTypeAnalyzer {
                     && attributeExpression.base() == identifierExpression;
         }
 
-        /// Supported local `:=` declarations should already have been stabilized before chain
-        /// binding. This fallback only fills an untouched `Variant` slot when no earlier phase has
-        /// published a narrower local type, and it must never silently override an already
-        /// stabilized slot.
-        ///
-        /// The check keeps inferred local ownership explicit while preserving initializer provenance
-        /// through the local use-site's `declarationSite()` plus the initializer expression's own
-        /// published type and diagnostics.
+        /// Supported local `:=` declarations must be stabilized before expression typing. This guard
+        /// only verifies that an already-stabilized exact slot still agrees with its initializer fact;
+        /// it never narrows an inventory-seeded `Variant` slot or refreshes binding payloads.
         private void backfillInferredLocalType(@NotNull VariableDeclaration variableDeclaration) {
             if (!FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())
                     || variableDeclaration.value() == null) {
@@ -540,7 +562,8 @@ public class FrontendExprTypeAnalyzer {
                 return;
             }
             var backfilledType = switch (publishedInitializerType.status()) {
-                case RESOLVED, DYNAMIC -> publishedInitializerType.publishedType();
+                case RESOLVED -> publishedInitializerType.publishedType();
+                case DYNAMIC -> null;
                 case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
             };
             if (backfilledType == null || backfilledType instanceof GdVoidType) {
@@ -563,21 +586,6 @@ public class FrontendExprTypeAnalyzer {
                                     + backfilledType.getTypeName()
                     );
                 }
-                return;
-            }
-            var localName = variableDeclaration.name().trim();
-            blockScope.resetLocalType(localName, variableDeclaration, backfilledType);
-            var updatedValue = blockScope.resolveValueHere(localName);
-            if (updatedValue != null && updatedValue.declaration() == variableDeclaration) {
-                analysisData.refreshPublishedLocalBindingPayloads(
-                        new FrontendLocalSlotTypeUpdate(
-                                blockScope,
-                                localName,
-                                variableDeclaration,
-                                updatedValue.type()
-                        ),
-                        updatedValue
-                );
             }
         }
 
@@ -824,14 +832,13 @@ public class FrontendExprTypeAnalyzer {
             if (publishedCall == null) {
                 return;
             }
-            var resolvedCalls = analysisData.resolvedCalls();
-            if (resolvedCalls.containsKey(callExpression)) {
+            if (analysisData.resolvedCalls().containsKey(callExpression) || bareResolvedCalls.containsKey(callExpression)) {
                 throw new IllegalStateException(
                         "resolvedCalls() already contains a published fact for bare CallExpression at "
                                 + callExpression.range()
                 );
             }
-            resolvedCalls.put(callExpression, publishedCall);
+            bareResolvedCalls.put(callExpression, publishedCall);
             reportUnsafeCallArgumentWarning(callExpression, publishedCall);
         }
 

@@ -38,6 +38,7 @@ import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
@@ -86,7 +87,16 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        run(classRegistry, analysisData, diagnosticManager, true);
+        run(classRegistry, analysisData, diagnosticManager, true, null);
+    }
+
+    void analyzeInWindow(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendWindowAnalysisContext window,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        Objects.requireNonNull(window, "window must not be null");
+        run(classRegistry, window.stableData(), diagnosticManager, true, window);
     }
 
     /// Package-private test helper for observing transient initializer typing.
@@ -100,7 +110,7 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        return run(classRegistry, analysisData, diagnosticManager, false);
+        return run(classRegistry, analysisData, diagnosticManager, false, null);
     }
 
     static @Nullable FrontendExpressionType probeAssignmentOrdinaryValueInitializerFailure(
@@ -121,7 +131,8 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager,
-            boolean writeBackStableSlots
+            boolean writeBackStableSlots,
+            @Nullable FrontendWindowAnalysisContext window
     ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         Objects.requireNonNull(analysisData, "analysisData must not be null");
@@ -146,7 +157,8 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                     analysisData,
                     scopesByAst,
                     probes,
-                    writeBackStableSlots
+                    writeBackStableSlots,
+                    window
             ).walk(sourceClassRelation.unit().ast());
         }
         return new ProbeSnapshot(probes);
@@ -241,6 +253,7 @@ public class FrontendLocalTypeStabilizationAnalyzer {
         private final @NotNull SilentExpressionResolver silentExpressionResolver;
         private final @NotNull List<ProbeEntry> probes;
         private final boolean writeBackStableSlots;
+        private final @Nullable FrontendWindowAnalysisContext window;
         private int supportedExecutableBlockDepth;
         private @NotNull ResolveRestriction currentRestriction = ResolveRestriction.unrestricted();
         private boolean currentStaticContext;
@@ -251,13 +264,15 @@ public class FrontendLocalTypeStabilizationAnalyzer {
                 @NotNull FrontendAnalysisData analysisData,
                 @NotNull FrontendAstSideTable<Scope> scopesByAst,
                 @NotNull List<ProbeEntry> probes,
-                boolean writeBackStableSlots
+                boolean writeBackStableSlots,
+                @Nullable FrontendWindowAnalysisContext window
         ) {
             var checkedAnalysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
             this.analysisData = checkedAnalysisData;
             this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
             this.probes = Objects.requireNonNull(probes, "probes must not be null");
             this.writeBackStableSlots = writeBackStableSlots;
+            this.window = window;
             astWalker = new ASTWalker(this);
             silentExpressionResolver = new SilentExpressionResolver(
                     Objects.requireNonNull(sourcePath, "sourcePath must not be null"),
@@ -361,8 +376,23 @@ public class FrontendLocalTypeStabilizationAnalyzer {
             var initializerType = silentExpressionResolver.resolveExpressionType(initializer);
             probes.add(new ProbeEntry(variableDeclaration, initializer, initializerType));
             if (writeBackStableSlots) {
-                var updatedValue = stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
-                if (updatedValue != null) {
+                if (window != null) {
+                    var stableType = stableLocalTypeOrNull(initializerType);
+                    if (stableType != null) {
+                        // Window execution records the owner-approved rewrite and leaves the actual
+                        // BlockScope mutation to patch commit, so discarded windows stay isolated.
+                        window.publications().addLocalSlotTypeUpdate(new FrontendLocalSlotTypeUpdate(
+                                blockScope,
+                                variableDeclaration.name().trim(),
+                                variableDeclaration,
+                                stableType
+                        ));
+                    }
+                } else {
+                    var updatedValue = stabilizeLocalSlot(blockScope, variableDeclaration, initializerType);
+                    if (updatedValue == null) {
+                        return FrontendASTTraversalDirective.SKIP_CHILDREN;
+                    }
                     analysisData.refreshPublishedLocalBindingPayloads(
                             new FrontendLocalSlotTypeUpdate(
                                     blockScope,

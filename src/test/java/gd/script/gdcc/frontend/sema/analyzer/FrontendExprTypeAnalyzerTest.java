@@ -12,6 +12,8 @@ import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
@@ -39,6 +41,7 @@ import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -2319,11 +2322,11 @@ class FrontendExprTypeAnalyzerTest {
     }
 
     @Test
-    void analyzeBackfillRefreshesPublishedLocalResolvedValuePayload() throws Exception {
+    void analyzeBackfillGuardDoesNotRefreshVariantLocalResolvedValuePayload() throws Exception {
         var input = prepareInputBeforeExpressionTyping(
-                "expr_type_backfill_refreshes_binding_resolved_value.gd",
+                "expr_type_backfill_guard_does_not_refresh_binding_resolved_value.gd",
                 """
-                        class_name ExprTypeBackfillRefreshesBindingResolvedValue
+                        class_name ExprTypeBackfillGuardDoesNotRefreshBindingResolvedValue
                         extends RefCounted
                         
                         func ping():
@@ -2349,14 +2352,59 @@ class FrontendExprTypeAnalyzerTest {
                 input.diagnosticManager()
         );
 
-        var refreshedBinding = input.analysisData().symbolBindings().get(valueUse);
+        var guardedBinding = input.analysisData().symbolBindings().get(valueUse);
         var valueUseType = input.analysisData().expressionTypes().get(valueUse);
         assertAll(
-                () -> assertNotNull(refreshedBinding),
-                () -> assertNotNull(refreshedBinding.resolvedValue()),
-                () -> assertSame(valueDeclaration, refreshedBinding.resolvedValue().declaration()),
-                () -> assertEquals("int", refreshedBinding.resolvedValue().type().getTypeName()),
-                () -> assertEquals("int", bodyScope.resolveValue("value").type().getTypeName()),
+                () -> assertNotNull(guardedBinding),
+                () -> assertNotNull(guardedBinding.resolvedValue()),
+                () -> assertSame(valueDeclaration, guardedBinding.resolvedValue().declaration()),
+                () -> assertSame(staleResolvedValue, guardedBinding.resolvedValue()),
+                () -> assertEquals(GdVariantType.VARIANT, guardedBinding.resolvedValue().type()),
+                () -> assertEquals(GdVariantType.VARIANT, bodyScope.resolveValue("value").type()),
+                () -> assertNotNull(valueUseType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, valueUseType.status()),
+                () -> assertEquals(GdVariantType.VARIANT, valueUseType.publishedType())
+        );
+    }
+
+    @Test
+    void analyzeInWindowKeepsExpressionFactsScratchOnlyUntilPatchCommit() throws Exception {
+        var input = prepareInputBeforeExpressionTyping(
+                "expr_type_window_scratch_publication.gd",
+                """
+                        class_name ExprTypeWindowScratchPublication
+                        extends RefCounted
+                        
+                        func make_value() -> int:
+                            return 1
+                        
+                        func ping():
+                            var value := make_value()
+                            value
+                        """
+        );
+        var pingFunction = findFunction(input.unit().ast(), "ping");
+        var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
+        var valueUse = assertInstanceOf(
+                IdentifierExpression.class,
+                assertInstanceOf(ExpressionStatement.class, pingFunction.body().statements().get(1)).expression()
+        );
+        input.analysisData().updateExpressionTypes(new FrontendAstSideTable<>());
+
+        var window = new FrontendWindowAnalysisContext(input.analysisData());
+        new FrontendExprTypeAnalyzer().analyzeInWindow(input.classRegistry(), window, input.diagnosticManager());
+
+        assertNull(input.analysisData().expressionTypes().get(valueDeclaration.value()));
+        assertNull(input.analysisData().expressionTypes().get(valueUse));
+
+        input.analysisData().applyPatch(window.drainPatch(FrontendSemanticStage.EXPR_TYPE));
+
+        var initializerType = input.analysisData().expressionTypes().get(valueDeclaration.value());
+        var valueUseType = input.analysisData().expressionTypes().get(valueUse);
+        assertAll(
+                () -> assertNotNull(initializerType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
+                () -> assertEquals("int", initializerType.publishedType().getTypeName()),
                 () -> assertNotNull(valueUseType),
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, valueUseType.status()),
                 () -> assertEquals("int", valueUseType.publishedType().getTypeName())
@@ -2441,7 +2489,7 @@ class FrontendExprTypeAnalyzerTest {
                 """
                         class_name ExprTypeCompilerOnlyExpressionFact
                         extends RefCounted
-
+                        
                         func ping():
                             var value: int = 1
                             value

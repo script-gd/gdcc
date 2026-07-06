@@ -444,6 +444,15 @@ record FrontendLocalSlotTypeUpdate(
 - 改造 `FrontendChainReductionHelper` / `FrontendChainReductionFacade` 的 expression type 查找入口，使其通过 window effective view 或 window-aware resolver 读取 `expressionTypes()`。
 - 保持现有 analyzer class 名称和 public `analyze(...)` 方法，避免一次性改动所有调用点。
 
+当前状态（2026-07-05）：
+
+- [x] C1 为 `FrontendTopBindingAnalyzer`、`FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer`、`FrontendVarTypePostAnalyzer` 提取 window-level runner，runner 将 stage 产物写入 `FrontendWindowAnalysisContext` scratch surface，不直接发布到 stable side table。
+- [x] C2 保持现有 public `analyze(...)` 方法签名；whole-module wrapper 先清空本阶段拥有的 snapshot 表，再通过 window runner 生成 patch，以保留 legacy stale-clear 语义。
+- [x] C3 为 `FrontendLocalTypeStabilizationAnalyzer` 提取 window-level runner，并让 window 路径只收集 `FrontendLocalSlotTypeUpdate`；实际 `BlockScope` mutation 与 binding payload refresh 仍由 patch commit 统一执行。
+- [x] C4 将 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 收紧为 guard-only：不再调用 `BlockScope.resetLocalType(...)`，不再刷新 `symbolBindings()` payload，也不产生 local slot update。
+- [x] C5 将 expr typing 的 `expressionTypes()` 与 bare-call `resolvedCalls()` 发布改为先写 window scratch；nested expression dependency 继续通过当前 window 的 scratch table 保留读己写能力。
+- [x] C6 增加 focused tests 锚定 guard-only backfill、expr window scratch-only publication、local stabilization window commit 前隔离与 commit 后 slot/binding refresh。
+
 验收细则：
 
 - `FrontendSemanticAnalyzerFrameworkTest.analyzePublishesPhaseBoundariesThroughVirtualOverridePhaseAndRefreshesDiagnosticsAfterEachPhase` 继续通过，证明 public phase boundary 未漂移。

@@ -7,6 +7,8 @@ import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoundary;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason;
@@ -83,9 +85,27 @@ public class FrontendTopBindingAnalyzer {
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnosticManager
     ) {
+        analysisData.updateSymbolBindings(new FrontendAstSideTable<>());
+        var window = new FrontendWindowAnalysisContext(analysisData);
+        analyzeInWindow(classRegistry, window, diagnosticManager);
+
+        // The legacy whole-module API still means "replace the complete top-binding snapshot".
+        // Segmented callers commit the drained patch directly instead.
+        var patch = window.drainPatch(FrontendSemanticStage.TOP_BINDING);
+        analysisData.updateSymbolBindings(patch.symbolBindings());
+    }
+
+    /// Runs top-binding analysis into one window-local scratch publication surface.
+    void analyzeInWindow(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendWindowAnalysisContext window,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
-        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(window, "window must not be null");
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+
+        var analysisData = window.stableData();
 
         var moduleSkeleton = analysisData.moduleSkeleton();
         analysisData.diagnostics();
@@ -113,7 +133,9 @@ public class FrontendTopBindingAnalyzer {
                     classRegistry
             ).walk(sourceClassRelation.unit().ast());
         }
-        analysisData.updateSymbolBindings(symbolBindings);
+        for (var entry : symbolBindings.entrySet()) {
+            window.publications().symbolBindings().put(entry.getKey(), entry.getValue());
+        }
     }
 
     private enum ExpressionPosition {
