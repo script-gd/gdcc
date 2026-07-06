@@ -473,6 +473,15 @@ record FrontendLocalSlotTypeUpdate(
 - `FrontendSemanticAnalyzer` 增加内部开关或 package-private 构造路径，用于测试 segmented runner 与 legacy whole-phase runner 的等价性。
 - 默认生产路径可以在阶段 D 末切换到 segmented runner，但必须先完成等价测试。
 
+当前状态（2026-07-06）：
+
+- [x] D1 新增 `FrontendSegmentedSemanticScheduler`，接入阶段 A-C 已有 window publication / patch merge 基础设施。
+- [x] D2 为 `FrontendSemanticAnalyzer` 增加测试用 segmented runner 内部入口，默认生产路径仍保持 legacy whole-phase runner。
+- [x] D3 scheduler 对 top binding、chain binding、expr typing、var type post 使用独立 window surface，并在每个 owner stage 完成后通过 `applyPatch(...)` 增量提交和刷新 diagnostics snapshot。
+- [x] D4 scheduler 的 local type stabilization 暂时沿用 legacy direct phase，以保持现有源码顺序 `:=` alias chain 行为等价；原因是当前 window runner 会把 slot update 延迟到 patch commit，若整模块一次性运行会让后续 local initializer 读不到前序 local 的稳定 slot 类型。
+- [x] D5 新增 legacy runner 与 segmented runner 的 side-table / diagnostics 等价测试，并覆盖 unsupported `for` / `match` / block-local `const` 行为不变。
+- [ ] D6 真正 root-bounded 的 statement window 执行仍需后续细化：需要让五个 window-capable analyzer 按 `FrontendSemanticWindow.roots()` 限定遍历，同时保持 callable/property initializer 上下文和 local slot update 对同 window 后续 stage 的可见性。该项完成前不切换默认生产路径。
+
 验收细则：
 
 - 对同一输入，legacy whole-phase runner 与 segmented runner 的 `symbolBindings()`、`resolvedMembers()`、`resolvedCalls()`、`expressionTypes()`、`slotTypes()` 等价。
@@ -493,6 +502,7 @@ record FrontendLocalSlotTypeUpdate(
 - 在 `FrontendAnalysisData` 中加入 gate side table 或专用 registry；若 gate 不需要长期暴露给 lowering，可先保持 package-private data structure，但必须可被 resolver / scheduler 查询。
 - gate registry 必须按 gate owner / body root identity 提供 body readiness update 和 lookup API，作为 4.4.1 定义的单一真源。
 - `FrontendVariableAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、`FrontendVarTypePostAnalyzer`、`FrontendCompileCheckAnalyzer` 的 callable-local inventory 判断必须迁移到共享 readiness 查询；纯 `BlockScopeKind` 查询只能处理无条件支持的 block kind。
+- 本阶段可以先建立 gate registry / readiness 查询，但不得假设阶段 D6 已完成。任何依赖 statement window 顺序提交或 child body window 递归的行为，只能在 D6 完成后接入 scheduler。
 
 验收细则：
 
@@ -508,10 +518,12 @@ record FrontendLocalSlotTypeUpdate(
 实施内容：
 
 - scheduler 在每个 block 内按源码顺序提交 statement patches。
+- 本阶段必须与阶段 D6 联动完成：`FrontendSemanticWindow.roots()` 必须真正限制 analyzer 遍历范围，否则“当前 statement 提交后供后续 statement 消费”的合同没有实现基础。
 - 当前 statement 的 expr facts 提交后，后续 statement classifier 可以读取这些 facts。
 - 对 `var limit := 3; <typed-dependent gate uses limit>` 建立测试用 synthetic gate 或选用 `for` range classifier 作为第一个真实 consumer。
 - local `:=` stabilization 必须在同一 statement window 内早于后续 statement 的 binding / classifier 消费。
 - child block 的完整 inventory 必须在 child body 第一个 semantic window 前发布，且共享 readiness 查询必须已经返回 true。
+- local stabilization 不得继续依赖整模块 legacy direct phase 来表达 source-order 行为；D6 必须提供 per-window slot update 可见性，使同一 statement window 内后续 stage 能消费已稳定的 local slot，下一 statement 只能消费已 commit 的 stable facts。
 
 验收细则：
 
@@ -528,6 +540,7 @@ record FrontendLocalSlotTypeUpdate(
 实施内容：
 
 - 将 `ForStatement` 注册为 typed-dependent inventory gate。
+- 本阶段以前必须完成 D6；真实 `ForStatement` gate classifier 依赖前序 statement 已提交的 `expressionTypes()`，不能建立在 whole-module window 或 legacy local stabilization 旁路之上。
 - `range(...)` call 仍可由 AST shape 早期识别；`INT_SHORTHAND` 必须等 iterable expression typed fact 就绪后再判定。
 - `var limit := 3; for i in limit:` 中，scheduler 先完成 `limit` statement window，再分类 `for` gate。
 - supported gate 先推进为 `SUPPORTED + NOT_PUBLISHED`，再由 body inventory publication window 发布 iterator binding 和 body 完整 local inventory，最后原子推进为 `PUBLISHED`。
@@ -548,6 +561,7 @@ record FrontendLocalSlotTypeUpdate(
 实施内容：
 
 - 确定 segmented runner 的 diagnostics snapshot 发布点：每个 stage patch 应用后刷新 `analysisData.updateDiagnostics(...)`，保证后续 stage 看到稳定 upstream diagnostics。
+- 若 D6 将 analyzer 从 whole-module window 切到 root-bounded statement window，本阶段必须重新锚定 diagnostics snapshot 的刷新点与顺序，特别是同一源码位置跨 window 的 duplicate suppression。
 - compile gate 继续只在 shared segmented pipeline 完成后运行。
 - 检查 compile gate 的 duplicate suppression 是否仍能识别跨 segment upstream diagnostics。
 - 对缺失 `slotTypes()`、`DEFERRED`、`FAILED`、`UNSUPPORTED` 的 final facts 保持现有 compile blocking 规则。
@@ -564,6 +578,7 @@ record FrontendLocalSlotTypeUpdate(
 实施内容：
 
 - 等阶段 D-H 的等价与新增支持测试稳定后，删除仅用于迁移的 legacy whole-phase runner 旁路。
+- 删除 legacy 旁路前必须完成 D6，并证明默认 segmented runner 不再依赖整模块 legacy local stabilization direct phase。
 - 保留 window-capable analyzer API，whole-module analyzer wrapper 只作为测试或调试入口时存在。
 - 更新相关文档，尤其是 variable analyzer、visible resolver、local type stabilization、chain/expr typing、compile check 与 for-range plan。
 

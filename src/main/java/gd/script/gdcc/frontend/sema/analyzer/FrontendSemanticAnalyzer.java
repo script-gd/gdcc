@@ -41,6 +41,7 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
     private final @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer;
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
+    private final boolean segmentedSemanticRunner;
 
     public FrontendSemanticAnalyzer() {
         this(
@@ -407,6 +408,40 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
             @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer
     ) {
+        this(
+                classSkeletonBuilder,
+                scopeAnalyzer,
+                variableAnalyzer,
+                topBindingAnalyzer,
+                localTypeStabilizationAnalyzer,
+                chainBindingAnalyzer,
+                exprTypeAnalyzer,
+                varTypePostAnalyzer,
+                annotationUsageAnalyzer,
+                virtualOverrideAnalyzer,
+                typeCheckAnalyzer,
+                loopControlFlowAnalyzer,
+                compileCheckAnalyzer,
+                false
+        );
+    }
+
+    private FrontendSemanticAnalyzer(
+            @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder,
+            @NotNull FrontendScopeAnalyzer scopeAnalyzer,
+            @NotNull FrontendVariableAnalyzer variableAnalyzer,
+            @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer,
+            @NotNull FrontendLocalTypeStabilizationAnalyzer localTypeStabilizationAnalyzer,
+            @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer,
+            @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer,
+            @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer,
+            @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer,
+            @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer,
+            @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
+            @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
+            @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer,
+            boolean segmentedSemanticRunner
+    ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
@@ -435,6 +470,26 @@ public final class FrontendSemanticAnalyzer {
                 "loopControlFlowAnalyzer must not be null"
         );
         this.compileCheckAnalyzer = Objects.requireNonNull(compileCheckAnalyzer, "compileCheckAnalyzer must not be null");
+        this.segmentedSemanticRunner = segmentedSemanticRunner;
+    }
+
+    public static @NotNull FrontendSemanticAnalyzer withSegmentedSemanticRunnerForTesting() {
+        return new FrontendSemanticAnalyzer(
+                new FrontendClassSkeletonBuilder(),
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer(),
+                new FrontendLocalTypeStabilizationAnalyzer(),
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
+                new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
+                new FrontendCompileCheckAnalyzer(),
+                true
+        );
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -481,6 +536,46 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
+        runSharedSemanticPublication(classRegistry, diagnosticManager, analysisData);
+
+        // Annotation-usage validation consumes retained annotations plus the published class/scope
+        // facts, but still stays diagnostics-only and does not mutate semantic side tables.
+        annotationUsageAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Engine virtual override validation consumes the published class/function metadata and
+        // reports signature mismatches without skipping the owning function subtree.
+        virtualOverrideAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Type checking is diagnostics-only for now: it consumes the published frontend facts but
+        // must not introduce new side tables or rewrite earlier publication boundaries.
+        typeCheckAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Loop-control legality is also diagnostics-only, but it must run on the shared semantic
+        // path so invalid `break` / `continue` never rely on lowering fail-fast to become visible.
+        loopControlFlowAnalyzer.analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        return analysisData;
+    }
+
+    private void runSharedSemanticPublication(
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager,
+            @NotNull FrontendAnalysisData analysisData
+    ) {
+        if (segmentedSemanticRunner) {
+            new FrontendSegmentedSemanticScheduler(
+                    topBindingAnalyzer,
+                    localTypeStabilizationAnalyzer,
+                    chainBindingAnalyzer,
+                    exprTypeAnalyzer,
+                    varTypePostAnalyzer
+            ).run(classRegistry, analysisData, diagnosticManager);
+            return;
+        }
+
         // Top-binding analysis classifies supported use-sites into stable symbol categories while
         // still keeping member/call resolution out of scope. Keeping it separate from variable
         // analysis preserves a clean hand-off between declaration inventory and use-site binding.
@@ -508,27 +603,6 @@ public final class FrontendSemanticAnalyzer {
         // the lexical inventory state.
         varTypePostAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Annotation-usage validation consumes retained annotations plus the published class/scope
-        // facts, but still stays diagnostics-only and does not mutate semantic side tables.
-        annotationUsageAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Engine virtual override validation consumes the published class/function metadata and
-        // reports signature mismatches without skipping the owning function subtree.
-        virtualOverrideAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Type checking is diagnostics-only for now: it consumes the published frontend facts but
-        // must not introduce new side tables or rewrite earlier publication boundaries.
-        typeCheckAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Loop-control legality is also diagnostics-only, but it must run on the shared semantic
-        // path so invalid `break` / `continue` never rely on lowering fail-fast to become visible.
-        loopControlFlowAnalyzer.analyze(analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        return analysisData;
     }
 
     /// Runs the shared semantic pipeline plus the compile-only final gate.

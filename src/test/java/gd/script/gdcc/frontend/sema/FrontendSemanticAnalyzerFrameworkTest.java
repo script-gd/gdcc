@@ -48,7 +48,9 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ClassDef;
+import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.PropertyDef;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.scope.resolver.ScopeResolvedMethod;
 import gd.script.gdcc.type.GdArrayType;
@@ -65,6 +67,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -973,6 +976,90 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
+    void segmentedRunnerProducesEquivalentSharedSemanticSideTablesAndDiagnostics() throws Exception {
+        var parserService = new GdScriptParserService();
+        var parseDiagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "segmented_equivalence.gd"), """
+                class_name SegmentedEquivalence
+                extends Node
+                class Point:
+                    var marker: int = 1
+                var ready_value := 1
+                func ping(value: Point) -> int:
+                    var alias := value
+                    var number := ready_value
+                    if number > 0:
+                        var nested := alias
+                        number = nested.marker
+                    while number < 3:
+                        number += 1
+                    return alias.marker
+                """, parseDiagnostics);
+        var legacyDiagnostics = new DiagnosticManager();
+        var segmentedDiagnostics = new DiagnosticManager();
+
+        var legacy = analyzeModule(
+                new FrontendSemanticAnalyzer(),
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                legacyDiagnostics
+        );
+        var segmented = analyzeModule(
+                FrontendSemanticAnalyzer.withSegmentedSemanticRunnerForTesting(),
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                segmentedDiagnostics
+        );
+
+        assertEquivalentSharedSemanticFacts(legacy, segmented);
+        assertEquals(legacy.diagnostics(), segmented.diagnostics());
+        assertEquals(legacyDiagnostics.snapshot(), segmentedDiagnostics.snapshot());
+    }
+
+    @Test
+    void segmentedRunnerKeepsExistingUnsupportedSubtreeBehaviorEquivalent() throws Exception {
+        var parserService = new GdScriptParserService();
+        var unit = parserService.parseUnit(Path.of("tmp", "segmented_unsupported_equivalence.gd"), """
+                class_name SegmentedUnsupportedEquivalence
+                extends Node
+                func ping(values):
+                    const blocked := 1
+                    for value in values:
+                        var hidden := value
+                    match values:
+                        _:
+                            pass
+                    return values
+                """, new DiagnosticManager());
+        var legacyDiagnostics = new DiagnosticManager();
+        var segmentedDiagnostics = new DiagnosticManager();
+
+        var legacy = analyzeModule(
+                new FrontendSemanticAnalyzer(),
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                legacyDiagnostics
+        );
+        var segmented = analyzeModule(
+                FrontendSemanticAnalyzer.withSegmentedSemanticRunnerForTesting(),
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                segmentedDiagnostics
+        );
+
+        assertEquivalentSharedSemanticFacts(legacy, segmented);
+        assertEquals(
+                diagnosticsByCategory(legacy.diagnostics(), "sema.unsupported_binding_subtree"),
+                diagnosticsByCategory(segmented.diagnostics(), "sema.unsupported_binding_subtree")
+        );
+        assertEquals(legacy.diagnostics(), segmented.diagnostics());
+    }
+
+    @Test
     void analyzeForCompileRunsCompileGateAfterLoopControlWhileAnalyzeStaysCompileCheckFree() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "compile_check_phase_probe.gd"), """
@@ -1398,6 +1485,143 @@ class FrontendSemanticAnalyzerFrameworkTest {
             @NotNull DiagnosticManager diagnostics
     ) {
         return analyzer.analyzeForCompile(new FrontendModule(moduleName, units), registry, diagnostics);
+    }
+
+    private void assertEquivalentSharedSemanticFacts(
+            @NotNull FrontendAnalysisData expected,
+            @NotNull FrontendAnalysisData actual
+    ) {
+        assertEquivalentSideTable(
+                expected.symbolBindings(),
+                actual.symbolBindings(),
+                this::sameBindingAcrossIndependentRuns,
+                "symbolBindings"
+        );
+        assertEquivalentSideTable(
+                expected.resolvedMembers(),
+                actual.resolvedMembers(),
+                this::sameResolvedMemberAcrossIndependentRuns,
+                "resolvedMembers"
+        );
+        assertEquivalentSideTable(
+                expected.resolvedCalls(),
+                actual.resolvedCalls(),
+                this::sameResolvedCallAcrossIndependentRuns,
+                "resolvedCalls"
+        );
+        assertEquivalentSideTable(
+                expected.expressionTypes(),
+                actual.expressionTypes(),
+                FrontendAnalysisData::sameExpressionType,
+                "expressionTypes"
+        );
+        assertEquivalentSideTable(
+                expected.slotTypes(),
+                actual.slotTypes(),
+                FrontendAnalysisData::sameType,
+                "slotTypes"
+        );
+    }
+
+    private boolean sameBindingAcrossIndependentRuns(
+            @NotNull FrontendBinding first,
+            @NotNull FrontendBinding second
+    ) {
+        return first.kind() == second.kind()
+                && first.symbolName().equals(second.symbolName())
+                && sameDeclarationAcrossIndependentRuns(first.declarationSite(), second.declarationSite())
+                && first.valueAccessStatus() == second.valueAccessStatus()
+                && sameScopeValueAcrossIndependentRuns(first.resolvedValue(), second.resolvedValue());
+    }
+
+    private boolean sameResolvedMemberAcrossIndependentRuns(
+            @NotNull FrontendResolvedMember first,
+            @NotNull FrontendResolvedMember second
+    ) {
+        return first.bindingKind() == second.bindingKind()
+                && first.status() == second.status()
+                && first.receiverKind() == second.receiverKind()
+                && first.ownerKind() == second.ownerKind()
+                && sameDeclarationAcrossIndependentRuns(first.declarationSite(), second.declarationSite())
+                && first.memberName().equals(second.memberName())
+                && FrontendAnalysisData.sameType(first.receiverType(), second.receiverType())
+                && FrontendAnalysisData.sameType(first.resultType(), second.resultType())
+                && Objects.equals(first.detailReason(), second.detailReason());
+    }
+
+    private boolean sameResolvedCallAcrossIndependentRuns(
+            @NotNull FrontendResolvedCall first,
+            @NotNull FrontendResolvedCall second
+    ) {
+        return first.callKind() == second.callKind()
+                && first.status() == second.status()
+                && first.receiverKind() == second.receiverKind()
+                && first.ownerKind() == second.ownerKind()
+                && sameDeclarationAcrossIndependentRuns(first.declarationSite(), second.declarationSite())
+                && first.callableName().equals(second.callableName())
+                && FrontendAnalysisData.sameType(first.receiverType(), second.receiverType())
+                && FrontendAnalysisData.sameType(first.returnType(), second.returnType())
+                && FrontendAnalysisData.sameTypeList(first.argumentTypes(), second.argumentTypes())
+                && FrontendAnalysisData.sameExactCallableBoundary(
+                first.exactCallableBoundary(),
+                second.exactCallableBoundary()
+        )
+                && Objects.equals(first.detailReason(), second.detailReason());
+    }
+
+    private boolean sameScopeValueAcrossIndependentRuns(ScopeValue first, ScopeValue second) {
+        if (first == null || second == null) {
+            return first == second;
+        }
+        return first.kind() == second.kind()
+                && first.constant() == second.constant()
+                && first.writable() == second.writable()
+                && first.staticMember() == second.staticMember()
+                && sameDeclarationAcrossIndependentRuns(first.declaration(), second.declaration())
+                && first.name().equals(second.name())
+                && FrontendAnalysisData.sameType(first.type(), second.type());
+    }
+
+    private boolean sameDeclarationAcrossIndependentRuns(Object first, Object second) {
+        if (first == second) {
+            return true;
+        }
+        if (first == null || second == null || first instanceof Node || second instanceof Node) {
+            return false;
+        }
+        return declarationFingerprint(first).equals(declarationFingerprint(second));
+    }
+
+    private String declarationFingerprint(@NotNull Object declaration) {
+        if (declaration instanceof ClassDef classDef) {
+            return "class:" + classDef.getName();
+        }
+        if (declaration instanceof PropertyDef propertyDef) {
+            return "property:" + propertyDef.getName();
+        }
+        if (declaration instanceof FunctionDef functionDef) {
+            return "function:" + functionDef.getName();
+        }
+        return declaration.getClass().getName() + ':' + declaration;
+    }
+
+    private <V> void assertEquivalentSideTable(
+            @NotNull FrontendAstSideTable<V> expected,
+            @NotNull FrontendAstSideTable<V> actual,
+            @NotNull BiPredicate<V, V> sameValue,
+            @NotNull String tableName
+    ) {
+        assertEquals(expected.size(), actual.size(), tableName + " size changed");
+        for (var entry : expected.entrySet()) {
+            assertTrue(actual.containsKey(entry.getKey()), tableName + " lost key " + entry.getKey());
+            var actualValue = actual.get(entry.getKey());
+            assertTrue(
+                    sameValue.test(entry.getValue(), actualValue),
+                    tableName + " changed value for " + entry.getKey()
+                            + ": expected " + entry.getValue()
+                            + ", actual " + actualValue
+            );
+        }
     }
 
     private FunctionDeclaration findFunction(List<?> statements, String name) {
