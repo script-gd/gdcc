@@ -7,7 +7,7 @@
 计划完成后，frontend shared semantic pipeline 分为四个层次：
 
 1. 基础结构层：建立 module skeleton、scope graph 与 baseline inventory。
-2. Interface 层：建立 body 解析所需的 declaration index、gate registry、typed lexical baseline 与 suite plan。
+2. Interface 层：建立 body 解析所需的 declaration index、gate registry、typed lexical baseline 与 suite entry roots。
 3. Body 层：通过 `SuiteResolver` 按源码顺序解析 supported body suite，并使用 typed overlay 表达前缀事实可见性。
 4. Diagnostics-only 层：在 body facts 完全收敛并导出为 stable facts 后运行 annotation usage、virtual override、type check、loop control 与 compile-only final gate。
 
@@ -44,7 +44,7 @@ Interface 层在基础结构层之后运行，负责准备 body `SuiteResolver` 
 - `FrontendBodyDeclarationIndex`：记录每个 supported block 的完整 declaration 列表与 source order。
 - `FrontendInventoryGateRegistry`：记录 typed-dependent subtree 的 gate owner、header root、body root、deferred domain 与 readiness。
 - `FrontendTypedLexicalBaseline`：记录参数、显式 typed local 与 interface 层可静态确定的 source-facing slot baseline。
-- `FrontendSuitePlan`：列出 body layer 可进入的 callable、property initializer 与 supported block。
+- `FrontendSuiteEntryRoots`：列出 body layer 可进入的 callable、property initializer 与 supported block roots。
 
 Interface 层不得发布 body typed facts。特别是不得发布 `expressionTypes()`、`resolvedMembers()` 或 `resolvedCalls()`，也不得把 `GdCompilerType` 写入 source-facing lexical baseline。
 

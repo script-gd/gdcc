@@ -225,7 +225,7 @@ Interface phase 输出：
 - `FrontendBodyDeclarationIndex`：每个 supported block 的完整 declaration 列表与 source order。
 - `FrontendInventoryGateRegistry`：typed-dependent subtree 的 gate owner、header root、body root、deferred domain、readiness。
 - `FrontendTypedLexicalBaseline`：参数、显式 typed local、已可静态确定的 interface-level source-facing slot baseline。
-- `FrontendSuitePlan`：body layer 可进入的 callable/property initializer/supported block 列表。
+- `FrontendSuiteEntryRoots`：body layer 可进入的 callable/property initializer/supported block 根列表。
 
 Interface phase 不得：
 
@@ -602,13 +602,22 @@ Compiler-only guard payload matrix：
 
 ### 阶段 B：建立 Interface phase 数据结构
 
+状态同步（2026-07-07）：
+
+- [x] B1 新增 `FrontendInterfacePhase` coordinator；它在 skeleton / scope / variable inventory 之后构建独立 `FrontendInterfaceSurface`，不写入 stable typed side table，也不改变 legacy analyzer 顺序。
+- [x] B2 新增 `FrontendBodyDeclarationIndex`，按 supported body root 记录已发布 ordinary local declaration 与 body-local source order；该 index 是 baseline inventory 的只读 view，不重新发布 local。
+- [x] B3 新增 `FrontendInventoryGateRegistry`，记录 typed-dependent subtree 与 body readiness；Phase B gate 固定从 `PENDING + NOT_PUBLISHED` 起步，非 `SUPPORTED + PUBLISHED` 查询必须 fail-closed。
+- [x] B4 新增 `FrontendTypedLexicalBaseline`，记录 parameter / ordinary local source-facing slot baseline，并在写入时 fail-fast 拒绝 `GdCompilerType`。
+- [x] B5 新增 `FrontendSuiteEntryRoots`，列出 body layer 可进入的 callable / property initializer / supported block roots，并明确 typed-dependent body 在 gate 发布前不进入 entry roots。
+- [x] B6 保持 skeleton / scope / variable analyzer public contract 不变；新增 `FrontendInterfacePhaseTest` 只调用已发布基础结构层并断言 Interface phase 不写 typed stable side table，现有 phase-boundary / variable inventory focused tests 继续作为回归锚点。
+
 实施内容：
 
 - 新增 `FrontendInterfacePhase` 或等价 coordinator。
 - 新增 `FrontendBodyDeclarationIndex`，按 callable/block 记录完整 ordinary local declaration 与 source order。
 - 新增 `FrontendInventoryGateRegistry`，记录 typed-dependent subtree 与 body readiness。
 - 新增 `FrontendTypedLexicalBaseline`，记录 interface 层可确定的 source-facing typed baseline。
-- 新增 `FrontendSuitePlan`，列出 body layer 可进入的 callable/property initializer/supported block。
+- 新增 `FrontendSuiteEntryRoots`，列出 body layer 可进入的 callable/property initializer/supported block roots。
 - 保持 skeleton/scope/variable analyzer 的 public contract 不变。
 
 验收细则：
@@ -657,7 +666,7 @@ Compiler-only guard payload matrix：
 
 验收细则：
 
-- `SuiteResolver` 只进入 `FrontendSuitePlan` 标记为可进入的 body。
+- `SuiteResolver` 只进入 `FrontendSuiteEntryRoots` 标记为可进入的 body。
 - source-order traversal 与 AST statement order 一致。
 - child block 递归顺序为 header 先解析，body 后解析。
 - `FrontendVisibleValueResolver` 的 declaration-after-use 与 self-reference 测试继续通过。
@@ -814,9 +823,10 @@ Compiler-only guard payload matrix：
 
 Interface phase 测试：
 
-- `FrontendInterfacePhaseTest`：构建 `FrontendBodyDeclarationIndex`，完整记录 supported block local declaration source order。
-- `FrontendInterfacePhaseTest`：记录 `FrontendInventoryGate(PENDING, NOT_PUBLISHED)`，但不发布 gate body inventory。
-- `FrontendInterfacePhaseTest`：`for` / `match` / lambda / block-local `const` 未转正时仍 fail-closed。
+- `FrontendInterfacePhaseTest.buildsSupportedBodyDeclarationIndexTypedBaselineAndSuiteEntryRoots`：构建 `FrontendBodyDeclarationIndex`，完整记录 supported block local declaration source order，同时锚定 typed baseline 与 suite entry roots 不写 stable typed side table。
+- `FrontendInterfacePhaseTest.keepsFutureDeclarationVisibleToResolverThroughCompleteBodyIndex`：`var first := second; var second := 1` 仍通过完整 inventory 被 resolver 过滤为 `DECLARATION_AFTER_USE_SITE`。
+- `FrontendInterfacePhaseTest.recordsPendingTypedDependentGatesWithoutOpeningTheirBodies`：记录 `FrontendInventoryGate(PENDING, NOT_PUBLISHED)`，但不发布 gate body inventory，且 `for` / `match` / lambda / block-local `const` 未转正时仍 fail-closed。
+- `FrontendInterfacePhaseTest.typedLexicalBaselineRejectsCompilerOnlySourceFacingTypes`：source-facing typed baseline 写入 `GdCompilerType` 时 fail-fast。
 - `FrontendSemanticAnalyzerFrameworkTest`：skeleton / scope / variable diagnostics snapshot boundary 不漂移。
 
 Suite/body pipeline 测试：
