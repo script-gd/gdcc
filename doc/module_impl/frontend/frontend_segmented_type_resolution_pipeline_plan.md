@@ -547,16 +547,48 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 - 为五个 owner analyzer 建立 walker-state inventory：列出当前内部 visitor 的 traversal root、隐式字段状态、读取的 stable side table、写入的 side table、diagnostic emission 与可抽取 helper。该 inventory 是重写输入，不是迁移完成标志。
 - 为 compiler-only guard 建立 payload matrix：逐项记录 `expressionTypes()`、`slotTypes()`、`localSlotTypeUpdates()`、`symbolBindings()`、`resolvedMembers()`、`resolvedCalls()` 当前由谁检查、谁未检查、哪些 API 仍可直接绕过 guard。该 matrix 必须与阶段 C shared walker 设计一起冻结。
 
-当前状态（2026-07-06）：
+当前状态（2026-07-07）：
 
-- [ ] A1 在文档中完成资产分类。
-- [ ] A2 在代码中将 `FrontendSegmentedSemanticScheduler` 标记为 deprecated 或 legacy comparison entry。
-- [ ] A3 保留 `FrontendAnalysisDataTest`，并将 `FrontendWindowPublicationSurfaceTest` 降级为 API-level / legacy contamination regression 测试，不再作为新 overlay 正确性的参考测试。
-- [ ] A4 移除或隔离 `segmentedSemanticRunner` 对生产路径的影响。
-- [ ] A5 确定 patch package 迁移计划、per-owner patch 命名与 transaction apply 顺序。
-- [ ] A6 完成 whole-module walker state inventory，并标记 `analyzeInWindow(...)` 只允许作为 legacy comparison path。
-- [ ] A7 记录 `FrontendVarTypePostAnalyzer.analyzeInWindow(...)` 的 stable `slotTypes()` 污染路径，并决定修复、隔离或删除该 legacy path。
-- [ ] A8 完成 compiler-only guard payload matrix，并明确 `updateXxx(...)` / direct stable side-table 引用哪些是 legacy-only，哪些必须在后续阶段接入 shared walker。
+- [x] A1 在文档中完成资产分类。
+- [x] A2 在代码中将 `FrontendSegmentedSemanticScheduler` 标记为 deprecated 或 legacy comparison entry。
+- [x] A3 保留 `FrontendAnalysisDataTest`，并将 `FrontendWindowPublicationSurfaceTest` 降级为 API-level / legacy contamination regression 测试，不再作为新 overlay 正确性的参考测试。
+- [x] A4 移除或隔离 `segmentedSemanticRunner` 对生产路径的影响。
+- [x] A5 确定 patch package 迁移计划、per-owner patch 命名与 transaction apply 顺序。
+- [x] A6 完成 whole-module walker state inventory，并标记 `analyzeInWindow(...)` 只允许作为 legacy comparison path。
+- [x] A7 记录 `FrontendVarTypePostAnalyzer.analyzeInWindow(...)` 的 stable `slotTypes()` 污染路径，并决定修复、隔离或删除该 legacy path。
+- [x] A8 完成 compiler-only guard payload matrix，并明确 `updateXxx(...)` / direct stable side-table 引用哪些是 legacy-only，哪些必须在后续阶段接入 shared walker。
+
+阶段 A 完成记录：
+
+- A1：第 4.9 节的资产分类冻结为阶段 A 基线。`FrontendSemanticStage`、`FrontendAnalysisData.applyPatch(...)`、`refreshPublishedLocalBindingPayloads(...)`、backfill guard 与 `FrontendAnalysisDataTest` 保留；patch carrier 与 transaction 类型进入 `gd.script.gdcc.frontend.sema.patch` 迁移计划；现有 analyzer walker 只作为语义 helper / rewrite reference；`FrontendSegmentedSemanticScheduler`、`segmentedSemanticRunner` 和 production `analyzeInWindow(...)` 调用路径归类为可回退或废弃资产。
+- A2：`FrontendSegmentedSemanticScheduler` 已在代码中标记为 `@Deprecated` legacy comparison entry，类注释明确它不是 SuiteResolver production pipeline。IDE 对该类发出弃用警告是预期状态。
+- A3：`FrontendAnalysisDataTest` 继续作为 stable reference、conflict、idempotent 与 compiler-only guard 的 focused tests。`FrontendWindowPublicationSurfaceTest` 的类级注释已降级其解释范围：它只证明 legacy shim API 的 scratch write 隔离与 guard，不证明所有 legacy `analyzeInWindow(...)` 都 scratch-safe。
+- A4：生产构造路径保持 `segmentedSemanticRunner == false`；唯一启用入口仍是 `FrontendSemanticAnalyzer.withSegmentedSemanticRunnerForTesting()`。该入口只作为 legacy comparison / equivalence test hook，不作为 production path。
+- A5：patch package 迁移计划冻结为：新建 `gd.script.gdcc.frontend.sema.patch`；以 `FrontendOwnerPatch` 或等价 sealed interface 作为单 owner patch 根类型；新增 `FrontendTopBindingPatch`、`FrontendLocalTypeStabilizationPatch`、`FrontendChainBindingPatch`、`FrontendExprTypePatch`、`FrontendVarTypePostPatch`；新增 `FrontendPatchTransaction` 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序 apply。旧 `FrontendAnalysisPatch` 若迁移则只能作为 legacy single-stage compatibility carrier，不能继续作为 SuiteResolver export 的 multi-owner carrier；`FrontendLocalSlotTypeUpdate` 随 local stabilization patch 迁入 patch 包。
+- A6：whole-module walker state inventory 见下表。所有当前 `analyzeInWindow(...)` 都只允许作为 legacy comparison path；其 whole-module traversal root、隐式 visitor 字段和整表发布策略都不得直接复用为 SuiteResolver statement-local owner procedure。
+- A7：`FrontendVarTypePostAnalyzer.analyzeInWindow(...)` 的 legacy 污染路径为：读取 `analysisData.slotTypes()` 稳定表 -> `clear()` -> 将稳定表传入 `SlotTypePublisher` 逐项写入 -> 再复制到 `window.publications().slotTypes()`。阶段 A 决定是隔离而非修补该 legacy path：保留测试比较价值，但新 var type post procedure 必须从 statement-local scratch/overlay 写入重新实现。
+- A8：compiler-only guard payload matrix 见下表。阶段 C 的 shared type-bearing field walker 必须成为 overlay write、patch merge、overlay flush 与任何保留 source-facing `updateXxx(...)` 的共同 guard 基线；不能先写 overlay / stable 再在 export 时补查。
+
+Whole-module walker state inventory：
+
+| Owner analyzer | 当前 traversal root | 隐式 walker state | 读取的 stable side table / state | 写入 side table / patch payload | Diagnostics owner | 可抽取 helper / 不可复用部分 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `FrontendTopBindingAnalyzer` | 每个 `FrontendSourceClassRelation.unit().ast()` 的 `SourceFile` whole-module walk | `sourcePath`、`moduleSkeleton`、`visibleValueResolver`、`classRegistry`、`reportedUnsupportedRoots`、`ASTWalker` | `moduleSkeleton()`、`scopesByAst()`、parse/skeleton diagnostics snapshot、class registry | `symbolBindings()` | `sema.binding` 与 unsupported binding routes | binding 分类与 visible resolver provenance 可抽取；whole-module walk 和整表 `updateSymbolBindings(...)` 不可作为 SuiteResolver procedure |
+| `FrontendLocalTypeStabilizationAnalyzer` | 每个 source file whole-module walk；按 visitor 状态维护 source-order probe | `SilentExpressionResolver`、`probes`、`writeBackStableSlots`、可选 `FrontendWindowAnalysisContext`、probe-local expression memo | `scopesByAst()`、`symbolBindings()`、`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` 已发布事实、当前 scope slot state | legacy path 直接更新 local `ScopeValue.type()`；window path 产生 `FrontendLocalSlotTypeUpdate` | 不拥有 source-facing diagnostics；只在写回边界 fail-fast 拒绝非法 slot type | initializer probe、compatibility 与 slot rewrite guard 可抽取；whole-module delayed probe 收集和直接 stable scope mutation 不可复用 |
+| `FrontendChainBindingAnalyzer` | 每个 source file whole-module walk | `chainReduction`、assignment / expression semantic support、`reportedDeferredRoots`、`reportedUnsupportedRoots`、`ASTWalker` | `scopesByAst()`、`symbolBindings()`、stable slot types、已发布 member/call facts、class registry | `resolvedMembers()`、chain-owned `resolvedCalls()` | `sema.member_resolution`、`sema.call_resolution`、deferred / unsupported routes | chain reduction 与 call/member classification 可抽取；通过 analyzer-local callback 读取 dependency type 与 whole-module retry memo 不可复用 |
+| `FrontendExprTypeAnalyzer` | 每个 source file whole-module walk | `chainReduction`、assignment / expression semantic support、`parentByNode`、reported expression/deferred/unsupported/discarded roots | `scopesByAst()`、`symbolBindings()`、`resolvedMembers()`、`resolvedCalls()`、slot types、class registry | `expressionTypes()`、bare-call `resolvedCalls()`；`backfillInferredLocalType(...)` 只能 guard-only | `sema.expression_resolution`、`sema.deferred_expression_resolution`、`sema.unsupported_expression_route`、`sema.discarded_expression` | expression support、type compatibility 与 discarded-expression rules 可抽取；backfill 不得重新成为 slot mutation owner，whole-module expression walk 不可复用 |
+| `FrontendVarTypePostAnalyzer` | 每个 source file whole-module walk | `sourcePath`、`blockScopeStack`、`currentCallableOwner`、`supportedExecutableBlockDepth`、`ASTWalker` | `moduleSkeleton()`、`scopesByAst()`、callable/block scope inventory、current scope slot types | `slotTypes()` final callable-local snapshot | `sema.variable_slot_publication` fail-fast / invariant violations | slot publication eligibility rules 可抽取；legacy `analyzeInWindow(...)` 的 stable `slotTypes()` clear/write 与 whole-table snapshot 不可复用 |
+
+Compiler-only guard payload matrix：
+
+| Publication surface | User-visible type-bearing payload | 当前 guard 覆盖 | 当前绕过点 / legacy-only API | 后续 shared walker 要求 |
+| --- | --- | --- | --- | --- |
+| `expressionTypes()` | `FrontendExpressionType.publishedType()` | `FrontendAnalysisData.applyPatch(...)` 与 `FrontendWindowPublicationSurface.expressionTypes().put(...)` 检查 published type | `updateExpressionTypes(...)` 整表替换和 direct stable table mutation 是 legacy-only，当前不复用 shared walker | overlay write、patch commit、overlay flush、保留的 source-facing whole-table publish 均递归检查 published type |
+| `slotTypes()` | local / parameter / iterator slot `GdType` value | `applyPatch(...)`、window `slotTypes().put(...)`、`FrontendLocalSlotTypeUpdate` 检查 compiler-only；local slot update 也拒绝 void | `updateSlotTypes(...)` 整表替换、`analysisData.slotTypes().put/clear` direct mutation、VarTypePost legacy contamination path 是 legacy-only | 所有 source-facing slot publication 必须先通过同一 field walker；VarTypePost 新 procedure 只能写 scratch/overlay |
+| `localSlotTypeUpdates()` | `FrontendLocalSlotTypeUpdate.type()` | `FrontendWindowPublicationSurface.addLocalSlotTypeUpdate(...)` 与 `FrontendAnalysisData.validateLocalSlotTypeUpdates(...)` 检查 compiler-only / void / conflict | 旧 `FrontendAnalysisPatch` 可携带跨 owner payload，不能作为 SuiteResolver production carrier | `FrontendLocalTypeStabilizationPatch` 独占携带，并在 transaction apply 前后复用 shared guard |
+| `symbolBindings()` | `FrontendBinding.resolvedValue().type()` | local slot update 后的 `refreshPublishedLocalBindingPayloads(...)` 覆盖刷新路径 | `updateSymbolBindings(...)`、`applyPatch(...)` 里的 direct binding merge、`analysisData.symbolBindings().put` 目前可绕过 compiler-only payload 检查 | 阶段 C 至少先关闭 `resolvedValue.type()` direct patch / overlay bypass，再允许 production SuiteResolver export |
+| `resolvedMembers()` | `FrontendResolvedMember.receiverType()` / `resultType()` | 当前没有统一 compiler-only payload guard；只做 conflict equality | `updateResolvedMembers(...)`、`applyPatch(...)` merge、direct stable table mutation 都是 legacy-only publication surface | shared walker 必须递归检查 receiver/result type，且区分 hidden compiler state 与 user-visible result |
+| `resolvedCalls()` | `FrontendResolvedCall.receiverType()` / `returnType()` / `argumentTypes()` / callable boundary parameter types | 当前没有统一 compiler-only payload guard；只做 conflict equality | `updateResolvedCalls(...)`、`applyPatch(...)` merge、direct stable table mutation 都是 legacy-only publication surface | shared walker 必须覆盖 call return、receiver、argument 与 exact callable boundary 参数类型 |
 
 验收细则：
 

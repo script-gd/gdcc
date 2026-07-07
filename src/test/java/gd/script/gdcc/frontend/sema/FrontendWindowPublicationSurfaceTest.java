@@ -41,6 +41,12 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/// API-level coverage for the legacy window publication shim.
+///
+/// These tests prove direct `FrontendWindowPublicationSurface` scratch writes are isolated and
+/// guarded. They must not be read as proof that every legacy `analyzeInWindow(...)` implementation
+/// is scratch-safe; `FrontendVarTypePostAnalyzer.analyzeInWindow(...)` is documented separately as a
+/// stable `slotTypes()` contamination path until the SuiteResolver rewrite replaces it.
 class FrontendWindowPublicationSurfaceTest {
     private static final Range RANGE = new Range(0, 1, new Point(0, 0), new Point(0, 1));
 

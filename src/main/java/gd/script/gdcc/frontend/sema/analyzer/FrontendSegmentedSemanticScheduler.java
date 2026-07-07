@@ -9,13 +9,14 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-/// Coordinates the segmented semantic publication layer introduced after the window-capable
-/// analyzer APIs.
+/// Legacy comparison scheduler for the segmented semantic publication layer introduced after the
+/// window-capable analyzer APIs.
 ///
-/// This first scheduler keeps the current supported frontend behavior equivalent by committing one
-/// owner stage at a time through `FrontendAnalysisData.applyPatch(...)`. That still exercises the
-/// segmented publication path, preserves stable side-table references, and makes local slot updates
-/// visible before chain binding consumes receiver slots.
+/// This scheduler is not the planned SuiteResolver production pipeline: its `analyzeInWindow(...)`
+/// calls still perform whole-module traversal, and local stabilization intentionally uses the stable
+/// whole-phase path. Keep it only as a legacy comparison entry while the root-bounded body resolver
+/// and per-owner patch transaction are implemented.
+@Deprecated
 final class FrontendSegmentedSemanticScheduler {
     private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
     private final @NotNull FrontendLocalTypeStabilizationAnalyzer localTypeStabilizationAnalyzer;
