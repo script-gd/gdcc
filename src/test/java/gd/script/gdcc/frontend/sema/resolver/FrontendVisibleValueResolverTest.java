@@ -7,12 +7,17 @@ import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
@@ -90,6 +95,89 @@ class FrontendVisibleValueResolverTest {
                 result.primaryFilteredHit().reason()
         );
         assertEquals(ScopeValueKind.LOCAL, result.primaryFilteredHit().value().kind());
+    }
+
+    @Test
+    void resolveWithTypedEnvironmentUsesOverlayTypeWithoutBypassingVisibilityFilter() throws Exception {
+        var visibleInput = analyzedInput("visible_overlay_local.gd", """
+                class_name VisibleOverlayLocal
+                extends Node
+
+                func ping():
+                    var count
+                    print(count)
+                """);
+        var visibleFunction = findFunction(visibleInput.unit().ast(), "ping");
+        var visibleUseSite = findIdentifierExpression(visibleFunction.body(), "count");
+        var visibleResolver = new FrontendVisibleValueResolver(visibleInput.analysisData());
+        var visibleBaseline = visibleResolver.resolve(new FrontendVisibleValueResolveRequest(
+                "count",
+                visibleUseSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+        var visibleScope = assertInstanceOf(BlockScope.class, visibleInput.analysisData().scopesByAst().get(visibleUseSite));
+        var visibleEnvironment = new FrontendTypedLexicalEnvironment(visibleScope, visibleInput.analysisData());
+        visibleEnvironment.addLocalSlotTypeUpdate(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                new FrontendLocalSlotTypeUpdate(
+                        visibleScope,
+                        "count",
+                        visibleBaseline.visibleValue().declaration(),
+                        GdIntType.INT
+                )
+        );
+
+        var visibleWithOverlay = visibleResolver.resolve(new FrontendVisibleValueResolveRequest(
+                "count",
+                visibleUseSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ), visibleEnvironment);
+
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, visibleWithOverlay.status());
+        assertSame(GdVariantType.VARIANT, visibleBaseline.visibleValue().type());
+        assertSame(GdIntType.INT, visibleWithOverlay.visibleValue().type());
+        assertSame(GdVariantType.VARIANT, visibleScope.resolveValueHere("count").type());
+
+        var futureInput = analyzedInput("future_overlay_local.gd", """
+                class_name FutureOverlayLocal
+                extends Node
+
+                func ping():
+                    print(later)
+                    var later
+                """);
+        var futureUseSite = findIdentifierExpression(futureInput.unit().ast(), "later");
+        var futureResolver = new FrontendVisibleValueResolver(futureInput.analysisData());
+        var futureBaseline = futureResolver.resolve(new FrontendVisibleValueResolveRequest(
+                "later",
+                futureUseSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+        var filteredHit = futureBaseline.primaryFilteredHit();
+        var futureEnvironment = new FrontendTypedLexicalEnvironment(filteredHit.owningScope(), futureInput.analysisData());
+        var futureScope = assertInstanceOf(BlockScope.class, filteredHit.owningScope());
+        futureEnvironment.addLocalSlotTypeUpdate(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                new FrontendLocalSlotTypeUpdate(
+                        futureScope,
+                        "later",
+                        filteredHit.value().declaration(),
+                        GdIntType.INT
+                )
+        );
+
+        var futureWithOverlay = futureResolver.resolve(new FrontendVisibleValueResolveRequest(
+                "later",
+                futureUseSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ), futureEnvironment);
+
+        assertEquals(FrontendVisibleValueStatus.NOT_FOUND, futureWithOverlay.status());
+        assertNull(futureWithOverlay.visibleValue());
+        assertEquals(
+                FrontendFilteredValueHitReason.DECLARATION_AFTER_USE_SITE,
+                futureWithOverlay.primaryFilteredHit().reason()
+        );
     }
 
     @Test

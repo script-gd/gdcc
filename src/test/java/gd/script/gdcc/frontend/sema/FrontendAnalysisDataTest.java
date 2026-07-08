@@ -5,6 +5,11 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendPatchTransaction;
+import gd.script.gdcc.frontend.sema.patch.FrontendTopBindingPatch;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;
@@ -17,6 +22,7 @@ import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdType;
@@ -586,6 +592,157 @@ class FrontendAnalysisDataTest {
                                 declaration,
                                 GdccForRangeIterType.FOR_RANGE_ITER
                         ))
+                ))
+        );
+    }
+
+    @Test
+    void applyPatchRejectsCompilerOnlyLeaksAcrossBindingMemberAndCallPayloads() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var declaration = variable("local");
+        var compilerOnlyValue = new ScopeValue(
+                "local",
+                GdccForRangeIterType.FOR_RANGE_ITER,
+                ScopeValueKind.LOCAL,
+                declaration,
+                false,
+                true,
+                false
+        );
+        var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
+        symbolBindings.put(
+                identifier("local"),
+                new FrontendBinding(
+                        "local",
+                        FrontendBindingKind.LOCAL_VAR,
+                        declaration,
+                        compilerOnlyValue,
+                        ScopeLookupStatus.FOUND_ALLOWED
+                )
+        );
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(FrontendSemanticStage.TOP_BINDING, symbolBindings))
+        );
+
+        var resolvedMembers = new FrontendAstSideTable<FrontendResolvedMember>();
+        resolvedMembers.put(identifier("member"), FrontendResolvedMember.resolved(
+                "member",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                GdccForRangeIterType.FOR_RANGE_ITER,
+                GdIntType.INT,
+                "owner.member"
+        ));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.CHAIN_BINDING,
+                        new FrontendAstSideTable<>(),
+                        resolvedMembers,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        List.of()
+                ))
+        );
+
+        var resolvedCalls = new FrontendAstSideTable<FrontendResolvedCall>();
+        resolvedCalls.put(identifier("call"), FrontendResolvedCall.resolved(
+                "call",
+                FrontendCallResolutionKind.STATIC_METHOD,
+                FrontendReceiverKind.TYPE_META,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Owner"),
+                GdIntType.INT,
+                List.of(GdIntType.INT),
+                "Owner.call",
+                new FrontendResolvedCall.ExactCallableBoundary(
+                        List.of(GdccForRangeIterType.FOR_RANGE_ITER),
+                        false
+                )
+        ));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(patch(
+                        FrontendSemanticStage.EXPR_TYPE,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        resolvedCalls,
+                        new FrontendAstSideTable<>(),
+                        new FrontendAstSideTable<>(),
+                        List.of()
+                ))
+        );
+    }
+
+    @Test
+    void updateWholeTablePublicationUsesSharedCompilerOnlyGuard() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
+        var declaration = variable("local");
+        symbolBindings.put(identifier("local"), new FrontendBinding(
+                "local",
+                FrontendBindingKind.LOCAL_VAR,
+                declaration,
+                new ScopeValue(
+                        "local",
+                        GdccForRangeIterType.FOR_RANGE_ITER,
+                        ScopeValueKind.LOCAL,
+                        declaration,
+                        false,
+                        true,
+                        false
+                ),
+                ScopeLookupStatus.FOUND_ALLOWED
+        ));
+        assertThrows(FrontendAnalysisPatchException.class, () -> analysisData.updateSymbolBindings(symbolBindings));
+
+        var resolvedCalls = new FrontendAstSideTable<FrontendResolvedCall>();
+        resolvedCalls.put(identifier("call"), FrontendResolvedCall.resolved(
+                "call",
+                FrontendCallResolutionKind.STATIC_METHOD,
+                FrontendReceiverKind.TYPE_META,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Owner"),
+                GdccForRangeIterType.FOR_RANGE_ITER,
+                List.of(GdIntType.INT),
+                "Owner.call"
+        ));
+        assertThrows(FrontendAnalysisPatchException.class, () -> analysisData.updateResolvedCalls(resolvedCalls));
+    }
+
+    @Test
+    void ownerPatchTransactionAppliesInFixedOwnerOrderAndRejectsRegressions() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var bindingNode = identifier("value");
+        var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
+        var binding = new FrontendBinding("value", FrontendBindingKind.LOCAL_VAR, variable("value"));
+        symbolBindings.put(bindingNode, binding);
+        var expressionNode = identifier("expr");
+        var expressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
+        expressionTypes.put(expressionNode, FrontendExpressionType.resolved(GdIntType.INT));
+
+        new FrontendPatchTransaction(List.of(
+                new FrontendTopBindingPatch(symbolBindings),
+                new FrontendExprTypePatch(expressionTypes, new FrontendAstSideTable<>())
+        )).applyTo(analysisData);
+
+        assertSame(binding, analysisData.symbolBindings().get(bindingNode));
+        assertEquals(GdIntType.INT, analysisData.expressionTypes().get(expressionNode).publishedType());
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> new FrontendPatchTransaction(List.of(
+                        new FrontendExprTypePatch(expressionTypes, new FrontendAstSideTable<>()),
+                        new FrontendTopBindingPatch(symbolBindings)
+                ))
+        );
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> new FrontendPatchTransaction(List.of(
+                        new FrontendTopBindingPatch(symbolBindings),
+                        new FrontendTopBindingPatch(symbolBindings)
                 ))
         );
     }

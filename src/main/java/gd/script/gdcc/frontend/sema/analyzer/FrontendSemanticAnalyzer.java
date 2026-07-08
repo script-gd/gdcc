@@ -41,6 +41,8 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
     private final @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer;
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
+    private final @NotNull FrontendInterfacePhase interfacePhase;
+    private final @NotNull FrontendSuiteResolver suiteResolver;
     private final boolean segmentedSemanticRunner;
 
     public FrontendSemanticAnalyzer() {
@@ -58,6 +60,30 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer()
+        );
+    }
+
+    public FrontendSemanticAnalyzer(
+            @NotNull FrontendInterfacePhase interfacePhase,
+            @NotNull FrontendSuiteResolver suiteResolver
+    ) {
+        this(
+                new FrontendClassSkeletonBuilder(),
+                new FrontendScopeAnalyzer(),
+                new FrontendVariableAnalyzer(),
+                new FrontendTopBindingAnalyzer(),
+                new FrontendLocalTypeStabilizationAnalyzer(),
+                new FrontendChainBindingAnalyzer(),
+                new FrontendExprTypeAnalyzer(),
+                new FrontendVarTypePostAnalyzer(),
+                new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
+                new FrontendTypeCheckAnalyzer(),
+                new FrontendLoopControlFlowAnalyzer(),
+                new FrontendCompileCheckAnalyzer(),
+                interfacePhase,
+                suiteResolver,
+                false
         );
     }
 
@@ -422,6 +448,8 @@ public final class FrontendSemanticAnalyzer {
                 typeCheckAnalyzer,
                 loopControlFlowAnalyzer,
                 compileCheckAnalyzer,
+                new FrontendInterfacePhase(),
+                new FrontendSuiteResolver(),
                 false
         );
     }
@@ -440,6 +468,8 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer,
             @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
             @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer,
+            @NotNull FrontendInterfacePhase interfacePhase,
+            @NotNull FrontendSuiteResolver suiteResolver,
             boolean segmentedSemanticRunner
     ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
@@ -470,6 +500,8 @@ public final class FrontendSemanticAnalyzer {
                 "loopControlFlowAnalyzer must not be null"
         );
         this.compileCheckAnalyzer = Objects.requireNonNull(compileCheckAnalyzer, "compileCheckAnalyzer must not be null");
+        this.interfacePhase = Objects.requireNonNull(interfacePhase, "interfacePhase must not be null");
+        this.suiteResolver = Objects.requireNonNull(suiteResolver, "suiteResolver must not be null");
         this.segmentedSemanticRunner = segmentedSemanticRunner;
     }
 
@@ -488,6 +520,8 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendTypeCheckAnalyzer(),
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer(),
+                new FrontendInterfacePhase(),
+                new FrontendSuiteResolver(),
                 true
         );
     }
@@ -534,6 +568,13 @@ public final class FrontendSemanticAnalyzer {
         // constructed. Keeping it as its own phase prevents scope construction plus parameter/local
         // inventory work from drifting into one monolithic analyzer.
         variableAnalyzer.analyze(analysisData, diagnosticManager);
+        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+
+        // Phase D wires the Interface surface into the main pipeline before any body semantic
+        // publication runs. The suite resolver is still a no-op owner skeleton, so legacy analyzers
+        // remain the source of stable body facts until Phase E/H replace them.
+        var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
+        suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         runSharedSemanticPublication(classRegistry, diagnosticManager, analysisData);

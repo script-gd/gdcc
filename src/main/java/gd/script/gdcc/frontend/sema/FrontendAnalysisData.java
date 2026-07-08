@@ -2,11 +2,14 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
+import gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
-import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -99,24 +102,29 @@ public final class FrontendAnalysisData {
     }
 
     public void updateSymbolBindings(@NotNull FrontendAstSideTable<FrontendBinding> symbolBindings) {
+        FrontendPublishedFactTypeGuard.checkSymbolBindings(symbolBindings);
         replaceSideTableContents(this.symbolBindings, symbolBindings, "symbolBindings");
     }
 
     /// Replaces the published expression-fact snapshot in place while preserving the stable table
     /// reference. Callers may publish both expression-root facts and attribute-step facts here.
     public void updateExpressionTypes(@NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes) {
+        FrontendPublishedFactTypeGuard.checkExpressionTypes(expressionTypes);
         replaceSideTableContents(this.expressionTypes, expressionTypes, "expressionTypes");
     }
 
     public void updateResolvedMembers(@NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers) {
+        FrontendPublishedFactTypeGuard.checkResolvedMembers(resolvedMembers);
         replaceSideTableContents(this.resolvedMembers, resolvedMembers, "resolvedMembers");
     }
 
     public void updateResolvedCalls(@NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls) {
+        FrontendPublishedFactTypeGuard.checkResolvedCalls(resolvedCalls);
         replaceSideTableContents(this.resolvedCalls, resolvedCalls, "resolvedCalls");
     }
 
     public void updateSlotTypes(@NotNull FrontendAstSideTable<GdType> slotTypes) {
+        FrontendPublishedFactTypeGuard.checkSlotTypes(slotTypes);
         replaceSideTableContents(
                 this.slotTypes,
                 slotTypes,
@@ -131,34 +139,69 @@ public final class FrontendAnalysisData {
     /// the stable publication surface.
     public void applyPatch(@NotNull FrontendAnalysisPatch patch) {
         var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
-        checkPatchDoesNotLeakCompilerOnlyTypes(checkedPatch);
-        var validatedLocalSlotUpdates = validateLocalSlotTypeUpdates(checkedPatch);
-        checkPatchConflicts(symbolBindings, checkedPatch.symbolBindings(), "symbolBindings", FrontendAnalysisData::sameBinding);
+        FrontendPublishedFactTypeGuard.checkAnalysisPatch(checkedPatch);
+        applyPatchFields(
+                checkedPatch.stage(),
+                checkedPatch.symbolBindings(),
+                checkedPatch.resolvedMembers(),
+                checkedPatch.resolvedCalls(),
+                checkedPatch.expressionTypes(),
+                checkedPatch.slotTypes(),
+                checkedPatch.localSlotTypeUpdates()
+        );
+    }
+
+    /// Applies one Phase C single-owner patch without replacing any stable side-table reference.
+    public void applyPatch(@NotNull FrontendOwnerPatch patch) {
+        var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
+        FrontendPublishedFactTypeGuard.checkOwnerPatch(checkedPatch);
+        applyPatchFields(
+                checkedPatch.stage(),
+                checkedPatch.symbolBindings(),
+                checkedPatch.resolvedMembers(),
+                checkedPatch.resolvedCalls(),
+                checkedPatch.expressionTypes(),
+                checkedPatch.slotTypes(),
+                checkedPatch.localSlotTypeUpdates()
+        );
+    }
+
+    private void applyPatchFields(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull FrontendAstSideTable<FrontendBinding> patchSymbolBindings,
+            @NotNull FrontendAstSideTable<FrontendResolvedMember> patchResolvedMembers,
+            @NotNull FrontendAstSideTable<FrontendResolvedCall> patchResolvedCalls,
+            @NotNull FrontendAstSideTable<FrontendExpressionType> patchExpressionTypes,
+            @NotNull FrontendAstSideTable<GdType> patchSlotTypes,
+            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
+    ) {
+        var validatedLocalSlotUpdates = validateLocalSlotTypeUpdates(stage, localSlotTypeUpdates);
+        checkPatchConflicts(symbolBindings, patchSymbolBindings, "symbolBindings", FrontendAnalysisData::sameBinding);
         checkPatchConflicts(
                 resolvedMembers,
-                checkedPatch.resolvedMembers(),
+                patchResolvedMembers,
                 "resolvedMembers",
                 FrontendAnalysisData::sameResolvedMember
         );
         checkPatchConflicts(
                 resolvedCalls,
-                checkedPatch.resolvedCalls(),
+                patchResolvedCalls,
                 "resolvedCalls",
                 FrontendAnalysisData::sameResolvedCall
         );
         checkPatchConflicts(
                 expressionTypes,
-                checkedPatch.expressionTypes(),
+                patchExpressionTypes,
                 "expressionTypes",
                 FrontendAnalysisData::sameExpressionType
         );
-        checkPatchConflicts(slotTypes, checkedPatch.slotTypes(), "slotTypes", FrontendAnalysisData::sameType);
+        checkPatchConflicts(slotTypes, patchSlotTypes, "slotTypes", FrontendAnalysisData::sameType);
 
-        mergeSideTable(symbolBindings, checkedPatch.symbolBindings());
-        mergeSideTable(resolvedMembers, checkedPatch.resolvedMembers());
-        mergeSideTable(resolvedCalls, checkedPatch.resolvedCalls());
-        mergeSideTable(expressionTypes, checkedPatch.expressionTypes());
-        mergeSideTable(slotTypes, checkedPatch.slotTypes());
+        mergeSideTable(symbolBindings, patchSymbolBindings);
+        mergeSideTable(resolvedMembers, patchResolvedMembers);
+        mergeSideTable(resolvedCalls, patchResolvedCalls);
+        mergeSideTable(expressionTypes, patchExpressionTypes);
+        mergeSideTable(slotTypes, patchSlotTypes);
         for (var validatedUpdate : validatedLocalSlotUpdates) {
             applyLocalSlotTypeUpdate(validatedUpdate);
         }
@@ -257,19 +300,20 @@ public final class FrontendAnalysisData {
     }
 
     private @NotNull List<ValidatedLocalSlotTypeUpdate> validateLocalSlotTypeUpdates(
-            @NotNull FrontendAnalysisPatch patch
+            @NotNull FrontendSemanticStage stage,
+            @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
     ) {
-        if (patch.localSlotTypeUpdates().isEmpty()) {
+        if (localSlotTypeUpdates.isEmpty()) {
             return List.of();
         }
-        if (patch.stage() != FrontendSemanticStage.LOCAL_TYPE_STABILIZATION) {
+        if (stage != FrontendSemanticStage.LOCAL_TYPE_STABILIZATION) {
             throw patchFailure(
                     "Only LOCAL_TYPE_STABILIZATION patches may publish local slot type updates, but got "
-                            + patch.stage()
+                            + stage
             );
         }
-        var validatedUpdates = new ArrayList<ValidatedLocalSlotTypeUpdate>(patch.localSlotTypeUpdates().size());
-        for (var update : patch.localSlotTypeUpdates()) {
+        var validatedUpdates = new ArrayList<ValidatedLocalSlotTypeUpdate>(localSlotTypeUpdates.size());
+        for (var update : localSlotTypeUpdates) {
             validatedUpdates.add(validateLocalSlotTypeUpdate(update, validatedUpdates));
         }
         return List.copyOf(validatedUpdates);
@@ -387,23 +431,8 @@ public final class FrontendAnalysisData {
         }
     }
 
-    private void checkPatchDoesNotLeakCompilerOnlyTypes(@NotNull FrontendAnalysisPatch patch) {
-        for (var expressionType : patch.expressionTypes().values()) {
-            checkNoCompilerOnlyLeak(expressionType.publishedType(), "expressionTypes() published type");
-        }
-        for (var slotType : patch.slotTypes().values()) {
-            checkNoCompilerOnlyLeak(slotType, "slotTypes() value");
-        }
-    }
-
     static void checkNoCompilerOnlyLeak(@Nullable GdType type, @NotNull String fieldName) {
-        if (type instanceof GdCompilerType compilerOnlyType) {
-            throw patchFailure(
-                    fieldName
-                            + " leaked compiler-only type "
-                            + compilerOnlyType.getTypeName()
-            );
-        }
+        FrontendPublishedFactTypeGuard.checkNoCompilerOnlyLeak(type, fieldName);
     }
 
     static void checkNoVoidLocalSlotType(@NotNull GdType type, @NotNull String localName) {

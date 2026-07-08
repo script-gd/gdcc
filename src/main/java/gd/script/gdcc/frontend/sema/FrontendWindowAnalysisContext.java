@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema;
 
+import gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;

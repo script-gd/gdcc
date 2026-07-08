@@ -1,4 +1,4 @@
-package gd.script.gdcc.frontend.sema;
+package gd.script.gdcc.frontend.sema.patch;
 
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.type.GdType;
@@ -8,8 +8,9 @@ import java.util.Objects;
 
 /// One local-slot type rewrite produced by local type stabilization.
 ///
-/// The update itself is stage-scoped metadata. `FrontendAnalysisData.applyPatch(...)` owns the
-/// actual scope mutation rules, compiler-only guards, and published binding payload refresh.
+/// The update itself is owner-scoped metadata. `FrontendAnalysisData` owns the final scope mutation
+/// rules, while `FrontendTypedLexicalEnvironment` may expose the same update as an effective view
+/// before stable export.
 public record FrontendLocalSlotTypeUpdate(
         @NotNull BlockScope scope,
         @NotNull String name,

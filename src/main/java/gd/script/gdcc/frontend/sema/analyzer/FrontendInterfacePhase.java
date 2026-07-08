@@ -37,6 +37,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.Scope;
 import org.jetbrains.annotations.NotNull;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -61,7 +62,7 @@ public class FrontendInterfacePhase {
         analysisData.diagnostics();
         var builder = new InterfaceSurfaceBuilder(analysisData.scopesByAst());
         for (var relation : moduleSkeleton.sourceClassRelations()) {
-            builder.walk(relation.unit().ast());
+            builder.walk(relation.unit().path(), relation.unit().ast());
         }
         return builder.build();
     }
@@ -71,6 +72,7 @@ public class FrontendInterfacePhase {
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot =
                 new IdentityHashMap<>();
+        private final @NotNull Map<Node, Path> sourcePathsByEntryRoot = new IdentityHashMap<>();
         private final @NotNull FrontendInventoryGateRegistry.Builder gateRegistryBuilder =
                 FrontendInventoryGateRegistry.builder();
         private final @NotNull FrontendTypedLexicalBaseline.Builder typedBaselineBuilder =
@@ -79,6 +81,7 @@ public class FrontendInterfacePhase {
         private final @NotNull List<VariableDeclaration> propertyInitializers = new ArrayList<>();
         private final @NotNull List<Block> supportedBlocks = new ArrayList<>();
         private @NotNull List<FrontendBodyLocalDeclaration> currentBodyDeclarations = List.of();
+        private @NotNull Path currentSourcePath = Path.of("");
         private int supportedBodyDepth;
 
         private InterfaceSurfaceBuilder(@NotNull FrontendAstSideTable<Scope> scopesByAst) {
@@ -86,7 +89,8 @@ public class FrontendInterfacePhase {
             astWalker = new ASTWalker(this);
         }
 
-        private void walk(@NotNull SourceFile sourceFile) {
+        private void walk(@NotNull Path sourcePath, @NotNull SourceFile sourceFile) {
+            currentSourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
             astWalker.walk(sourceFile);
         }
 
@@ -95,7 +99,12 @@ public class FrontendInterfacePhase {
                     new FrontendBodyDeclarationIndex(declarationsByBodyRoot),
                     gateRegistryBuilder.build(),
                     typedBaselineBuilder.build(),
-                    new FrontendSuiteEntryRoots(callableOwners, propertyInitializers, supportedBlocks)
+                    new FrontendSuiteEntryRoots(
+                            callableOwners,
+                            propertyInitializers,
+                            supportedBlocks,
+                            sourcePathsByEntryRoot
+                    )
             );
         }
 
@@ -258,6 +267,7 @@ public class FrontendInterfacePhase {
                 return;
             }
             callableOwners.add(callableOwner);
+            sourcePathsByEntryRoot.put(callableOwner, currentSourcePath);
             recordParameterBaselines(parameters);
             enterSupportedBlock(body);
         }
@@ -280,6 +290,7 @@ public class FrontendInterfacePhase {
                 return;
             }
             propertyInitializers.add(variableDeclaration);
+            sourcePathsByEntryRoot.put(variableDeclaration, currentSourcePath);
             astWalker.walk(variableDeclaration.value());
         }
 
@@ -290,6 +301,7 @@ public class FrontendInterfacePhase {
                 return;
             }
             supportedBlocks.add(block);
+            sourcePathsByEntryRoot.put(block, currentSourcePath);
             var previousDeclarations = currentBodyDeclarations;
             var bodyDeclarations = new ArrayList<FrontendBodyLocalDeclaration>();
             currentBodyDeclarations = bodyDeclarations;

@@ -13,6 +13,7 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;

@@ -6,6 +6,7 @@ import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
+import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupResult;
@@ -45,6 +46,14 @@ public final class FrontendVisibleValueResolver {
 
     /// Resolves one value use site under the frontend-visible declaration-order rules.
     public @NotNull FrontendVisibleValueResolution resolve(@NotNull FrontendVisibleValueResolveRequest request) {
+        return resolve(request, null);
+    }
+
+    /// Resolves one use site and overlays the returned local type only after visibility filtering.
+    public @NotNull FrontendVisibleValueResolution resolve(
+            @NotNull FrontendVisibleValueResolveRequest request,
+            @Nullable FrontendTypedLexicalEnvironment typedEnvironment
+    ) {
         Objects.requireNonNull(request, "request must not be null");
 
         if (request.domain() != FrontendVisibleValueDomain.EXECUTABLE_BODY) {
@@ -83,13 +92,19 @@ public final class FrontendVisibleValueResolver {
         while (scope instanceof BlockScope || scope instanceof CallableScope) {
             var currentLayerResult = scope.resolveValueHere(request.name(), request.restriction());
             if (currentLayerResult.isBlocked()) {
-                return FrontendVisibleValueResolution.foundBlocked(currentLayerResult.requireValue(), filteredHits);
+                return FrontendVisibleValueResolution.foundBlocked(
+                        effectiveValue(currentLayerResult.requireValue(), scope, typedEnvironment),
+                        filteredHits
+                );
             }
             if (currentLayerResult.isAllowed()) {
                 var visibleValue = currentLayerResult.requireValue();
                 var filteredHit = filterInvisibleCurrentLayerHit(visibleValue, scope, useSite);
                 if (filteredHit == null) {
-                    return FrontendVisibleValueResolution.foundAllowed(visibleValue, filteredHits);
+                    return FrontendVisibleValueResolution.foundAllowed(
+                            effectiveValue(visibleValue, scope, typedEnvironment),
+                            filteredHits
+                    );
                 }
                 filteredHits.add(filteredHit);
             }
@@ -100,6 +115,14 @@ public final class FrontendVisibleValueResolver {
             return FrontendVisibleValueResolution.notFound(filteredHits);
         }
         return toFrontendResolution(scope.resolveValue(request.name(), request.restriction()), filteredHits);
+    }
+
+    private @NotNull ScopeValue effectiveValue(
+            @NotNull ScopeValue value,
+            @NotNull Scope owningScope,
+            @Nullable FrontendTypedLexicalEnvironment typedEnvironment
+    ) {
+        return typedEnvironment != null ? typedEnvironment.effectiveScopeValue(value, owningScope) : value;
     }
 
     private void indexSourceAstParents(@NotNull FrontendModuleSkeleton moduleSkeleton) {
@@ -167,10 +190,11 @@ public final class FrontendVisibleValueResolver {
             );
             case MatchSection matchSection when (matchSection.guard() == childNode
                     || matchSection.body() == childNode
-                    || containsNodeIdentity(matchSection.patterns(), childNode)) -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.MATCH_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
+                    || containsNodeIdentity(matchSection.patterns(), childNode)) ->
+                    new FrontendVisibleValueDeferredBoundary(
+                            FrontendVisibleValueDomain.MATCH_SUBTREE,
+                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+                    );
             default -> null;
         };
     }

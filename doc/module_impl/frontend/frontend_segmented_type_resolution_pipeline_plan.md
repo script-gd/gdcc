@@ -583,12 +583,12 @@ Compiler-only guard payload matrix：
 
 | Publication surface | User-visible type-bearing payload | 当前 guard 覆盖 | 当前绕过点 / legacy-only API | 后续 shared walker 要求 |
 | --- | --- | --- | --- | --- |
-| `expressionTypes()` | `FrontendExpressionType.publishedType()` | `FrontendAnalysisData.applyPatch(...)` 与 `FrontendWindowPublicationSurface.expressionTypes().put(...)` 检查 published type | `updateExpressionTypes(...)` 整表替换和 direct stable table mutation 是 legacy-only，当前不复用 shared walker | overlay write、patch commit、overlay flush、保留的 source-facing whole-table publish 均递归检查 published type |
-| `slotTypes()` | local / parameter / iterator slot `GdType` value | `applyPatch(...)`、window `slotTypes().put(...)`、`FrontendLocalSlotTypeUpdate` 检查 compiler-only；local slot update 也拒绝 void | `updateSlotTypes(...)` 整表替换、`analysisData.slotTypes().put/clear` direct mutation、VarTypePost legacy contamination path 是 legacy-only | 所有 source-facing slot publication 必须先通过同一 field walker；VarTypePost 新 procedure 只能写 scratch/overlay |
-| `localSlotTypeUpdates()` | `FrontendLocalSlotTypeUpdate.type()` | `FrontendWindowPublicationSurface.addLocalSlotTypeUpdate(...)` 与 `FrontendAnalysisData.validateLocalSlotTypeUpdates(...)` 检查 compiler-only / void / conflict | 旧 `FrontendAnalysisPatch` 可携带跨 owner payload，不能作为 SuiteResolver production carrier | `FrontendLocalTypeStabilizationPatch` 独占携带，并在 transaction apply 前后复用 shared guard |
-| `symbolBindings()` | `FrontendBinding.resolvedValue().type()` | local slot update 后的 `refreshPublishedLocalBindingPayloads(...)` 覆盖刷新路径 | `updateSymbolBindings(...)`、`applyPatch(...)` 里的 direct binding merge、`analysisData.symbolBindings().put` 目前可绕过 compiler-only payload 检查 | 阶段 C 至少先关闭 `resolvedValue.type()` direct patch / overlay bypass，再允许 production SuiteResolver export |
-| `resolvedMembers()` | `FrontendResolvedMember.receiverType()` / `resultType()` | 当前没有统一 compiler-only payload guard；只做 conflict equality | `updateResolvedMembers(...)`、`applyPatch(...)` merge、direct stable table mutation 都是 legacy-only publication surface | shared walker 必须递归检查 receiver/result type，且区分 hidden compiler state 与 user-visible result |
-| `resolvedCalls()` | `FrontendResolvedCall.receiverType()` / `returnType()` / `argumentTypes()` / callable boundary parameter types | 当前没有统一 compiler-only payload guard；只做 conflict equality | `updateResolvedCalls(...)`、`applyPatch(...)` merge、direct stable table mutation 都是 legacy-only publication surface | shared walker 必须覆盖 call return、receiver、argument 与 exact callable boundary 参数类型 |
+| `expressionTypes()` | `FrontendExpressionType.publishedType()` | 阶段 C 起由 `FrontendPublishedFactTypeGuard` 统一覆盖 overlay write / flush / export、`applyPatch(...)`、legacy window put 与 `updateExpressionTypes(...)` | direct stable table mutation 仍是 legacy-only 可变引用 bypass，production SuiteResolver path 不得使用 | 新增 typed overlay 与 patch transaction 测试锚定 same walker 覆盖 |
+| `slotTypes()` | local / parameter / iterator slot `GdType` value | 阶段 C 起由 `FrontendPublishedFactTypeGuard` 覆盖 overlay write / flush / export、owner patch、legacy patch、window put 与 `updateSlotTypes(...)`；local slot update 仍额外拒绝 void | `analysisData.slotTypes().put/clear` direct mutation 与 VarTypePost legacy contamination path 是 legacy-only bypass | VarTypePost 新 procedure 后续只能写 overlay，不得复用旧 `analyzeInWindow(...)` contamination path |
+| `localSlotTypeUpdates()` | `FrontendLocalSlotTypeUpdate.type()` | 阶段 C 起迁入 `gd.script.gdcc.frontend.sema.patch`，由 `FrontendPublishedFactTypeGuard` 覆盖 overlay / owner patch / legacy patch；`FrontendAnalysisData` 继续负责 void / exact rewrite / declaration conflict | legacy `FrontendAnalysisPatch` 仍保留为 compatibility carrier，但 production suite export 使用 `FrontendLocalTypeStabilizationPatch` | `FrontendLocalTypeStabilizationPatch` 独占携带，并在 transaction apply 前后复用 shared guard |
+| `symbolBindings()` | `FrontendBinding.resolvedValue().type()` | 阶段 C 起由 `FrontendPublishedFactTypeGuard` 覆盖 overlay write / flush / export、owner patch、legacy patch、window put 与 `updateSymbolBindings(...)`；local slot refresh 仍有额外 payload guard | `analysisData.symbolBindings().put` direct mutation 是 legacy-only 可变引用 bypass，production SuiteResolver path 不得使用 | `FrontendTopBindingPatch` 是 production suite export 的唯一 top-binding carrier |
+| `resolvedMembers()` | `FrontendResolvedMember.receiverType()` / `resultType()` | 阶段 C 起由 `FrontendPublishedFactTypeGuard` 覆盖 overlay write / flush / export、owner patch、legacy patch、window put 与 `updateResolvedMembers(...)` | direct stable table mutation 仍是 legacy-only 可变引用 bypass，production SuiteResolver path 不得使用 | `FrontendChainBindingPatch` 是 production suite export 的 member carrier |
+| `resolvedCalls()` | `FrontendResolvedCall.receiverType()` / `returnType()` / `argumentTypes()` / callable boundary parameter types | 阶段 C 起由 `FrontendPublishedFactTypeGuard` 覆盖 overlay write / flush / export、owner patch、legacy patch、window put 与 `updateResolvedCalls(...)` | direct stable table mutation 仍是 legacy-only 可变引用 bypass，production SuiteResolver path 不得使用 | chain-owned call 与 bare-call 由 `FrontendChainBindingPatch` / `FrontendExprTypePatch` 分 owner 携带 |
 
 验收细则：
 
@@ -619,6 +619,7 @@ Compiler-only guard payload matrix：
 - 新增 `FrontendTypedLexicalBaseline`，记录 interface 层可确定的 source-facing typed baseline。
 - 新增 `FrontendSuiteEntryRoots`，列出 body layer 可进入的 callable/property initializer/supported block roots。
 - 保持 skeleton/scope/variable analyzer 的 public contract 不变。
+- 阶段 B 的 `FrontendInterfaceSurface` 暂时仍是可手动构建的数据结构，不是 `FrontendSemanticAnalyzer.analyze()` 主 pipeline 的真实产物；阶段 D 引入 `SuiteResolver` 时必须补齐主流程集成。
 
 验收细则：
 
@@ -628,6 +629,17 @@ Compiler-only guard payload matrix：
 - `for` / `match` / lambda / block-local `const` 仍默认 deferred / unsupported。
 
 ### 阶段 C：引入 `TypedLexicalEnvironment` overlay
+
+状态同步（2026-07-07）：
+
+- [x] C1 新增 `FrontendTypedLexicalEnvironment`，包装当前 `Scope`、stable `FrontendAnalysisData`、parent environment、statement pending overlay 与 current-suite committed overlay；pending write / flush / export 均不提前修改 stable side table 或 `BlockScope`。
+- [x] C2 新增 `gd.script.gdcc.frontend.sema.patch` 包，迁入 legacy `FrontendAnalysisPatch` / `FrontendLocalSlotTypeUpdate`，并新增 `FrontendOwnerPatch`、`FrontendTopBindingPatch`、`FrontendLocalTypeStabilizationPatch`、`FrontendChainBindingPatch`、`FrontendExprTypePatch`、`FrontendVarTypePostPatch` 与 `FrontendPatchTransaction`。
+- [x] C3 新增 `FrontendPublishedFactTypeGuard` shared walker，覆盖 binding/member/call/expression/slot/update 六类 source-facing typed payload；`FrontendAnalysisData.applyPatch(...)`、owner patch、legacy window scratch put 与保留的 `updateXxx(...)` whole-table publish 均接入该 guard。
+- [x] C4 Overlay 写入 API 必须显式传入 `FrontendSemanticStage` owner metadata；错误 owner fail-fast，local slot overlay 继续执行 `Variant -> exact` / exact-same-only / no-void / no-compiler-only 规则。
+- [x] C5 `flushStatementFacts()` 只把 pending overlay 合并到 committed overlay；`exportPatchTransaction()` 只导出 fixed-order per-owner patch transaction，并由 `FrontendPatchTransaction` 拒绝 owner 顺序回退或重复 owner。
+- [x] C6 新增 `FrontendOwnerRetryMemo`，表达 owner-local retry 中间 fact 不属于 typed lexical environment，不参与 flush / export。
+- [x] C7 `FrontendVisibleValueResolver` 新增 overlay-aware `resolve(request, environment)` overload；它只在 declaration-order / self-reference filter 之后替换 returned local 的 effective type，不绕过 future-local filtered hit。
+- [ ] C8 Expression semantic support 与 chain reduction facade 的 dependency-type callback 尚未替换为 explicit environment lookup；这是阶段 E owner procedure 重写的一部分，本阶段只提供可接入入口。
 
 实施内容：
 
@@ -652,12 +664,23 @@ Compiler-only guard payload matrix：
 
 ### 阶段 D：实现 body `SuiteResolver` 骨架
 
+状态同步（2026-07-08）：
+
+- [x] D1 新增 `FrontendSuiteResolver` skeleton；默认 owner procedures 为 no-op，只从 `FrontendInterfaceSurface.suiteEntryRoots()` 进入 callable / property initializer / supported child block roots，并在 suite 收敛后通过 `FrontendTypedLexicalEnvironment.exportPatchTransaction()` apply stable facts。
+- [x] D2 `FrontendSemanticAnalyzer.analyze()` 已在 skeleton / scope / variable inventory 之后构建真实 `FrontendInterfaceSurface`，并在 legacy body analyzers 之前传入 `FrontendSuiteResolver`；legacy analyzer 顺序保留，SuiteResolver 目前是 shadow no-op body path。
+- [x] D3 新增 `FrontendSuiteContext`，显式携带 source path、callable owner、current block scope / scope、restriction、static context、property initializer context、interface surface、typed lexical environment、analysis data、diagnostic manager 与 class registry。
+- [x] D4 新增 `FrontendStatementResolver` dispatcher；supported roots 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 固定顺序调用 injected owner hooks，并在每个 statement/header boundary flush pending overlay。
+- [x] D5 `if` / `elif` / `else` / `while` 的 Phase D traversal 已建立 header-first / child-suite-after-header 形状；`for` / `match` / block-local `const` 只触发 fail-closed unsupported hook，不进入 body。
+- [x] D6 新增并运行 `FrontendSuiteResolverTest` 及相关 targeted regressions，覆盖 source-order、owner order、header-before-body、unsupported body not entered、overlay export boundary、main pipeline surface hand-off；`FrontendInterfacePhaseTest`、`FrontendTypedLexicalEnvironmentTest`、`FrontendVisibleValueResolverTest`、`FrontendAnalysisDataTest`、`FrontendSemanticAnalyzerFrameworkTest`、`FrontendVariableAnalyzerTest`、`FrontendLocalTypeStabilizationAnalyzerTest`、`FrontendVarTypePostAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest` 均通过。
+
 实施内容：
 
 - 新增 `FrontendSuiteResolver`。
+- 在 `FrontendSemanticAnalyzer.analyze()` 主 pipeline 中，于 skeleton / scope / variable inventory 之后构建 `FrontendInterfaceSurface`，并把它作为 `FrontendSuiteResolver` 的输入；不能继续只依赖测试或手动 fixture 构造 interface surface。
 - 新增 `FrontendSuiteContext`，携带 source path、callable owner、current block scope、restriction、static context、property initializer context、gate registry、typed lexical environment。
 - 新增 `FrontendStatementResolver` 或等价 statement dispatcher。
 - 新增 owner procedure registry / dispatch contract，但第一版只接线 no-op 或 fail-closed hook，不复用 whole-module `analyzeInWindow(...)`。
+- `FrontendSuiteContext` / owner procedure registry 必须把 `FrontendTypedLexicalEnvironment` 作为显式依赖暴露给后续 owner procedure；阶段 C8 的 expression semantic support 与 chain reduction facade 接入点由阶段 E 真正替换，阶段 D 只建立可传递该依赖的骨架。
 - 第一版只遍历当前已支持 body 结构：ordinary statements、`if` / `elif` / `else`、`while`、property initializer。
 - `for` / `match` / lambda / block-local `const` 继续 fail-closed。
 - 暂不删除 legacy whole-phase analyzer wrappers。
@@ -667,6 +690,7 @@ Compiler-only guard payload matrix：
 验收细则：
 
 - `SuiteResolver` 只进入 `FrontendSuiteEntryRoots` 标记为可进入的 body。
+- `FrontendSemanticAnalyzer.analyze()` 必须发布并传递真实的 `FrontendInterfaceSurface` 给 `SuiteResolver`；targeted test 必须证明 interface surface 是主 pipeline 中 skeleton / scope / variable inventory 之后、body suite 解析之前产生的。
 - source-order traversal 与 AST statement order 一致。
 - child block 递归顺序为 header 先解析，body 后解析。
 - `FrontendVisibleValueResolver` 的 declaration-after-use 与 self-reference 测试继续通过。
@@ -684,6 +708,7 @@ Compiler-only guard payload matrix：
 - `FrontendStatementResolver` 必须按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 的顺序调用 owner procedure。
 - 保留现有 analyzer class 名称和 owner 边界。
 - `FrontendLocalTypeStabilizationAnalyzer` 不再通过整模块 legacy direct phase 表达 source-order 行为。
+- 完成阶段 C8：`FrontendExpressionSemanticSupport`、`FrontendChainReductionFacade` 与相关 chain-head / dependency-type callback 必须改为显式读取 `FrontendTypedLexicalEnvironment`，替换 stable-data / analyzer-local callback 的 dependency type 读取路径。
 - `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 继续 guard-only。
 - Chain / argument retry 的中间 expression facts 必须保存在 `FrontendOwnerRetryMemo` 或等价 owner-local memo，不得写入 `expressionTypes()` overlay 后再以 narrowing / status upgrade 方式覆盖。
 
@@ -693,6 +718,7 @@ Compiler-only guard payload matrix：
 - Local stabilization：把 `AstWalkerLocalTypeStabilizer` 的 eligible `:=` initializer 解析改为立即写 pending overlay，使同 statement 后续 owner 与后续 statement 可按 flush 规则读取；禁止继续依赖整模块 direct phase 更新 `BlockScope`。
 - Chain binding：把 chain reduction 的 dependency type 回调改为读取 `FrontendTypedLexicalEnvironment` 与 owner-local memo，而不是 analyzer-local stable side table snapshot。
 - Expr typing：把 expression fact 发布改为 statement-local final fact publication；父索引、duplicate-report state、retry state 都必须显式化，不能藏在 whole-module walker 字段里。
+- Expression semantic support / chain reduction facade：identifier binding、receiver type、argument type、bare-call callee type 与 nested dependency type 读取必须先走 owner-local memo / pending overlay / committed overlay 的 effective view，再回退 stable side table；不得继续把 `FrontendAnalysisData.symbolBindings()` / `expressionTypes()` 作为 body procedure 的第一读取源。
 - Var type post：把 slot type publication 改为消费当前 statement / current-suite typed facts 的 statement-local publication，不再通过整表 `updateSlotTypes(...)` 表达 body 结果，也不得复用旧 `analyzeInWindow(...)` 的“stable `slotTypes()` clear/write 后再复制到 window”模式。
 - Resolver request：request-domain gate、AST boundary gate 与 current-scope gate 的创建必须由 `FrontendSuiteContext` 统一完成，不能继续由各 analyzer 手写 deferred domain。
 
@@ -705,6 +731,8 @@ Compiler-only guard payload matrix：
 - rejected shadow declaration 不污染 parent slot。
 - nested chain / argument retry 保持读己写能力，但这个能力只存在于 owner-local memo；同一 expression / step key 在 statement flush 和 suite export 中只产生一条最终 `expressionTypes()` fact。
 - retry 过程中出现的任何非最终 expression fact（含 `DEFERRED` 代理类型、暂定 `Variant`、中间 status / detailReason）不得先发布到 pending overlay、committed overlay 或 stable side table 再被最终 fact 覆盖。
+- C8 回归测试必须证明：当 stable side table / baseline 仍是 `Variant` 而 pending 或 committed overlay 已有 exact local slot fact 时，`FrontendExpressionSemanticSupport` 与 `FrontendChainReductionFacade` 的 dependency-type callback 消费 overlay exact type，而不是 stable `Variant`。
+- C8 negative path 必须证明：support / facade 不能直接读取 retry memo 以外的非最终 expression fact，也不能绕过 `FrontendTypedLexicalEnvironment` 直接读取 stable-only side table 后发布 stale receiver / argument / bare-call result。
 - owner 以外的 procedure 不能写对应 side table 或 slot update。
 - 每个 owner 子过程的 suite export 以独立 per-owner patch 出现在 transaction 中；transaction coordinator 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序 apply。
 - Var type post procedure 在 statement flush 前不得改变 stable `slotTypes()`；targeted test 必须在 procedure 运行、flush、suite export 三个点分别断言 stable table 只在 export/apply patch 后变化。

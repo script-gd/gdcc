@@ -1,0 +1,497 @@
+package gd.script.gdcc.frontend.sema;
+
+import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IfStatement;
+import dev.superice.gdparser.frontend.ast.LambdaExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
+import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.Statement;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.parse.FrontendModule;
+import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
+import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import gd.script.gdcc.gdextension.ExtensionApiLoader;
+import gd.script.gdcc.scope.ClassRegistry;
+import org.jetbrains.annotations.NotNull;
+import org.junit.jupiter.api.Test;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Predicate;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+class FrontendSuiteResolverTest {
+    @Test
+    void sourceOrderTraversalMatchesAstOrderAndOwnerOrderIsFixed() throws Exception {
+        var phaseInput = phaseInput("suite_source_order.gd", """
+                class_name SuiteSourceOrder
+                extends Node
+                
+                func ping(value):
+                    var first := value
+                    var second := first
+                    return second
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var first = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("first")
+        );
+        var second = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("second")
+        );
+        var returnStatement = findStatement(pingFunction.body().statements(), ReturnStatement.class, _ -> true);
+        var ownerProcedures = new RecordingOwnerProcedures(false);
+
+        resolveWith(phaseInput, ownerProcedures);
+
+        assertOwnerSequence(ownerProcedures.events(), 0, first);
+        assertOwnerSequence(ownerProcedures.events(), 5, second);
+        assertOwnerSequence(ownerProcedures.events(), 10, returnStatement);
+        assertEquals(15, ownerProcedures.events().size());
+    }
+
+    @Test
+    void branchHeadersResolveBeforeTheirChildSuites() throws Exception {
+        var phaseInput = phaseInput("suite_header_before_body.gd", """
+                class_name SuiteHeaderBeforeBody
+                extends Node
+                
+                func ping(value, other):
+                    if value:
+                        var branch := value
+                    elif other:
+                        var elif_branch := other
+                    else:
+                        var else_branch := value
+                    while other:
+                        var loop_local := other
+                        break
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        var branch = findStatement(
+                ifStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("branch")
+        );
+        var elifClause = ifStatement.elifClauses().getFirst();
+        var elifBranch = findStatement(
+                elifClause.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("elif_branch")
+        );
+        var elseBody = ifStatement.elseBody();
+        assertNotNull(elseBody);
+        var elseBranch = findStatement(
+                elseBody.statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("else_branch")
+        );
+        var whileStatement = findStatement(pingFunction.body().statements(), WhileStatement.class, _ -> true);
+        var loopLocal = findStatement(
+                whileStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("loop_local")
+        );
+        var ownerProcedures = new RecordingOwnerProcedures(false);
+
+        resolveWith(phaseInput, ownerProcedures);
+
+        assertTrue(firstStageIndex(ownerProcedures.events(), ifStatement.condition()) < firstStageIndex(ownerProcedures.events(), branch));
+        assertTrue(firstStageIndex(ownerProcedures.events(), elifClause.condition()) < firstStageIndex(ownerProcedures.events(), elifBranch));
+        assertTrue(firstStageIndex(ownerProcedures.events(), elseBranch) < firstStageIndex(ownerProcedures.events(), whileStatement.condition()));
+        assertTrue(firstStageIndex(ownerProcedures.events(), whileStatement.condition()) < firstStageIndex(ownerProcedures.events(), loopLocal));
+    }
+
+    @Test
+    void unsupportedTypedDependentBodiesRemainFailClosed() throws Exception {
+        var phaseInput = phaseInput("suite_fail_closed.gd", """
+                class_name SuiteFailClosed
+                extends Node
+                
+                func ping(items, choice):
+                    for item in items:
+                        var from_for := item
+                    match choice:
+                        0:
+                            var from_match := choice
+                    var callback = func():
+                        var from_lambda := choice
+                        return choice
+                    const answer = choice
+                    var after := choice
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_for")
+        );
+        var matchStatement = findStatement(pingFunction.body().statements(), MatchStatement.class, _ -> true);
+        var fromMatch = findStatement(
+                matchStatement.sections().getFirst().body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_match")
+        );
+        var callback = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("callback")
+        );
+        var lambdaExpression = assertInstanceOf(LambdaExpression.class, callback.value());
+        var fromLambda = findStatement(
+                lambdaExpression.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_lambda")
+        );
+        var answer = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("answer")
+        );
+        var after = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("after")
+        );
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        var ownerProcedures = new RecordingOwnerProcedures(false);
+
+        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+
+        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
+        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
+        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambdaExpression.body()));
+        assertTrue(ownerProcedures.unsupportedRoots().contains(forStatement));
+        assertTrue(ownerProcedures.unsupportedRoots().contains(matchStatement));
+        assertTrue(ownerProcedures.unsupportedRoots().contains(answer));
+        assertFalse(hasOwnerEvent(ownerProcedures.events(), fromFor));
+        assertFalse(hasOwnerEvent(ownerProcedures.events(), fromMatch));
+        assertFalse(hasOwnerEvent(ownerProcedures.events(), fromLambda));
+        assertFalse(hasOwnerEvent(ownerProcedures.events(), answer));
+        assertTrue(hasOwnerEvent(ownerProcedures.events(), callback));
+        assertTrue(hasOwnerEvent(ownerProcedures.events(), after));
+    }
+
+    @Test
+    void suiteExportKeepsStableSideTableUnchangedUntilTransactionApply() throws Exception {
+        var phaseInput = phaseInput("suite_export_boundary.gd", """
+                class_name SuiteExportBoundary
+                extends Node
+                
+                func ping(value):
+                    var first := value
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var first = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("first")
+        );
+        var ownerProcedures = new RecordingOwnerProcedures(true);
+
+        resolveWith(phaseInput, ownerProcedures);
+
+        assertTrue(ownerProcedures.pendingBindingWasVisibleBeforeStableApply());
+        assertTrue(ownerProcedures.stableWasEmptyDuringOwnerProcedure());
+        var publishedBinding = phaseInput.analysisData().symbolBindings().get(first);
+        assertNotNull(publishedBinding);
+        assertEquals("__suite_probe__", publishedBinding.symbolName());
+    }
+
+    @Test
+    void mainAnalyzerBuildsInterfaceSurfaceBeforeLegacyBodyAnalyzers() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "suite_pipeline_handoff.gd"), """
+                class_name SuitePipelineHandoff
+                extends Node
+                
+                func ping(value):
+                    var local := value
+                    return local
+                """, diagnostics);
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var interfacePhase = new RecordingInterfacePhase();
+        var suiteResolver = new RecordingSuiteResolver();
+        var analyzer = new FrontendSemanticAnalyzer(interfacePhase, suiteResolver);
+
+        var analysisData = analyzer.analyze(new FrontendModule("test_module", List.of(unit)), registry, diagnostics);
+
+        assertTrue(interfacePhase.invoked());
+        assertTrue(interfacePhase.variableInventoryWasPublished());
+        assertTrue(suiteResolver.invoked());
+        assertSame(interfacePhase.surface(), suiteResolver.surface());
+        assertTrue(suiteResolver.bodySideTablesWereEmptyAtHandoff());
+        assertFalse(interfacePhase.surface().bodyDeclarationIndex().declarationsByBodyRoot().isEmpty());
+        assertFalse(analysisData.slotTypes().isEmpty());
+    }
+
+    private static void resolveWith(
+            @NotNull PhaseInput phaseInput,
+            @NotNull RecordingOwnerProcedures ownerProcedures
+    ) {
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+    }
+
+    private static void assertOwnerSequence(@NotNull List<OwnerEvent> events, int offset, @NotNull Node root) {
+        assertSame(root, events.get(offset).root());
+        assertEquals("top", events.get(offset).stage());
+        assertSame(root, events.get(offset + 1).root());
+        assertEquals("local", events.get(offset + 1).stage());
+        assertSame(root, events.get(offset + 2).root());
+        assertEquals("chain", events.get(offset + 2).stage());
+        assertSame(root, events.get(offset + 3).root());
+        assertEquals("expr", events.get(offset + 3).stage());
+        assertSame(root, events.get(offset + 4).root());
+        assertEquals("var_post", events.get(offset + 4).stage());
+    }
+
+    private static int firstStageIndex(@NotNull List<OwnerEvent> events, @NotNull Node root) {
+        for (var i = 0; i < events.size(); i++) {
+            if (events.get(i).root() == root) {
+                return i;
+            }
+        }
+        throw new AssertionError("Missing event for root: " + root.getClass().getSimpleName());
+    }
+
+    private static boolean hasOwnerEvent(@NotNull List<OwnerEvent> events, @NotNull Node root) {
+        return events.stream().anyMatch(event -> event.root() == root);
+    }
+
+    private static @NotNull PhaseInput phaseInput(@NotNull String fileName, @NotNull String source) throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
+        assertTrue(diagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnostics.snapshot());
+
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var module = new FrontendModule("test_module", List.of(unit));
+        var moduleSkeleton = new FrontendClassSkeletonBuilder().build(module, registry, diagnostics, analysisData);
+        analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendScopeAnalyzer().analyze(registry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        return new PhaseInput(unit, registry, analysisData, diagnostics);
+    }
+
+    private static <T extends Statement> T findStatement(
+            @NotNull List<Statement> statements,
+            @NotNull Class<T> statementType,
+            @NotNull Predicate<T> predicate
+    ) {
+        return statements.stream()
+                .filter(statementType::isInstance)
+                .map(statementType::cast)
+                .filter(predicate)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Statement not found: " + statementType.getSimpleName()));
+    }
+
+    private record PhaseInput(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull ClassRegistry registry,
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+    }
+
+    private record OwnerEvent(@NotNull String stage, @NotNull Node root) {
+    }
+
+    private static final class RecordingOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+        private final boolean publishTopBinding;
+        private final @NotNull List<OwnerEvent> events = new ArrayList<>();
+        private final @NotNull List<Node> unsupportedRoots = new ArrayList<>();
+        private boolean pendingBindingWasVisibleBeforeStableApply;
+        private boolean stableWasEmptyDuringOwnerProcedure = true;
+
+        private RecordingOwnerProcedures(boolean publishTopBinding) {
+            this.publishTopBinding = publishTopBinding;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("top", root));
+            if (!publishTopBinding) {
+                return;
+            }
+            stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
+            context.typedEnvironment().putSymbolBinding(
+                    FrontendSemanticStage.TOP_BINDING,
+                    root,
+                    new FrontendBinding("__suite_probe__", FrontendBindingKind.UNKNOWN, null)
+            );
+        }
+
+        @Override
+        public void runLocalTypeStabilization(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("local", root));
+            stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
+            pendingBindingWasVisibleBeforeStableApply |= context.typedEnvironment().symbolBinding(root) != null;
+        }
+
+        @Override
+        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("chain", root));
+            stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
+        }
+
+        @Override
+        public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("expr", root));
+            stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
+        }
+
+        @Override
+        public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("var_post", root));
+            stableWasEmptyDuringOwnerProcedure &= context.analysisData().symbolBindings().get(root) == null;
+        }
+
+        @Override
+        public void runUnsupported(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            unsupportedRoots.add(root);
+        }
+
+        private @NotNull List<OwnerEvent> events() {
+            return events;
+        }
+
+        private @NotNull List<Node> unsupportedRoots() {
+            return unsupportedRoots;
+        }
+
+        private boolean pendingBindingWasVisibleBeforeStableApply() {
+            return pendingBindingWasVisibleBeforeStableApply;
+        }
+
+        private boolean stableWasEmptyDuringOwnerProcedure() {
+            return stableWasEmptyDuringOwnerProcedure;
+        }
+    }
+
+    private static final class RecordingInterfacePhase extends FrontendInterfacePhase {
+        private boolean invoked;
+        private boolean variableInventoryWasPublished;
+        private FrontendInterfaceSurface surface;
+
+        @Override
+        public @NotNull FrontendInterfaceSurface analyze(
+                @NotNull ClassRegistry classRegistry,
+                @NotNull FrontendAnalysisData analysisData
+        ) {
+            invoked = true;
+            variableInventoryWasPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
+                    .allMatch(relation -> analysisData.scopesByAst().containsKey(relation.unit().ast()))
+                    && analysisData.symbolBindings().isEmpty()
+                    && analysisData.expressionTypes().isEmpty();
+            surface = super.analyze(classRegistry, analysisData);
+            return surface;
+        }
+
+        private boolean invoked() {
+            return invoked;
+        }
+
+        private boolean variableInventoryWasPublished() {
+            return variableInventoryWasPublished;
+        }
+
+        private @NotNull FrontendInterfaceSurface surface() {
+            if (surface == null) {
+                throw new AssertionError("Interface surface was not recorded");
+            }
+            return surface;
+        }
+    }
+
+    private static final class RecordingSuiteResolver extends FrontendSuiteResolver {
+        private boolean invoked;
+        private boolean bodySideTablesWereEmptyAtHandoff;
+        private FrontendInterfaceSurface surface;
+
+        @Override
+        public void resolve(
+                @NotNull FrontendInterfaceSurface interfaceSurface,
+                @NotNull ClassRegistry classRegistry,
+                @NotNull FrontendAnalysisData analysisData,
+                @NotNull DiagnosticManager diagnosticManager
+        ) {
+            invoked = true;
+            surface = interfaceSurface;
+            bodySideTablesWereEmptyAtHandoff = analysisData.symbolBindings().isEmpty()
+                    && analysisData.resolvedMembers().isEmpty()
+                    && analysisData.resolvedCalls().isEmpty()
+                    && analysisData.expressionTypes().isEmpty()
+                    && analysisData.slotTypes().isEmpty();
+        }
+
+        private boolean invoked() {
+            return invoked;
+        }
+
+        private boolean bodySideTablesWereEmptyAtHandoff() {
+            return bodySideTablesWereEmptyAtHandoff;
+        }
+
+        private FrontendInterfaceSurface surface() {
+            return surface;
+        }
+    }
+}

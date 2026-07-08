@@ -258,10 +258,9 @@ class FrontendInterfacePhaseTest {
         if (maybeGate == null) {
             fail("Expected pending gate for domain: " + domain);
         }
-        var gate = maybeGate;
-        assertEquals(domain, gate.deferredDomain());
-        assertEquals(FrontendInventoryGateStatus.PENDING, gate.status());
-        assertEquals(FrontendBodyInventoryReadiness.NOT_PUBLISHED, gate.bodyInventoryReadiness());
+        assertEquals(domain, maybeGate.deferredDomain());
+        assertEquals(FrontendInventoryGateStatus.PENDING, maybeGate.status());
+        assertEquals(FrontendBodyInventoryReadiness.NOT_PUBLISHED, maybeGate.bodyInventoryReadiness());
     }
 
     private static @NotNull FrontendFilteredValueHitReason primaryFilteredHitReason(

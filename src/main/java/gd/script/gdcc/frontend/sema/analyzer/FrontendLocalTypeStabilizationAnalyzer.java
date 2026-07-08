@@ -37,7 +37,7 @@ import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
-import gd.script.gdcc.frontend.sema.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;

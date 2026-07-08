@@ -1,0 +1,503 @@
+package gd.script.gdcc.frontend.sema;
+
+import dev.superice.gdparser.frontend.ast.Node;
+import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendPatchTransaction;
+import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
+import gd.script.gdcc.frontend.sema.patch.FrontendTopBindingPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendVarTypePostPatch;
+import gd.script.gdcc.scope.Scope;
+import gd.script.gdcc.scope.ScopeValue;
+import gd.script.gdcc.scope.ScopeValueKind;
+import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+/// Effective typed view used by the future body suite resolver.
+///
+/// The environment keeps statement-local pending facts separate from current-suite committed facts.
+/// Stable side tables and `BlockScope` slots are only changed after exporting a per-owner patch
+/// transaction and applying it to `FrontendAnalysisData`.
+public final class FrontendTypedLexicalEnvironment {
+    private final @NotNull Scope scope;
+    private final @NotNull FrontendAnalysisData stableData;
+    private final @Nullable FrontendTypedLexicalEnvironment parent;
+    private final @NotNull OverlayFacts pendingFacts = new OverlayFacts();
+    private final @NotNull OverlayFacts committedFacts = new OverlayFacts();
+
+    public FrontendTypedLexicalEnvironment(
+            @NotNull Scope scope,
+            @NotNull FrontendAnalysisData stableData
+    ) {
+        this(scope, stableData, null);
+    }
+
+    public FrontendTypedLexicalEnvironment(
+            @NotNull Scope scope,
+            @NotNull FrontendAnalysisData stableData,
+            @Nullable FrontendTypedLexicalEnvironment parent
+    ) {
+        this.scope = Objects.requireNonNull(scope, "scope must not be null");
+        this.stableData = Objects.requireNonNull(stableData, "stableData must not be null");
+        this.parent = parent;
+    }
+
+    public @NotNull Scope scope() {
+        return scope;
+    }
+
+    public @Nullable FrontendTypedLexicalEnvironment parent() {
+        return parent;
+    }
+
+    public @Nullable FrontendBinding symbolBinding(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.symbolBindings.get(astNode),
+                committedFacts.symbolBindings.get(astNode),
+                stableData.symbolBindings().get(astNode),
+                parent != null ? parent.symbolBinding(astNode) : null
+        );
+    }
+
+    public @Nullable FrontendResolvedMember resolvedMember(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.resolvedMembers.get(astNode),
+                committedFacts.resolvedMembers.get(astNode),
+                stableData.resolvedMembers().get(astNode),
+                parent != null ? parent.resolvedMember(astNode) : null
+        );
+    }
+
+    public @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.resolvedCall(astNode),
+                committedFacts.resolvedCall(astNode),
+                stableData.resolvedCalls().get(astNode),
+                parent != null ? parent.resolvedCall(astNode) : null
+        );
+    }
+
+    public @Nullable FrontendExpressionType expressionType(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.expressionTypes.get(astNode),
+                committedFacts.expressionTypes.get(astNode),
+                stableData.expressionTypes().get(astNode),
+                parent != null ? parent.expressionType(astNode) : null
+        );
+    }
+
+    public @Nullable GdType slotType(@NotNull Node astNode) {
+        return firstNonNull(
+                pendingFacts.slotTypes.get(astNode),
+                committedFacts.slotTypes.get(astNode),
+                stableData.slotTypes().get(astNode),
+                parent != null ? parent.slotType(astNode) : null
+        );
+    }
+
+    /// Returns the effective local value without mutating the owning `BlockScope` slot.
+    public @NotNull ScopeValue effectiveScopeValue(@NotNull ScopeValue value, @NotNull Scope owningScope) {
+        var checkedValue = Objects.requireNonNull(value, "value must not be null");
+        if (!(owningScope instanceof BlockScope blockScope)
+                || checkedValue.kind() != ScopeValueKind.LOCAL
+                || checkedValue.declaration() == null) {
+            return checkedValue;
+        }
+        var effectiveType = localSlotType(blockScope, checkedValue.name(), checkedValue.declaration());
+        if (effectiveType == null || FrontendAnalysisData.sameType(checkedValue.type(), effectiveType)) {
+            return checkedValue;
+        }
+        return withType(checkedValue, effectiveType);
+    }
+
+    public @Nullable GdType localSlotType(
+            @NotNull BlockScope blockScope,
+            @NotNull String name,
+            @NotNull Object declaration
+    ) {
+        var pendingType = pendingFacts.localSlotType(blockScope, name, declaration);
+        if (pendingType != null) {
+            return pendingType;
+        }
+        var committedType = committedFacts.localSlotType(blockScope, name, declaration);
+        if (committedType != null) {
+            return committedType;
+        }
+        if (parent != null) {
+            var parentType = parent.localSlotType(blockScope, name, declaration);
+            if (parentType != null) {
+                return parentType;
+            }
+        }
+        var stableValue = blockScope.resolveValueHere(name);
+        if (stableValue != null && stableValue.declaration() == declaration) {
+            return stableValue.type();
+        }
+        return null;
+    }
+
+    public void putSymbolBinding(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendBinding binding
+    ) {
+        requireOwner(owner, FrontendSemanticStage.TOP_BINDING);
+        FrontendPublishedFactTypeGuard.checkBinding(binding);
+        putSideTable(
+                stableData.symbolBindings(),
+                committedFacts.symbolBindings,
+                pendingFacts.symbolBindings,
+                astNode,
+                binding,
+                "symbolBindings",
+                FrontendAnalysisData::sameBinding
+        );
+    }
+
+    public void addLocalSlotTypeUpdate(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull FrontendLocalSlotTypeUpdate update
+    ) {
+        requireOwner(owner, FrontendSemanticStage.LOCAL_TYPE_STABILIZATION);
+        validateLocalSlotTypeUpdate(update);
+        pendingFacts.localSlotTypeUpdates.add(update);
+    }
+
+    public void putResolvedMember(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendResolvedMember member
+    ) {
+        requireOwner(owner, FrontendSemanticStage.CHAIN_BINDING);
+        FrontendPublishedFactTypeGuard.checkResolvedMember(member);
+        putSideTable(
+                stableData.resolvedMembers(),
+                committedFacts.resolvedMembers,
+                pendingFacts.resolvedMembers,
+                astNode,
+                member,
+                "resolvedMembers",
+                FrontendAnalysisData::sameResolvedMember
+        );
+    }
+
+    public void putResolvedCall(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendResolvedCall call
+    ) {
+        FrontendPublishedFactTypeGuard.checkResolvedCall(call);
+        switch (owner) {
+            case CHAIN_BINDING -> putResolvedCall(pendingFacts.chainResolvedCalls, astNode, call);
+            case EXPR_TYPE -> putResolvedCall(pendingFacts.exprResolvedCalls, astNode, call);
+            default -> throw FrontendAnalysisData.patchFailure(owner + " cannot publish resolvedCalls() overlay facts");
+        }
+    }
+
+    public void putExpressionType(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull FrontendExpressionType expressionType
+    ) {
+        requireOwner(owner, FrontendSemanticStage.EXPR_TYPE);
+        FrontendPublishedFactTypeGuard.checkExpressionType(expressionType);
+        putSideTable(
+                stableData.expressionTypes(),
+                committedFacts.expressionTypes,
+                pendingFacts.expressionTypes,
+                astNode,
+                expressionType,
+                "expressionTypes",
+                FrontendAnalysisData::sameExpressionType
+        );
+    }
+
+    public void putSlotType(
+            @NotNull FrontendSemanticStage owner,
+            @NotNull Node astNode,
+            @NotNull GdType slotType
+    ) {
+        requireOwner(owner, FrontendSemanticStage.VAR_TYPE_POST);
+        FrontendPublishedFactTypeGuard.checkNoCompilerOnlyLeak(slotType, "slotTypes() value");
+        putSideTable(
+                stableData.slotTypes(),
+                committedFacts.slotTypes,
+                pendingFacts.slotTypes,
+                astNode,
+                slotType,
+                "slotTypes",
+                FrontendAnalysisData::sameType
+        );
+    }
+
+    /// Moves current-statement facts into the suite overlay without touching stable data or scopes.
+    public void flushStatementFacts() {
+        pendingFacts.checkNoCompilerOnlyLeaks();
+        committedFacts.mergeFrom(pendingFacts);
+        pendingFacts.clear();
+    }
+
+    /// Exports committed suite facts as ordered single-owner patches. Stable data remains unchanged.
+    public @NotNull FrontendPatchTransaction exportPatchTransaction() {
+        committedFacts.checkNoCompilerOnlyLeaks();
+        return new FrontendPatchTransaction(committedFacts.toOwnerPatches());
+    }
+
+    public boolean hasPendingFacts() {
+        return !pendingFacts.isEmpty();
+    }
+
+    public boolean hasCommittedFacts() {
+        return !committedFacts.isEmpty();
+    }
+
+    private void putResolvedCall(
+            @NotNull FrontendAstSideTable<FrontendResolvedCall> targetTable,
+            @NotNull Node astNode,
+            @NotNull FrontendResolvedCall call
+    ) {
+        checkResolvedCallConflict(astNode, call, stableData.resolvedCalls().get(astNode));
+        checkResolvedCallConflict(astNode, call, committedFacts.chainResolvedCalls.get(astNode));
+        checkResolvedCallConflict(astNode, call, committedFacts.exprResolvedCalls.get(astNode));
+        checkResolvedCallConflict(astNode, call, pendingFacts.chainResolvedCalls.get(astNode));
+        checkResolvedCallConflict(astNode, call, pendingFacts.exprResolvedCalls.get(astNode));
+        targetTable.put(astNode, call);
+    }
+
+    private void validateLocalSlotTypeUpdate(@NotNull FrontendLocalSlotTypeUpdate update) {
+        FrontendAnalysisData.checkNoVoidLocalSlotType(update.type(), update.name());
+        FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdate(update);
+        var currentValue = requireEffectiveLocalSlotValue(update);
+        if (currentValue.declaration() != update.declaration()) {
+            throw FrontendAnalysisData.patchFailure(
+                    "local slot update targeted a different declaration for '" + update.name() + "'"
+            );
+        }
+        if (FrontendAnalysisData.sameType(currentValue.type(), update.type())) {
+            return;
+        }
+        if (!(currentValue.type() instanceof GdVariantType)) {
+            throw FrontendAnalysisData.patchFailure(
+                    "local slot update changed exact type for '"
+                            + update.name()
+                            + "' from "
+                            + currentValue.type().getTypeName()
+                            + " to "
+                            + update.type().getTypeName()
+            );
+        }
+    }
+
+    private @NotNull ScopeValue requireEffectiveLocalSlotValue(@NotNull FrontendLocalSlotTypeUpdate update) {
+        var stableValue = update.scope().resolveValueHere(update.name());
+        if (stableValue == null) {
+            throw FrontendAnalysisData.patchFailure("local slot update targeted a missing binding for '" + update.name() + "'");
+        }
+        if (stableValue.kind() != ScopeValueKind.LOCAL) {
+            throw FrontendAnalysisData.patchFailure("local slot update targeted a non-local binding for '" + update.name() + "'");
+        }
+        return effectiveScopeValue(stableValue, update.scope());
+    }
+
+    private static @NotNull ScopeValue withType(@NotNull ScopeValue value, @NotNull GdType type) {
+        return new ScopeValue(
+                value.name(),
+                type,
+                value.kind(),
+                value.declaration(),
+                value.constant(),
+                value.writable(),
+                value.staticMember()
+        );
+    }
+
+    private <V> void putSideTable(
+            @NotNull FrontendAstSideTable<V> stableTable,
+            @NotNull FrontendAstSideTable<V> committedTable,
+            @NotNull FrontendAstSideTable<V> pendingTable,
+            @NotNull Node astNode,
+            @NotNull V value,
+            @NotNull String fieldName,
+            @NotNull SameValueChecker<V> sameValueChecker
+    ) {
+        var checkedNode = Objects.requireNonNull(astNode, "astNode must not be null");
+        var checkedValue = Objects.requireNonNull(value, "value must not be null");
+        checkConflict(fieldName, checkedNode, stableTable.get(checkedNode), checkedValue, sameValueChecker);
+        checkConflict(fieldName, checkedNode, committedTable.get(checkedNode), checkedValue, sameValueChecker);
+        checkConflict(fieldName, checkedNode, pendingTable.get(checkedNode), checkedValue, sameValueChecker);
+        pendingTable.put(checkedNode, checkedValue);
+    }
+
+    private static void checkResolvedCallConflict(
+            @NotNull Node astNode,
+            @NotNull FrontendResolvedCall newValue,
+            @Nullable FrontendResolvedCall existingValue
+    ) {
+        checkConflict(
+                "resolvedCalls",
+                astNode,
+                existingValue,
+                newValue,
+                FrontendAnalysisData::sameResolvedCall
+        );
+    }
+
+    private static <V> void checkConflict(
+            @NotNull String fieldName,
+            @NotNull Node astNode,
+            @Nullable V existingValue,
+            @NotNull V newValue,
+            @NotNull SameValueChecker<V> sameValueChecker
+    ) {
+        if (existingValue == null || sameValueChecker.sameValue(existingValue, newValue)) {
+            return;
+        }
+        throw FrontendAnalysisData.patchFailure(
+                fieldName + " overlay write conflicted on " + FrontendAnalysisData.describeNode(astNode)
+        );
+    }
+
+    private static void requireOwner(@NotNull FrontendSemanticStage actual, @NotNull FrontendSemanticStage expected) {
+        if (actual != expected) {
+            throw FrontendAnalysisData.patchFailure(actual + " cannot publish " + expected + " overlay facts");
+        }
+    }
+
+    @SafeVarargs
+    private static <T> @Nullable T firstNonNull(@Nullable T... values) {
+        for (var value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    @FunctionalInterface
+    private interface SameValueChecker<V> {
+        boolean sameValue(@NotNull V first, @NotNull V second);
+    }
+
+    private static final class OverlayFacts {
+        private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings = new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers = new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<FrontendResolvedCall> chainResolvedCalls = new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<FrontendResolvedCall> exprResolvedCalls = new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes = new FrontendAstSideTable<>();
+        private final @NotNull FrontendAstSideTable<GdType> slotTypes = new FrontendAstSideTable<>();
+        private final @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates = new ArrayList<>();
+
+        private @Nullable FrontendResolvedCall resolvedCall(@NotNull Node astNode) {
+            var chainCall = chainResolvedCalls.get(astNode);
+            return chainCall != null ? chainCall : exprResolvedCalls.get(astNode);
+        }
+
+        private @Nullable GdType localSlotType(
+                @NotNull BlockScope scope,
+                @NotNull String name,
+                @NotNull Object declaration
+        ) {
+            for (var i = localSlotTypeUpdates.size() - 1; i >= 0; i--) {
+                var update = localSlotTypeUpdates.get(i);
+                if (update.scope() == scope
+                        && update.declaration() == declaration
+                        && update.name().equals(name)) {
+                    return update.type();
+                }
+            }
+            return null;
+        }
+
+        private void mergeFrom(@NotNull OverlayFacts incoming) {
+            mergeSideTable(symbolBindings, incoming.symbolBindings, "symbolBindings", FrontendAnalysisData::sameBinding);
+            mergeSideTable(resolvedMembers, incoming.resolvedMembers, "resolvedMembers", FrontendAnalysisData::sameResolvedMember);
+            mergeSideTable(
+                    chainResolvedCalls,
+                    incoming.chainResolvedCalls,
+                    "resolvedCalls",
+                    FrontendAnalysisData::sameResolvedCall
+            );
+            mergeSideTable(
+                    exprResolvedCalls,
+                    incoming.exprResolvedCalls,
+                    "resolvedCalls",
+                    FrontendAnalysisData::sameResolvedCall
+            );
+            mergeSideTable(expressionTypes, incoming.expressionTypes, "expressionTypes", FrontendAnalysisData::sameExpressionType);
+            mergeSideTable(slotTypes, incoming.slotTypes, "slotTypes", FrontendAnalysisData::sameType);
+            localSlotTypeUpdates.addAll(incoming.localSlotTypeUpdates);
+        }
+
+        private void checkNoCompilerOnlyLeaks() {
+            FrontendPublishedFactTypeGuard.checkSymbolBindings(symbolBindings);
+            FrontendPublishedFactTypeGuard.checkResolvedMembers(resolvedMembers);
+            FrontendPublishedFactTypeGuard.checkResolvedCalls(chainResolvedCalls);
+            FrontendPublishedFactTypeGuard.checkResolvedCalls(exprResolvedCalls);
+            FrontendPublishedFactTypeGuard.checkExpressionTypes(expressionTypes);
+            FrontendPublishedFactTypeGuard.checkSlotTypes(slotTypes);
+            FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdates(localSlotTypeUpdates);
+        }
+
+        private @NotNull List<FrontendOwnerPatch> toOwnerPatches() {
+            var patches = new ArrayList<FrontendOwnerPatch>();
+            if (!symbolBindings.isEmpty()) {
+                patches.add(new FrontendTopBindingPatch(symbolBindings));
+            }
+            if (!localSlotTypeUpdates.isEmpty()) {
+                patches.add(new FrontendLocalTypeStabilizationPatch(localSlotTypeUpdates));
+            }
+            if (!resolvedMembers.isEmpty() || !chainResolvedCalls.isEmpty()) {
+                patches.add(new FrontendChainBindingPatch(resolvedMembers, chainResolvedCalls));
+            }
+            if (!expressionTypes.isEmpty() || !exprResolvedCalls.isEmpty()) {
+                patches.add(new FrontendExprTypePatch(expressionTypes, exprResolvedCalls));
+            }
+            if (!slotTypes.isEmpty()) {
+                patches.add(new FrontendVarTypePostPatch(slotTypes));
+            }
+            return patches;
+        }
+
+        private boolean isEmpty() {
+            return symbolBindings.isEmpty()
+                    && resolvedMembers.isEmpty()
+                    && chainResolvedCalls.isEmpty()
+                    && exprResolvedCalls.isEmpty()
+                    && expressionTypes.isEmpty()
+                    && slotTypes.isEmpty()
+                    && localSlotTypeUpdates.isEmpty();
+        }
+
+        private void clear() {
+            symbolBindings.clear();
+            resolvedMembers.clear();
+            chainResolvedCalls.clear();
+            exprResolvedCalls.clear();
+            expressionTypes.clear();
+            slotTypes.clear();
+            localSlotTypeUpdates.clear();
+        }
+
+        private static <V> void mergeSideTable(
+                @NotNull FrontendAstSideTable<V> target,
+                @NotNull FrontendAstSideTable<V> source,
+                @NotNull String fieldName,
+                @NotNull SameValueChecker<V> sameValueChecker
+        ) {
+            for (var entry : source.entrySet()) {
+                checkConflict(fieldName, entry.getKey(), target.get(entry.getKey()), entry.getValue(), sameValueChecker);
+                target.put(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+}

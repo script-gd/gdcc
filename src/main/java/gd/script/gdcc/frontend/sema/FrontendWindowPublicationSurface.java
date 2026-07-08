@@ -1,6 +1,9 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Node;
+import gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -29,34 +32,31 @@ public final class FrontendWindowPublicationSurface {
                 checkedStableData.symbolBindings(),
                 FrontendAnalysisData::sameBinding,
                 "symbolBindings",
-                null
+                FrontendPublishedFactTypeGuard::checkBinding
         );
         resolvedMembers = new WindowSideTableView<>(
                 checkedStableData.resolvedMembers(),
                 FrontendAnalysisData::sameResolvedMember,
                 "resolvedMembers",
-                null
+                FrontendPublishedFactTypeGuard::checkResolvedMember
         );
         resolvedCalls = new WindowSideTableView<>(
                 checkedStableData.resolvedCalls(),
                 FrontendAnalysisData::sameResolvedCall,
                 "resolvedCalls",
-                null
+                FrontendPublishedFactTypeGuard::checkResolvedCall
         );
         expressionTypes = new WindowSideTableView<>(
                 checkedStableData.expressionTypes(),
                 FrontendAnalysisData::sameExpressionType,
                 "expressionTypes",
-                value -> FrontendAnalysisData.checkNoCompilerOnlyLeak(
-                        value.publishedType(),
-                        "expressionTypes() published type"
-                )
+                FrontendPublishedFactTypeGuard::checkExpressionType
         );
         slotTypes = new WindowSideTableView<>(
                 checkedStableData.slotTypes(),
                 FrontendAnalysisData::sameType,
                 "slotTypes",
-                value -> FrontendAnalysisData.checkNoCompilerOnlyLeak(value, "slotTypes() value")
+                value -> FrontendPublishedFactTypeGuard.checkNoCompilerOnlyLeak(value, "slotTypes() value")
         );
     }
 
@@ -85,10 +85,7 @@ public final class FrontendWindowPublicationSurface {
         requireOpen();
         var checkedUpdate = Objects.requireNonNull(update, "update must not be null");
         FrontendAnalysisData.checkNoVoidLocalSlotType(checkedUpdate.type(), checkedUpdate.name());
-        FrontendAnalysisData.checkNoCompilerOnlyLeak(
-                checkedUpdate.type(),
-                "local slot update for '" + checkedUpdate.name() + "'"
-        );
+        FrontendPublishedFactTypeGuard.checkLocalSlotTypeUpdate(checkedUpdate);
         localSlotTypeUpdates.add(checkedUpdate);
     }
 
