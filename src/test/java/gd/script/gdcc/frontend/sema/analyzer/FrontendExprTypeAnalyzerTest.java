@@ -2753,13 +2753,43 @@ class FrontendExprTypeAnalyzerTest {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        var analysisData = FrontendSemanticAnalyzerTestAccess.analyzeWithLegacySharedSemanticPublication(
-                new FrontendSemanticAnalyzer(),
-                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
-                registry,
-                diagnostics
-        );
+        var analysisData = analyzeWithOwnerAnalyzerBaseline(unit, registry, diagnostics, topLevelCanonicalNameMap);
         return new AnalyzedScript(unit.ast(), analysisData);
+    }
+
+    private static @NotNull FrontendAnalysisData analyzeWithOwnerAnalyzerBaseline(
+            @NotNull FrontendSourceUnit unit,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnostics,
+            @NotNull Map<String, String> topLevelCanonicalNameMap
+    ) {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
+                new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
+                classRegistry,
+                diagnostics,
+                analysisData
+        );
+        analysisData.updateModuleSkeleton(moduleSkeleton);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendScopeAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendVariableAnalyzer().analyze(analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        // These focused tests exercise the standalone owner analyzers after Phase I removed the
+        // shared FrontendSemanticAnalyzer legacy bypass. Production body publication remains covered
+        // by SuiteResolver/framework tests and must not call this helper.
+        new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        new FrontendVarTypePostAnalyzer().analyze(analysisData, diagnostics);
+        analysisData.updateDiagnostics(diagnostics.snapshot());
+        return analysisData;
     }
 
     private static @NotNull PreparedExpressionInput prepareInputBeforeExpressionTyping(

@@ -2,6 +2,8 @@
 
 本文总结 `doc/module_impl/frontend/frontend_segmented_type_resolution_pipeline_plan.md` 执行完成后的前端分析流水线形态。内容只描述目标架构、执行顺序与不变量，不展开旧 whole-module 流水线或过渡实现资产。
 
+最近同步：2026-07-09（Phase I：shared analyzer legacy whole-phase bypass、test bridge 与 `FrontendSegmentedSemanticScheduler` 已删除）。
+
 ## 1. 总体形态
 
 计划完成后，frontend shared semantic pipeline 分为四个层次：
@@ -260,7 +262,7 @@ Diagnostic owner 保持单一：
 
 如果同一根源错误已经有 upstream diagnostic，下游 analyzer 只能保留 side-table status，不得补第二条同级错误。
 
-Diagnostics snapshot 在 segmented body path 中有明确层级：同 statement 内 owner procedure 产生的 upstream diagnostic 立即进入 live `DiagnosticManager`；statement boundary flush typed facts 后同步刷新 `FrontendAnalysisData.diagnostics()`，使后一 statement 可读取 current-suite snapshot；suite export 在 patch transaction 应用到 stable side table 后保留最终 body snapshot；interface/body hand-off 与 diagnostics-only phases 继续在各自 phase boundary 刷新 snapshot。
+Diagnostics snapshot 在 interface/body path 中有明确层级：同 statement 内 owner procedure 产生的 upstream diagnostic 立即进入 live `DiagnosticManager`；statement boundary flush typed facts 后同步刷新 `FrontendAnalysisData.diagnostics()`，使后一 statement 可读取 current-suite snapshot；suite export 在 patch transaction 应用到 stable side table 后保留最终 body snapshot；interface/body hand-off 与 diagnostics-only phases 继续在各自 phase boundary 刷新 snapshot。
 
 `FrontendCompileCheckAnalyzer` 只运行在 compile-only 入口。默认 shared semantic `analyze(...)`、inspection 与未来 LSP 入口不得隐式运行 compile-only gate。Lowering 只能以 `analyzeForCompile(...)` 且 diagnostics 无 error 的结果作为最低前置条件。Compile gate 在入口仍要求 stable diagnostics boundary 已发布，但 upstream duplicate suppression 使用当时 live `DiagnosticManager` 的冻结 snapshot，以覆盖 interface/body path 中尚未被调用方再次复制到 `FrontendAnalysisData` 的 upstream diagnostics。
 
@@ -294,6 +296,7 @@ Top binding 先绑定 `receiver` use-site。Local stabilization 随后把 `recei
 计划完成后应满足以下不变量：
 
 - shared semantic 默认使用 interface/body pipeline。
+- shared analyzer 不再提供 legacy whole-phase body publication bypass；`FrontendSegmentedSemanticScheduler` 不再是代码资产。
 - body typed resolution 按 source order 运行。
 - 每个 statement 内 owner 顺序固定为 top binding -> local stabilization -> chain binding -> expr typing -> var type post。
 - pending overlay 只对当前 statement 后续 owner 可见。

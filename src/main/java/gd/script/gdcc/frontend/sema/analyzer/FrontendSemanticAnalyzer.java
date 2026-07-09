@@ -28,11 +28,6 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendClassSkeletonBuilder classSkeletonBuilder;
     private final @NotNull FrontendScopeAnalyzer scopeAnalyzer;
     private final @NotNull FrontendVariableAnalyzer variableAnalyzer;
-    private final @NotNull FrontendTopBindingAnalyzer topBindingAnalyzer;
-    private final @NotNull FrontendLocalTypeStabilizationAnalyzer localTypeStabilizationAnalyzer;
-    private final @NotNull FrontendChainBindingAnalyzer chainBindingAnalyzer;
-    private final @NotNull FrontendExprTypeAnalyzer exprTypeAnalyzer;
-    private final @NotNull FrontendVarTypePostAnalyzer varTypePostAnalyzer;
     private final @NotNull FrontendAnnotationUsageAnalyzer annotationUsageAnalyzer;
     private final @NotNull FrontendVirtualOverrideAnalyzer virtualOverrideAnalyzer;
     private final @NotNull FrontendTypeCheckAnalyzer typeCheckAnalyzer;
@@ -468,17 +463,11 @@ public final class FrontendSemanticAnalyzer {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
         this.variableAnalyzer = Objects.requireNonNull(variableAnalyzer, "variableAnalyzer must not be null");
-        this.topBindingAnalyzer = Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
-        this.localTypeStabilizationAnalyzer = Objects.requireNonNull(
-                localTypeStabilizationAnalyzer,
-                "localTypeStabilizationAnalyzer must not be null"
-        );
-        this.chainBindingAnalyzer = Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
-        this.exprTypeAnalyzer = Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
-        this.varTypePostAnalyzer = Objects.requireNonNull(
-                varTypePostAnalyzer,
-                "varTypePostAnalyzer must not be null"
-        );
+        Objects.requireNonNull(topBindingAnalyzer, "topBindingAnalyzer must not be null");
+        Objects.requireNonNull(localTypeStabilizationAnalyzer, "localTypeStabilizationAnalyzer must not be null");
+        Objects.requireNonNull(chainBindingAnalyzer, "chainBindingAnalyzer must not be null");
+        Objects.requireNonNull(exprTypeAnalyzer, "exprTypeAnalyzer must not be null");
+        Objects.requireNonNull(varTypePostAnalyzer, "varTypePostAnalyzer must not be null");
         this.annotationUsageAnalyzer = Objects.requireNonNull(
                 annotationUsageAnalyzer,
                 "annotationUsageAnalyzer must not be null"
@@ -512,25 +501,13 @@ public final class FrontendSemanticAnalyzer {
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
     ) {
-        return analyzeShared(module, classRegistry, diagnosticManager, false);
-    }
-
-    /// Test-only compatibility hook for comparing the retired whole-phase owner publication path
-    /// with the default interface/body pipeline. Production callers must use `analyze(...)` so body
-    /// facts are published by `FrontendSuiteResolver` and not double-written by legacy analyzers.
-    @NotNull FrontendAnalysisData analyzeWithLegacySharedSemanticPublication(
-            @NotNull FrontendModule module,
-            @NotNull ClassRegistry classRegistry,
-            @NotNull DiagnosticManager diagnosticManager
-    ) {
-        return analyzeShared(module, classRegistry, diagnosticManager, true);
+        return analyzeShared(module, classRegistry, diagnosticManager);
     }
 
     private @NotNull FrontendAnalysisData analyzeShared(
             @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
-            @NotNull DiagnosticManager diagnosticManager,
-            boolean useLegacySharedSemanticPublication
+            @NotNull DiagnosticManager diagnosticManager
     ) {
         Objects.requireNonNull(module, "module must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
@@ -561,15 +538,11 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // Interface analysis freezes callable/property entry roots, then exactly one body owner
-        // publication path runs. The legacy path is reserved for comparison tests so production never
-        // publishes the same side-table facts twice.
+        // Interface analysis freezes callable/property entry roots before the only body owner
+        // publication path runs. Phase I removes the legacy whole-phase bypass so shared facts can
+        // only enter stable storage through SuiteResolver's per-owner export transaction.
         var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
-        if (useLegacySharedSemanticPublication) {
-            runLegacySharedSemanticPublication(classRegistry, diagnosticManager, analysisData);
-        } else {
-            suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
-        }
+        suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
         // Annotation-usage validation consumes retained annotations plus the published class/scope
@@ -592,40 +565,6 @@ public final class FrontendSemanticAnalyzer {
         loopControlFlowAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return analysisData;
-    }
-
-    private void runLegacySharedSemanticPublication(
-            @NotNull ClassRegistry classRegistry,
-            @NotNull DiagnosticManager diagnosticManager,
-            @NotNull FrontendAnalysisData analysisData
-    ) {
-        // Top-binding analysis classifies supported use-sites into stable symbol categories while
-        // still keeping member/call resolution out of scope. Keeping it separate from variable
-        // analysis preserves a clean hand-off between declaration inventory and use-site binding.
-        topBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Local type stabilization updates only block-local `:=` slot types. It runs after use-site
-        // symbols are classified and before chain binding consumes receiver slots.
-        localTypeStabilizationAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Chain-binding analysis consumes published symbol/scope facts plus stabilized local slots,
-        // then emits the first stable member/call side tables without opening whole-module
-        // expression typing yet.
-        chainBindingAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Expression typing consumes the published symbol/member/call facts and releases expression
-        // facts without taking primary ownership of inferred local slot stabilization.
-        exprTypeAnalyzer.analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        // Lowering is only allowed to consume published facts, so the final callable-local slot
-        // types are republished here after local stabilization and expression typing have settled
-        // the lexical inventory state.
-        varTypePostAnalyzer.analyze(analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
     }
 
     /// Runs the shared semantic pipeline plus the compile-only final gate.

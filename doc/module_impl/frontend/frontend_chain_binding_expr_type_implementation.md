@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
-- 更新时间：2026-06-27
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、SuiteResolver statement-local owner procedures、typed overlay-aware shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
+- 更新时间：2026-07-09（Phase I：production shared analyzer 不再提供 legacy whole-phase chain/expr bypass）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -40,7 +40,7 @@
 
 ### 1.1 主链路位置
 
-当前 `FrontendSemanticAnalyzer` 的稳定顺序是：
+当前 production `FrontendSemanticAnalyzer` 的稳定顺序是：
 
 1. `FrontendClassSkeletonBuilder.build(...)`
 2. `analysisData.updateModuleSkeleton(...)`
@@ -49,21 +49,16 @@
 5. `analysisData.updateDiagnostics(...)`
 6. `FrontendVariableAnalyzer.analyze(...)`
 7. `analysisData.updateDiagnostics(...)`
-8. `FrontendTopBindingAnalyzer.analyze(...)`
-9. `analysisData.updateDiagnostics(...)`
-10. `FrontendLocalTypeStabilizationAnalyzer.analyze(...)`
-11. `analysisData.updateDiagnostics(...)`
-12. `FrontendChainBindingAnalyzer.analyze(...)`
-13. `analysisData.updateDiagnostics(...)`
-14. `FrontendExprTypeAnalyzer.analyze(...)`
-15. `analysisData.updateDiagnostics(...)`
+8. `FrontendInterfacePhase.analyze(...)`
+9. `FrontendSuiteResolver.resolve(...)`，内部按 statement root 固定执行 top binding -> local type stabilization -> chain binding -> expr typing -> var type post
+10. `analysisData.updateDiagnostics(...)`
 
 这意味着：
 
-- `FrontendLocalTypeStabilizationAnalyzer` 运行在 top binding 之后、chain binding 之前，只回写符合条件的 `:=` local `BlockScope` slot
-- `FrontendChainBindingAnalyzer` 只运行在 skeleton、scope graph、variable inventory、`symbolBindings()` 与局部类型稳定化结果已发布之后
-- `FrontendExprTypeAnalyzer` 只运行在 `symbolBindings()`、`resolvedMembers()` 与当前 `resolvedCalls()` published surface 已发布之后
-- body phase 仍保持“先发布 member/call，再发布 expression type”的顶层边界，不回头重开更早 phase
+- production body facts 只通过 SuiteResolver 的 `FrontendTypedLexicalEnvironment` overlay 与 per-owner patch transaction 导出
+- chain binding owner procedure 只在当前 statement root 内消费已发布 / pending 的 binding 与 stabilized local slot fact
+- expr typing owner procedure 只在 chain-owned member/call facts 已对当前 root 可见后发布 expression facts 与 bare-call facts
+- standalone `FrontendChainBindingAnalyzer.analyze(...)` / `FrontendExprTypeAnalyzer.analyze(...)` 保留为 focused analyzer / legacy shim 测试参考，不再由 shared analyzer 的 legacy whole-phase bypass 调用
 
 ### 1.2 当前 owner 边界
 

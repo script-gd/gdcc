@@ -11,16 +11,13 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLocalTypeStabilizationAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzerTestAccess;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVirtualOverrideAnalyzer;
@@ -34,6 +31,7 @@ import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionHeader;
 import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.lir.LirClassDef;
+import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
@@ -50,14 +48,13 @@ import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SourceFile;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ClassDef;
-import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.PropertyDef;
-import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.scope.resolver.ScopeResolvedMethod;
 import gd.script.gdcc.type.GdArrayType;
@@ -75,7 +72,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -667,7 +663,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void legacyWholePhaseBypassPublishesPhaseBoundariesThroughVirtualOverridePhaseAndRefreshesDiagnosticsAfterEachPhase() throws Exception {
+    void analyzeUsesSuiteResolverBodyPublicationAndDoesNotCallLegacyWholePhaseAnalyzers() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "variable_phase_probe.gd"), """
@@ -705,7 +701,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendCompileCheckAnalyzer()
         );
 
-        var result = analyzeModuleWithLegacySharedSemanticPublication(
+        var result = analyzeModule(
                 analyzer,
                 "test_module",
                 List.of(unit),
@@ -719,32 +715,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeVariableAnalyzer.invoked);
         assertTrue(probeVariableAnalyzer.scopeBoundaryPublished);
         assertTrue(probeVariableAnalyzer.preVariableDiagnosticsMatchedManager);
-        assertTrue(probeTopBindingAnalyzer.invoked);
-        assertTrue(probeTopBindingAnalyzer.scopeBoundaryPublished);
-        assertTrue(probeTopBindingAnalyzer.preTopBindingDiagnosticsMatchedManager);
-        assertTrue(probeTopBindingAnalyzer.stableSymbolBindingsReferencePreserved);
-        assertTrue(probeTopBindingAnalyzer.symbolBindingsPublicationClearedProbeEntry);
-        assertTrue(probeLocalTypeStabilizationAnalyzer.invoked);
-        assertTrue(probeLocalTypeStabilizationAnalyzer.topBindingBoundaryPublished);
-        assertTrue(probeLocalTypeStabilizationAnalyzer.preLocalTypeStabilizationDiagnosticsMatchedManager);
-        assertTrue(probeLocalTypeStabilizationAnalyzer.sideTablesRemainUnpublished);
-        assertTrue(probeChainBindingAnalyzer.invoked);
-        assertTrue(probeChainBindingAnalyzer.localTypeStabilizationBoundaryPublished);
-        assertTrue(probeChainBindingAnalyzer.preChainBindingDiagnosticsMatchedManager);
-        assertTrue(probeChainBindingAnalyzer.stableResolvedMembersReferencePreserved);
-        assertTrue(probeChainBindingAnalyzer.stableResolvedCallsReferencePreserved);
-        assertTrue(probeChainBindingAnalyzer.memberPublicationClearedProbeEntry);
-        assertTrue(probeChainBindingAnalyzer.callPublicationClearedProbeEntry);
-        assertTrue(probeExprTypeAnalyzer.invoked);
-        assertTrue(probeExprTypeAnalyzer.chainBindingBoundaryPublished);
-        assertTrue(probeExprTypeAnalyzer.preExprTypeDiagnosticsMatchedManager);
-        assertTrue(probeExprTypeAnalyzer.stableExpressionTypesReferencePreserved);
-        assertTrue(probeExprTypeAnalyzer.expressionTypePublicationClearedProbeEntry);
-        assertTrue(probeVarTypePostAnalyzer.invoked);
-        assertTrue(probeVarTypePostAnalyzer.exprTypeBoundaryPublished);
-        assertTrue(probeVarTypePostAnalyzer.preVarTypePostDiagnosticsMatchedManager);
-        assertTrue(probeVarTypePostAnalyzer.stableSlotTypesReferencePreserved);
-        assertTrue(probeVarTypePostAnalyzer.slotTypePublicationClearedProbeEntry);
+        assertFalse(probeTopBindingAnalyzer.invoked);
+        assertFalse(probeLocalTypeStabilizationAnalyzer.invoked);
+        assertFalse(probeChainBindingAnalyzer.invoked);
+        assertFalse(probeExprTypeAnalyzer.invoked);
+        assertFalse(probeVarTypePostAnalyzer.invoked);
         assertTrue(probeAnnotationUsageAnalyzer.invoked);
         assertTrue(probeAnnotationUsageAnalyzer.varTypeBoundaryPublished);
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnosticsMatchedManager);
@@ -766,45 +741,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
         assertEquals(
                 probeVariableAnalyzer.preVariableDiagnostics.size() + 1,
-                probeTopBindingAnalyzer.preTopBindingDiagnostics.size()
-        );
-        assertTrue(probeTopBindingAnalyzer.preTopBindingDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.variable_phase_probe")
-        ));
-        assertEquals(
-                probeTopBindingAnalyzer.preTopBindingDiagnostics.size() + 1,
-                probeLocalTypeStabilizationAnalyzer.preLocalTypeStabilizationDiagnostics.size()
-        );
-        assertTrue(probeLocalTypeStabilizationAnalyzer.preLocalTypeStabilizationDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.top_binding_phase_probe")
-        ));
-        assertEquals(
-                probeLocalTypeStabilizationAnalyzer.preLocalTypeStabilizationDiagnostics.size() + 1,
-                probeChainBindingAnalyzer.preChainBindingDiagnostics.size()
-        );
-        assertTrue(probeChainBindingAnalyzer.preChainBindingDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.local_type_stabilization_phase_probe")
-        ));
-        assertEquals(
-                probeChainBindingAnalyzer.preChainBindingDiagnostics.size() + 1,
-                probeExprTypeAnalyzer.preExprTypeDiagnostics.size()
-        );
-        assertTrue(probeExprTypeAnalyzer.preExprTypeDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.chain_binding_phase_probe")
-        ));
-        assertEquals(
-                probeExprTypeAnalyzer.preExprTypeDiagnostics.size() + 1,
-                probeVarTypePostAnalyzer.preVarTypePostDiagnostics.size()
-        );
-        assertTrue(probeVarTypePostAnalyzer.preVarTypePostDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.expr_type_phase_probe")
-        ));
-        assertEquals(
-                probeVarTypePostAnalyzer.preVarTypePostDiagnostics.size() + 1,
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size()
         );
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.var_type_post_phase_probe")
+                diagnostic.category().equals("sema.variable_phase_probe")
         ));
         assertEquals(
                 probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnostics.size() + 1,
@@ -835,23 +775,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 diagnostic.category().equals("sema.variable_phase_probe")
         ));
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.top_binding_phase_probe")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.local_type_stabilization_phase_probe")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.chain_binding_phase_probe")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.expr_type_phase_probe")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals("sema.var_type_post_phase_probe")
-        ));
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.top_binding_phase_probe").isEmpty());
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.local_type_stabilization_phase_probe").isEmpty());
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.chain_binding_phase_probe").isEmpty());
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.expr_type_phase_probe").isEmpty());
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.var_type_post_phase_probe").isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.virtual_override_phase_probe")
         ));
@@ -990,7 +920,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void defaultInterfaceBodyPipelineMatchesLegacyWholePhaseSideTables() throws Exception {
+    void defaultInterfaceBodyPipelinePublishesBodyFactsThroughSuiteExport() throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "real_body_owner_framework_path.gd"), """
@@ -1011,16 +941,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var markerStep = findNode(pingFunction.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
         var numberInitializer = numberDeclaration.value();
         assertNotNull(numberInitializer);
-        var legacyDiagnostics = new DiagnosticManager();
         var interfaceBodyDiagnostics = new DiagnosticManager();
 
-        var legacy = analyzeModuleWithLegacySharedSemanticPublication(
-                new FrontendSemanticAnalyzer(),
-                "test_module",
-                List.of(unit),
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                legacyDiagnostics
-        );
         var interfaceBody = analyzeModule(
                 new FrontendSemanticAnalyzer(),
                 "test_module",
@@ -1046,12 +968,11 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
                 () -> assertEquals("int", initializerType.publishedType().getTypeName())
         );
-        assertEquivalentSharedSemanticFacts(legacy, interfaceBody);
-        assertEquals(legacyDiagnostics.snapshot(), interfaceBodyDiagnostics.snapshot());
+        assertEquals(interfaceBodyDiagnostics.snapshot(), interfaceBody.diagnostics());
     }
 
     @Test
-    void defaultInterfaceBodyPipelineKeepsNestedSharedSemanticFactsEquivalentToLegacy() throws Exception {
+    void defaultInterfaceBodyPipelinePublishesNestedHeaderAndBodyFactsInSourceOrder() throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_equivalence.gd"), """
@@ -1059,10 +980,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 extends Node
                 class Point:
                     var marker: int = 1
-                var ready_value := 1
                 func ping(value: Point) -> int:
                     var alias := value
-                    var number := ready_value
+                    var number := 1
                     if number > 0:
                         var nested := alias
                         number = nested.marker
@@ -1070,16 +990,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                         number += 1
                     return alias.marker
                 """, parseDiagnostics);
-        var legacyDiagnostics = new DiagnosticManager();
         var interfaceBodyDiagnostics = new DiagnosticManager();
-
-        var legacy = analyzeModuleWithLegacySharedSemanticPublication(
-                new FrontendSemanticAnalyzer(),
-                "test_module",
-                List.of(unit),
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                legacyDiagnostics
-        );
         var interfaceBody = analyzeModule(
                 new FrontendSemanticAnalyzer(),
                 "test_module",
@@ -1087,10 +998,29 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 interfaceBodyDiagnostics
         );
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var aliasDeclaration = findVariable(pingFunction.body().statements(), "alias");
+        var numberDeclaration = findVariable(pingFunction.body().statements(), "number");
+        var nestedDeclaration = findNode(pingFunction.body(), VariableDeclaration.class, variableDeclaration ->
+                variableDeclaration.name().equals("nested")
+        );
+        var markerSteps = findNodes(pingFunction.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+        assertEquals(2, markerSteps.size());
+        var numberInitializer = numberDeclaration.value();
+        var nestedInitializer = nestedDeclaration.value();
+        assertNotNull(numberInitializer);
+        assertNotNull(nestedInitializer);
 
-        assertEquivalentSharedSemanticFacts(legacy, interfaceBody);
-        assertDiagnosticsEquivalentIgnoringOrder(legacy.diagnostics(), interfaceBody.diagnostics());
-        assertEquals(legacyDiagnostics.snapshot(), interfaceBodyDiagnostics.snapshot());
+        assertAll(
+                () -> assertTypeNameEndsWith(interfaceBody.slotTypes().get(aliasDeclaration), "Point"),
+                () -> assertEquals("int", interfaceBody.slotTypes().get(numberDeclaration).getTypeName()),
+                () -> assertTypeNameEndsWith(interfaceBody.slotTypes().get(nestedDeclaration), "Point"),
+                () -> assertEquals("int", interfaceBody.resolvedMembers().get(markerSteps.getFirst()).resultType().getTypeName()),
+                () -> assertEquals("int", interfaceBody.resolvedMembers().get(markerSteps.getLast()).resultType().getTypeName()),
+                () -> assertEquals("int", interfaceBody.expressionTypes().get(numberInitializer).publishedType().getTypeName()),
+                () -> assertTypeNameEndsWith(interfaceBody.expressionTypes().get(nestedInitializer).publishedType(), "Point")
+        );
+        assertEquals(interfaceBodyDiagnostics.snapshot(), interfaceBody.diagnostics());
     }
 
     @Test
@@ -1108,16 +1038,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                             pass
                     return values
                 """, new DiagnosticManager());
-        var legacyDiagnostics = new DiagnosticManager();
         var interfaceBodyDiagnostics = new DiagnosticManager();
 
-        var legacy = analyzeModuleWithLegacySharedSemanticPublication(
-                new FrontendSemanticAnalyzer(),
-                "test_module",
-                List.of(unit),
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                legacyDiagnostics
-        );
         var interfaceBody = analyzeModule(
                 new FrontendSemanticAnalyzer(),
                 "test_module",
@@ -1134,15 +1056,64 @@ class FrontendSemanticAnalyzerFrameworkTest {
         );
         var hiddenUseSite = assertInstanceOf(IdentifierExpression.class, hiddenLocal.value());
 
-        assertEquivalentSharedSemanticFacts(legacy, interfaceBody);
         assertNull(interfaceBody.slotTypes().get(blockedConst));
         assertNull(interfaceBody.slotTypes().get(hiddenLocal));
         assertNull(interfaceBody.symbolBindings().get(hiddenUseSite));
-        assertEquals(
-                diagnosticsByCategory(legacy.diagnostics(), "sema.unsupported_binding_subtree"),
-                diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree")
+        assertFalse(diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+        assertEquals(interfaceBodyDiagnostics.snapshot(), interfaceBody.diagnostics());
+    }
+
+    @Test
+    void defaultInterfaceBodyPipelinePublishesAssignmentTargetLoweringFacts() throws Exception {
+        var parserService = new GdScriptParserService();
+        var diagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "assignment_target_lowering_facts.gd"), """
+                class_name AssignmentTargetLoweringFacts
+                extends RefCounted
+
+                var hp: int = 0
+
+                func ping(host, index: int, value: int):
+                    self.hp = value
+                    host.box.count += value
+                    host.payloads[index].value = value
+                """, diagnostics);
+
+        var result = analyzeModule(
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                diagnostics
         );
-        assertDiagnosticsEquivalentIgnoringOrder(legacy.diagnostics(), interfaceBody.diagnostics());
+        var assignments = findNodes(findFunction(unit.ast().statements(), "ping"), AssignmentExpression.class, _ -> true);
+        assertEquals(3, assignments.size());
+        var selfTarget = assertInstanceOf(AttributeExpression.class, assignments.get(0).left());
+        var dynamicTarget = assertInstanceOf(AttributeExpression.class, assignments.get(1).left());
+        var subscriptTarget = assertInstanceOf(AttributeExpression.class, assignments.get(2).left());
+        var explicitSelf = assertInstanceOf(SelfExpression.class, selfTarget.base());
+        var boxStep = assertInstanceOf(AttributePropertyStep.class, dynamicTarget.steps().getFirst());
+        var countStep = assertInstanceOf(AttributePropertyStep.class, dynamicTarget.steps().getLast());
+        var indexUse = findNode(subscriptTarget, IdentifierExpression.class, identifier -> identifier.name().equals("index"));
+
+        assertAll(
+                () -> assertEquals(
+                        FrontendExpressionTypeStatus.RESOLVED,
+                        result.expressionTypes().get(explicitSelf).status()
+                ),
+                () -> assertEquals(
+                        FrontendExpressionTypeStatus.DYNAMIC,
+                        result.expressionTypes().get(boxStep).status()
+                ),
+                () -> assertEquals(
+                        FrontendExpressionTypeStatus.DYNAMIC,
+                        result.expressionTypes().get(countStep).status()
+                ),
+                () -> assertEquals(
+                        FrontendExpressionTypeStatus.RESOLVED,
+                        result.expressionTypes().get(indexUse).status()
+                )
+        );
+        assertEquals(diagnostics.snapshot(), result.diagnostics());
     }
 
     @Test
@@ -1554,21 +1525,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
         return analyzer.analyze(new FrontendModule(moduleName, units), registry, diagnostics);
     }
 
-    private FrontendAnalysisData analyzeModuleWithLegacySharedSemanticPublication(
-            @NotNull FrontendSemanticAnalyzer analyzer,
-            @NotNull String moduleName,
-            @NotNull List<FrontendSourceUnit> units,
-            @NotNull ClassRegistry registry,
-            @NotNull DiagnosticManager diagnostics
-    ) {
-        return FrontendSemanticAnalyzerTestAccess.analyzeWithLegacySharedSemanticPublication(
-                analyzer,
-                new FrontendModule(moduleName, units),
-                registry,
-                diagnostics
-        );
-    }
-
     private FrontendAnalysisData analyzeModuleForCompile(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,
@@ -1586,146 +1542,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
             @NotNull DiagnosticManager diagnostics
     ) {
         return analyzer.analyzeForCompile(new FrontendModule(moduleName, units), registry, diagnostics);
-    }
-
-    private void assertEquivalentSharedSemanticFacts(
-            @NotNull FrontendAnalysisData expected,
-            @NotNull FrontendAnalysisData actual
-    ) {
-        assertEquivalentSideTable(
-                expected.symbolBindings(),
-                actual.symbolBindings(),
-                this::sameBindingAcrossIndependentRuns,
-                "symbolBindings"
-        );
-        assertEquivalentSideTable(
-                expected.resolvedMembers(),
-                actual.resolvedMembers(),
-                this::sameResolvedMemberAcrossIndependentRuns,
-                "resolvedMembers"
-        );
-        assertEquivalentSideTable(
-                expected.resolvedCalls(),
-                actual.resolvedCalls(),
-                this::sameResolvedCallAcrossIndependentRuns,
-                "resolvedCalls"
-        );
-        assertEquivalentSideTable(
-                expected.expressionTypes(),
-                actual.expressionTypes(),
-                FrontendAnalysisData::sameExpressionType,
-                "expressionTypes"
-        );
-        assertEquivalentSideTable(
-                expected.slotTypes(),
-                actual.slotTypes(),
-                FrontendAnalysisData::sameType,
-                "slotTypes"
-        );
-    }
-
-    private boolean sameBindingAcrossIndependentRuns(
-            @NotNull FrontendBinding first,
-            @NotNull FrontendBinding second
-    ) {
-        return first.kind() == second.kind()
-                && first.symbolName().equals(second.symbolName())
-                && sameDeclarationAcrossIndependentRuns(first.declarationSite(), second.declarationSite())
-                && first.valueAccessStatus() == second.valueAccessStatus()
-                && sameScopeValueAcrossIndependentRuns(first.resolvedValue(), second.resolvedValue());
-    }
-
-    private boolean sameResolvedMemberAcrossIndependentRuns(
-            @NotNull FrontendResolvedMember first,
-            @NotNull FrontendResolvedMember second
-    ) {
-        return first.bindingKind() == second.bindingKind()
-                && first.status() == second.status()
-                && first.receiverKind() == second.receiverKind()
-                && first.ownerKind() == second.ownerKind()
-                && sameDeclarationAcrossIndependentRuns(first.declarationSite(), second.declarationSite())
-                && first.memberName().equals(second.memberName())
-                && FrontendAnalysisData.sameType(first.receiverType(), second.receiverType())
-                && FrontendAnalysisData.sameType(first.resultType(), second.resultType())
-                && Objects.equals(first.detailReason(), second.detailReason());
-    }
-
-    private boolean sameResolvedCallAcrossIndependentRuns(
-            @NotNull FrontendResolvedCall first,
-            @NotNull FrontendResolvedCall second
-    ) {
-        return first.callKind() == second.callKind()
-                && first.status() == second.status()
-                && first.receiverKind() == second.receiverKind()
-                && first.ownerKind() == second.ownerKind()
-                && sameDeclarationAcrossIndependentRuns(first.declarationSite(), second.declarationSite())
-                && first.callableName().equals(second.callableName())
-                && FrontendAnalysisData.sameType(first.receiverType(), second.receiverType())
-                && FrontendAnalysisData.sameType(first.returnType(), second.returnType())
-                && FrontendAnalysisData.sameTypeList(first.argumentTypes(), second.argumentTypes())
-                && FrontendAnalysisData.sameExactCallableBoundary(
-                first.exactCallableBoundary(),
-                second.exactCallableBoundary()
-        )
-                && Objects.equals(first.detailReason(), second.detailReason());
-    }
-
-    private boolean sameScopeValueAcrossIndependentRuns(ScopeValue first, ScopeValue second) {
-        if (first == null || second == null) {
-            return first == second;
-        }
-        return first.kind() == second.kind()
-                && first.constant() == second.constant()
-                && first.writable() == second.writable()
-                && first.staticMember() == second.staticMember()
-                && sameDeclarationAcrossIndependentRuns(first.declaration(), second.declaration())
-                && first.name().equals(second.name())
-                && FrontendAnalysisData.sameType(first.type(), second.type());
-    }
-
-    private boolean sameDeclarationAcrossIndependentRuns(Object first, Object second) {
-        if (first == second) {
-            return true;
-        }
-        if (first == null || second == null || first instanceof Node || second instanceof Node) {
-            return false;
-        }
-        return declarationFingerprint(first).equals(declarationFingerprint(second));
-    }
-
-    private String declarationFingerprint(@NotNull Object declaration) {
-        if (declaration instanceof ClassDef classDef) {
-            return "class:" + classDef.getName();
-        }
-        if (declaration instanceof PropertyDef propertyDef) {
-            return "property:" + propertyDef.getName();
-        }
-        if (declaration instanceof FunctionDef functionDef) {
-            return "function:" + functionDef.getName();
-        }
-        return declaration.getClass().getName() + ':' + declaration;
-    }
-
-    private <V> void assertEquivalentSideTable(
-            @NotNull FrontendAstSideTable<V> expected,
-            @NotNull FrontendAstSideTable<V> actual,
-            @NotNull BiPredicate<V, V> sameValue,
-            @NotNull String tableName
-    ) {
-        for (var entry : expected.entrySet()) {
-            assertTrue(actual.containsKey(entry.getKey()), tableName + " lost key " + entry.getKey());
-            var actualValue = actual.get(entry.getKey());
-            assertTrue(
-                    sameValue.test(entry.getValue(), actualValue),
-                    tableName + " changed value for " + entry.getKey()
-                            + ": expected " + entry.getValue()
-                            + ", actual " + actualValue
-            );
-        }
-        for (var entry : actual.entrySet()) {
-            assertTrue(expected.containsKey(entry.getKey()), tableName + " gained key " + entry.getKey());
-        }
-        assertEquals(expected.size(), actual.size(), tableName + " size changed");
     }
 
     private FunctionDeclaration findFunction(List<?> statements, String name) {
@@ -1817,6 +1633,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
         return diagnostics.asList().stream()
                 .filter(diagnostic -> diagnostic.category().equals(category))
                 .toList();
+    }
+
+    private void assertTypeNameEndsWith(@NotNull GdType type, @NotNull String suffix) {
+        assertTrue(type.getTypeName().endsWith(suffix), () -> "Expected type ending with " + suffix + ", got " + type);
     }
 
     private void assertDiagnosticsEquivalentIgnoringOrder(

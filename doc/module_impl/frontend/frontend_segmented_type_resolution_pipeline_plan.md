@@ -4,7 +4,7 @@
 
 - 性质：重启后的实施计划。
 - 目标模块：`src/main/java/gd/script/gdcc/frontend/sema/**`，并影响 `frontend/scope/**` 与 frontend lowering 的 analysis contract。
-- 直接动机：用 Godot 风格的 interface/body 分层与 source-order suite 解析替代原先 statement-window segmented runner 路线，使 `var limit := 3; for i in limit:` 这类依赖前缀 typed fact 的语义支持拥有稳定架构基础。
+- 直接动机：用 Godot 风格的 interface/body 分层与 source-order suite 解析替代原先 statement-window segmented runner 路线，使 `var limit := 3; for i in limit:` 这类依赖前缀 typed fact 的语义支持拥有稳定架构基础。阶段 I 后，旧 runner 与 shared analyzer legacy whole-phase bypass 已从代码中删除。
 - 主体方案：以 interface phase + body `SuiteResolver` 为主线，即先建立 class/callable/block 的 lexical 与 signature/interface 事实，再按 body suite 源码顺序解析 statement。
 - 辅助方案：引入 `TypedLexicalEnvironment` overlay，使当前 statement / 当前 suite 内的 local slot typed fact 能被后续 semantic step 读取，而不提前污染最终 stable side table。
 - 实施策略：允许把阶段 A-D 的已有实现视为“可保留资产 / 可重写参考 / 可回退资产”。本文不假设当前 segmented scheduler 已经是新路线的可继续扩展基础，也不把现有 `analyzeInWindow(...)` 当作可抽取的 statement runner。
@@ -59,7 +59,7 @@
 
 现有 analyzer 不是“window runner”。它们的 `analyze(...)` / `analyzeInWindow(...)` 入口仍以 `moduleSkeleton.sourceClassRelations()` 为根，创建内部 `AstWalker...` / visitor 并遍历完整 `SourceFile` AST。`FrontendWindowAnalysisContext` 只把发布目标换成 scratch surface；它没有把遍历 root 限制到当前 statement、当前 suite 或当前 body。因此，新的 body `SuiteResolver` 不能通过简单迁移这些入口获得。它需要在现有语义规则与 owner 合同之上，重写每个 owner 的 statement-local 调度、显式上下文状态和发布逻辑。
 
-这也是一次执行框架重写，而不是 statement-window 方案的续作：`FrontendSegmentedSemanticScheduler` 只能作为证明 patch merge / stable reference 行为的过渡资产。它仍按 whole-module owner stage 调度，并且 local type stabilization 仍走 legacy direct phase 以避免延迟 slot update 破坏 source-order alias chain。
+这也是一次执行框架重写，而不是 statement-window 方案的续作：`FrontendSegmentedSemanticScheduler` 曾只作为证明 patch merge / stable reference 行为的过渡资产，阶段 I 后已删除。最终 pipeline 不再保留 shared analyzer 级别的 legacy whole-phase body semantic bypass。
 
 因此，`FrontendWindowPublicationSurface` / `FrontendWindowAnalysisContext` 不能作为新 overlay/export 的正确性参考。类型本身的 API 试图表达 scratch view，但现有 analyzer 使用方式已经破坏该承诺；计划只能把它们作为 legacy comparison / targeted regression 的输入，不能把它们当作可复用设计。
 
@@ -517,7 +517,7 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 - `FrontendAnalysisPatch` 迁入 patch package；若保留，它只能是 legacy single-stage patch / 测试兼容层，不能作为 suite export 生产路径的 multi-owner carrier。
 - `FrontendLocalSlotTypeUpdate` 迁入 patch package，并只由 `FrontendLocalTypeStabilizationPatch` 携带。
 - `FrontendWindowPublicationSurface` 与 `FrontendWindowAnalysisContext` 若迁入 patch package，也只能作为 legacy comparison shim。它们不再是 overlay/export 参考实现；若最终删除这两个类型，必须把仍然有效的 surface API tests 拆到 overlay 与 per-owner patch transaction 测试，并新增 VarTypePost window contamination regression test 记录旧路径问题。
-- `FrontendSemanticAnalyzer.analyzeWithLegacySharedSemanticPublication(...)` package-private 测试旁路，作为阶段 H 后 legacy whole-phase baseline 的等价测试入口。
+- 已删除的 `FrontendSemanticAnalyzer.analyzeWithLegacySharedSemanticPublication(...)` package-private 测试旁路。阶段 I 后不再通过 shared analyzer 进入 legacy whole-phase baseline；需要 owner-level legacy 行为时只能在 focused legacy shim tests 中直接使用对应 analyzer/window API。
 
 重写参考资产：
 
@@ -528,8 +528,8 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 
 可回退或废弃资产：
 
-- `FrontendSegmentedSemanticScheduler` 当前实现。它是阶段 D 的行为等价过渡调度器，仍包含 legacy local stabilization direct phase，不是新计划的主体。
-- 已删除的 `FrontendSemanticAnalyzer.segmentedSemanticRunner` 生产路径开关。阶段 H 后默认入口只运行新 pipeline，legacy whole-phase 只作为 package-private 迁移测试旁路存在。
+- 已删除的 `FrontendSegmentedSemanticScheduler` 过渡实现。阶段 I 后它不再作为代码资产存在。
+- 已删除的 `FrontendSemanticAnalyzer.segmentedSemanticRunner` 生产路径开关与 `analyzeWithLegacySharedSemanticPublication(...)` 测试旁路。默认入口只运行 interface/body pipeline。
 - 把 `analyzeInWindow(...)` 作为 production body procedure 的任何调用路径。
 
 ## 5. 分步骤实施
@@ -539,15 +539,15 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 实施内容：
 
 - 明确阶段 A-D 已实施代码的处理方式：保留、移动、重写参考、废弃或回退。
-- 将 `FrontendSegmentedSemanticScheduler` 当前实现标记为过渡实现，不再作为新路线的主体。
+- 将 `FrontendSegmentedSemanticScheduler` 标记为过渡实现并在最终阶段删除，不再作为新路线的主体。
 - 保留 `FrontendAnalysisPatch`、`FrontendLocalSlotTypeUpdate`、`FrontendAnalysisData.applyPatch(...)` 的测试价值。`FrontendWindowPublicationSurface` 只保留 API-level / legacy comparison 测试价值，不能作为 overlay 隔离参考；patch 相关类型是否迁入 `gd.script.gdcc.frontend.sema.patch` 包需与其 legacy shim 定位一致。
 - 明确 per-owner patch 类型与 `FrontendPatchTransaction` 命名方案，旧 `FrontendAnalysisPatch` 不再作为 suite export 生产路径的 multi-owner carrier。
-- 明确 `FrontendSemanticAnalyzer.segmentedSemanticRunner` 生产路径开关最终要移除。
+- 明确 `FrontendSemanticAnalyzer.segmentedSemanticRunner` 生产路径开关最终要移除；阶段 I 后该开关及 shared analyzer legacy bypass 均已删除。
 - 明确 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` guard-only 合同不可回退。
 - 为五个 owner analyzer 建立 walker-state inventory：列出当前内部 visitor 的 traversal root、隐式字段状态、读取的 stable side table、写入的 side table、diagnostic emission 与可抽取 helper。该 inventory 是重写输入，不是迁移完成标志。
 - 为 compiler-only guard 建立 payload matrix：逐项记录 `expressionTypes()`、`slotTypes()`、`localSlotTypeUpdates()`、`symbolBindings()`、`resolvedMembers()`、`resolvedCalls()` 当前由谁检查、谁未检查、哪些 API 仍可直接绕过 guard。该 matrix 必须与阶段 C shared walker 设计一起冻结。
 
-当前状态（2026-07-07）：
+当前状态（2026-07-09）：
 
 - [x] A1 在文档中完成资产分类。
 - [x] A2 在代码中将 `FrontendSegmentedSemanticScheduler` 标记为 deprecated 或 legacy comparison entry。
@@ -561,9 +561,9 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 阶段 A 完成记录：
 
 - A1：第 4.9 节的资产分类冻结为阶段 A 基线。`FrontendSemanticStage`、`FrontendAnalysisData.applyPatch(...)`、`refreshPublishedLocalBindingPayloads(...)`、backfill guard 与 `FrontendAnalysisDataTest` 保留；patch carrier 与 transaction 类型进入 `gd.script.gdcc.frontend.sema.patch` 迁移计划；现有 analyzer walker 只作为语义 helper / rewrite reference；`FrontendSegmentedSemanticScheduler`、`segmentedSemanticRunner` 和 production `analyzeInWindow(...)` 调用路径归类为可回退或废弃资产。
-- A2：`FrontendSegmentedSemanticScheduler` 已在代码中标记为 `@Deprecated` legacy comparison entry，类注释明确它不是 SuiteResolver production pipeline。IDE 对该类发出弃用警告是预期状态。
+- A2/I2：`FrontendSegmentedSemanticScheduler` 在阶段 A 被标记为 `@Deprecated` legacy comparison entry；阶段 I 已删除该过渡实现，SuiteResolver 成为唯一 shared body publication path。
 - A3：`FrontendAnalysisDataTest` 继续作为 stable reference、conflict、idempotent 与 compiler-only guard 的 focused tests。`FrontendWindowPublicationSurfaceTest` 的类级注释已降级其解释范围：它只证明 legacy shim API 的 scratch write 隔离与 guard，不证明所有 legacy `analyzeInWindow(...)` 都 scratch-safe。
-- A4/H3：阶段 A 先隔离 `segmentedSemanticRunner` 的生产影响；阶段 H 已删除该字段、构造参数和 `withSegmentedSemanticRunnerForTesting()` 工厂。legacy comparison 现在通过 package-private `FrontendSemanticAnalyzer.analyzeWithLegacySharedSemanticPublication(...)` 及 test-source bridge 进入，不再经过 deprecated segmented scheduler。
+- A4/H3/I1：阶段 A 先隔离 `segmentedSemanticRunner` 的生产影响；阶段 H 已删除该字段、构造参数和 `withSegmentedSemanticRunnerForTesting()` 工厂；阶段 I 已删除 shared analyzer 的 package-private legacy whole-phase bypass 与 test-source bridge。
 - A5：patch package 迁移计划冻结为：新建 `gd.script.gdcc.frontend.sema.patch`；以 `FrontendOwnerPatch` 或等价 sealed interface 作为单 owner patch 根类型；新增 `FrontendTopBindingPatch`、`FrontendLocalTypeStabilizationPatch`、`FrontendChainBindingPatch`、`FrontendExprTypePatch`、`FrontendVarTypePostPatch`；新增 `FrontendPatchTransaction` 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序 apply。旧 `FrontendAnalysisPatch` 若迁移则只能作为 legacy single-stage compatibility carrier，不能继续作为 SuiteResolver export 的 multi-owner carrier；`FrontendLocalSlotTypeUpdate` 随 local stabilization patch 迁入 patch 包。
 - A6：whole-module walker state inventory 见下表。所有当前 `analyzeInWindow(...)` 都只允许作为 legacy comparison path；其 whole-module traversal root、隐式 visitor 字段和整表发布策略都不得直接复用为 SuiteResolver statement-local owner procedure。
 - A7：`FrontendVarTypePostAnalyzer.analyzeInWindow(...)` 的 legacy 污染路径为：读取 `analysisData.slotTypes()` 稳定表 -> `clear()` -> 将稳定表传入 `SlotTypePublisher` 逐项写入 -> 再复制到 `window.publications().slotTypes()`。阶段 A 决定是隔离而非修补该 legacy path：保留测试比较价值，但新 var type post procedure 必须从 statement-local scratch/overlay 写入重新实现。
@@ -727,10 +727,10 @@ Compiler-only guard payload matrix：
 - [x] E0 重新读取 `AGENTS.md`，用 MCP 列出 `doc` 与 `doc/module_impl`，并并行子代理调研阶段 E 相关文档、owner analyzer 代码与测试基线。
 - [x] E1 完成 C8 overlay-aware dependency lookup：`FrontendExpressionSemanticSupport` / `FrontendChainReductionFacade` / chain-head receiver 可通过注入 lookup 读取 `FrontendTypedLexicalEnvironment` 的 effective binding 与 exact local slot fact；`FrontendChainReductionHelper` 的 argument dependency lookup 不再先读 stable `expressionTypes()`，而是委托注入 resolver 保持 overlay-first 合同；旧构造器继续保持 stable-table 兼容。
 - [x] E2 新增 `FrontendBodyOwnerProcedures`，以 root-bounded DFS 实现 top binding、local stabilization、chain binding、expr typing、var type post 的核心 statement-local publication，不调用 whole-module analyzer entrypoint。
-- [x] E3 `FrontendSuiteResolver` 默认接入真实 owner procedure；`FrontendSemanticAnalyzer` 默认仍注入 legacy-compatible no-op suite resolver，避免阶段 H 之前提前写入 body facts 干扰 legacy whole-phase fallback。
+- [x] E3 `FrontendSuiteResolver` 默认接入真实 owner procedure；阶段 I 后 `FrontendSemanticAnalyzer` 默认无条件运行真实 SuiteResolver，不再保留 legacy-compatible no-op / whole-phase fallback 分支。
 - [x] E4 新增正反向 targeted tests，锚定 source-order alias、child-prefix visibility、chain receiver exactness、transient cache isolation、var type post export boundary、C8 overlay lookup 与 framework-level real owner path hand-off。
 - [x] E5 已运行格式化、IDE 增量编译与问题检查、`FrontendSuiteResolverTest`、`FrontendExpressionSemanticSupportTest`、`FrontendChainReductionFacadeTest`、`FrontendChainReductionHelperTest`、阶段 E 相关 targeted regression batch，以及 `git diff --check`。
-- [x] E6 原通过显式注入真实 `FrontendBodyOwnerProcedures` 的 `FrontendSuiteResolver` 证明 D/E body owner path 在 framework hand-off 中先于 legacy whole-phase publication 执行；阶段 H 后该证据已升级为 `FrontendSemanticAnalyzerFrameworkTest.defaultInterfaceBodyPipelineMatchesLegacyWholePhaseSideTables` 与 nested/unsupported 等价测试，默认 analyzer 已直接运行 real body owner path。
+- [x] E6 原通过显式注入真实 `FrontendBodyOwnerProcedures` 的 `FrontendSuiteResolver` 证明 D/E body owner path 在 framework hand-off 中先于 legacy whole-phase publication 执行；阶段 I 后该证据已收口为 `FrontendSemanticAnalyzerFrameworkTest` 中的默认 SuiteResolver body publication、nested source-order facts 与 unsupported fail-closed tests，且不再依赖 legacy baseline。
 
 验收细则：
 
@@ -801,10 +801,10 @@ Compiler-only guard payload matrix：
 实施内容：
 
 - [x] H1 `FrontendSemanticAnalyzer.analyze(...)` 默认运行新 interface/body pipeline。当前生产 `analyze(...)` 在 interface phase 后只调用真实 `FrontendSuiteResolver`，不再追加 legacy whole-phase owner publication，避免 body facts 双重发布。
-- [x] H2 legacy whole-phase runner 只保留为 package-private 测试旁路。当前 `FrontendSemanticAnalyzer.analyzeWithLegacySharedSemanticPublication(...)` 为 package-private comparison hook，供测试桥接 legacy baseline，不暴露给生产入口。
+- [x] H2 legacy whole-phase runner 在阶段 H 只保留为 package-private 测试旁路；阶段 I 已删除该旁路与 test bridge。
 - [x] H3 移除 `segmentedSemanticRunner` 生产路径开关。当前已删除 `segmentedSemanticRunner` 字段、构造参数与 `withSegmentedSemanticRunnerForTesting()` 工厂，生产路径不再能切到 deprecated segmented scheduler。
-- [x] H4 新增 legacy vs interface/body pipeline 等价测试，等价基线以 guard-only backfill 合同为准。当前 `FrontendSemanticAnalyzerFrameworkTest` 通过 package-private legacy test bridge 比较默认 interface/body pipeline 与 legacy whole-phase baseline 的五张共享 side table；unsupported `for` / `match` / block-local `const` 负向测试同时锚定 fail-closed fact surface，并用顺序无关 diagnostics 断言记录 legacy whole-phase 与 statement-local suite boundary 的诊断顺序差异。
-- [x] H5 broad regression parity follow-up：body owner top-binding 现在与 legacy 共享 dual-role singleton/type-meta 路偏和 global enum type-meta preference，body expression publication 补齐 builtin Variant constructor unsafe-call warning，missing / blocked binding diagnostics 与 legacy binding owner 对齐；legacy owner-specific `FrontendExprTypeAnalyzerTest` 通过 test bridge 显式进入 legacy whole-phase baseline。
+- [x] H4 新增 legacy vs interface/body pipeline 等价测试，等价基线以 guard-only backfill 合同为准；阶段 I 后这些测试已迁移为默认 interface/body pipeline 的 body fact、nested source-order 与 unsupported fail-closed 合同测试。
+- [x] H5 broad regression parity follow-up：body owner top-binding 现在与 legacy 共享 dual-role singleton/type-meta 路偏和 global enum type-meta preference，body expression publication 补齐 builtin Variant constructor unsafe-call warning，missing / blocked binding diagnostics 与 legacy binding owner 对齐；阶段 I 后 owner-specific `FrontendExprTypeAnalyzerTest` 使用测试内显式 owner-analyzer baseline helper，不再通过 shared analyzer test bridge 进入 legacy whole-phase baseline。
 
 验收细则：
 
@@ -816,9 +816,11 @@ Compiler-only guard payload matrix：
 
 实施内容：
 
-- 删除 legacy whole-phase body semantic 旁路。
-- 删除或重构 `FrontendSegmentedSemanticScheduler` 过渡实现。
-- 保留 patch/overlay/export 基础设施，并移除 single-stage `FrontendAnalysisPatch` 作为 suite export 生产路径的用途。
+- [x] I1 删除 legacy whole-phase body semantic 旁路。`FrontendSemanticAnalyzer.analyze(...)` 现在无条件执行 interface phase + `FrontendSuiteResolver`；`analyzeWithLegacySharedSemanticPublication(...)` 与 test bridge 已删除。
+- [x] I2 删除 `FrontendSegmentedSemanticScheduler` 过渡实现。代码中不再存在 scheduler 文件或 runner 开关。
+- [x] I3 保留 patch/overlay/export 基础设施，并移除 single-stage `FrontendAnalysisPatch` 作为 suite export 生产路径的用途。Suite export 继续通过 `FrontendTypedLexicalEnvironment.exportPatchTransaction()` 产生 per-owner transaction；`FrontendAnalysisPatch` 仅保留为 legacy shim / focused tests 兼容载体。
+- [x] I4 更新 variable analyzer、visible resolver、local stabilization、chain/expr typing、compile check、for-range plan，明确最终 production shared analyzer 只通过 interface/body + SuiteResolver 发布 body facts。
+- [x] I5 更新 `doc/analysis/frontend_segmented_type_resolution_pipeline_execution_summary.md`，记录 Phase I 删除项、final owner 顺序、fact 生命周期、per-owner patch/export、compiler-only guard 与 diagnostics / compile gate 边界。
 - 更新 variable analyzer、visible resolver、local stabilization、chain/expr typing、compile check、for-range plan。
 - 更新 `doc/analysis/frontend_segmented_type_resolution_pipeline_execution_summary.md`，使其反映最终实现的层级职责、owner 顺序、fact 生命周期、patch/export 合同、compiler-only guard 与 diagnostics / compile gate 边界，并继续保持为目标架构摘要而非旧流水线或过渡资产说明。
 
@@ -880,8 +882,8 @@ Suite/body pipeline 测试：
 - `FrontendSuiteResolverTest`：local stabilization patch apply 后由 commit helper 派生刷新同 declaration 的 `symbolBindings()` payload，而不是通过同一个 patch 携带 binding delta。
 - `FrontendSuiteResolverTest`：`if` / `elif` / `else` / `while` header 先解析，body 后递归。
 - `FrontendSuiteResolverTest`：unsupported body 不进入 resolver。
-- `FrontendSemanticAnalyzerFrameworkTest`：legacy whole-phase baseline 与默认 interface/body pipeline side-table 等价；legacy baseline 通过 package-private `analyzeWithLegacySharedSemanticPublication(...)` test bridge 进入，不再依赖 `withSegmentedSemanticRunnerForTesting()` 或 deprecated scheduler。
-- `FrontendSemanticAnalyzerFrameworkTest`：等价基线使用 guard-only backfill 合同，不允许恢复旧 expr-phase slot mutation。
+- `FrontendSemanticAnalyzerFrameworkTest`：默认 interface/body pipeline 发布 body facts、nested source-order facts，并保持 unsupported `for` / `match` / block-local `const` fail-closed；测试不再通过 shared analyzer legacy whole-phase baseline。
+- `FrontendExprTypeAnalyzerTest`：owner-specific baseline 只能在测试内显式串联 focused owner analyzers；不得恢复 shared analyzer legacy bridge 或旧 expr-phase slot mutation。
 
 Resolver 测试：
 

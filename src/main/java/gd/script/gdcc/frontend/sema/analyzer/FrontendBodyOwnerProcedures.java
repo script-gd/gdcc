@@ -752,7 +752,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             if (resolver.isRouteHeadOnlyTypeMeta(entry.getKey())) {
                 continue;
             }
-            reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
+            if (!resolver.isAssignmentTargetPrefixExpression(entry.getKey())) {
+                reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
+            }
             context.typedEnvironment().putExpressionType(
                     FrontendSemanticStage.EXPR_TYPE,
                     entry.getKey(),
@@ -762,6 +764,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 publishAttributeStepExpressionTypes(context, resolver.reduceAttributeExpression(attributeExpression));
             }
         }
+        if (expression instanceof AssignmentExpression assignmentExpression) {
+            publishAssignmentTargetStepExpressionTypes(context, resolver, assignmentExpression.left());
+        }
         for (var entry : resolver.resolvedCalls().entrySet()) {
             context.typedEnvironment().putResolvedCall(
                     FrontendSemanticStage.EXPR_TYPE,
@@ -769,6 +774,16 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     entry.getValue()
             );
             reportUnsafeCallArgumentWarning(context, entry.getKey(), entry.getValue());
+        }
+    }
+
+    private static void publishAssignmentTargetStepExpressionTypes(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BodyExpressionResolver resolver,
+            @NotNull Expression targetExpression
+    ) {
+        if (targetExpression instanceof AttributeExpression attributeExpression) {
+            publishAttributeStepExpressionTypes(context, resolver.assignmentTargetReduction(attributeExpression));
         }
     }
 
@@ -1012,6 +1027,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Expression, FrontendExpressionType> finalizedExpressionTypes =
                 new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Expression, Boolean> assignmentTargetPrefixExpressions =
+                new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<AttributeExpression, FrontendChainReductionHelper.ReductionResult>
+                assignmentTargetReductions = new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Expression, Boolean> routeHeadOnlyTypeMetaExpressions =
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<CallExpression, FrontendResolvedCall> resolvedCalls =
@@ -1109,18 +1128,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         .expressionType();
                 case AttributeExpression attributeExpression ->
                         resolveAttributeExpressionType(attributeExpression, finalizeWindow);
-                case AssignmentExpression assignmentExpression -> FrontendAssignmentSemanticSupport
-                        .resolveAssignmentExpressionType(
-                                assignmentSemanticContext,
-                                assignmentExpression,
-                                assignmentUsages.getOrDefault(
-                                        assignmentExpression,
-                                        FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED
-                                ),
-                                this::resolveExpressionType,
-                                finalizeWindow
-                        )
-                        .expressionType();
+                case AssignmentExpression assignmentExpression -> resolveAssignmentExpressionType(
+                        assignmentExpression,
+                        finalizeWindow
+                );
                 case CallExpression callExpression -> resolveCallExpressionType(callExpression, finalizeWindow);
                 case SubscriptExpression subscriptExpression -> expressionSemanticSupport
                         .resolveSubscriptExpressionType(
@@ -1160,6 +1171,92 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         )
                         .expressionType();
             };
+        }
+
+        private @NotNull FrontendExpressionType resolveAssignmentExpressionType(
+                @NotNull AssignmentExpression assignmentExpression,
+                boolean finalizeWindow
+        ) {
+            var result = FrontendAssignmentSemanticSupport.resolveAssignmentExpressionType(
+                    assignmentSemanticContext,
+                    assignmentExpression,
+                    assignmentUsages.getOrDefault(
+                            assignmentExpression,
+                            FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED
+                    ),
+                    this::resolveExpressionType,
+                    finalizeWindow
+            ).expressionType();
+            if (finalizeWindow) {
+                finalizeAssignmentTargetExpressionTypes(assignmentExpression.left());
+            }
+            return result;
+        }
+
+        private void finalizeAssignmentTargetExpressionTypes(@NotNull Expression targetExpression) {
+            switch (targetExpression) {
+                case AttributeExpression attributeExpression ->
+                        finalizeAttributeAssignmentTargetExpressionTypes(attributeExpression, false);
+                case SubscriptExpression subscriptExpression ->
+                        finalizeSubscriptAssignmentTargetExpressionTypes(subscriptExpression, false);
+                default -> {
+                }
+            }
+        }
+
+        private void finalizeAssignmentTargetValueExpression(@NotNull Expression expression) {
+            switch (expression) {
+                case AttributeExpression attributeExpression ->
+                        finalizeAttributeAssignmentTargetExpressionTypes(attributeExpression, true);
+                case SubscriptExpression subscriptExpression ->
+                        finalizeSubscriptAssignmentTargetExpressionTypes(subscriptExpression, true);
+                default -> markAndResolveAssignmentTargetPrefixExpression(expression);
+            }
+        }
+
+        private void finalizeAttributeAssignmentTargetExpressionTypes(
+                @NotNull AttributeExpression attributeExpression,
+                boolean publishRootExpression
+        ) {
+            finalizeAssignmentTargetValueExpression(attributeExpression.base());
+            for (var step : attributeExpression.steps()) {
+                if (step instanceof AttributeCallStep attributeCallStep) {
+                    for (var argument : attributeCallStep.arguments()) {
+                        resolveExpressionType(argument, true);
+                    }
+                } else if (step instanceof AttributeSubscriptStep attributeSubscriptStep) {
+                    for (var argument : attributeSubscriptStep.arguments()) {
+                        resolveExpressionType(argument, true);
+                    }
+                }
+            }
+            var reduction = reduceAttributeExpression(attributeExpression);
+            if (reduction != null) {
+                assignmentTargetReductions.put(attributeExpression, reduction);
+            }
+            if (publishRootExpression) {
+                markAndResolveAssignmentTargetPrefixExpression(attributeExpression);
+            }
+        }
+
+        private void finalizeSubscriptAssignmentTargetExpressionTypes(
+                @NotNull SubscriptExpression subscriptExpression,
+                boolean publishRootExpression
+        ) {
+            finalizeAssignmentTargetValueExpression(subscriptExpression.base());
+            for (var argument : subscriptExpression.arguments()) {
+                resolveExpressionType(argument, true);
+            }
+            if (publishRootExpression) {
+                markAndResolveAssignmentTargetPrefixExpression(subscriptExpression);
+            }
+        }
+
+        private void markAndResolveAssignmentTargetPrefixExpression(@NotNull Expression expression) {
+            // Lowering materializes assignment receivers, but binding/chain/assignment-root owners
+            // still own their diagnostics. Publish the type fact without creating duplicate expr errors.
+            assignmentTargetPrefixExpressions.put(expression, Boolean.TRUE);
+            resolveExpressionType(expression, true);
         }
 
         private @NotNull FrontendExpressionType resolveCallExpressionType(
@@ -1214,8 +1311,18 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return chainReduction.reduce(attributeExpression).result();
         }
 
+        private @Nullable FrontendChainReductionHelper.ReductionResult assignmentTargetReduction(
+                @NotNull AttributeExpression attributeExpression
+        ) {
+            return assignmentTargetReductions.get(attributeExpression);
+        }
+
         private @NotNull IdentityHashMap<Expression, FrontendExpressionType> finalizedExpressionTypes() {
             return finalizedExpressionTypes;
+        }
+
+        private boolean isAssignmentTargetPrefixExpression(@NotNull Expression expression) {
+            return assignmentTargetPrefixExpressions.containsKey(expression);
         }
 
         private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {

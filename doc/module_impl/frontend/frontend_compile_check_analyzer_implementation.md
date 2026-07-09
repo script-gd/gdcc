@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、explicit self assignment-target prefix 去重、shared/compile 分流边界、unary/binary 非 blocker 合同已落地）
-- 更新时间：2026-04-26
+- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、explicit self assignment-target prefix 去重、shared/compile 分流边界、interface/body SuiteResolver facts、unary/binary 非 blocker 合同已落地）
+- 更新时间：2026-07-09（Phase I：compile gate 消费最终 shared pipeline 导出的 stable facts，不依赖 legacy whole-phase publication）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -40,6 +40,7 @@
 1. `analyze(...)`
    - 共享 frontend 语义入口
    - 负责发布 skeleton/scope/variable、interface/body suite、shared semantic publication 与 diagnostics-only phase 的 frontend facts / diagnostics snapshots
+   - body semantic facts 只来自 `FrontendSuiteResolver` 的 per-owner patch transaction；shared analyzer 不再提供 legacy whole-phase body publication bypass
    - 不保证 lowering-ready
 2. `analyzeForCompile(...)`
    - compile-only 入口

@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（source-order local `:=` slot stabilization、parameter/local alias 传播、复杂 initializer 求型、assignment initializer 与 bare `TYPE_META` fail-closed、parent/child block 边界合同已落地）
-- 更新时间：2026-06-20
+- 状态：事实源维护中（source-order local `:=` slot stabilization、parameter/local alias 传播、复杂 initializer 求型、assignment initializer 与 bare `TYPE_META` fail-closed、parent/child block 边界合同、SuiteResolver body-owner overlay/export 路径已落地）
+- 更新时间：2026-07-09（Phase I：production shared analyzer 不再调用 legacy whole-phase stabilization bypass）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -37,29 +37,26 @@
 
 ### 1.1 主链路位置
 
-当前 `FrontendSemanticAnalyzer` 的稳定顺序是：
+当前 production `FrontendSemanticAnalyzer` 的稳定顺序是：
 
 1. skeleton
 2. scope
 3. variable inventory
-4. top binding
-5. local type stabilization
-6. chain binding
-7. expr typing
-8. callable-local slot-type republish
-9. annotation usage
-10. virtual override
-11. type check
-12. loop-control legality
-13. compile-only final gate（仅 `analyzeForCompile(...)`）
+4. interface phase
+5. SuiteResolver body publication，内部 owner 顺序固定为 top binding -> local type stabilization -> chain binding -> expr typing -> callable-local slot-type republish
+6. annotation usage
+7. virtual override
+8. type check
+9. loop-control legality
+10. compile-only final gate（仅 `analyzeForCompile(...)`）
 
-每个 phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断快照。因此 local type stabilization 虽然不拥有 diagnostics，仍然参与稳定的 phase-boundary refresh。
+每个 shared phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断快照。SuiteResolver body path 还会在 statement boundary 刷新快照，让后一 statement 读取 current-suite upstream diagnostics。
 
-`FrontendLocalTypeStabilizationAnalyzer` 固定运行在 `FrontendTopBindingAnalyzer` 之后、`FrontendChainBindingAnalyzer` 之前。它的职责是先把 block-local `:=` slot 稳定到当前可得到的 exact type，再让 chain binding 消费这些 receiver slot，避免第一次正式发布 member/call facts 时把本应静态的 receiver 误读成 `Variant`。
+生产 body path 中，local stabilization 作为 `FrontendBodyOwnerProcedures` 的 statement-local owner procedure 运行在 top binding 之后、chain binding 之前。Standalone `FrontendLocalTypeStabilizationAnalyzer.analyze(...)` / `analyzeInWindow(...)` 只保留为 focused analyzer / legacy shim 测试参考，不再由 shared analyzer 的 legacy whole-phase bypass 调用。
 
 ### 1.2 当前职责
 
-`FrontendLocalTypeStabilizationAnalyzer` 当前只负责一件事：在已发布的 callable executable body 中，按源码顺序稳定符合条件的 local `var := initializer` slot type。
+local stabilization 当前只负责一件事：在已发布的 callable executable body 中，按源码顺序稳定符合条件的 local `var := initializer` slot type。
 
 它当前稳定负责：
 

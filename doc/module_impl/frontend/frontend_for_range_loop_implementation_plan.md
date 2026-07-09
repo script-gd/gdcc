@@ -6,6 +6,7 @@
 
 - 状态：计划中
 - 创建日期：2026-07-03
+- 最近校对：2026-07-09（Phase I：后续 for-range 解封必须基于最终 interface/body + SuiteResolver shared semantic pipeline）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -58,7 +59,7 @@
 - `GdScriptParserService` 只是外部 parser adapter，本仓库没有本地 parser grammar 可改；若 parse smoke 发现 `range` loop AST 形态不足，应先升级或修复外部 parser，而不是在 frontend analyzer 中猜文本。
 - `FrontendScopeAnalyzer` 已为 `ForStatement` 建立 `FOR_BODY` scope，并保证 `iteratorType` 与 `iterable` 在外层 scope 下遍历，`body` 在独立 `FOR_BODY` scope 下遍历。
 - `FrontendLoopControlFlowAnalyzer` 已把 `for` 与 `while` 一样视为 loop boundary，`break` / `continue` 在 `for` body 内不再报 `sema.loop_control_flow`。
-- `FrontendVisibleValueResolver`、`FrontendVariableAnalyzer`、`FrontendTopBindingAnalyzer`、`FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、`FrontendVarTypePostAnalyzer` 与 `FrontendCompileCheckAnalyzer` 仍分别把 `for` 作为 deferred / unsupported boundary。
+- 最终 shared semantic pipeline 已固定为 interface/body + SuiteResolver：`FrontendVisibleValueResolver`、`FrontendVariableAnalyzer`、body owner procedures 与 `FrontendCompileCheckAnalyzer` 当前仍分别把 `for` 作为 deferred / unsupported boundary；后续 for-range 解封必须在 SuiteResolver owner procedures 与 shared readiness policy 中闭环，不能恢复 legacy whole-phase analyzer bypass。
 - `FrontendCfgGraphBuilder.processStatement(...)` 当前没有 `ForStatement` 分支；`break` / `continue` lowering 依赖 active `LoopFrame`。
 - `FrontendCfgRegion` 当前只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
 - `GdccForRangeIterType.FOR_RANGE_ITER` 已作为唯一 `GdCompilerType` 子类型存在。

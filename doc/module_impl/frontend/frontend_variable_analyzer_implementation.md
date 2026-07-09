@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 性质：长期事实源
-- 最后校对：2026-04-02
+- 最后校对：2026-07-09（Phase I：默认 shared analyzer 只走 interface/body + SuiteResolver body publication）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -42,12 +42,15 @@
 5. `analysisData.updateDiagnostics(...)`
 6. `FrontendVariableAnalyzer.analyze(...)`
 7. `analysisData.updateDiagnostics(...)`
+8. `FrontendInterfacePhase.analyze(...)`
+9. `FrontendSuiteResolver.resolve(...)`
 
 这意味着：
 
 - `FrontendVariableAnalyzer` 只运行在 skeleton 与 scope graph 已发布之后
 - 它消费 `moduleSkeleton`、`diagnostics` 与 `scopesByAst`
 - 它不会重建 scope graph，而是就地 enrich 已发布的 `CallableScope` / `BlockScope`
+- 它发布的是 interface/body pipeline 的 inventory 前置条件；body 事实不再由 shared analyzer 的 legacy whole-phase owner bypass 回填，而是由 SuiteResolver 的 statement-local owner procedures 通过 per-owner patch transaction 导出
 
 ### 1.2 当前职责
 

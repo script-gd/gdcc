@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（request/result 合同、declaration-order 过滤、initializer 自引用过滤、deferred boundary 封口、current-scope fail-closed hardening、shared support matrix 与核心单元测试已落地）
-- 更新时间：2026-03-16
+- 状态：事实源维护中（request/result 合同、declaration-order 过滤、initializer 自引用过滤、deferred boundary 封口、current-scope fail-closed hardening、typed overlay-aware resolve overload、shared support matrix 与核心单元测试已落地）
+- 更新时间：2026-07-09（Phase I：resolver 服务最终 interface/body + SuiteResolver pipeline，不依赖 legacy whole-phase bypass）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -81,6 +81,10 @@ shared `Scope` 继续负责：
 - initializer 自引用过滤
 - filtered hit provenance 保留
 - deferred / unsupported 域显式封口
+
+### 2.3 与 `FrontendTypedLexicalEnvironment` 的分工
+
+SuiteResolver body path 中的 caller 必须优先通过 typed overlay-aware `resolve(request, environment)` 入口读取 current statement / current suite 已发布的 local slot 与 binding payload。resolver 仍保留 request-domain、AST boundary 与 current-scope 三道 fail-closed gate；overlay 只改变可见事实来源，不允许绕过 declaration-order、initializer self-reference 或 typed-dependent body readiness 判定。
 
 ---
 
