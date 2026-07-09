@@ -9,6 +9,7 @@ import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendDualRoleTypeMetaRouteSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredBoundary;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDeferredReason;
@@ -17,23 +18,18 @@ import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolution;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueStatus;
-import gd.script.gdcc.gdextension.ExtensionGdClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
-import gd.script.gdcc.scope.ClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.*;
 import gd.script.gdcc.scope.ScopeValue;
-import gd.script.gdcc.type.GdObjectType;
 import dev.superice.gdparser.frontend.ast.ASTNodeHandler;
 import dev.superice.gdparser.frontend.ast.ASTWalker;
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
-import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
-import dev.superice.gdparser.frontend.ast.AttributeStep;
 import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
@@ -63,9 +59,8 @@ import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.IdentityHashMap;
 import java.nio.file.Path;
-import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 
@@ -1020,26 +1015,14 @@ public class FrontendTopBindingAnalyzer {
         }
 
         private boolean supportsTopLevelTypeMeta(@NotNull ScopeTypeMeta typeMeta) {
-            return switch (typeMeta.kind()) {
-                case GDCC_CLASS, ENGINE_CLASS, BUILTIN -> !typeMeta.pseudoType();
-                case GLOBAL_ENUM -> typeMeta.declaration() != null;
-            };
+            return FrontendDualRoleTypeMetaRouteSupport.supportsTopLevelTypeMeta(typeMeta);
         }
 
         private boolean shouldPreferGlobalEnumTypeMeta(
                 @NotNull FrontendVisibleValueResolution valueResolution,
                 @NotNull ScopeLookupResult<ScopeTypeMeta> typeMetaResult
         ) {
-            if (valueResolution.status() != FrontendVisibleValueStatus.FOUND_ALLOWED) {
-                return false;
-            }
-            var visibleValue = valueResolution.visibleValue();
-            if (visibleValue == null || visibleValue.kind() != ScopeValueKind.GLOBAL_ENUM) {
-                return false;
-            }
-            return typeMetaResult.isAllowed()
-                    && typeMetaResult.requireValue().kind() == ScopeTypeMetaKind.GLOBAL_ENUM
-                    && supportsTopLevelTypeMeta(typeMetaResult.requireValue());
+            return FrontendDualRoleTypeMetaRouteSupport.shouldPreferGlobalEnumTypeMeta(valueResolution, typeMetaResult);
         }
 
         /// Dual-role chain-head route bias entry point.
@@ -1088,198 +1071,24 @@ public class FrontendTopBindingAnalyzer {
             if (trySealPropertyInitializerValueBoundary(identifierExpression)) {
                 return false;
             }
-            var valueResolution = resolveVisibleValue(identifierExpression);
-            if (valueResolution.status() != FrontendVisibleValueStatus.FOUND_ALLOWED) {
-                return false;
-            }
-            var visibleValue = valueResolution.visibleValue();
-            if (visibleValue == null || visibleValue.kind() != ScopeValueKind.SINGLETON) {
-                return false;
-            }
-            var singletonType = classRegistry.findSingletonType(name);
-            if (singletonType == null) {
-                return false;
-            }
-
-            // Type-meta namespace must also resolve the same name to ENGINE_CLASS (or GDCC_CLASS).
-            var typeMetaResult = moduleSkeleton.resolveSourceFacingTypeMeta(
+            var biasedTypeMeta = FrontendDualRoleTypeMetaRouteSupport.resolveBiasedTypeMeta(
+                    attributeExpression,
+                    resolveVisibleValue(identifierExpression),
                     currentScope,
-                    name,
-                    currentRestriction
+                    currentRestriction,
+                    moduleSkeleton,
+                    classRegistry
             );
-            if (!typeMetaResult.isAllowed()) {
+            if (biasedTypeMeta == null) {
                 return false;
             }
-            var typeMeta = typeMetaResult.requireValue();
-            if (typeMeta.kind() != ScopeTypeMetaKind.ENGINE_CLASS
-                    && typeMeta.kind() != ScopeTypeMetaKind.GDCC_CLASS) {
-                return false;
-            }
-            if (!supportsTopLevelTypeMeta(typeMeta)) {
-                return false;
-            }
-
-            var firstStep = attributeExpression.steps().getFirst();
-            var stepName = extractStepName(firstStep);
-            if (stepName == null) {
-                return false;
-            }
-
-            // Constructor-like `.new()` route: prefer TYPE_META, but still respect fail-closed.
-            // If the singleton declared type has an instance method, instance property, or signal
-            // named "new", the suffix resolves in the singleton instance namespace, so the head
-            // must stay SINGLETON to avoid silently stealing an instance-member route. Only when
-            // "new" does NOT resolve as a singleton instance member do we switch to TYPE_META and
-            // let the downstream constructor route decide legality.
-            if (firstStep instanceof AttributeCallStep && stepName.equals("new")) {
-                if (!resolvesInSingletonInstanceNamespace(singletonType, stepName)) {
-                    publishBinding(
-                            identifierExpression,
-                            name,
-                            FrontendBindingKind.TYPE_META,
-                            typeMeta.declaration()
-                    );
-                    return true;
-                }
-                return false;
-            }
-
-            // For property steps, check whether the suffix only resolves in the type-meta static
-            // namespace (engine class constant, class enum value, or static method reference).
-            // For call steps (non-`new`), check whether the suffix only resolves as a static method.
-            boolean inTypeMetaStatic = resolvesInTypeMetaStaticNamespace(typeMeta, stepName);
-            boolean inSingletonInstance = resolvesInSingletonInstanceNamespace(singletonType, stepName);
-
-            // Fail-closed: only switch to TYPE_META when the suffix is NOT available as a
-            // singleton instance member (instance method, instance property, or signal). This
-            // prevents silently changing the route when both namespaces can satisfy the same
-            // suffix name.
-            if (inTypeMetaStatic && !inSingletonInstance) {
-                publishBinding(
-                        identifierExpression,
-                        name,
-                        FrontendBindingKind.TYPE_META,
-                        typeMeta.declaration()
-                );
-                return true;
-            }
-            return false;
-        }
-
-        /// Extracts the member name from the first attribute step, or `null` for unknown step types.
-        private @Nullable String extractStepName(@NotNull AttributeStep step) {
-            return switch (step) {
-                case AttributePropertyStep propertyStep -> propertyStep.name();
-                case AttributeCallStep callStep -> callStep.name();
-                case AttributeSubscriptStep subscriptStep -> subscriptStep.name();
-                default -> null;
-            };
-        }
-
-        /// Checks whether `stepName` resolves in the type-meta static namespace. Engine class
-        /// constants and class enum values use the registry's inherited lookup, while static
-        /// methods keep the existing hierarchy walk shared with GDCC classes.
-        private boolean resolvesInTypeMetaStaticNamespace(
-                @NotNull ScopeTypeMeta typeMeta,
-                @NotNull String stepName
-        ) {
-            if (typeMeta.declaration() instanceof ExtensionGdClass engineClass) {
-                if (classRegistry.findEngineClassConstantInHierarchy(engineClass.getName(), stepName) != null) {
-                    return true;
-                }
-                if (classRegistry.findEngineClassEnumValueInHierarchy(engineClass.getName(), stepName) != null) {
-                    return true;
-                }
-            } else if (classRegistry.getClassDef(
-                    typeMeta.instanceType() instanceof GdObjectType ot ? ot : new GdObjectType(typeMeta.canonicalName())
-            ) instanceof ExtensionGdClass engineClass) {
-                if (classRegistry.findEngineClassConstantInHierarchy(engineClass.getName(), stepName) != null) {
-                    return true;
-                }
-                if (classRegistry.findEngineClassEnumValueInHierarchy(engineClass.getName(), stepName) != null) {
-                    return true;
-                }
-            }
-            return hasStaticMethodInHierarchy(typeMeta, stepName);
-        }
-
-        /// Checks whether `stepName` resolves as a singleton instance member: instance method,
-        /// instance property, or signal (walking the class hierarchy of the singleton declared
-        /// type). Signal is included defensively so that when signal chain access enters the
-        /// supported grammar, the fail-closed rule already covers it instead of silently
-        /// switching the head to TYPE_META.
-        private boolean resolvesInSingletonInstanceNamespace(
-                @NotNull GdObjectType singletonType,
-                @NotNull String stepName
-        ) {
-            return hasInstanceMethodInHierarchy(singletonType, stepName)
-                    || hasInstancePropertyInHierarchy(singletonType, stepName)
-                    || hasSignalInHierarchy(singletonType, stepName);
-        }
-
-        /// Walks the class hierarchy starting from `typeMeta` to check if a static method named
-        /// `stepName` exists. Covers both ENGINE_CLASS and GDCC_CLASS.
-        private boolean hasStaticMethodInHierarchy(@NotNull ScopeTypeMeta typeMeta, @NotNull String stepName) {
-            ClassDef current = classRegistry.resolveClassDefFromTypeMeta(typeMeta);
-            var visited = new HashSet<String>();
-            while (current != null && visited.add(current.getName())) {
-                var found = current.getFunctions().stream()
-                        .anyMatch(fn -> fn.getName().equals(stepName) && fn.isStatic());
-                if (found) {
-                    return true;
-                }
-                current = classRegistry.resolveSuperclass(current);
-            }
-            return false;
-        }
-
-        /// Walks the class hierarchy of the singleton declared type to check if an instance method
-        /// named `stepName` exists.
-        private boolean hasInstanceMethodInHierarchy(@NotNull GdObjectType singletonType, @NotNull String stepName) {
-            ClassDef current = classRegistry.getClassDef(singletonType);
-            var visited = new HashSet<String>();
-            while (current != null && visited.add(current.getName())) {
-                var found = current.getFunctions().stream()
-                        .anyMatch(fn -> fn.getName().equals(stepName) && !fn.isStatic());
-                if (found) {
-                    return true;
-                }
-                current = classRegistry.resolveSuperclass(current);
-            }
-            return false;
-        }
-
-        /// Walks the class hierarchy of the singleton declared type to check if an instance
-        /// property named `stepName` exists.
-        private boolean hasInstancePropertyInHierarchy(@NotNull GdObjectType singletonType, @NotNull String stepName) {
-            ClassDef current = classRegistry.getClassDef(singletonType);
-            var visited = new HashSet<String>();
-            while (current != null && visited.add(current.getName())) {
-                var found = current.getProperties().stream()
-                        .anyMatch(prop -> prop.getName().equals(stepName) && !prop.isStatic());
-                if (found) {
-                    return true;
-                }
-                current = classRegistry.resolveSuperclass(current);
-            }
-            return false;
-        }
-
-        /// Walks the class hierarchy of the singleton declared type to check if a signal named
-        /// `stepName` exists. Signal is checked defensively so the fail-closed rule covers it
-        /// even before signal chain access enters the supported grammar.
-        private boolean hasSignalInHierarchy(@NotNull GdObjectType singletonType, @NotNull String stepName) {
-            ClassDef current = classRegistry.getClassDef(singletonType);
-            var visited = new HashSet<String>();
-            while (current != null && visited.add(current.getName())) {
-                var found = current.getSignals().stream()
-                        .anyMatch(signal -> signal.getName().equals(stepName));
-                if (found) {
-                    return true;
-                }
-                current = classRegistry.resolveSuperclass(current);
-            }
-            return false;
+            publishBinding(
+                    identifierExpression,
+                    name,
+                    FrontendBindingKind.TYPE_META,
+                    biasedTypeMeta.declaration()
+            );
+            return true;
         }
 
         private @Nullable Scope findCurrentScope(@NotNull IdentifierExpression identifierExpression) {

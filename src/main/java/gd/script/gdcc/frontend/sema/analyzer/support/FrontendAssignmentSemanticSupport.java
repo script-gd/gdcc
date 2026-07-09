@@ -33,6 +33,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /// Shared assignment semantic helper used by both body-phase analyzers.
@@ -195,6 +196,7 @@ public final class FrontendAssignmentSemanticSupport {
 
     public record Context(
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
+            @NotNull Function<IdentifierExpression, FrontendBinding> symbolBindingResolver,
             @NotNull FrontendAstSideTable<Scope> scopesByAst,
             @NotNull FrontendModuleSkeleton moduleSkeleton,
             @NotNull Supplier<ResolveRestriction> restrictionSupplier,
@@ -204,6 +206,7 @@ public final class FrontendAssignmentSemanticSupport {
     ) {
         public Context {
             Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
+            Objects.requireNonNull(symbolBindingResolver, "symbolBindingResolver must not be null");
             Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
             Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null");
             Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
@@ -227,6 +230,29 @@ public final class FrontendAssignmentSemanticSupport {
         var actualRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         return new Context(
                 Objects.requireNonNull(symbolBindings, "symbolBindings must not be null"),
+                symbolBindings::get,
+                Objects.requireNonNull(scopesByAst, "scopesByAst must not be null"),
+                Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null"),
+                Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null"),
+                actualRegistry,
+                Objects.requireNonNull(chainReduction, "chainReduction must not be null"),
+                new FrontendSubscriptSemanticSupport(actualRegistry)
+        );
+    }
+
+    public static @NotNull Context createContext(
+            @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
+            @NotNull Function<IdentifierExpression, FrontendBinding> symbolBindingResolver,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull FrontendModuleSkeleton moduleSkeleton,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendChainReductionFacade chainReduction
+    ) {
+        var actualRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+        return new Context(
+                Objects.requireNonNull(symbolBindings, "symbolBindings must not be null"),
+                Objects.requireNonNull(symbolBindingResolver, "symbolBindingResolver must not be null"),
                 Objects.requireNonNull(scopesByAst, "scopesByAst must not be null"),
                 Objects.requireNonNull(moduleSkeleton, "moduleSkeleton must not be null"),
                 Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null"),
@@ -390,7 +416,7 @@ public final class FrontendAssignmentSemanticSupport {
             );
         }
 
-        var publishedBinding = context.symbolBindings().get(identifierExpression);
+        var publishedBinding = context.symbolBindingResolver().apply(identifierExpression);
         var detailReason = publishedBinding == null || publishedBinding.kind() == FrontendBindingKind.UNKNOWN
                 ? "No published assignment-target binding fact is available for identifier '"
                   + identifierExpression.name() + "'"

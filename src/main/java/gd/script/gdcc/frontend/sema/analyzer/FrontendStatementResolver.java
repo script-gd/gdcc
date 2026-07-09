@@ -22,8 +22,9 @@ import java.util.Objects;
 
 /// Root-bounded statement dispatcher for the new body SuiteResolver skeleton.
 ///
-/// Phase D only establishes traversal and owner ordering. The owner procedures are intentionally
-/// injectable no-op hooks until Phase E replaces the legacy whole-module analyzers.
+/// The no-op constructor is retained for traversal tests and explicit legacy shims. Production
+/// wiring reaches this dispatcher through `FrontendSuiteResolver`, which supplies real owner
+/// procedures and publishes facts through the typed lexical environment.
 public class FrontendStatementResolver {
     private final @NotNull OwnerProcedures ownerProcedures;
 

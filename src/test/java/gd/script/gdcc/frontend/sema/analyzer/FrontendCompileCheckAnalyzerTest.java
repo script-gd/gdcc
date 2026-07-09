@@ -148,7 +148,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_assert_contract.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertEquals(1, compileDiagnostics.size());
+        assertEquals(1, compileDiagnostics.size(), () -> compiled.diagnostics().asList().toString());
         assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.type_check").isEmpty());
         assertTrue(compileDiagnostics.getFirst().message().contains("assert statement"));
     }
@@ -518,7 +518,10 @@ class FrontendCompileCheckAnalyzerTest {
         assertTrue(diagnosticsByCategory(sharedAnalyzed.diagnostics(), "sema.compile_check").isEmpty());
 
         var compiled = analyzeForCompile("compile_check_static_method_route.gd", source);
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").toString()
+        );
     }
 
     @Test
@@ -546,7 +549,10 @@ class FrontendCompileCheckAnalyzerTest {
                 source,
                 Map.of("MappedWorker", "RuntimeWorker")
         );
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        assertTrue(
+                diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty(),
+                () -> diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").toString()
+        );
     }
 
     @Test
@@ -708,7 +714,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
                 class_name CompileCheckLiveManagerUpstream
                 extends Node
-
+                
                 func ping():
                     [1]
                 """);
@@ -1167,7 +1173,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("deferred_compile_check.gd", source);
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
-        assertFalse(compileDiagnostics.isEmpty());
+        assertFalse(compileDiagnostics.isEmpty(), () -> compiled.diagnostics().asList().toString());
         assertTrue(compiled.diagnostics().hasErrors());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR

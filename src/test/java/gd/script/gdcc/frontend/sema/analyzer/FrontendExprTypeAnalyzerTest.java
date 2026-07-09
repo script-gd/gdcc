@@ -2753,7 +2753,8 @@ class FrontendExprTypeAnalyzerTest {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        var analysisData = new FrontendSemanticAnalyzer().analyze(
+        var analysisData = FrontendSemanticAnalyzerTestAccess.analyzeWithLegacySharedSemanticPublication(
+                new FrontendSemanticAnalyzer(),
                 new FrontendModule("test_module", List.of(unit), topLevelCanonicalNameMap),
                 registry,
                 diagnostics

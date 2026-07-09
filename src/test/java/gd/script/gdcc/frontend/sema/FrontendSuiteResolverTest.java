@@ -99,7 +99,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_statement_diagnostics_snapshot.gd", """
                 class_name SuiteStatementDiagnosticsSnapshot
                 extends Node
-
+                
                 func ping(value):
                     var first := value
                     var second := first
@@ -285,7 +285,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_gate_classifier_prefix.gd", """
                 class_name SuiteGateClassifierPrefix
                 extends Node
-
+                
                 func ping(values, choice):
                     var limit := 1
                     for item in values:
@@ -341,7 +341,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_gate_body_published.gd", """
                 class_name SuiteGateBodyPublished
                 extends Node
-
+                
                 func ping(values, seed: int):
                     for item in values:
                         var from_for := seed
@@ -379,7 +379,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_gate_body_missing_owner.gd", """
                 class_name SuiteGateBodyMissingOwner
                 extends Node
-
+                
                 func ping(values, seed: int):
                     for item in values:
                         print(seed)
@@ -471,10 +471,10 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_stage_e_alias_chain.gd", """
                 class_name SuiteStageEAliasChain
                 extends RefCounted
-
+                
                 class Point:
                     var marker: int = -1
-
+                
                 func read_path(point: Point):
                     var a := point
                     var b := a
@@ -514,10 +514,10 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_stage_e_child_prefix.gd", """
                 class_name SuiteStageEChildPrefix
                 extends RefCounted
-
+                
                 class Point:
                     var marker: int = -1
-
+                
                 func read_path(point: Point, seed: int):
                     var stable := point
                     if seed > 0:
@@ -565,7 +565,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_stage_e_export_boundary.gd", """
                 class_name SuiteStageEExportBoundary
                 extends RefCounted
-
+                
                 func ping(seed: int):
                     var first := seed
                     var second := first
@@ -1139,6 +1139,7 @@ class FrontendSuiteResolverTest {
                     && analysisData.resolvedCalls().isEmpty()
                     && analysisData.expressionTypes().isEmpty()
                     && analysisData.slotTypes().isEmpty();
+            super.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         }
 
         private boolean invoked() {

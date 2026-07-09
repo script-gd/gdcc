@@ -16,11 +16,8 @@ import java.util.Objects;
 /// - skeleton publication
 /// - lexical scope graph construction
 /// - callable-parameter and supported local-variable inventory
-/// - top-binding publication for symbol-category resolution
-/// - source-order local `:=` slot stabilization
-/// - chain member/call publication
-/// - expression-type publication
-/// - callable-local slot-type publication
+/// - interface/body suite publication for statement-local top binding, local slot stabilization,
+///   chain binding, expression typing, and callable-local slot finalization
 /// - annotation-usage validation
 /// - diagnostics-only engine virtual override validation
 /// - diagnostics-only type-check traversal
@@ -43,7 +40,6 @@ public final class FrontendSemanticAnalyzer {
     private final @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer;
     private final @NotNull FrontendInterfacePhase interfacePhase;
     private final @NotNull FrontendSuiteResolver suiteResolver;
-    private final boolean segmentedSemanticRunner;
 
     public FrontendSemanticAnalyzer() {
         this(
@@ -82,8 +78,7 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer(),
                 interfacePhase,
-                suiteResolver,
-                false
+                suiteResolver
         );
     }
 
@@ -449,8 +444,7 @@ public final class FrontendSemanticAnalyzer {
                 loopControlFlowAnalyzer,
                 compileCheckAnalyzer,
                 new FrontendInterfacePhase(),
-                legacyCompatibleSuiteResolver(),
-                false
+                new FrontendSuiteResolver()
         );
     }
 
@@ -469,8 +463,7 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendLoopControlFlowAnalyzer loopControlFlowAnalyzer,
             @NotNull FrontendCompileCheckAnalyzer compileCheckAnalyzer,
             @NotNull FrontendInterfacePhase interfacePhase,
-            @NotNull FrontendSuiteResolver suiteResolver,
-            boolean segmentedSemanticRunner
+            @NotNull FrontendSuiteResolver suiteResolver
     ) {
         this.classSkeletonBuilder = Objects.requireNonNull(classSkeletonBuilder, "classSkeletonBuilder must not be null");
         this.scopeAnalyzer = Objects.requireNonNull(scopeAnalyzer, "scopeAnalyzer must not be null");
@@ -502,35 +495,6 @@ public final class FrontendSemanticAnalyzer {
         this.compileCheckAnalyzer = Objects.requireNonNull(compileCheckAnalyzer, "compileCheckAnalyzer must not be null");
         this.interfacePhase = Objects.requireNonNull(interfacePhase, "interfacePhase must not be null");
         this.suiteResolver = Objects.requireNonNull(suiteResolver, "suiteResolver must not be null");
-        this.segmentedSemanticRunner = segmentedSemanticRunner;
-    }
-
-    public static @NotNull FrontendSemanticAnalyzer withSegmentedSemanticRunnerForTesting() {
-        // This factory keeps the deprecated whole-module segmented scheduler covered. It does not
-        // exercise the Phase D/E root-bounded body owner path; tests for that path should inject a
-        // `FrontendSuiteResolver` wired with real owner procedures through the public constructor.
-        return new FrontendSemanticAnalyzer(
-                new FrontendClassSkeletonBuilder(),
-                new FrontendScopeAnalyzer(),
-                new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer(),
-                new FrontendLocalTypeStabilizationAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
-                new FrontendVarTypePostAnalyzer(),
-                new FrontendAnnotationUsageAnalyzer(),
-                new FrontendVirtualOverrideAnalyzer(),
-                new FrontendTypeCheckAnalyzer(),
-                new FrontendLoopControlFlowAnalyzer(),
-                new FrontendCompileCheckAnalyzer(),
-                new FrontendInterfacePhase(),
-                legacyCompatibleSuiteResolver(),
-                true
-        );
-    }
-
-    private static @NotNull FrontendSuiteResolver legacyCompatibleSuiteResolver() {
-        return new FrontendSuiteResolver(new FrontendStatementResolver());
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -547,6 +511,26 @@ public final class FrontendSemanticAnalyzer {
             @NotNull FrontendModule module,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager
+    ) {
+        return analyzeShared(module, classRegistry, diagnosticManager, false);
+    }
+
+    /// Test-only compatibility hook for comparing the retired whole-phase owner publication path
+    /// with the default interface/body pipeline. Production callers must use `analyze(...)` so body
+    /// facts are published by `FrontendSuiteResolver` and not double-written by legacy analyzers.
+    @NotNull FrontendAnalysisData analyzeWithLegacySharedSemanticPublication(
+            @NotNull FrontendModule module,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager
+    ) {
+        return analyzeShared(module, classRegistry, diagnosticManager, true);
+    }
+
+    private @NotNull FrontendAnalysisData analyzeShared(
+            @NotNull FrontendModule module,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull DiagnosticManager diagnosticManager,
+            boolean useLegacySharedSemanticPublication
     ) {
         Objects.requireNonNull(module, "module must not be null");
         Objects.requireNonNull(classRegistry, "classRegistry must not be null");
@@ -577,15 +561,16 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // The Interface/Body hand-off runs before legacy whole-phase publication. The default
-        // analyzer still injects a legacy-compatible no-op suite resolver until Phase H switches the
-        // shared pipeline. Phase D/E tests that need the real body owner path inject a
-        // `FrontendSuiteResolver` with real owner procedures through the public constructor.
+        // Interface analysis freezes callable/property entry roots, then exactly one body owner
+        // publication path runs. The legacy path is reserved for comparison tests so production never
+        // publishes the same side-table facts twice.
         var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
-        suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
+        if (useLegacySharedSemanticPublication) {
+            runLegacySharedSemanticPublication(classRegistry, diagnosticManager, analysisData);
+        } else {
+            suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
+        }
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-
-        runSharedSemanticPublication(classRegistry, diagnosticManager, analysisData);
 
         // Annotation-usage validation consumes retained annotations plus the published class/scope
         // facts, but still stays diagnostics-only and does not mutate semantic side tables.
@@ -609,22 +594,11 @@ public final class FrontendSemanticAnalyzer {
         return analysisData;
     }
 
-    private void runSharedSemanticPublication(
+    private void runLegacySharedSemanticPublication(
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnosticManager,
             @NotNull FrontendAnalysisData analysisData
     ) {
-        if (segmentedSemanticRunner) {
-            new FrontendSegmentedSemanticScheduler(
-                    topBindingAnalyzer,
-                    localTypeStabilizationAnalyzer,
-                    chainBindingAnalyzer,
-                    exprTypeAnalyzer,
-                    varTypePostAnalyzer
-            ).run(classRegistry, analysisData, diagnosticManager);
-            return;
-        }
-
         // Top-binding analysis classifies supported use-sites into stable symbol categories while
         // still keeping member/call resolution out of scope. Keeping it separate from variable
         // analysis preserves a clean hand-off between declaration inventory and use-site binding.

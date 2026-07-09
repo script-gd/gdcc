@@ -17,6 +17,7 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendLocalTypeStabilizationAnaly
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzerTestAccess;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
@@ -666,7 +667,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzePublishesPhaseBoundariesThroughVirtualOverridePhaseAndRefreshesDiagnosticsAfterEachPhase() throws Exception {
+    void legacyWholePhaseBypassPublishesPhaseBoundariesThroughVirtualOverridePhaseAndRefreshesDiagnosticsAfterEachPhase() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "variable_phase_probe.gd"), """
@@ -704,7 +705,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendCompileCheckAnalyzer()
         );
 
-        var result = analyzeModule(analyzer, "test_module", List.of(unit), registry, diagnostics);
+        var result = analyzeModuleWithLegacySharedSemanticPublication(
+                analyzer,
+                "test_module",
+                List.of(unit),
+                registry,
+                diagnostics
+        );
 
         assertTrue(probeScopeAnalyzer.invoked);
         assertTrue(probeScopeAnalyzer.moduleSkeletonPublished);
@@ -983,7 +990,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void injectedRealBodyOwnerSuiteResolverRunsDAndEOwnerPathBeforeLegacyPublication() throws Exception {
+    void defaultInterfaceBodyPipelineMatchesLegacyWholePhaseSideTables() throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "real_body_owner_framework_path.gd"), """
@@ -1004,42 +1011,29 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var markerStep = findNode(pingFunction.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
         var numberInitializer = numberDeclaration.value();
         assertNotNull(numberInitializer);
-        var ownerProcedures = new FrameworkBodyOwnerProcedures(
-                aliasDeclaration,
-                numberDeclaration,
-                markerStep,
-                numberInitializer
-        );
         var legacyDiagnostics = new DiagnosticManager();
-        var realBodyDiagnostics = new DiagnosticManager();
+        var interfaceBodyDiagnostics = new DiagnosticManager();
 
-        var legacy = analyzeModule(
+        var legacy = analyzeModuleWithLegacySharedSemanticPublication(
                 new FrontendSemanticAnalyzer(),
                 "test_module",
                 List.of(unit),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 legacyDiagnostics
         );
-        var realBody = analyzeModule(
-                new FrontendSemanticAnalyzer(
-                        new FrontendInterfacePhase(),
-                        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures))
-                ),
+        var interfaceBody = analyzeModule(
+                new FrontendSemanticAnalyzer(),
                 "test_module",
                 List.of(unit),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                realBodyDiagnostics
+                interfaceBodyDiagnostics
         );
 
-        var aliasSlotType = realBody.slotTypes().get(aliasDeclaration);
-        var numberSlotType = realBody.slotTypes().get(numberDeclaration);
-        var markerMember = realBody.resolvedMembers().get(markerStep);
-        var initializerType = realBody.expressionTypes().get(numberInitializer);
+        var aliasSlotType = interfaceBody.slotTypes().get(aliasDeclaration);
+        var numberSlotType = interfaceBody.slotTypes().get(numberDeclaration);
+        var markerMember = interfaceBody.resolvedMembers().get(markerStep);
+        var initializerType = interfaceBody.expressionTypes().get(numberInitializer);
         assertAll(
-                () -> assertTrue(ownerProcedures.aliasSlotWasPublishedBeforeLegacy()),
-                () -> assertTrue(ownerProcedures.memberFactWasPublishedBeforeLegacy()),
-                () -> assertTrue(ownerProcedures.expressionFactWasPublishedBeforeLegacy()),
-                () -> assertTrue(ownerProcedures.varPostFactWasPublishedBeforeLegacy()),
                 () -> assertNotNull(aliasSlotType),
                 () -> assertTrue(aliasSlotType.getTypeName().endsWith("Point")),
                 () -> assertNotNull(numberSlotType),
@@ -1052,12 +1046,12 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
                 () -> assertEquals("int", initializerType.publishedType().getTypeName())
         );
-        assertEquivalentSharedSemanticFacts(legacy, realBody);
-        assertEquals(legacyDiagnostics.snapshot(), realBodyDiagnostics.snapshot());
+        assertEquivalentSharedSemanticFacts(legacy, interfaceBody);
+        assertEquals(legacyDiagnostics.snapshot(), interfaceBodyDiagnostics.snapshot());
     }
 
     @Test
-    void deprecatedSegmentedSchedulerProducesEquivalentSharedSemanticSideTablesAndDiagnostics() throws Exception {
+    void defaultInterfaceBodyPipelineKeepsNestedSharedSemanticFactsEquivalentToLegacy() throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_equivalence.gd"), """
@@ -1077,30 +1071,30 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     return alias.marker
                 """, parseDiagnostics);
         var legacyDiagnostics = new DiagnosticManager();
-        var segmentedDiagnostics = new DiagnosticManager();
+        var interfaceBodyDiagnostics = new DiagnosticManager();
 
-        var legacy = analyzeModule(
+        var legacy = analyzeModuleWithLegacySharedSemanticPublication(
                 new FrontendSemanticAnalyzer(),
                 "test_module",
                 List.of(unit),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 legacyDiagnostics
         );
-        var segmented = analyzeModule(
-                FrontendSemanticAnalyzer.withSegmentedSemanticRunnerForTesting(),
+        var interfaceBody = analyzeModule(
+                new FrontendSemanticAnalyzer(),
                 "test_module",
                 List.of(unit),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                segmentedDiagnostics
+                interfaceBodyDiagnostics
         );
 
-        assertEquivalentSharedSemanticFacts(legacy, segmented);
-        assertEquals(legacy.diagnostics(), segmented.diagnostics());
-        assertEquals(legacyDiagnostics.snapshot(), segmentedDiagnostics.snapshot());
+        assertEquivalentSharedSemanticFacts(legacy, interfaceBody);
+        assertDiagnosticsEquivalentIgnoringOrder(legacy.diagnostics(), interfaceBody.diagnostics());
+        assertEquals(legacyDiagnostics.snapshot(), interfaceBodyDiagnostics.snapshot());
     }
 
     @Test
-    void deprecatedSegmentedSchedulerKeepsExistingUnsupportedSubtreeBehaviorEquivalent() throws Exception {
+    void defaultInterfaceBodyPipelineKeepsUnsupportedSubtreesFailClosed() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_unsupported_equivalence.gd"), """
                 class_name SegmentedUnsupportedEquivalence
@@ -1115,29 +1109,40 @@ class FrontendSemanticAnalyzerFrameworkTest {
                     return values
                 """, new DiagnosticManager());
         var legacyDiagnostics = new DiagnosticManager();
-        var segmentedDiagnostics = new DiagnosticManager();
+        var interfaceBodyDiagnostics = new DiagnosticManager();
 
-        var legacy = analyzeModule(
+        var legacy = analyzeModuleWithLegacySharedSemanticPublication(
                 new FrontendSemanticAnalyzer(),
                 "test_module",
                 List.of(unit),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
                 legacyDiagnostics
         );
-        var segmented = analyzeModule(
-                FrontendSemanticAnalyzer.withSegmentedSemanticRunnerForTesting(),
+        var interfaceBody = analyzeModule(
+                new FrontendSemanticAnalyzer(),
                 "test_module",
                 List.of(unit),
                 new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                segmentedDiagnostics
+                interfaceBodyDiagnostics
         );
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var blockedConst = findNode(pingFunction.body(), VariableDeclaration.class, variableDeclaration ->
+                variableDeclaration.name().equals("blocked")
+        );
+        var hiddenLocal = findNode(pingFunction.body(), VariableDeclaration.class, variableDeclaration ->
+                variableDeclaration.name().equals("hidden")
+        );
+        var hiddenUseSite = assertInstanceOf(IdentifierExpression.class, hiddenLocal.value());
 
-        assertEquivalentSharedSemanticFacts(legacy, segmented);
+        assertEquivalentSharedSemanticFacts(legacy, interfaceBody);
+        assertNull(interfaceBody.slotTypes().get(blockedConst));
+        assertNull(interfaceBody.slotTypes().get(hiddenLocal));
+        assertNull(interfaceBody.symbolBindings().get(hiddenUseSite));
         assertEquals(
                 diagnosticsByCategory(legacy.diagnostics(), "sema.unsupported_binding_subtree"),
-                diagnosticsByCategory(segmented.diagnostics(), "sema.unsupported_binding_subtree")
+                diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree")
         );
-        assertEquals(legacy.diagnostics(), segmented.diagnostics());
+        assertDiagnosticsEquivalentIgnoringOrder(legacy.diagnostics(), interfaceBody.diagnostics());
     }
 
     @Test
@@ -1549,6 +1554,21 @@ class FrontendSemanticAnalyzerFrameworkTest {
         return analyzer.analyze(new FrontendModule(moduleName, units), registry, diagnostics);
     }
 
+    private FrontendAnalysisData analyzeModuleWithLegacySharedSemanticPublication(
+            @NotNull FrontendSemanticAnalyzer analyzer,
+            @NotNull String moduleName,
+            @NotNull List<FrontendSourceUnit> units,
+            @NotNull ClassRegistry registry,
+            @NotNull DiagnosticManager diagnostics
+    ) {
+        return FrontendSemanticAnalyzerTestAccess.analyzeWithLegacySharedSemanticPublication(
+                analyzer,
+                new FrontendModule(moduleName, units),
+                registry,
+                diagnostics
+        );
+    }
+
     private FrontendAnalysisData analyzeModuleForCompile(
             @NotNull String moduleName,
             @NotNull List<FrontendSourceUnit> units,
@@ -1692,7 +1712,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
             @NotNull BiPredicate<V, V> sameValue,
             @NotNull String tableName
     ) {
-        assertEquals(expected.size(), actual.size(), tableName + " size changed");
         for (var entry : expected.entrySet()) {
             assertTrue(actual.containsKey(entry.getKey()), tableName + " lost key " + entry.getKey());
             var actualValue = actual.get(entry.getKey());
@@ -1703,6 +1722,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
                             + ", actual " + actualValue
             );
         }
+        for (var entry : actual.entrySet()) {
+            assertTrue(expected.containsKey(entry.getKey()), tableName + " gained key " + entry.getKey());
+        }
+        assertEquals(expected.size(), actual.size(), tableName + " size changed");
     }
 
     private FunctionDeclaration findFunction(List<?> statements, String name) {
@@ -1796,6 +1819,16 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 .toList();
     }
 
+    private void assertDiagnosticsEquivalentIgnoringOrder(
+            @NotNull DiagnosticSnapshot expected,
+            @NotNull DiagnosticSnapshot actual
+    ) {
+        assertEquals(
+                expected.asList().stream().map(Objects::toString).sorted().toList(),
+                actual.asList().stream().map(Objects::toString).sorted().toList()
+        );
+    }
+
     private ClassRegistry createRegistryWithSingleton(String singletonName) {
         return new ClassRegistry(new ExtensionAPI(
                 new ExtensionHeader(4, 4, 0, "stable", "test", "test", "single"),
@@ -1854,10 +1887,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 aliasSlotWasPublishedBeforeLegacy = context.analysisData().slotTypes().get(aliasDeclaration) == null
                         && currentBlockScope != null
                         && hasTypeNameSuffix(context.typedEnvironment().localSlotType(
-                                currentBlockScope,
-                                aliasDeclaration.name(),
-                                aliasDeclaration
-                        ), "Point");
+                        currentBlockScope,
+                        aliasDeclaration.name(),
+                        aliasDeclaration
+                ), "Point");
             }
         }
 

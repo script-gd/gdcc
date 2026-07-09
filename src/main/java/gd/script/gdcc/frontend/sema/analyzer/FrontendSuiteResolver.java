@@ -4,20 +4,26 @@ import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.ScopeValueKind;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Objects;
 
 /// Body-suite coordinator for the staged semantic pipeline.
@@ -26,6 +32,10 @@ import java.util.Objects;
 /// `FrontendStatementResolver` to record traversal shape, but production body facts must flow through
 /// the typed lexical environment and ordered patch transaction.
 public class FrontendSuiteResolver {
+    private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
+            "sema.unsupported_binding_subtree";
+    private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
+
     private final @NotNull FrontendStatementResolver statementResolver;
 
     public FrontendSuiteResolver() {
@@ -100,7 +110,58 @@ public class FrontendSuiteResolver {
                 diagnosticManager,
                 classRegistry
         );
+        publishCallableParameterSlots(context, callableOwner);
         resolveSuite(context, body);
+    }
+
+    private void publishCallableParameterSlots(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node callableOwner
+    ) {
+        var parameters = callableParameters(callableOwner);
+        for (var parameter : parameters) {
+            publishParameterSlotType(context, parameter);
+            reportUnsupportedParameterDefault(context, parameter);
+        }
+        // Parameters are callable-entry facts rather than statement facts, but they still need to
+        // enter the suite overlay before export and before the first statement consumes them.
+        context.typedEnvironment().flushStatementFacts();
+    }
+
+    private void publishParameterSlotType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Parameter parameter
+    ) {
+        var scope = context.analysisData().scopesByAst().get(parameter);
+        if (!(scope instanceof CallableScope callableScope)) {
+            throw new IllegalStateException("Parameter '" + parameter.name().trim() + "' has no published callable scope");
+        }
+        var slot = callableScope.resolveValueHere(parameter.name().trim());
+        if (slot == null || slot.kind() != ScopeValueKind.PARAMETER || slot.declaration() != parameter) {
+            throw new IllegalStateException("Parameter '" + parameter.name().trim() + "' inventory slot drifted");
+        }
+        context.typedEnvironment().putSlotType(FrontendSemanticStage.VAR_TYPE_POST, parameter, slot.type());
+    }
+
+    private static void reportUnsupportedParameterDefault(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Parameter parameter
+    ) {
+        if (parameter.defaultValue() == null) {
+            return;
+        }
+        context.diagnosticManager().error(
+                UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                "Binding analysis is not supported in parameter default",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(parameter.defaultValue().range())
+        );
+        context.diagnosticManager().error(
+                UNSUPPORTED_CHAIN_ROUTE_CATEGORY,
+                "Chain binding analysis is not supported in parameter default",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(parameter.defaultValue().range())
+        );
     }
 
     private void resolvePropertyInitializer(
@@ -172,6 +233,14 @@ public class FrontendSuiteResolver {
             case FunctionDeclaration functionDeclaration -> functionDeclaration.body();
             case ConstructorDeclaration constructorDeclaration -> constructorDeclaration.body();
             default -> null;
+        };
+    }
+
+    private static @NotNull List<Parameter> callableParameters(@NotNull Node callableOwner) {
+        return switch (callableOwner) {
+            case FunctionDeclaration functionDeclaration -> functionDeclaration.parameters();
+            case ConstructorDeclaration constructorDeclaration -> constructorDeclaration.parameters();
+            default -> List.of();
         };
     }
 

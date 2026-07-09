@@ -548,7 +548,10 @@ public class FrontendCompileCheckAnalyzer {
                 if (!isCompileBlocking(publishedType.status()) || !compileSurfaceNodes.contains(anchor)) {
                     continue;
                 }
-                if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor, publishedType)) {
+                if (isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(anchor)) {
+                    continue;
+                }
+                if (isCoveredByStaticSelfBindingDiagnostic(publishedType.detailReason())) {
                     continue;
                 }
                 var compileAnchor = compileAnchorForExpressionType(anchor);
@@ -572,6 +575,9 @@ public class FrontendCompileCheckAnalyzer {
                 var anchor = requireAttributePropertyStep(entry.getKey());
                 var publishedMember = Objects.requireNonNull(entry.getValue(), "publishedMember must not be null");
                 if (!isCompileBlocking(publishedMember.status()) || !compileSurfaceNodes.contains(anchor)) {
+                    continue;
+                }
+                if (isCoveredByStaticSelfBindingDiagnostic(publishedMember.detailReason())) {
                     continue;
                 }
                 reportCompileBlock(
@@ -684,10 +690,7 @@ public class FrontendCompileCheckAnalyzer {
         /// Assignment root facts can propagate a prefix-owned blocked `self` route. When that exact
         /// prefix already has the upstream binding diagnostic, keep ownership there instead of adding
         /// a generic root-level compile blocker for the same cause.
-        private boolean isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(
-                @NotNull Node anchor,
-                @NotNull FrontendExpressionType publishedType
-        ) {
+        private boolean isAssignmentRootCoveredByExplicitSelfPrefixDiagnostic(@NotNull Node anchor) {
             if (!(anchor instanceof AssignmentExpression assignmentExpression)) {
                 return false;
             }
@@ -695,13 +698,18 @@ public class FrontendCompileCheckAnalyzer {
             if (selfExpression == null) {
                 return false;
             }
-            var selfType = expressionTypes.get(selfExpression);
-            if (selfType == null
-                    || selfType.status() != publishedType.status()
-                    || !isCompileBlocking(selfType.status())) {
+            return hasPublishedConflictingDiagnosticAt(selfExpression);
+        }
+
+        private boolean isCoveredByStaticSelfBindingDiagnostic(@Nullable String detailReason) {
+            if (detailReason == null || !detailReason.contains("Keyword 'self' is not available in static context")) {
                 return false;
             }
-            return hasPublishedConflictingDiagnosticAt(selfExpression);
+            return publishedDiagnostics.asList().stream().anyMatch(diagnostic ->
+                    diagnostic.category().equals("sema.binding")
+                            && diagnostic.message().contains("Keyword 'self' is not available in static context")
+                            && diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(sourcePath))
+            );
         }
 
         private static @Nullable SelfExpression directExplicitSelfAssignmentTargetPrefixOrNull(

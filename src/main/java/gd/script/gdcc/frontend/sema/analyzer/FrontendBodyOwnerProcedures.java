@@ -1,44 +1,66 @@
 package gd.script.gdcc.frontend.sema.analyzer;
 
 import dev.superice.gdparser.frontend.ast.AssignmentExpression;
+import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributeCallStep;
+import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.BinaryExpression;
 import dev.superice.gdparser.frontend.ast.CallExpression;
+import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
+import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
+import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelper;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendDualRoleTypeMetaRouteSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
+import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolution;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueStatus;
+import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
 import gd.script.gdcc.gdextension.ExtensionUtilityFunction;
 import gd.script.gdcc.scope.FunctionDef;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeLookupStatus;
+import gd.script.gdcc.scope.ScopeTypeMeta;
+import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -55,16 +77,91 @@ import java.util.function.Consumer;
 /// are written only through `FrontendTypedLexicalEnvironment`, so pending/current-suite visibility and
 /// ordered per-owner export stay centralized in one place.
 public final class FrontendBodyOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+    private static final @NotNull String BINDING_CATEGORY = "sema.binding";
+    private static final @NotNull String MEMBER_RESOLUTION_CATEGORY = "sema.member_resolution";
+    private static final @NotNull String CALL_RESOLUTION_CATEGORY = "sema.call_resolution";
+    private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
+    private static final @NotNull String UNSAFE_CALL_ARGUMENT_CATEGORY = "sema.unsafe_call_argument";
+    private static final @NotNull String DEFERRED_CHAIN_RESOLUTION_CATEGORY = "sema.deferred_chain_resolution";
+    private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
+            "sema.deferred_expression_resolution";
+    private static final @NotNull String UNSUPPORTED_BINDING_SUBTREE_CATEGORY =
+            "sema.unsupported_binding_subtree";
+    private static final @NotNull String UNSUPPORTED_CHAIN_ROUTE_CATEGORY = "sema.unsupported_chain_route";
+    private static final @NotNull String UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY = "sema.unsupported_expression_route";
+
     private FrontendAnalysisData cachedAnalysisData;
     private FrontendVisibleValueResolver cachedVisibleValueResolver;
 
     @Override
     public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         forEachExpression(root, expression -> {
-            if (expression instanceof IdentifierExpression identifierExpression) {
+            if (expression instanceof AttributeExpression attributeExpression) {
+                tryApplyAttributeChainHeadTypeMetaBias(context, attributeExpression);
+            } else if (expression instanceof IdentifierExpression identifierExpression) {
                 bindIdentifier(context, identifierExpression);
+            } else if (expression instanceof LiteralExpression literalExpression) {
+                bindLiteral(context, literalExpression);
+            } else if (expression instanceof SelfExpression selfExpression) {
+                bindSelf(context, selfExpression);
+            } else if (expression instanceof LambdaExpression lambdaExpression) {
+                reportUnsupportedBinding(context, lambdaExpression, "lambda subtree");
             }
         });
+    }
+
+    private void tryApplyAttributeChainHeadTypeMetaBias(
+            @NotNull FrontendSuiteContext context,
+            @NotNull AttributeExpression attributeExpression
+    ) {
+        if (!(attributeExpression.base() instanceof IdentifierExpression identifierExpression)) {
+            return;
+        }
+        if (context.typedEnvironment().symbolBinding(identifierExpression) != null) {
+            return;
+        }
+        var currentScope = currentScopeFor(context, identifierExpression);
+        if (currentScope == null) {
+            return;
+        }
+        var valueResolution = resolveVisibleValue(context, identifierExpression);
+        var biasedTypeMeta = FrontendDualRoleTypeMetaRouteSupport.resolveBiasedTypeMeta(
+                attributeExpression,
+                valueResolution,
+                currentScope,
+                context.restriction(),
+                context.analysisData().moduleSkeleton(),
+                context.classRegistry()
+        );
+        if (biasedTypeMeta != null) {
+            publishTypeMetaBinding(context, identifierExpression, biasedTypeMeta);
+            return;
+        }
+
+        var typeMetaResult = context.analysisData().moduleSkeleton().resolveSourceFacingTypeMeta(
+                currentScope,
+                identifierExpression.name(),
+                context.restriction()
+        );
+        if (FrontendDualRoleTypeMetaRouteSupport.shouldPreferGlobalEnumTypeMeta(valueResolution, typeMetaResult)) {
+            publishTypeMetaBinding(context, identifierExpression, typeMetaResult.requireValue());
+        }
+    }
+
+    private static void publishTypeMetaBinding(
+            @NotNull FrontendSuiteContext context,
+            @NotNull IdentifierExpression identifierExpression,
+            @NotNull ScopeTypeMeta typeMeta
+    ) {
+        context.typedEnvironment().putSymbolBinding(
+                FrontendSemanticStage.TOP_BINDING,
+                identifierExpression,
+                new FrontendBinding(
+                        identifierExpression.name(),
+                        FrontendBindingKind.TYPE_META,
+                        typeMeta.declaration()
+                )
+        );
     }
 
     @Override
@@ -108,6 +205,8 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 if (reduced != null) {
                     publishReduction(context, reduced);
                 }
+            } else if (expression instanceof LambdaExpression lambdaExpression) {
+                reportUnsupportedChain(context, lambdaExpression, "lambda subtree");
             }
         });
     }
@@ -115,7 +214,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     @Override
     public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         var resolver = new BodyExpressionResolver(context);
-        forEachExpression(root, expression -> publishExpressionType(context, resolver, expression));
+        publishRootExpressionTypes(context, resolver, root);
     }
 
     @Override
@@ -131,6 +230,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         var localName = variableDeclaration.name().trim();
         var slot = blockScope.resolveValueHere(localName);
         if (slot == null || slot.declaration() != variableDeclaration) {
+            reportRejectedLocalSlotPublication(context, blockScope, variableDeclaration, slot);
             return;
         }
         var effectiveSlot = context.typedEnvironment().effectiveScopeValue(slot, blockScope);
@@ -139,6 +239,138 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 variableDeclaration,
                 effectiveSlot.type()
         );
+    }
+
+    private void reportRejectedLocalSlotPublication(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BlockScope blockScope,
+            @NotNull VariableDeclaration variableDeclaration,
+            @Nullable ScopeValue currentLayerSlot
+    ) {
+        var survivingSlot = findSurvivingCallableLocalBinding(blockScope, variableDeclaration.name().trim(), currentLayerSlot);
+        var message = new StringBuilder()
+                .append("Local variable '")
+                .append(variableDeclaration.name().trim())
+                .append("' in ")
+                .append(describeLocalContext(blockScope, context.callableOwner()))
+                .append(" has no lowering-ready published slot type at ")
+                .append(formatRange(variableDeclaration))
+                .append(" in ")
+                .append(context.sourcePath())
+                .append("; the declaration was not accepted into callable-local inventory");
+        if (survivingSlot != null && survivingSlot.declaration() instanceof Node survivingDeclaration) {
+            message.append("; surviving slot currently resolves to ")
+                    .append(describeSurvivingDeclaration(survivingSlot))
+                    .append(" at ")
+                    .append(formatRange(survivingDeclaration));
+        } else {
+            message.append("; this usually means earlier variable analysis rejected the declaration as duplicate or shadowing");
+        }
+        context.diagnosticManager().warning(
+                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY,
+                message.toString(),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(variableDeclaration.range())
+        );
+    }
+
+    private @Nullable ScopeValue findSurvivingCallableLocalBinding(
+            @NotNull BlockScope declarationScope,
+            @NotNull String variableName,
+            @Nullable ScopeValue currentLayerSlot
+    ) {
+        if (currentLayerSlot != null) {
+            return currentLayerSlot;
+        }
+        Scope currentScope = declarationScope.getParentScope();
+        while (currentScope != null) {
+            if (currentScope instanceof BlockScope outerBlockScope) {
+                var outerLocal = outerBlockScope.resolveValueHere(variableName);
+                if (outerLocal != null) {
+                    return outerLocal;
+                }
+                currentScope = outerBlockScope.getParentScope();
+                continue;
+            }
+            if (currentScope instanceof CallableScope callableScope) {
+                return callableScope.resolveValueHere(variableName);
+            }
+            return null;
+        }
+        return null;
+    }
+
+    private static @NotNull String describeLocalContext(
+            @NotNull BlockScope blockScope,
+            @NotNull Node callableOwner
+    ) {
+        return switch (blockScope.kind()) {
+            case FUNCTION_BODY, CONSTRUCTOR_BODY -> describeCallableContext(callableOwner);
+            case BLOCK_STATEMENT -> "block statement of " + describeCallableContext(callableOwner);
+            case IF_BODY -> "if-body of " + describeCallableContext(callableOwner);
+            case ELIF_BODY -> "elif-body of " + describeCallableContext(callableOwner);
+            case ELSE_BODY -> "else-body of " + describeCallableContext(callableOwner);
+            case WHILE_BODY -> "while-body of " + describeCallableContext(callableOwner);
+            case LAMBDA_BODY -> "lambda-body of " + describeCallableContext(callableOwner);
+            case FOR_BODY -> "`for` body of " + describeCallableContext(callableOwner);
+            case MATCH_SECTION_BODY -> "`match` section of " + describeCallableContext(callableOwner);
+        };
+    }
+
+    private static @NotNull String describeCallableContext(@NotNull Node callableOwner) {
+        return switch (callableOwner) {
+            case FunctionDeclaration functionDeclaration -> "function '" + functionDeclaration.name().trim() + "'";
+            case ConstructorDeclaration _ -> "constructor '_init'";
+            default -> callableOwner.getClass().getSimpleName();
+        };
+    }
+
+    private static @NotNull String describeSurvivingDeclaration(@NotNull ScopeValue survivingSlot) {
+        return switch (survivingSlot.kind()) {
+            case LOCAL -> "another accepted local declaration";
+            case PARAMETER -> "the parameter declaration";
+            case CAPTURE -> "the capture declaration";
+            case CONSTANT -> "the constant declaration";
+            default -> "an accepted callable-local binding";
+        };
+    }
+
+    private static @NotNull String formatRange(@NotNull Node node) {
+        var range = FrontendRange.fromAstRange(node.range());
+        if (range == null) {
+            return "<unknown-range>";
+        }
+        return "%d:%d-%d:%d".formatted(
+                range.start().line(),
+                range.start().column(),
+                range.end().line(),
+                range.end().column()
+        );
+    }
+
+    @Override
+    public void runUnsupported(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        switch (root) {
+            case VariableDeclaration variableDeclaration when variableDeclaration.value() != null -> {
+                reportUnsupportedBinding(context, variableDeclaration.value(), "block-local const initializer");
+                reportUnsupportedChain(context, variableDeclaration.value(), "block-local const initializer");
+            }
+            case ForStatement forStatement -> {
+                reportUnsupportedBinding(context, forStatement, "for subtree");
+                reportUnsupportedChain(context, forStatement, "for subtree");
+            }
+            case MatchStatement matchStatement -> {
+                reportUnsupportedBinding(context, matchStatement, "match subtree");
+                reportUnsupportedChain(context, matchStatement, "match subtree");
+                // `match` sections remain sealed until their gate is supported, but the subject
+                // expression belongs to the enclosing executable surface and must stay visible.
+                runTopBinding(context, matchStatement.value());
+                runChainBinding(context, matchStatement.value());
+                runExprType(context, matchStatement.value());
+            }
+            default -> {
+            }
+        }
     }
 
     private void bindIdentifier(
@@ -152,6 +384,13 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_ALLOWED
                 || valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
             publishScopeValueBinding(context, identifierExpression, valueResolution);
+            if (valueResolution.status() == FrontendVisibleValueStatus.FOUND_BLOCKED) {
+                reportBindingError(
+                        context,
+                        identifierExpression,
+                        "Binding '" + identifierExpression.name() + "' is not accessible in the current context"
+                );
+            }
             return;
         }
         if (valueResolution.status() == FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED) {
@@ -167,6 +406,49 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 FrontendSemanticStage.TOP_BINDING,
                 identifierExpression,
                 new FrontendBinding(identifierExpression.name(), FrontendBindingKind.UNKNOWN, null)
+        );
+        reportBindingError(
+                context,
+                identifierExpression,
+                "Unable to resolve value binding '" + identifierExpression.name() + "'"
+        );
+    }
+
+    private void bindSelf(
+            @NotNull FrontendSuiteContext context,
+            @NotNull SelfExpression selfExpression
+    ) {
+        if (context.typedEnvironment().symbolBinding(selfExpression) == null) {
+            context.typedEnvironment().putSymbolBinding(
+                    FrontendSemanticStage.TOP_BINDING,
+                    selfExpression,
+                    new FrontendBinding("self", FrontendBindingKind.SELF, null)
+            );
+        }
+        if (context.propertyInitializerContext() != null) {
+            reportUnsupportedBindingMessage(
+                    context,
+                    selfExpression,
+                    FrontendPropertyInitializerSupport.unsupportedSelfMessage()
+            );
+            return;
+        }
+        if (context.staticContext()) {
+            reportBindingError(context, selfExpression, "Keyword 'self' is not available in static context");
+        }
+    }
+
+    private void bindLiteral(
+            @NotNull FrontendSuiteContext context,
+            @NotNull LiteralExpression literalExpression
+    ) {
+        if (context.typedEnvironment().symbolBinding(literalExpression) != null) {
+            return;
+        }
+        context.typedEnvironment().putSymbolBinding(
+                FrontendSemanticStage.TOP_BINDING,
+                literalExpression,
+                new FrontendBinding(literalExpression.sourceText(), FrontendBindingKind.LITERAL, null)
         );
     }
 
@@ -347,6 +629,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         trace.step(),
                         trace.suggestedMember()
                 );
+                reportMemberTrace(context, trace);
             }
             if (trace.suggestedCall() != null) {
                 context.typedEnvironment().putResolvedCall(
@@ -354,31 +637,301 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                         trace.step(),
                         trace.suggestedCall()
                 );
+                reportCallTrace(context, trace);
             }
+        }
+        reportRecoveryBoundary(context, result);
+        for (var note : result.notes()) {
+            context.diagnosticManager().warning(
+                    CALL_RESOLUTION_CATEGORY,
+                    note.message(),
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(note.anchor().range())
+            );
+        }
+    }
+
+    private static void reportMemberTrace(
+            @NotNull FrontendSuiteContext context,
+            @NotNull FrontendChainReductionHelper.StepTrace trace
+    ) {
+        if (trace.status() != FrontendChainReductionHelper.Status.BLOCKED
+                && trace.status() != FrontendChainReductionHelper.Status.FAILED) {
+            return;
+        }
+        context.diagnosticManager().error(
+                MEMBER_RESOLUTION_CATEGORY,
+                Objects.requireNonNull(trace.detailReason(), "detailReason must not be null"),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(trace.step().range())
+        );
+    }
+
+    private static void reportCallTrace(
+            @NotNull FrontendSuiteContext context,
+            @NotNull FrontendChainReductionHelper.StepTrace trace
+    ) {
+        if (trace.status() != FrontendChainReductionHelper.Status.BLOCKED
+                && trace.status() != FrontendChainReductionHelper.Status.FAILED) {
+            return;
+        }
+        context.diagnosticManager().error(
+                CALL_RESOLUTION_CATEGORY,
+                Objects.requireNonNull(trace.detailReason(), "detailReason must not be null"),
+                context.sourcePath(),
+                FrontendRange.fromAstRange(trace.step().range())
+        );
+    }
+
+    private static void reportRecoveryBoundary(
+            @NotNull FrontendSuiteContext context,
+            @NotNull FrontendChainReductionHelper.ReductionResult result
+    ) {
+        var recoveryRoot = result.recoveryRoot();
+        if (recoveryRoot == null || result.stepTraces().isEmpty()) {
+            return;
+        }
+        var firstNonResolved = result.stepTraces().stream()
+                .filter(trace -> trace.status() != FrontendChainReductionHelper.Status.RESOLVED)
+                .findFirst()
+                .orElse(null);
+        if (firstNonResolved == null) {
+            return;
+        }
+        if (firstNonResolved.status() == FrontendChainReductionHelper.Status.DEFERRED) {
+            context.diagnosticManager().warning(
+                    DEFERRED_CHAIN_RESOLUTION_CATEGORY,
+                    Objects.requireNonNull(firstNonResolved.detailReason(), "detailReason must not be null"),
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(recoveryRoot.range())
+            );
+            return;
+        }
+        if (firstNonResolved.status() == FrontendChainReductionHelper.Status.UNSUPPORTED) {
+            context.diagnosticManager().error(
+                    UNSUPPORTED_CHAIN_ROUTE_CATEGORY,
+                    Objects.requireNonNull(firstNonResolved.detailReason(), "detailReason must not be null"),
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(recoveryRoot.range())
+            );
+        }
+    }
+
+    private static void publishRootExpressionTypes(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BodyExpressionResolver resolver,
+            @NotNull Node root
+    ) {
+        switch (root) {
+            case VariableDeclaration variableDeclaration when variableDeclaration.value() != null ->
+                    publishExpressionType(context, resolver, variableDeclaration.value(), false);
+            case ExpressionStatement expressionStatement ->
+                    publishExpressionType(context, resolver, expressionStatement.expression(), true);
+            case ReturnStatement returnStatement when returnStatement.value() != null ->
+                    publishExpressionType(context, resolver, returnStatement.value(), false);
+            case AssertStatement assertStatement -> {
+                publishExpressionType(context, resolver, assertStatement.condition(), false);
+                if (assertStatement.message() != null) {
+                    publishExpressionType(context, resolver, assertStatement.message(), false);
+                }
+            }
+            case Expression expression -> publishExpressionType(context, resolver, expression, false);
+            default ->
+                    forEachExpression(root, expression -> publishExpressionType(context, resolver, expression, false));
         }
     }
 
     private static void publishExpressionType(
             @NotNull FrontendSuiteContext context,
             @NotNull BodyExpressionResolver resolver,
-            @NotNull Expression expression
+            @NotNull Expression expression,
+            boolean allowStatementResult
     ) {
-        var expressionType = resolver.resolveExpressionType(expression, true);
-        context.typedEnvironment().putExpressionType(
-                FrontendSemanticStage.EXPR_TYPE,
-                expression,
-                expressionType
-        );
-        if (expression instanceof CallExpression callExpression) {
-            var resolvedCall = resolver.resolvedCall(callExpression);
-            if (resolvedCall != null) {
-                context.typedEnvironment().putResolvedCall(
-                        FrontendSemanticStage.EXPR_TYPE,
-                        callExpression,
-                        resolvedCall
-                );
+        resolver.populateRootExpressionTransientCaches(expression, allowStatementResult);
+        for (var entry : resolver.finalizedExpressionTypes().entrySet()) {
+            if (resolver.isRouteHeadOnlyTypeMeta(entry.getKey())) {
+                continue;
+            }
+            reportExpressionDiagnostic(context, resolver, entry.getKey(), entry.getValue());
+            context.typedEnvironment().putExpressionType(
+                    FrontendSemanticStage.EXPR_TYPE,
+                    entry.getKey(),
+                    entry.getValue()
+            );
+            if (entry.getKey() instanceof AttributeExpression attributeExpression) {
+                publishAttributeStepExpressionTypes(context, resolver.reduceAttributeExpression(attributeExpression));
             }
         }
+        for (var entry : resolver.resolvedCalls().entrySet()) {
+            context.typedEnvironment().putResolvedCall(
+                    FrontendSemanticStage.EXPR_TYPE,
+                    entry.getKey(),
+                    entry.getValue()
+            );
+            reportUnsafeCallArgumentWarning(context, entry.getKey(), entry.getValue());
+        }
+    }
+
+    private static void reportUnsafeCallArgumentWarning(
+            @NotNull FrontendSuiteContext context,
+            @NotNull CallExpression callExpression,
+            @NotNull FrontendResolvedCall publishedCall
+    ) {
+        if (!isUnsafeBuiltinVariantConstructorRoute(publishedCall)) {
+            return;
+        }
+        var sourceType = publishedCall.argumentTypes().getFirst();
+        var targetType = Objects.requireNonNull(publishedCall.returnType(), "returnType must not be null");
+        context.diagnosticManager().warning(
+                UNSAFE_CALL_ARGUMENT_CATEGORY,
+                "Unsafe call argument for builtin constructor '" + publishedCall.callableName()
+                        + "(...)': static argument type '" + sourceType.getTypeName()
+                        + "' requires runtime conversion to '" + targetType.getTypeName() + "'",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(callExpression.range())
+        );
+    }
+
+    private static boolean isUnsafeBuiltinVariantConstructorRoute(@NotNull FrontendResolvedCall publishedCall) {
+        return publishedCall.status() == FrontendCallResolutionStatus.RESOLVED
+                && publishedCall.callKind() == FrontendCallResolutionKind.CONSTRUCTOR
+                && publishedCall.receiverKind() == FrontendReceiverKind.TYPE_META
+                && publishedCall.ownerKind() == ScopeOwnerKind.BUILTIN
+                && publishedCall.argumentTypes().size() == 1
+                && publishedCall.argumentTypes().getFirst() instanceof GdVariantType
+                && publishedCall.declarationSite() instanceof ExtensionBuiltinClass;
+    }
+
+    private static void reportUnsupportedBinding(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @NotNull String domain
+    ) {
+        context.diagnosticManager().error(
+                UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                "Binding analysis is not supported in " + domain,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(anchor.range())
+        );
+    }
+
+    private static void reportBindingError(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @NotNull String message
+    ) {
+        context.diagnosticManager().error(
+                BINDING_CATEGORY,
+                message,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(anchor.range())
+        );
+    }
+
+    private static void reportUnsupportedBindingMessage(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @NotNull String message
+    ) {
+        context.diagnosticManager().error(
+                UNSUPPORTED_BINDING_SUBTREE_CATEGORY,
+                message,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(anchor.range())
+        );
+    }
+
+    private static void reportUnsupportedChain(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @NotNull String domain
+    ) {
+        context.diagnosticManager().error(
+                UNSUPPORTED_CHAIN_ROUTE_CATEGORY,
+                "Chain binding analysis is not supported in " + domain,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(anchor.range())
+        );
+    }
+
+    private static void reportUnsupportedExpression(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Node anchor,
+            @NotNull String detailReason
+    ) {
+        context.diagnosticManager().error(
+                UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY,
+                detailReason,
+                context.sourcePath(),
+                FrontendRange.fromAstRange(anchor.range())
+        );
+    }
+
+    private static void reportExpressionDiagnostic(
+            @NotNull FrontendSuiteContext context,
+            @NotNull BodyExpressionResolver resolver,
+            @NotNull Expression expression,
+            @NotNull FrontendExpressionType expressionType
+    ) {
+        if (!resolver.markExpressionDiagnosticReported(expression)) {
+            return;
+        }
+        switch (expressionType.status()) {
+            case FAILED -> context.diagnosticManager().error(
+                    EXPRESSION_RESOLUTION_CATEGORY,
+                    Objects.requireNonNull(expressionType.detailReason(), "detailReason must not be null"),
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(expression.range())
+            );
+            case DEFERRED -> context.diagnosticManager().warning(
+                    DEFERRED_EXPRESSION_RESOLUTION_CATEGORY,
+                    Objects.requireNonNull(expressionType.detailReason(), "detailReason must not be null"),
+                    context.sourcePath(),
+                    FrontendRange.fromAstRange(expression.range())
+            );
+            case UNSUPPORTED -> reportUnsupportedExpression(
+                    context,
+                    expression,
+                    Objects.requireNonNull(expressionType.detailReason(), "detailReason must not be null")
+            );
+            default -> {
+            }
+        }
+    }
+
+    private static void publishAttributeStepExpressionTypes(
+            @NotNull FrontendSuiteContext context,
+            @Nullable FrontendChainReductionHelper.ReductionResult reduction
+    ) {
+        if (reduction == null) {
+            return;
+        }
+        for (var trace : reduction.stepTraces()) {
+            context.typedEnvironment().putExpressionType(
+                    FrontendSemanticStage.EXPR_TYPE,
+                    trace.step(),
+                    resolvePublishedAttributeStepType(trace)
+            );
+        }
+    }
+
+    private static @NotNull FrontendExpressionType resolvePublishedAttributeStepType(
+            @NotNull FrontendChainReductionHelper.StepTrace trace
+    ) {
+        if (trace.suggestedMember() != null) {
+            return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedMember());
+        }
+        if (trace.suggestedCall() != null) {
+            return FrontendChainStatusBridge.toPublishedExpressionType(trace.suggestedCall());
+        }
+        if (trace.status() == FrontendChainReductionHelper.Status.BLOCKED
+                && trace.routeKind() == FrontendChainReductionHelper.RouteKind.UPSTREAM_BLOCKED) {
+            return FrontendExpressionType.blocked(
+                    null,
+                    Objects.requireNonNull(trace.detailReason(), "detailReason must not be null")
+            );
+        }
+        return FrontendChainStatusBridge.toPublishedExpressionType(trace.outgoingReceiver());
     }
 
     private @NotNull FrontendVisibleValueResolver visibleValueResolver(@NotNull FrontendSuiteContext context) {
@@ -459,10 +1012,17 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<Expression, FrontendExpressionType> finalizedExpressionTypes =
                 new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Expression, Boolean> routeHeadOnlyTypeMetaExpressions =
+                new IdentityHashMap<>();
         private final @NotNull IdentityHashMap<CallExpression, FrontendResolvedCall> resolvedCalls =
                 new IdentityHashMap<>();
+        private final @NotNull IdentityHashMap<Expression, Boolean> reportedExpressionDiagnostics =
+                new IdentityHashMap<>();
         private final @NotNull FrontendChainReductionFacade chainReduction;
+        private final @NotNull FrontendAssignmentSemanticSupport.Context assignmentSemanticContext;
         private final @NotNull FrontendExpressionSemanticSupport expressionSemanticSupport;
+        private final @NotNull IdentityHashMap<AssignmentExpression, FrontendAssignmentSemanticSupport.AssignmentUsage>
+                assignmentUsages = new IdentityHashMap<>();
 
         private BodyExpressionResolver(@NotNull FrontendSuiteContext context) {
             this.context = Objects.requireNonNull(context, "context must not be null");
@@ -475,6 +1035,15 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                     context.classRegistry(),
                     this::resolveExpressionDependency,
                     identifier -> context.typedEnvironment().symbolBinding(identifier)
+            );
+            assignmentSemanticContext = FrontendAssignmentSemanticSupport.createContext(
+                    context.analysisData().symbolBindings(),
+                    identifier -> context.typedEnvironment().symbolBinding(identifier),
+                    context.analysisData().scopesByAst(),
+                    context.analysisData().moduleSkeleton(),
+                    context::restriction,
+                    context.classRegistry(),
+                    chainReduction
             );
             expressionSemanticSupport = new FrontendExpressionSemanticSupport(
                     identifier -> context.typedEnvironment().symbolBinding(identifier),
@@ -507,6 +1076,23 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return computed;
         }
 
+        /// Computes the root expression for side effects only: it records statement-vs-value
+        /// assignment usage and fills owner-local transient caches that the caller publishes in bulk.
+        private void populateRootExpressionTransientCaches(
+                @NotNull Expression expression,
+                boolean allowStatementResult
+        ) {
+            if (expression instanceof AssignmentExpression assignmentExpression) {
+                assignmentUsages.put(
+                        assignmentExpression,
+                        allowStatementResult
+                                ? FrontendAssignmentSemanticSupport.AssignmentUsage.STATEMENT_ROOT
+                                : FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED
+                );
+            }
+            resolveExpressionType(expression, true);
+        }
+
         private @NotNull FrontendExpressionType computeExpressionType(
                 @NotNull Expression expression,
                 boolean finalizeWindow
@@ -521,10 +1107,20 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 case IdentifierExpression identifierExpression -> expressionSemanticSupport
                         .resolveIdentifierExpressionType(identifierExpression)
                         .expressionType();
-                case AttributeExpression attributeExpression -> resolveAttributeExpressionType(attributeExpression);
-                case AssignmentExpression _ -> FrontendExpressionType.failed(
-                        "Assignment expression typing is not part of the statement-local value contract yet"
-                );
+                case AttributeExpression attributeExpression ->
+                        resolveAttributeExpressionType(attributeExpression, finalizeWindow);
+                case AssignmentExpression assignmentExpression -> FrontendAssignmentSemanticSupport
+                        .resolveAssignmentExpressionType(
+                                assignmentSemanticContext,
+                                assignmentExpression,
+                                assignmentUsages.getOrDefault(
+                                        assignmentExpression,
+                                        FrontendAssignmentSemanticSupport.AssignmentUsage.VALUE_REQUIRED
+                                ),
+                                this::resolveExpressionType,
+                                finalizeWindow
+                        )
+                        .expressionType();
                 case CallExpression callExpression -> resolveCallExpressionType(callExpression, finalizeWindow);
                 case SubscriptExpression subscriptExpression -> expressionSemanticSupport
                         .resolveSubscriptExpressionType(
@@ -583,8 +1179,26 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
 
         private @NotNull FrontendExpressionType resolveAttributeExpressionType(
-                @NotNull AttributeExpression attributeExpression
+                @NotNull AttributeExpression attributeExpression,
+                boolean finalizeWindow
         ) {
+            if (isTypeMetaRouteHead(attributeExpression.base())) {
+                routeHeadOnlyTypeMetaExpressions.put(attributeExpression.base(), Boolean.TRUE);
+            }
+            resolveExpressionType(attributeExpression.base(), finalizeWindow);
+            for (var step : attributeExpression.steps()) {
+                if (step instanceof AttributeCallStep attributeCallStep) {
+                    for (var argument : attributeCallStep.arguments()) {
+                        resolveExpressionType(argument, finalizeWindow);
+                    }
+                    continue;
+                }
+                if (step instanceof AttributeSubscriptStep attributeSubscriptStep) {
+                    for (var argument : attributeSubscriptStep.arguments()) {
+                        resolveExpressionType(argument, finalizeWindow);
+                    }
+                }
+            }
             var reduced = reduceAttributeExpression(attributeExpression);
             if (reduced == null) {
                 return FrontendExpressionType.unsupported(
@@ -600,8 +1214,28 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             return chainReduction.reduce(attributeExpression).result();
         }
 
-        private @Nullable FrontendResolvedCall resolvedCall(@NotNull CallExpression callExpression) {
-            return resolvedCalls.get(callExpression);
+        private @NotNull IdentityHashMap<Expression, FrontendExpressionType> finalizedExpressionTypes() {
+            return finalizedExpressionTypes;
+        }
+
+        private boolean isRouteHeadOnlyTypeMeta(@NotNull Expression expression) {
+            return routeHeadOnlyTypeMetaExpressions.containsKey(expression);
+        }
+
+        private boolean markExpressionDiagnosticReported(@NotNull Expression expression) {
+            return reportedExpressionDiagnostics.putIfAbsent(expression, Boolean.TRUE) == null;
+        }
+
+        private boolean isTypeMetaRouteHead(@NotNull Expression expression) {
+            if (!(expression instanceof IdentifierExpression identifierExpression)) {
+                return false;
+            }
+            var binding = context.typedEnvironment().symbolBinding(identifierExpression);
+            return binding != null && binding.kind() == FrontendBindingKind.TYPE_META;
+        }
+
+        private @NotNull IdentityHashMap<CallExpression, FrontendResolvedCall> resolvedCalls() {
+            return resolvedCalls;
         }
 
         private @NotNull FrontendChainReductionHelper.ExpressionTypeResult resolveExpressionDependency(
