@@ -21,14 +21,14 @@ import java.util.Objects;
 
 /// Body-suite coordinator for the staged semantic pipeline.
 ///
-/// Phase D runs no-op owner procedures by default. Its job is to prove that executable body roots are
-/// entered only through `FrontendInterfaceSurface` and that overlay facts are exported through an
-/// ordered patch transaction instead of direct stable side-table writes.
+/// The default resolver now uses statement-local owner procedures. Tests may still inject a custom
+/// `FrontendStatementResolver` to record traversal shape, but production body facts must flow through
+/// the typed lexical environment and ordered patch transaction.
 public class FrontendSuiteResolver {
     private final @NotNull FrontendStatementResolver statementResolver;
 
     public FrontendSuiteResolver() {
-        this(new FrontendStatementResolver());
+        this(new FrontendStatementResolver(new FrontendBodyOwnerProcedures()));
     }
 
     public FrontendSuiteResolver(@NotNull FrontendStatementResolver statementResolver) {

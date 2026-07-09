@@ -2058,10 +2058,9 @@ public final class FrontendChainReductionHelper {
             @NotNull Expression expression,
             boolean finalizeWindow
     ) {
-        var publishedType = request.analysisData().expressionTypes().get(expression);
-        if (publishedType != null) {
-            return ExpressionTypeResult.fromPublished(publishedType);
-        }
+        // The injected resolver owns dependency lookup ordering. Body resolvers must see their
+        // procedure-local transient caches and overlay facts before stable side tables, so this
+        // helper must not short-circuit through `analysisData.expressionTypes()` first.
         return request.expressionTypeResolver().resolve(expression, finalizeWindow);
     }
 

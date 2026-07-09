@@ -8,6 +8,9 @@ import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.lir.LirPropertyDef;
@@ -18,6 +21,7 @@ import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.AttributeStep;
@@ -92,6 +96,53 @@ class FrontendChainReductionFacadeTest {
         assertSame(missing.base(), first.result().recoveryRoot());
         assertFalse(second.computedNow());
         assertSame(first.result(), second.result());
+    }
+
+    @Test
+    void reduceUsesInjectedOverlayBindingBeforeStableVariantPayload() throws Exception {
+        var context = newTestContext();
+        var worker = identifier("worker");
+        var workerClass = new LirClassDef("Worker", "Object");
+        workerClass.addProperty(new LirPropertyDef("payload", GdStringType.STRING));
+        context.registry().addGdccClass(workerClass);
+        context.bodyScope().defineLocal("worker", GdVariantType.VARIANT, worker);
+        var stableValue = context.bodyScope().resolveValueHere("worker");
+        assertNotNull(stableValue);
+        context.analysisData().scopesByAst().put(worker, context.bodyScope());
+        context.analysisData().symbolBindings().put(
+                worker,
+                new FrontendBinding(
+                        "worker",
+                        FrontendBindingKind.LOCAL_VAR,
+                        worker,
+                        stableValue,
+                        ScopeLookupStatus.FOUND_ALLOWED
+                )
+        );
+        var environment = new FrontendTypedLexicalEnvironment(context.bodyScope(), context.analysisData());
+        environment.addLocalSlotTypeUpdate(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                new FrontendLocalSlotTypeUpdate(context.bodyScope(), "worker", worker, new GdObjectType("Worker"))
+        );
+        var facade = new FrontendChainReductionFacade(
+                context.analysisData(),
+                context.analysisData().scopesByAst(),
+                ResolveRestriction::unrestricted,
+                () -> false,
+                () -> null,
+                context.registry(),
+                (expression, finalizeWindow) -> FrontendChainReductionHelper.ExpressionTypeResult.failed(
+                        "unexpected expression type lookup for " + expression.getClass().getSimpleName()
+                ),
+                identifier -> environment.symbolBinding(identifier)
+        );
+
+        var reduction = facade.reduce(chain(worker, property("payload"))).result();
+
+        assertNotNull(reduction);
+        assertEquals(GdVariantType.VARIANT, stableValue.type());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, reduction.finalReceiver().status());
+        assertEquals(GdStringType.STRING, reduction.finalReceiver().receiverType());
     }
 
     private static @NotNull FrontendChainReductionFacade newFacade(@NotNull TestContext context) {

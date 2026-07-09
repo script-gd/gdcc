@@ -121,14 +121,14 @@ Pending overlay 只对当前 statement 后续 owner 子过程可见。Statement 
 
 目标架构固定四层事实可见性模型：
 
-1. `FrontendOwnerRetryMemo`：owner 子过程私有，只给当前 chain / expr reduction 的 retry 回调读取，owner 子过程结束即丢弃。
+1. Owner procedure transient cache：当前由 `BodyExpressionResolver` 的 expression / finalized-expression / call caches、`FrontendChainReductionFacade.reducedChains` 与 helper bounded retry 承担；只给当前 chain / expr reduction 的 retry 回调读取，owner 子过程结束即丢弃。
 2. Current statement pending overlay：当前 statement 后续 owner 子过程可读，只接受每个 AST key 的最终 publication fact。
 3. Current-suite committed overlay：由 statement flush 合并而来，后续 statement 与 gate classifier 可读，但仍不是 stable publication。
 4. `FrontendAnalysisData` stable side tables / `BlockScope` stable slot：只在 suite export 的 per-owner patch apply / stable export helper 后更新。
 
-Nested chain / argument retry 的中间事实只能存在于 owner-local memo 中。Retry 中出现的临时 `DEFERRED`、暂定 `Variant`、中间 status 或 detailReason 不得写入 pending overlay、committed overlay 或 stable side table。
+Nested chain / argument retry 的中间事实只能存在于 owner-local transient cache 中。Retry 中出现的临时 `DEFERRED`、暂定 `Variant`、中间 status 或 detailReason 不得写入 pending overlay、committed overlay 或 stable side table。
 
-`expressionTypes()` 对同一 key 只能发布最终 fact 一次。如果一个 expression 在 reduction 过程中需要先得到临时 fact 再得到 exact result，中间状态必须留在 owner-local memo 或专用非导出状态中。
+`expressionTypes()` 对同一 key 只能发布最终 fact 一次。如果一个 expression 在 reduction 过程中需要先得到临时 fact 再得到 exact result，中间状态必须留在 owner-local transient cache 或专用非导出状态中。
 
 ## 8. Overlay 写入、Flush 与 Export
 

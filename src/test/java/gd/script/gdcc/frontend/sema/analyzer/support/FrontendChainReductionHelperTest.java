@@ -4,6 +4,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
+import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.gdextension.ExtensionAPI;
 import gd.script.gdcc.gdextension.ExtensionBuiltinClass;
@@ -198,6 +199,41 @@ class FrontendChainReductionHelperTest {
     }
 
     @Test
+    void reduceRetriesOnlyDeferredArgumentsDuringFinalizeWindow() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("combine", GdStringType.STRING, false, GdIntType.INT, GdStringType.STRING));
+        var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
+        var immediate = identifier("immediate");
+        var deferred = identifier("deferred");
+        var chain = chain(identifier("worker"), call("combine", immediate, deferred), property("length"));
+
+        var result = FrontendChainReductionHelper.reduce(request(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
+                registry,
+                (expression, finalizeWindow) -> {
+                    if (expression == immediate) {
+                        return FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT);
+                    }
+                    if (expression == deferred) {
+                        return finalizeWindow
+                                ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdStringType.STRING)
+                                : FrontendChainReductionHelper.ExpressionTypeResult.deferred("deferred type pending");
+                    }
+                    return FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression");
+                }
+        ));
+
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status());
+        assertTrue(result.stepTraces().getFirst().finalizeRetryUsed());
+        var combineCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(combineCall);
+        assertEquals(FrontendCallResolutionKind.INSTANCE_METHOD, combineCall.callKind());
+        assertEquals(List.of(GdIntType.INT, GdStringType.STRING), combineCall.argumentTypes());
+        assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().get(1).status());
+    }
+
+    @Test
     void reducePublishesDeferredStepAfter_MissAndStopsSuffix() {
         var worker = newClass("Worker");
         worker.addFunction(newMethod("make", GdStringType.STRING, false, GdIntType.INT));
@@ -273,6 +309,38 @@ class FrontendChainReductionHelperTest {
         var consumeCall = result.stepTraces().getFirst().suggestedCall();
         assertNotNull(consumeCall);
         assertEquals(List.of(GdVariantType.VARIANT), consumeCall.argumentTypes());
+    }
+
+    @Test
+    void reduceUsesInjectedResolverBeforeStaleStableExpressionType() {
+        var worker = newClass("Worker");
+        worker.addFunction(newMethod("consume", GdStringType.STRING, false, GdIntType.INT));
+        var registry = newRegistry(List.of(stringBuiltinWithLength()), List.of(worker));
+        var seed = identifier("seed");
+        var chain = chain(identifier("worker"), call("consume", seed), property("length"));
+        var analysisData = FrontendAnalysisData.bootstrap();
+        analysisData.expressionTypes().put(seed, FrontendExpressionType.resolved(GdVariantType.VARIANT));
+
+        var result = FrontendChainReductionHelper.reduce(new FrontendChainReductionHelper.ReductionRequest(
+                chain,
+                FrontendChainReductionHelper.ReceiverState.resolvedInstance(new GdObjectType("Worker")),
+                analysisData,
+                registry,
+                (expression, _) -> expression == seed
+                        ? FrontendChainReductionHelper.ExpressionTypeResult.resolved(GdIntType.INT)
+                        : FrontendChainReductionHelper.ExpressionTypeResult.failed("unexpected expression"),
+                _ -> {
+                }
+        ));
+
+        var consumeCall = result.stepTraces().getFirst().suggestedCall();
+        assertNotNull(consumeCall);
+        assertAll(
+                () -> assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().getFirst().status()),
+                () -> assertEquals(FrontendChainReductionHelper.Status.RESOLVED, result.stepTraces().get(1).status()),
+                () -> assertEquals(List.of(GdIntType.INT), consumeCall.argumentTypes()),
+                () -> assertEquals(FrontendExpressionType.resolved(GdVariantType.VARIANT), analysisData.expressionTypes().get(seed))
+        );
     }
 
     @Test

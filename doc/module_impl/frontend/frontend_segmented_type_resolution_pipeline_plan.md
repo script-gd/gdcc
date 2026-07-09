@@ -269,9 +269,9 @@ Suite 收敛后，不能把 current-suite committed overlay 整体打包为单�
 
 不得重排 1-5。尤其是 chain binding 读取 receiver local slot 时，必须先看到 local stabilization 对前序 statement 或当前 statement 前序子过程写入的 exact slot fact；否则会重新打开 receiver 被误读成 `Variant` 的历史回归。
 
-Nested chain / argument retry 只能发生在当前 owner 子过程内部的 `FrontendOwnerRetryMemo`（实现命名可调整）或等价非导出 transient memo 中。Retry 可读取本次 reduction 已经推导出的 receiver / argument / step 临时事实，也可读取当前 statement 之前 owner 子过程已发布到 pending / committed overlay 的事实；但 retry 产生的中间 facts 不写入 `expressionTypes()` overlay、statement pending overlay、current-suite committed overlay 或 stable side table，也不能被 `TypedLexicalEnvironment` 的普通 lookup 读取。它们在当前 owner 子过程结束时丢弃。
+Nested chain / argument retry 只能发生在当前 owner 子过程内部的非导出 transient cache 中。当前实现由 `FrontendBodyOwnerProcedures.BodyExpressionResolver` 的 `expressionTypes` / `finalizedExpressionTypes` / `resolvedCalls` 缓存、`FrontendChainReductionFacade.reducedChains` 以及 `FrontendChainReductionHelper` 的 bounded `finalizeWindow` retry 共同承担。Retry 可读取本次 reduction 已经推导出的 receiver / argument / step 临时事实，也可读取当前 statement 之前 owner 子过程已发布到 pending / committed overlay 的事实；但 retry 产生的中间 facts 不写入 `expressionTypes()` overlay、statement pending overlay、current-suite committed overlay 或 stable side table，也不能被 `TypedLexicalEnvironment` 的普通 lookup 读取。它们在当前 owner 子过程结束时丢弃。
 
-`FrontendExprTypeAnalyzer` 对同一 expression / step key 只能在完成 retry、选定最终 `FrontendExpressionType` 后写入一次 expression type overlay。若同一 key 需要先得到 `DEFERRED`、暂定 `Variant` 或其他非最终状态，再得到 exact result，必须把中间值保存在 owner-local memo 或专用非导出状态里，而不是发布为 `expressionTypes()` 后再 narrowing / status upgrade。
+`FrontendExprTypeAnalyzer` 对同一 expression / step key 只能在完成 retry、选定最终 `FrontendExpressionType` 后写入一次 expression type overlay。若同一 key 需要先得到 `DEFERRED`、暂定 `Variant` 或其他非最终状态，再得到 exact result，必须把中间值保存在 owner-local transient cache 或专用非导出状态里，而不是发布为 `expressionTypes()` 后再 narrowing / status upgrade。
 
 Gate classifier 属于 statement 结构处理的一部分，只能在其 header 所需的 top binding、local stabilization、chain binding 与 expr typing 子过程完成后运行。Classifier 可读取当前 statement pending overlay 与 current-suite committed overlay，但不能读取后续 statement facts。
 
@@ -312,12 +312,12 @@ Pending overlay 只对当前 statement 内后续 owner 子过程可见。Stateme
 - overlay fact 必须带 owner metadata，并在导出到 stable side table 前执行冲突检测、idempotent 检查和 compiler-only guard。
 - compiler-only guard 必须检查该 fact 可达的每个 user-visible `GdType` payload；不能只检查 `expressionTypes()` / `slotTypes()` 两个表。
 - compiler-only guard 必须在 pending overlay write 时就 fail-fast，而不是等 suite export 时才补救。任何 scratch 写入如果命中 `GdCompilerType`，必须在 write API 返回前拒绝该 fact，不能先写入 pending / committed overlay 再在 export 时回滚。
-- `expressionTypes()` overlay 只接受当前 statement 内每个 AST key 的最终 publication fact。retry 中间计算（包括首 pass 的 `DEFERRED`、暂定 `Variant`、临时 status / detailReason）必须留在 `FrontendOwnerRetryMemo`，不得作为 overlay fact 写入。
+- `expressionTypes()` overlay 只接受当前 statement 内每个 AST key 的最终 publication fact。retry 中间计算（包括首 pass 的 `DEFERRED`、暂定 `Variant`、临时 status / detailReason）必须留在 owner procedure 的非导出 transient cache，不得作为 overlay fact 写入。
 - `expressionTypes()` overlay 不提供 `Variant -> exact`、parent -> child 或 terminal status -> success 的 narrowing 例外。这不是 overlay 的局部规则，而是对 `FrontendAnalysisData.sameExpressionType` 严格判据（status + publishedType + detailReason 全等，见第 4.6 节）的直接引用。需要 narrowing 的 local slot 变化必须走 `FrontendLocalSlotTypeUpdate`，不得绕道 `expressionTypes()` republish。
 
 四层事实可见性模型固定为：
 
-- `FrontendOwnerRetryMemo`：owner 子过程私有，只给当前 chain / expr reduction 的 retry 回调读取；不属于 `TypedLexicalEnvironment`，不参与 flush / export，owner 子过程结束即丢弃。
+- Owner procedure transient cache：owner 子过程私有，只给当前 chain / expr reduction 的 retry 回调读取；不属于 `TypedLexicalEnvironment`，不参与 flush / export，owner 子过程结束即丢弃。
 - 当前 statement pending overlay：只给当前 statement 后续 owner 子过程读取；只接受每个 AST key 的最终 publication fact。
 - current-suite committed overlay：由 statement flush 合并而来，给后续 statement 与 gate classifier 读取；仍不是 stable publication。
 - `FrontendAnalysisData` stable side tables / `BlockScope` stable slot：只在 suite export 的 per-owner patch apply / stable export helper 后更新，供 diagnostics-only phase、compile gate 与 lowering 使用。
@@ -422,7 +422,7 @@ record FrontendInventoryGate(
 
 可调整的是通信路径：body layer 可以先写 `TypedLexicalEnvironment` overlay，再在 suite / callable / module 边界导出 per-owner patch transaction。不得用 `updateXxx(...)` 表达部分提交，也不得用一个 single-stage patch 表达多 owner suite export。
 
-这意味着 Stage E 的 “nested chain / argument retry 读己写” 不是 stable side-table rewrite 能力。Retry 的读己写发生在 chain/expr owner 的 `FrontendOwnerRetryMemo` 与当前 statement effective view 中；stable `expressionTypes()` 仍只看到每个 key 的最终一次 publication。
+这意味着 Stage E 的 “nested chain / argument retry 读己写” 不是 stable side-table rewrite 能力。Retry 的读己写发生在 chain/expr owner 的 procedure-local transient cache 与当前 statement effective view 中；stable `expressionTypes()` 仍只看到每个 key 的最终一次 publication。
 
 ### 4.7 Scope slot mutation
 
@@ -510,7 +510,7 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 - patch package 内的 shared merge helper / type-bearing compiler-only guard / owner-field validator。
 - `FrontendSuiteResolver` / `FrontendStatementResolver` 的 root-bounded statement dispatch 子框架。
 - statement-local owner procedure interface 或等价显式调用约定，接收 `FrontendSuiteContext`、当前 statement root 与 `FrontendTypedLexicalEnvironment`。
-- 每个 owner 的显式上下文状态 record / stack，例如 restriction、static context、property initializer context、block scope stack、diagnostic suppression state、owner-local retry memo。
+- 每个 owner 的显式上下文状态 record / stack，例如 restriction、static context、property initializer context、block scope stack、diagnostic suppression state、procedure-local transient retry cache。
 
 移动 / 兼容资产：
 
@@ -524,7 +524,7 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 - `FrontendTopBindingAnalyzer.AstWalkerTopBindingBinder`、`FrontendLocalTypeStabilizationAnalyzer.AstWalkerLocalTypeStabilizer`、`FrontendChainBindingAnalyzer.AstWalkerChainBinder`、`FrontendExprTypeAnalyzer.AstWalkerExprTypePublisher`、`FrontendVarTypePostAnalyzer.SlotTypePublisher` 等内部 walker 只能作为语义规则参考。它们的 whole-module `walk(sourceFile)` 入口、隐式字段状态与整表发布策略不得作为 production SuiteResolver procedure 复用。
 - 各 analyzer 的 `analyzeInWindow(...)` 方法名称具有误导性：它只改变 publication surface，不改变 traversal root。它可以保留为 legacy / comparison test path，但不能被归类为可迁移 runner。
 - `FrontendVarTypePostAnalyzer.analyzeInWindow(...)` 更不能作为参考：它直接清空并写入 stable `slotTypes()`，再事后复制到 window scratch。新 var type post procedure 必须从这个实现重新写起，而不是修饰调用路径。
-- `FrontendChainReductionFacade` 与 `FrontendExpressionSemanticSupport` 可保留算法价值，但它们当前通过 analyzer-local 回调读取 dependency type；SuiteResolver 下必须改为从 `FrontendTypedLexicalEnvironment` 与 owner-local memo 读取。
+- `FrontendChainReductionFacade` 与 `FrontendExpressionSemanticSupport` 可保留算法价值，但它们当前通过 analyzer-local 回调读取 dependency type；SuiteResolver 下必须改为从 `FrontendTypedLexicalEnvironment` 与 owner-local transient cache 读取。
 
 可回退或废弃资产：
 
@@ -575,7 +575,7 @@ Whole-module walker state inventory：
 | --- | --- | --- | --- | --- | --- | --- |
 | `FrontendTopBindingAnalyzer` | 每个 `FrontendSourceClassRelation.unit().ast()` 的 `SourceFile` whole-module walk | `sourcePath`、`moduleSkeleton`、`visibleValueResolver`、`classRegistry`、`reportedUnsupportedRoots`、`ASTWalker` | `moduleSkeleton()`、`scopesByAst()`、parse/skeleton diagnostics snapshot、class registry | `symbolBindings()` | `sema.binding` 与 unsupported binding routes | binding 分类与 visible resolver provenance 可抽取；whole-module walk 和整表 `updateSymbolBindings(...)` 不可作为 SuiteResolver procedure |
 | `FrontendLocalTypeStabilizationAnalyzer` | 每个 source file whole-module walk；按 visitor 状态维护 source-order probe | `SilentExpressionResolver`、`probes`、`writeBackStableSlots`、可选 `FrontendWindowAnalysisContext`、probe-local expression memo | `scopesByAst()`、`symbolBindings()`、`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()` 已发布事实、当前 scope slot state | legacy path 直接更新 local `ScopeValue.type()`；window path 产生 `FrontendLocalSlotTypeUpdate` | 不拥有 source-facing diagnostics；只在写回边界 fail-fast 拒绝非法 slot type | initializer probe、compatibility 与 slot rewrite guard 可抽取；whole-module delayed probe 收集和直接 stable scope mutation 不可复用 |
-| `FrontendChainBindingAnalyzer` | 每个 source file whole-module walk | `chainReduction`、assignment / expression semantic support、`reportedDeferredRoots`、`reportedUnsupportedRoots`、`ASTWalker` | `scopesByAst()`、`symbolBindings()`、stable slot types、已发布 member/call facts、class registry | `resolvedMembers()`、chain-owned `resolvedCalls()` | `sema.member_resolution`、`sema.call_resolution`、deferred / unsupported routes | chain reduction 与 call/member classification 可抽取；通过 analyzer-local callback 读取 dependency type 与 whole-module retry memo 不可复用 |
+| `FrontendChainBindingAnalyzer` | 每个 source file whole-module walk | `chainReduction`、assignment / expression semantic support、`reportedDeferredRoots`、`reportedUnsupportedRoots`、`ASTWalker` | `scopesByAst()`、`symbolBindings()`、stable slot types、已发布 member/call facts、class registry | `resolvedMembers()`、chain-owned `resolvedCalls()` | `sema.member_resolution`、`sema.call_resolution`、deferred / unsupported routes | chain reduction 与 call/member classification 可抽取；通过 analyzer-local callback 读取 dependency type 与 whole-module transient retry cache 不可复用 |
 | `FrontendExprTypeAnalyzer` | 每个 source file whole-module walk | `chainReduction`、assignment / expression semantic support、`parentByNode`、reported expression/deferred/unsupported/discarded roots | `scopesByAst()`、`symbolBindings()`、`resolvedMembers()`、`resolvedCalls()`、slot types、class registry | `expressionTypes()`、bare-call `resolvedCalls()`；`backfillInferredLocalType(...)` 只能 guard-only | `sema.expression_resolution`、`sema.deferred_expression_resolution`、`sema.unsupported_expression_route`、`sema.discarded_expression` | expression support、type compatibility 与 discarded-expression rules 可抽取；backfill 不得重新成为 slot mutation owner，whole-module expression walk 不可复用 |
 | `FrontendVarTypePostAnalyzer` | 每个 source file whole-module walk | `sourcePath`、`blockScopeStack`、`currentCallableOwner`、`supportedExecutableBlockDepth`、`ASTWalker` | `moduleSkeleton()`、`scopesByAst()`、callable/block scope inventory、current scope slot types | `slotTypes()` final callable-local snapshot | `sema.variable_slot_publication` fail-fast / invariant violations | slot publication eligibility rules 可抽取；legacy `analyzeInWindow(...)` 的 stable `slotTypes()` clear/write 与 whole-table snapshot 不可复用 |
 
@@ -637,7 +637,7 @@ Compiler-only guard payload matrix：
 - [x] C3 新增 `FrontendPublishedFactTypeGuard` shared walker，覆盖 binding/member/call/expression/slot/update 六类 source-facing typed payload；`FrontendAnalysisData.applyPatch(...)`、owner patch、legacy window scratch put 与保留的 `updateXxx(...)` whole-table publish 均接入该 guard。
 - [x] C4 Overlay 写入 API 必须显式传入 `FrontendSemanticStage` owner metadata；错误 owner fail-fast，local slot overlay 继续执行 `Variant -> exact` / exact-same-only / no-void / no-compiler-only 规则。
 - [x] C5 `flushStatementFacts()` 只把 pending overlay 合并到 committed overlay；`exportPatchTransaction()` 只导出 fixed-order per-owner patch transaction，并由 `FrontendPatchTransaction` 拒绝 owner 顺序回退或重复 owner。
-- [x] C6 新增 `FrontendOwnerRetryMemo`，表达 owner-local retry 中间 fact 不属于 typed lexical environment，不参与 flush / export。
+- [x] C6 移除未接入生产路径的 `FrontendOwnerRetryMemo`，并把合同明确为 owner procedure 内部非导出 transient cache：`BodyExpressionResolver` 双 expression cache / call cache、`FrontendChainReductionFacade.reducedChains` 与 helper bounded retry 均不属于 typed lexical environment，不参与 flush / export。
 - [x] C7 `FrontendVisibleValueResolver` 新增 overlay-aware `resolve(request, environment)` overload；它只在 declaration-order / self-reference filter 之后替换 returned local 的 effective type，不绕过 future-local filtered hit。
 - [ ] C8 Expression semantic support 与 chain reduction facade 的 dependency-type callback 尚未替换为 explicit environment lookup；这是阶段 E owner procedure 重写的一部分，本阶段只提供可接入入口。
 
@@ -710,17 +710,27 @@ Compiler-only guard payload matrix：
 - `FrontendLocalTypeStabilizationAnalyzer` 不再通过整模块 legacy direct phase 表达 source-order 行为。
 - 完成阶段 C8：`FrontendExpressionSemanticSupport`、`FrontendChainReductionFacade` 与相关 chain-head / dependency-type callback 必须改为显式读取 `FrontendTypedLexicalEnvironment`，替换 stable-data / analyzer-local callback 的 dependency type 读取路径。
 - `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 继续 guard-only。
-- Chain / argument retry 的中间 expression facts 必须保存在 `FrontendOwnerRetryMemo` 或等价 owner-local memo，不得写入 `expressionTypes()` overlay 后再以 narrowing / status upgrade 方式覆盖。
+- Chain / argument retry 的中间 expression facts 必须保存在 owner procedure 内部非导出 transient cache，不得写入 `expressionTypes()` overlay 后再以 narrowing / status upgrade 方式覆盖。
 
 每个 owner 的重写范围必须显式记录：
 
 - Top binding：把 `AstWalkerTopBindingBinder` 的 use-site binding 规则拆为 statement-local binding procedure，并把 restriction、static context、property initializer context 由 `FrontendSuiteContext` 显式传入。
 - Local stabilization：把 `AstWalkerLocalTypeStabilizer` 的 eligible `:=` initializer 解析改为立即写 pending overlay，使同 statement 后续 owner 与后续 statement 可按 flush 规则读取；禁止继续依赖整模块 direct phase 更新 `BlockScope`。
-- Chain binding：把 chain reduction 的 dependency type 回调改为读取 `FrontendTypedLexicalEnvironment` 与 owner-local memo，而不是 analyzer-local stable side table snapshot。
+- Chain binding：把 chain reduction 的 dependency type 回调改为读取 `FrontendTypedLexicalEnvironment` 与 owner-local transient cache，而不是 analyzer-local stable side table snapshot。
 - Expr typing：把 expression fact 发布改为 statement-local final fact publication；父索引、duplicate-report state、retry state 都必须显式化，不能藏在 whole-module walker 字段里。
-- Expression semantic support / chain reduction facade：identifier binding、receiver type、argument type、bare-call callee type 与 nested dependency type 读取必须先走 owner-local memo / pending overlay / committed overlay 的 effective view，再回退 stable side table；不得继续把 `FrontendAnalysisData.symbolBindings()` / `expressionTypes()` 作为 body procedure 的第一读取源。
+- Expression semantic support / chain reduction facade：identifier binding、receiver type、argument type、bare-call callee type 与 nested dependency type 读取必须先走 owner-local transient cache / pending overlay / committed overlay 的 effective view，再回退 stable side table；不得继续把 `FrontendAnalysisData.symbolBindings()` / `expressionTypes()` 作为 body procedure 的第一读取源。
 - Var type post：把 slot type publication 改为消费当前 statement / current-suite typed facts 的 statement-local publication，不再通过整表 `updateSlotTypes(...)` 表达 body 结果，也不得复用旧 `analyzeInWindow(...)` 的“stable `slotTypes()` clear/write 后再复制到 window”模式。
 - Resolver request：request-domain gate、AST boundary gate 与 current-scope gate 的创建必须由 `FrontendSuiteContext` 统一完成，不能继续由各 analyzer 手写 deferred domain。
+
+阶段 E 状态同步：
+
+- [x] E0 重新读取 `AGENTS.md`，用 MCP 列出 `doc` 与 `doc/module_impl`，并并行子代理调研阶段 E 相关文档、owner analyzer 代码与测试基线。
+- [x] E1 完成 C8 overlay-aware dependency lookup：`FrontendExpressionSemanticSupport` / `FrontendChainReductionFacade` / chain-head receiver 可通过注入 lookup 读取 `FrontendTypedLexicalEnvironment` 的 effective binding 与 exact local slot fact；`FrontendChainReductionHelper` 的 argument dependency lookup 不再先读 stable `expressionTypes()`，而是委托注入 resolver 保持 overlay-first 合同；旧构造器继续保持 stable-table 兼容。
+- [x] E2 新增 `FrontendBodyOwnerProcedures`，以 root-bounded DFS 实现 top binding、local stabilization、chain binding、expr typing、var type post 的核心 statement-local publication，不调用 whole-module analyzer entrypoint。
+- [x] E3 `FrontendSuiteResolver` 默认接入真实 owner procedure；`FrontendSemanticAnalyzer` 默认仍注入 legacy-compatible no-op suite resolver，避免阶段 H 之前提前写入 body facts 干扰 legacy whole-phase fallback。
+- [x] E4 新增正反向 targeted tests，锚定 source-order alias、child-prefix visibility、chain receiver exactness、transient cache isolation、var type post export boundary、C8 overlay lookup 与 framework-level real owner path hand-off。
+- [x] E5 已运行格式化、IDE 增量编译与问题检查、`FrontendSuiteResolverTest`、`FrontendExpressionSemanticSupportTest`、`FrontendChainReductionFacadeTest`、`FrontendChainReductionHelperTest`、阶段 E 相关 targeted regression batch，以及 `git diff --check`。
+- [x] E6 补充 `FrontendSemanticAnalyzerFrameworkTest.injectedRealBodyOwnerSuiteResolverRunsDAndEOwnerPathBeforeLegacyPublication`，通过显式注入真实 `FrontendBodyOwnerProcedures` 的 `FrontendSuiteResolver` 证明 D/E body owner path 在 framework hand-off 中先于 legacy whole-phase publication 执行；原 `withSegmentedSemanticRunnerForTesting()` 等价测试已重命名为 deprecated scheduler coverage，不再作为 real body owner path 证据。本轮已运行 `FrontendSemanticAnalyzerFrameworkTest`、suite/body/support focused batch、阶段 E 相关 15 类 targeted regression batch 与 `git diff --check`。
 
 验收细则：
 
@@ -729,10 +739,10 @@ Compiler-only guard payload matrix：
 - 对 `var b := a`，`b` 的 local stabilization 必须读取前一 statement 已 committed 的 `a` exact slot fact。
 - 对 `var x := receiver.member`，chain binding 必须在 local stabilization 子过程之后运行，并消费已稳定的 `receiver` slot fact；不能直接读取 interface baseline `Variant`。
 - rejected shadow declaration 不污染 parent slot。
-- nested chain / argument retry 保持读己写能力，但这个能力只存在于 owner-local memo；同一 expression / step key 在 statement flush 和 suite export 中只产生一条最终 `expressionTypes()` fact。
+- nested chain / argument retry 保持读己写能力，但这个能力只存在于 owner-local transient cache；同一 expression / step key 在 statement flush 和 suite export 中只产生一条最终 `expressionTypes()` fact。
 - retry 过程中出现的任何非最终 expression fact（含 `DEFERRED` 代理类型、暂定 `Variant`、中间 status / detailReason）不得先发布到 pending overlay、committed overlay 或 stable side table 再被最终 fact 覆盖。
 - C8 回归测试必须证明：当 stable side table / baseline 仍是 `Variant` 而 pending 或 committed overlay 已有 exact local slot fact 时，`FrontendExpressionSemanticSupport` 与 `FrontendChainReductionFacade` 的 dependency-type callback 消费 overlay exact type，而不是 stable `Variant`。
-- C8 negative path 必须证明：support / facade 不能直接读取 retry memo 以外的非最终 expression fact，也不能绕过 `FrontendTypedLexicalEnvironment` 直接读取 stable-only side table 后发布 stale receiver / argument / bare-call result。
+- C8 negative path 必须证明：support / facade 不能直接读取 owner-local transient cache 以外的非最终 expression fact，也不能绕过 `FrontendTypedLexicalEnvironment` 直接读取 stable-only side table 后发布 stale receiver / argument / bare-call result。
 - owner 以外的 procedure 不能写对应 side table 或 slot update。
 - 每个 owner 子过程的 suite export 以独立 per-owner patch 出现在 transaction 中；transaction coordinator 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序 apply。
 - Var type post procedure 在 statement flush 前不得改变 stable `slotTypes()`；targeted test 必须在 procedure 运行、flush、suite export 三个点分别断言 stable table 只在 export/apply patch 后变化。
@@ -759,7 +769,7 @@ Compiler-only guard payload matrix：
 - classifier 已返回 supported 但 body readiness 仍为 `NOT_PUBLISHED` / `PUBLISHING` 时，body lookup 仍必须是 `DEFERRED_UNSUPPORTED` 或对应 deferred domain。
 - Classifier 只能在 header statement 的 top binding、local stabilization、chain binding 与 expr typing 子过程完成后读取 overlay。
 - Classifier 可读取前序 statement committed typed fact，但不能读取后续 statement 或未运行子过程的 fact。
-- Classifier 只能读取 expr typing 已最终发布到 overlay 的 expression facts，不能读取 retry memo 中未导出的中间 expression type。
+- Classifier 只能读取 expr typing 已最终发布到 overlay 的 expression facts，不能读取 owner-local transient cache 中未导出的中间 expression type。
 - body inventory publication 成功后，readiness 原子推进为 `PUBLISHED`，resolver 才允许进入该合成 body。
 - 合成 gate 的 body use-site 在 `PUBLISHED` 后必须同时通过 request-domain gate、AST boundary gate 与 current-scope gate；任一 gate 仍按旧常量逻辑封口都应有测试失败。
 - 合成 gate 的 header use-site 可在 header/classifier 上下文读取前缀 overlay fact，但 header 放行不能让 body lookup 提前通过。
@@ -840,7 +850,7 @@ Compiler-only guard payload matrix：
 - `FrontendTypedLexicalEnvironmentTest`：suite export 前 stable side table 与 `BlockScope` 不变，export 后只通过 patch apply 更新。
 - `FrontendTypedLexicalEnvironmentTest`：suite export 生成 per-owner patch transaction，而不是单个 multi-owner patch。
 - `FrontendTypedLexicalEnvironmentTest`：`expressionTypes()` overlay 同 key 同值幂等，不同值 fail-fast；retry 中间 fact 不能作为可导出的 expression type fact 留存。
-- `FrontendTypedLexicalEnvironmentTest`：`FrontendOwnerRetryMemo` 中的临时 facts 不会进入 pending overlay、committed overlay 或 stable side table。
+- `FrontendSuiteResolverTest` / `FrontendChainReductionHelperTest`：owner procedure transient caches 与 bounded `finalizeWindow` retry 中的临时 facts 不会进入 pending overlay、committed overlay 或 stable side table；只有 owner 显式 publication 后才进入 typed overlay。
 - `FrontendTypedLexicalEnvironmentTest`：overlay 写入拒绝 `symbolBindings()`、`resolvedMembers()`、`resolvedCalls()` 中所有 type-bearing payload 的 `GdCompilerType`；不得用 `FrontendWindowPublicationSurfaceTest` 代替该覆盖。
 - `FrontendTypedLexicalEnvironmentTest`：pending write、statement flush、suite export 三个时点对 compiler-only payload 的拒绝集合一致；不能出现 pending 接受、export 才拒绝的 coverage drift。
 - `FrontendWindowPublicationSurfaceTest`：保留为 API-level / legacy shim 测试，只验证 surface 自身 direct API 的 scratch / discard / conflict 语义；不得声明所有 `analyzeInWindow(...)` caller 都满足 scratch-over-stable。
@@ -869,7 +879,7 @@ Suite/body pipeline 测试：
 - `FrontendSuiteResolverTest`：local stabilization patch apply 后由 commit helper 派生刷新同 declaration 的 `symbolBindings()` payload，而不是通过同一个 patch 携带 binding delta。
 - `FrontendSuiteResolverTest`：`if` / `elif` / `else` / `while` header 先解析，body 后递归。
 - `FrontendSuiteResolverTest`：unsupported body 不进入 resolver。
-- `FrontendSemanticAnalyzerFrameworkTest`：legacy pipeline 与 interface/body pipeline side-table 等价。
+- `FrontendSemanticAnalyzerFrameworkTest`：legacy pipeline 与显式注入真实 body owner procedures 的 interface/body pipeline side-table 等价；`withSegmentedSemanticRunnerForTesting()` 只覆盖 deprecated whole-module segmented scheduler 兼容性，不得作为 D/E real body owner path 证据。
 - `FrontendSemanticAnalyzerFrameworkTest`：等价基线使用 guard-only backfill 合同，不允许恢复旧 expr-phase slot mutation。
 
 Resolver 测试：
@@ -965,7 +975,7 @@ Compile gate 测试：
 
 ### R14：retry 中间 expression type 被导出导致 patch 冲突
 
-缓解：`expressionTypes()` stable merge 保持严格 `sameExpressionType` 判据，不增加 `Variant -> exact`、parent -> child 或 status upgrade 例外。Chain / argument retry 的中间 expression facts 只能存放在 `FrontendOwnerRetryMemo`；statement pending overlay、current-suite committed overlay 与 `FrontendExprTypePatch.expressionTypes()` 都只能包含每 key 最终单条 fact。测试必须覆盖 same key different value fail-fast，以及 retry 后 stable / committed table 不含 stale intermediate fact。
+缓解：`expressionTypes()` stable merge 保持严格 `sameExpressionType` 判据，不增加 `Variant -> exact`、parent -> child 或 status upgrade 例外。Chain / argument retry 的中间 expression facts 只能存放在 owner procedure 内部非导出 transient cache；statement pending overlay、current-suite committed overlay 与 `FrontendExprTypePatch.expressionTypes()` 都只能包含每 key 最终单条 fact。测试必须覆盖 same key different value fail-fast，以及 retry 后 stable / committed table 不含 stale intermediate fact。
 
 ### R15：single-stage patch 被误用为 multi-owner suite export
 

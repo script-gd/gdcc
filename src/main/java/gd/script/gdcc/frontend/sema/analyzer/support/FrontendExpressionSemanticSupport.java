@@ -55,6 +55,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /// Shared local expression-semantics helper used by both body-phase analyzers.
@@ -91,7 +92,7 @@ public final class FrontendExpressionSemanticSupport {
         }
     }
 
-    private final @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings;
+    private final @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
     private final @NotNull Supplier<ResolveRestriction> restrictionSupplier;
     private final @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext>
@@ -108,7 +109,7 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier
     ) {
         this(
-                symbolBindings,
+                symbolBindings::get,
                 scopesByAst,
                 restrictionSupplier,
                 () -> null,
@@ -125,7 +126,25 @@ public final class FrontendExpressionSemanticSupport {
             @NotNull ClassRegistry classRegistry,
             @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier
     ) {
-        this.symbolBindings = Objects.requireNonNull(symbolBindings, "symbolBindings must not be null");
+        this(
+                symbolBindings::get,
+                scopesByAst,
+                restrictionSupplier,
+                propertyInitializerContextSupplier,
+                classRegistry,
+                headReceiverSupportSupplier
+        );
+    }
+
+    public FrontendExpressionSemanticSupport(
+            @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext> propertyInitializerContextSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull Supplier<FrontendChainHeadReceiverSupport> headReceiverSupportSupplier
+    ) {
+        this.bindingLookup = Objects.requireNonNull(bindingLookup, "bindingLookup must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
         this.restrictionSupplier = Objects.requireNonNull(restrictionSupplier, "restrictionSupplier must not be null");
         this.propertyInitializerContextSupplier = Objects.requireNonNull(
@@ -169,7 +188,7 @@ public final class FrontendExpressionSemanticSupport {
     public @NotNull ExpressionSemanticResult resolveIdentifierExpressionType(
             @NotNull IdentifierExpression identifierExpression
     ) {
-        var binding = symbolBindings.get(identifierExpression);
+        var binding = bindingFor(identifierExpression);
         if (binding == null) {
             return propagated(FrontendExpressionType.failed(
                     "No published binding fact is available for identifier '" + identifierExpression.name() + "'"
@@ -215,7 +234,7 @@ public final class FrontendExpressionSemanticSupport {
             boolean finalizeWindow
     ) {
         if (callExpression.callee() instanceof IdentifierExpression bareCallee) {
-            var bareBinding = symbolBindings.get(bareCallee);
+            var bareBinding = bindingFor(bareCallee);
             if (bareBinding != null && bareBinding.kind() == FrontendBindingKind.TYPE_META) {
                 var argumentResolution = resolveCallArgumentTypes(callExpression.arguments(), nestedResolver, finalizeWindow);
                 if (argumentResolution.issue() != null) {
@@ -320,7 +339,7 @@ public final class FrontendExpressionSemanticSupport {
                 || !(calleeType.publishedType() instanceof GdCallableType)) {
             return false;
         }
-        var binding = symbolBindings.get(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
+        var binding = bindingFor(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
         if (binding == null) {
             return false;
         }
@@ -865,7 +884,7 @@ public final class FrontendExpressionSemanticSupport {
     }
 
     private @NotNull BareCallRoute bareCallRoute(@NotNull IdentifierExpression bareCallee) {
-        var binding = symbolBindings.get(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
+        var binding = bindingFor(Objects.requireNonNull(bareCallee, "bareCallee must not be null"));
         var receiverType = currentClassReceiverType(bareCallee);
         if (binding == null) {
             return new BareCallRoute(FrontendCallResolutionKind.UNKNOWN, FrontendReceiverKind.UNKNOWN, receiverType);
@@ -1077,6 +1096,10 @@ public final class FrontendExpressionSemanticSupport {
 
     private @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext currentPropertyInitializerContext() {
         return propertyInitializerContextSupplier.get();
+    }
+
+    private @Nullable FrontendBinding bindingFor(@NotNull IdentifierExpression identifierExpression) {
+        return bindingLookup.apply(Objects.requireNonNull(identifierExpression, "identifierExpression must not be null"));
     }
 
     /// Typed containers keep richer source-level names such as `Array[int]`, but operator metadata

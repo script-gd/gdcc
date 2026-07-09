@@ -33,7 +33,6 @@ import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -194,25 +193,6 @@ class FrontendTypedLexicalEnvironmentTest {
                 expressionNode,
                 FrontendExpressionType.resolved(GdIntType.INT)
         ));
-    }
-
-    @Test
-    void retryMemoFactsDoNotEnterOverlayFlushOrExport() throws Exception {
-        var analysisData = FrontendAnalysisData.bootstrap();
-        var environment = new FrontendTypedLexicalEnvironment(newBodyScope(), analysisData);
-        var memo = new FrontendOwnerRetryMemo();
-        var expressionNode = identifier("temporary");
-
-        memo.putExpressionType(expressionNode, FrontendExpressionType.deferred("first retry pass"));
-        environment.flushStatementFacts();
-
-        var memoExpressionType = Objects.requireNonNull(memo.expressionType(expressionNode));
-        assertSame(FrontendExpressionTypeStatus.DEFERRED, memoExpressionType.status());
-        assertFalse(environment.hasPendingFacts());
-        assertFalse(environment.hasCommittedFacts());
-        assertTrue(environment.exportPatchTransaction().patches().isEmpty());
-        memo.clear();
-        assertNull(memo.expressionType(expressionNode));
     }
 
     private static @NotNull IdentifierExpression identifier(@NotNull String name) {

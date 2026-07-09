@@ -1,5 +1,9 @@
 package gd.script.gdcc.frontend.sema.analyzer.support;
 
+import gd.script.gdcc.frontend.scope.BlockScope;
+import gd.script.gdcc.frontend.scope.BlockScopeKind;
+import gd.script.gdcc.frontend.scope.CallableScope;
+import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -11,7 +15,10 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
+import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
+import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
@@ -19,6 +26,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirParameterDef;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.scope.ScopeLookupStatus;
 import gd.script.gdcc.type.GdCallableType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -156,6 +164,52 @@ class FrontendExpressionSemanticSupportTest {
         assertFalse(seedResult.rootOwnsOutcome());
         assertEquals(FrontendExpressionTypeStatus.FAILED, seedResult.expressionType().status());
         assertTrue(seedResult.expressionType().detailReason().contains("missing its top-binding resolved value payload"));
+    }
+
+    @Test
+    void resolveIdentifierExpressionTypeUsesInjectedOverlayBindingBeforeStableVariantPayload() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
+        var classScope = new ClassScope(registry, registry, new LirClassDef("OverlayHost", "RefCounted"));
+        var callableScope = new CallableScope(classScope, CallableScopeKind.FUNCTION_DECLARATION);
+        var bodyScope = new BlockScope(callableScope, BlockScopeKind.FUNCTION_BODY);
+        var seed = identifier("seed");
+        bodyScope.defineLocal("seed", GdVariantType.VARIANT, seed);
+        var stableValue = bodyScope.resolveValueHere("seed");
+        assertNotNull(stableValue);
+        analysisData.scopesByAst().put(seed, bodyScope);
+        analysisData.symbolBindings().put(
+                seed,
+                new FrontendBinding("seed", FrontendBindingKind.LOCAL_VAR, seed, stableValue, ScopeLookupStatus.FOUND_ALLOWED)
+        );
+        var environment = new FrontendTypedLexicalEnvironment(bodyScope, analysisData);
+        environment.addLocalSlotTypeUpdate(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                new FrontendLocalSlotTypeUpdate(bodyScope, "seed", seed, GdIntType.INT)
+        );
+        var support = new FrontendExpressionSemanticSupport(
+                identifier -> environment.symbolBinding(identifier),
+                analysisData.scopesByAst(),
+                ResolveRestriction::instanceContext,
+                () -> null,
+                registry,
+                () -> new FrontendChainHeadReceiverSupport(
+                        analysisData,
+                        analysisData.scopesByAst(),
+                        identifier -> environment.symbolBinding(identifier),
+                        ResolveRestriction.instanceContext(),
+                        false,
+                        null,
+                        _ -> null,
+                        _ -> null
+                )
+        );
+
+        var result = support.resolveIdentifierExpressionType(seed);
+
+        assertEquals(GdVariantType.VARIANT, stableValue.type());
+        assertEquals(FrontendExpressionTypeStatus.RESOLVED, result.expressionType().status());
+        assertEquals(GdIntType.INT, result.expressionType().publishedType());
     }
 
     @Test

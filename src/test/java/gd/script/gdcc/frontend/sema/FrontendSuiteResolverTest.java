@@ -1,5 +1,7 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
@@ -17,13 +19,16 @@ import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -31,10 +36,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -272,6 +279,145 @@ class FrontendSuiteResolverTest {
         assertFalse(analysisData.slotTypes().isEmpty());
     }
 
+    @Test
+    void bodyOwnerProceduresStabilizeSourceOrderAliasChainBeforeLegacyAnalyzers() throws Exception {
+        var phaseInput = phaseInput("suite_stage_e_alias_chain.gd", """
+                class_name SuiteStageEAliasChain
+                extends RefCounted
+
+                class Point:
+                    var marker: int = -1
+
+                func read_path(point: Point):
+                    var a := point
+                    var b := a
+                    var c := b
+                    return c.marker
+                """);
+        var readPath = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("read_path")
+        );
+        var a = findStatement(readPath.body().statements(), VariableDeclaration.class, declaration -> declaration.name().equals("a"));
+        var b = findStatement(readPath.body().statements(), VariableDeclaration.class, declaration -> declaration.name().equals("b"));
+        var c = findStatement(readPath.body().statements(), VariableDeclaration.class, declaration -> declaration.name().equals("c"));
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(a)), "Point"),
+                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(b)), "Point"),
+                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(c)), "Point"),
+                () -> assertExpressionTypeNameEndsWith(phaseInput.analysisData(), requireExpression(a.value()), "Point"),
+                () -> assertExpressionTypeNameEndsWith(phaseInput.analysisData(), requireExpression(b.value()), "Point"),
+                () -> assertExpressionTypeNameEndsWith(phaseInput.analysisData(), requireExpression(c.value()), "Point")
+        );
+        var resolvedMember = phaseInput.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+        assertAll(
+                () -> assertTypeNameEndsWith(requireType(resolvedMember.receiverType()), "Point"),
+                () -> assertEquals("int", requireType(resolvedMember.resultType()).getTypeName())
+        );
+    }
+
+    @Test
+    void childBlockReadsParentPrefixAndRejectedShadowDoesNotPolluteParentSlot() throws Exception {
+        var phaseInput = phaseInput("suite_stage_e_child_prefix.gd", """
+                class_name SuiteStageEChildPrefix
+                extends RefCounted
+
+                class Point:
+                    var marker: int = -1
+
+                func read_path(point: Point, seed: int):
+                    var stable := point
+                    if seed > 0:
+                        var child := stable
+                        var stable := seed
+                    return stable.marker
+                """);
+        var readPath = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("read_path")
+        );
+        var stable = findStatement(
+                readPath.body().statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("stable")
+        );
+        var ifStatement = findStatement(readPath.body().statements(), IfStatement.class, _ -> true);
+        var child = findStatement(
+                ifStatement.body().statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("child")
+        );
+        var rejectedShadow = findStatement(
+                ifStatement.body().statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("stable")
+        );
+        var markerStep = findNode(readPath.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(stable)), "Point"),
+                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(child)), "Point"),
+                () -> assertNull(phaseInput.analysisData().slotTypes().get(rejectedShadow))
+        );
+        var resolvedMember = phaseInput.analysisData().resolvedMembers().get(markerStep);
+        assertNotNull(resolvedMember);
+        assertTypeNameEndsWith(requireType(resolvedMember.receiverType()), "Point");
+    }
+
+    @Test
+    void transientExpressionCacheAndVarPostFactsStayOverlayLocalUntilSuiteExport() throws Exception {
+        var phaseInput = phaseInput("suite_stage_e_export_boundary.gd", """
+                class_name SuiteStageEExportBoundary
+                extends RefCounted
+
+                func ping(seed: int):
+                    var first := seed
+                    var second := first
+                    return second
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var first = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("first")
+        );
+        var second = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("second")
+        );
+        var ownerProcedures = new ExportBoundaryOwnerProcedures(first, second);
+
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+
+        assertAll(
+                () -> assertTrue(ownerProcedures.localStabilizationKeptInitializerTypeInTransientCache()),
+                () -> assertTrue(ownerProcedures.varPostPendingFactWasIsolatedFromStableTable()),
+                () -> assertTrue(ownerProcedures.flushedVarPostFactWasVisibleBeforeSuiteExport()),
+                () -> assertEquals("int", requireType(phaseInput.analysisData().slotTypes().get(first)).getTypeName()),
+                () -> assertEquals("int", requireType(phaseInput.analysisData().slotTypes().get(second)).getTypeName())
+        );
+    }
+
     private static void resolveWith(
             @NotNull PhaseInput phaseInput,
             @NotNull RecordingOwnerProcedures ownerProcedures
@@ -283,6 +429,42 @@ class FrontendSuiteResolverTest {
                 phaseInput.analysisData(),
                 phaseInput.diagnostics()
         );
+    }
+
+    private static void resolveWithDefaultOwnerProcedures(@NotNull PhaseInput phaseInput) {
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        new FrontendSuiteResolver().resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+    }
+
+    private static void assertExpressionTypeNameEndsWith(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression,
+            @NotNull String suffix
+    ) {
+        var expressionType = analysisData.expressionTypes().get(expression);
+        assertNotNull(expressionType);
+        assertNotNull(expressionType.publishedType());
+        assertTypeNameEndsWith(requireType(expressionType.publishedType()), suffix);
+    }
+
+    private static @NotNull Expression requireExpression(@Nullable Expression expression) {
+        assertNotNull(expression);
+        return expression;
+    }
+
+    private static @NotNull GdType requireType(@Nullable GdType type) {
+        assertNotNull(type);
+        return type;
+    }
+
+    private static void assertTypeNameEndsWith(@NotNull GdType type, @NotNull String suffix) {
+        assertTrue(type.getTypeName().endsWith(suffix),
+                () -> "Expected type name to end with '" + suffix + "' but was " + type.getTypeName());
     }
 
     private static void assertOwnerSequence(@NotNull List<OwnerEvent> events, int offset, @NotNull Node root) {
@@ -341,6 +523,46 @@ class FrontendSuiteResolverTest {
                 .filter(predicate)
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("Statement not found: " + statementType.getSimpleName()));
+    }
+
+    private static <T extends Node> T findNode(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        if (nodeType.isInstance(root)) {
+            var candidate = nodeType.cast(root);
+            if (predicate.test(candidate)) {
+                return candidate;
+            }
+        }
+        for (var child : root.getChildren()) {
+            var match = findNodeOrNull(child, nodeType, predicate);
+            if (match != null) {
+                return match;
+            }
+        }
+        throw new AssertionError("Node not found: " + nodeType.getSimpleName());
+    }
+
+    private static <T extends Node> T findNodeOrNull(
+            @NotNull Node root,
+            @NotNull Class<T> nodeType,
+            @NotNull Predicate<T> predicate
+    ) {
+        if (nodeType.isInstance(root)) {
+            var candidate = nodeType.cast(root);
+            if (predicate.test(candidate)) {
+                return candidate;
+            }
+        }
+        for (var child : root.getChildren()) {
+            var match = findNodeOrNull(child, nodeType, predicate);
+            if (match != null) {
+                return match;
+            }
+        }
+        return null;
     }
 
     private record PhaseInput(
@@ -423,6 +645,79 @@ class FrontendSuiteResolverTest {
 
         private boolean stableWasEmptyDuringOwnerProcedure() {
             return stableWasEmptyDuringOwnerProcedure;
+        }
+    }
+
+    private static final class ExportBoundaryOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+        private final @NotNull FrontendBodyOwnerProcedures delegate = new FrontendBodyOwnerProcedures();
+        private final @NotNull VariableDeclaration first;
+        private final @NotNull VariableDeclaration second;
+        private boolean localStabilizationKeptInitializerTypeInTransientCache;
+        private boolean varPostPendingFactWasIsolatedFromStableTable;
+        private boolean flushedVarPostFactWasVisibleBeforeSuiteExport;
+
+        private ExportBoundaryOwnerProcedures(
+                @NotNull VariableDeclaration first,
+                @NotNull VariableDeclaration second
+        ) {
+            this.first = first;
+            this.second = second;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            if (root == second) {
+                flushedVarPostFactWasVisibleBeforeSuiteExport = context.analysisData().slotTypes().get(first) == null
+                        && context.typedEnvironment().slotType(first) != null;
+            }
+            delegate.runTopBinding(context, root);
+        }
+
+        @Override
+        public void runLocalTypeStabilization(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runLocalTypeStabilization(context, root);
+            if (root == first) {
+                var currentBlockScope = context.currentBlockScope();
+                localStabilizationKeptInitializerTypeInTransientCache = first.value() != null
+                        && currentBlockScope != null
+                        && context.typedEnvironment().expressionType(first.value()) == null
+                        && context.typedEnvironment().localSlotType(
+                        currentBlockScope,
+                        first.name(),
+                        first
+                ) != null;
+            }
+        }
+
+        @Override
+        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runChainBinding(context, root);
+        }
+
+        @Override
+        public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runExprType(context, root);
+        }
+
+        @Override
+        public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runVarTypePost(context, root);
+            if (root == first) {
+                varPostPendingFactWasIsolatedFromStableTable = context.analysisData().slotTypes().get(first) == null
+                        && context.typedEnvironment().slotType(first) != null;
+            }
+        }
+
+        private boolean localStabilizationKeptInitializerTypeInTransientCache() {
+            return localStabilizationKeptInitializerTypeInTransientCache;
+        }
+
+        private boolean varPostPendingFactWasIsolatedFromStableTable() {
+            return varPostPendingFactWasIsolatedFromStableTable;
+        }
+
+        private boolean flushedVarPostFactWasVisibleBeforeSuiteExport() {
+            return flushedVarPostFactWasVisibleBeforeSuiteExport;
         }
     }
 

@@ -449,7 +449,7 @@ public final class FrontendSemanticAnalyzer {
                 loopControlFlowAnalyzer,
                 compileCheckAnalyzer,
                 new FrontendInterfacePhase(),
-                new FrontendSuiteResolver(),
+                legacyCompatibleSuiteResolver(),
                 false
         );
     }
@@ -506,6 +506,9 @@ public final class FrontendSemanticAnalyzer {
     }
 
     public static @NotNull FrontendSemanticAnalyzer withSegmentedSemanticRunnerForTesting() {
+        // This factory keeps the deprecated whole-module segmented scheduler covered. It does not
+        // exercise the Phase D/E root-bounded body owner path; tests for that path should inject a
+        // `FrontendSuiteResolver` wired with real owner procedures through the public constructor.
         return new FrontendSemanticAnalyzer(
                 new FrontendClassSkeletonBuilder(),
                 new FrontendScopeAnalyzer(),
@@ -521,9 +524,13 @@ public final class FrontendSemanticAnalyzer {
                 new FrontendLoopControlFlowAnalyzer(),
                 new FrontendCompileCheckAnalyzer(),
                 new FrontendInterfacePhase(),
-                new FrontendSuiteResolver(),
+                legacyCompatibleSuiteResolver(),
                 true
         );
+    }
+
+    private static @NotNull FrontendSuiteResolver legacyCompatibleSuiteResolver() {
+        return new FrontendSuiteResolver(new FrontendStatementResolver());
     }
 
     /// Runs the current frontend analyzer framework against one module using a shared
@@ -570,9 +577,10 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // Phase D wires the Interface surface into the main pipeline before any body semantic
-        // publication runs. The suite resolver is still a no-op owner skeleton, so legacy analyzers
-        // remain the source of stable body facts until Phase E/H replace them.
+        // The Interface/Body hand-off runs before legacy whole-phase publication. The default
+        // analyzer still injects a legacy-compatible no-op suite resolver until Phase H switches the
+        // shared pipeline. Phase D/E tests that need the real body owner path inject a
+        // `FrontendSuiteResolver` with real owner procedures through the public constructor.
         var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
         suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());

@@ -6,6 +6,8 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import gd.script.gdcc.frontend.sema.FrontendBinding;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -13,6 +15,7 @@ import java.util.IdentityHashMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 /// Analyzer-side cached facade for attribute-chain reduction.
@@ -41,6 +44,7 @@ public final class FrontendChainReductionFacade {
             propertyInitializerContextSupplier;
     private final @NotNull ClassRegistry classRegistry;
     private final @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver;
+    private final @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup;
     private final @NotNull IdentityHashMap<AttributeExpression, Optional<FrontendChainReductionHelper.ReductionResult>> reducedChains =
             new IdentityHashMap<>();
 
@@ -59,7 +63,8 @@ public final class FrontendChainReductionFacade {
                 staticContextSupplier,
                 () -> null,
                 classRegistry,
-                expressionTypeResolver
+                expressionTypeResolver,
+                analysisData.symbolBindings()::get
         );
     }
 
@@ -72,6 +77,29 @@ public final class FrontendChainReductionFacade {
                     propertyInitializerContextSupplier,
             @NotNull ClassRegistry classRegistry,
             @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver
+    ) {
+        this(
+                analysisData,
+                scopesByAst,
+                restrictionSupplier,
+                staticContextSupplier,
+                propertyInitializerContextSupplier,
+                classRegistry,
+                expressionTypeResolver,
+                analysisData.symbolBindings()::get
+        );
+    }
+
+    public FrontendChainReductionFacade(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull Supplier<ResolveRestriction> restrictionSupplier,
+            @NotNull BooleanSupplier staticContextSupplier,
+            @NotNull Supplier<FrontendPropertyInitializerSupport.PropertyInitializerContext>
+                    propertyInitializerContextSupplier,
+            @NotNull ClassRegistry classRegistry,
+            @NotNull FrontendChainReductionHelper.ExpressionTypeResolver expressionTypeResolver,
+            @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup
     ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
@@ -86,12 +114,14 @@ public final class FrontendChainReductionFacade {
                 expressionTypeResolver,
                 "expressionTypeResolver must not be null"
         );
+        this.bindingLookup = Objects.requireNonNull(bindingLookup, "bindingLookup must not be null");
     }
 
     public @NotNull FrontendChainHeadReceiverSupport headReceiverSupport() {
         return new FrontendChainHeadReceiverSupport(
                 analysisData,
                 scopesByAst,
+                bindingLookup,
                 restrictionSupplier.get(),
                 staticContextSupplier.getAsBoolean(),
                 propertyInitializerContextSupplier.get(),

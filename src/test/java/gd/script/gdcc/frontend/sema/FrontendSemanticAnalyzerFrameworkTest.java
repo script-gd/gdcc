@@ -7,14 +7,19 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLocalTypeStabilizationAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVirtualOverrideAnalyzer;
@@ -30,6 +35,7 @@ import gd.script.gdcc.gdextension.ExtensionSingleton;
 import gd.script.gdcc.lir.LirClassDef;
 import dev.superice.gdparser.frontend.ast.AttributeCallStep;
 import dev.superice.gdparser.frontend.ast.AttributeExpression;
+import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
@@ -57,6 +63,7 @@ import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.scope.resolver.ScopeTypeResolver;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdVariantType;
@@ -976,7 +983,81 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void segmentedRunnerProducesEquivalentSharedSemanticSideTablesAndDiagnostics() throws Exception {
+    void injectedRealBodyOwnerSuiteResolverRunsDAndEOwnerPathBeforeLegacyPublication() throws Exception {
+        var parserService = new GdScriptParserService();
+        var parseDiagnostics = new DiagnosticManager();
+        var unit = parserService.parseUnit(Path.of("tmp", "real_body_owner_framework_path.gd"), """
+                class_name RealBodyOwnerFrameworkPath
+                extends RefCounted
+                class Point:
+                    var marker: int = 1
+
+                func ping(value: Point) -> int:
+                    var alias := value
+                    var number := alias.marker
+                    return number
+                """, parseDiagnostics);
+        assertTrue(parseDiagnostics.isEmpty(), () -> "Unexpected parse diagnostics: " + parseDiagnostics.snapshot());
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        var aliasDeclaration = findVariable(pingFunction.body().statements(), "alias");
+        var numberDeclaration = findVariable(pingFunction.body().statements(), "number");
+        var markerStep = findNode(pingFunction.body(), AttributePropertyStep.class, step -> step.name().equals("marker"));
+        var numberInitializer = numberDeclaration.value();
+        assertNotNull(numberInitializer);
+        var ownerProcedures = new FrameworkBodyOwnerProcedures(
+                aliasDeclaration,
+                numberDeclaration,
+                markerStep,
+                numberInitializer
+        );
+        var legacyDiagnostics = new DiagnosticManager();
+        var realBodyDiagnostics = new DiagnosticManager();
+
+        var legacy = analyzeModule(
+                new FrontendSemanticAnalyzer(),
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                legacyDiagnostics
+        );
+        var realBody = analyzeModule(
+                new FrontendSemanticAnalyzer(
+                        new FrontendInterfacePhase(),
+                        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures))
+                ),
+                "test_module",
+                List.of(unit),
+                new ClassRegistry(ExtensionApiLoader.loadDefault()),
+                realBodyDiagnostics
+        );
+
+        var aliasSlotType = realBody.slotTypes().get(aliasDeclaration);
+        var numberSlotType = realBody.slotTypes().get(numberDeclaration);
+        var markerMember = realBody.resolvedMembers().get(markerStep);
+        var initializerType = realBody.expressionTypes().get(numberInitializer);
+        assertAll(
+                () -> assertTrue(ownerProcedures.aliasSlotWasPublishedBeforeLegacy()),
+                () -> assertTrue(ownerProcedures.memberFactWasPublishedBeforeLegacy()),
+                () -> assertTrue(ownerProcedures.expressionFactWasPublishedBeforeLegacy()),
+                () -> assertTrue(ownerProcedures.varPostFactWasPublishedBeforeLegacy()),
+                () -> assertNotNull(aliasSlotType),
+                () -> assertTrue(aliasSlotType.getTypeName().endsWith("Point")),
+                () -> assertNotNull(numberSlotType),
+                () -> assertEquals("int", numberSlotType.getTypeName()),
+                () -> assertNotNull(markerMember),
+                () -> assertEquals(FrontendMemberResolutionStatus.RESOLVED, markerMember.status()),
+                () -> assertTrue(markerMember.receiverType().getTypeName().endsWith("Point")),
+                () -> assertEquals("int", markerMember.resultType().getTypeName()),
+                () -> assertNotNull(initializerType),
+                () -> assertEquals(FrontendExpressionTypeStatus.RESOLVED, initializerType.status()),
+                () -> assertEquals("int", initializerType.publishedType().getTypeName())
+        );
+        assertEquivalentSharedSemanticFacts(legacy, realBody);
+        assertEquals(legacyDiagnostics.snapshot(), realBodyDiagnostics.snapshot());
+    }
+
+    @Test
+    void deprecatedSegmentedSchedulerProducesEquivalentSharedSemanticSideTablesAndDiagnostics() throws Exception {
         var parserService = new GdScriptParserService();
         var parseDiagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_equivalence.gd"), """
@@ -1019,7 +1100,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void segmentedRunnerKeepsExistingUnsupportedSubtreeBehaviorEquivalent() throws Exception {
+    void deprecatedSegmentedSchedulerKeepsExistingUnsupportedSubtreeBehaviorEquivalent() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_unsupported_equivalence.gd"), """
                 class_name SegmentedUnsupportedEquivalence
@@ -1731,6 +1812,106 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 List.of(new ExtensionSingleton(singletonName, "Node")),
                 List.of()
         ));
+    }
+
+    private static boolean hasTypeNameSuffix(Object type, String suffix) {
+        return type instanceof GdType gdType && gdType.getTypeName().endsWith(suffix);
+    }
+
+    private static final class FrameworkBodyOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+        private final @NotNull FrontendBodyOwnerProcedures delegate = new FrontendBodyOwnerProcedures();
+        private final @NotNull VariableDeclaration aliasDeclaration;
+        private final @NotNull VariableDeclaration numberDeclaration;
+        private final @NotNull AttributePropertyStep markerStep;
+        private final @NotNull Node numberInitializer;
+        private boolean aliasSlotWasPublishedBeforeLegacy;
+        private boolean memberFactWasPublishedBeforeLegacy;
+        private boolean expressionFactWasPublishedBeforeLegacy;
+        private boolean varPostFactWasPublishedBeforeLegacy;
+
+        private FrameworkBodyOwnerProcedures(
+                @NotNull VariableDeclaration aliasDeclaration,
+                @NotNull VariableDeclaration numberDeclaration,
+                @NotNull AttributePropertyStep markerStep,
+                @NotNull Node numberInitializer
+        ) {
+            this.aliasDeclaration = aliasDeclaration;
+            this.numberDeclaration = numberDeclaration;
+            this.markerStep = markerStep;
+            this.numberInitializer = numberInitializer;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runTopBinding(context, root);
+        }
+
+        @Override
+        public void runLocalTypeStabilization(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runLocalTypeStabilization(context, root);
+            if (root == aliasDeclaration) {
+                var currentBlockScope = context.currentBlockScope();
+                aliasSlotWasPublishedBeforeLegacy = context.analysisData().slotTypes().get(aliasDeclaration) == null
+                        && currentBlockScope != null
+                        && hasTypeNameSuffix(context.typedEnvironment().localSlotType(
+                                currentBlockScope,
+                                aliasDeclaration.name(),
+                                aliasDeclaration
+                        ), "Point");
+            }
+        }
+
+        @Override
+        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runChainBinding(context, root);
+            if (root == numberDeclaration) {
+                var markerMember = context.typedEnvironment().resolvedMember(markerStep);
+                memberFactWasPublishedBeforeLegacy = context.analysisData().resolvedMembers().get(markerStep) == null
+                        && markerMember != null
+                        && markerMember.status() == FrontendMemberResolutionStatus.RESOLVED
+                        && hasTypeNameSuffix(markerMember.receiverType(), "Point")
+                        && "int".equals(markerMember.resultType().getTypeName());
+            }
+        }
+
+        @Override
+        public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runExprType(context, root);
+            if (root == numberDeclaration) {
+                var initializerType = context.typedEnvironment().expressionType(numberInitializer);
+                expressionFactWasPublishedBeforeLegacy = context.analysisData().expressionTypes().get(numberInitializer) == null
+                        && initializerType != null
+                        && initializerType.status() == FrontendExpressionTypeStatus.RESOLVED
+                        && "int".equals(initializerType.publishedType().getTypeName());
+            }
+        }
+
+        @Override
+        public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            delegate.runVarTypePost(context, root);
+            if (root == numberDeclaration) {
+                var slotType = context.typedEnvironment().slotType(numberDeclaration);
+                varPostFactWasPublishedBeforeLegacy = context.analysisData().slotTypes().get(numberDeclaration) == null
+                        && slotType != null
+                        && "int".equals(slotType.getTypeName());
+            }
+        }
+
+        private boolean aliasSlotWasPublishedBeforeLegacy() {
+            return aliasSlotWasPublishedBeforeLegacy;
+        }
+
+        private boolean memberFactWasPublishedBeforeLegacy() {
+            return memberFactWasPublishedBeforeLegacy;
+        }
+
+        private boolean expressionFactWasPublishedBeforeLegacy() {
+            return expressionFactWasPublishedBeforeLegacy;
+        }
+
+        private boolean varPostFactWasPublishedBeforeLegacy() {
+            return varPostFactWasPublishedBeforeLegacy;
+        }
     }
 
     /// Test double that records the diagnostics snapshot and published skeleton boundary visible

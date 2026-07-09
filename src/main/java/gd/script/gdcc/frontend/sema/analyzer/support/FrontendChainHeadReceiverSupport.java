@@ -27,6 +27,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
+import java.util.function.Function;
 
 /// Shared analyzer-side support for chain heads and local atomic receiver facts.
 ///
@@ -79,6 +80,7 @@ public final class FrontendChainHeadReceiverSupport {
 
     private final @NotNull FrontendAnalysisData analysisData;
     private final @NotNull FrontendAstSideTable<Scope> scopesByAst;
+    private final @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup;
     private final @NotNull ResolveRestriction currentRestriction;
     private final boolean staticContext;
     private final @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext;
@@ -106,6 +108,7 @@ public final class FrontendChainHeadReceiverSupport {
         this(
                 analysisData,
                 scopesByAst,
+                analysisData.symbolBindings()::get,
                 currentRestriction,
                 staticContext,
                 null,
@@ -123,8 +126,31 @@ public final class FrontendChainHeadReceiverSupport {
             @NotNull NestedAttributeReceiverResolver nestedAttributeReceiverResolver,
             @NotNull FallbackExpressionReceiverResolver fallbackExpressionReceiverResolver
     ) {
+        this(
+                analysisData,
+                scopesByAst,
+                analysisData.symbolBindings()::get,
+                currentRestriction,
+                staticContext,
+                propertyInitializerContext,
+                nestedAttributeReceiverResolver,
+                fallbackExpressionReceiverResolver
+        );
+    }
+
+    public FrontendChainHeadReceiverSupport(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull FrontendAstSideTable<Scope> scopesByAst,
+            @NotNull Function<IdentifierExpression, FrontendBinding> bindingLookup,
+            @NotNull ResolveRestriction currentRestriction,
+            boolean staticContext,
+            @Nullable FrontendPropertyInitializerSupport.PropertyInitializerContext propertyInitializerContext,
+            @NotNull NestedAttributeReceiverResolver nestedAttributeReceiverResolver,
+            @NotNull FallbackExpressionReceiverResolver fallbackExpressionReceiverResolver
+    ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         this.scopesByAst = Objects.requireNonNull(scopesByAst, "scopesByAst must not be null");
+        this.bindingLookup = Objects.requireNonNull(bindingLookup, "bindingLookup must not be null");
         this.currentRestriction = Objects.requireNonNull(currentRestriction, "currentRestriction must not be null");
         this.staticContext = staticContext;
         this.propertyInitializerContext = propertyInitializerContext;
@@ -175,7 +201,7 @@ public final class FrontendChainHeadReceiverSupport {
             @NotNull IdentifierExpression identifierExpression
     ) {
         var identifier = Objects.requireNonNull(identifierExpression, "identifierExpression must not be null");
-        var binding = analysisData.symbolBindings().get(identifier);
+        var binding = bindingLookup.apply(identifier);
         if (binding == null) {
             return failedHeadReceiver(
                     identifier,
@@ -266,7 +292,7 @@ public final class FrontendChainHeadReceiverSupport {
                     "Value receiver '" + identifier.name() + "' is inside a skipped subtree"
             );
         }
-        var binding = analysisData.symbolBindings().get(identifier);
+        var binding = bindingLookup.apply(identifier);
         if (binding == null) {
             return new FrontendChainReductionHelper.ReceiverState(
                     FrontendChainReductionHelper.Status.FAILED,

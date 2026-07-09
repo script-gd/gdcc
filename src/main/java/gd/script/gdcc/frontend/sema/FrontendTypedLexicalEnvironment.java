@@ -61,12 +61,15 @@ public final class FrontendTypedLexicalEnvironment {
     }
 
     public @Nullable FrontendBinding symbolBinding(@NotNull Node astNode) {
-        return firstNonNull(
+        var localBinding = firstNonNull(
                 pendingFacts.symbolBindings.get(astNode),
                 committedFacts.symbolBindings.get(astNode),
-                stableData.symbolBindings().get(astNode),
-                parent != null ? parent.symbolBinding(astNode) : null
+                stableData.symbolBindings().get(astNode)
         );
+        if (localBinding != null) {
+            return effectiveBinding(localBinding);
+        }
+        return parent != null ? parent.symbolBinding(astNode) : null;
     }
 
     public @Nullable FrontendResolvedMember resolvedMember(@NotNull Node astNode) {
@@ -307,6 +310,19 @@ public final class FrontendTypedLexicalEnvironment {
             throw FrontendAnalysisData.patchFailure("local slot update targeted a non-local binding for '" + update.name() + "'");
         }
         return effectiveScopeValue(stableValue, update.scope());
+    }
+
+    private @NotNull FrontendBinding effectiveBinding(@NotNull FrontendBinding binding) {
+        var resolvedValue = binding.resolvedValue();
+        if (resolvedValue == null || !(binding.declarationSite() instanceof Node declarationNode)) {
+            return binding;
+        }
+        var owningScope = stableData.scopesByAst().get(declarationNode);
+        if (owningScope == null) {
+            return binding;
+        }
+        var effectiveValue = effectiveScopeValue(resolvedValue, owningScope);
+        return effectiveValue == resolvedValue ? binding : binding.withResolvedValue(effectiveValue);
     }
 
     private static @NotNull ScopeValue withType(@NotNull ScopeValue value, @NotNull GdType type) {
