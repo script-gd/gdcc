@@ -781,11 +781,11 @@ Compiler-only guard payload matrix：
 
 实施内容：
 
-- 确定 interface phase、body suite statement、suite export、diagnostics-only phase 的 diagnostics snapshot 刷新点。
-- 重新定义 diagnostics 可见性：body statement 解析期间的诊断写入仍进入 `DiagnosticManager`，但 duplicate suppression 必须能区分 statement-local upstream、current-suite upstream 与稳定 phase upstream；不能继续假设每个 whole-module analyzer 结束后才刷新一次 snapshot。
-- 保持 compile gate 只在 `analyzeForCompile(...)` 运行。
-- 检查 compile gate 的 duplicate suppression 是否仍能识别 interface/body upstream diagnostics。
-- 对缺失 `slotTypes()`、`DEFERRED`、`FAILED`、`UNSUPPORTED` 的 final facts 保持现有 compile blocking 规则。
+- [x] G1 确定 interface phase、body suite statement、suite export、diagnostics-only phase 的 diagnostics snapshot 刷新点。`FrontendStatementResolver.flushStatementBoundary(...)` 在每个 body statement flush typed facts 后同步刷新 diagnostics snapshot；`FrontendSuiteResolver` 保留 suite export snapshot；`FrontendSemanticAnalyzer` 保留 interface/suite hand-off 后、annotation/virtual/type/loop diagnostics-only phase 后、compile-only gate 后的 snapshot。
+- [x] G2 重新定义 diagnostics 可见性：body statement 解析期间的诊断写入仍进入 `DiagnosticManager`，但 duplicate suppression 必须能区分 statement-local upstream、current-suite upstream 与稳定 phase upstream；不能继续假设每个 whole-module analyzer 结束后才刷新一次 snapshot。`FrontendSuiteResolverTest.statementBoundaryPublishesDiagnosticsSnapshotForLaterStatements` 锚定同 statement 内只能通过 live manager snapshot 读取 statement-local upstream，后一 statement 可通过 `analysisData.diagnostics()` 读取 current-suite snapshot。
+- [x] G3 保持 compile gate 只在 `analyzeForCompile(...)` 运行。代码路径未把 `FrontendCompileCheckAnalyzer` 接入 shared `analyze(...)`、suite resolver 或 inspection；既有 `FrontendCompileCheckAnalyzerTest` / `FrontendSemanticAnalyzerFrameworkTest` / `FrontendAnalysisInspectionToolTest` split 覆盖继续作为锚点。
+- [x] G4 检查 compile gate 的 duplicate suppression 是否仍能识别 interface/body upstream diagnostics。`FrontendCompileCheckAnalyzer` 在 gate 入口先要求 stable diagnostics boundary 已发布，再冻结 live `DiagnosticManager.snapshot()` 作为 upstream 去重输入；`FrontendCompileCheckAnalyzerTest.analyzeDeduplicatesAgainstLiveManagerSnapshotWhenAnalysisDataSnapshotIsStale` 锚定 manager 中存在但 stable snapshot 尚未刷新的 upstream error 仍会抑制同 anchor `sema.compile_check`。
+- [x] G5 对缺失 `slotTypes()`、`DEFERRED`、`FAILED`、`UNSUPPORTED` 的 final facts 保持现有 compile blocking 规则。compile gate 仅调整 upstream snapshot 来源，generic published-fact blocker 与 non-error slot publication blocker 逻辑未改变；`FrontendCompileCheckAnalyzerTest` 中 slot publication、deferred/failed/unsupported/dynamic 覆盖继续通过。
 
 验收细则：
 

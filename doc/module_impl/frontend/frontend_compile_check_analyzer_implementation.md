@@ -39,11 +39,11 @@
 
 1. `analyze(...)`
    - 共享 frontend 语义入口
-   - 负责发布 8 个稳定 frontend phase 的 semantic facts
+   - 负责发布 skeleton/scope/variable、interface/body suite、shared semantic publication 与 diagnostics-only phase 的 frontend facts / diagnostics snapshots
    - 不保证 lowering-ready
 2. `analyzeForCompile(...)`
    - compile-only 入口
-   - 先运行共享 8 phase
+   - 先运行共享 semantic pipeline
    - 再运行 `FrontendCompileCheckAnalyzer`
    - 最后刷新最终 diagnostics snapshot
 
@@ -54,6 +54,7 @@ inspection 与未来 LSP 必须继续消费共享 `analyze(...)`，而不是隐�
 `FrontendCompileCheckAnalyzer` 当前只负责 diagnostics-only final gate：
 
 - 读取已经发布的 frontend 事实
+- 读取 compile-gate 入口处冻结的 live `DiagnosticManager` snapshot 作为 upstream duplicate-suppression 输入
 - 对 compile mode 仍不可接受的 surface 发出 `sema.compile_check`
 - 不创建新的 side table
 - 不改写已有 side table
@@ -335,6 +336,7 @@ compile gate 当前统一使用：
 
 当前“已有 upstream error”按以下条件判定：
 
+- upstream 诊断集合来自 compile gate 入口处冻结的 live `DiagnosticManager.snapshot()`，而不是之后会被本 gate 继续追加的 mutable manager
 - 同一 `sourcePath`
 - 同一 `FrontendRange`
 - severity 为 `ERROR`

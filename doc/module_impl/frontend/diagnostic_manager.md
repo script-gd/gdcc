@@ -330,6 +330,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 
 - `FrontendSemanticAnalyzer` 当前返回 `FrontendAnalysisData`
 - analyze 流程围绕同一份共享分析数据推进
+- interface/body suite resolver 路径会在每个 body statement boundary 刷新 `FrontendAnalysisData.diagnostics()`，让后一 statement 能读取 current-suite upstream diagnostic snapshot；suite export 在 patch transaction 应用后保留最终 body snapshot
 - analyze 现在已经具备独立的多 phase 主链路：
     - skeleton 结束后先发布 `updateModuleSkeleton(...)`
     - 再发布一次 pre-scope `updateDiagnostics(...)`
@@ -348,6 +349,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
 - `analyzeForCompile(...)` 在共享 11 phase 之后追加：
     - 调用 `FrontendCompileCheckAnalyzer.analyze(...)`
     - 再次 `updateDiagnostics(...)`，把 compile-only final gate 的诊断写回最终边界快照
+- compile gate 运行前仍要求 stable diagnostics boundary 已发布，但 duplicate suppression 会冻结 live `DiagnosticManager.snapshot()`，避免 interface/body upstream diagnostics 因调用方尚未再次复制到 `FrontendAnalysisData` 而被漏看
 - 共享 `analyze(...)` 的结果当前仍只是 frontend semantic snapshot，不应直接视为 lowering-ready
 - inspection 与未来 LSP 入口继续消费共享 `analyze(...)`，不应被 `sema.compile_check` 污染
 - 未来 frontend -> LIR lowering 调用方必须：

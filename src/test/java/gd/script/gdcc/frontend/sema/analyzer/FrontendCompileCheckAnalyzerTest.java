@@ -704,6 +704,34 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
+    void analyzeDeduplicatesAgainstLiveManagerSnapshotWhenAnalysisDataSnapshotIsStale() throws Exception {
+        var preparedInput = prepareCompileCheckInput("compile_check_live_manager_upstream.gd", """
+                class_name CompileCheckLiveManagerUpstream
+                extends Node
+
+                func ping():
+                    [1]
+                """);
+        var arrayExpression = findNode(preparedInput.unit().ast(), ArrayExpression.class, _ -> true);
+        preparedInput.diagnosticManager().error(
+                "sema.synthetic",
+                "synthetic upstream error not yet copied to analysisData",
+                preparedInput.unit().path(),
+                FrontendRange.fromAstRange(arrayExpression.range())
+        );
+        assertTrue(diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.synthetic").isEmpty());
+
+        new FrontendCompileCheckAnalyzer().analyze(
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var finalSnapshot = preparedInput.diagnosticManager().snapshot();
+        assertTrue(diagnosticsByCategory(finalSnapshot, "sema.compile_check").isEmpty());
+        assertEquals(1, diagnosticsByCategory(finalSnapshot, "sema.synthetic").size());
+    }
+
+    @Test
     void analyzeReportsGenericCompileBlocksForPublishedCompileSurfaceFacts() throws Exception {
         var preparedInput = prepareCompileCheckInput("compile_check_published_facts.gd", """
                 class_name CompileCheckPublishedFacts

@@ -103,7 +103,13 @@ public class FrontendCompileCheckAnalyzer {
         Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
 
         var moduleSkeleton = analysisData.moduleSkeleton();
-        var publishedDiagnostics = analysisData.diagnostics();
+        // Keep the stable boundary precondition even though dedup reads the live manager below.
+        analysisData.diagnostics();
+        // Freeze the live manager at compile-gate entry. This captures the latest interface/body
+        // upstream diagnostics even if a caller has not yet copied that manager state back into
+        // `FrontendAnalysisData`, while still preventing diagnostics emitted by this gate from
+        // suppressing later checks in the same run.
+        var publishedDiagnostics = diagnosticManager.snapshot();
         var scopesByAst = analysisData.scopesByAst();
 
         for (var sourceClassRelation : moduleSkeleton.sourceClassRelations()) {

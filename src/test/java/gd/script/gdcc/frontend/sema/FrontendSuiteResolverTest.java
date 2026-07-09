@@ -15,6 +15,9 @@ import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
+import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
+import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -52,6 +55,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendSuiteResolverTest {
+    private static final @NotNull String STATEMENT_SNAPSHOT_TEST_CATEGORY = "sema.suite_statement_snapshot_probe";
+
     @Test
     void sourceOrderTraversalMatchesAstOrderAndOwnerOrderIsFixed() throws Exception {
         var phaseInput = phaseInput("suite_source_order.gd", """
@@ -87,6 +92,55 @@ class FrontendSuiteResolverTest {
         assertOwnerSequence(ownerProcedures.events(), 5, second);
         assertOwnerSequence(ownerProcedures.events(), 10, returnStatement);
         assertEquals(15, ownerProcedures.events().size());
+    }
+
+    @Test
+    void statementBoundaryPublishesDiagnosticsSnapshotForLaterStatements() throws Exception {
+        var phaseInput = phaseInput("suite_statement_diagnostics_snapshot.gd", """
+                class_name SuiteStatementDiagnosticsSnapshot
+                extends Node
+
+                func ping(value):
+                    var first := value
+                    var second := first
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var first = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("first")
+        );
+        var second = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("second")
+        );
+        var ownerProcedures = new StatementSnapshotOwnerProcedures(first, second);
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+
+        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+
+        assertAll(
+                () -> assertTrue(ownerProcedures.sameStatementSawLiveDiagnostic()),
+                () -> assertFalse(ownerProcedures.sameStatementSawStableSnapshotBeforeFlush()),
+                () -> assertTrue(ownerProcedures.nextStatementSawCurrentSuiteSnapshot()),
+                () -> assertEquals(
+                        1,
+                        diagnosticsByCategory(
+                                phaseInput.analysisData().diagnostics(),
+                                STATEMENT_SNAPSHOT_TEST_CATEGORY
+                        ).size()
+                )
+        );
     }
 
     @Test
@@ -626,6 +680,15 @@ class FrontendSuiteResolverTest {
         return events.stream().anyMatch(event -> event.root() == root);
     }
 
+    private static @NotNull List<FrontendDiagnostic> diagnosticsByCategory(
+            @NotNull DiagnosticSnapshot diagnostics,
+            @NotNull String category
+    ) {
+        return diagnostics.asList().stream()
+                .filter(diagnostic -> diagnostic.category().equals(category))
+                .toList();
+    }
+
     private static @NotNull FrontendSuiteContext contextForBlock(
             @NotNull PhaseInput phaseInput,
             @NotNull FrontendInterfaceSurface surface,
@@ -731,6 +794,60 @@ class FrontendSuiteResolverTest {
     }
 
     private record OwnerEvent(@NotNull String stage, @NotNull Node root) {
+    }
+
+    private static final class StatementSnapshotOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+        private final @NotNull Node first;
+        private final @NotNull Node second;
+        private boolean sameStatementSawLiveDiagnostic;
+        private boolean sameStatementSawStableSnapshotBeforeFlush;
+        private boolean nextStatementSawCurrentSuiteSnapshot;
+
+        private StatementSnapshotOwnerProcedures(@NotNull Node first, @NotNull Node second) {
+            this.first = first;
+            this.second = second;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            if (root == first) {
+                context.diagnosticManager().error(
+                        STATEMENT_SNAPSHOT_TEST_CATEGORY,
+                        "synthetic statement-local upstream diagnostic",
+                        context.sourcePath(),
+                        FrontendRange.fromAstRange(root.range())
+                );
+                return;
+            }
+            if (root == second) {
+                nextStatementSawCurrentSuiteSnapshot = hasStatementSnapshotDiagnostic(context.analysisData().diagnostics());
+            }
+        }
+
+        @Override
+        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            if (root != first) {
+                return;
+            }
+            sameStatementSawLiveDiagnostic = hasStatementSnapshotDiagnostic(context.diagnosticManager().snapshot());
+            sameStatementSawStableSnapshotBeforeFlush = hasStatementSnapshotDiagnostic(context.analysisData().diagnostics());
+        }
+
+        private static boolean hasStatementSnapshotDiagnostic(@NotNull DiagnosticSnapshot diagnostics) {
+            return diagnosticsByCategory(diagnostics, STATEMENT_SNAPSHOT_TEST_CATEGORY).size() == 1;
+        }
+
+        private boolean sameStatementSawLiveDiagnostic() {
+            return sameStatementSawLiveDiagnostic;
+        }
+
+        private boolean sameStatementSawStableSnapshotBeforeFlush() {
+            return sameStatementSawStableSnapshotBeforeFlush;
+        }
+
+        private boolean nextStatementSawCurrentSuiteSnapshot() {
+            return nextStatementSawCurrentSuiteSnapshot;
+        }
     }
 
     private static final class PrefixGateClassifierOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {

@@ -126,6 +126,9 @@ public class FrontendStatementResolver {
 
     private void flushStatementBoundary(@NotNull FrontendSuiteContext context) {
         context.typedEnvironment().flushStatementFacts();
+        // Diagnostics share the statement boundary with typed facts: later statements in the same
+        // suite must see upstream diagnostics without waiting for the final suite export snapshot.
+        context.analysisData().updateDiagnostics(context.diagnosticManager().snapshot());
     }
 
     @FunctionalInterface
