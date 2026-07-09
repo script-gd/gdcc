@@ -753,14 +753,14 @@ Compiler-only guard payload matrix：
 
 实施内容：
 
-- 建立 typed-dependent inventory gate 的注册、lookup、status update 与 readiness update API。
-- 使用合成 fixture 或最小测试 gate 验证 `PENDING + NOT_PUBLISHED`、`SUPPORTED + NOT_PUBLISHED`、`PUBLISHING`、`SUPPORTED + PUBLISHED`、`UNSUPPORTED` 的转换。
-- 支持由前缀 statement typed fact 驱动的测试 classifier，但 classifier 只服务于 gate lifecycle，不实现任何 for-range 规则。
-- `SUPPORTED` 只表示 header/classifier 通过，不能使 body resolver / binder 放行。
-- body inventory publication 成功后才原子推进为 `PUBLISHED`。
-- 建立 resolver gate readiness policy，并接入 request-domain gate、AST boundary gate、current-scope gate 三处判断。
-- 统一 resolver request 创建路径：gate header / gate body lookup 都必须由 `SuiteResolver` / `FrontendSuiteContext` 构造，不能由 analyzer 直接决定 deferred domain。
-- unsupported gate 继续保留对应 deferred / unsupported boundary。
+- [x] F1 建立 typed-dependent inventory gate 的注册、lookup、status update 与 readiness update API。当前实现以 `FrontendInventoryGate` 的 immutable state transition helper、`FrontendInventoryGateRegistry` 的 mutable lifecycle API，以及 `FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(...)` 作为 shared readiness 入口；非 `SUPPORTED + PUBLISHED` 的 gate 仍统一 fail-closed。
+- [x] F2 使用合成 fixture 或最小测试 gate 验证 `PENDING + NOT_PUBLISHED`、`SUPPORTED + NOT_PUBLISHED`、`PUBLISHING`、`SUPPORTED + PUBLISHED`、`UNSUPPORTED` 的转换。`FrontendInventoryGateRegistryTest.registryTransitionsOnlySupportedPublishedGateToReady` 锚定所有有效生命周期状态，invalid-state tests 锚定 pending / unsupported 不得携带 published readiness。
+- [x] F3 支持由前缀 statement typed fact 驱动的测试 classifier，但 classifier 只服务于 gate lifecycle，不实现任何 for-range 规则。`FrontendStatementResolver.OwnerProcedures.runGateClassifier(...)` 接在 top/local/chain/expr 后与 flush 前，`FrontendSuiteResolverTest.classifierReadsPrefixOverlayAndDoesNotOpenUnpublishedBody` 证明 classifier 可读取前缀 `:=` local exact overlay 与 expr typing 已最终发布的 expression overlay；同测例证明 local stabilization 的 transient expression cache 不会提前进入 overlay，并且 classifier 只推进指定 synthetic gate。
+- [x] F4 `SUPPORTED` 只表示 header/classifier 通过，不能使 body resolver / binder 放行。`FrontendVisibleValueResolverTest.resolveKeepsSupportedButUnpublishedGateBodyFailClosed` 覆盖 `SUPPORTED + NOT_PUBLISHED` / `SUPPORTED + PUBLISHING`，`FrontendSuiteResolverTest.classifierReadsPrefixOverlayAndDoesNotOpenUnpublishedBody` 覆盖 binder 不进入未发布 body。
+- [x] F5 body inventory publication 成功后才原子推进为 `PUBLISHED`。`FrontendInventoryGateRegistry.markBodyInventoryPublished(...)` 是唯一 readiness published transition，resolver / suite entry 只接受 `SUPPORTED + PUBLISHED`；`FrontendSuiteResolverTest.publishedGateBodyIsResolvedBySuiteResolver` 证明 published 后 body facts 可发布。
+- [x] F6 建立 resolver gate readiness policy，并接入 request-domain gate、AST boundary gate、current-scope gate 三处判断。`FrontendVisibleValueResolver` 三处封口、`FrontendSuiteResolver` body entry 与 body-local stabilization 均复用 `FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(...)` / `FrontendInventoryGateRegistry` readiness；`resolvePublishedGateBodyPassesRequestAstAndCurrentScopeGates` 使用 deferred request domain 证明任一旧常量封口未接入都会失败。
+- [x] F7 统一 resolver request 创建路径：gate header / gate body lookup 都必须由 `SuiteResolver` / `FrontendSuiteContext` 构造，不能由 analyzer 直接决定 deferred domain。body owner path 已改为通过 `FrontendSuiteContext.visibleValueResolveRequest(...)` 创建请求，并随 current body readiness 选择 `EXECUTABLE_BODY` 或 gate deferred domain；`missingOwningGateBodyContextUsesDeferredDomainAndStaysFailClosed` 锚定缺失 gate 的 typed-dependent body 不回退为 executable lookup。
+- [x] F8 unsupported gate 继续保留对应 deferred / unsupported boundary。`FrontendVisibleValueResolverTest.resolveUnsupportedGateBodyDoesNotFallBackToOuterBinding` 证明 `UNSUPPORTED` body lookup 不回退到外层同名 binding。
 - 明确非目标：不实现 `range(...)` AST shape 识别、不实现 `INT_SHORTHAND`、不发布 iterator binding、不解封 supported for-range body、不调整 for-range compile gate。
 
 验收细则：

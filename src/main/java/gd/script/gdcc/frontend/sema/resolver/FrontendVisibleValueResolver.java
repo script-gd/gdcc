@@ -1,10 +1,11 @@
 package gd.script.gdcc.frontend.sema.resolver;
 
 import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
+import gd.script.gdcc.frontend.sema.FrontendInventoryGate;
+import gd.script.gdcc.frontend.sema.FrontendInventoryGateRegistry;
 import gd.script.gdcc.frontend.sema.FrontendModuleSkeleton;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
@@ -36,11 +37,20 @@ import java.util.Objects;
 ///   explicit deferred-boundary sealing for domains whose variable inventory is not published yet
 public final class FrontendVisibleValueResolver {
     private final @NotNull FrontendAnalysisData analysisData;
+    private final @NotNull FrontendInventoryGateRegistry gateRegistry;
     private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
     private final @NotNull IdentityHashMap<Node, Boolean> indexedAstNodes = new IdentityHashMap<>();
 
     public FrontendVisibleValueResolver(@NotNull FrontendAnalysisData analysisData) {
+        this(analysisData, FrontendInventoryGateRegistry.empty());
+    }
+
+    public FrontendVisibleValueResolver(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull FrontendInventoryGateRegistry gateRegistry
+    ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
+        this.gateRegistry = Objects.requireNonNull(gateRegistry, "gateRegistry must not be null");
         indexSourceAstParents(analysisData.moduleSkeleton());
     }
 
@@ -56,11 +66,9 @@ public final class FrontendVisibleValueResolver {
     ) {
         Objects.requireNonNull(request, "request must not be null");
 
-        if (request.domain() != FrontendVisibleValueDomain.EXECUTABLE_BODY) {
-            return deferredUnsupported(
-                    request.domain(),
-                    FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
-            );
+        var requestDomainBoundary = classifyRequestDomainBoundary(request);
+        if (requestDomainBoundary != null) {
+            return FrontendVisibleValueResolution.deferredUnsupported(requestDomainBoundary);
         }
 
         var useSite = request.useSite();
@@ -78,7 +86,7 @@ public final class FrontendVisibleValueResolver {
                     FrontendVisibleValueDeferredReason.MISSING_SCOPE_OR_SKIPPED_SUBTREE
             );
         }
-        var currentScopeBoundary = classifyUnsupportedCurrentScopeBoundary(currentScope);
+        var currentScopeBoundary = classifyUnsupportedCurrentScopeBoundary(currentScope, useSite);
         if (currentScopeBoundary != null) {
             return FrontendVisibleValueResolution.deferredUnsupported(currentScopeBoundary);
         }
@@ -171,25 +179,30 @@ public final class FrontendVisibleValueResolver {
                             FrontendVisibleValueDomain.PARAMETER_DEFAULT,
                             FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
                     );
-            case LambdaExpression lambdaExpression when lambdaExpression.body() == childNode ->
-                    new FrontendVisibleValueDeferredBoundary(
-                            FrontendVisibleValueDomain.LAMBDA_SUBTREE,
-                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-                    );
+            case LambdaExpression lambdaExpression when lambdaExpression.body() == childNode -> gateBodyBoundary(
+                    lambdaExpression.body(),
+                    FrontendVisibleValueDomain.LAMBDA_SUBTREE
+            );
             case VariableDeclaration variableDeclaration when variableDeclaration.kind() == DeclarationKind.CONST
                     && variableDeclaration.value() == childNode
-                    && isDeferredBlockLocalConst(variableDeclaration) -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+                    && isDeferredBlockLocalConst(variableDeclaration) -> gateBodyBoundary(
+                    variableDeclaration,
+                    FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE
+            );
+            case ForStatement forStatement when forStatement.body() == childNode -> gateBodyBoundary(
+                    forStatement.body(),
+                    FrontendVisibleValueDomain.FOR_SUBTREE
             );
             case ForStatement forStatement when (forStatement.iteratorType() == childNode
-                    || forStatement.iterable() == childNode
-                    || forStatement.body() == childNode) -> new FrontendVisibleValueDeferredBoundary(
+                    || forStatement.iterable() == childNode) -> new FrontendVisibleValueDeferredBoundary(
                     FrontendVisibleValueDomain.FOR_SUBTREE,
                     FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
             );
+            case MatchSection matchSection when matchSection.body() == childNode -> gateBodyBoundary(
+                    matchSection.body(),
+                    FrontendVisibleValueDomain.MATCH_SUBTREE
+            );
             case MatchSection matchSection when (matchSection.guard() == childNode
-                    || matchSection.body() == childNode
                     || containsNodeIdentity(matchSection.patterns(), childNode)) ->
                     new FrontendVisibleValueDeferredBoundary(
                             FrontendVisibleValueDomain.MATCH_SUBTREE,
@@ -197,6 +210,37 @@ public final class FrontendVisibleValueResolver {
                     );
             default -> null;
         };
+    }
+
+    private @Nullable FrontendVisibleValueDeferredBoundary classifyRequestDomainBoundary(
+            @NotNull FrontendVisibleValueResolveRequest request
+    ) {
+        if (request.domain() == FrontendVisibleValueDomain.EXECUTABLE_BODY) {
+            return null;
+        }
+        // Transitional callers may still pass a deferred domain for a gate body. A published owning
+        // gate normalizes that request into ordinary executable-body lookup; every other case stays
+        // fail-closed at the request-domain boundary.
+        if (isNearestOwningGateReady(request.useSite(), request.domain())) {
+            return null;
+        }
+        return new FrontendVisibleValueDeferredBoundary(
+                request.domain(),
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
+        );
+    }
+
+    private @Nullable FrontendVisibleValueDeferredBoundary gateBodyBoundary(
+            @NotNull Node bodyRoot,
+            @NotNull FrontendVisibleValueDomain deferredDomain
+    ) {
+        if (gateRegistry.isBodyInventoryReady(bodyRoot)) {
+            return null;
+        }
+        return new FrontendVisibleValueDeferredBoundary(
+                deferredDomain,
+                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+        );
     }
 
     /// Class-level `const` continues to belong to class-scope lookup. Only executable block-local
@@ -256,7 +300,8 @@ public final class FrontendVisibleValueResolver {
         if (!(statement instanceof VariableDeclaration variableDeclaration)
                 || variableDeclaration.kind() != DeclarationKind.CONST
                 || !variableDeclaration.name().trim().equals(name)
-                || !isVisibleLocal(variableDeclaration, useSite)) {
+                || !isVisibleLocal(variableDeclaration, useSite)
+                || gateRegistry.isBodyInventoryReady(variableDeclaration)) {
             return null;
         }
         return new FrontendVisibleValueDeferredBoundary(
@@ -269,15 +314,13 @@ public final class FrontendVisibleValueResolver {
     /// that still reuse one outer supported scope. This current-scope gate exists as the fail-closed
     /// backstop for unsupported bodies whose own scope is already published in `scopesByAst()`.
     private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentScopeBoundary(
-            @NotNull Scope currentScope
+            @NotNull Scope currentScope,
+            @NotNull Node useSite
     ) {
         return switch (currentScope) {
-            case BlockScope blockScope -> classifyUnsupportedCurrentBlockScopeBoundary(blockScope.kind());
+            case BlockScope blockScope -> classifyUnsupportedCurrentBlockScopeBoundary(blockScope, useSite);
             case CallableScope callableScope when callableScope.kind() == CallableScopeKind.LAMBDA_EXPRESSION ->
-                    new FrontendVisibleValueDeferredBoundary(
-                            FrontendVisibleValueDomain.LAMBDA_SUBTREE,
-                            FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-                    );
+                    unsupportedScopeBoundary(useSite, FrontendVisibleValueDomain.LAMBDA_SUBTREE);
             default -> new FrontendVisibleValueDeferredBoundary(
                     FrontendVisibleValueDomain.EXECUTABLE_BODY,
                     FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
@@ -297,29 +340,54 @@ public final class FrontendVisibleValueResolver {
     }
 
     private @Nullable FrontendVisibleValueDeferredBoundary classifyUnsupportedCurrentBlockScopeBoundary(
-            @NotNull BlockScopeKind kind
+            @NotNull BlockScope blockScope,
+            @NotNull Node useSite
     ) {
-        if (FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(kind)) {
+        if (FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
             return null;
         }
-        return switch (kind) {
-            case LAMBDA_BODY -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.LAMBDA_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
-            case FOR_BODY -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.FOR_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
-            case MATCH_SECTION_BODY -> new FrontendVisibleValueDeferredBoundary(
-                    FrontendVisibleValueDomain.MATCH_SUBTREE,
-                    FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
-            );
+        return switch (blockScope.kind()) {
+            case LAMBDA_BODY -> unsupportedScopeBoundary(useSite, FrontendVisibleValueDomain.LAMBDA_SUBTREE);
+            case FOR_BODY -> unsupportedScopeBoundary(useSite, FrontendVisibleValueDomain.FOR_SUBTREE);
+            case MATCH_SECTION_BODY -> unsupportedScopeBoundary(useSite, FrontendVisibleValueDomain.MATCH_SUBTREE);
             default -> new FrontendVisibleValueDeferredBoundary(
                     FrontendVisibleValueDomain.EXECUTABLE_BODY,
                     FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN
             );
         };
+    }
+
+    private @Nullable FrontendVisibleValueDeferredBoundary unsupportedScopeBoundary(
+            @NotNull Node useSite,
+            @NotNull FrontendVisibleValueDomain deferredDomain
+    ) {
+        if (isNearestOwningGateReady(useSite, deferredDomain)) {
+            return null;
+        }
+        return new FrontendVisibleValueDeferredBoundary(
+                deferredDomain,
+                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED
+        );
+    }
+
+    private boolean isNearestOwningGateReady(
+            @NotNull Node useSite,
+            @NotNull FrontendVisibleValueDomain deferredDomain
+    ) {
+        var gate = nearestOwningGate(useSite);
+        return gate != null && gate.deferredDomain() == deferredDomain && gate.isBodyInventoryReady();
+    }
+
+    private @Nullable FrontendInventoryGate nearestOwningGate(@NotNull Node useSite) {
+        Node currentNode = useSite;
+        while (currentNode != null) {
+            var gate = gateRegistry.gateForBodyRoot(currentNode);
+            if (gate != null) {
+                return gate;
+            }
+            currentNode = parentByNode.get(currentNode);
+        }
+        return null;
     }
 
     private boolean publishesCallableLocalValueInventory(@NotNull Block block) {

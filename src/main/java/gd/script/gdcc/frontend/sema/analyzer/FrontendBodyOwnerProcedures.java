@@ -29,8 +29,6 @@ import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionHelpe
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainStatusBridge;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendExpressionSemanticSupport;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
-import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
-import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolution;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolver;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueStatus;
@@ -184,12 +182,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 case NOT_FOUND -> FrontendVisibleValueResolution.notFound(List.of());
             };
         }
-        return visibleValueResolver(context).resolve(new FrontendVisibleValueResolveRequest(
-                identifierExpression.name(),
-                identifierExpression,
-                context.restriction(),
-                FrontendVisibleValueDomain.EXECUTABLE_BODY
-        ), context.typedEnvironment());
+        return visibleValueResolver(context).resolve(
+                context.visibleValueResolveRequest(identifierExpression.name(), identifierExpression),
+                context.typedEnvironment()
+        );
     }
 
     private void publishScopeValueBinding(
@@ -281,7 +277,11 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
         var declarationScope = context.analysisData().scopesByAst().get(variableDeclaration);
         if (!(declarationScope instanceof BlockScope blockScope)
-                || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
+                || !FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(
+                blockScope,
+                context.currentBlockRoot(),
+                context.interfaceSurface().inventoryGateRegistry()
+        )) {
             return null;
         }
         var survivingLocal = blockScope.resolveValueHere(variableDeclaration.name().trim());
@@ -384,7 +384,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private @NotNull FrontendVisibleValueResolver visibleValueResolver(@NotNull FrontendSuiteContext context) {
         if (cachedAnalysisData != context.analysisData() || cachedVisibleValueResolver == null) {
             cachedAnalysisData = context.analysisData();
-            cachedVisibleValueResolver = new FrontendVisibleValueResolver(context.analysisData());
+            cachedVisibleValueResolver = new FrontendVisibleValueResolver(
+                    context.analysisData(),
+                    context.interfaceSurface().inventoryGateRegistry()
+            );
         }
         return cachedVisibleValueResolver;
     }

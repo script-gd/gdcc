@@ -8,6 +8,7 @@ import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
@@ -57,7 +58,8 @@ public class FrontendSuiteResolver {
     public void resolveSuite(@NotNull FrontendSuiteContext context, @NotNull Block block) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(block, "block must not be null");
-        if (!context.interfaceSurface().suiteEntryRoots().containsSupportedBlock(block)) {
+        var blockScope = blockScopeFor(context, block);
+        if (blockScope == null || !isCallableLocalValueInventoryReady(context, block, blockScope)) {
             return;
         }
         for (var statement : block.statements()) {
@@ -138,14 +140,31 @@ public class FrontendSuiteResolver {
     }
 
     private void resolveChildSuite(@NotNull FrontendSuiteContext parentContext, @NotNull Block childBlock) {
-        if (!parentContext.interfaceSurface().suiteEntryRoots().containsSupportedBlock(childBlock)) {
-            return;
-        }
-        var childScope = parentContext.analysisData().scopesByAst().get(childBlock);
-        if (!(childScope instanceof BlockScope blockScope)) {
+        var blockScope = blockScopeFor(parentContext, childBlock);
+        if (blockScope == null || !isCallableLocalValueInventoryReady(parentContext, childBlock, blockScope)) {
             return;
         }
         resolveSuite(parentContext.withChildBlock(childBlock, blockScope), childBlock);
+    }
+
+    private static boolean isCallableLocalValueInventoryReady(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Block block,
+            @NotNull BlockScope blockScope
+    ) {
+        return FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(
+                blockScope,
+                block,
+                context.interfaceSurface().inventoryGateRegistry()
+        );
+    }
+
+    private static @Nullable BlockScope blockScopeFor(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Block block
+    ) {
+        var scope = context.analysisData().scopesByAst().get(block);
+        return scope instanceof BlockScope blockScope ? blockScope : null;
     }
 
     private static @Nullable Block callableBody(@NotNull Node callableOwner) {

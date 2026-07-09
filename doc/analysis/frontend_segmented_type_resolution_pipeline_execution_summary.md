@@ -60,7 +60,7 @@ resolveSuite(context, block):
       resolvePendingBodiesIfAllowed(context)
 ```
 
-`resolveStatement(...)` 不是新的 semantic owner。它只按 statement 结构编排已有 owner 的 body-aware 子过程：top binding、local stabilization、chain binding、expr typing 与 var type post。
+`resolveStatement(...)` 不是新的 semantic owner。它只按 statement 结构编排已有 owner 的 body-aware 子过程：top binding、local stabilization、chain binding、expr typing、gate classifier 与 var type post。
 
 Body procedure 必须是 root-bounded、statement-local 的实现。每个 owner 子过程只处理 `SuiteResolver` 传入的 statement、header 或 expression root 及其允许的子表达式。实现可以复用纯语义 helper，但 owner 子过程不能依赖 whole-module traversal 建立隐式上下文。
 
@@ -84,8 +84,9 @@ Body procedure 必须是 root-bounded、statement-local 的实现。每个 owner
 2. Local stabilization runner。
 3. Chain binding runner。
 4. Expr typing runner。
-5. Var type post procedure。
-6. Statement flush。
+5. Gate classifier hook。
+6. Var type post procedure。
+7. Statement flush。
 
 Top binding runner 为当前 statement 内的 bare identifier 与 chain head use-site 写入 binding overlay。
 
@@ -94,6 +95,8 @@ Local stabilization runner 在 top binding overlay、current-suite committed typ
 Chain binding runner 消费 top binding overlay 与 local stabilization pending / committed slot fact，发布 `resolvedMembers()` 与 chain-owned `resolvedCalls()` overlay。
 
 Expr typing runner 消费 binding、member、call 与 local slot overlay，发布 `expressionTypes()` 与 bare-call `resolvedCalls()` overlay。`backfillInferredLocalType(...)` 在目标架构中仍只保留 guard-only 协议检查。
+
+Gate classifier hook 在 header / synthetic fixture 已完成 top binding、local stabilization、chain binding 与 expr typing 后运行。当前 Phase F 只使用该 hook 推进 generic gate lifecycle，不实现任何 for-range feature rule，也不发布 iterator binding。
 
 Var type post procedure 消费 expression type 与 source-facing local slot overlay，发布 final `slotTypes()` overlay。
 
@@ -236,6 +239,8 @@ Typed-dependent gate 使用统一 readiness policy。三道封口必须同步条
 3. Current-scope gate。
 
 只有 owning gate 达到 `SUPPORTED + PUBLISHED` 后，body lookup 才能作为普通 executable body lookup 进入 resolver。`PENDING`、`SUPPORTED + NOT_PUBLISHED`、`PUBLISHING`、`UNSUPPORTED`、缺失 owning gate 或找不到 owner 的情况都必须 fail-closed。
+
+Phase F 当前实现以 `FrontendInventoryGateRegistry` 作为 gate lifecycle 事实源。`FrontendVisibleValueResolver` 的 request-domain gate、AST boundary gate 与 current-scope gate 均读取同一个 registry readiness；`FrontendSuiteContext.visibleValueResolveRequest(...)` 统一创建 body owner lookup request；`FrontendSuiteResolver` 与 body-local stabilization 通过 shared readiness helper 只接受 unconditional supported block 或 `SUPPORTED + PUBLISHED` gate body。
 
 ## 13. Diagnostics 与 Compile Gate
 

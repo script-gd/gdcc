@@ -114,6 +114,7 @@ public class FrontendStatementResolver {
         ownerProcedures.runLocalTypeStabilization(context, root);
         ownerProcedures.runChainBinding(context, root);
         ownerProcedures.runExprType(context, root);
+        ownerProcedures.runGateClassifier(context, root);
         ownerProcedures.runVarTypePost(context, root);
         flushStatementBoundary(context);
     }
@@ -148,6 +149,12 @@ public class FrontendStatementResolver {
         }
 
         default void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        }
+
+        /// Runs after header expression facts are finalized into the current overlay but before the
+        /// statement boundary is flushed. Phase F test classifiers use this hook to advance synthetic
+        /// gate lifecycle without implementing any feature-specific rules.
+        default void runGateClassifier(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         }
 
         default void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {

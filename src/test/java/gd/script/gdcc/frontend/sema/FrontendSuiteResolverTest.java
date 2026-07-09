@@ -1,9 +1,11 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
+import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
@@ -16,6 +18,7 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
+import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendInterfacePhase;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
@@ -24,8 +27,11 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
+import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -218,6 +224,133 @@ class FrontendSuiteResolverTest {
         assertFalse(hasOwnerEvent(ownerProcedures.events(), answer));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), callback));
         assertTrue(hasOwnerEvent(ownerProcedures.events(), after));
+    }
+
+    @Test
+    void classifierReadsPrefixOverlayAndDoesNotOpenUnpublishedBody() throws Exception {
+        var phaseInput = phaseInput("suite_gate_classifier_prefix.gd", """
+                class_name SuiteGateClassifierPrefix
+                extends Node
+
+                func ping(values, choice):
+                    var limit := 1
+                    for item in values:
+                        var from_for := item
+                    match choice:
+                        0:
+                            var from_match := choice
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var limit = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("limit")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_for")
+        );
+        var matchStatement = findStatement(pingFunction.body().statements(), MatchStatement.class, _ -> true);
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        var ownerProcedures = new PrefixGateClassifierOwnerProcedures(limit, forStatement.body());
+
+        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+
+        var forGate = surface.inventoryGateRegistry().gateForBodyRoot(forStatement.body());
+        assertNotNull(forGate);
+        assertEquals(FrontendInventoryGateStatus.SUPPORTED, forGate.status());
+        assertEquals(FrontendBodyInventoryReadiness.NOT_PUBLISHED, forGate.bodyInventoryReadiness());
+        assertFalse(surface.inventoryGateRegistry().isBodyInventoryReady(forStatement.body()));
+        assertTrue(ownerProcedures.classifierSawPrefixExactType());
+        assertTrue(ownerProcedures.localStageCouldNotSeeTransientExpressionFact());
+        assertTrue(ownerProcedures.classifierSawFinalExpressionFact());
+        assertFalse(ownerProcedures.events().stream().anyMatch(event -> event.root() == fromFor));
+
+        var matchGate = surface.inventoryGateRegistry().gateForBodyRoot(matchStatement.sections().getFirst().body());
+        assertNotNull(matchGate);
+        assertEquals(FrontendInventoryGateStatus.PENDING, matchGate.status());
+    }
+
+    @Test
+    void publishedGateBodyIsResolvedBySuiteResolver() throws Exception {
+        var phaseInput = phaseInput("suite_gate_body_published.gd", """
+                class_name SuiteGateBodyPublished
+                extends Node
+
+                func ping(values, seed: int):
+                    for item in values:
+                        var from_for := seed
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_for")
+        );
+        var seedUseSite = findNode(fromFor, IdentifierExpression.class, identifier -> identifier.name().equals("seed"));
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        surface.inventoryGateRegistry().markSupported(forStatement.body());
+        surface.inventoryGateRegistry().markBodyInventoryPublishing(forStatement.body());
+        surface.inventoryGateRegistry().markBodyInventoryPublished(forStatement.body());
+        var forBodyContext = contextForBlock(phaseInput, surface, pingFunction, forStatement.body());
+
+        new FrontendSuiteResolver().resolveSuite(forBodyContext, forStatement.body());
+
+        var seedBinding = phaseInput.analysisData().symbolBindings().get(seedUseSite);
+        assertNotNull(seedBinding);
+        assertEquals(FrontendBindingKind.PARAMETER, seedBinding.kind());
+        var seedExpressionType = phaseInput.analysisData().expressionTypes().get(seedUseSite);
+        assertNotNull(seedExpressionType);
+        assertSame(GdIntType.INT, seedExpressionType.publishedType());
+    }
+
+    @Test
+    void missingOwningGateBodyContextUsesDeferredDomainAndStaysFailClosed() throws Exception {
+        var phaseInput = phaseInput("suite_gate_body_missing_owner.gd", """
+                class_name SuiteGateBodyMissingOwner
+                extends Node
+
+                func ping(values, seed: int):
+                    for item in values:
+                        print(seed)
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var seedUseSite = findNode(forStatement.body(), IdentifierExpression.class, identifier -> identifier.name().equals("seed"));
+        var originalSurface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        var surfaceWithoutGate = new FrontendInterfaceSurface(
+                originalSurface.bodyDeclarationIndex(),
+                FrontendInventoryGateRegistry.empty(),
+                originalSurface.typedLexicalBaseline(),
+                originalSurface.suiteEntryRoots()
+        );
+        var forBodyContext = contextForBlock(phaseInput, surfaceWithoutGate, pingFunction, forStatement.body());
+
+        var request = forBodyContext.visibleValueResolveRequest(seedUseSite.name(), seedUseSite);
+        new FrontendSuiteResolver().resolveSuite(forBodyContext, forStatement.body());
+
+        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, request.domain());
+        assertNull(phaseInput.analysisData().symbolBindings().get(seedUseSite));
     }
 
     @Test
@@ -493,6 +626,30 @@ class FrontendSuiteResolverTest {
         return events.stream().anyMatch(event -> event.root() == root);
     }
 
+    private static @NotNull FrontendSuiteContext contextForBlock(
+            @NotNull PhaseInput phaseInput,
+            @NotNull FrontendInterfaceSurface surface,
+            @NotNull Node callableOwner,
+            @NotNull Block block
+    ) {
+        var blockScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(block));
+        return new FrontendSuiteContext(
+                Path.of("tmp", "synthetic_gate_body.gd"),
+                callableOwner,
+                block,
+                blockScope,
+                blockScope,
+                ResolveRestriction.instanceContext(),
+                false,
+                null,
+                surface,
+                new FrontendTypedLexicalEnvironment(blockScope, phaseInput.analysisData()),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics(),
+                phaseInput.registry()
+        );
+    }
+
     private static @NotNull PhaseInput phaseInput(@NotNull String fileName, @NotNull String source) throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
@@ -574,6 +731,96 @@ class FrontendSuiteResolverTest {
     }
 
     private record OwnerEvent(@NotNull String stage, @NotNull Node root) {
+    }
+
+    private static final class PrefixGateClassifierOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+        private final @NotNull FrontendBodyOwnerProcedures delegate = new FrontendBodyOwnerProcedures();
+        private final @NotNull VariableDeclaration prefixLocal;
+        private final @NotNull Block targetBody;
+        private final @NotNull List<OwnerEvent> events = new ArrayList<>();
+        private boolean classifierSawPrefixExactType;
+        private boolean localStageCouldNotSeeTransientExpressionFact;
+        private boolean classifierSawFinalExpressionFact;
+
+        private PrefixGateClassifierOwnerProcedures(
+                @NotNull VariableDeclaration prefixLocal,
+                @NotNull Block targetBody
+        ) {
+            this.prefixLocal = prefixLocal;
+            this.targetBody = targetBody;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("top", root));
+            delegate.runTopBinding(context, root);
+        }
+
+        @Override
+        public void runLocalTypeStabilization(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("local", root));
+            delegate.runLocalTypeStabilization(context, root);
+            if (root == prefixLocal && prefixLocal.value() != null) {
+                localStageCouldNotSeeTransientExpressionFact = context.typedEnvironment()
+                        .expressionType(prefixLocal.value()) == null;
+            }
+        }
+
+        @Override
+        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("chain", root));
+            delegate.runChainBinding(context, root);
+        }
+
+        @Override
+        public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("expr", root));
+            delegate.runExprType(context, root);
+        }
+
+        @Override
+        public void runGateClassifier(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            if (root != prefixLocal || context.currentBlockScope() == null) {
+                return;
+            }
+            var prefixType = context.typedEnvironment().localSlotType(
+                    context.currentBlockScope(),
+                    prefixLocal.name(),
+                    prefixLocal
+            );
+            var prefixExpressionType = prefixLocal.value() != null
+                    ? context.typedEnvironment().expressionType(prefixLocal.value())
+                    : null;
+            classifierSawPrefixExactType = prefixType == GdIntType.INT;
+            classifierSawFinalExpressionFact = prefixExpressionType != null
+                    && prefixExpressionType.status() == FrontendExpressionTypeStatus.RESOLVED
+                    && prefixExpressionType.publishedType() == GdIntType.INT;
+            if (classifierSawPrefixExactType) {
+                context.interfaceSurface().inventoryGateRegistry().markSupported(targetBody);
+            }
+        }
+
+        @Override
+        public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            events.add(new OwnerEvent("var_post", root));
+            delegate.runVarTypePost(context, root);
+        }
+
+        private @NotNull List<OwnerEvent> events() {
+            return events;
+        }
+
+        private boolean classifierSawPrefixExactType() {
+            return classifierSawPrefixExactType;
+        }
+
+        private boolean localStageCouldNotSeeTransientExpressionFact() {
+            return localStageCouldNotSeeTransientExpressionFact;
+        }
+
+        private boolean classifierSawFinalExpressionFact() {
+            return classifierSawFinalExpressionFact;
+        }
     }
 
     private static final class RecordingOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {

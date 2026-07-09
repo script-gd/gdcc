@@ -6,6 +6,10 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBodyInventoryReadiness;
+import gd.script.gdcc.frontend.sema.FrontendInventoryGate;
+import gd.script.gdcc.frontend.sema.FrontendInventoryGateRegistry;
+import gd.script.gdcc.frontend.sema.FrontendInventoryGateStatus;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
@@ -19,6 +23,7 @@ import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
@@ -449,6 +454,113 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
+    void resolveKeepsSupportedButUnpublishedGateBodyFailClosed() throws Exception {
+        var analyzedInput = analyzedInput("for_body_supported_not_published.gd", """
+                class_name ForBodySupportedNotPublished
+                extends Node
+
+                func ping(values, seed):
+                    for item in values:
+                        print(seed)
+                """);
+        var forStatement = findNode(analyzedInput.unit().ast(), ForStatement.class, _ -> true);
+        var useSite = findIdentifierExpression(forStatement.body(), "seed");
+
+        var notPublished = resolveWithGate(
+                analyzedInput,
+                forStatement,
+                useSite,
+                FrontendInventoryGateStatus.SUPPORTED,
+                FrontendBodyInventoryReadiness.NOT_PUBLISHED,
+                FrontendVisibleValueDomain.FOR_SUBTREE
+        );
+        var publishing = resolveWithGate(
+                analyzedInput,
+                forStatement,
+                useSite,
+                FrontendInventoryGateStatus.SUPPORTED,
+                FrontendBodyInventoryReadiness.PUBLISHING,
+                FrontendVisibleValueDomain.FOR_SUBTREE
+        );
+
+        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, notPublished.status());
+        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, notPublished.deferredBoundary().domain());
+        assertEquals(
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
+                notPublished.deferredBoundary().reason()
+        );
+        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, publishing.status());
+        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, publishing.deferredBoundary().domain());
+        assertEquals(
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
+                publishing.deferredBoundary().reason()
+        );
+    }
+
+    @Test
+    void resolvePublishedGateBodyPassesRequestAstAndCurrentScopeGates() throws Exception {
+        var analyzedInput = analyzedInput("for_body_published.gd", """
+                class_name ForBodyPublished
+                extends Node
+
+                func ping(values, seed):
+                    for item in values:
+                        print(seed)
+                """);
+        var forStatement = findNode(analyzedInput.unit().ast(), ForStatement.class, _ -> true);
+        var useSite = findIdentifierExpression(forStatement.body(), "seed");
+
+        var result = resolveWithGate(
+                analyzedInput,
+                forStatement,
+                useSite,
+                FrontendInventoryGateStatus.SUPPORTED,
+                FrontendBodyInventoryReadiness.PUBLISHED,
+                FrontendVisibleValueDomain.FOR_SUBTREE
+        );
+
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
+        assertTrue(result.filteredHits().isEmpty());
+        assertNull(result.deferredBoundary());
+    }
+
+    @Test
+    void resolveUnsupportedGateBodyDoesNotFallBackToOuterBinding() throws Exception {
+        var analyzedInput = analyzedInput("for_body_unsupported_no_fallback.gd", """
+                class_name ForBodyUnsupportedNoFallback
+                extends Node
+
+                var item = 100
+
+                func ping(values):
+                    for item in values:
+                        print(item)
+                """);
+        var forStatement = findNode(analyzedInput.unit().ast(), ForStatement.class, _ -> true);
+        var useSite = findIdentifierExpression(forStatement.body(), "item");
+
+        var result = resolveWithGate(
+                analyzedInput,
+                forStatement,
+                useSite,
+                FrontendInventoryGateStatus.UNSUPPORTED,
+                FrontendBodyInventoryReadiness.NOT_PUBLISHED,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        );
+
+        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
+        assertNull(result.visibleValue());
+        assertTrue(result.filteredHits().isEmpty());
+        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, result.deferredBoundary().domain());
+        assertEquals(
+                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                result.deferredBoundary().reason()
+        );
+    }
+
+    @Test
     void resolveSealsForIterableAsDeferredUnsupported() throws Exception {
         var analyzedInput = analyzedInput("for_iterable_deferred.gd", """
                 class_name ForIterableDeferred
@@ -704,6 +816,31 @@ class FrontendVisibleValueResolverTest {
                 IdentifierExpression.class,
                 identifierExpression -> identifierExpression.name().equals(name)
         );
+    }
+
+    private static @NotNull FrontendVisibleValueResolution resolveWithGate(
+            @NotNull AnalyzedInput analyzedInput,
+            @NotNull ForStatement forStatement,
+            @NotNull IdentifierExpression useSite,
+            @NotNull FrontendInventoryGateStatus status,
+            @NotNull FrontendBodyInventoryReadiness readiness,
+            @NotNull FrontendVisibleValueDomain requestDomain
+    ) {
+        var gate = FrontendInventoryGate.pending(
+                        forStatement,
+                        forStatement,
+                        forStatement.body(),
+                        FrontendVisibleValueDomain.FOR_SUBTREE
+                )
+                .withStatus(status)
+                .withBodyInventoryReadiness(readiness);
+        var registry = FrontendInventoryGateRegistry.builder().add(gate).build();
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData(), registry);
+        return resolver.resolve(new FrontendVisibleValueResolveRequest(
+                useSite.name(),
+                useSite,
+                requestDomain
+        ));
     }
 
     private static <T extends Node> @NotNull T findNode(
