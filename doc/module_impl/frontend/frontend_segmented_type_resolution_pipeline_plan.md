@@ -239,12 +239,26 @@ Interface phase 不得：
 新增 `FrontendSuiteResolver` 或等价 body coordinator。它按 Godot `resolve_suite()` 的形状处理 body：
 
 ```text
+resolveCallableOwner(context, callableOwner):
+  runCallableEntryVarTypePost(context, callableOwner)
+  resolveSuite(context, callableOwner.body)
+
+runCallableEntryVarTypePost(context, callableOwner):
+  for parameter in callableOwner.parameters():
+      putSlotType(VAR_TYPE_POST, parameter, baselineType)
+  context.typedEnvironment().flushPendingFacts()
+
 resolveSuite(context, block):
   for statement in block.statements():
       resolveStatement(context, statement)
-      flushStatementFacts(context, statement)
+      context.typedEnvironment().flushPendingFacts()
       resolvePendingBodiesIfAllowed(context)
 ```
+
+参数是 callable-entry `VAR_TYPE_POST` facts。它们不是 statement root，因而必须在进入
+statement 循环前写入 pending overlay 并 flush 到 current-suite committed overlay。该步骤与
+statement-local var type post procedure 互补而非绕过：二者共享 `VAR_TYPE_POST` owner stage、
+冲突检查、compiler-only guard 与 suite-export transaction；此前不得写 stable `slotTypes()`。
 
 `resolveStatement(...)` 不是新的 owner。它只负责按 statement 结构调用 body-aware owner 子过程：
 
@@ -258,12 +272,13 @@ resolveSuite(context, block):
 
 `resolveStatement(...)` 内部的 owner 子过程顺序是新的硬不变量，必须保持 legacy whole-phase 的可见性顺序：
 
+0. Callable-entry var type post pre-publication：在进入 statement 循环前，为每个 parameter 发布 `VAR_TYPE_POST` slot fact，并调用 `flushPendingFacts()` 使其进入 current-suite committed overlay。它不是 statement-local procedure 的例外。
 1. Top binding runner：为当前 statement 内的 bare identifier / chain head use-site 写入 binding overlay。
 2. Local stabilization runner：在 top binding overlay、当前 suite 已提交 typed fact、stable lexical inventory 之上解析 eligible `:=` initializer，并写入当前 statement 的 local slot pending overlay。
 3. Chain binding runner：消费 top binding overlay 与 local stabilization pending / committed slot fact，发布 `resolvedMembers()` 与 chain-owned `resolvedCalls()` overlay。
 4. Expr typing runner：消费 binding、member、call 与 local slot overlay，发布 `expressionTypes()` 与 bare-call `resolvedCalls()` overlay；`backfillInferredLocalType(...)` 仍只做 guard-only 检查。
 5. Var type post procedure：消费 expression type 与 source-facing local slot overlay，发布 final `slotTypes()` overlay。
-6. Statement flush：把当前 statement pending overlay 转入 current-suite committed overlay，供后续 statement / gate classifier 读取；不得在这一步写 stable side table。
+6. Pending fact flush：把当前 statement pending overlay 转入 current-suite committed overlay，供后续 statement / gate classifier 读取；不得在这一步写 stable side table。
 
 `SuiteResolver` 必须把 interface surface 的 declaration index 交给 visible-value resolver，以检查 scope 选中的 ordinary local 的 declaration identity 已由 baseline inventory 发布；这不是重新扫描普通 `var`，也不改变 resolver 现有 filtered-hit 规则。它还必须把 typed lexical baseline 传给 root 与 child typed environment，使参数和 ordinary local 在没有更新 overlay / stable slot fact 时仍有 immutable source-facing 初始类型。
 
@@ -303,7 +318,7 @@ Gate classifier 属于 statement 结构处理的一部分，只能在其 header 
 5. interface typed baseline 提供的冻结 source-facing fallback；`BlockScope` / `CallableScope` 继续提供 lexical inventory 名称查找。
 6. class/global/singleton/type-meta lookup。
 
-Pending overlay 只对当前 statement 内后续 owner 子过程可见。Statement flush 后，它才变成 current-suite committed overlay，并对后续 statement / gate classifier 可见。Committed overlay 仍不是 stable publication。
+Pending overlay 只对当前 statement 内后续 owner 子过程可见。`flushPendingFacts()` 后，它才变成 current-suite committed overlay，并对后续 statement / gate classifier 可见。Committed overlay 仍不是 stable publication。
 
 写入规则：
 
@@ -311,7 +326,7 @@ Pending overlay 只对当前 statement 内后续 owner 子过程可见。Stateme
 - 只有 `FrontendTopBindingAnalyzer` 可写 binding overlay。
 - 只有 `FrontendChainBindingAnalyzer` 可写 member / chain-call overlay。
 - 只有 `FrontendExprTypeAnalyzer` 可写 expression type / bare-call overlay。
-- 只有 `FrontendVarTypePostAnalyzer` 可写 source-facing slot type overlay。
+- 只有 var type post owner 可写 source-facing slot type overlay；它包括 callable-entry 参数预发布与 statement-local local-`var` publication，两者都必须使用 `VAR_TYPE_POST` stage。
 - overlay fact 必须带 owner metadata，并在导出到 stable side table 前执行冲突检测、idempotent 检查和 compiler-only guard。
 - compiler-only guard 必须检查该 fact 可达的每个 user-visible `GdType` payload；不能只检查 `expressionTypes()` / `slotTypes()` 两个表。
 - compiler-only guard 必须在 pending overlay write 时就 fail-fast，而不是等 suite export 时才补救。任何 scratch 写入如果命中 `GdCompilerType`，必须在 write API 返回前拒绝该 fact，不能先写入 pending / committed overlay 再在 export 时回滚。
@@ -322,16 +337,16 @@ Pending overlay 只对当前 statement 内后续 owner 子过程可见。Stateme
 
 - Owner procedure transient cache：owner 子过程私有，只给当前 chain / expr reduction 的 retry 回调读取；不属于 `TypedLexicalEnvironment`，不参与 flush / export，owner 子过程结束即丢弃。
 - 当前 statement pending overlay：只给当前 statement 后续 owner 子过程读取；只接受每个 AST key 的最终 publication fact。
-- current-suite committed overlay：由 statement flush 合并而来，给后续 statement 与 gate classifier 读取；仍不是 stable publication。
+- current-suite committed overlay：由 pending fact flush 合并而来，给后续 statement 与 gate classifier 读取；仍不是 stable publication。
 - `FrontendAnalysisData` stable side tables / `BlockScope` stable slot：只在 suite export 的 per-owner patch apply / stable export helper 后更新，供 diagnostics-only phase、compile gate 与 lowering 使用。
 
 Overlay 的目标是模拟 Godot “当前 statement 已解析出的类型可被后续 statement 使用”的效果，同时避免提前污染 `FrontendAnalysisData` stable tables。
 
 写入与导出时机：
 
-- Owner runner 只能写当前 statement pending overlay。
-- `flushStatementFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay，并执行 owner、conflict、idempotent、exact-type 与 compiler-only guard。该 guard 必须与 suite export 使用同一 type-bearing field walker，避免 scratch 层接受 stable merge 层会拒绝的 compiler-only payload。
-- `flushStatementFacts(...)` 不得通过 stable side table 的临时 whole-table publish 再“读回 overlay”。如果当前实现为了复用旧 analyzer helper 需要 `updateXxx(...)` / stable side table 作为中转，则该 helper 必须先被改写或隔离为 legacy path，不能把中转污染当作阶段性可接受状态。
+- Statement owner runner 只能写当前 statement pending overlay；callable-entry var type post 在 statement 循环前写参数 pending overlay。
+- `flushPendingFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay，并执行 owner、conflict、idempotent、exact-type 与 compiler-only guard。该 guard 必须与 suite export 使用同一 type-bearing field walker，避免 scratch 层接受 stable merge 层会拒绝的 compiler-only payload。
+- `flushPendingFacts(...)` 不得通过 stable side table 的临时 whole-table publish 再“读回 overlay”。如果当前实现为了复用旧 analyzer helper 需要 `updateXxx(...)` / stable side table 作为中转，则该 helper 必须先被改写或隔离为 legacy path，不能把中转污染当作阶段性可接受状态。
 - Suite 收敛时，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner `FrontendAnalysisPatch`。
 - Patch transaction 固定按 top binding -> local stabilization -> chain binding -> expr typing -> var type post apply；每个 step 只包含该 owner 的 facts。
 - Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 per-owner patch apply / stable export helper 中更新。
@@ -639,7 +654,7 @@ Compiler-only guard payload matrix：
 - [x] C2 新增 `gd.script.gdcc.frontend.sema.patch` 包，迁入 legacy `FrontendAnalysisPatch` / `FrontendLocalSlotTypeUpdate`，并新增 `FrontendOwnerPatch`、`FrontendTopBindingPatch`、`FrontendLocalTypeStabilizationPatch`、`FrontendChainBindingPatch`、`FrontendExprTypePatch`、`FrontendVarTypePostPatch` 与 `FrontendPatchTransaction`。
 - [x] C3 新增 `FrontendPublishedFactTypeGuard` shared walker，覆盖 binding/member/call/expression/slot/update 六类 source-facing typed payload；`FrontendAnalysisData.applyPatch(...)`、owner patch、legacy window scratch put 与保留的 `updateXxx(...)` whole-table publish 均接入该 guard。
 - [x] C4 Overlay 写入 API 必须显式传入 `FrontendSemanticStage` owner metadata；错误 owner fail-fast，local slot overlay 继续执行 `Variant -> exact` / exact-same-only / no-void / no-compiler-only 规则。
-- [x] C5 `flushStatementFacts()` 只把 pending overlay 合并到 committed overlay；`exportPatchTransaction()` 只导出 fixed-order per-owner patch transaction，并由 `FrontendPatchTransaction` 拒绝 owner 顺序回退或重复 owner。
+- [x] C5 `flushPendingFacts()` 只把 pending overlay 合并到 committed overlay；`exportPatchTransaction()` 只导出 fixed-order per-owner patch transaction，并由 `FrontendPatchTransaction` 拒绝 owner 顺序回退或重复 owner。
 - [x] C6 移除未接入生产路径的 `FrontendOwnerRetryMemo`，并把合同明确为 owner procedure 内部非导出 transient cache：`BodyExpressionResolver` 双 expression cache / call cache、`FrontendChainReductionFacade.reducedChains` 与 helper bounded retry 均不属于 typed lexical environment，不参与 flush / export。
 - [x] C7 `FrontendVisibleValueResolver` 新增 overlay-aware `resolve(request, environment)` overload；它只在 declaration-order / self-reference filter 之后替换 returned local 的 effective type，不绕过 future-local filtered hit。
 - [ ] C8 Expression semantic support 与 chain reduction facade 的 dependency-type callback 尚未替换为 explicit environment lookup；这是阶段 E owner procedure 重写的一部分，本阶段只提供可接入入口。

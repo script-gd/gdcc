@@ -115,25 +115,29 @@ public class FrontendSuiteResolver {
                 diagnosticManager,
                 classRegistry
         );
-        publishCallableParameterSlots(context, callableOwner);
+        runCallableEntryVarTypePost(context, callableOwner);
         resolveSuite(context, body);
     }
 
-    private void publishCallableParameterSlots(
+    /// Publishes callable-entry var-type-post facts before the first body statement is resolved.
+    ///
+    /// Parameters are not statement roots, so this complements rather than bypasses the
+    /// statement-local var-type-post procedure. Both paths publish through the same overlay,
+    /// owner stage, and suite-export transaction.
+    private void runCallableEntryVarTypePost(
             @NotNull FrontendSuiteContext context,
             @NotNull Node callableOwner
     ) {
         var parameters = callableParameters(callableOwner);
         for (var parameter : parameters) {
-            publishParameterSlotType(context, parameter);
+            publishCallableEntryParameterSlotType(context, parameter);
             reportUnsupportedParameterDefault(context, parameter);
         }
-        // Parameters are callable-entry facts rather than statement facts, but they still need to
-        // enter the suite overlay before export and before the first statement consumes them.
-        context.typedEnvironment().flushStatementFacts();
+        // Make every parameter visible to the first statement without publishing stable facts.
+        context.typedEnvironment().flushPendingFacts();
     }
 
-    private void publishParameterSlotType(
+    private void publishCallableEntryParameterSlotType(
             @NotNull FrontendSuiteContext context,
             @NotNull Parameter parameter
     ) {

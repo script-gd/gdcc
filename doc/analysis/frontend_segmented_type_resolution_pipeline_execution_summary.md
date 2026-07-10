@@ -55,12 +55,27 @@ Interface 层不得发布 body typed facts。特别是不得发布 `expressionTy
 Body 层由 `FrontendSuiteResolver` 或等价 coordinator 驱动。它按源码顺序进入 supported suite，形态如下：
 
 ```text
+resolveCallableOwner(context, callableOwner):
+  runCallableEntryVarTypePost(context, callableOwner)
+  resolveSuite(context, callableOwner.body)
+
+runCallableEntryVarTypePost(context, callableOwner):
+  for parameter in callableOwner.parameters():
+      putSlotType(VAR_TYPE_POST, parameter, baselineType)
+  context.typedEnvironment().flushPendingFacts()
+
 resolveSuite(context, block):
   for statement in block.statements():
       resolveStatement(context, statement)
-      flushStatementFacts(context, statement)
+      context.typedEnvironment().flushPendingFacts()
       resolvePendingBodiesIfAllowed(context)
 ```
+
+参数是 callable-entry `VAR_TYPE_POST` facts，不是 statement root。因此预发布是与
+statement-local var type post procedure 互补的正规步骤，而不是绕过或例外：两条路径都使用
+同一 owner stage、typed overlay 与 suite-export transaction。参数 facts 在进入 statement
+循环前 flush 到 committed overlay，使第一个 statement 可读取它们，同时 stable side table
+仍保持不变。
 
 `resolveStatement(...)` 不是新的 semantic owner。它只按 statement 结构编排已有 owner 的 body-aware 子过程：top binding、local stabilization、chain binding、expr typing、gate classifier 与 var type post。
 
@@ -90,7 +105,11 @@ Body procedure 必须是 root-bounded、statement-local 的实现。每个 owner
 4. Expr typing runner。
 5. Gate classifier hook。
 6. Var type post procedure。
-7. Statement flush。
+7. Pending fact flush。
+
+在上述 statement-local 顺序之前，callable-entry var type post 会为每个参数发布
+`VAR_TYPE_POST` slot fact 并 flush 到 committed overlay。它不属于第 1-7 步的 statement
+procedure，但使用相同的 owner stage 和发布协议。
 
 Top binding runner 为当前 statement 内的 bare identifier 与 chain head use-site 写入 binding overlay。
 
@@ -104,7 +123,7 @@ Gate classifier hook 在 header / synthetic fixture 已完成 top binding、loca
 
 Var type post procedure 消费 expression type 与 source-facing local slot overlay，发布 final `slotTypes()` overlay。
 
-Statement flush 把当前 statement pending overlay 转入 current-suite committed overlay，供后续 statement 与 gate classifier 读取。Flush 不得写入 stable side table 或 stable `BlockScope` slot。
+Pending fact flush 把当前 statement pending overlay 转入 current-suite committed overlay，供后续 statement 与 gate classifier 读取。Flush 不得写入 stable side table 或 stable `BlockScope` slot。
 
 这个顺序不能重排。尤其 chain binding 读取 receiver local slot 时，必须先看到 local stabilization 对前序 statement 或当前 statement 前序子过程写入的 exact slot fact。
 
@@ -121,7 +140,7 @@ Statement flush 把当前 statement pending overlay 转入 current-suite committ
 5. `FrontendTypedLexicalBaseline` 提供的冻结 source-facing fallback；`BlockScope` / `CallableScope` 仍负责 lexical inventory 名称查找。
 6. class / global / singleton / type-meta lookup。
 
-Pending overlay 只对当前 statement 后续 owner 子过程可见。Statement flush 后，pending facts 才进入 current-suite committed overlay，并对后续 statement 与 gate classifier 可见。Committed overlay 仍不是 stable publication。
+Pending overlay 只对当前 statement 后续 owner 子过程可见。`flushPendingFacts()` 后，pending facts 才进入 current-suite committed overlay，并对后续 statement 与 gate classifier 可见。Committed overlay 仍不是 stable publication。
 
 `TypedLexicalEnvironment` 的目标是模拟 source-order body resolution 中“前缀 statement 已解析出的类型可被后续 statement 使用”的行为，同时避免提前污染 stable semantic facts。
 
@@ -131,7 +150,7 @@ Pending overlay 只对当前 statement 后续 owner 子过程可见。Statement 
 
 1. Owner procedure transient cache：当前由 `BodyExpressionResolver` 的 expression / finalized-expression / call caches、`FrontendChainReductionFacade.reducedChains` 与 helper bounded retry 承担；只给当前 chain / expr reduction 的 retry 回调读取，owner 子过程结束即丢弃。
 2. Current statement pending overlay：当前 statement 后续 owner 子过程可读，只接受每个 AST key 的最终 publication fact。
-3. Current-suite committed overlay：由 statement flush 合并而来，后续 statement 与 gate classifier 可读，但仍不是 stable publication。
+3. Current-suite committed overlay：由 pending fact flush 合并而来，后续 statement 与 gate classifier 可读，但仍不是 stable publication。
 4. `FrontendAnalysisData` stable side tables / `BlockScope` stable slot：只在 suite export 的 per-owner patch apply / stable export helper 后更新。
 
 Nested chain / argument retry 的中间事实只能存在于 owner-local transient cache 中。Retry 中出现的临时 `DEFERRED`、暂定 `Variant`、中间 status 或 detailReason 不得写入 pending overlay、committed overlay 或 stable side table。
@@ -140,9 +159,9 @@ Nested chain / argument retry 的中间事实只能存在于 owner-local transie
 
 ## 8. Overlay 写入、Flush 与 Export
 
-Owner runner 只能写当前 statement pending overlay。Overlay write 必须携带 owner metadata，并在写入时执行 owner、conflict、idempotent、exact-type 与 compiler-only guard。
+Statement owner runner 只能写当前 statement pending overlay；callable-entry var type post 在 statement 循环前写参数 pending overlay。Overlay write 必须携带 owner metadata，并在写入时执行 owner、conflict、idempotent、exact-type 与 compiler-only guard。
 
-`flushStatementFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay。Flush 必须复用 suite export 使用的同一个 type-bearing field walker，不能在 scratch 层接受 export 层会拒绝的 payload。
+`flushPendingFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay。Flush 必须复用 suite export 使用的同一个 type-bearing field walker，不能在 scratch 层接受 export 层会拒绝的 payload。
 
 Suite 收敛后，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner patch。Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 per-owner patch apply 或 stable export helper 中更新。
 

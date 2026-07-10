@@ -61,7 +61,7 @@ class FrontendTypedLexicalEnvironmentTest {
         assertSame(GdVariantType.VARIANT, requireLocal(bodyScope, "local").type());
         assertSame(GdVariantType.VARIANT, Objects.requireNonNull(originalBinding.resolvedValue()).type());
 
-        environment.flushStatementFacts();
+        environment.flushPendingFacts();
 
         assertFalse(environment.hasPendingFacts());
         assertTrue(environment.hasCommittedFacts());
@@ -92,7 +92,7 @@ class FrontendTypedLexicalEnvironmentTest {
                 FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
                 new FrontendLocalSlotTypeUpdate(parentScope, "parent_local", declaration, GdIntType.INT)
         );
-        parentEnvironment.flushStatementFacts();
+        parentEnvironment.flushPendingFacts();
         var childScope = new BlockScope(parentScope, BlockScopeKind.IF_BODY);
         var childEnvironment = new FrontendTypedLexicalEnvironment(childScope, analysisData, parentEnvironment);
 
@@ -208,7 +208,7 @@ class FrontendTypedLexicalEnvironmentTest {
                 expressionNode,
                 FrontendExpressionType.resolved(GdIntType.INT)
         ));
-        environment.flushStatementFacts();
+        environment.flushPendingFacts();
         assertThrows(FrontendAnalysisPatchException.class, () -> environment.putExpressionType(
                 FrontendSemanticStage.EXPR_TYPE,
                 expressionNode,

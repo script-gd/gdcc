@@ -10,6 +10,7 @@ import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
@@ -30,6 +31,7 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import gd.script.gdcc.frontend.sema.patch.FrontendVarTypePostPatch;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -605,6 +607,43 @@ class FrontendSuiteResolverTest {
         );
     }
 
+    @Test
+    void callableEntryVarTypePostFactsStayOverlayLocalUntilSuiteExport() throws Exception {
+        var phaseInput = phaseInput("suite_callable_entry_var_post.gd", """
+                class_name SuiteCallableEntryVarPost
+                extends RefCounted
+
+                func ping(value: int):
+                    var first := value
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var parameter = pingFunction.parameters().getFirst();
+        var first = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                declaration -> declaration.name().equals("first")
+        );
+        var ownerProcedures = new CallableEntryVarTypePostOwnerProcedures(parameter, first);
+
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+                surface,
+                phaseInput.registry(),
+                phaseInput.analysisData(),
+                phaseInput.diagnostics()
+        );
+
+        assertAll(
+                () -> assertTrue(ownerProcedures.parameterWasCommittedBeforeFirstStatement()),
+                () -> assertTrue(ownerProcedures.stableSlotTypesWereUnchangedBeforeSuiteExport()),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(parameter))
+        );
+    }
+
     private static void resolveWith(
             @NotNull PhaseInput phaseInput,
             @NotNull RecordingOwnerProcedures ownerProcedures
@@ -1082,6 +1121,46 @@ class FrontendSuiteResolverTest {
 
         private boolean flushedVarPostFactWasVisibleBeforeSuiteExport() {
             return flushedVarPostFactWasVisibleBeforeSuiteExport;
+        }
+    }
+
+    private static final class CallableEntryVarTypePostOwnerProcedures
+            implements FrontendStatementResolver.OwnerProcedures {
+        private final @NotNull Parameter parameter;
+        private final @NotNull VariableDeclaration firstStatement;
+        private boolean parameterWasCommittedBeforeFirstStatement;
+        private boolean stableSlotTypesWereUnchangedBeforeSuiteExport;
+
+        private CallableEntryVarTypePostOwnerProcedures(
+                @NotNull Parameter parameter,
+                @NotNull VariableDeclaration firstStatement
+        ) {
+            this.parameter = parameter;
+            this.firstStatement = firstStatement;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            if (root != firstStatement) {
+                return;
+            }
+            var patch = context.typedEnvironment().exportPatchTransaction().patches().stream()
+                    .filter(FrontendVarTypePostPatch.class::isInstance)
+                    .map(FrontendVarTypePostPatch.class::cast)
+                    .findFirst()
+                    .orElse(null);
+            parameterWasCommittedBeforeFirstStatement = patch != null
+                    && patch.slotTypes().get(parameter) == GdIntType.INT
+                    && context.typedEnvironment().slotType(parameter) == GdIntType.INT;
+            stableSlotTypesWereUnchangedBeforeSuiteExport = context.analysisData().slotTypes().get(parameter) == null;
+        }
+
+        private boolean parameterWasCommittedBeforeFirstStatement() {
+            return parameterWasCommittedBeforeFirstStatement;
+        }
+
+        private boolean stableSlotTypesWereUnchangedBeforeSuiteExport() {
+            return stableSlotTypesWereUnchangedBeforeSuiteExport;
         }
     }
 

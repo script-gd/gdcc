@@ -270,8 +270,10 @@ public final class FrontendTypedLexicalEnvironment {
         );
     }
 
-    /// Moves current-statement facts into the suite overlay without touching stable data or scopes.
-    public void flushStatementFacts() {
+    /// Moves pending facts into the suite overlay without touching stable data or scopes.
+    ///
+    /// Callers use this at both statement and callable-entry boundaries.
+    public void flushPendingFacts() {
         pendingFacts.checkNoCompilerOnlyLeaks();
         committedFacts.mergeFrom(pendingFacts);
         pendingFacts.clear();
