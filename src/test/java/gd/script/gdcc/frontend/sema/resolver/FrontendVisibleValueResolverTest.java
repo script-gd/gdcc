@@ -6,7 +6,9 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendBodyInventoryReadiness;
+import gd.script.gdcc.frontend.sema.FrontendBodyLocalDeclaration;
 import gd.script.gdcc.frontend.sema.FrontendInventoryGate;
 import gd.script.gdcc.frontend.sema.FrontendInventoryGateRegistry;
 import gd.script.gdcc.frontend.sema.FrontendInventoryGateStatus;
@@ -27,12 +29,14 @@ import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SourceFile;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Predicate;
 
@@ -100,6 +104,62 @@ class FrontendVisibleValueResolverTest {
                 result.primaryFilteredHit().reason()
         );
         assertEquals(ScopeValueKind.LOCAL, result.primaryFilteredHit().value().kind());
+    }
+
+    @Test
+    void resolveValidatesPublishedDeclarationIdentityWithoutReplacingRangeFilter() throws Exception {
+        var analyzedInput = analyzedInput("future_local_index.gd", """
+                class_name FutureLocalIndex
+                extends Node
+
+                func ping():
+                    print(count)
+                    var count := 1
+                """);
+        var pingFunction = findFunction(analyzedInput.unit().ast(), "ping");
+        var useSite = findIdentifierExpression(pingFunction.body(), "count");
+        var declaration = findNode(
+                pingFunction.body(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("count")
+        );
+        var scope = assertInstanceOf(BlockScope.class, analyzedInput.analysisData().scopesByAst().get(declaration));
+        var binding = Objects.requireNonNull(scope.resolveValueHere("count"), "count local must be published");
+        var publishedIndex = new FrontendBodyDeclarationIndex(Map.of(
+                pingFunction.body(),
+                List.of(new FrontendBodyLocalDeclaration(declaration, binding, 0))
+        ));
+        var resolver = new FrontendVisibleValueResolver(
+                analyzedInput.analysisData(),
+                FrontendInventoryGateRegistry.empty(),
+                publishedIndex
+        );
+
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "count",
+                useSite,
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
+
+        assertEquals(FrontendVisibleValueStatus.NOT_FOUND, result.status());
+        assertEquals(
+                FrontendFilteredValueHitReason.DECLARATION_AFTER_USE_SITE,
+                result.primaryFilteredHit().reason()
+        );
+
+        var incompleteIndex = new FrontendBodyDeclarationIndex(Map.of());
+        var incompleteResolver = new FrontendVisibleValueResolver(
+                analyzedInput.analysisData(),
+                FrontendInventoryGateRegistry.empty(),
+                incompleteIndex
+        );
+        assertThrows(IllegalStateException.class, () -> incompleteResolver.resolve(
+                new FrontendVisibleValueResolveRequest(
+                        "count",
+                        useSite,
+                        FrontendVisibleValueDomain.EXECUTABLE_BODY
+                )
+        ));
     }
 
     @Test

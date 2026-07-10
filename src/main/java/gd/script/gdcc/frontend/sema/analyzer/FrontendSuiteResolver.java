@@ -94,7 +94,12 @@ public class FrontendSuiteResolver {
         if (!(bodyScope instanceof BlockScope blockScope)) {
             return;
         }
-        var environment = new FrontendTypedLexicalEnvironment(blockScope, analysisData);
+        var environment = new FrontendTypedLexicalEnvironment(
+                blockScope,
+                analysisData,
+                null,
+                interfaceSurface.typedLexicalBaseline()
+        );
         var context = new FrontendSuiteContext(
                 sourcePathFor(interfaceSurface, callableOwner, analysisData),
                 callableOwner,
@@ -140,7 +145,11 @@ public class FrontendSuiteResolver {
         if (slot == null || slot.kind() != ScopeValueKind.PARAMETER || slot.declaration() != parameter) {
             throw new IllegalStateException("Parameter '" + parameter.name().trim() + "' inventory slot drifted");
         }
-        context.typedEnvironment().putSlotType(FrontendSemanticStage.VAR_TYPE_POST, parameter, slot.type());
+        var baselineType = context.interfaceSurface().typedLexicalBaseline().typeFor(parameter);
+        if (baselineType == null) {
+            throw new IllegalStateException("Parameter '" + parameter.name().trim() + "' is missing typed baseline");
+        }
+        context.typedEnvironment().putSlotType(FrontendSemanticStage.VAR_TYPE_POST, parameter, baselineType);
     }
 
     private static void reportUnsupportedParameterDefault(
@@ -179,7 +188,12 @@ public class FrontendSuiteResolver {
             return;
         }
         var classScope = propertyContext.declaringClassScope();
-        var environment = new FrontendTypedLexicalEnvironment(classScope, analysisData);
+        var environment = new FrontendTypedLexicalEnvironment(
+                classScope,
+                analysisData,
+                null,
+                interfaceSurface.typedLexicalBaseline()
+        );
         var context = new FrontendSuiteContext(
                 sourcePathFor(interfaceSurface, propertyInitializer, analysisData),
                 propertyInitializer,

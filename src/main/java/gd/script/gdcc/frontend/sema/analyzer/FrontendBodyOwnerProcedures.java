@@ -29,6 +29,7 @@ import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
@@ -91,6 +92,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     private static final @NotNull String UNSUPPORTED_EXPRESSION_ROUTE_CATEGORY = "sema.unsupported_expression_route";
 
     private FrontendAnalysisData cachedAnalysisData;
+    private FrontendBodyDeclarationIndex cachedBodyDeclarationIndex;
     private FrontendVisibleValueResolver cachedVisibleValueResolver;
 
     @Override
@@ -950,11 +952,16 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     }
 
     private @NotNull FrontendVisibleValueResolver visibleValueResolver(@NotNull FrontendSuiteContext context) {
-        if (cachedAnalysisData != context.analysisData() || cachedVisibleValueResolver == null) {
+        var bodyDeclarationIndex = context.interfaceSurface().bodyDeclarationIndex();
+        if (cachedAnalysisData != context.analysisData()
+                || cachedBodyDeclarationIndex != bodyDeclarationIndex
+                || cachedVisibleValueResolver == null) {
             cachedAnalysisData = context.analysisData();
+            cachedBodyDeclarationIndex = bodyDeclarationIndex;
             cachedVisibleValueResolver = new FrontendVisibleValueResolver(
                     context.analysisData(),
-                    context.interfaceSurface().inventoryGateRegistry()
+                    context.interfaceSurface().inventoryGateRegistry(),
+                    bodyDeclarationIndex
             );
         }
         return cachedVisibleValueResolver;

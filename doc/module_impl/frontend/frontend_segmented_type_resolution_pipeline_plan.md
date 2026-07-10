@@ -104,7 +104,7 @@ GDCC 的完整 lexical inventory 要求不是因为 Godot 缺少前向 local 检
 
 正确模型是：
 
-- 对已支持的 block，基础结构层沿用现有 `FrontendVariableAnalyzer` + scope graph 发布完整 ordinary local inventory；interface 层建立 body declaration index / typed baseline view，而不是另起一套重复发布通道。
+- 对已支持的 block，基础结构层沿用现有 `FrontendVariableAnalyzer` + scope graph 发布完整 ordinary local inventory；interface 层建立 body declaration index / typed baseline view，而不是另起一套重复发布通道。生产 resolver 仍由 scope 完成按名称查找，并以 index 的 declaration identity 验证命中的 ordinary local 属于已发布 inventory；现有 source byte range filter 继续负责 declaration-order 与 initializer self-reference 语义。
 - local `:=` 初始类型仍是 `Variant`。
 - body `SuiteResolver` 只负责按源码顺序稳定类型、发布 use-site facts、推进 gate readiness。
 - 若某个 child feature gate 后续转正，必须先发布该 child body 的 gate-owned bindings 与完整 local inventory，再解析 body suite。
@@ -222,9 +222,9 @@ Interface phase 输入：
 
 Interface phase 输出：
 
-- `FrontendBodyDeclarationIndex`：每个 supported block 的完整 declaration 列表与 source order。
+- `FrontendBodyDeclarationIndex`：每个 supported block 的完整 declaration 列表与 source order；production resolver 用它验证 scope local 的 published-inventory identity。
 - `FrontendInventoryGateRegistry`：typed-dependent subtree 的 gate owner、header root、body root、deferred domain、readiness。
-- `FrontendTypedLexicalBaseline`：参数、显式 typed local、已可静态确定的 interface-level source-facing slot baseline。
+- `FrontendTypedLexicalBaseline`：参数、显式 typed local、已可静态确定的 interface-level source-facing slot baseline；production `TypedLexicalEnvironment` 将其作为冻结 fallback。
 - `FrontendSuiteEntryRoots`：body layer 可进入的 callable/property initializer/supported block 根列表。
 
 Interface phase 不得：
@@ -265,6 +265,8 @@ resolveSuite(context, block):
 5. Var type post procedure：消费 expression type 与 source-facing local slot overlay，发布 final `slotTypes()` overlay。
 6. Statement flush：把当前 statement pending overlay 转入 current-suite committed overlay，供后续 statement / gate classifier 读取；不得在这一步写 stable side table。
 
+`SuiteResolver` 必须把 interface surface 的 declaration index 交给 visible-value resolver，以检查 scope 选中的 ordinary local 的 declaration identity 已由 baseline inventory 发布；这不是重新扫描普通 `var`，也不改变 resolver 现有 filtered-hit 规则。它还必须把 typed lexical baseline 传给 root 与 child typed environment，使参数和 ordinary local 在没有更新 overlay / stable slot fact 时仍有 immutable source-facing 初始类型。
+
 Suite 收敛后，不能把 current-suite committed overlay 整体打包为单个多 owner `FrontendAnalysisPatch`。Stable export 必须构造按 owner 有序的 patch transaction，并按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序依次 apply 每个 owner patch。这样既保留 source-order suite 的前缀可见性，又不破坏 `FrontendAnalysisPatch` 现有单 stage / 单 owner 约束。
 
 不得重排 1-5。尤其是 chain binding 读取 receiver local slot 时，必须先看到 local stabilization 对前序 statement 或当前 statement 前序子过程写入的 exact slot fact；否则会重新打开 receiver 被误读成 `Variant` 的历史回归。
@@ -296,9 +298,10 @@ Gate classifier 属于 statement 结构处理的一部分，只能在其 header 
 
 1. 当前 statement pending overlay。
 2. 当前 suite committed overlay。
-3. `BlockScope` / `CallableScope` 中的 stable lexical inventory 与 stable side tables。
+3. 已发布 stable slot facts。
 4. parent typed lexical environment。
-5. class/global/singleton/type-meta lookup。
+5. interface typed baseline 提供的冻结 source-facing fallback；`BlockScope` / `CallableScope` 继续提供 lexical inventory 名称查找。
+6. class/global/singleton/type-meta lookup。
 
 Pending overlay 只对当前 statement 内后续 owner 子过程可见。Statement flush 后，它才变成 current-suite committed overlay，并对后续 statement / gate classifier 可见。Committed overlay 仍不是 stable publication。
 
@@ -928,7 +931,7 @@ Compile gate 测试：
 
 ### R2：resolver 看不到未来声明
 
-缓解：interface phase 必须基于基础结构层已发布的 inventory 为 supported suite 建立完整 local declaration index。禁止 resolver 自己扫描普通 `var` 弥补缺口；resolver 只能读取 index 与 readiness。参见第 3.2 节：完整 inventory 是 resolver filtered-hit 模型的前提，不是为了与 Godot source-order analysis 对立。
+缓解：interface phase 必须基于基础结构层已发布的 inventory 为 supported suite 建立完整 local declaration index。禁止 resolver 自己扫描普通 `var` 弥补缺口；resolver 通过 scope 的已发布 inventory 完成名称查找，并读取 index 与 readiness 验证该命中属于可解析 body。现有 source byte range filter 继续产出 declaration-after-use 与 initializer self-reference provenance；仅有 local declaration `sourceOrder` 不能替代任意 use-site 的位置模型。参见第 3.2 节：完整 inventory 是 resolver filtered-hit 模型的前提，不是为了与 Godot source-order analysis 对立。
 
 ### R3：scope slot mutation 与 published binding payload 脱节
 
@@ -1011,7 +1014,7 @@ Compile gate 测试：
 - shared compiler-only walker 同时用于 patch commit、overlay pending write、overlay flush，以及任何保留的 source-facing whole-table publication API；新增 type-bearing payload 时必须同步更新该 walker 与对应 regression tests。
 - production body path 不通过 `FrontendAnalysisData.symbolBindings()/resolvedMembers()/resolvedCalls()/expressionTypes()/slotTypes()` 返回的可变 stable 引用直接 `put()` / `clear()` / `putAll()`，也不通过 `updateXxx(...)` whole-table replace 把 body typed facts 中转到 stable side table 后再校验。
 - `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 不改写 `BlockScope`、不刷新 `symbolBindings()` payload、不产生 slot update，只保留 guard-only 协议检查。
-- supported suite 的完整 local inventory 先于 body typed resolution，declaration-after-use filtered hit 行为不退化。
+- supported suite 的完整 local inventory 先于 body typed resolution，production resolver 使用 declaration index 验证 scope local identity，且 declaration-after-use filtered hit 行为不退化。
 - local `:=` 的 source-order type stabilization 可被后续 statement / gate classifier 消费。
 - chain binding 消费 receiver local slot 时，必须看到 local stabilization 已发布到 overlay 的 exact type，而不是 interface baseline `Variant`。
 - pending feature gate 能在 typed fact 就绪后安全转正，但 child body 只有在 `bodyInventoryReadiness == PUBLISHED` 后才可解析。

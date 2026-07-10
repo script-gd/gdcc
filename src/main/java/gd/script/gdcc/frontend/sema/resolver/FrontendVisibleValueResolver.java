@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.resolver;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
+import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendInventoryGate;
 import gd.script.gdcc.frontend.sema.FrontendInventoryGateRegistry;
@@ -38,19 +39,31 @@ import java.util.Objects;
 public final class FrontendVisibleValueResolver {
     private final @NotNull FrontendAnalysisData analysisData;
     private final @NotNull FrontendInventoryGateRegistry gateRegistry;
+    private final @Nullable FrontendBodyDeclarationIndex bodyDeclarationIndex;
     private final @NotNull IdentityHashMap<Node, Node> parentByNode = new IdentityHashMap<>();
     private final @NotNull IdentityHashMap<Node, Boolean> indexedAstNodes = new IdentityHashMap<>();
 
     public FrontendVisibleValueResolver(@NotNull FrontendAnalysisData analysisData) {
-        this(analysisData, FrontendInventoryGateRegistry.empty());
+        this(analysisData, FrontendInventoryGateRegistry.empty(), null);
     }
 
     public FrontendVisibleValueResolver(
             @NotNull FrontendAnalysisData analysisData,
             @NotNull FrontendInventoryGateRegistry gateRegistry
     ) {
+        this(analysisData, gateRegistry, null);
+    }
+
+    /// `bodyDeclarationIndex` is supplied by the production SuiteResolver path to validate that a
+    /// selected local belongs to Interface-phase inventory. Legacy callers retain range-only filtering.
+    public FrontendVisibleValueResolver(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull FrontendInventoryGateRegistry gateRegistry,
+            @Nullable FrontendBodyDeclarationIndex bodyDeclarationIndex
+    ) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         this.gateRegistry = Objects.requireNonNull(gateRegistry, "gateRegistry must not be null");
+        this.bodyDeclarationIndex = bodyDeclarationIndex;
         indexSourceAstParents(analysisData.moduleSkeleton());
     }
 
@@ -406,6 +419,7 @@ public final class FrontendVisibleValueResolver {
             return null;
         }
         if (declaration instanceof VariableDeclaration variableDeclaration) {
+            checkPublishedLocalInventory(variableDeclaration, value);
             if (isVisibleLocal(variableDeclaration, useSite)) {
                 return null;
             }
@@ -416,6 +430,23 @@ public final class FrontendVisibleValueResolver {
             );
         }
         return null;
+    }
+
+    private void checkPublishedLocalInventory(
+            @NotNull VariableDeclaration declaration,
+            @NotNull ScopeValue value
+    ) {
+        if (bodyDeclarationIndex == null) {
+            return;
+        }
+        var indexedDeclaration = bodyDeclarationIndex.declarationFor(declaration);
+        if (indexedDeclaration == null
+                || indexedDeclaration.binding().declaration() != value.declaration()
+                || indexedDeclaration.binding().kind() != value.kind()) {
+            throw new IllegalStateException(
+                    "scope local '" + value.name() + "' is missing or inconsistent in published body inventory"
+            );
+        }
     }
 
     private boolean isVisibleLocal(@NotNull VariableDeclaration variableDeclaration, @NotNull Node useSite) {

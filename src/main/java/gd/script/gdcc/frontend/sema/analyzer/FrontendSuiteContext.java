@@ -56,7 +56,8 @@ public record FrontendSuiteContext(
         var childEnvironment = new FrontendTypedLexicalEnvironment(
                 blockScope,
                 analysisData,
-                typedEnvironment
+                typedEnvironment,
+                interfaceSurface.typedLexicalBaseline()
         );
         return new FrontendSuiteContext(
                 sourcePath,

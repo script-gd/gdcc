@@ -103,6 +103,27 @@ class FrontendTypedLexicalEnvironmentTest {
     }
 
     @Test
+    void typedBaselineSuppliesInitialLocalTypeUntilPublishedFactOverridesIt() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var bodyScope = newBodyScope();
+        var declaration = variable("local");
+        bodyScope.defineLocal("local", GdVariantType.VARIANT, declaration);
+        var baseline = FrontendTypedLexicalBaseline.builder()
+                .put(declaration, GdIntType.INT)
+                .build();
+        var environment = new FrontendTypedLexicalEnvironment(bodyScope, analysisData, null, baseline);
+
+        assertSame(GdIntType.INT, environment.slotType(declaration));
+        assertSame(GdIntType.INT, environment.localSlotType(bodyScope, "local", declaration));
+        assertSame(GdIntType.INT, environment.effectiveScopeValue(requireLocal(bodyScope, "local"), bodyScope).type());
+
+        environment.putSlotType(FrontendSemanticStage.VAR_TYPE_POST, declaration, GdFloatType.FLOAT);
+
+        assertSame(GdFloatType.FLOAT, environment.slotType(declaration));
+        assertSame(GdFloatType.FLOAT, environment.localSlotType(bodyScope, "local", declaration));
+    }
+
+    @Test
     void overlayRejectsWrongOwnerAndCompilerOnlyPayloadsAcrossAllSurfaces() throws Exception {
         var analysisData = FrontendAnalysisData.bootstrap();
         var bodyScope = newBodyScope();

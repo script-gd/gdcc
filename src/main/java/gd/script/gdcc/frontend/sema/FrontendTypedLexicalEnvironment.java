@@ -23,15 +23,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/// Effective typed view used by the future body suite resolver.
+/// Effective typed view used by the body suite resolver.
 ///
 /// The environment keeps statement-local pending facts separate from current-suite committed facts.
 /// Stable side tables and `BlockScope` slots are only changed after exporting a per-owner patch
-/// transaction and applying it to `FrontendAnalysisData`.
+/// transaction and applying it to `FrontendAnalysisData`. The Interface-layer baseline supplies
+/// immutable source-facing slot types until a body fact supersedes them.
 public final class FrontendTypedLexicalEnvironment {
     private final @NotNull Scope scope;
     private final @NotNull FrontendAnalysisData stableData;
     private final @Nullable FrontendTypedLexicalEnvironment parent;
+    private final @Nullable FrontendTypedLexicalBaseline typedBaseline;
     private final @NotNull OverlayFacts pendingFacts = new OverlayFacts();
     private final @NotNull OverlayFacts committedFacts = new OverlayFacts();
 
@@ -47,9 +49,19 @@ public final class FrontendTypedLexicalEnvironment {
             @NotNull FrontendAnalysisData stableData,
             @Nullable FrontendTypedLexicalEnvironment parent
     ) {
+        this(scope, stableData, parent, null);
+    }
+
+    public FrontendTypedLexicalEnvironment(
+            @NotNull Scope scope,
+            @NotNull FrontendAnalysisData stableData,
+            @Nullable FrontendTypedLexicalEnvironment parent,
+            @Nullable FrontendTypedLexicalBaseline typedBaseline
+    ) {
         this.scope = Objects.requireNonNull(scope, "scope must not be null");
         this.stableData = Objects.requireNonNull(stableData, "stableData must not be null");
         this.parent = parent;
+        this.typedBaseline = typedBaseline;
     }
 
     public @NotNull Scope scope() {
@@ -100,12 +112,21 @@ public final class FrontendTypedLexicalEnvironment {
     }
 
     public @Nullable GdType slotType(@NotNull Node astNode) {
-        return firstNonNull(
+        var localSlotType = firstNonNull(
                 pendingFacts.slotTypes.get(astNode),
                 committedFacts.slotTypes.get(astNode),
-                stableData.slotTypes().get(astNode),
-                parent != null ? parent.slotType(astNode) : null
+                stableData.slotTypes().get(astNode)
         );
+        if (localSlotType != null) {
+            return localSlotType;
+        }
+        if (parent != null) {
+            var parentSlotType = parent.slotType(astNode);
+            if (parentSlotType != null) {
+                return parentSlotType;
+            }
+        }
+        return typedBaseline != null ? typedBaseline.typeFor(astNode) : null;
     }
 
     /// Returns the effective local value without mutating the owning `BlockScope` slot.
@@ -140,6 +161,12 @@ public final class FrontendTypedLexicalEnvironment {
             var parentType = parent.localSlotType(blockScope, name, declaration);
             if (parentType != null) {
                 return parentType;
+            }
+        }
+        if (declaration instanceof Node astNode) {
+            var publishedType = slotType(astNode);
+            if (publishedType != null) {
+                return publishedType;
             }
         }
         var stableValue = blockScope.resolveValueHere(name);

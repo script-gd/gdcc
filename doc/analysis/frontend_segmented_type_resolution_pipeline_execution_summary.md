@@ -43,9 +43,9 @@ Interface 层在基础结构层之后运行，负责准备 body `SuiteResolver` 
 
 输出包括：
 
-- `FrontendBodyDeclarationIndex`：记录每个 supported block 的完整 declaration 列表与 source order。
+- `FrontendBodyDeclarationIndex`：记录每个 supported block 的完整 declaration 列表与 source order；生产 resolver 用 declaration identity 验证 scope 命中的 ordinary local 属于已发布 inventory，但不替代 declaration-order / self-reference filtered-hit。
 - `FrontendInventoryGateRegistry`：记录 typed-dependent subtree 的 gate owner、header root、body root、deferred domain 与 readiness。
-- `FrontendTypedLexicalBaseline`：记录参数、显式 typed local 与 interface 层可静态确定的 source-facing slot baseline。
+- `FrontendTypedLexicalBaseline`：记录参数、显式 typed local 与 interface 层可静态确定的 source-facing slot baseline；`TypedLexicalEnvironment` 在 overlay、已发布 slot fact 与 parent environment 都没有事实时读取该冻结 fallback。
 - `FrontendSuiteEntryRoots`：列出 body layer 可进入的 callable、property initializer 与 supported block roots。
 
 Interface 层不得发布 body typed facts。特别是不得发布 `expressionTypes()`、`resolvedMembers()` 或 `resolvedCalls()`，也不得把 `GdCompilerType` 写入 source-facing lexical baseline。
@@ -65,6 +65,8 @@ resolveSuite(context, block):
 `resolveStatement(...)` 不是新的 semantic owner。它只按 statement 结构编排已有 owner 的 body-aware 子过程：top binding、local stabilization、chain binding、expr typing、gate classifier 与 var type post。
 
 Body procedure 必须是 root-bounded、statement-local 的实现。每个 owner 子过程只处理 `SuiteResolver` 传入的 statement、header 或 expression root 及其允许的子表达式。实现可以复用纯语义 helper，但 owner 子过程不能依赖 whole-module traversal 建立隐式上下文。
+
+生产 `SuiteResolver` 将 interface surface 的 `FrontendBodyDeclarationIndex` 传给 `FrontendVisibleValueResolver`，以确认 scope 选中的 ordinary local 已在 interface phase inventory 中发布；名称查找仍由 scope 完成，source byte range 仍负责 declaration-order 与 initializer self-reference filter。它同时将 `FrontendTypedLexicalBaseline` 传给每个 `FrontendTypedLexicalEnvironment`，使尚未被 body overlay 或 stable publication 覆盖的 source-facing slot 能读取 interface-level 初始类型。
 
 第一版 body statement 支持面包括：
 
@@ -114,9 +116,10 @@ Statement flush 把当前 statement pending overlay 转入 current-suite committ
 
 1. 当前 statement pending overlay。
 2. 当前 suite committed overlay。
-3. `BlockScope` / `CallableScope` 中的 stable lexical inventory 与 stable side tables。
+3. 已发布 stable slot facts。
 4. parent typed lexical environment。
-5. class / global / singleton / type-meta lookup。
+5. `FrontendTypedLexicalBaseline` 提供的冻结 source-facing fallback；`BlockScope` / `CallableScope` 仍负责 lexical inventory 名称查找。
+6. class / global / singleton / type-meta lookup。
 
 Pending overlay 只对当前 statement 后续 owner 子过程可见。Statement flush 后，pending facts 才进入 current-suite committed overlay，并对后续 statement 与 gate classifier 可见。Committed overlay 仍不是 stable publication。
 

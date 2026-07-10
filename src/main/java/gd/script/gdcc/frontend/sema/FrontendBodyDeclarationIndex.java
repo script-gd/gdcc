@@ -1,7 +1,9 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -12,23 +14,39 @@ import java.util.Objects;
 /// Interface-layer index of ordinary locals that already exist in baseline `BlockScope` inventory.
 ///
 /// The index is intentionally a view over published inventory, not a second declaration publisher.
+/// Production body lookup uses declaration identity to verify that a scope local belongs to this
+/// published inventory; source-range filtering still determines declaration-order visibility.
 /// Unsupported typed-dependent bodies therefore have no entries until their gate-owned inventory is
 /// explicitly published by a later body phase.
 public final class FrontendBodyDeclarationIndex {
     private final @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot;
+    private final @NotNull Map<VariableDeclaration, FrontendBodyLocalDeclaration> declarationsByDeclaration;
 
     public FrontendBodyDeclarationIndex(
             @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot
     ) {
         Objects.requireNonNull(declarationsByBodyRoot, "declarationsByBodyRoot");
         var copiedDeclarations = new IdentityHashMap<Node, List<FrontendBodyLocalDeclaration>>();
+        var copiedDeclarationsByDeclaration = new IdentityHashMap<VariableDeclaration, FrontendBodyLocalDeclaration>();
         for (var entry : declarationsByBodyRoot.entrySet()) {
+            var bodyRoot = Objects.requireNonNull(entry.getKey(), "bodyRoot");
+            var declarations = List.copyOf(Objects.requireNonNull(entry.getValue(), "declarations"));
             copiedDeclarations.put(
-                    Objects.requireNonNull(entry.getKey(), "bodyRoot"),
-                    List.copyOf(Objects.requireNonNull(entry.getValue(), "declarations"))
+                    bodyRoot,
+                    declarations
             );
+            for (var declaration : declarations) {
+                var previous = copiedDeclarationsByDeclaration.put(
+                        declaration.declaration(),
+                        declaration
+                );
+                if (previous != null) {
+                    throw new IllegalArgumentException("ordinary local declaration belongs to multiple body roots");
+                }
+            }
         }
         this.declarationsByBodyRoot = Collections.unmodifiableMap(copiedDeclarations);
+        declarationsByDeclaration = Collections.unmodifiableMap(copiedDeclarationsByDeclaration);
     }
 
     public @NotNull List<FrontendBodyLocalDeclaration> declarationsFor(@NotNull Node bodyRoot) {
@@ -37,6 +55,11 @@ public final class FrontendBodyDeclarationIndex {
 
     public boolean containsBodyRoot(@NotNull Node bodyRoot) {
         return declarationsByBodyRoot.containsKey(Objects.requireNonNull(bodyRoot, "bodyRoot"));
+    }
+
+    /// Returns the published inventory entry for one ordinary local declaration, if any.
+    public @Nullable FrontendBodyLocalDeclaration declarationFor(@NotNull VariableDeclaration declaration) {
+        return declarationsByDeclaration.get(Objects.requireNonNull(declaration, "declaration"));
     }
 
     public @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot() {
