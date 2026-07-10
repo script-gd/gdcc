@@ -16,6 +16,7 @@ import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import gd.script.gdcc.frontend.sema.patch.FrontendCallableExportBatch;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.ScopeValueKind;
@@ -65,6 +66,10 @@ public class FrontendSuiteResolver {
         }
     }
 
+    /// Resolves one root or nested suite and defers its stable publication to the callable export batch.
+    ///
+    /// Child environments retain separate pending and committed overlays. Their transactions join the
+    /// root callable's batch rather than becoming visible through stable side tables mid-resolution.
     public void resolveSuite(@NotNull FrontendSuiteContext context, @NotNull Block block) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(block, "block must not be null");
@@ -75,7 +80,13 @@ public class FrontendSuiteResolver {
         for (var statement : block.statements()) {
             statementResolver.resolveStatement(context, statement, this::resolveChildSuite);
         }
-        context.typedEnvironment().exportPatchTransaction().applyTo(context.analysisData());
+        var transaction = context.typedEnvironment().exportPatchTransaction();
+        var exportBatch = context.exportBatch();
+        if (exportBatch != null) {
+            exportBatch.accumulate(transaction);
+        } else {
+            transaction.applyTo(context.analysisData());
+        }
         context.analysisData().updateDiagnostics(context.diagnosticManager().snapshot());
     }
 
@@ -100,6 +111,7 @@ public class FrontendSuiteResolver {
                 null,
                 interfaceSurface.typedLexicalBaseline()
         );
+        var exportBatch = new FrontendCallableExportBatch();
         var context = new FrontendSuiteContext(
                 sourcePathFor(interfaceSurface, callableOwner, analysisData),
                 callableOwner,
@@ -113,17 +125,19 @@ public class FrontendSuiteResolver {
                 environment,
                 analysisData,
                 diagnosticManager,
-                classRegistry
+                classRegistry,
+                exportBatch
         );
         runCallableEntryVarTypePost(context, callableOwner);
         resolveSuite(context, body);
+        exportBatch.applyTo(analysisData);
     }
 
     /// Publishes callable-entry var-type-post facts before the first body statement is resolved.
     ///
     /// Parameters are not statement roots, so this complements rather than bypasses the
     /// statement-local var-type-post procedure. Both paths publish through the same overlay,
-    /// owner stage, and suite-export transaction.
+    /// owner stage, and callable-scoped export batch.
     private void runCallableEntryVarTypePost(
             @NotNull FrontendSuiteContext context,
             @NotNull Node callableOwner
@@ -211,13 +225,16 @@ public class FrontendSuiteResolver {
                 environment,
                 analysisData,
                 diagnosticManager,
-                classRegistry
+                classRegistry,
+                null
         );
         statementResolver.resolvePropertyInitializer(context, propertyInitializer);
+        // Property initializers are independent roots and do not join a callable export batch.
         context.typedEnvironment().exportPatchTransaction().applyTo(analysisData);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
     }
 
+    /// Resolves a child block with its own overlay while sharing the parent's callable export batch.
     private void resolveChildSuite(@NotNull FrontendSuiteContext parentContext, @NotNull Block childBlock) {
         var blockScope = blockScopeFor(parentContext, childBlock);
         if (blockScope == null || !isCallableLocalValueInventoryReady(parentContext, childBlock, blockScope)) {

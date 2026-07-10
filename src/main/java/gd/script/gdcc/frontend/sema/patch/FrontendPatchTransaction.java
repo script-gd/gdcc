@@ -12,7 +12,8 @@ import java.util.Objects;
 /// Ordered suite-export transaction made of single-owner patches.
 ///
 /// The constructor rejects duplicate or out-of-order owners so callers cannot accidentally recreate
-/// the legacy multi-owner patch shape at suite export time.
+/// the legacy multi-owner patch shape at suite export time. Nested suite transactions are deferred
+/// in a callable-scoped export batch and never applied at their own suite boundary.
 public record FrontendPatchTransaction(@NotNull List<FrontendOwnerPatch> patches) {
     public FrontendPatchTransaction {
         patches = List.copyOf(Objects.requireNonNull(patches, "patches must not be null"));

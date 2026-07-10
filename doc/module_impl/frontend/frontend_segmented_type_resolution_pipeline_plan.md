@@ -240,8 +240,11 @@ Interface phase 不得：
 
 ```text
 resolveCallableOwner(context, callableOwner):
+  exportBatch = new FrontendCallableExportBatch()
+  context = newSuiteContext(callableOwner, exportBatch)
   runCallableEntryVarTypePost(context, callableOwner)
   resolveSuite(context, callableOwner.body)
+  exportBatch.applyTo(context.analysisData())
 
 runCallableEntryVarTypePost(context, callableOwner):
   for parameter in callableOwner.parameters():
@@ -251,14 +254,13 @@ runCallableEntryVarTypePost(context, callableOwner):
 resolveSuite(context, block):
   for statement in block.statements():
       resolveStatement(context, statement)
-      context.typedEnvironment().flushPendingFacts()
-      resolvePendingBodiesIfAllowed(context)
+  context.exportBatch().accumulate(context.typedEnvironment().exportPatchTransaction())
 ```
 
 参数是 callable-entry `VAR_TYPE_POST` facts。它们不是 statement root，因而必须在进入
 statement 循环前写入 pending overlay 并 flush 到 current-suite committed overlay。该步骤与
 statement-local var type post procedure 互补而非绕过：二者共享 `VAR_TYPE_POST` owner stage、
-冲突检查、compiler-only guard 与 suite-export transaction；此前不得写 stable `slotTypes()`。
+冲突检查、compiler-only guard 与 callable-scoped export batch；此前不得写 stable `slotTypes()`。
 
 `resolveStatement(...)` 不是新的 owner。它只负责按 statement 结构调用 body-aware owner 子过程：
 
@@ -282,7 +284,7 @@ statement-local var type post procedure 互补而非绕过：二者共享 `VAR_T
 
 `SuiteResolver` 必须把 interface surface 的 declaration index 交给 visible-value resolver，以检查 scope 选中的 ordinary local 的 declaration identity 已由 baseline inventory 发布；这不是重新扫描普通 `var`，也不改变 resolver 现有 filtered-hit 规则。它还必须把 typed lexical baseline 传给 root 与 child typed environment，使参数和 ordinary local 在没有更新 overlay / stable slot fact 时仍有 immutable source-facing 初始类型。
 
-Suite 收敛后，不能把 current-suite committed overlay 整体打包为单个多 owner `FrontendAnalysisPatch`。Stable export 必须构造按 owner 有序的 patch transaction，并按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序依次 apply 每个 owner patch。这样既保留 source-order suite 的前缀可见性，又不破坏 `FrontendAnalysisPatch` 现有单 stage / 单 owner 约束。
+Suite 收敛后，不能把 current-suite committed overlay 整体打包为单个多 owner `FrontendAnalysisPatch`。它必须构造按 owner 有序的 patch transaction。嵌套 suite 只把该 transaction 追加到同一 callable-scoped export batch，不得在 child suite 边界直接 apply；根 callable suite 收敛后才由 batch 按追加顺序 apply 各 transaction。每个 transaction 内仍按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序 apply 每个 owner patch。这样既保留 source-order suite 的前缀可见性，又不破坏 `FrontendAnalysisPatch` 现有单 stage / 单 owner 约束。
 
 不得重排 1-5。尤其是 chain binding 读取 receiver local slot 时，必须先看到 local stabilization 对前序 statement 或当前 statement 前序子过程写入的 exact slot fact；否则会重新打开 receiver 被误读成 `Variant` 的历史回归。
 
@@ -320,6 +322,8 @@ Gate classifier 属于 statement 结构处理的一部分，只能在其 header 
 
 Pending overlay 只对当前 statement 内后续 owner 子过程可见。`flushPendingFacts()` 后，它才变成 current-suite committed overlay，并对后续 statement / gate classifier 可见。Committed overlay 仍不是 stable publication。
 
+Parent environment 只能沿 parent 链读取上层 overlay，不能读取 child environment 的 pending 或 committed facts。Child suite 保持独立 overlay；其 facts 仅以 per-owner patch transaction 追加到 shared callable export batch，并在根 callable 完成前保持不在 stable side table 中。
+
 写入规则：
 
 - 只有 `FrontendLocalTypeStabilizationAnalyzer` 可写 source-facing local slot overlay。
@@ -348,10 +352,11 @@ Overlay 的目标是模拟 Godot “当前 statement 已解析出的类型可被
 - `flushPendingFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay，并执行 owner、conflict、idempotent、exact-type 与 compiler-only guard。该 guard 必须与 suite export 使用同一 type-bearing field walker，避免 scratch 层接受 stable merge 层会拒绝的 compiler-only payload。
 - `flushPendingFacts(...)` 不得通过 stable side table 的临时 whole-table publish 再“读回 overlay”。如果当前实现为了复用旧 analyzer helper 需要 `updateXxx(...)` / stable side table 作为中转，则该 helper 必须先被改写或隔离为 legacy path，不能把中转污染当作阶段性可接受状态。
 - Suite 收敛时，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner `FrontendAnalysisPatch`。
-- Patch transaction 固定按 top binding -> local stabilization -> chain binding -> expr typing -> var type post apply；每个 step 只包含该 owner 的 facts。
-- Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 per-owner patch apply / stable export helper 中更新。
+- 嵌套 suite 的 transaction 必须追加到 root callable 共享的 `FrontendCallableExportBatch`，不得在 child suite 收敛时独立 apply。根 callable suite 返回后，batch 才按追加顺序 apply 所有 transaction。
+- 每个 patch transaction 固定按 top binding -> local stabilization -> chain binding -> expr typing -> var type post apply；每个 step 只包含该 owner 的 facts。
+- Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 callable export batch 的 per-owner patch apply / stable export helper 中更新。
 - Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后的 stable facts。
-- Nested supported suite 收敛后，可把其 per-owner patch transaction 追加到外层 export transaction；lexical visibility 仍由 scope graph 与 resolver filter 决定，不能因为 transaction 合并放宽 local 可见性。
+- Nested supported suite 收敛后，必须把其 per-owner patch transaction 追加到外层 callable export batch；lexical visibility 仍由 scope graph 与 resolver filter 决定，不能因为 transaction 合并放宽 local 可见性。
 
 ### 4.5 Feature gate 与 body readiness
 
@@ -524,6 +529,7 @@ Feature-specific header state 仍属于 gate header 语义，不得因为 body r
 - `gd.script.gdcc.frontend.sema.patch` 包。
 - `FrontendOwnerPatch` 或等价 sealed interface。
 - `FrontendPatchTransaction` 或等价有序 transaction 类型。
+- `FrontendCallableExportBatch`，累积单个 callable root 及其 nested suite 的 transaction，并只在 root suite 收敛后 apply。
 - `FrontendTopBindingPatch`、`FrontendLocalTypeStabilizationPatch`、`FrontendChainBindingPatch`、`FrontendExprTypePatch`、`FrontendVarTypePostPatch` 等 per-owner patch carrier。
 - patch package 内的 shared merge helper / type-bearing compiler-only guard / owner-field validator。
 - `FrontendSuiteResolver` / `FrontendStatementResolver` 的 root-bounded statement dispatch 子框架。

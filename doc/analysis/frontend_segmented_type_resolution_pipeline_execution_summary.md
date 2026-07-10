@@ -56,8 +56,11 @@ Body 层由 `FrontendSuiteResolver` 或等价 coordinator 驱动。它按源码�
 
 ```text
 resolveCallableOwner(context, callableOwner):
+  exportBatch = new FrontendCallableExportBatch()
+  context = newSuiteContext(callableOwner, exportBatch)
   runCallableEntryVarTypePost(context, callableOwner)
   resolveSuite(context, callableOwner.body)
+  exportBatch.applyTo(context.analysisData())
 
 runCallableEntryVarTypePost(context, callableOwner):
   for parameter in callableOwner.parameters():
@@ -67,15 +70,18 @@ runCallableEntryVarTypePost(context, callableOwner):
 resolveSuite(context, block):
   for statement in block.statements():
       resolveStatement(context, statement)
-      context.typedEnvironment().flushPendingFacts()
-      resolvePendingBodiesIfAllowed(context)
+  context.exportBatch().accumulate(context.typedEnvironment().exportPatchTransaction())
 ```
 
 参数是 callable-entry `VAR_TYPE_POST` facts，不是 statement root。因此预发布是与
 statement-local var type post procedure 互补的正规步骤，而不是绕过或例外：两条路径都使用
-同一 owner stage、typed overlay 与 suite-export transaction。参数 facts 在进入 statement
+同一 owner stage、typed overlay 与 callable-scoped export batch。参数 facts 在进入 statement
 循环前 flush 到 committed overlay，使第一个 statement 可读取它们，同时 stable side table
 仍保持不变。
+
+每个 nested suite 收敛时只把自己的 per-owner patch transaction 追加到同一 callable-scoped
+export batch，不得直接 apply stable side table。根 callable suite 及其所有 nested suite 完成后，
+batch 才按追加顺序 apply；child pending/committed overlay 不合并到 parent overlay。
 
 `resolveStatement(...)` 不是新的 semantic owner。它只按 statement 结构编排已有 owner 的 body-aware 子过程：top binding、local stabilization、chain binding、expr typing、gate classifier 与 var type post。
 
@@ -144,6 +150,10 @@ Pending overlay 只对当前 statement 后续 owner 子过程可见。`flushPend
 
 `TypedLexicalEnvironment` 的目标是模拟 source-order body resolution 中“前缀 statement 已解析出的类型可被后续 statement 使用”的行为，同时避免提前污染 stable semantic facts。
 
+Parent environment 只能读取 parent 链上的 overlay，不能读取 child environment 的 pending 或
+committed facts。Child facts 只能通过 callable-scoped export batch 在 root callable 完成后进入
+stable side tables。
+
 ## 7. Fact 生命周期
 
 目标架构固定四层事实可见性模型：
@@ -151,7 +161,7 @@ Pending overlay 只对当前 statement 后续 owner 子过程可见。`flushPend
 1. Owner procedure transient cache：当前由 `BodyExpressionResolver` 的 expression / finalized-expression / call caches、`FrontendChainReductionFacade.reducedChains` 与 helper bounded retry 承担；只给当前 chain / expr reduction 的 retry 回调读取，owner 子过程结束即丢弃。
 2. Current statement pending overlay：当前 statement 后续 owner 子过程可读，只接受每个 AST key 的最终 publication fact。
 3. Current-suite committed overlay：由 pending fact flush 合并而来，后续 statement 与 gate classifier 可读，但仍不是 stable publication。
-4. `FrontendAnalysisData` stable side tables / `BlockScope` stable slot：只在 suite export 的 per-owner patch apply / stable export helper 后更新。
+4. `FrontendAnalysisData` stable side tables / `BlockScope` stable slot：只在 root callable export batch 的 per-owner patch apply / stable export helper 后更新。
 
 Nested chain / argument retry 的中间事实只能存在于 owner-local transient cache 中。Retry 中出现的临时 `DEFERRED`、暂定 `Variant`、中间 status 或 detailReason 不得写入 pending overlay、committed overlay 或 stable side table。
 
@@ -163,7 +173,7 @@ Statement owner runner 只能写当前 statement pending overlay；callable-entr
 
 `flushPendingFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay。Flush 必须复用 suite export 使用的同一个 type-bearing field walker，不能在 scratch 层接受 export 层会拒绝的 payload。
 
-Suite 收敛后，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner patch。Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 per-owner patch apply 或 stable export helper 中更新。
+Suite 收敛后，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner patch。Nested suite transaction 必须追加到 root callable 的 `FrontendCallableExportBatch`，不得在 child suite 边界独立 apply。Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 root callable batch 的 per-owner patch apply 或 stable export helper 中更新。
 
 Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后的 stable facts。
 
@@ -178,6 +188,7 @@ Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后
 - `FrontendExprTypePatch`。
 - `FrontendVarTypePostPatch`。
 - `FrontendPatchTransaction`。
+- `FrontendCallableExportBatch`。
 - `FrontendLocalSlotTypeUpdate`。
 
 每个 per-owner patch 只能携带该 owner 允许发布的 payload：
@@ -189,6 +200,8 @@ Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后
 - `FrontendVarTypePostPatch`：`slotTypes()` delta。
 
 `FrontendPatchTransaction` 按固定 owner 顺序 apply：top binding -> local stabilization -> chain binding -> expr typing -> var type post。
+
+`FrontendCallableExportBatch` 按 suite 收敛顺序保存 root callable 与 nested suite 的 transaction，且仅在 root callable suite 返回后依次 apply。Property initializer 是独立 root，不加入 callable-scoped batch。
 
 Merge 规则如下：
 

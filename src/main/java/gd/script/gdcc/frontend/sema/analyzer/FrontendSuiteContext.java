@@ -10,6 +10,7 @@ import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
+import gd.script.gdcc.frontend.sema.patch.FrontendCallableExportBatch;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueResolveRequest;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -24,7 +25,9 @@ import java.util.Objects;
 /// Statement-local context passed through the new body SuiteResolver skeleton.
 ///
 /// The context deliberately carries the typed lexical environment as an explicit dependency so later
-/// owner procedures cannot fall back to hidden analyzer-local side-table snapshots.
+/// owner procedures cannot fall back to hidden analyzer-local side-table snapshots. Callable roots
+/// also share one export batch with their nested suites; child overlays stay isolated while their
+/// exported transactions are deferred to the callable boundary.
 public record FrontendSuiteContext(
         @NotNull Path sourcePath,
         @NotNull Node callableOwner,
@@ -38,7 +41,8 @@ public record FrontendSuiteContext(
         @NotNull FrontendTypedLexicalEnvironment typedEnvironment,
         @NotNull FrontendAnalysisData analysisData,
         @NotNull DiagnosticManager diagnosticManager,
-        @NotNull ClassRegistry classRegistry
+        @NotNull ClassRegistry classRegistry,
+        @Nullable FrontendCallableExportBatch exportBatch
 ) {
     public FrontendSuiteContext {
         Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -72,7 +76,8 @@ public record FrontendSuiteContext(
                 childEnvironment,
                 analysisData,
                 diagnosticManager,
-                classRegistry
+                classRegistry,
+                exportBatch
         );
     }
 

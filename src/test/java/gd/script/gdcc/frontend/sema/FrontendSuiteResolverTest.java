@@ -563,6 +563,43 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
+    void nestedSuiteFactsStayUnpublishedUntilCallableRootCompletes() throws Exception {
+        var phaseInput = phaseInput("suite_nested_export_batch.gd", """
+                class_name SuiteNestedExportBatch
+                extends RefCounted
+
+                func ping(seed):
+                    if seed:
+                        var child := seed
+                    var after := seed
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var ifStatement = findStatement(pingFunction.body().statements(), IfStatement.class, _ -> true);
+        var child = findStatement(
+                ifStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("child")
+        );
+        var after = findStatement(
+                pingFunction.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("after")
+        );
+        var ownerProcedures = new DeferredChildExportOwnerProcedures(child, after);
+
+        resolveWith(phaseInput, ownerProcedures);
+
+        assertAll(
+                () -> assertTrue(ownerProcedures.childBindingWasUnpublishedInParentContinuation()),
+                () -> assertNotNull(phaseInput.analysisData().symbolBindings().get(child))
+        );
+    }
+
+    @Test
     void transientExpressionCacheAndVarPostFactsStayOverlayLocalUntilSuiteExport() throws Exception {
         var phaseInput = phaseInput("suite_stage_e_export_boundary.gd", """
                 class_name SuiteStageEExportBoundary
@@ -646,7 +683,7 @@ class FrontendSuiteResolverTest {
 
     private static void resolveWith(
             @NotNull PhaseInput phaseInput,
-            @NotNull RecordingOwnerProcedures ownerProcedures
+            @NotNull FrontendStatementResolver.OwnerProcedures ownerProcedures
     ) {
         var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
         new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
@@ -748,7 +785,8 @@ class FrontendSuiteResolverTest {
                 new FrontendTypedLexicalEnvironment(blockScope, phaseInput.analysisData()),
                 phaseInput.analysisData(),
                 phaseInput.diagnostics(),
-                phaseInput.registry()
+                phaseInput.registry(),
+                null
         );
     }
 
@@ -1048,6 +1086,38 @@ class FrontendSuiteResolverTest {
 
         private boolean stableWasEmptyDuringOwnerProcedure() {
             return stableWasEmptyDuringOwnerProcedure;
+        }
+    }
+
+    private static final class DeferredChildExportOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+        private final @NotNull Node child;
+        private final @NotNull Node parentContinuation;
+        private boolean childBindingWasUnpublishedInParentContinuation;
+
+        private DeferredChildExportOwnerProcedures(@NotNull Node child, @NotNull Node parentContinuation) {
+            this.child = child;
+            this.parentContinuation = parentContinuation;
+        }
+
+        @Override
+        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+            if (root == child) {
+                context.typedEnvironment().putSymbolBinding(
+                        FrontendSemanticStage.TOP_BINDING,
+                        child,
+                        new FrontendBinding("__nested_suite_probe__", FrontendBindingKind.UNKNOWN, null)
+                );
+                return;
+            }
+            if (root == parentContinuation) {
+                childBindingWasUnpublishedInParentContinuation = context.analysisData()
+                        .symbolBindings()
+                        .get(child) == null;
+            }
+        }
+
+        private boolean childBindingWasUnpublishedInParentContinuation() {
+            return childBindingWasUnpublishedInParentContinuation;
         }
     }
 
