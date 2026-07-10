@@ -7,21 +7,13 @@ import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendChainBindingAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendCompileCheckAnalyzer;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendExprTypeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendAnnotationUsageAnalyzer;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendLocalTypeStabilizationAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendLoopControlFlowAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendScopeAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendStatementResolver;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendTopBindingAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVirtualOverrideAnalyzer;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendVarTypePostAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
@@ -70,8 +62,10 @@ import org.jetbrains.annotations.NotNull;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -99,13 +93,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 @tool
                 class_name AnnotatedPlayer
                 extends Node
-                
+
                 @export var hp: int = 1
-                
+
                 @rpc("authority")
                 func ping(value):
                     var local := value
-                
+
                 @warning_ignore_start("unused_variable")
                 var tmp := 1
                 
@@ -663,7 +657,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void analyzeUsesSuiteResolverBodyPublicationAndDoesNotCallLegacyWholePhaseAnalyzers() throws Exception {
+    void activeDependencyConstructorUsesDefaultSuiteResolverAndPreservesPhaseBoundaries() throws Exception {
         var parserService = new GdScriptParserService();
         var diagnostics = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", "variable_phase_probe.gd"), """
@@ -676,11 +670,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var registry = new ClassRegistry(ExtensionApiLoader.loadDefault());
         var probeScopeAnalyzer = new RecordingScopeAnalyzer();
         var probeVariableAnalyzer = new RecordingVariableAnalyzer();
-        var probeTopBindingAnalyzer = new RecordingTopBindingAnalyzer();
-        var probeLocalTypeStabilizationAnalyzer = new RecordingLocalTypeStabilizationAnalyzer();
-        var probeChainBindingAnalyzer = new RecordingChainBindingAnalyzer();
-        var probeExprTypeAnalyzer = new RecordingExprTypeAnalyzer();
-        var probeVarTypePostAnalyzer = new RecordingVarTypePostAnalyzer();
         var probeAnnotationUsageAnalyzer = new RecordingAnnotationUsageAnalyzer();
         var probeVirtualOverrideAnalyzer = new RecordingVirtualOverrideAnalyzer();
         var probeTypeCheckAnalyzer = new RecordingTypeCheckAnalyzer();
@@ -689,11 +678,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendClassSkeletonBuilder(),
                 probeScopeAnalyzer,
                 probeVariableAnalyzer,
-                probeTopBindingAnalyzer,
-                probeLocalTypeStabilizationAnalyzer,
-                probeChainBindingAnalyzer,
-                probeExprTypeAnalyzer,
-                probeVarTypePostAnalyzer,
                 probeAnnotationUsageAnalyzer,
                 probeVirtualOverrideAnalyzer,
                 probeTypeCheckAnalyzer,
@@ -715,11 +699,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(probeVariableAnalyzer.invoked);
         assertTrue(probeVariableAnalyzer.scopeBoundaryPublished);
         assertTrue(probeVariableAnalyzer.preVariableDiagnosticsMatchedManager);
-        assertFalse(probeTopBindingAnalyzer.invoked);
-        assertFalse(probeLocalTypeStabilizationAnalyzer.invoked);
-        assertFalse(probeChainBindingAnalyzer.invoked);
-        assertFalse(probeExprTypeAnalyzer.invoked);
-        assertFalse(probeVarTypePostAnalyzer.invoked);
         assertTrue(probeAnnotationUsageAnalyzer.invoked);
         assertTrue(probeAnnotationUsageAnalyzer.varTypeBoundaryPublished);
         assertTrue(probeAnnotationUsageAnalyzer.preAnnotationUsageDiagnosticsMatchedManager);
@@ -777,11 +756,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.annotation_usage_phase_probe")
         ));
-        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.top_binding_phase_probe").isEmpty());
-        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.local_type_stabilization_phase_probe").isEmpty());
-        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.chain_binding_phase_probe").isEmpty());
-        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.expr_type_phase_probe").isEmpty());
-        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.var_type_post_phase_probe").isEmpty());
         assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
                 diagnostic.category().equals("sema.virtual_override_phase_probe")
         ));
@@ -795,7 +769,38 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(result.resolvedMembers().isEmpty());
         assertTrue(result.resolvedCalls().isEmpty());
         assertTrue(result.expressionTypes().isEmpty());
+        // The callable-entry var type post procedure is the only body publication for this empty body.
+        var pingFunction = findFunction(unit.ast().statements(), "ping");
+        assertEquals(GdVariantType.VARIANT, result.slotTypes().get(pingFunction.parameters().getFirst()));
         assertFalse(result.slotTypes().isEmpty());
+    }
+
+    /// Locks the Stage J API boundary: test doubles remain available for active phases, while
+    /// statement-local body ownership is exclusively selected by `FrontendSuiteResolver`.
+    @Test
+    void activeDependencyConstructorExcludesLegacyBodyOwnerParameters() throws Exception {
+        var activeConstructor = FrontendSemanticAnalyzer.class.getConstructor(
+                FrontendClassSkeletonBuilder.class,
+                FrontendScopeAnalyzer.class,
+                FrontendVariableAnalyzer.class,
+                FrontendAnnotationUsageAnalyzer.class,
+                FrontendVirtualOverrideAnalyzer.class,
+                FrontendTypeCheckAnalyzer.class,
+                FrontendLoopControlFlowAnalyzer.class,
+                FrontendCompileCheckAnalyzer.class
+        );
+        var legacyOwnerParameterNames = Set.of(
+                "FrontendTopBindingAnalyzer",
+                "FrontendLocalTypeStabilizationAnalyzer",
+                "FrontendChainBindingAnalyzer",
+                "FrontendExprTypeAnalyzer",
+                "FrontendVarTypePostAnalyzer"
+        );
+
+        assertNotNull(activeConstructor);
+        assertTrue(Arrays.stream(FrontendSemanticAnalyzer.class.getConstructors())
+                .flatMap(constructor -> Arrays.stream(constructor.getParameterTypes()))
+                .noneMatch(parameterType -> legacyOwnerParameterNames.contains(parameterType.getSimpleName())));
     }
 
     @Test
@@ -1135,10 +1140,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendClassSkeletonBuilder(),
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 sharedLoopControlProbe,
                 sharedProbe
@@ -1159,10 +1162,8 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 new FrontendClassSkeletonBuilder(),
                 new FrontendScopeAnalyzer(),
                 new FrontendVariableAnalyzer(),
-                new FrontendTopBindingAnalyzer(),
-                new FrontendChainBindingAnalyzer(),
-                new FrontendExprTypeAnalyzer(),
                 new FrontendAnnotationUsageAnalyzer(),
+                new FrontendVirtualOverrideAnalyzer(),
                 new FrontendTypeCheckAnalyzer(),
                 compileLoopControlProbe,
                 compileProbe
@@ -1667,106 +1668,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
         ));
     }
 
-    private static boolean hasTypeNameSuffix(Object type, String suffix) {
-        return type instanceof GdType gdType && gdType.getTypeName().endsWith(suffix);
-    }
-
-    private static final class FrameworkBodyOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
-        private final @NotNull FrontendBodyOwnerProcedures delegate = new FrontendBodyOwnerProcedures();
-        private final @NotNull VariableDeclaration aliasDeclaration;
-        private final @NotNull VariableDeclaration numberDeclaration;
-        private final @NotNull AttributePropertyStep markerStep;
-        private final @NotNull Node numberInitializer;
-        private boolean aliasSlotWasPublishedBeforeLegacy;
-        private boolean memberFactWasPublishedBeforeLegacy;
-        private boolean expressionFactWasPublishedBeforeLegacy;
-        private boolean varPostFactWasPublishedBeforeLegacy;
-
-        private FrameworkBodyOwnerProcedures(
-                @NotNull VariableDeclaration aliasDeclaration,
-                @NotNull VariableDeclaration numberDeclaration,
-                @NotNull AttributePropertyStep markerStep,
-                @NotNull Node numberInitializer
-        ) {
-            this.aliasDeclaration = aliasDeclaration;
-            this.numberDeclaration = numberDeclaration;
-            this.markerStep = markerStep;
-            this.numberInitializer = numberInitializer;
-        }
-
-        @Override
-        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            delegate.runTopBinding(context, root);
-        }
-
-        @Override
-        public void runLocalTypeStabilization(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            delegate.runLocalTypeStabilization(context, root);
-            if (root == aliasDeclaration) {
-                var currentBlockScope = context.currentBlockScope();
-                aliasSlotWasPublishedBeforeLegacy = context.analysisData().slotTypes().get(aliasDeclaration) == null
-                        && currentBlockScope != null
-                        && hasTypeNameSuffix(context.typedEnvironment().localSlotType(
-                        currentBlockScope,
-                        aliasDeclaration.name(),
-                        aliasDeclaration
-                ), "Point");
-            }
-        }
-
-        @Override
-        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            delegate.runChainBinding(context, root);
-            if (root == numberDeclaration) {
-                var markerMember = context.typedEnvironment().resolvedMember(markerStep);
-                memberFactWasPublishedBeforeLegacy = context.analysisData().resolvedMembers().get(markerStep) == null
-                        && markerMember != null
-                        && markerMember.status() == FrontendMemberResolutionStatus.RESOLVED
-                        && hasTypeNameSuffix(markerMember.receiverType(), "Point")
-                        && "int".equals(markerMember.resultType().getTypeName());
-            }
-        }
-
-        @Override
-        public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            delegate.runExprType(context, root);
-            if (root == numberDeclaration) {
-                var initializerType = context.typedEnvironment().expressionType(numberInitializer);
-                expressionFactWasPublishedBeforeLegacy = context.analysisData().expressionTypes().get(numberInitializer) == null
-                        && initializerType != null
-                        && initializerType.status() == FrontendExpressionTypeStatus.RESOLVED
-                        && "int".equals(initializerType.publishedType().getTypeName());
-            }
-        }
-
-        @Override
-        public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            delegate.runVarTypePost(context, root);
-            if (root == numberDeclaration) {
-                var slotType = context.typedEnvironment().slotType(numberDeclaration);
-                varPostFactWasPublishedBeforeLegacy = context.analysisData().slotTypes().get(numberDeclaration) == null
-                        && slotType != null
-                        && "int".equals(slotType.getTypeName());
-            }
-        }
-
-        private boolean aliasSlotWasPublishedBeforeLegacy() {
-            return aliasSlotWasPublishedBeforeLegacy;
-        }
-
-        private boolean memberFactWasPublishedBeforeLegacy() {
-            return memberFactWasPublishedBeforeLegacy;
-        }
-
-        private boolean expressionFactWasPublishedBeforeLegacy() {
-            return expressionFactWasPublishedBeforeLegacy;
-        }
-
-        private boolean varPostFactWasPublishedBeforeLegacy() {
-            return varPostFactWasPublishedBeforeLegacy;
-        }
-    }
-
     /// Test double that records the diagnostics snapshot and published skeleton boundary visible
     /// to scope analysis.
     private static final class RecordingScopeAnalyzer extends FrontendScopeAnalyzer {
@@ -1817,230 +1718,6 @@ class FrontendSemanticAnalyzerFrameworkTest {
             diagnosticManager.warning(
                     "sema.variable_phase_probe",
                     "variable phase probe diagnostic",
-                    null,
-                    null
-            );
-        }
-    }
-
-    /// Test double that records the diagnostics snapshot and `symbolBindings()` publication
-    /// boundary visible to top-binding analysis.
-    private static final class RecordingTopBindingAnalyzer extends FrontendTopBindingAnalyzer {
-        private boolean invoked;
-        private boolean scopeBoundaryPublished;
-        private boolean preTopBindingDiagnosticsMatchedManager;
-        private boolean stableSymbolBindingsReferencePreserved;
-        private boolean symbolBindingsPublicationClearedProbeEntry;
-        private DiagnosticSnapshot preTopBindingDiagnostics;
-
-        @Override
-        public void analyze(
-                @NotNull ClassRegistry classRegistry,
-                @NotNull FrontendAnalysisData analysisData,
-                @NotNull DiagnosticManager diagnosticManager
-        ) {
-            invoked = true;
-            preTopBindingDiagnostics = analysisData.diagnostics();
-            preTopBindingDiagnosticsMatchedManager = preTopBindingDiagnostics.equals(diagnosticManager.snapshot());
-            scopeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
-                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()));
-            var publishedSymbolBindings = analysisData.symbolBindings();
-            var probeNode = new PassStatement(SYNTHETIC_RANGE);
-            publishedSymbolBindings.put(probeNode, new FrontendBinding("__probe__", FrontendBindingKind.UNKNOWN, null));
-
-            super.analyze(classRegistry, analysisData, diagnosticManager);
-
-            stableSymbolBindingsReferencePreserved = publishedSymbolBindings == analysisData.symbolBindings();
-            symbolBindingsPublicationClearedProbeEntry = analysisData.symbolBindings().isEmpty()
-                    && !analysisData.symbolBindings().containsKey(probeNode);
-            diagnosticManager.warning(
-                    "sema.top_binding_phase_probe",
-                    "top-binding phase probe diagnostic",
-                    null,
-                    null
-            );
-        }
-    }
-
-    private static final class RecordingLocalTypeStabilizationAnalyzer extends FrontendLocalTypeStabilizationAnalyzer {
-        private boolean invoked;
-        private boolean topBindingBoundaryPublished;
-        private boolean preLocalTypeStabilizationDiagnosticsMatchedManager;
-        private boolean sideTablesRemainUnpublished;
-        private DiagnosticSnapshot preLocalTypeStabilizationDiagnostics;
-
-        @Override
-        public void analyze(
-                @NotNull ClassRegistry classRegistry,
-                @NotNull FrontendAnalysisData analysisData,
-                @NotNull DiagnosticManager diagnosticManager
-        ) {
-            invoked = true;
-            preLocalTypeStabilizationDiagnostics = analysisData.diagnostics();
-            preLocalTypeStabilizationDiagnosticsMatchedManager =
-                    preLocalTypeStabilizationDiagnostics.equals(diagnosticManager.snapshot());
-            topBindingBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
-                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
-                    && analysisData.symbolBindings().isEmpty();
-
-            super.analyze(classRegistry, analysisData, diagnosticManager);
-
-            sideTablesRemainUnpublished = analysisData.resolvedMembers().isEmpty()
-                    && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty()
-                    && analysisData.slotTypes().isEmpty();
-            diagnosticManager.warning(
-                    "sema.local_type_stabilization_phase_probe",
-                    "local-type-stabilization phase probe diagnostic",
-                    null,
-                    null
-            );
-        }
-    }
-
-    private static final class RecordingChainBindingAnalyzer extends FrontendChainBindingAnalyzer {
-        private boolean invoked;
-        private boolean localTypeStabilizationBoundaryPublished;
-        private boolean preChainBindingDiagnosticsMatchedManager;
-        private boolean stableResolvedMembersReferencePreserved;
-        private boolean stableResolvedCallsReferencePreserved;
-        private boolean memberPublicationClearedProbeEntry;
-        private boolean callPublicationClearedProbeEntry;
-        private DiagnosticSnapshot preChainBindingDiagnostics;
-
-        @Override
-        public void analyze(
-                @NotNull ClassRegistry classRegistry,
-                @NotNull FrontendAnalysisData analysisData,
-                @NotNull DiagnosticManager diagnosticManager
-        ) {
-            invoked = true;
-            preChainBindingDiagnostics = analysisData.diagnostics();
-            preChainBindingDiagnosticsMatchedManager = preChainBindingDiagnostics.equals(diagnosticManager.snapshot());
-            localTypeStabilizationBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
-                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
-                    && analysisData.symbolBindings().isEmpty();
-            var publishedMembers = analysisData.resolvedMembers();
-            var publishedCalls = analysisData.resolvedCalls();
-            var probeMemberNode = new PassStatement(SYNTHETIC_RANGE);
-            var probeCallNode = new ExpressionStatement(new LiteralExpression("integer", "0", SYNTHETIC_RANGE), SYNTHETIC_RANGE);
-            publishedMembers.put(
-                    probeMemberNode,
-                    FrontendResolvedMember.failed(
-                            "__probe_member__",
-                            FrontendBindingKind.PROPERTY,
-                            FrontendReceiverKind.INSTANCE,
-                            null,
-                            GdVariantType.VARIANT,
-                            null,
-                            "probe"
-                    )
-            );
-            publishedCalls.put(
-                    probeCallNode,
-                    FrontendResolvedCall.failed(
-                            "__probe_call__",
-                            FrontendCallResolutionKind.INSTANCE_METHOD,
-                            FrontendReceiverKind.INSTANCE,
-                            null,
-                            GdVariantType.VARIANT,
-                            List.of(),
-                            null,
-                            "probe"
-                    )
-            );
-
-            super.analyze(classRegistry, analysisData, diagnosticManager);
-
-            stableResolvedMembersReferencePreserved = publishedMembers == analysisData.resolvedMembers();
-            stableResolvedCallsReferencePreserved = publishedCalls == analysisData.resolvedCalls();
-            memberPublicationClearedProbeEntry = analysisData.resolvedMembers().isEmpty()
-                    && !analysisData.resolvedMembers().containsKey(probeMemberNode);
-            callPublicationClearedProbeEntry = analysisData.resolvedCalls().isEmpty()
-                    && !analysisData.resolvedCalls().containsKey(probeCallNode);
-            diagnosticManager.warning(
-                    "sema.chain_binding_phase_probe",
-                    "chain-binding phase probe diagnostic",
-                    null,
-                    null
-            );
-        }
-    }
-
-    private static final class RecordingExprTypeAnalyzer extends FrontendExprTypeAnalyzer {
-        private boolean invoked;
-        private boolean chainBindingBoundaryPublished;
-        private boolean preExprTypeDiagnosticsMatchedManager;
-        private boolean stableExpressionTypesReferencePreserved;
-        private boolean expressionTypePublicationClearedProbeEntry;
-        private DiagnosticSnapshot preExprTypeDiagnostics;
-
-        @Override
-        public void analyze(
-                @NotNull ClassRegistry classRegistry,
-                @NotNull FrontendAnalysisData analysisData,
-                @NotNull DiagnosticManager diagnosticManager
-        ) {
-            invoked = true;
-            preExprTypeDiagnostics = analysisData.diagnostics();
-            preExprTypeDiagnosticsMatchedManager = preExprTypeDiagnostics.equals(diagnosticManager.snapshot());
-            chainBindingBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
-                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
-                    && analysisData.symbolBindings().isEmpty()
-                    && analysisData.resolvedMembers().isEmpty()
-                    && analysisData.resolvedCalls().isEmpty();
-            var publishedExpressionTypes = analysisData.expressionTypes();
-            var probeExpression = new LiteralExpression("integer", "0", SYNTHETIC_RANGE);
-            publishedExpressionTypes.put(probeExpression, FrontendExpressionType.resolved(GdVariantType.VARIANT));
-
-            super.analyze(classRegistry, analysisData, diagnosticManager);
-
-            stableExpressionTypesReferencePreserved = publishedExpressionTypes == analysisData.expressionTypes();
-            expressionTypePublicationClearedProbeEntry = analysisData.expressionTypes().isEmpty()
-                    && !analysisData.expressionTypes().containsKey(probeExpression);
-            diagnosticManager.warning(
-                    "sema.expr_type_phase_probe",
-                    "expr-type phase probe diagnostic",
-                    null,
-                    null
-            );
-        }
-    }
-
-    private static final class RecordingVarTypePostAnalyzer extends FrontendVarTypePostAnalyzer {
-        private boolean invoked;
-        private boolean exprTypeBoundaryPublished;
-        private boolean preVarTypePostDiagnosticsMatchedManager;
-        private boolean stableSlotTypesReferencePreserved;
-        private boolean slotTypePublicationClearedProbeEntry;
-        private DiagnosticSnapshot preVarTypePostDiagnostics;
-
-        @Override
-        public void analyze(
-                @NotNull FrontendAnalysisData analysisData,
-                @NotNull DiagnosticManager diagnosticManager
-        ) {
-            invoked = true;
-            preVarTypePostDiagnostics = analysisData.diagnostics();
-            preVarTypePostDiagnosticsMatchedManager = preVarTypePostDiagnostics.equals(diagnosticManager.snapshot());
-            exprTypeBoundaryPublished = analysisData.moduleSkeleton().sourceClassRelations().stream()
-                    .allMatch(sourceClassRelation -> analysisData.scopesByAst().containsKey(sourceClassRelation.unit().ast()))
-                    && analysisData.symbolBindings().isEmpty()
-                    && analysisData.resolvedMembers().isEmpty()
-                    && analysisData.resolvedCalls().isEmpty()
-                    && analysisData.expressionTypes().isEmpty();
-            var publishedSlotTypes = analysisData.slotTypes();
-            var probeNode = new PassStatement(SYNTHETIC_RANGE);
-            publishedSlotTypes.put(probeNode, GdVariantType.VARIANT);
-
-            super.analyze(analysisData, diagnosticManager);
-
-            stableSlotTypesReferencePreserved = publishedSlotTypes == analysisData.slotTypes();
-            slotTypePublicationClearedProbeEntry = !analysisData.slotTypes().containsKey(probeNode)
-                    && !analysisData.slotTypes().isEmpty();
-            diagnosticManager.warning(
-                    "sema.var_type_post_phase_probe",
-                    "var-type-post phase probe diagnostic",
                     null,
                     null
             );

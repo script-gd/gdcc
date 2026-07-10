@@ -856,6 +856,73 @@ Compiler-only guard payload matrix：
 - `./gradlew classes --no-daemon --info --console=plain` 通过。
 - 相关 targeted tests 使用 `script/run-gradle-targeted-tests.sh --tests ...` 通过。
 
+### 阶段 J：收口 `FrontendSemanticAnalyzer` 的 legacy-owner constructor 注入
+
+阶段 I 已删除 shared pipeline 的 legacy whole-phase bypass，但不包含无效 constructor
+注入的物理删除。本阶段负责删除 `FrontendSemanticAnalyzer` 中所有 legacy-owner
+constructor overload，清理 constructor chaining 中被丢弃的 analyzer 实例，并将
+framework tests 从“断言 legacy analyzer 未运行”改为验证默认
+`FrontendSuiteResolver` 的 body fact publication。
+
+- [x] J1 删除所有接收 `FrontendTopBindingAnalyzer`、
+  `FrontendLocalTypeStabilizationAnalyzer`、`FrontendChainBindingAnalyzer`、
+  `FrontendExprTypeAnalyzer` 或 `FrontendVarTypePostAnalyzer` 的 public constructor
+  overload。这五类参数此前只作 null-check，既不保存为 field，也不进入 production
+  pipeline。现有 public API 只保留 default、active phase、interface/body resolver 与
+  skeleton/scope/variable 的注入边界。
+- [x] J2 清理其余 constructor chaining 中无意义的上述 analyzer `new` 操作；默认与
+  active-dependency 注入入口不再构造被丢弃的 legacy owner analyzer。
+- [x] J3 将 framework tests 从“注入 probe 后断言 legacy analyzer 未运行”改为验证默认
+  `FrontendSuiteResolver` 的 body fact publication；继续保留对 skeleton、scope、variable
+  inventory、diagnostics-only phase 与 compile-only gate 的 active dependency probes。
+  `activeDependencyConstructorExcludesLegacyBodyOwnerParameters` 正向锚定 active-only
+  constructor，并反向检查全部 public constructor 均不含 legacy owner 参数；
+  `activeDependencyConstructorUsesDefaultSuiteResolverAndPreservesPhaseBoundaries` 保留
+  diagnostics boundary probes 与 callable-entry slot publication，既有 default
+  SuiteResolver body-fact / unsupported-subtree tests 继续锚定 export 与 fail-closed 合同。
+
+验收细则：
+
+- `FrontendSemanticAnalyzer` 不再暴露或构造被丢弃的 legacy owner analyzer；其 production
+  pipeline 仍只通过 interface/body + `FrontendSuiteResolver` 发布 body facts。
+- `./gradlew classes --no-daemon --info --console=plain` 通过。
+- 相关 targeted tests 使用 `script/run-gradle-targeted-tests.sh --tests ...` 通过。
+
+### 阶段 K：删除 legacy whole-phase 比较路径并迁移测试基线
+
+本阶段在前一阶段删除 legacy-owner constructor 注入的基础上，继续删除 legacy
+whole-phase analyzer comparison path 及 window/patch compatibility shim。必须先完成测试
+基线迁移与常量收口再执行 K3-K4 的物理删除，不能因为 production 路径已切换就跳过这些
+前置条件。
+
+- [ ] K1 迁移或删除五个 legacy owner analyzer 的 standalone/cross-analyzer tests，使新
+  `FrontendBodyOwnerProcedures`、overlay 与 per-owner patch transaction 覆盖仍有效的
+  semantic contracts；不得仅因 production 无调用者就删除这些测试。
+- [ ] K2 将 `FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY` 迁移到
+  非 legacy analyzer 的语义常量位置，并更新 `FrontendBodyOwnerProcedures` 与
+  `FrontendCompileCheckAnalyzer` 的消费者。
+- [ ] K3 删除 `FrontendTopBindingAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、
+  `FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer` 与
+  `FrontendVarTypePostAnalyzer` 的 whole-module `analyze(...)` /
+  `analyzeInWindow(...)` entrypoints、内部 `AstWalker...walk(sourceFile)` traversal
+  与 legacy stable-table publication path。仍有效的 owner 语义边界必须由
+  `FrontendBodyOwnerProcedures` 保持。
+- [ ] K4 在 K3 后删除 `FrontendWindowAnalysisContext`、
+  `FrontendWindowPublicationSurface`、legacy `FrontendAnalysisPatch`、
+  `FrontendAnalysisData.applyPatch(FrontendAnalysisPatch)` 与对应的
+  `FrontendPublishedFactTypeGuard.checkAnalysisPatch(...)` compatibility path；
+  `FrontendLocalSlotTypeUpdate`、`FrontendOwnerPatch`、`FrontendPatchTransaction` 与
+  `FrontendAnalysisPatchException` 仍是 active patch infrastructure，不得删除。
+
+验收细则：
+
+- 不存在任何 production 或 focused test 对 legacy whole-module `analyze(...)` /
+  `analyzeInWindow(...)`、window shim 或 `FrontendAnalysisPatch` 的引用。
+- per-owner patches 与 `FrontendPatchTransaction` 是唯一的 body-fact export path，且
+  `FrontendVarTypePostAnalyzer` 删除前完成 category 常量迁移。
+- `./gradlew classes --no-daemon --info --console=plain` 通过。
+- 相关 targeted tests 使用 `script/run-gradle-targeted-tests.sh --tests ...` 通过。
+
 ## 6. 必须新增或调整的测试
 
 基础设施测试：
