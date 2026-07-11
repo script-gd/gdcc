@@ -14,7 +14,7 @@ import java.util.List;
 /// Publication delta owned by exactly one semantic owner.
 ///
 /// Suite export composes these patches in a `FrontendPatchTransaction`; it must not collapse facts
-/// from multiple owners into one legacy `FrontendAnalysisPatch`.
+/// from multiple owners into one multi-owner payload.
 public sealed interface FrontendOwnerPatch permits
         FrontendTopBindingPatch,
         FrontendLocalTypeStabilizationPatch,

@@ -895,24 +895,36 @@ whole-phase analyzer comparison path 及 window/patch compatibility shim。必�
 基线迁移与常量收口再执行 K3-K4 的物理删除，不能因为 production 路径已切换就跳过这些
 前置条件。
 
-- [ ] K1 迁移或删除五个 legacy owner analyzer 的 standalone/cross-analyzer tests，使新
+- [x] K1 迁移或删除五个 legacy owner analyzer 的 standalone/cross-analyzer tests，使新
   `FrontendBodyOwnerProcedures`、overlay 与 per-owner patch transaction 覆盖仍有效的
-  semantic contracts；不得仅因 production 无调用者就删除这些测试。
-- [ ] K2 将 `FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY` 迁移到
+  semantic contracts；不得仅因 production 无调用者就删除这些测试。chain、expression
+  与 var-post 基线已迁入 `FrontendBodyOwnerProcedures*Test` 并通过默认 segmented pipeline
+  或真实 root-bounded owner procedure 运行；纯 whole-module boundary/probe/整表清空断言已
+  删除。local stabilization 的 source-order/parent-prefix 合同继续由 suite/framework/expr
+  tests 锚定，overlay 另补错误 owner、stable conflict 与无副作用负向覆盖。
+- [x] K2 将 `FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY` 迁移到
   非 legacy analyzer 的语义常量位置，并更新 `FrontendBodyOwnerProcedures` 与
-  `FrontendCompileCheckAnalyzer` 的消费者。
-- [ ] K3 删除 `FrontendTopBindingAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、
+  `FrontendCompileCheckAnalyzer` 的消费者。常量现由实际发布该诊断的
+  `FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY` 持有；compile gate、
+  lowering gate 与 focused tests 均不再依赖 legacy analyzer 类型。
+- [x] K3 删除 `FrontendTopBindingAnalyzer`、`FrontendLocalTypeStabilizationAnalyzer`、
   `FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer` 与
   `FrontendVarTypePostAnalyzer` 的 whole-module `analyze(...)` /
   `analyzeInWindow(...)` entrypoints、内部 `AstWalker...walk(sourceFile)` traversal
   与 legacy stable-table publication path。仍有效的 owner 语义边界必须由
-  `FrontendBodyOwnerProcedures` 保持。
-- [ ] K4 在 K3 后删除 `FrontendWindowAnalysisContext`、
+  `FrontendBodyOwnerProcedures` 保持。五个 legacy 类已物理删除；active expression owner
+  保留 discarded-result diagnostic 与 inferred-local consistency guard，但该 guard 只检查
+  local stabilization 结果，不写 slot、不刷新 binding payload。framework negative test 同时
+  锚定这些类不再出现在 constructor API 或 runtime classpath。
+- [x] K4 在 K3 后删除 `FrontendWindowAnalysisContext`、
   `FrontendWindowPublicationSurface`、legacy `FrontendAnalysisPatch`、
   `FrontendAnalysisData.applyPatch(FrontendAnalysisPatch)` 与对应的
   `FrontendPublishedFactTypeGuard.checkAnalysisPatch(...)` compatibility path；
   `FrontendLocalSlotTypeUpdate`、`FrontendOwnerPatch`、`FrontendPatchTransaction` 与
-  `FrontendAnalysisPatchException` 仍是 active patch infrastructure，不得删除。
+  `FrontendAnalysisPatchException` 仍是 active patch infrastructure，不得删除。window 与
+  multi-owner shim 及其 direct API tests 已删除；`FrontendAnalysisDataTest` 现只构造
+  owner-specific patches，并补充 binding/member/call conflict 无副作用测试。framework
+  negative regression 同时验证三个 shim 类和 legacy `applyPatch` overload 均不存在。
 
 验收细则：
 

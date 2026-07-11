@@ -1,11 +1,13 @@
 # FrontendTopBindingAnalyzer 实现说明
 
-> 本文档作为 `FrontendTopBindingAnalyzer` 的长期事实源，定义当前职责边界、`symbolBindings()` 发布合同、命名空间分流规则、遍历与恢复语义，以及后续工程必须遵守的接线约束。本文档替代旧的实施计划与进度记录，不再保留阶段清单、验收流水账或已完成任务日志。
+> 本文档作为 `FrontendBodyOwnerProcedures` 中 top-binding owner 的长期事实源，定义当前
+> 职责边界、`symbolBindings()` 发布合同、命名空间分流规则、遍历与恢复语义，以及后续
+> 工程必须遵守的接线约束。
 
 ## 文档状态
 
 - 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、class property initializer support island、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
-- 更新时间：2026-06-27
+- 更新时间：2026-07-10
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`

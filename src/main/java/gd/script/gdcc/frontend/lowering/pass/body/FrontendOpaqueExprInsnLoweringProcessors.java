@@ -49,7 +49,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
     /// (local/parameter/capture/property/self/singleton); it must not re-run any scope lookup or
     /// member inference.
     ///
-    /// `FrontendTopBindingAnalyzer` publishes `FrontendBindingKind.SELF` only for explicit
+    /// The top-binding owner procedure publishes `FrontendBindingKind.SELF` only for explicit
     /// `SelfExpression`. If an `IdentifierExpression` arrives here with binding kind `SELF`, some
     /// earlier publication step violated that contract and body lowering must fail fast instead of
     /// silently recovering to `"self"`.
@@ -87,7 +87,7 @@ final class FrontendOpaqueExprInsnLoweringProcessors {
                     block.appendNonTerminatorInstruction(new LoadPropertyInsn(resultSlotId, binding.symbolName(), "self"));
                 }
                 case SINGLETON -> {
-                    session.requireSingletonType(binding);
+                    session.checkSingletonBindingType(binding);
                     block.appendNonTerminatorInstruction(new LoadStaticInsn(
                             resultSlotId,
                             "@GlobalScope",

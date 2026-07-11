@@ -20,15 +20,6 @@ public final class FrontendPublishedFactTypeGuard {
     private FrontendPublishedFactTypeGuard() {
     }
 
-    public static void checkAnalysisPatch(@NotNull FrontendAnalysisPatch patch) {
-        checkSymbolBindings(patch.symbolBindings());
-        checkResolvedMembers(patch.resolvedMembers());
-        checkResolvedCalls(patch.resolvedCalls());
-        checkExpressionTypes(patch.expressionTypes());
-        checkSlotTypes(patch.slotTypes());
-        checkLocalSlotTypeUpdates(patch.localSlotTypeUpdates());
-    }
-
     public static void checkOwnerPatch(@NotNull FrontendOwnerPatch patch) {
         checkSymbolBindings(patch.symbolBindings());
         checkResolvedMembers(patch.resolvedMembers());

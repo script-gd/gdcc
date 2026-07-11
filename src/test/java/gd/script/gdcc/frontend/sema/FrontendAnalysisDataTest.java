@@ -5,11 +5,14 @@ import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
-import gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPatchTransaction;
 import gd.script.gdcc.frontend.sema.patch.FrontendTopBindingPatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendVarTypePostPatch;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.BlockScopeKind;
 import gd.script.gdcc.frontend.scope.CallableScope;
@@ -250,21 +253,13 @@ class FrontendAnalysisDataTest {
     }
 
     @Test
-    void analysisPatchCopiesSourceTablesAtConstructionTime() {
+    void ownerPatchCopiesSourceTablesAtConstructionTime() {
         var bindingNode = identifier("value");
         var symbolBindings = new FrontendAstSideTable<FrontendBinding>();
         var binding = new FrontendBinding("self", FrontendBindingKind.SELF, null);
         symbolBindings.put(bindingNode, binding);
 
-        var patch = new FrontendAnalysisPatch(
-                FrontendSemanticStage.TOP_BINDING,
-                symbolBindings,
-                new FrontendAstSideTable<>(),
-                new FrontendAstSideTable<>(),
-                new FrontendAstSideTable<>(),
-                new FrontendAstSideTable<>(),
-                List.of()
-        );
+        var patch = new FrontendTopBindingPatch(symbolBindings);
         symbolBindings.clear();
 
         assertSame(binding, patch.symbolBindings().get(bindingNode));
@@ -456,6 +451,84 @@ class FrontendAnalysisDataTest {
     }
 
     @Test
+    void ownerPatchesRejectConflictingBindingMemberAndCallFactsWithoutMutation() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+
+        var bindingNode = identifier("binding");
+        var stableBinding = new FrontendBinding("binding", FrontendBindingKind.UNKNOWN, null);
+        analysisData.symbolBindings().put(bindingNode, stableBinding);
+        var conflictingBindings = new FrontendAstSideTable<FrontendBinding>();
+        conflictingBindings.put(bindingNode, new FrontendBinding("binding", FrontendBindingKind.SELF, null));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendTopBindingPatch(conflictingBindings))
+        );
+        assertSame(stableBinding, analysisData.symbolBindings().get(bindingNode));
+
+        var memberNode = identifier("member");
+        var stableMember = FrontendResolvedMember.resolved(
+                "member",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Owner"),
+                GdIntType.INT,
+                "Owner.member"
+        );
+        analysisData.resolvedMembers().put(memberNode, stableMember);
+        var conflictingMembers = new FrontendAstSideTable<FrontendResolvedMember>();
+        conflictingMembers.put(memberNode, FrontendResolvedMember.resolved(
+                "member",
+                FrontendBindingKind.PROPERTY,
+                FrontendReceiverKind.INSTANCE,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Owner"),
+                GdFloatType.FLOAT,
+                "Owner.member"
+        ));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendChainBindingPatch(
+                        conflictingMembers,
+                        new FrontendAstSideTable<>()
+                ))
+        );
+        assertSame(stableMember, analysisData.resolvedMembers().get(memberNode));
+
+        var callNode = identifier("call");
+        var stableCall = FrontendResolvedCall.resolved(
+                "call",
+                FrontendCallResolutionKind.STATIC_METHOD,
+                FrontendReceiverKind.TYPE_META,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Owner"),
+                GdIntType.INT,
+                List.of(),
+                "Owner.call"
+        );
+        analysisData.resolvedCalls().put(callNode, stableCall);
+        var conflictingCalls = new FrontendAstSideTable<FrontendResolvedCall>();
+        conflictingCalls.put(callNode, FrontendResolvedCall.resolved(
+                "call",
+                FrontendCallResolutionKind.STATIC_METHOD,
+                FrontendReceiverKind.TYPE_META,
+                ScopeOwnerKind.GDCC,
+                new GdObjectType("Owner"),
+                GdFloatType.FLOAT,
+                List.of(),
+                "Owner.call"
+        ));
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendChainBindingPatch(
+                        new FrontendAstSideTable<>(),
+                        conflictingCalls
+                ))
+        );
+        assertSame(stableCall, analysisData.resolvedCalls().get(callNode));
+    }
+
+    @Test
     void applyPatchRefreshesPublishedLocalBindingsForMatchingDeclarationOnly() throws Exception {
         var analysisData = FrontendAnalysisData.bootstrap();
         var updatedScope = newBodyScope();
@@ -565,18 +638,6 @@ class FrontendAnalysisDataTest {
         var localScope = newBodyScope();
         var declaration = variable("local");
         localScope.defineLocal("local", GdVariantType.VARIANT, declaration);
-        assertThrows(
-                FrontendAnalysisPatchException.class,
-                () -> analysisData.applyPatch(patch(
-                        FrontendSemanticStage.EXPR_TYPE,
-                        new FrontendAstSideTable<>(),
-                        new FrontendAstSideTable<>(),
-                        new FrontendAstSideTable<>(),
-                        new FrontendAstSideTable<>(),
-                        new FrontendAstSideTable<>(),
-                        List.of(new FrontendLocalSlotTypeUpdate(localScope, "local", declaration, GdIntType.INT))
-                ))
-        );
         assertThrows(
                 FrontendAnalysisPatchException.class,
                 () -> analysisData.applyPatch(patch(
@@ -832,7 +893,7 @@ class FrontendAnalysisDataTest {
         return new BlockScope(callableScope, BlockScopeKind.FUNCTION_BODY);
     }
 
-    private static @NotNull FrontendAnalysisPatch patch(
+    private static @NotNull FrontendOwnerPatch patch(
             @NotNull FrontendSemanticStage stage,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
             @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
@@ -841,18 +902,16 @@ class FrontendAnalysisDataTest {
             @NotNull FrontendAstSideTable<GdType> slotTypes,
             @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
     ) {
-        return new FrontendAnalysisPatch(
-                stage,
-                symbolBindings,
-                resolvedMembers,
-                resolvedCalls,
-                expressionTypes,
-                slotTypes,
-                localSlotTypeUpdates
-        );
+        return switch (stage) {
+            case TOP_BINDING -> new FrontendTopBindingPatch(symbolBindings);
+            case LOCAL_TYPE_STABILIZATION -> new FrontendLocalTypeStabilizationPatch(localSlotTypeUpdates);
+            case CHAIN_BINDING -> new FrontendChainBindingPatch(resolvedMembers, resolvedCalls);
+            case EXPR_TYPE -> new FrontendExprTypePatch(expressionTypes, resolvedCalls);
+            case VAR_TYPE_POST -> new FrontendVarTypePostPatch(slotTypes);
+        };
     }
 
-    private static @NotNull FrontendAnalysisPatch patch(
+    private static @NotNull FrontendOwnerPatch patch(
             @NotNull FrontendSemanticStage stage,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings
     ) {

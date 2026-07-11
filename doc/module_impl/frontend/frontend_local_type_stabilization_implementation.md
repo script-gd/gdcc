@@ -1,11 +1,13 @@
 # FrontendLocalTypeStabilization 实现说明
 
-> 本文档作为 `FrontendLocalTypeStabilizationAnalyzer` 及其相邻 `:=` 局部类型稳定化合同的长期事实源，定义当前 phase 位置、输入输出边界、slot owner、稳定化规则、fail-closed 边界与测试锚点。本文档替代旧的实施计划与阶段记录，不再保留进度流水账、已完成任务列表或回滚步骤。
+> 本文档作为 `FrontendBodyOwnerProcedures` 中 local-stabilization owner 及其相邻 `:=`
+> 局部类型稳定化合同的长期事实源，定义当前 phase 位置、输入输出边界、slot owner、
+> 稳定化规则、fail-closed 边界与测试锚点。
 
 ## 文档状态
 
 - 状态：事实源维护中（source-order local `:=` slot stabilization、parameter/local alias 传播、复杂 initializer 求型、assignment initializer 与 bare `TYPE_META` fail-closed、parent/child block 边界合同、SuiteResolver body-owner overlay/export 路径已落地）
-- 更新时间：2026-07-09（Phase I：production shared analyzer 不再调用 legacy whole-phase stabilization bypass）
+- 更新时间：2026-07-10
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -52,7 +54,10 @@
 
 每个 shared phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断快照。SuiteResolver body path 还会在 statement boundary 刷新快照，让后一 statement 读取 current-suite upstream diagnostics。
 
-生产 body path 中，local stabilization 作为 `FrontendBodyOwnerProcedures` 的 statement-local owner procedure 运行在 top binding 之后、chain binding 之前。Standalone `FrontendLocalTypeStabilizationAnalyzer.analyze(...)` / `analyzeInWindow(...)` 只保留为 focused analyzer / legacy shim 测试参考，不再由 shared analyzer 的 legacy whole-phase bypass 调用。
+生产 body path 中，local stabilization 作为 `FrontendBodyOwnerProcedures` 的 statement-local
+owner procedure 运行在 top binding 之后、chain binding 之前。阶段 K 已删除 standalone
+whole-module analyzer 与 window shim；focused coverage 通过 SuiteResolver、typed overlay 和
+per-owner patch transaction 锚定，不再存在第二条发布路径。
 
 ### 1.2 当前职责
 

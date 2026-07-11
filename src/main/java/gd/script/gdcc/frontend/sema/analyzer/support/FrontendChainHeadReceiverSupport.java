@@ -32,12 +32,12 @@ import java.util.function.Function;
 /// Shared analyzer-side support for chain heads and local atomic receiver facts.
 ///
 /// Why this helper exists:
-/// - both `FrontendChainBindingAnalyzer` and `FrontendExprTypeAnalyzer` need the same rules for
-///   turning a chain head into `ReceiverState`
+/// - the chain-binding and expression-typing owner procedures need the same rules for turning a
+///   chain head into `ReceiverState`
 /// - those rules are not the chain-reduction core itself; they are the glue that bridges already
 ///   published binding facts into a stable receiver model
 /// - keeping this logic in one place reduces the risk that `self`, `TYPE_META`, literal heads, or
-///   blocked value bindings drift apart between the two analyzers
+///   blocked value bindings drift apart between the two owners
 ///
 /// What this helper does:
 /// - consumes already-published `symbolBindings()` and `scopesByAst()` facts

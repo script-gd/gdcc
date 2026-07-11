@@ -2,7 +2,6 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
-import gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendPublishedFactTypeGuard;
@@ -132,26 +131,7 @@ public final class FrontendAnalysisData {
         );
     }
 
-    /// Applies one segmented semantic patch without replacing any stable side-table reference.
-    ///
-    /// Whole-table `updateXxx(...)` remains the legacy publication path. This API is reserved for
-    /// segmented stages, so every merge validates conflicts and compiler-only leaks before mutating
-    /// the stable publication surface.
-    public void applyPatch(@NotNull FrontendAnalysisPatch patch) {
-        var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
-        FrontendPublishedFactTypeGuard.checkAnalysisPatch(checkedPatch);
-        applyPatchFields(
-                checkedPatch.stage(),
-                checkedPatch.symbolBindings(),
-                checkedPatch.resolvedMembers(),
-                checkedPatch.resolvedCalls(),
-                checkedPatch.expressionTypes(),
-                checkedPatch.slotTypes(),
-                checkedPatch.localSlotTypeUpdates()
-        );
-    }
-
-    /// Applies one Phase C single-owner patch without replacing any stable side-table reference.
+    /// Applies one single-owner patch without replacing any stable side-table reference.
     public void applyPatch(@NotNull FrontendOwnerPatch patch) {
         var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
         FrontendPublishedFactTypeGuard.checkOwnerPatch(checkedPatch);

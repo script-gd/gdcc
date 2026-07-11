@@ -2,8 +2,6 @@
 
 本文总结 `doc/module_impl/frontend/frontend_segmented_type_resolution_pipeline_plan.md` 执行完成后的前端分析流水线形态。内容只描述目标架构、执行顺序与不变量，不展开旧 whole-module 流水线或过渡实现资产。
 
-最近同步：2026-07-09（Phase I：shared analyzer legacy whole-phase bypass、test bridge 与 `FrontendSegmentedSemanticScheduler` 已删除）。
-
 ## 1. 总体形态
 
 计划完成后，frontend shared semantic pipeline 分为四个层次：
@@ -332,6 +330,12 @@ Top binding 先绑定 `receiver` use-site。Local stabilization 随后把 `recei
 
 - shared semantic 默认使用 interface/body pipeline。
 - shared analyzer 不再提供 legacy whole-phase body publication bypass；`FrontendSegmentedSemanticScheduler` 不再是代码资产。
+- top binding、local stabilization、chain binding、expression typing 与 var type post 只由
+  `FrontendBodyOwnerProcedures` 的 root-bounded owner procedure 承载；对应 whole-module analyzer
+  类已删除。
+- `FrontendWindowAnalysisContext`、`FrontendWindowPublicationSurface` 与 legacy
+  `FrontendAnalysisPatch` 已删除；body facts 只能通过 per-owner patches 和
+  `FrontendPatchTransaction` 导出。
 - body typed resolution 按 source order 运行。
 - 每个 statement 内 owner 顺序固定为 top binding -> local stabilization -> chain binding -> expr typing -> var type post。
 - pending overlay 只对当前 statement 后续 owner 可见。

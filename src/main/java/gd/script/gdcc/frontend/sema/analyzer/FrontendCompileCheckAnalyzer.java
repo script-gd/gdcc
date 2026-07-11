@@ -61,12 +61,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.IdentityHashMap;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
+import java.util.function.Predicate;
 
 /// Compile-only final frontend gate that runs after the shared semantic pipeline.
 ///
@@ -86,13 +82,13 @@ public class FrontendCompileCheckAnalyzer {
     /// gate's own hard-stop diagnostic. Those categories stay configurable here so future warning-
     /// based blockers do not need another dedicated ignore-upstream branch.
     private static final @NotNull Map<String, String> NON_CONFLICTING_UPSTREAM_DIAGNOSTIC_CATEGORIES = Map.of(
-            FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY,
+            FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY,
             "slot-publication warning explains the missing lowering-ready fact and must coexist with compile_check"
     );
     /// Compile mode usually blocks only on upstream `ERROR`s. This set is the narrow exception list
     /// for already-published non-error diagnostics that still represent a lowering-blocking gap.
     private static final @NotNull Set<String> NON_ERROR_BLOCKING_DIAGNOSTIC_CATEGORIES = Set.of(
-            FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+            FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
     );
 
     public void analyze(
@@ -443,14 +439,14 @@ public class FrontendCompileCheckAnalyzer {
         }
 
         /// Replay the AST walker over a flat statement list in source order.
-        private void walkStatements(@NotNull java.util.List<Statement> statements) {
+        private void walkStatements(@NotNull List<Statement> statements) {
             for (var statement : statements) {
                 astWalker.walk(statement);
             }
         }
 
         /// Traverse declarations with executable depth pinned to zero so nested bodies must opt in explicitly.
-        private void walkNonExecutableContainerStatements(@NotNull java.util.List<Statement> statements) {
+        private void walkNonExecutableContainerStatements(@NotNull List<Statement> statements) {
             var previousDepth = supportedExecutableBlockDepth;
             supportedExecutableBlockDepth = 0;
             try {
@@ -708,7 +704,7 @@ public class FrontendCompileCheckAnalyzer {
             return publishedDiagnostics.asList().stream().anyMatch(diagnostic ->
                     diagnostic.category().equals("sema.binding")
                             && diagnostic.message().contains("Keyword 'self' is not available in static context")
-                            && diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(sourcePath))
+                            && (diagnostic.sourcePath() != null && diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(sourcePath)))
             );
         }
 
@@ -837,7 +833,7 @@ public class FrontendCompileCheckAnalyzer {
         /// Find one previously published diagnostic that exactly matches the anchor range in the same file.
         private @Nullable FrontendDiagnostic findPublishedDiagnosticAt(
                 @NotNull Node anchor,
-                @NotNull java.util.function.Predicate<FrontendDiagnostic> predicate
+                @NotNull Predicate<FrontendDiagnostic> predicate
         ) {
             var anchorRange = FrontendRange.fromAstRange(anchor.range());
             return publishedDiagnostics.asList().stream()

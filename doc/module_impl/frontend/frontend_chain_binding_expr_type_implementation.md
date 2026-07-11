@@ -1,11 +1,14 @@
 # FrontendChainBinding / ExprType 实现说明
 
-> 本文档作为 `FrontendChainBindingAnalyzer`、`FrontendExprTypeAnalyzer` 及其共享 body-phase support 的长期事实源，定义当前 phase 顺序、side-table / diagnostic owner 边界、局部 chain reduction 架构、已冻结的 published contract，以及后续工程必须遵守的 fail-closed 边界。本文档替代旧的规划性文档与验收流水账，不再保留进度记录或阶段日志。
+> 本文档作为 `FrontendBodyOwnerProcedures` 中 chain-binding、expression-typing owner 及其
+> 共享 body-phase support 的长期事实源，定义当前 phase 顺序、side-table / diagnostic owner
+> 边界、局部 chain reduction 架构、已冻结的 published contract，以及后续工程必须遵守的
+> fail-closed 边界。
 
 ## 文档状态
 
 - 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、SuiteResolver statement-local owner procedures、typed overlay-aware shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
-- 更新时间：2026-07-09（Phase I：production shared analyzer 不再提供 legacy whole-phase chain/expr bypass）
+- 更新时间：2026-07-10
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -58,7 +61,9 @@
 - production body facts 只通过 SuiteResolver 的 `FrontendTypedLexicalEnvironment` overlay 与 per-owner patch transaction 导出
 - chain binding owner procedure 只在当前 statement root 内消费已发布 / pending 的 binding 与 stabilized local slot fact
 - expr typing owner procedure 只在 chain-owned member/call facts 已对当前 root 可见后发布 expression facts 与 bare-call facts
-- standalone `FrontendChainBindingAnalyzer.analyze(...)` / `FrontendExprTypeAnalyzer.analyze(...)` 保留为 focused analyzer / legacy shim 测试参考，不再由 shared analyzer 的 legacy whole-phase bypass 调用
+- 阶段 K 已删除 standalone chain/expr whole-module analyzer 与 window shim；focused tests
+  直接覆盖 `FrontendBodyOwnerProcedures`、typed overlay 与 per-owner patch export，不再维护
+  comparison publication path
 
 ### 1.2 当前 owner 边界
 

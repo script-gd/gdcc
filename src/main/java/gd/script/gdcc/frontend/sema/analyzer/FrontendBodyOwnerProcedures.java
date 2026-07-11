@@ -78,10 +78,13 @@ import java.util.function.Consumer;
 /// are written only through `FrontendTypedLexicalEnvironment`, so pending/current-suite visibility and
 /// ordered per-owner export stay centralized in one place.
 public final class FrontendBodyOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
+    /// Shared category for a callable-local slot that cannot become lowering-ready.
+    public static final @NotNull String VARIABLE_SLOT_PUBLICATION_CATEGORY = "sema.variable_slot_publication";
     private static final @NotNull String BINDING_CATEGORY = "sema.binding";
     private static final @NotNull String MEMBER_RESOLUTION_CATEGORY = "sema.member_resolution";
     private static final @NotNull String CALL_RESOLUTION_CATEGORY = "sema.call_resolution";
     private static final @NotNull String EXPRESSION_RESOLUTION_CATEGORY = "sema.expression_resolution";
+    private static final @NotNull String DISCARDED_EXPRESSION_CATEGORY = "sema.discarded_expression";
     private static final @NotNull String UNSAFE_CALL_ARGUMENT_CATEGORY = "sema.unsafe_call_argument";
     private static final @NotNull String DEFERRED_CHAIN_RESOLUTION_CATEGORY = "sema.deferred_chain_resolution";
     private static final @NotNull String DEFERRED_EXPRESSION_RESOLUTION_CATEGORY =
@@ -217,6 +220,81 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         var resolver = new BodyExpressionResolver(context);
         publishRootExpressionTypes(context, resolver, root);
+        if (root instanceof ExpressionStatement expressionStatement) {
+            reportDiscardedExpressionWarning(
+                    context,
+                    expressionStatement.expression(),
+                    context.typedEnvironment().expressionType(expressionStatement.expression())
+            );
+        }
+        if (root instanceof VariableDeclaration variableDeclaration && variableDeclaration.value() != null) {
+            var declarationScope = context.analysisData().scopesByAst().get(variableDeclaration);
+            checkInferredLocalTypeConsistency(
+                    variableDeclaration,
+                    declarationScope instanceof BlockScope blockScope ? blockScope : null,
+                    context.typedEnvironment().expressionType(variableDeclaration.value())
+            );
+        }
+    }
+
+    private static void reportDiscardedExpressionWarning(
+            @NotNull FrontendSuiteContext context,
+            @NotNull Expression expression,
+            @Nullable FrontendExpressionType expressionType
+    ) {
+        if (expressionType == null
+                || expressionType.status() != FrontendExpressionTypeStatus.RESOLVED
+                || expressionType.publishedType() instanceof GdVoidType) {
+            return;
+        }
+        context.diagnosticManager().warning(
+                DISCARDED_EXPRESSION_CATEGORY,
+                "Discarded expression result of type '" + expressionType.publishedType().getTypeName() + "'",
+                context.sourcePath(),
+                FrontendRange.fromAstRange(expression.range())
+        );
+    }
+
+    /// Verifies the local-stabilization result without creating a second slot-mutation owner.
+    static void checkInferredLocalTypeConsistency(
+            @NotNull VariableDeclaration variableDeclaration,
+            @Nullable BlockScope blockScope,
+            @Nullable FrontendExpressionType initializerType
+    ) {
+        if (!FrontendDeclaredTypeSupport.isInferredTypeRef(variableDeclaration.type())
+                || variableDeclaration.value() == null
+                || blockScope == null
+                || initializerType == null) {
+            return;
+        }
+        var existingLocal = blockScope.resolveValueHere(variableDeclaration.name().trim());
+        if (existingLocal == null || existingLocal.declaration() != variableDeclaration) {
+            return;
+        }
+        var resolvedInitializerType = switch (initializerType.status()) {
+            case RESOLVED -> initializerType.publishedType();
+            case DYNAMIC, BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
+        };
+        if (resolvedInitializerType == null || resolvedInitializerType instanceof GdVoidType) {
+            return;
+        }
+        if (resolvedInitializerType instanceof GdCompilerType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend local consistency guard: "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+        if (!(existingLocal.type() instanceof GdVariantType)
+                && !existingLocal.type().getTypeName().equals(resolvedInitializerType.getTypeName())) {
+            throw new IllegalStateException(
+                    "Inferred local slot type changed after stabilization for '"
+                            + variableDeclaration.name().trim()
+                            + "': existing="
+                            + existingLocal.type().getTypeName()
+                            + ", initializer="
+                            + resolvedInitializerType.getTypeName()
+            );
+        }
     }
 
     @Override
@@ -269,7 +347,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             message.append("; this usually means earlier variable analysis rejected the declaration as duplicate or shadowing");
         }
         context.diagnosticManager().warning(
-                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY,
+                VARIABLE_SLOT_PUBLICATION_CATEGORY,
                 message.toString(),
                 context.sourcePath(),
                 FrontendRange.fromAstRange(variableDeclaration.range())

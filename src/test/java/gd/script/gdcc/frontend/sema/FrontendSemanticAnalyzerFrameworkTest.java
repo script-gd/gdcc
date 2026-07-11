@@ -15,6 +15,7 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendTypeCheckAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVirtualOverrideAnalyzer;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
+import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
@@ -75,6 +76,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendSemanticAnalyzerFrameworkTest {
@@ -93,13 +95,13 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 @tool
                 class_name AnnotatedPlayer
                 extends Node
-
+                
                 @export var hp: int = 1
-
+                
                 @rpc("authority")
                 func ping(value):
                     var local := value
-
+                
                 @warning_ignore_start("unused_variable")
                 var tmp := 1
                 
@@ -775,10 +777,10 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertFalse(result.slotTypes().isEmpty());
     }
 
-    /// Locks the Stage J API boundary: test doubles remain available for active phases, while
-    /// statement-local body ownership is exclusively selected by `FrontendSuiteResolver`.
+    /// Locks the Stage K boundary: active phase injection remains available while legacy body-owner
+    /// classes are absent from both constructor signatures and the runtime classpath.
     @Test
-    void activeDependencyConstructorExcludesLegacyBodyOwnerParameters() throws Exception {
+    void activeDependencyConstructorAndClasspathExcludeLegacyBodyOwners() throws Exception {
         var activeConstructor = FrontendSemanticAnalyzer.class.getConstructor(
                 FrontendClassSkeletonBuilder.class,
                 FrontendScopeAnalyzer.class,
@@ -801,6 +803,30 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertTrue(Arrays.stream(FrontendSemanticAnalyzer.class.getConstructors())
                 .flatMap(constructor -> Arrays.stream(constructor.getParameterTypes()))
                 .noneMatch(parameterType -> legacyOwnerParameterNames.contains(parameterType.getSimpleName())));
+        for (var legacyOwnerName : legacyOwnerParameterNames) {
+            assertThrows(
+                    ClassNotFoundException.class,
+                    () -> Class.forName("gd.script.gdcc.frontend.sema.analyzer." + legacyOwnerName)
+            );
+        }
+    }
+
+    @Test
+    void removedWindowAndMultiOwnerPatchShimsStayAbsent() throws Exception {
+        var removedClassNames = List.of(
+                "gd.script.gdcc.frontend.sema.FrontendWindowAnalysisContext",
+                "gd.script.gdcc.frontend.sema.FrontendWindowPublicationSurface",
+                "gd.script.gdcc.frontend.sema.patch.FrontendAnalysisPatch"
+        );
+
+        for (var removedClassName : removedClassNames) {
+            assertThrows(ClassNotFoundException.class, () -> Class.forName(removedClassName));
+        }
+        assertNotNull(FrontendAnalysisData.class.getMethod("applyPatch", FrontendOwnerPatch.class));
+        assertTrue(Arrays.stream(FrontendAnalysisData.class.getMethods())
+                .filter(method -> method.getName().equals("applyPatch"))
+                .flatMap(method -> Arrays.stream(method.getParameterTypes()))
+                .noneMatch(parameterType -> parameterType.getSimpleName().equals("FrontendAnalysisPatch")));
     }
 
     @Test
@@ -933,7 +959,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
                 extends RefCounted
                 class Point:
                     var marker: int = 1
-
+                
                 func ping(value: Point) -> int:
                     var alias := value
                     var number := alias.marker
@@ -1075,9 +1101,9 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var unit = parserService.parseUnit(Path.of("tmp", "assignment_target_lowering_facts.gd"), """
                 class_name AssignmentTargetLoweringFacts
                 extends RefCounted
-
+                
                 var hp: int = 0
-
+                
                 func ping(host, index: int, value: int):
                     self.hp = value
                     host.box.count += value

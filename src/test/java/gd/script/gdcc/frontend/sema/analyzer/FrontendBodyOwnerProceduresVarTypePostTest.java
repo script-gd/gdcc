@@ -5,12 +5,7 @@ import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
-import gd.script.gdcc.frontend.scope.BlockScope;
-import gd.script.gdcc.frontend.scope.BlockScopeKind;
-import gd.script.gdcc.frontend.scope.CallableScope;
-import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendClassSkeletonBuilder;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.type.GdIntType;
@@ -18,7 +13,6 @@ import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.Parameter;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
@@ -33,10 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class FrontendVarTypePostAnalyzerTest {
+class FrontendBodyOwnerProceduresVarTypePostTest {
     @Test
     void analyzePublishesParameterAndCallableLocalSlotTypesFromSharedPipeline() throws Exception {
         var analyzed = analyzeShared(
@@ -86,13 +79,13 @@ class FrontendVarTypePostAnalyzerTest {
                 """
                         class_name VarTypePostPreStabilizedLocals
                         extends RefCounted
-
+                        
                         class Point:
                             var marker: int = -1
-
+                        
                         func make_point() -> Point:
                             return Point.new()
-
+                        
                         func ping():
                             var point := make_point()
                             var alias := point
@@ -119,55 +112,8 @@ class FrontendVarTypePostAnalyzerTest {
         assertTypeNameEndsWith(pointType, "Point");
         assertTypeNameEndsWith(aliasType, "Point");
         assertTrue(analyzed.diagnostics().asList().stream()
-                .noneMatch(diagnostic -> diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY)));
-    }
-
-    @Test
-    void analyzeRepublishesSettledAliasSlotsAndClearsStaleSlotFacts() throws Exception {
-        var prepared = preparePublishedInput(
-                "var_type_post_republish_settled_alias_slots.gd",
-                """
-                        class_name VarTypePostRepublishSettledAliasSlots
-                        extends RefCounted
-
-                        class Point:
-                            var marker: int = -1
-
-                        func make_point() -> Point:
-                            return Point.new()
-
-                        func ping():
-                            var point := make_point()
-                            var alias := point
-                            return alias.marker
-                        """
-        );
-
-        var pingFunction = findFunction(prepared.unit().ast().statements(), "ping");
-        var point = findNode(
-                pingFunction.body(),
-                VariableDeclaration.class,
-                variableDeclaration -> variableDeclaration.name().equals("point")
-        );
-        var alias = findNode(
-                pingFunction.body(),
-                VariableDeclaration.class,
-                variableDeclaration -> variableDeclaration.name().equals("alias")
-        );
-        prepared.analysisData().slotTypes().put(point, GdVariantType.VARIANT);
-        prepared.analysisData().slotTypes().put(alias, GdVariantType.VARIANT);
-
-        new FrontendVarTypePostAnalyzer().analyze(prepared.analysisData(), prepared.diagnosticManager());
-
-        var pointType = prepared.analysisData().slotTypes().get(point);
-        var aliasType = prepared.analysisData().slotTypes().get(alias);
-        assertNotNull(pointType);
-        assertNotNull(aliasType);
-        assertTypeNameEndsWith(pointType, "Point");
-        assertTypeNameEndsWith(aliasType, "Point");
-        assertTrue(prepared.diagnosticManager().snapshot().asList().stream()
                 .noneMatch(diagnostic -> diagnostic.category().equals(
-                        FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                        FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
                 )));
     }
 
@@ -178,7 +124,7 @@ class FrontendVarTypePostAnalyzerTest {
                 """
                         class_name VarTypePostDynamicFailClosedSlots
                         extends RefCounted
-
+                        
                         func ping(dynamic_host):
                             var point := dynamic_host.next
                             var alias := point
@@ -203,7 +149,7 @@ class FrontendVarTypePostAnalyzerTest {
         assertFalse(analyzed.diagnostics().hasErrors(), () -> "Unexpected diagnostics: " + analyzed.diagnostics());
         assertTrue(analyzed.diagnostics().asList().stream()
                 .noneMatch(diagnostic -> diagnostic.category().equals(
-                        FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                        FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
                 )));
     }
 
@@ -258,7 +204,7 @@ class FrontendVarTypePostAnalyzerTest {
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(stable));
         assertNull(analyzed.analysisData().slotTypes().get(duplicateStable));
         assertTrue(analyzed.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY)
+                diagnostic.category().equals(FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY)
                         && diagnostic.message().contains("Local variable 'stable'")
                         && diagnostic.message().contains("surviving slot currently resolves to another accepted local declaration")
         ));
@@ -293,73 +239,11 @@ class FrontendVarTypePostAnalyzerTest {
         assertEquals(GdIntType.INT, analyzed.analysisData().slotTypes().get(stable));
         assertNull(analyzed.analysisData().slotTypes().get(shadowingStable));
         assertTrue(analyzed.diagnostics().asList().stream().anyMatch(diagnostic ->
-                diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY)
+                diagnostic.category().equals(FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY)
                         && diagnostic.message().contains("Local variable 'stable'")
                         && diagnostic.message().contains("if-body of function 'ping'")
                         && diagnostic.message().contains("surviving slot currently resolves to another accepted local declaration")
         ));
-    }
-
-    @Test
-    void analyzeFailsFastWhenSupportedParameterScopeIsMissing() throws Exception {
-        var prepared = preparePublishedInput(
-                "var_type_post_missing_parameter_scope.gd",
-                """
-                        class_name VarTypePostMissingParameterScope
-                        extends Node
-                        
-                        func ping(seed: int):
-                            return seed
-                        """
-        );
-        var parameter = findNode(
-                prepared.unit().ast(),
-                Parameter.class,
-                candidate -> candidate.name().equals("seed")
-        );
-        prepared.analysisData().scopesByAst().remove(parameter);
-
-        var error = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendVarTypePostAnalyzer().analyze(prepared.analysisData(), prepared.diagnosticManager())
-        );
-
-        assertTrue(error.getMessage().contains("Parameter 'seed'"));
-        assertTrue(error.getMessage().contains(prepared.unit().path().toString()));
-    }
-
-    @Test
-    void analyzeFailsFastWhenSupportedLocalInventorySlotIsMissing() throws Exception {
-        var prepared = preparePublishedInput(
-                "var_type_post_missing_local_slot.gd",
-                """
-                        class_name VarTypePostMissingLocalSlot
-                        extends Node
-                        
-                        func ping():
-                            var local := 1
-                            return local
-                        """
-        );
-        var local = findNode(
-                prepared.unit().ast(),
-                VariableDeclaration.class,
-                variableDeclaration -> variableDeclaration.name().equals("local")
-        );
-        var brokenCallableScope = new CallableScope(
-                new ClassRegistry(ExtensionApiLoader.loadDefault()),
-                CallableScopeKind.FUNCTION_DECLARATION
-        );
-        var brokenBlockScope = new BlockScope(brokenCallableScope, BlockScopeKind.FUNCTION_BODY);
-        prepared.analysisData().scopesByAst().put(local, brokenBlockScope);
-
-        var error = assertThrows(
-                IllegalStateException.class,
-                () -> new FrontendVarTypePostAnalyzer().analyze(prepared.analysisData(), prepared.diagnosticManager())
-        );
-
-        assertTrue(error.getMessage().contains("Local variable 'local'"));
-        assertTrue(error.getMessage().contains(prepared.unit().path().toString()));
     }
 
     private static @NotNull AnalyzedScript analyzeShared(
@@ -378,40 +262,6 @@ class FrontendVarTypePostAnalyzerTest {
                 diagnosticManager
         );
         return new AnalyzedScript(unit, analysisData, diagnosticManager.snapshot());
-    }
-
-    private static @NotNull PreparedVarTypeInput preparePublishedInput(
-            @NotNull String fileName,
-            @NotNull String source
-    ) throws Exception {
-        var parserService = new GdScriptParserService();
-        var diagnosticManager = new DiagnosticManager();
-        var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnosticManager);
-        assertTrue(diagnosticManager.isEmpty(), () -> "Unexpected parse diagnostics: " + diagnosticManager.snapshot());
-
-        var classRegistry = new ClassRegistry(ExtensionApiLoader.loadDefault());
-        var analysisData = FrontendAnalysisData.bootstrap();
-        var moduleSkeleton = new FrontendClassSkeletonBuilder().build(
-                new FrontendModule("test_module", List.of(unit)),
-                classRegistry,
-                diagnosticManager,
-                analysisData
-        );
-        analysisData.updateModuleSkeleton(moduleSkeleton);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendScopeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendLocalTypeStabilizationAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        return new PreparedVarTypeInput(unit, analysisData, diagnosticManager);
     }
 
     private static @NotNull FunctionDeclaration findFunction(
@@ -460,13 +310,6 @@ class FrontendVarTypePostAnalyzerTest {
             @NotNull FrontendSourceUnit unit,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticSnapshot diagnostics
-    ) {
-    }
-
-    private record PreparedVarTypeInput(
-            @NotNull FrontendSourceUnit unit,
-            @NotNull FrontendAnalysisData analysisData,
-            @NotNull DiagnosticManager diagnosticManager
     ) {
     }
 }

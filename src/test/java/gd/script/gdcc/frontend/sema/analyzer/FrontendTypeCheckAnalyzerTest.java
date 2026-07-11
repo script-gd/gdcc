@@ -1296,12 +1296,7 @@ class FrontendTypeCheckAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        FrontendSegmentedPipelineTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         return new PreparedTypeCheckInput(unit, analysisData, diagnosticManager, classRegistry);
     }
 

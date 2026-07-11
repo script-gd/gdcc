@@ -5,7 +5,7 @@ import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.analyzer.FrontendVarTypePostAnalyzer;
+import gd.script.gdcc.frontend.sema.analyzer.FrontendBodyOwnerProcedures;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import org.jetbrains.annotations.NotNull;
@@ -153,7 +153,9 @@ class FrontendLoweringAnalysisPassTest {
                 .filter(diagnostic -> diagnostic.category().equals("sema.variable_binding"))
                 .toList();
         var slotPublicationWarnings = diagnostics.snapshot().asList().stream()
-                .filter(diagnostic -> diagnostic.category().equals(FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY))
+                .filter(diagnostic -> diagnostic.category().equals(
+                        FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                ))
                 .toList();
 
         assertNull(lowered);

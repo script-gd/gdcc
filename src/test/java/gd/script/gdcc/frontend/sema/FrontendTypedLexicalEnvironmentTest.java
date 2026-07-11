@@ -13,6 +13,7 @@ import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.scope.CallableScopeKind;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
+import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.LirClassDef;
 import gd.script.gdcc.scope.ClassRegistry;
@@ -71,7 +72,7 @@ class FrontendTypedLexicalEnvironmentTest {
 
         var transaction = environment.exportPatchTransaction();
         assertEquals(List.of(FrontendSemanticStage.LOCAL_TYPE_STABILIZATION), transaction.patches().stream()
-                .map(patch -> patch.stage())
+                .map(FrontendOwnerPatch::stage)
                 .toList());
         transaction.applyTo(analysisData);
 
@@ -214,6 +215,76 @@ class FrontendTypedLexicalEnvironmentTest {
                 expressionNode,
                 FrontendExpressionType.resolved(GdIntType.INT)
         ));
+    }
+
+    @Test
+    void overlayRejectsWrongOwnersAcrossEveryPublicationSurface() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var bodyScope = newBodyScope();
+        var declaration = variable("local");
+        bodyScope.defineLocal("local", GdVariantType.VARIANT, declaration);
+        var environment = new FrontendTypedLexicalEnvironment(bodyScope, analysisData);
+
+        assertThrows(FrontendAnalysisPatchException.class, () -> environment.putSymbolBinding(
+                FrontendSemanticStage.CHAIN_BINDING,
+                identifier("binding"),
+                localBinding("local", declaration, requireLocal(bodyScope, "local"))
+        ));
+        assertThrows(FrontendAnalysisPatchException.class, () -> environment.putResolvedMember(
+                FrontendSemanticStage.EXPR_TYPE,
+                identifier("member"),
+                FrontendResolvedMember.resolved(
+                        "member",
+                        FrontendBindingKind.PROPERTY,
+                        FrontendReceiverKind.INSTANCE,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("Owner"),
+                        GdIntType.INT,
+                        "Owner.member"
+                )
+        ));
+        assertThrows(FrontendAnalysisPatchException.class, () -> environment.putResolvedCall(
+                FrontendSemanticStage.TOP_BINDING,
+                identifier("call"),
+                FrontendResolvedCall.resolved(
+                        "call",
+                        FrontendCallResolutionKind.STATIC_METHOD,
+                        FrontendReceiverKind.TYPE_META,
+                        ScopeOwnerKind.GDCC,
+                        new GdObjectType("Owner"),
+                        GdIntType.INT,
+                        List.of(),
+                        "Owner.call"
+                )
+        ));
+        assertThrows(FrontendAnalysisPatchException.class, () -> environment.putSlotType(
+                FrontendSemanticStage.LOCAL_TYPE_STABILIZATION,
+                declaration,
+                GdIntType.INT
+        ));
+        assertThrows(FrontendAnalysisPatchException.class, () -> environment.addLocalSlotTypeUpdate(
+                FrontendSemanticStage.VAR_TYPE_POST,
+                new FrontendLocalSlotTypeUpdate(bodyScope, "local", declaration, GdIntType.INT)
+        ));
+    }
+
+    @Test
+    void overlayRejectsConflictingStableSlotFactWithoutMutation() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var bodyScope = newBodyScope();
+        var declaration = variable("local");
+        bodyScope.defineLocal("local", GdIntType.INT, declaration);
+        analysisData.slotTypes().put(declaration, GdIntType.INT);
+        var environment = new FrontendTypedLexicalEnvironment(bodyScope, analysisData);
+
+        assertThrows(FrontendAnalysisPatchException.class, () -> environment.putSlotType(
+                FrontendSemanticStage.VAR_TYPE_POST,
+                declaration,
+                GdFloatType.FLOAT
+        ));
+
+        assertSame(GdIntType.INT, analysisData.slotTypes().get(declaration));
+        assertFalse(environment.hasPendingFacts());
     }
 
     private static @NotNull IdentifierExpression identifier(@NotNull String name) {

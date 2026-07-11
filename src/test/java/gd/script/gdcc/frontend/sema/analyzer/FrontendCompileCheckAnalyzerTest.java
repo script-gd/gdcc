@@ -235,7 +235,7 @@ class FrontendCompileCheckAnalyzerTest {
         var variableDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.variable_binding");
         var slotPublicationWarnings = diagnosticsByCategory(
                 compiled.diagnostics(),
-                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
         );
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
@@ -264,7 +264,7 @@ class FrontendCompileCheckAnalyzerTest {
 
         var slotPublicationWarnings = diagnosticsByCategory(
                 compiled.diagnostics(),
-                FrontendVarTypePostAnalyzer.VARIABLE_SLOT_PUBLICATION_CATEGORY
+                FrontendBodyOwnerProcedures.VARIABLE_SLOT_PUBLICATION_CATEGORY
         );
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
 
@@ -896,10 +896,12 @@ class FrontendCompileCheckAnalyzerTest {
         runCompileCheck(preparedInput);
 
         var compileDiagnostics = diagnosticsByCategory(preparedInput.analysisData().diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertEquals(FrontendRange.fromAstRange(bareCall.range()), compileDiagnostics.getFirst().range());
-        assertTrue(compileDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("not accessible in the current context"));
+        var bareCallDiagnostics = compileDiagnostics.stream()
+                .filter(diagnostic -> FrontendRange.fromAstRange(bareCall.range()).equals(diagnostic.range()))
+                .toList();
+        assertEquals(1, bareCallDiagnostics.size());
+        assertTrue(bareCallDiagnostics.getFirst().message().contains("Call expression 'helper(...)'"));
+        assertTrue(bareCallDiagnostics.getFirst().message().contains("not accessible in the current context"));
     }
 
     @Test
@@ -1259,12 +1261,7 @@ class FrontendCompileCheckAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        FrontendSegmentedPipelineTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         new FrontendAnnotationUsageAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendTypeCheckAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);

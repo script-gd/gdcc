@@ -133,7 +133,7 @@ public final class FrontendBodyLoweringSession {
         return binding;
     }
 
-    /// `FrontendTopBindingAnalyzer` only publishes binding kind `SELF` for explicit
+    /// The top-binding owner procedure only publishes binding kind `SELF` for explicit
     /// `SelfExpression`. Any identifier node that still carries `SELF` means some earlier
     /// publication step leaked an impossible surface into lowering, so all body-lowering entry
     /// points must reject it consistently instead of silently rewriting the identifier to `self`.
@@ -1032,7 +1032,7 @@ public final class FrontendBodyLoweringSession {
         );
     }
 
-    @NotNull GdObjectType requireSingletonType(@NotNull FrontendBinding binding) {
+    void checkSingletonBindingType(@NotNull FrontendBinding binding) {
         var singletonType = classRegistry.findSingletonType(binding.symbolName());
         if (singletonType == null) {
             throw new IllegalStateException(
@@ -1040,7 +1040,6 @@ public final class FrontendBodyLoweringSession {
                             + "' is missing registry-validated object metadata"
             );
         }
-        return singletonType;
     }
 
     /// Allocates one body-local helper temp owned by writable-route lowering.

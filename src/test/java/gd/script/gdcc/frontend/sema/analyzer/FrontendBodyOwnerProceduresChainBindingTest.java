@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class FrontendChainBindingAnalyzerTest {
+class FrontendBodyOwnerProceduresChainBindingTest {
     @Test
     void analyzePublishesResolvedMemberAndStaticCallFactsForSupportedRoutes() throws Exception {
         var analyzed = analyze(
@@ -2047,7 +2047,7 @@ class FrontendChainBindingAnalyzerTest {
                 """
                         class_name InheritedEngineStaticLoadRoutes
                         extends RefCounted
-
+                        
                         func ping():
                             ChildInput.PARENT_LIMIT
                             ChildInput.PARENT_MOUSE_MODE
@@ -2276,7 +2276,7 @@ class FrontendChainBindingAnalyzerTest {
     private static @NotNull ClassRegistry registryWithKeyedStringBuiltin() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedBuiltins = api.builtinClasses().stream()
-                .map(FrontendChainBindingAnalyzerTest::withKeyedStringBuiltin)
+                .map(FrontendBodyOwnerProceduresChainBindingTest::withKeyedStringBuiltin)
                 .toList();
         return new ClassRegistry(new ExtensionAPI(
                 api.header(),
@@ -2294,7 +2294,7 @@ class FrontendChainBindingAnalyzerTest {
     private static @NotNull ClassRegistry registryWithAmbiguousStringPairConstructors() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedBuiltins = api.builtinClasses().stream()
-                .map(FrontendChainBindingAnalyzerTest::withAmbiguousStringPairConstructors)
+                .map(FrontendBodyOwnerProceduresChainBindingTest::withAmbiguousStringPairConstructors)
                 .toList();
         return new ClassRegistry(new ExtensionAPI(
                 api.header(),
@@ -2312,7 +2312,7 @@ class FrontendChainBindingAnalyzerTest {
     private static @NotNull ClassRegistry registryWithSpecificStringConstructors() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedBuiltins = api.builtinClasses().stream()
-                .map(FrontendChainBindingAnalyzerTest::withSpecificStringConstructors)
+                .map(FrontendBodyOwnerProceduresChainBindingTest::withSpecificStringConstructors)
                 .toList();
         return new ClassRegistry(new ExtensionAPI(
                 api.header(),
@@ -2330,7 +2330,7 @@ class FrontendChainBindingAnalyzerTest {
     private static @NotNull ClassRegistry registryWithNonInstantiableNode() throws Exception {
         var api = ExtensionApiLoader.loadDefault();
         var patchedClasses = api.classes().stream()
-                .map(FrontendChainBindingAnalyzerTest::withNonInstantiableNode)
+                .map(FrontendBodyOwnerProceduresChainBindingTest::withNonInstantiableNode)
                 .toList();
         return new ClassRegistry(new ExtensionAPI(
                 api.header(),

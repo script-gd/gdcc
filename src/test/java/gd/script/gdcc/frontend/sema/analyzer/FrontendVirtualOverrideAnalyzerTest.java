@@ -282,14 +282,7 @@ class FrontendVirtualOverrideAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendTopBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendChainBindingAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendExprTypeAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        new FrontendVarTypePostAnalyzer().analyze(analysisData, diagnosticManager);
-        analysisData.updateDiagnostics(diagnosticManager.snapshot());
+        FrontendSegmentedPipelineTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         new FrontendAnnotationUsageAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return new PreparedVirtualOverrideInput(units, analysisData, diagnosticManager, classRegistry);
