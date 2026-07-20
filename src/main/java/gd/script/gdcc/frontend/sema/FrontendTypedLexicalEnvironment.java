@@ -282,7 +282,8 @@ public final class FrontendTypedLexicalEnvironment {
     /// Exports committed suite facts as ordered single-owner patches. Stable data remains unchanged.
     ///
     /// Callable body resolution adds this transaction to its callable-scoped export batch. Property
-    /// initializers remain independent roots and apply their transaction directly.
+    /// initializers remain independent roots and apply their transaction directly. Export validates
+    /// this environment only; it does not preflight against transactions queued by other suite environments.
     public @NotNull FrontendPatchTransaction exportPatchTransaction() {
         committedFacts.checkNoCompilerOnlyLeaks();
         return new FrontendPatchTransaction(committedFacts.toOwnerPatches());

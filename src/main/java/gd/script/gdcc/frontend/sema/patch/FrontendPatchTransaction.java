@@ -11,6 +11,10 @@ import java.util.Objects;
 
 /// Ordered suite-export transaction made of single-owner patches.
 ///
+/// "Transaction" denotes grouping and owner order only. `applyTo(...)` applies each patch immediately
+/// and provides no cross-patch atomicity or rollback. If a later patch fails, earlier patches remain
+/// in stable side tables, and local stabilization may already have updated scope slots and binding payloads.
+///
 /// The constructor rejects duplicate or out-of-order owners so callers cannot accidentally recreate
 /// the legacy multi-owner patch shape at suite export time. Nested suite transactions are deferred
 /// in a callable-scoped export batch and never applied at their own suite boundary.

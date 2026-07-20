@@ -10,7 +10,10 @@ import java.util.Objects;
 /// Callable-scoped batch of suite export transactions.
 ///
 /// Nested suites contribute their transactions here without mutating stable side tables. The root
-/// callable applies the complete batch only after every supported child suite has resolved.
+/// callable applies the accumulated transactions in insertion order only after every supported child
+/// suite has resolved. The batch does not preflight conflicts across queued transactions and provides
+/// no atomicity or rollback. If a later transaction fails, earlier transactions remain applied to the
+/// stable side tables and scopes.
 public final class FrontendCallableExportBatch {
     private final @NotNull List<FrontendPatchTransaction> transactions = new ArrayList<>();
 

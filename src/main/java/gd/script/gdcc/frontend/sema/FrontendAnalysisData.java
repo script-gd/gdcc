@@ -132,6 +132,9 @@ public final class FrontendAnalysisData {
     }
 
     /// Applies one single-owner patch without replacing any stable side-table reference.
+    ///
+    /// Conflict checks and local-slot validation are scoped to this patch. Repeated calls, including
+    /// calls from `FrontendPatchTransaction`, do not form an atomic unit and do not roll back earlier patches.
     public void applyPatch(@NotNull FrontendOwnerPatch patch) {
         var checkedPatch = Objects.requireNonNull(patch, "patch must not be null");
         FrontendPublishedFactTypeGuard.checkOwnerPatch(checkedPatch);

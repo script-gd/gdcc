@@ -324,6 +324,13 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
   - 有显式 iterator type 时通过既有 declared-type resolver 解析 source-facing type。
   - 使用现有 duplicate / same-callable shadow 规则检查 iterator 与参数、外层 local、同 body local 的冲突。
   - 遍历 body，发布 body 内 ordinary local `var`。
+- 在移除 shared semantic 的 `ForStatement` unsupported diagnostic 前，先让
+  `FrontendCompileCheckAnalyzer.handleForStatement(...)` 对所有 `for-in` 发布临时、无条件的
+  statement-root `sema.compile_check` blocker：
+  - blocker 只锚定 `ForStatement`，不得进入 body 重扫 semantic facts。
+  - blocker 不读取 iteration plan、iterable type 或 route readiness。
+  - 阶段 F 以 route-aware compile policy 替换该临时 blocker；在此之前任何 `for-in` 都不能进入
+    `FrontendCfgGraphBuilder`。
 - 移除 `UnsupportedVariableBoundaryReporter` 对 `ForStatement` 的 unsupported diagnostic。
 - `FrontendBodyLocalDeclaration` / `FrontendBodyDeclarationIndex` 扩展为支持 iterator declaration identity：
   - declaration key 使用 `Node` 或 `Object` identity，而不是只接受 `VariableDeclaration`。
@@ -349,13 +356,16 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - 同一 callable 内 iterator name 与已有 parameter/local 冲突时按现有 local conflict 规则报错。
 - body 内 `var i := ...` 与 iterator `i` 冲突，不能覆盖 iterator。
 - `match`、lambda、block-local `const` 的旧 unsupported / deferred 行为不因 `FOR_BODY` 解封而改变。
+- 默认 shared `analyze(...)` 不再为 `for-in` 产生 `FOR_SUBTREE` / variable-inventory unsupported
+  diagnostic；同一 source 通过 `analyzeForCompile(...)` 时由临时 `sema.compile_check` blocker
+  明确阻断，且 lowering pipeline 不进入 CFG build。
 
 ### 阶段 C：iteration plan 数据结构与 publication surface
 
 目标：
 
 - 建立 lowering 与 type-check 共同消费的 `FrontendForIterationPlan`。
-- 增加 iteration planning owner，避免把 route 选择散落到 type-check / CFG / lowering。
+- 建立 iteration planning owner 后续需要的数据与 publication surface，避免把 route 选择散落到 type-check / CFG / lowering。
 
 实施内容：
 
@@ -387,12 +397,13 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - `GENERIC_VARIANT` plan 不携带 range iterator state type。
 - route 与 operation name 不在 CFG builder / lowering processor 中重复硬编码。
 
-### 阶段 D：SuiteResolver header-only for path 与 iterator slot refinement
+### 阶段 D0：SuiteResolver header-only for path 与 baseline body entry
 
 目标：
 
-- 让 `SuiteResolver` 先解析 for header，再发布 iteration plan 与 iterator slot refinement，最后进入 child body。
-- body resolver 必须看到 header 已提交的 iterator effective type。
+- 让 `SuiteResolver` 先解析 for header，再以阶段 B 已发布的 iterator baseline 进入 child body。
+- 本阶段只依赖阶段 B，不依赖阶段 C 的 iteration plan 数据结构，也不做 iterator slot refinement。
+- 为 segmented pipeline 阶段 L 提供“没有 typed gate 也能进入 for body”的 production path。
 
 实施内容：
 
@@ -401,7 +412,41 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
   - 如果 `iteratorType` 非空，解析该 type ref 相关 expression / type use-site 所需 facts。
   - 解析 `iterable` 或 `range(...)` arguments。
   - 不在 header pass 中遍历 body statements。
-- 增加 owner hook，例如 `runForIterationPlanning(context, forStatement)`，执行位置固定在 expr typing 后、var type post 前。
+- header facts 在同一个 statement boundary flush；不得把 `iteratorType`、`iterable` 与 body 分别当成
+  三个独立 statement flush。
+- 本阶段不增加 `runForIterationPlanning(...)`，也不要求 `FrontendForIterationPlan` 已存在。
+- `resolveForStatement(...)` 在 header facts flush 后调用
+  `childSuiteResolver.resolveChildSuite(context, forStatement.body())`。
+- child body 读取阶段 B 的 iterator baseline：无显式 type 时为 `Variant`，有显式 declared type 时为该
+  source-facing type。
+
+验收细则：
+
+- `var limit := 3; for i in limit: var x := i` 中 header 能读取前缀 `limit:int`，但 body 中 `i` 与
+  `x` 在本阶段仍可以保持 `Variant`。
+- `for item in values: var x := item` 中 `item`、`x` 均进入 ordinary shared semantic，不产生
+  `FOR_SUBTREE` deferred result。
+- `for i: float in range(3): print(i)` 的 body 在 iteration planning 尚未实现时已经能读取 declared
+  baseline `i:float`；element conversion 是否成立由后续阶段判断。
+- header pass 不遍历 body，child body 只通过普通 `resolveChildSuite(...)` 进入。
+- nested `for` 递归使用同一 D0 path，不依赖 gate registry 或 iteration plan。
+- owner procedure 不从 `SourceFile` root 重新 walk，不恢复 legacy whole-module analyzer。
+
+### 阶段 D1：iteration planning 与 iterator slot refinement
+
+依赖：阶段 C 与阶段 D0。
+
+目标：
+
+- 在 D0 已建立的 header-first 路径中发布 iteration plan 与 iterator slot refinement。
+- body resolver 必须看到 header 已提交的 iterator effective type；该精化只改变 typed fact，不改变
+  body 是否进入 `SuiteResolver`。
+
+实施内容：
+
+- 增加 feature-specific owner hook，例如 `runForIterationPlanning(context, forStatement)`，执行位置
+  固定在 header expr typing 后、iterator var type post 前。该 hook 不复用或恢复
+  `runGateClassifier(...)`。
 - `runForIterationPlanning(...)`：
   - 读取 `iterable` 的 effective expression / slot typed fact。
   - 调用 `FrontendForLoopSupport` 构造 plan。
@@ -411,8 +456,8 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - `runVarTypePost(...)` 扩展为支持 `ForStatement` iterator declaration：
   - 为 iterator declaration key 发布 final source-facing `slotTypes()` fact。
   - `slotTypes()` value 必须是 exposed iterator type，不能是 compiler-only state type。
-- `resolveForStatement(...)` 在 header facts flush 后调用 `childSuiteResolver.resolveChildSuite(context, forStatement.body())`。
-- child body 的 `FrontendSuiteContext` 应通过 parent environment 读取 iterator slot refinement。
+- D0 的 header flush 必须发生在 planning 与 iterator var type post 之后；child body 的
+  `FrontendSuiteContext` 通过 parent environment 读取 iterator slot refinement。
 
 验收细则：
 
@@ -422,7 +467,8 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - `for i: float in range(3): print(i)` 若现有 boundary 允许 `int -> float`，body 中 `i` 是 `float`，plan 记录 per-element conversion；若不允许则发 type diagnostic。
 - `for i: String in range(3): pass` 不静默通过。
 - nested `for j in range(i):` 可以读取外层 `i` 的 refined type。
-- owner procedure 不从 `SourceFile` root 重新 walk，不恢复 legacy whole-module analyzer。
+- 改变 iterable 的 resolved type 只能改变 plan/refinement/type diagnostic，不能改变 D0 已建立的
+  inventory、declaration index、suite entry 或 child-body dispatch。
 
 ### 阶段 E：type-check 与 Godot iteration 语义
 
@@ -461,7 +507,8 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 实施内容：
 
-- shared semantic 阶段完成后，`FrontendCompileCheckAnalyzer.handleForStatement(...)` 仍可以按 route 分阶段阻断 compile：
+- shared semantic 阶段完成后，`FrontendCompileCheckAnalyzer.handleForStatement(...)` 用 route-aware
+  policy 替换阶段 B 的临时无条件 blocker，并按 route 分阶段阻断 compile：
   - range route 已有 intrinsic/backend/runtime，可以优先解封。
   - generic Variant route 必须等 LIR intrinsic、runtime helper、C backend codegen 与 tests 全部完成后再解封。
   - known iterable 专用 route 必须等对应 helper 准备好后再解封；否则先降级到 generic Variant route。

@@ -81,6 +81,8 @@ statement-local var type post procedure 互补的正规步骤，而不是绕过�
 export batch，不得直接 apply stable side table。根 callable suite 及其所有 nested suite 完成后，
 batch 才按追加顺序 apply；child pending/committed overlay 不合并到 parent overlay。
 
+这里的 transaction / batch 只保证顺序与 apply 时机，不提供原子提交。Batch 不在 apply 前预检 queued transaction 之间的冲突；隔离的 child / sibling overlay 也看不到彼此已经导出但尚未进入 stable state 的 fact。因此跨 transaction 的重复、不兼容 publication 可能直到后一个 transaction apply 时才 fail-fast，此前已提交的 patch / transaction 不回滚。当前实现明确保留这一 corner case；apply 异常后必须丢弃整个 `FrontendAnalysisData`，不能继续消费其中的 stable facts。
+
 `resolveStatement(...)` 不是新的 semantic owner。它只按 statement 结构编排已有 owner 的 body-aware 子过程：top binding、local stabilization、chain binding、expr typing、gate classifier 与 var type post。
 
 Body procedure 必须是 root-bounded、statement-local 的实现。每个 owner 子过程只处理 `SuiteResolver` 传入的 statement、header 或 expression root 及其允许的子表达式。实现可以复用纯语义 helper，但 owner 子过程不能依赖 whole-module traversal 建立隐式上下文。
@@ -171,7 +173,7 @@ Statement owner runner 只能写当前 statement pending overlay；callable-entr
 
 `flushPendingFacts(...)` 只把 pending overlay 合并到 current-suite committed overlay。Flush 必须复用 suite export 使用的同一个 type-bearing field walker，不能在 scratch 层接受 export 层会拒绝的 payload。
 
-Suite 收敛后，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner patch。Nested suite transaction 必须追加到 root callable 的 `FrontendCallableExportBatch`，不得在 child suite 边界独立 apply。Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 root callable batch 的 per-owner patch apply 或 stable export helper 中更新。
+Suite 收敛后，current-suite committed overlay 只能导出为按 owner 有序的 patch transaction，不能导出为一个跨 owner patch。Nested suite transaction 必须追加到 root callable 的 `FrontendCallableExportBatch`，不得在 child suite 边界独立 apply。Stable side table 与 `BlockScope.resetLocalType(...)` 只能在 root callable batch 的 per-owner patch apply 或 stable export helper 中更新；该集中 apply 只定义时机和顺序，不构成原子 commit boundary。
 
 Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后的 stable facts。
 
@@ -197,9 +199,9 @@ Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后
 - `FrontendExprTypePatch`：`expressionTypes()` + bare-call `resolvedCalls()` delta。
 - `FrontendVarTypePostPatch`：`slotTypes()` delta。
 
-`FrontendPatchTransaction` 按固定 owner 顺序 apply：top binding -> local stabilization -> chain binding -> expr typing -> var type post。
+`FrontendPatchTransaction` 按固定 owner 顺序 apply：top binding -> local stabilization -> chain binding -> expr typing -> var type post。`Transaction` 在这里不表示原子提交；后续 patch 失败时，先前 patch 已产生的 stable mutation 不回滚。
 
-`FrontendCallableExportBatch` 按 suite 收敛顺序保存 root callable 与 nested suite 的 transaction，且仅在 root callable suite 返回后依次 apply。Property initializer 是独立 root，不加入 callable-scoped batch。
+`FrontendCallableExportBatch` 按 suite 收敛顺序保存 root callable 与 nested suite 的 transaction，且仅在 root callable suite 返回后依次 apply。它不预检 queued transaction 之间的冲突，也不提供跨 transaction 原子性或回滚。Property initializer 是独立 root，不加入 callable-scoped batch。
 
 Merge 规则如下：
 
@@ -212,6 +214,8 @@ Merge 规则如下：
 - `expressionTypes()` 同 key republish 只有 status、publishedType 与 detailReason 全等时允许。
 - `expressionTypes()` 不允许 `Variant -> exact`、parent -> child、status upgrade 或 detailReason change。
 - `slotTypes()` 不允许同一 source slot 被不同类型覆盖，同类型 no-op 允许。
+
+这些 merge 规则只保证当前 per-owner patch 的 conflict check。Fail-fast 不撤销同一 transaction 内更早的 patch，也不撤销 callable batch 内更早的 transaction；跨 queued transaction 的冲突盲区是当前已知且暂不修复的限制。
 
 ## 10. Scope Slot Mutation
 
@@ -341,6 +345,7 @@ Top binding 先绑定 `receiver` use-site。Local stabilization 随后把 `recei
 - pending overlay 只对当前 statement 后续 owner 可见。
 - statement flush 只更新 current-suite committed overlay。
 - suite export 只通过 per-owner patch transaction 更新 stable side tables 与 stable slot。
+- patch transaction 与 callable export batch 是 non-atomic ordered apply；batch 不做跨 queued transaction 预检，apply 失败后当前 analysis state 必须整体丢弃。
 - `expressionTypes()` 每个 key 只导出最终 fact 一次。
 - retry 中间 facts 不进入 pending overlay、committed overlay 或 stable side table。
 - source-facing local slot mutation 只有 local stabilization owner 可以产生。

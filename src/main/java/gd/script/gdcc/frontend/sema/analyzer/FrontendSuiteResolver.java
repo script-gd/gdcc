@@ -130,6 +130,8 @@ public class FrontendSuiteResolver {
         );
         runCallableEntryVarTypePost(context, callableOwner);
         resolveSuite(context, body);
+        // Stable export is ordered but non-atomic: queued transactions are not preflighted together,
+        // and a later failure does not roll back patches or transactions that were already applied.
         exportBatch.applyTo(analysisData);
     }
 
