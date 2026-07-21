@@ -393,7 +393,10 @@ Body entry 已冻结为两个互不替代的结构事实：
   是否进入 `FrontendSuiteResolver`，以及 unsupported 位置使用哪个精确 deferred domain。
 - `FrontendBodyStructuralCompleteness` 对本次 Interface surface 做 fail-fast 验证：scope identity、suite
   entry、body declaration index、declaration/binding/scope identity 与 source-facing typed baseline 必须
-  同时完整；`FOR_BODY` 还必须包含以 `ForStatement` 为 identity 的 iterator entry。
+  同时完整；完整性对 published body inventory 是双向的——每个 index entry 必须能回到 scope/baseline，
+  且 body `BlockScope` 中每条已发布 `LOCAL` binding 必须出现在 declaration index 中；index 的
+  `sourceOrder` 必须从 0 连续，并与 AST start-byte 非降序一致；`FOR_BODY` 还必须恰好包含一个以
+  `ForStatement` 为 identity 的 iterator entry，且该 entry 位于 inventory 列表头部、`sourceOrder == 0`。
 
 Policy 不读取 expression type、typed overlay、iteration plan、diagnostic state 或 compile surface；
 certificate 不读取 pending/committed overlay、slot refinement 或 semantic/lowering route。Typed fact 只能
@@ -1009,17 +1012,28 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
   - `scopesByAst()` 中 body root 映射到预期 identity / kind 的 `BlockScope`。
   - `FrontendSuiteEntryRoots` 明确包含该 supported body。
   - `FrontendBodyDeclarationIndex.containsBodyRoot(body)` 为 true，即使 body 没有 ordinary local。
-  - 每个 index entry 的 declaration/binding/scope identity 一致，且 typed baseline 包含该
-    source-facing declaration；`FOR_BODY` 的 iterator `Node` identity 也必须覆盖。
-- [x] certificate 只读取 scope graph、suite entry roots、declaration index 与 baseline；不得读取
-  pending/committed overlay、expression type、slot refinement 或 iteration plan。
+  - **正向**（index → scope/baseline）：每个 index entry 的 declaration/binding/scope identity 一致，
+    且 typed baseline 包含该 source-facing declaration；`sourceOrder` 从 0 连续，并与 AST start-byte
+    非降序一致。
+  - **反向**（scope → index）：`expectedScope` 中每条已发布 `LOCAL` binding（ordinary `var` 与
+    for iterator）都必须有对应 declaration-index entry，且 declaration identity / binding kind 与
+    scope inventory 一致。反向检查只覆盖该 body-root scope，不遍历 child scope；不包含尚未发布的
+    block-local `const`。
+  - `FOR_BODY` inventory 契约：恰好一个 iterator entry，且必须是 inventory 列表首项、
+    `sourceOrder == 0`；ordinary body local 仅能跟在其后并占用连续 `sourceOrder >= 1`。Interface
+    层 `FrontendInterfacePhase` 通过“先 record iterator、再 walk body statements”发布该形状，
+    certificate 在 suite entry 再次钉死。
+- [x] certificate 只读取 scope graph、suite entry roots、declaration index、baseline 与 body scope
+  inventory 枚举；不得读取 pending/committed overlay、expression type、slot refinement 或 iteration
+  plan。
 - [x] 结构事实缺洞属于 phase protocol / programmer error，必须 fail-fast，不得伪装成源码
   diagnostic，也不得静默跳过 body。
 
 验收细则：
 
-- scope 存在但 suite-entry、body-index、iterator entry 或 baseline 任一缺失时 focused test
-  fail-fast。
+- scope 存在但 suite-entry、body-index、iterator entry、ordinary inventory entry 或 baseline 任一
+  缺失时 focused test fail-fast。
+- 仅 index 列表重编号连续但 AST 顺序错乱、或 for iterator 不在 `sourceOrder` 0 时 fail-fast。
 - header resolved type 变化不会改变 certificate 结果。
 
 #### 阶段 L3：迁移 SuiteResolver 与 body-local consumer
@@ -1239,9 +1253,10 @@ Compile gate 测试：
 
 缓解：immutable structural semantic support matrix 只回答某种 AST/scope kind 的 inventory path
 是否已实现；`FrontendSuiteEntryRoots`、`FrontendBodyDeclarationIndex`、typed baseline 与 scope
-identity 共同证明本次 interface surface 的 structural completeness。`canPublish...` 或等价
-allowlist 不能单独充当 body-entry certificate。缺失结构事实必须 fail-fast，不能静默跳过 body，
-也不能重新引入 `PENDING` / `PUBLISHED` lifecycle。
+identity 共同证明本次 interface surface 的 structural completeness，且 declaration index 对 body
+scope inventory 必须双向一致（index entry 回到 scope/baseline，scope 中每条 published `LOCAL`
+都能在 index 找到）。`canPublish...` 或等价 allowlist 不能单独充当 body-entry certificate。缺失
+结构事实必须 fail-fast，不能静默跳过 body，也不能重新引入 `PENDING` / `PUBLISHED` lifecycle。
 
 ### R6：`SuiteResolver` 绕过 phase owner 边界
 
@@ -1327,7 +1342,7 @@ supported for 的三处放行与 unsupported feature 的 AST/current-scope 双�
 - local `:=` 的 source-order type stabilization 可被后续 statement 与 feature-specific semantic route planning 消费，但不能改变 structural body entry。
 - chain binding 消费 receiver local slot 时，必须看到 local stabilization 已发布到 overlay 的 exact type，而不是 interface baseline `Variant`。
 - immutable structural semantic support matrix 是 AST/scope kind 支持面的单一事实源；它不读取 typed fact、compile readiness 或 lifecycle state。
-- supported body 只有在 scope identity、suite entry root、body declaration index 与 typed baseline 全部满足 structural completeness certificate 后才进入 `SuiteResolver`；缺洞 fail-fast。
+- supported body 只有在 scope identity、suite entry root、body declaration index 与 typed baseline 全部满足 structural completeness certificate 后才进入 `SuiteResolver`；certificate 对 published body inventory 做 index↔scope 双向校验与 AST 源序 `sourceOrder` 校验，缺洞 fail-fast。
 - resolver 的 request-domain hard boundary、AST boundary 与 current-scope backstop 不读取 registry；supported `FOR_BODY` 三处均放行，unsupported lambda/match/const/parameter-default 继续 structural fail-closed。
 - for header 与 body edge 可区分：header typed resolution 可读取前缀 facts并驱动后续 iteration planning，但 body entry 已由无条件 structural inventory 与 D0 child-suite path 决定。
 - nested chain / argument retry 不会产生 stable `expressionTypes()` narrowing rewrite 或 status upgrade；每个 expression / step key 在 overlay export 与 stable table 中最多有一个最终 fact。

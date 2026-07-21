@@ -6,11 +6,17 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-/// One ordinary local declaration published by the baseline inventory layer for a supported body.
+/// One ordinary local or for-iterator declaration published by the baseline inventory layer for a
+/// supported body.
 ///
-/// `sourceOrder` is local to the owning body root. It preserves the complete-inventory plus
-/// source-order model required by `FrontendVisibleValueResolver`: the resolver can see future locals
-/// in the scope graph, then decide whether a use-site is before or after this declaration.
+/// `sourceOrder` is local to the owning body root and must remain contiguous from zero in AST
+/// start-byte order. Production lookup still uses declaration identity plus source byte-range filters
+/// for visibility; `sourceOrder` is a structural inventory fact certified at suite entry.
+///
+/// For `FOR_BODY` inventory the contract is stricter: exactly one [Kind#ITERATOR] entry must exist,
+/// it must occupy list position 0, and its `sourceOrder` must be `0`. Ordinary body locals follow at
+/// `sourceOrder >= 1`. [FrontendBodyStructuralCompleteness] and the Interface-phase publisher both
+/// preserve this shape.
 public record FrontendBodyLocalDeclaration(
         @NotNull Node declaration,
         @NotNull ScopeValue binding,
@@ -30,7 +36,10 @@ public record FrontendBodyLocalDeclaration(
     }
 
     public enum Kind {
+        /// Loop iterator published into a `FOR_BODY` inventory. Must be the sole iterator entry and
+        /// always use `sourceOrder == 0` at the head of that body's declaration list.
         ITERATOR,
+        /// Ordinary `var` published into a supported body inventory after any leading iterator entry.
         ORDINARY_VAR
     }
 }

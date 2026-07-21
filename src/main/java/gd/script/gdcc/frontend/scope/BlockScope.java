@@ -9,7 +9,10 @@ import gd.script.gdcc.scope.ScopeValueKind;
 import gd.script.gdcc.type.GdType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +46,15 @@ public final class BlockScope extends AbstractFrontendScope {
     /// Returns the semantic source that created this lexical block boundary.
     public @NotNull BlockScopeKind kind() {
         return kind;
+    }
+
+    /// Returns an unmodifiable view of all value bindings owned by this block.
+    ///
+    /// Insertion order matches the order in which locals and constants were published. Callers that need
+    /// the Interface-phase body inventory should filter to [ScopeValueKind#LOCAL]; block-local constants
+    /// may appear here once supported, but are not part of the current body declaration index.
+    public @NotNull @UnmodifiableView Collection<ScopeValue> localValues() {
+        return Collections.unmodifiableCollection(valuesByName.values());
     }
 
     /// Registers a mutable local binding owned by the current block.

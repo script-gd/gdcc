@@ -41,11 +41,11 @@ Interface 层在基础结构层之后运行，负责准备 body `SuiteResolver` 
 
 输出包括：
 
-- `FrontendBodyDeclarationIndex`：记录每个 supported block 的完整 body-local declaration 列表与 source order；ordinary `var` 使用 `VariableDeclaration` identity，for iterator 使用 owning `ForStatement` identity。生产 resolver 用 declaration identity 验证 scope 命中的 local 属于已发布 inventory，但不替代 declaration-order / self-reference filtered-hit。
+- `FrontendBodyDeclarationIndex`：记录每个 supported block 的完整 body-local declaration 列表与 source order；ordinary `var` 使用 `VariableDeclaration` identity，for iterator 使用 owning `ForStatement` identity。对 `FOR_BODY`，inventory 契约是恰好一个 iterator entry 位于列表头部且 `sourceOrder == 0`，ordinary body local 仅能使用连续 `sourceOrder >= 1`。生产 resolver 用 declaration identity 验证 scope 命中的 local 属于已发布 inventory，但不替代 declaration-order / self-reference filtered-hit。
 - `FrontendTypedLexicalBaseline`：记录参数、显式 typed local 与 interface 层可静态确定的 source-facing slot baseline；`TypedLexicalEnvironment` 在 overlay、已发布 slot fact 与 parent environment 都没有事实时读取该冻结 fallback。
 - `FrontendSuiteEntryRoots`：列出 body layer 可进入的 callable、property initializer 与 supported block roots。
 
-`FrontendBodySemanticSupportPolicy` 是 AST/scope kind 支持面的唯一事实源；它不读取 typed fact、diagnostic 或 compile state。`FrontendBodyStructuralCompleteness` 在 SuiteResolver 进入 root/child body 前验证 scope identity、suite entry、declaration index 与 typed baseline 完整，且 `FOR_BODY` 必须包含 iterator entry。这两个合同分别表达“该结构受支持”和“本次 interface surface 确实完整”，不能合并为 typed-dependent readiness。
+`FrontendBodySemanticSupportPolicy` 是 AST/scope kind 支持面的唯一事实源；它不读取 typed fact、diagnostic 或 compile state。`FrontendBodyStructuralCompleteness` 在 SuiteResolver 进入 root/child body 前验证 scope identity、suite entry、declaration index 与 typed baseline 完整；完整性对 published body inventory 是双向的（index entry ↔ body `BlockScope` 中每条 `LOCAL`），`sourceOrder` 必须与 AST start-byte 序一致，且 `FOR_BODY` inventory 必须恰好包含一个位于列表头部、`sourceOrder == 0` 的 iterator entry（Interface 层先发布 iterator 再 walk body 的形状）。这两个合同分别表达“该结构受支持”和“本次 interface surface 确实完整”，不能合并为 typed-dependent readiness。
 
 Interface 层不得发布 body typed facts。特别是不得发布 `expressionTypes()`、`resolvedMembers()` 或 `resolvedCalls()`，也不得把 `GdCompilerType` 写入 source-facing lexical baseline。
 
@@ -352,6 +352,6 @@ Top binding 先绑定 `receiver` use-site。Local stabilization 随后把 `recei
 - `backfillInferredLocalType(...)` 保持 guard-only。
 - shared compiler-only walker 覆盖所有 user-visible type-bearing publication surfaces。
 - resolver 的 declaration-order 与 self-reference filter 不能被 overlay 绕过。
-- structural policy 与 completeness certificate 分别控制支持面和 interface 完整性；二者都不读取 typed fact 或 compile readiness。
+- structural policy 与 completeness certificate 分别控制支持面和 interface 完整性；certificate 对 body inventory 做 index↔scope 双向完备校验；二者都不读取 typed fact 或 compile readiness。
 - resolver 的 request-domain、AST boundary 与 current-scope backstop 保持结构性 fail-closed，且 `FOR_BODY` 直接进入 ordinary lookup。
 - diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后的 stable facts。

@@ -265,6 +265,11 @@ public class FrontendInterfacePhase {
             enterSupportedBlock(block, null);
         }
 
+        /// Opens one supported body inventory list.
+        ///
+        /// For a `for` body, the iterator is recorded first at `sourceOrder == 0` before walking body
+        /// statements, so ordinary locals receive contiguous `sourceOrder >= 1`. That shape is part of
+        /// the Interface surface contract certified by [FrontendBodyStructuralCompleteness].
         private void enterSupportedBlock(@NotNull Block block, @Nullable ForStatement ownerFor) {
             var scope = scopesByAst.get(block);
             if (!(scope instanceof BlockScope blockScope)
@@ -299,6 +304,7 @@ public class FrontendInterfacePhase {
             if (binding == null || binding.declaration() != variableDeclaration) {
                 return;
             }
+            // When this body is a FOR_BODY, index 0 is already occupied by the iterator entry.
             currentBodyDeclarations.add(new FrontendBodyLocalDeclaration(
                     variableDeclaration,
                     binding,
@@ -308,6 +314,7 @@ public class FrontendInterfacePhase {
             typedBaselineBuilder.put(variableDeclaration, binding.type());
         }
 
+        /// Publishes the sole for-body iterator inventory entry at list head with `sourceOrder == 0`.
         private void recordIteratorDeclaration(
                 @NotNull ForStatement forStatement,
                 @NotNull BlockScope blockScope

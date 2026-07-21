@@ -2,11 +2,14 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.BlockScopeKind;
+import gd.script.gdcc.scope.ScopeValueKind;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.List;
 import java.util.Objects;
 
 /// Verifies that a structurally supported body has the complete Interface-phase surface required by the
@@ -17,6 +20,11 @@ import java.util.Objects;
 /// published every required structural fact for one supported body. It inspects only the scope graph and the
 /// immutable [FrontendInterfaceSurface]: suite-entry roots, the body declaration index, and the source-facing
 /// typed baseline.
+///
+/// Completeness is bidirectional for published body inventory:
+/// - every indexed declaration must agree with scope identity, binding identity, and typed baseline
+/// - every `LOCAL` binding in the body's [BlockScope] inventory must appear in the declaration index
+/// - indexed `sourceOrder` must be contiguous and non-decreasing by AST start-byte range
 ///
 /// Typed overlays, expression types, slot refinements, iteration plans, diagnostics, and compile readiness are
 /// deliberately excluded. Consequently, later semantic facts can refine a body after entry, but cannot make an
@@ -39,9 +47,12 @@ public final class FrontendBodyStructuralCompleteness {
     /// 2. The scope graph must map `body` to the exact `expectedScope` instance.
     /// 3. The Interface surface must list `body` as a supported suite-entry root.
     /// 4. The declaration index must contain `body`, including an explicit empty entry for a body without locals.
-    /// 5. Indexed declarations must have contiguous source order, matching binding/declaration/scope identities,
-    ///    and a source-facing typed baseline equal to the published lexical binding type.
-    /// 6. A `FOR_BODY` must additionally contain the iterator entry identified by its owning `ForStatement`.
+    /// 5. Indexed declarations must have contiguous `sourceOrder`, non-decreasing AST start-byte order,
+    ///    matching binding/declaration/scope identities, and a source-facing typed baseline equal to the
+    ///    published lexical binding type.
+    /// 6. Every published `LOCAL` value in `expectedScope` must have a matching declaration-index entry.
+    /// 7. A `FOR_BODY` must contain exactly one iterator entry identified by its owning `ForStatement`, and
+    ///    that entry must occupy `sourceOrder` 0 at the head of the body inventory list.
     ///
     /// The method intentionally returns no boolean. A caller may enter a supported suite only after this method
     /// returns normally; any missing fact is an internal phase-order or publication error that must stop analysis.
@@ -86,6 +97,10 @@ public final class FrontendBodyStructuralCompleteness {
             if (declaration.sourceOrder() != sourceOrder) {
                 throw incomplete(body, "declaration source order is not contiguous");
             }
+            if (sourceOrder > 0
+                    && declarationStartByte(declaration) < declarationStartByte(declarations.get(sourceOrder - 1))) {
+                throw incomplete(body, "declaration source order does not match AST range order");
+            }
             requireCompleteDeclaration(
                     analysisData,
                     interfaceSurface,
@@ -95,11 +110,10 @@ public final class FrontendBodyStructuralCompleteness {
             );
         }
 
-        if (expectedScope.kind() == BlockScopeKind.FOR_BODY
-                && declarations.stream().noneMatch(
-                declaration -> declaration.kind() == FrontendBodyLocalDeclaration.Kind.ITERATOR
-        )) {
-            throw incomplete(body, "`for` body declaration index does not contain its iterator");
+        requireScopeInventoryPublished(declarationIndex, body, expectedScope);
+
+        if (expectedScope.kind() == BlockScopeKind.FOR_BODY) {
+            requireForBodyIteratorInventory(body, declarations);
         }
     }
 
@@ -150,6 +164,66 @@ public final class FrontendBodyStructuralCompleteness {
                 }
             }
         }
+    }
+
+    /// Requires every published `LOCAL` scope binding to appear in the body declaration index.
+    ///
+    /// This is the reverse half of inventory completeness: the index is only a view over `BlockScope`
+    /// inventory, so a producer that omits an accepted local must fail before suite entry rather than only
+    /// when that local is later looked up.
+    private static void requireScopeInventoryPublished(
+            @NotNull FrontendBodyDeclarationIndex declarationIndex,
+            @NotNull Block body,
+            @NotNull BlockScope expectedScope
+    ) {
+        for (var value : expectedScope.localValues()) {
+            if (value.kind() != ScopeValueKind.LOCAL) {
+                continue;
+            }
+            if (!(value.declaration() instanceof Node declarationNode)
+                    || (!(declarationNode instanceof VariableDeclaration)
+                    && !(declarationNode instanceof ForStatement))) {
+                throw incomplete(
+                        body,
+                        "scope inventory contains a local that is not a body declaration-index identity"
+                );
+            }
+            var indexedDeclaration = declarationIndex.declarationFor(declarationNode);
+            if (indexedDeclaration == null
+                    || indexedDeclaration.binding().declaration() != value.declaration()
+                    || indexedDeclaration.binding().kind() != value.kind()) {
+                throw incomplete(
+                        body,
+                        "scope inventory local is missing from body declaration index"
+                );
+            }
+        }
+    }
+
+    /// Requires the Interface-phase `FOR_BODY` inventory contract: exactly one iterator entry, list head,
+    /// `sourceOrder == 0`. Ordinary body locals may follow only at contiguous `sourceOrder >= 1`.
+    private static void requireForBodyIteratorInventory(
+            @NotNull Block body,
+            @NotNull List<FrontendBodyLocalDeclaration> declarations
+    ) {
+        var iteratorCount = 0;
+        for (var declaration : declarations) {
+            if (declaration.kind() == FrontendBodyLocalDeclaration.Kind.ITERATOR) {
+                iteratorCount++;
+            }
+        }
+        if (iteratorCount != 1) {
+            throw incomplete(body, "`for` body declaration index must contain exactly one iterator");
+        }
+        var firstDeclaration = declarations.getFirst();
+        if (firstDeclaration.kind() != FrontendBodyLocalDeclaration.Kind.ITERATOR
+                || firstDeclaration.sourceOrder() != 0) {
+            throw incomplete(body, "`for` body iterator must be the first declaration with sourceOrder 0");
+        }
+    }
+
+    private static int declarationStartByte(@NotNull FrontendBodyLocalDeclaration declaration) {
+        return declaration.declaration().range().startByte();
     }
 
     /// Creates the uniform protocol-breach exception used by this certificate.

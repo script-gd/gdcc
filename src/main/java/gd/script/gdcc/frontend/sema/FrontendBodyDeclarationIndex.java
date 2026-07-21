@@ -10,13 +10,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/// Interface-layer index of ordinary locals that already exist in baseline `BlockScope` inventory.
+/// Interface-layer index of ordinary locals and for-iterators that already exist in baseline
+/// `BlockScope` inventory.
 ///
 /// The index is intentionally a view over published inventory, not a second declaration publisher.
-/// Production body lookup uses declaration identity to verify that a scope local belongs to this
-/// published inventory; source-range filtering still determines declaration-order visibility.
-/// Unsupported typed-dependent bodies therefore have no entries until their gate-owned inventory is
-/// explicitly published by a later body phase.
+/// `FrontendBodyStructuralCompleteness` requires the view to cover every published `LOCAL` binding in
+/// the body scope; production body lookup uses declaration identity to verify that a scope local
+/// belongs to this published inventory; source-range filtering still determines declaration-order
+/// visibility.
+///
+/// For each `FOR_BODY` root the published list must contain exactly one iterator entry at position 0
+/// with `sourceOrder == 0`; ordinary body locals follow at contiguous `sourceOrder >= 1`.
 public final class FrontendBodyDeclarationIndex {
     private final @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot;
     private final @NotNull Map<Node, FrontendBodyLocalDeclaration> declarationsByDeclaration;

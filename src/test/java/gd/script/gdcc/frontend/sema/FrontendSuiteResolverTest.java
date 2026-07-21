@@ -374,7 +374,7 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
-    void supportedBodyCertificateFailsFastForEveryMissingStructuralFact() throws Exception {
+    void supportedBodyCertificateFailsFastForMissingSuiteSurfaceFacts() throws Exception {
         var phaseInput = phaseInput("suite_body_certificate_missing_fact.gd", """
                 class_name SuiteBodyCertificateMissingFact
                 extends Node
@@ -432,7 +432,15 @@ class FrontendSuiteResolverTest {
                 originalSurface.typedLexicalBaseline(),
                 originalRoots
         );
-        assertCertificateFailure(phaseInput, missingIterator, pingFunction, forStatement.body(), "iterator");
+        // Scope still publishes the iterator; reverse inventory completeness fails before the
+        // FOR-specific iterator-shape check.
+        assertCertificateFailure(
+                phaseInput,
+                missingIterator,
+                pingFunction,
+                forStatement.body(),
+                "scope inventory local is missing from body declaration index"
+        );
 
         var baselineWithoutIterator = FrontendTypedLexicalBaseline.builder();
         for (var entry : originalSurface.typedLexicalBaseline().typesByDeclaration().entrySet()) {
@@ -462,6 +470,150 @@ class FrontendSuiteResolverTest {
                 )
         );
         assertTrue(scopeError.getMessage().contains("scope identity"));
+    }
+
+    @Test
+    void supportedBodyCertificateFailsWhenScopeInventoryIsMissingFromIndex() throws Exception {
+        var phaseInput = phaseInput("suite_body_certificate_missing_scope_inventory.gd", """
+                class_name SuiteBodyCertificateMissingScopeInventory
+                extends Node
+                
+                func ping(values, seed: int):
+                    for item in values:
+                        var copy := seed
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var originalSurface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        var declarationsWithoutCopy = new IdentityHashMap<>(
+                originalSurface.bodyDeclarationIndex().declarationsByBodyRoot()
+        );
+        declarationsWithoutCopy.put(
+                forStatement.body(),
+                originalSurface.bodyDeclarationIndex().declarationsFor(forStatement.body()).stream()
+                        .filter(declaration -> declaration.kind() == FrontendBodyLocalDeclaration.Kind.ITERATOR)
+                        .toList()
+        );
+        var missingOrdinaryLocal = new FrontendInterfaceSurface(
+                new FrontendBodyDeclarationIndex(declarationsWithoutCopy),
+                originalSurface.typedLexicalBaseline(),
+                originalSurface.suiteEntryRoots()
+        );
+
+        assertCertificateFailure(
+                phaseInput,
+                missingOrdinaryLocal,
+                pingFunction,
+                forStatement.body(),
+                "scope inventory local is missing from body declaration index"
+        );
+    }
+
+    @Test
+    void supportedBodyCertificateFailsWhenSourceOrderMismatchesAstRanges() throws Exception {
+        var phaseInput = phaseInput("suite_body_certificate_source_order.gd", """
+                class_name SuiteBodyCertificateSourceOrder
+                extends Node
+                
+                func ping(value):
+                    var first := value
+                    var second := first
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var originalSurface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        var bodyDeclarations = originalSurface.bodyDeclarationIndex().declarationsFor(pingFunction.body());
+        assertEquals(2, bodyDeclarations.size());
+        var reordered = List.of(
+                new FrontendBodyLocalDeclaration(
+                        bodyDeclarations.get(1).declaration(),
+                        bodyDeclarations.get(1).binding(),
+                        bodyDeclarations.get(1).kind(),
+                        0
+                ),
+                new FrontendBodyLocalDeclaration(
+                        bodyDeclarations.get(0).declaration(),
+                        bodyDeclarations.get(0).binding(),
+                        bodyDeclarations.get(0).kind(),
+                        1
+                )
+        );
+        var declarationsByBody = new IdentityHashMap<>(
+                originalSurface.bodyDeclarationIndex().declarationsByBodyRoot()
+        );
+        declarationsByBody.put(pingFunction.body(), reordered);
+        var reorderedSurface = new FrontendInterfaceSurface(
+                new FrontendBodyDeclarationIndex(declarationsByBody),
+                originalSurface.typedLexicalBaseline(),
+                originalSurface.suiteEntryRoots()
+        );
+
+        assertCertificateFailure(
+                phaseInput,
+                reorderedSurface,
+                pingFunction,
+                pingFunction.body(),
+                "declaration source order does not match AST range order"
+        );
+    }
+
+    @Test
+    void supportedBodyCertificateFailsWhenForIteratorIsNotFirstInAstOrder() throws Exception {
+        var phaseInput = phaseInput("suite_body_certificate_iterator_order.gd", """
+                class_name SuiteBodyCertificateIteratorOrder
+                extends Node
+                
+                func ping(values, seed: int):
+                    for item in values:
+                        var copy := seed
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var originalSurface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+        var bodyDeclarations = originalSurface.bodyDeclarationIndex().declarationsFor(forStatement.body());
+        assertEquals(2, bodyDeclarations.size());
+        var iterator = bodyDeclarations.stream()
+                .filter(declaration -> declaration.kind() == FrontendBodyLocalDeclaration.Kind.ITERATOR)
+                .findFirst()
+                .orElseThrow();
+        var ordinary = bodyDeclarations.stream()
+                .filter(declaration -> declaration.kind() == FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR)
+                .findFirst()
+                .orElseThrow();
+        // Contiguous sourceOrder with ordinary first violates AST range order because the
+        // ForStatement always starts before body locals.
+        var reordered = List.of(
+                new FrontendBodyLocalDeclaration(ordinary.declaration(), ordinary.binding(), ordinary.kind(), 0),
+                new FrontendBodyLocalDeclaration(iterator.declaration(), iterator.binding(), iterator.kind(), 1)
+        );
+        var declarationsByBody = new IdentityHashMap<>(
+                originalSurface.bodyDeclarationIndex().declarationsByBodyRoot()
+        );
+        declarationsByBody.put(forStatement.body(), reordered);
+        var reorderedSurface = new FrontendInterfaceSurface(
+                new FrontendBodyDeclarationIndex(declarationsByBody),
+                originalSurface.typedLexicalBaseline(),
+                originalSurface.suiteEntryRoots()
+        );
+
+        assertCertificateFailure(
+                phaseInput,
+                reorderedSurface,
+                pingFunction,
+                forStatement.body(),
+                "declaration source order does not match AST range order"
+        );
     }
 
     @Test
