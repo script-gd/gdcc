@@ -71,7 +71,7 @@ class FrontendCompileCheckAnalyzerTest {
         var preparedInput = prepareCompileCheckInput("missing_compile_check_diagnostics.gd", """
                 class_name MissingCompileCheckDiagnostics
                 extends Node
-                
+
                 func ping():
                     pass
                 """);
@@ -674,12 +674,40 @@ class FrontendCompileCheckAnalyzerTest {
 
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
-        assertTrue(diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check").isEmpty());
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("For statement"));
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
         );
-        assertEquals(5, unsupportedBindingDiagnostics.size());
+        assertEquals(4, unsupportedBindingDiagnostics.size());
+    }
+
+    @Test
+    void forIsSharedSemanticSupportedButCompileModeStopsAtStatementRoot() throws Exception {
+        var source = """
+                class_name CompileCheckForBridge
+                extends Node
+
+                func ping(values):
+                    for item in values:
+                        var copy := item
+                        assert(item)
+                """;
+
+        var shared = analyzeShared("compile_check_for_bridge.gd", source);
+        var compiled = analyzeForCompile("compile_check_for_bridge.gd", source);
+
+        assertTrue(shared.diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
+                        || diagnostic.category().equals("sema.unsupported_binding_subtree")
+                        || diagnostic.category().equals("sema.compile_check")
+        ));
+        var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
+        assertEquals(1, compileDiagnostics.size());
+        assertTrue(compileDiagnostics.getFirst().message().contains("For statement"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("CFG"));
     }
 
     @Test

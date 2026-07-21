@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（request/result 合同、declaration-order 过滤、initializer 自引用过滤、deferred boundary 封口、current-scope fail-closed hardening、typed overlay-aware resolve overload、shared support matrix 与核心单元测试已落地）
-- 更新时间：2026-07-09（Phase I：resolver 服务最终 interface/body + SuiteResolver pipeline，不依赖 legacy whole-phase bypass）
+- 状态：事实源维护中（request/result 合同、declaration-order 过滤、initializer 自引用过滤、结构性 deferred boundary、typed overlay-aware resolve、for header/body 解封与核心单元测试已落地）
+- 更新时间：2026-07-20（阶段 L：删除 typed-dependent readiness，resolver 只消费 structural policy、完整 inventory 与 typed overlay）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -23,7 +23,7 @@
   - 不修改 shared `Scope.resolveValue(...)` 协议
   - 不让 unsupported 子域伪装成正常 `NOT_FOUND`
   - 不在 resolver 内直接生产 diagnostics 或写入 `symbolBindings()`
-  - 不在当前 frontend 中为 parameter default、lambda、`for`、`match`、block-local `const` 提供正式 local inventory 解析
+  - 不在当前 frontend 中为 parameter default、lambda、`match`、block-local `const` 提供正式 local inventory 解析
 
 ---
 
@@ -55,7 +55,7 @@
 ### 2.1 与 `FrontendVariableAnalyzer` 的分工
 
 - `FrontendVariableAnalyzer` 负责把 parameter / supported ordinary local inventory 发布到 `CallableScope` / `BlockScope`
-- inventory 发布范围由 `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(...)` 统一定义
+- inventory 发布范围由 `FrontendBodySemanticSupportPolicy` 统一定义；`FrontendExecutableInventorySupport` 只是该 policy 的兼容委托入口
 - 当前允许发布 callable-local value inventory 的 `BlockScopeKind` 只有：
   - `FUNCTION_BODY`
   - `CONSTRUCTOR_BODY`
@@ -64,6 +64,7 @@
   - `ELIF_BODY`
   - `ELSE_BODY`
   - `WHILE_BODY`
+  - `FOR_BODY`
 - resolver 与 variable analyzer 必须共用同一 support matrix，不能各自维护名单
 
 ### 2.2 与 shared `Scope` 的分工
@@ -84,7 +85,7 @@ shared `Scope` 继续负责：
 
 ### 2.3 与 `FrontendTypedLexicalEnvironment` 的分工
 
-SuiteResolver body path 中的 caller 必须优先通过 typed overlay-aware `resolve(request, environment)` 入口读取 current statement / current suite 已发布的 local slot 与 binding payload。resolver 仍保留 request-domain、AST boundary 与 current-scope 三道 fail-closed gate；overlay 只改变可见事实来源，不允许绕过 declaration-order、initializer self-reference 或 typed-dependent body readiness 判定。
+SuiteResolver body path 中的 caller 必须优先通过 typed overlay-aware `resolve(request, environment)` 入口读取 current statement / current suite 已发布的 local slot 与 binding payload。resolver 仍保留 request-domain hard boundary、AST boundary 与 current-scope backstop；overlay 只改变可见事实来源，不允许绕过 declaration-order、initializer self-reference 或 structural unsupported boundary。
 
 ---
 
@@ -107,16 +108,14 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 - parameter default-value expression
 - lambda body
 - block-local `const` initializer subtree
-- `for` iterator type / iterable / body
 - `match` pattern / guard / section body
 - 任何缺少稳定 scope 记录的 subtree
 - 任何 current scope 自身就是未发布 inventory 的 scope，例如：
-  - `BlockScopeKind.FOR_BODY`
   - `BlockScopeKind.MATCH_SECTION_BODY`
   - `BlockScopeKind.LAMBDA_BODY`
   - `CallableScopeKind.LAMBDA_EXPRESSION`
 
-这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。
+这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup。
 
 ### 3.3 `ClassScope` / `ClassRegistry` 不是封口域
 
@@ -185,7 +184,6 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 - `PARAMETER_DEFAULT`
 - `LAMBDA_SUBTREE`
 - `BLOCK_LOCAL_CONST_SUBTREE`
-- `FOR_SUBTREE`
 - `MATCH_SUBTREE`
 - `UNKNOWN_OR_SKIPPED_SUBTREE`
 
@@ -202,7 +200,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 `FrontendVisibleValueResolver.resolve(request)` 当前行为冻结为：
 
 1. 若 `request.domain != EXECUTABLE_BODY`，直接返回 `DEFERRED_UNSUPPORTED(domain = request.domain, reason = UNSUPPORTED_DOMAIN)`
-2. 先做 AST boundary 检测，识别 parameter default、lambda body、block-local `const` initializer、`for`、`match` 等共享外层 scope 的 unsupported 子树
+2. 先做 AST boundary 检测，识别 parameter default、lambda body、block-local `const` initializer、`match` 等共享外层 scope 的 unsupported 子树；for header/body edge 不封口
 3. 若 use-site 缺少 current scope 记录，返回 `DEFERRED_UNSUPPORTED`
 4. 对 current scope 执行 fail-closed 校验；若 current scope 自身没有已发布 inventory，也返回 `DEFERRED_UNSUPPORTED`
 5. 在继续 outer fallback 之前，检查 enclosing supported block 中是否已经出现同名且当前可见的 block-local `const`；若存在，也必须封口为 `BLOCK_LOCAL_CONST_SUBTREE`
@@ -242,7 +240,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 
 ### 6.2 support matrix 必须共享
 
-`FrontendVariableAnalyzer` 发布 inventory 的范围，与 resolver 允许正常 lookup 的范围，本质上是同一份事实。该事实现在由 `FrontendExecutableInventorySupport` 统一承载；后续若扩展支持域，必须同时评估：
+`FrontendVariableAnalyzer` 发布 inventory 的范围，与 resolver 允许正常 lookup 的范围，本质上是同一份事实。该事实现在由 `FrontendBodySemanticSupportPolicy` 统一承载；后续若扩展支持域，必须同时评估：
 
 - variable inventory 是否真的发布
 - resolver 是否真的能在该域内给出不误导的绑定结果
@@ -268,7 +266,8 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
 - parameter / ordinary local / class property 三类基本路径的正向解析
 - future local / initializer self-reference 会进入 `filteredHits`，且不会误命中当前 declaration
 - `FOUND_BLOCKED` 不会被错误降级成 `NOT_FOUND`
-- parameter default、lambda、block-local `const`、`for`、`match`、missing-scope 都返回 `DEFERRED_UNSUPPORTED`
+- parameter default、lambda、block-local `const`、`match`、missing-scope 都返回 `DEFERRED_UNSUPPORTED`
+- for header/body/current-scope lookup 正常进入 resolver，iterator 与 body local 仍受 published inventory、declaration-order 与 self-reference guard 约束
 - 真实 AST deferred 场景与 synthetic current-scope remap 场景都已覆盖，证明即使 AST boundary 漏判，resolver 仍按未发布 inventory fail-closed
 - shared `ClassScope` / `ClassRegistry` 抛出的 `ScopeLookupException` 会原样传播
 

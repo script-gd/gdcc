@@ -6,8 +6,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`symbolBindings()` 重建、builtin / global enum / class-like top-level `TYPE_META` 规则、value-position bare callable / bare `TYPE_META` ordinary-value misuse 合同、class property initializer support island、root-level skipped-subtree 恢复合同、usage-agnostic binding 模型与核心单元测试已落地）
-- 更新时间：2026-07-10
+- 状态：事实源维护中（statement-local `symbolBindings()` publication、for header/body binding、builtin / global enum / class-like `TYPE_META` 规则、property initializer support island、结构性 skipped-subtree 恢复合同与核心单元测试已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -28,7 +28,7 @@
   - 不在这里发布 `resolvedMembers()`、`resolvedCalls()` 或 `expressionTypes()`
   - 不在这里解析显式 receiver 尾部成员或调用步骤
   - 不在这里建模 read / write / call / assignable / lvalue 语义
-  - 不在这里实现 parameter default、lambda、`for`、`match`、block-local `const` 的正式 binding
+  - 不在这里实现 parameter default、lambda、`match`、block-local `const` 的正式 binding
   - 不在这里扩展 shared `Scope` 协议
   - 不在这里处理 class constant binding；该能力仍延后到 MVP 之后
 
@@ -364,6 +364,7 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 - `elif` body
 - `else` body
 - `while` body
+- `for` iterator type / iterable header 与 `FOR_BODY`
 - ordinary local `var` initializer expression subtree
 - class property `var` initializer expression subtree
 
@@ -381,7 +382,6 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 
 - parameter default subtree
 - lambda subtree
-- `for` subtree
 - `match` subtree
 - block-local `const` initializer subtree
 - 任何缺少稳定 `scopesByAst()` 记录的 skipped subtree
@@ -466,7 +466,6 @@ builtin static namespace 当前仍 direct-only，因为 ExtensionAPI builtin met
 
 - parameter default subtree
 - lambda subtree
-- `for` subtree
 - `match` subtree
 - block-local `const` initializer subtree
 - missing-scope / skipped subtree
@@ -649,7 +648,9 @@ func ping(values):
         print(item)
 ```
 
-- `for` subtree 当前 deferred
+- `values` 绑定为 `PARAMETER`
+- body 内 `item` 绑定为 iterator `LOCAL_VAR`
+- `print` 按 utility function route 绑定；for body 不再产生 root-level unsupported binding error
 
 ```gdscript
 func ping(value):
@@ -696,5 +697,6 @@ func ping():
 - explicit receiver 只绑定链头与 step/index arguments，不绑定尾部 segment
 - assignment 左右两侧都会递归进入 binding
 - ordinary local initializer 继续属于支持面
-- parameter default / lambda / `for` / `match` / block-local `const` 当前继续走 root-level unsupported error
+- parameter default / lambda / `match` / block-local `const` 当前继续走 root-level unsupported error
+- for header/body use-site 通过普通 executable-body resolver path 发布 binding，且不依赖 iterable typed result 决定 body entry
 - skipped executable subtree 的 warning 当前按 root-level 发布，而不是静默跳过或逐 use-site 降级

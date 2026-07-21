@@ -32,19 +32,21 @@ import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteContext;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSuiteResolver;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendVariableAnalyzer;
 import gd.script.gdcc.frontend.sema.patch.FrontendVarTypePostPatch;
-import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
+import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -54,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrontendSuiteResolverTest {
@@ -203,7 +206,7 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
-    void unsupportedTypedDependentBodiesRemainFailClosed() throws Exception {
+    void forBodyResolvesWhileUnsupportedFeatureOwnedBodiesRemainFailClosed() throws Exception {
         var phaseInput = phaseInput("suite_fail_closed.gd", """
                 class_name SuiteFailClosed
                 extends Node
@@ -268,13 +271,13 @@ class FrontendSuiteResolverTest {
                 phaseInput.diagnostics()
         );
 
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambdaExpression.body()));
-        assertTrue(ownerProcedures.unsupportedRoots().contains(forStatement));
+        assertFalse(ownerProcedures.unsupportedRoots().contains(forStatement));
         assertTrue(ownerProcedures.unsupportedRoots().contains(matchStatement));
         assertTrue(ownerProcedures.unsupportedRoots().contains(answer));
-        assertFalse(hasOwnerEvent(ownerProcedures.events(), fromFor));
+        assertTrue(hasOwnerEvent(ownerProcedures.events(), fromFor));
         assertFalse(hasOwnerEvent(ownerProcedures.events(), fromMatch));
         assertFalse(hasOwnerEvent(ownerProcedures.events(), fromLambda));
         assertFalse(hasOwnerEvent(ownerProcedures.events(), answer));
@@ -283,18 +286,15 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
-    void classifierReadsPrefixOverlayAndDoesNotOpenUnpublishedBody() throws Exception {
-        var phaseInput = phaseInput("suite_gate_classifier_prefix.gd", """
-                class_name SuiteGateClassifierPrefix
+    void forHeaderReadsPrefixOverlayAndBodyEntryDoesNotDependOnTypedClassification() throws Exception {
+        var phaseInput = phaseInput("suite_for_header_prefix.gd", """
+                class_name SuiteForHeaderPrefix
                 extends Node
                 
-                func ping(values, choice):
+                func ping():
                     var limit := 1
-                    for item in values:
+                    for item in limit:
                         var from_for := item
-                    match choice:
-                        0:
-                            var from_match := choice
                 """);
         var pingFunction = findStatement(
                 phaseInput.unit().ast().statements(),
@@ -312,34 +312,34 @@ class FrontendSuiteResolverTest {
                 VariableDeclaration.class,
                 variableDeclaration -> variableDeclaration.name().equals("from_for")
         );
-        var matchStatement = findStatement(pingFunction.body().statements(), MatchStatement.class, _ -> true);
         var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
-        var ownerProcedures = new PrefixGateClassifierOwnerProcedures(limit, forStatement.body());
+        var itemUseSite = findNode(
+                fromFor,
+                IdentifierExpression.class,
+                identifierExpression -> identifierExpression.name().equals("item")
+        );
 
-        new FrontendSuiteResolver(new FrontendStatementResolver(ownerProcedures)).resolve(
+        new FrontendSuiteResolver().resolve(
                 surface,
                 phaseInput.registry(),
                 phaseInput.analysisData(),
                 phaseInput.diagnostics()
         );
 
-        var forGate = surface.inventoryGateRegistry().gateForBodyRoot(forStatement.body());
-        assertNotNull(forGate);
-        assertEquals(FrontendInventoryGateStatus.SUPPORTED, forGate.status());
-        assertEquals(FrontendBodyInventoryReadiness.NOT_PUBLISHED, forGate.bodyInventoryReadiness());
-        assertFalse(surface.inventoryGateRegistry().isBodyInventoryReady(forStatement.body()));
-        assertTrue(ownerProcedures.classifierSawPrefixExactType());
-        assertTrue(ownerProcedures.localStageCouldNotSeeTransientExpressionFact());
-        assertTrue(ownerProcedures.classifierSawFinalExpressionFact());
-        assertFalse(ownerProcedures.events().stream().anyMatch(event -> event.root() == fromFor));
-
-        var matchGate = surface.inventoryGateRegistry().gateForBodyRoot(matchStatement.sections().getFirst().body());
-        assertNotNull(matchGate);
-        assertEquals(FrontendInventoryGateStatus.PENDING, matchGate.status());
+        var iterableType = phaseInput.analysisData().expressionTypes().get(forStatement.iterable());
+        assertNotNull(iterableType);
+        assertSame(GdIntType.INT, iterableType.publishedType());
+        var itemBinding = phaseInput.analysisData().symbolBindings().get(itemUseSite);
+        assertNotNull(itemBinding);
+        assertEquals(FrontendBindingKind.LOCAL_VAR, itemBinding.kind());
+        assertEquals(GdVariantType.VARIANT, phaseInput.analysisData().slotTypes().get(fromFor));
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
+        assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(forStatement.body()));
+        assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(limit));
     }
 
     @Test
-    void publishedGateBodyIsResolvedBySuiteResolver() throws Exception {
+    void structurallySupportedForBodyIsResolvedBySuiteResolver() throws Exception {
         var phaseInput = phaseInput("suite_gate_body_published.gd", """
                 class_name SuiteGateBodyPublished
                 extends Node
@@ -361,9 +361,6 @@ class FrontendSuiteResolverTest {
         );
         var seedUseSite = findNode(fromFor, IdentifierExpression.class, identifier -> identifier.name().equals("seed"));
         var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
-        surface.inventoryGateRegistry().markSupported(forStatement.body());
-        surface.inventoryGateRegistry().markBodyInventoryPublishing(forStatement.body());
-        surface.inventoryGateRegistry().markBodyInventoryPublished(forStatement.body());
         var forBodyContext = contextForBlock(phaseInput, surface, pingFunction, forStatement.body());
 
         new FrontendSuiteResolver().resolveSuite(forBodyContext, forStatement.body());
@@ -377,14 +374,14 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
-    void missingOwningGateBodyContextUsesDeferredDomainAndStaysFailClosed() throws Exception {
-        var phaseInput = phaseInput("suite_gate_body_missing_owner.gd", """
-                class_name SuiteGateBodyMissingOwner
+    void supportedBodyCertificateFailsFastForEveryMissingStructuralFact() throws Exception {
+        var phaseInput = phaseInput("suite_body_certificate_missing_fact.gd", """
+                class_name SuiteBodyCertificateMissingFact
                 extends Node
                 
                 func ping(values, seed: int):
                     for item in values:
-                        print(seed)
+                        var copy := seed
                 """);
         var pingFunction = findStatement(
                 phaseInput.unit().ast().statements(),
@@ -392,21 +389,79 @@ class FrontendSuiteResolverTest {
                 functionDeclaration -> functionDeclaration.name().equals("ping")
         );
         var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
-        var seedUseSite = findNode(forStatement.body(), IdentifierExpression.class, identifier -> identifier.name().equals("seed"));
         var originalSurface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
-        var surfaceWithoutGate = new FrontendInterfaceSurface(
+        var originalRoots = originalSurface.suiteEntryRoots();
+
+        var missingSuiteEntry = new FrontendInterfaceSurface(
                 originalSurface.bodyDeclarationIndex(),
-                FrontendInventoryGateRegistry.empty(),
                 originalSurface.typedLexicalBaseline(),
-                originalSurface.suiteEntryRoots()
+                new FrontendSuiteEntryRoots(
+                        originalRoots.callableOwners(),
+                        originalRoots.propertyInitializers(),
+                        originalRoots.supportedBlocks().stream()
+                                .filter(block -> block != forStatement.body())
+                                .toList()
+                )
         );
-        var forBodyContext = contextForBlock(phaseInput, surfaceWithoutGate, pingFunction, forStatement.body());
+        assertCertificateFailure(phaseInput, missingSuiteEntry, pingFunction, forStatement.body(), "suite entry roots");
 
-        var request = forBodyContext.visibleValueResolveRequest(seedUseSite.name(), seedUseSite);
-        new FrontendSuiteResolver().resolveSuite(forBodyContext, forStatement.body());
+        var missingBodyIndex = new FrontendInterfaceSurface(
+                new FrontendBodyDeclarationIndex(Map.of()),
+                originalSurface.typedLexicalBaseline(),
+                originalRoots
+        );
+        assertCertificateFailure(phaseInput, missingBodyIndex, pingFunction, forStatement.body(), "declaration index");
 
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, request.domain());
-        assertNull(phaseInput.analysisData().symbolBindings().get(seedUseSite));
+        var declarationsWithoutIterator = new IdentityHashMap<>(
+                originalSurface.bodyDeclarationIndex().declarationsByBodyRoot()
+        );
+        declarationsWithoutIterator.put(
+                forStatement.body(),
+                originalSurface.bodyDeclarationIndex().declarationsFor(forStatement.body()).stream()
+                        .filter(declaration -> declaration.kind() != FrontendBodyLocalDeclaration.Kind.ITERATOR)
+                        .map(declaration -> new FrontendBodyLocalDeclaration(
+                                declaration.declaration(),
+                                declaration.binding(),
+                                declaration.kind(),
+                                0
+                        ))
+                        .toList()
+        );
+        var missingIterator = new FrontendInterfaceSurface(
+                new FrontendBodyDeclarationIndex(declarationsWithoutIterator),
+                originalSurface.typedLexicalBaseline(),
+                originalRoots
+        );
+        assertCertificateFailure(phaseInput, missingIterator, pingFunction, forStatement.body(), "iterator");
+
+        var baselineWithoutIterator = FrontendTypedLexicalBaseline.builder();
+        for (var entry : originalSurface.typedLexicalBaseline().typesByDeclaration().entrySet()) {
+            if (entry.getKey() != forStatement) {
+                baselineWithoutIterator.put(entry.getKey(), entry.getValue());
+            }
+        }
+        var missingBaseline = new FrontendInterfaceSurface(
+                originalSurface.bodyDeclarationIndex(),
+                baselineWithoutIterator.build(),
+                originalRoots
+        );
+        assertCertificateFailure(phaseInput, missingBaseline, pingFunction, forStatement.body(), "typed baseline");
+
+        var publishedScope = assertInstanceOf(
+                BlockScope.class,
+                phaseInput.analysisData().scopesByAst().get(forStatement.body())
+        );
+        var foreignScope = new BlockScope(publishedScope.getParentScope(), publishedScope.kind());
+        var scopeError = assertThrows(
+                IllegalStateException.class,
+                () -> FrontendBodyStructuralCompleteness.requireStructurallyCompleteBody(
+                        phaseInput.analysisData(),
+                        originalSurface,
+                        forStatement.body(),
+                        foreignScope
+                )
+        );
+        assertTrue(scopeError.getMessage().contains("scope identity"));
     }
 
     @Test
@@ -567,7 +622,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_nested_export_batch.gd", """
                 class_name SuiteNestedExportBatch
                 extends RefCounted
-
+                
                 func ping(seed):
                     if seed:
                         var child := seed
@@ -649,7 +704,7 @@ class FrontendSuiteResolverTest {
         var phaseInput = phaseInput("suite_callable_entry_var_post.gd", """
                 class_name SuiteCallableEntryVarPost
                 extends RefCounted
-
+                
                 func ping(value: int):
                     var first := value
                 """);
@@ -756,6 +811,21 @@ class FrontendSuiteResolverTest {
         return events.stream().anyMatch(event -> event.root() == root);
     }
 
+    private static void assertCertificateFailure(
+            @NotNull PhaseInput phaseInput,
+            @NotNull FrontendInterfaceSurface surface,
+            @NotNull Node callableOwner,
+            @NotNull Block body,
+            @NotNull String expectedDetail
+    ) {
+        var context = contextForBlock(phaseInput, surface, callableOwner, body);
+        var error = assertThrows(
+                IllegalStateException.class,
+                () -> new FrontendSuiteResolver().resolveSuite(context, body)
+        );
+        assertTrue(error.getMessage().contains(expectedDetail), error::getMessage);
+    }
+
     private static @NotNull List<FrontendDiagnostic> diagnosticsByCategory(
             @NotNull DiagnosticSnapshot diagnostics,
             @NotNull String category
@@ -771,7 +841,8 @@ class FrontendSuiteResolverTest {
             @NotNull Node callableOwner,
             @NotNull Block block
     ) {
-        var blockScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(block));
+        var publishedScope = phaseInput.analysisData().scopesByAst().get(block);
+        var blockScope = assertInstanceOf(BlockScope.class, publishedScope);
         return new FrontendSuiteContext(
                 Path.of("tmp", "synthetic_gate_body.gd"),
                 callableOwner,
@@ -782,7 +853,12 @@ class FrontendSuiteResolverTest {
                 false,
                 null,
                 surface,
-                new FrontendTypedLexicalEnvironment(blockScope, phaseInput.analysisData()),
+                new FrontendTypedLexicalEnvironment(
+                        blockScope,
+                        phaseInput.analysisData(),
+                        null,
+                        surface.typedLexicalBaseline()
+                ),
                 phaseInput.analysisData(),
                 phaseInput.diagnostics(),
                 phaseInput.registry(),
@@ -924,96 +1000,6 @@ class FrontendSuiteResolverTest {
 
         private boolean nextStatementSawCurrentSuiteSnapshot() {
             return nextStatementSawCurrentSuiteSnapshot;
-        }
-    }
-
-    private static final class PrefixGateClassifierOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {
-        private final @NotNull FrontendBodyOwnerProcedures delegate = new FrontendBodyOwnerProcedures();
-        private final @NotNull VariableDeclaration prefixLocal;
-        private final @NotNull Block targetBody;
-        private final @NotNull List<OwnerEvent> events = new ArrayList<>();
-        private boolean classifierSawPrefixExactType;
-        private boolean localStageCouldNotSeeTransientExpressionFact;
-        private boolean classifierSawFinalExpressionFact;
-
-        private PrefixGateClassifierOwnerProcedures(
-                @NotNull VariableDeclaration prefixLocal,
-                @NotNull Block targetBody
-        ) {
-            this.prefixLocal = prefixLocal;
-            this.targetBody = targetBody;
-        }
-
-        @Override
-        public void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            events.add(new OwnerEvent("top", root));
-            delegate.runTopBinding(context, root);
-        }
-
-        @Override
-        public void runLocalTypeStabilization(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            events.add(new OwnerEvent("local", root));
-            delegate.runLocalTypeStabilization(context, root);
-            if (root == prefixLocal && prefixLocal.value() != null) {
-                localStageCouldNotSeeTransientExpressionFact = context.typedEnvironment()
-                        .expressionType(prefixLocal.value()) == null;
-            }
-        }
-
-        @Override
-        public void runChainBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            events.add(new OwnerEvent("chain", root));
-            delegate.runChainBinding(context, root);
-        }
-
-        @Override
-        public void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            events.add(new OwnerEvent("expr", root));
-            delegate.runExprType(context, root);
-        }
-
-        @Override
-        public void runGateClassifier(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            if (root != prefixLocal || context.currentBlockScope() == null) {
-                return;
-            }
-            var prefixType = context.typedEnvironment().localSlotType(
-                    context.currentBlockScope(),
-                    prefixLocal.name(),
-                    prefixLocal
-            );
-            var prefixExpressionType = prefixLocal.value() != null
-                    ? context.typedEnvironment().expressionType(prefixLocal.value())
-                    : null;
-            classifierSawPrefixExactType = prefixType == GdIntType.INT;
-            classifierSawFinalExpressionFact = prefixExpressionType != null
-                    && prefixExpressionType.status() == FrontendExpressionTypeStatus.RESOLVED
-                    && prefixExpressionType.publishedType() == GdIntType.INT;
-            if (classifierSawPrefixExactType) {
-                context.interfaceSurface().inventoryGateRegistry().markSupported(targetBody);
-            }
-        }
-
-        @Override
-        public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-            events.add(new OwnerEvent("var_post", root));
-            delegate.runVarTypePost(context, root);
-        }
-
-        private @NotNull List<OwnerEvent> events() {
-            return events;
-        }
-
-        private boolean classifierSawPrefixExactType() {
-            return classifierSawPrefixExactType;
-        }
-
-        private boolean localStageCouldNotSeeTransientExpressionFact() {
-            return localStageCouldNotSeeTransientExpressionFact;
-        }
-
-        private boolean classifierSawFinalExpressionFact() {
-            return classifierSawFinalExpressionFact;
         }
     }
 

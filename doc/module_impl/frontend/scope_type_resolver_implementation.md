@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（shared resolver、skeleton 接入、真实 scope graph 接入、compatibility mapper 与 caller-side remap 接入已落地）
-- 更新时间：2026-03-25
+- 状态：事实源维护中（shared resolver、skeleton/variable 接入、真实 scope graph、for iterator declared type、compatibility mapper 与 caller-side remap 已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/scope/**`
@@ -134,6 +134,16 @@
 - callable / block scope 默认复用 parent 的 type namespace
 - outer class 只通过 type-meta parent chain 暴露 outer type
 - outer value/function namespace 仍不应被 inner class 直接继承
+
+### 2.5 For iterator declared type
+
+`FrontendVariableAnalyzer` 对 `for iterator: Type in expr` 复用 `FrontendDeclaredTypeSupport` 与本 shared strict resolver：
+
+- 显式 iterator type 按 iterator/header 所在外层 lexical type namespace 解析。
+- 未写显式 type 时，iterator source-facing baseline 为 `Variant`。
+- strict type miss 继续由 caller 发布 `sema.type_resolution` 并恢复为 `Variant`；resolver 本身不产出 diagnostic。
+- iterator declaration identity 是 owning `ForStatement`，但这不改变类型名解析协议。
+- iterable 的 typed result 不参与 declared-type lookup，也不能决定 `FOR_BODY` inventory 或 SuiteResolver entry。
 
 ---
 

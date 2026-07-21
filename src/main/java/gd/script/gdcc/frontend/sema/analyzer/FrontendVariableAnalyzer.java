@@ -43,8 +43,7 @@ import java.util.Objects;
 /// - require skeleton, diagnostics, and top-level source scopes to be published first
 /// - write function/constructor parameters into `CallableScope`
 /// - write supported ordinary locals into `BlockScope`
-/// - keep lambda / `for` / `match` / block-local `const` inventory outside the current support
-///   boundary
+/// - keep lambda / `match` / block-local `const` inventory outside the current support boundary
 /// - emit explicit recovery diagnostics instead of letting unsupported inventory sources fail silently
 public class FrontendVariableAnalyzer {
     private static final @NotNull String VARIABLE_BINDING_CATEGORY = "sema.variable_binding";
@@ -96,7 +95,7 @@ public class FrontendVariableAnalyzer {
     /// - only source/class statement lists and supported executable blocks are descended into
     /// - function/constructor parameters are bound at the callable boundary
     /// - ordinary locals are bound only while the walker is inside a supported executable block
-    /// - lambda / `for` / `match` subtrees are pruned explicitly
+    /// - lambda / `match` subtrees are pruned explicitly
     /// - arbitrary expression children stay outside the binding walk
     private static final class AstWalkerVariableBinder implements ASTNodeHandler {
         private final @NotNull Path sourcePath;
@@ -256,8 +255,11 @@ public class FrontendVariableAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
-            // The binder itself still treats `for` as an unsupported boundary; explicit user
-            // diagnostics are produced by the dedicated boundary reporter.
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(forStatement.body())) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            bindForIterator(forStatement);
+            walkSupportedExecutableBlock(forStatement.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -415,6 +417,43 @@ public class FrontendVariableAnalyzer {
                         "Duplicate local variable '" + variableName + "' in the same block"
                 );
             }
+        }
+
+        private void bindForIterator(@NotNull ForStatement forStatement) {
+            var iteratorName = forStatement.iterator().trim();
+            var targetScope = scopesByAst.get(forStatement.body());
+            if (!(targetScope instanceof BlockScope blockScope)
+                    || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
+                reportBindingError(forStatement, "Loop iterator '" + iteratorName + "' has no supported `for` body scope");
+                return;
+            }
+
+            var existingLocal = blockScope.resolveValueHere(iteratorName);
+            if (existingLocal != null) {
+                reportBindingError(forStatement, "Duplicate loop iterator '" + iteratorName + "' in the same `for` body");
+                return;
+            }
+            var sameCallableConflict = findSameCallableConflict(blockScope, iteratorName);
+            if (sameCallableConflict != null) {
+                reportBindingError(
+                        forStatement,
+                        "Loop iterator '" + iteratorName + "' in " + describeLocalContext(blockScope)
+                                + " shadows " + describeShadowingTarget(sameCallableConflict)
+                );
+            }
+
+            var headerScope = scopesByAst.get(forStatement);
+            if (headerScope == null) {
+                throw new IllegalStateException("Loop iterator '" + iteratorName + "' has no published header scope");
+            }
+            var iteratorType = FrontendDeclaredTypeSupport.resolveTypeOrVariant(
+                    forStatement.iteratorType(),
+                    headerScope,
+                    moduleSkeleton.topLevelCanonicalNameMap(),
+                    sourcePath,
+                    diagnosticManager
+            );
+            blockScope.defineLocal(iteratorName, iteratorType, forStatement);
         }
 
         /// Duplicate and shadowing locals are user-facing source errors rather than phase
@@ -621,16 +660,6 @@ public class FrontendVariableAnalyzer {
                     lambdaExpression,
                     "Variable analysis does not support lambda subtrees yet; parameters, default values, locals, "
                             + "and captures inside this lambda are not bound yet"
-            );
-            return FrontendASTTraversalDirective.SKIP_CHILDREN;
-        }
-
-        @Override
-        public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
-            reportUnsupportedBoundary(
-                    forStatement,
-                    "Variable analysis does not support `for` subtrees yet; the loop iterator binding and "
-                            + "locals declared inside this loop body are not bound yet"
             );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }

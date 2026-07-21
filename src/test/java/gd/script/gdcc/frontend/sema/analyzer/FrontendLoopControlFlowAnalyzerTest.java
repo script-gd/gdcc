@@ -108,9 +108,7 @@ class FrontendLoopControlFlowAnalyzerTest {
                 """);
 
         assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow").isEmpty());
-        assertTrue(result.diagnostics().asList().stream().anyMatch(diagnostic ->
-                !diagnostic.category().equals("sema.loop_control_flow")
-        ));
+        assertFalse(result.diagnostics().hasErrors());
     }
 
     @Test

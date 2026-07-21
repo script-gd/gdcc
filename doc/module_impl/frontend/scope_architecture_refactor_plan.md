@@ -413,8 +413,7 @@ AST 节点与 scope 的关联仍应由 side-table 维护，而不是把 AST 节�
 
 当前仍需继续保持 deferred 的 scope-prefill / binding 内容包括：
 
-- block local / local const prefill
-- `for` iterator binding
+- block-local `const` prefill
 - `match` pattern binding
 - lambda capture 推导与 `CallableScope.defineCapture(...)` 的生产接线
 
@@ -559,15 +558,16 @@ frontend binder 侧的 declaration-order 可见性修正层，详见：
 
 - function / constructor parameter -> `CallableScope`
 - function / constructor body 与 supported nested block 中的 ordinary local `var` -> `BlockScope`
+- `ForStatement` iterator 与 for body ordinary local -> `FOR_BODY` scope；iterator declaration identity 与 fallback baseline 已冻结
 - same-callable parameter/local shadowing 在 variable phase 直接诊断并拒绝写入
-- 参数默认值、lambda、`for`、`match`、block-local `const` 继续 deferred
+- 参数默认值、lambda、`match`、block-local `const` 继续 deferred
 
 后续 binder phase 在接线前或接线过程中仍需要冻结：
 
 - 同一 callable 内的 parameter/local/capture shadowing 规则
 - 参数默认值的可见性顺序
 - ordinary local `var` initializer 已按 `FrontendVisibleValueResolver` 合同进入当前支持面，不再作为 binder 的前置阻塞项
-- `for` iterator 的 declaration site 与 fallback type 策略
+- for iteration planning 与 iterator exact slot refinement
 - `match` pattern binding 在 guard/body 中的可见性
 - lambda capture 是同 phase 落地还是继续 deferred
 

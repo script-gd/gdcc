@@ -6,8 +6,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（source-order local `:=` slot stabilization、parameter/local alias 传播、复杂 initializer 求型、assignment initializer 与 bare `TYPE_META` fail-closed、parent/child block 边界合同、SuiteResolver body-owner overlay/export 路径已落地）
-- 更新时间：2026-07-10
+- 状态：事实源维护中（source-order local `:=` slot stabilization、for body ordinary local、parameter/local alias 传播、复杂 initializer 求型、fail-closed 边界与 SuiteResolver overlay/export 路径已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -30,7 +30,8 @@
   - 不在这里做 property `:=` metadata backfill
   - 不在这里做 whole-module fixed-point
   - 不在这里做 CFG / control-flow merge aware local type refinement
-  - 不在这里转正 parameter default、lambda、capture、`for`、`match`、block-local `const`、class `const`
+  - 不在这里转正 parameter default、lambda、capture、`match`、block-local `const`、class `const`
+  - 不在这里实现 for iteration planning 或 iterator slot refinement
   - 不在这里新增公共 frontend API；如需 helper，优先保持在 analyzer/support 包内且不拥有 phase facts
 
 ---
@@ -152,7 +153,7 @@ BlockScope.resetLocalType(...)
 - declaration 所在 scope 是 `BlockScope`
 - `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind()) == true`
 
-这条边界继承 callable-local inventory 合同，不会把 class property、class const、block-local `const` 或当前未支持的 subtree 混进来。
+这条边界继承 structural callable-local inventory 合同。`FOR_BODY` 中的 ordinary `VariableDeclaration` 可以参与稳定化；iterator identity 是 `ForStatement`，不是 eligible declaration，由后续 iteration planning 负责精化。
 
 ### 3.2 Source-order 单遍
 
@@ -278,14 +279,13 @@ package-private `probe(...)` 仅作为测试观察窗口存在，用来运行与
 
 - parameter default
 - lambda / capture
-- `for`
 - `match`
 - block-local `const`
 - class `const`
 - unsupported subtree
 - control-flow merge / join
 
-这些边界若未来要打开，必须与 variable inventory、visible-value resolution、chain binding、expr typing 和 type check 一起收口，不能在本 phase 单独偷开支持面。
+这些边界若未来要打开，必须与 variable inventory、visible-value resolution、chain binding、expr typing 和 type check 一起收口，不能在本 phase 单独偷开支持面。For body 已经通过普通 SuiteResolver path 进入本 owner，但 iterator refinement 仍不属于 local `var :=` stabilization。
 
 ---
 
@@ -334,6 +334,7 @@ focused case 至少要继续覆盖：
 - forward local reference
 - assignment-based local type refinement
 - CFG branch / loop merge aware refinement
-- `for` / `match` / lambda / capture local inventory
+- `match` / lambda / capture local inventory
+- for iterator route-aware refinement
 - property `:=` metadata backfill
 - 跨 callable 或 whole-module 的类型收敛

@@ -355,7 +355,7 @@ class FrontendScopeAnalyzerTest {
 
     @Test
     void analyzeBuildsLoopAndMatchBranchScopesWhileLeavingDeferredBindingsUnfilled() throws Exception {
-        var analyzed = analyze("""
+        var analyzed = analyzeScopeOnly("""
                 class_name LoopAndMatchScopes
                 extends Node
                 

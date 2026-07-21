@@ -154,7 +154,7 @@ class FrontendBodyOwnerProceduresVarTypePostTest {
     }
 
     @Test
-    void analyzeKeepsUnsupportedForBodyLocalsOutOfPublishedSlotTypeTable() throws Exception {
+    void analyzePublishesSupportedForBodyLocalSlotType() throws Exception {
         var analyzed = analyzeShared(
                 "var_type_post_unsupported_for_local.gd",
                 """
@@ -175,7 +175,7 @@ class FrontendBodyOwnerProceduresVarTypePostTest {
         );
         var pingFunction = findFunction(analyzed.unit().ast().statements(), "ping");
 
-        assertNull(analyzed.analysisData().slotTypes().get(fromFor));
+        assertEquals(GdVariantType.VARIANT, analyzed.analysisData().slotTypes().get(fromFor));
         assertEquals(
                 GdVariantType.VARIANT,
                 analyzed.analysisData().slotTypes().get(pingFunction.parameters().getFirst())

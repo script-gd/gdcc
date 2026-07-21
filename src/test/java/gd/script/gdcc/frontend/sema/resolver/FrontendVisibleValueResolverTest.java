@@ -7,11 +7,7 @@ import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
-import gd.script.gdcc.frontend.sema.FrontendBodyInventoryReadiness;
 import gd.script.gdcc.frontend.sema.FrontendBodyLocalDeclaration;
-import gd.script.gdcc.frontend.sema.FrontendInventoryGate;
-import gd.script.gdcc.frontend.sema.FrontendInventoryGateRegistry;
-import gd.script.gdcc.frontend.sema.FrontendInventoryGateStatus;
 import gd.script.gdcc.frontend.sema.analyzer.FrontendSemanticAnalyzer;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
@@ -54,7 +50,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("visible_parameter.gd", """
                 class_name VisibleParameter
                 extends Node
-                
+
                 func ping(value: int):
                     print(value)
                 """);
@@ -81,7 +77,7 @@ class FrontendVisibleValueResolverTest {
         var analyzedInput = analyzedInput("future_local_not_found.gd", """
                 class_name FutureLocalNotFound
                 extends Node
-                
+
                 func ping():
                     print(count)
                     var count := 1
@@ -127,11 +123,15 @@ class FrontendVisibleValueResolverTest {
         var binding = Objects.requireNonNull(scope.resolveValueHere("count"), "count local must be published");
         var publishedIndex = new FrontendBodyDeclarationIndex(Map.of(
                 pingFunction.body(),
-                List.of(new FrontendBodyLocalDeclaration(declaration, binding, 0))
+                List.of(new FrontendBodyLocalDeclaration(
+                        declaration,
+                        binding,
+                        FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR,
+                        0
+                ))
         ));
         var resolver = new FrontendVisibleValueResolver(
                 analyzedInput.analysisData(),
-                FrontendInventoryGateRegistry.empty(),
                 publishedIndex
         );
 
@@ -150,7 +150,6 @@ class FrontendVisibleValueResolverTest {
         var incompleteIndex = new FrontendBodyDeclarationIndex(Map.of());
         var incompleteResolver = new FrontendVisibleValueResolver(
                 analyzedInput.analysisData(),
-                FrontendInventoryGateRegistry.empty(),
                 incompleteIndex
         );
         assertThrows(IllegalStateException.class, () -> incompleteResolver.resolve(
@@ -361,7 +360,7 @@ class FrontendVisibleValueResolverTest {
         assertTrue(result.filteredHits().isEmpty());
         assertEquals(FrontendVisibleValueDomain.PARAMETER_DEFAULT, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -389,7 +388,7 @@ class FrontendVisibleValueResolverTest {
         assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
         assertEquals(FrontendVisibleValueDomain.LAMBDA_SUBTREE, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -418,7 +417,7 @@ class FrontendVisibleValueResolverTest {
         assertTrue(result.filteredHits().isEmpty());
         assertEquals(FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -450,7 +449,7 @@ class FrontendVisibleValueResolverTest {
         assertTrue(result.filteredHits().isEmpty());
         assertEquals(FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -482,9 +481,9 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveSealsForBodyUseSiteAsDeferredUnsupported() throws Exception {
-        var analyzedInput = analyzedInput("for_body_deferred.gd", """
-                class_name ForBodyDeferred
+    void resolveForBodyIteratorAsVisibleLocalWithoutFallingBackToClassProperty() throws Exception {
+        var analyzedInput = analyzedInput("for_body_iterator_visible.gd", """
+                class_name ForBodyIteratorVisible
                 extends Node
                 
                 var item = 100
@@ -503,20 +502,18 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertNull(result.visibleValue());
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.LOCAL, result.visibleValue().kind());
+        assertInstanceOf(ForStatement.class, result.visibleValue().declaration());
         assertTrue(result.filteredHits().isEmpty());
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
-                result.deferredBoundary().reason()
-        );
+        assertNull(result.deferredBoundary());
     }
 
     @Test
-    void resolveKeepsSupportedButUnpublishedGateBodyFailClosed() throws Exception {
-        var analyzedInput = analyzedInput("for_body_supported_not_published.gd", """
-                class_name ForBodySupportedNotPublished
+    void resolveForBodyCanReadOuterParameterThroughNormalLookup() throws Exception {
+        var analyzedInput = analyzedInput("for_body_outer_parameter.gd", """
+                class_name ForBodyOuterParameter
                 extends Node
 
                 func ping(values, seed):
@@ -525,59 +522,13 @@ class FrontendVisibleValueResolverTest {
                 """);
         var forStatement = findNode(analyzedInput.unit().ast(), ForStatement.class, _ -> true);
         var useSite = findIdentifierExpression(forStatement.body(), "seed");
+        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData());
 
-        var notPublished = resolveWithGate(
-                analyzedInput,
-                forStatement,
+        var result = resolver.resolve(new FrontendVisibleValueResolveRequest(
+                "seed",
                 useSite,
-                FrontendInventoryGateStatus.SUPPORTED,
-                FrontendBodyInventoryReadiness.NOT_PUBLISHED,
-                FrontendVisibleValueDomain.FOR_SUBTREE
-        );
-        var publishing = resolveWithGate(
-                analyzedInput,
-                forStatement,
-                useSite,
-                FrontendInventoryGateStatus.SUPPORTED,
-                FrontendBodyInventoryReadiness.PUBLISHING,
-                FrontendVisibleValueDomain.FOR_SUBTREE
-        );
-
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, notPublished.status());
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, notPublished.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                notPublished.deferredBoundary().reason()
-        );
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, publishing.status());
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, publishing.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
-                publishing.deferredBoundary().reason()
-        );
-    }
-
-    @Test
-    void resolvePublishedGateBodyPassesRequestAstAndCurrentScopeGates() throws Exception {
-        var analyzedInput = analyzedInput("for_body_published.gd", """
-                class_name ForBodyPublished
-                extends Node
-
-                func ping(values, seed):
-                    for item in values:
-                        print(seed)
-                """);
-        var forStatement = findNode(analyzedInput.unit().ast(), ForStatement.class, _ -> true);
-        var useSite = findIdentifierExpression(forStatement.body(), "seed");
-
-        var result = resolveWithGate(
-                analyzedInput,
-                forStatement,
-                useSite,
-                FrontendInventoryGateStatus.SUPPORTED,
-                FrontendBodyInventoryReadiness.PUBLISHED,
-                FrontendVisibleValueDomain.FOR_SUBTREE
-        );
+                FrontendVisibleValueDomain.EXECUTABLE_BODY
+        ));
 
         assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
         assertNotNull(result.visibleValue());
@@ -587,43 +538,9 @@ class FrontendVisibleValueResolverTest {
     }
 
     @Test
-    void resolveUnsupportedGateBodyDoesNotFallBackToOuterBinding() throws Exception {
-        var analyzedInput = analyzedInput("for_body_unsupported_no_fallback.gd", """
-                class_name ForBodyUnsupportedNoFallback
-                extends Node
-
-                var item = 100
-
-                func ping(values):
-                    for item in values:
-                        print(item)
-                """);
-        var forStatement = findNode(analyzedInput.unit().ast(), ForStatement.class, _ -> true);
-        var useSite = findIdentifierExpression(forStatement.body(), "item");
-
-        var result = resolveWithGate(
-                analyzedInput,
-                forStatement,
-                useSite,
-                FrontendInventoryGateStatus.UNSUPPORTED,
-                FrontendBodyInventoryReadiness.NOT_PUBLISHED,
-                FrontendVisibleValueDomain.EXECUTABLE_BODY
-        );
-
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertNull(result.visibleValue());
-        assertTrue(result.filteredHits().isEmpty());
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
-                result.deferredBoundary().reason()
-        );
-    }
-
-    @Test
-    void resolveSealsForIterableAsDeferredUnsupported() throws Exception {
-        var analyzedInput = analyzedInput("for_iterable_deferred.gd", """
-                class_name ForIterableDeferred
+    void resolveForIterableInOuterScopeNormally() throws Exception {
+        var analyzedInput = analyzedInput("for_iterable_outer_scope.gd", """
+                class_name ForIterableOuterScope
                 extends Node
                 
                 var item = 100
@@ -641,16 +558,14 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
-                result.deferredBoundary().reason()
-        );
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PROPERTY, result.visibleValue().kind());
+        assertNull(result.deferredBoundary());
     }
 
     @Test
-    void resolveRejectsSyntheticForBodyCurrentScopeEvenWithoutForAstBoundary() throws Exception {
+    void resolveAllowsSyntheticForBodyCurrentScopeWithoutForAstBoundary() throws Exception {
         var analyzedInput = analyzedInput("synthetic_for_body_scope.gd", """
                 class_name SyntheticForBodyScope
                 extends Node
@@ -669,12 +584,10 @@ class FrontendVisibleValueResolverTest {
                 FrontendVisibleValueDomain.EXECUTABLE_BODY
         ));
 
-        assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
-        assertEquals(FrontendVisibleValueDomain.FOR_SUBTREE, result.deferredBoundary().domain());
-        assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
-                result.deferredBoundary().reason()
-        );
+        assertEquals(FrontendVisibleValueStatus.FOUND_ALLOWED, result.status());
+        assertNotNull(result.visibleValue());
+        assertEquals(ScopeValueKind.PARAMETER, result.visibleValue().kind());
+        assertNull(result.deferredBoundary());
     }
 
     @Test
@@ -703,7 +616,7 @@ class FrontendVisibleValueResolverTest {
         assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
         assertEquals(FrontendVisibleValueDomain.MATCH_SUBTREE, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -731,7 +644,7 @@ class FrontendVisibleValueResolverTest {
         assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
         assertEquals(FrontendVisibleValueDomain.LAMBDA_SUBTREE, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -760,7 +673,7 @@ class FrontendVisibleValueResolverTest {
         assertEquals(FrontendVisibleValueStatus.DEFERRED_UNSUPPORTED, result.status());
         assertEquals(FrontendVisibleValueDomain.MATCH_SUBTREE, result.deferredBoundary().domain());
         assertEquals(
-                FrontendVisibleValueDeferredReason.VARIABLE_INVENTORY_NOT_PUBLISHED,
+                FrontendVisibleValueDeferredReason.UNSUPPORTED_DOMAIN,
                 result.deferredBoundary().reason()
         );
     }
@@ -876,31 +789,6 @@ class FrontendVisibleValueResolverTest {
                 IdentifierExpression.class,
                 identifierExpression -> identifierExpression.name().equals(name)
         );
-    }
-
-    private static @NotNull FrontendVisibleValueResolution resolveWithGate(
-            @NotNull AnalyzedInput analyzedInput,
-            @NotNull ForStatement forStatement,
-            @NotNull IdentifierExpression useSite,
-            @NotNull FrontendInventoryGateStatus status,
-            @NotNull FrontendBodyInventoryReadiness readiness,
-            @NotNull FrontendVisibleValueDomain requestDomain
-    ) {
-        var gate = FrontendInventoryGate.pending(
-                        forStatement,
-                        forStatement,
-                        forStatement.body(),
-                        FrontendVisibleValueDomain.FOR_SUBTREE
-                )
-                .withStatus(status)
-                .withBodyInventoryReadiness(readiness);
-        var registry = FrontendInventoryGateRegistry.builder().add(gate).build();
-        var resolver = new FrontendVisibleValueResolver(analyzedInput.analysisData(), registry);
-        return resolver.resolve(new FrontendVisibleValueResolveRequest(
-                useSite.name(),
-                useSite,
-                requestDomain
-        ));
     }
 
     private static <T extends Node> @NotNull T findNode(

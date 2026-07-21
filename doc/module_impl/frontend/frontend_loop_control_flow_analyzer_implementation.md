@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：已完成，事实源维护中
-- 最后更新：2026-04-01
+- 最后更新：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
   - `src/test/java/gd/script/gdcc/frontend/sema/**`
@@ -20,7 +20,7 @@
 - 明确非目标：
   - 不在这里实现 `break` / `continue` 的 lowering
   - 不在这里修改 compile-only `FrontendCompileCheckAnalyzer` 的职责边界
-  - 不在这里为 `for` / `match` / `lambda` 补齐完整 body semantic 支持
+  - 不在这里为 `match` / `lambda` 补齐完整 body semantic 支持，也不实现 for iteration planning 或 lowering
   - 不在这里新增 side table 或改写已有 side table 结构
 
 ---
@@ -124,7 +124,7 @@ owner 固定为：
 本次实现采用以下边界：
 
 - `while` 与 `for` 都视为 loop boundary
-  - 原因：即使 `for` 的其他 body semantic 仍未完全支持，`break` / `continue` 在 `for` 中是否合法仍是独立的 source-level 事实
+  - `for` body 已进入 shared semantic；loop-control legality 仍是独立 diagnostics-only source fact，不读取 iterator type、iteration route 或 compile readiness
 - `function` / `constructor` / `lambda` 视为新的 callable boundary
   - 外层 loop 不得跨 callable 泄漏到内层 callable
 - `if` / `elif` / `else` / `match` / 普通 block` 不重置 loop depth`

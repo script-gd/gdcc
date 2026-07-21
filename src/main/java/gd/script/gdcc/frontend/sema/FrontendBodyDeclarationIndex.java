@@ -1,7 +1,6 @@
 package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.Node;
-import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -20,14 +19,14 @@ import java.util.Objects;
 /// explicitly published by a later body phase.
 public final class FrontendBodyDeclarationIndex {
     private final @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot;
-    private final @NotNull Map<VariableDeclaration, FrontendBodyLocalDeclaration> declarationsByDeclaration;
+    private final @NotNull Map<Node, FrontendBodyLocalDeclaration> declarationsByDeclaration;
 
     public FrontendBodyDeclarationIndex(
             @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot
     ) {
         Objects.requireNonNull(declarationsByBodyRoot, "declarationsByBodyRoot");
         var copiedDeclarations = new IdentityHashMap<Node, List<FrontendBodyLocalDeclaration>>();
-        var copiedDeclarationsByDeclaration = new IdentityHashMap<VariableDeclaration, FrontendBodyLocalDeclaration>();
+        var copiedDeclarationsByDeclaration = new IdentityHashMap<Node, FrontendBodyLocalDeclaration>();
         for (var entry : declarationsByBodyRoot.entrySet()) {
             var bodyRoot = Objects.requireNonNull(entry.getKey(), "bodyRoot");
             var declarations = List.copyOf(Objects.requireNonNull(entry.getValue(), "declarations"));
@@ -57,8 +56,8 @@ public final class FrontendBodyDeclarationIndex {
         return declarationsByBodyRoot.containsKey(Objects.requireNonNull(bodyRoot, "bodyRoot"));
     }
 
-    /// Returns the published inventory entry for one ordinary local declaration, if any.
-    public @Nullable FrontendBodyLocalDeclaration declarationFor(@NotNull VariableDeclaration declaration) {
+    /// Returns the published inventory entry for one source local or iterator declaration, if any.
+    public @Nullable FrontendBodyLocalDeclaration declarationFor(@NotNull Node declaration) {
         return declarationsByDeclaration.get(Objects.requireNonNull(declaration, "declaration"));
     }
 

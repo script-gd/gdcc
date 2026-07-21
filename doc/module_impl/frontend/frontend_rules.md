@@ -36,7 +36,7 @@
 - `break` / `continue` 的位置合法性属于 shared semantic contract；`FrontendLoopControlFlowAnalyzer` 必须在进入 compile-only gate 前就对非法 loop control 发出 `sema.loop_control_flow`，lowering 中的 loop-frame fail-fast 只能保留为实现不变量保护。
 - `_field_init_`、`_field_getter_`、`_field_setter_` 是 compiler-owned synthetic property helper 前缀；source class member 一旦以这些前缀开头，skeleton phase 必须发出清晰的 `sema.class_skeleton` 并跳过该 member subtree，而不是等到 lowering/backend 再因 helper 名冲突抛异常。
 - `FrontendCompileCheckAnalyzer` 只能挂在 compile-only 入口上；默认共享 `FrontendSemanticAnalyzer.analyze(...)`、inspection 与未来 LSP 入口不得隐式附带 compile-only gate。
-- compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`for`、`match`、block-local `const` 或 skipped subtree。
+- compile-only gate 只允许扫描未来 lowering 会消费的 compile surface：supported executable body 与 supported property initializer island；不得重新深入 parameter default、lambda、`match`、block-local `const` 或 skipped subtree。`ForStatement` 已进入 shared semantic，但 route-aware lowering 尚未落地，因此 compile-only gate 当前只在 statement root 发布一个临时 blocker，不进入 body 重扫 semantic facts。
 - compile-only gate 一旦放行 supported property initializer，默认 lowering pipeline 必须把它 materialize 为真实 `init_func` helper；backend 不得再把同名 shell-only function 当作可修补中间态消费。
 - compile-only gate 对已发布 side-table 事实的最终阻断范围固定为 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`；`DYNAMIC` 继续保留为 frontend 已认可的 runtime-open 事实，不得在 compile gate 中误判成 blocker。
 - executable-body body lowering 对 call 的 lowering-ready surface 必须与 compile gate / CFG builder 保持一致：`resolvedCalls()` 只要已发布为 `RESOLVED` 或 `DYNAMIC` 就允许进入 body pass；其中 `DYNAMIC_FALLBACK` 当前只允许 instance route，必须继续复用 `CallMethodInsn` surface，结果类型真源来自 call anchor 的 `expressionTypes()`，frontend 不得为该路由重做 callable signature 推导。runtime-open 调用本身仍由 backend dynamic dispatch 承接，但其已发布的 `Variant` 结果若继续跨越 ordinary typed boundary，则仍由 frontend ordinary boundary helper 负责后续 `(un)pack`；若同一 call site 还发布了 writable receiver access-chain payload，则 body lowering 必须整体消费这条 payload 做 receiver-side leaf selection / post-call commit，不得把同一条 chain 重新拆成额外 step item 或回头重跑 AST；同时 sequence-item lowering 必须继续线程化当前 continuation block，避免 runtime-gated writeback 把后续 lowering 错挂回原始 lexical block。长合同以 `frontend_dynamic_call_lowering_implementation.md` 为准。
@@ -62,7 +62,7 @@
 ## MVP 支持约定 
 
 - 下述 MVP 约定描述的是当前 frontend 共享语义、body analyzer 与 compile surface 的正式支持面；它们不否认 parser 与 scope phase 对部分语法结构已经能识别或建图。
-- `lambda`、`match`、`for` 当前不在 frontend body semantic MVP 正式支持面；相关子树仍按 deferred / unsupported boundary fail-closed。
+- `for` 已进入 frontend shared body semantic 支持面：iterator、ordinary body local、declaration index、typed baseline 与 suite entry 在 typed resolution 前按结构无条件发布，header 解析后通过普通 child-suite path 进入 body。该支持不代表 compile-ready；在 route-aware compile policy、CFG 与 lowering 完成前，compile-only gate 继续以 statement-root 临时 blocker 阻断。`lambda`、`match` 仍按结构性 deferred / unsupported boundary fail-closed。
 - 协程与 signal-based coroutine 当前不在 frontend semantic MVP 范围内；`await` / `.emit(...)` 等 use-site 语义仍未闭环。
 - path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。

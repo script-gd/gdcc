@@ -271,15 +271,15 @@ mapped top-level gdcc class 当前已同时满足：
 
 ---
 
-## 6. Deferred Binding 边界
+## 6. Downstream Binding 边界
 
 当前 scope analyzer 只发布 lexical graph，不做 binding prefill。
 
-仍然明确 deferred 的内容包括：
+不由 scope analyzer 自身写入的内容包括：
 
 - callable parameters 的 binding 写入
 - 普通 `var` / `const` 的 binding 写入
-- `for` iterator 的 binding 与类型落地
+- `for` iterator 的 binding 与类型落地；该工作现由后续 `FrontendVariableAnalyzer` 完成
 - captures 的推导与写入
 - `PatternBindingExpression` 的 binding 写入
 - 成员解析、调用解析、表达式类型推断
@@ -288,7 +288,7 @@ mapped top-level gdcc class 当前已同时满足：
 
 - `Parameter` 节点必须拥有 side-table scope 记录，但这不等价于 parameter 已经能通过 `CallableScope.resolveValue(...)` 被解析
 - `for` 的 `iteratorType` 与 `iterable` 在进入 loop body 之前按外层 scope 分析
-- `for` body 拥有独立 `BlockScope`，但 `iterator` 仍未预填
+- `for` body 拥有独立 `BlockScope`；scope phase 不预填 iterator，后续 variable inventory phase 以 owning `ForStatement` 为 declaration identity 发布 iterator 与 body local
 - `MatchSection` 的 pattern、guard 与 body 共享同一个 branch scope，但 pattern binding 仍未注册成 local
 
 后续若要实现 binder，必须在完整 scope graph 建成之后单独做 binding pass，而不是把 binding 写回夹进当前 walker。

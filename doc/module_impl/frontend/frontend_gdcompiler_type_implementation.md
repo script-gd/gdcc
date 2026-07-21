@@ -5,7 +5,7 @@
 ## 文档状态
 
 - 状态：事实源维护中（`GdCompilerType` sealed 抽象层、`GdccForRangeIterType`、LIR-only grammar、frontend/backend leak guards、public ABI validator、range iterator intrinsic 已落地）
-- 更新时间：2026-07-03
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/type/**`
   - `src/main/java/gd/script/gdcc/frontend/**`
@@ -36,7 +36,7 @@
   - 不让 compiler-only type 进入 public / hidden function parameter 或 return ABI
   - 不让 compiler-only type 进入 property、signal、capture、typed container outward metadata
   - 不让 compiler-only type 参与 `Variant` pack / unpack、engine method、utility、global、operator、index、property 普通 Godot runtime 路径
-  - 不在这里实现 `for` parser / analyzer / lowering 或 async / function-state 全量 lowering
+  - 不在这里实现 for iteration planning / CFG / lowering 或 async / function-state 全量 lowering；for shared semantic inventory/body entry 已由 frontend 独立支持
 
 ---
 

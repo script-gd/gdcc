@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（compile-only final gate、显式 AST 封口、generic published-fact blocker、explicit self assignment-target prefix 去重、shared/compile 分流边界、interface/body SuiteResolver facts、unary/binary 非 blocker 合同已落地）
-- 更新时间：2026-07-09（Phase I：compile gate 消费最终 shared pipeline 导出的 stable facts，不依赖 legacy whole-phase publication）
+- 状态：事实源维护中（compile-only final gate、for statement-root 临时 blocker、显式 AST 封口、generic published-fact blocker、shared/compile 分流边界与 SuiteResolver stable facts 已落地）
+- 更新时间：2026-07-20（阶段 L：for shared semantic 已解封，compile-only 仅保留 root blocker）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -101,12 +101,11 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 - parameter default
 - lambda subtree
-- `for` subtree
 - `match` subtree
 - block-local `const`
 - missing-scope / skipped subtree
 
-这条边界的目的不是“少报错”，而是避免 compile gate 把已经被上游明确封口的恢复域重新打平成 lowering surface。
+这条边界的目的不是“少报错”，而是避免 compile gate 把已经被上游明确封口的恢复域重新打平成 lowering surface。`ForStatement` 不属于该跳过集合：它已进入 shared semantic，compile gate 会命中 statement root，但不会进入 body 重扫 facts。
 
 ---
 
@@ -114,7 +113,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 ### 3.1 statement 级封口
 
-`AssertStatement` 当前由 compile gate 显式拦截，并直接发出 `sema.compile_check` `error`。
+`AssertStatement` 与 `ForStatement` 当前由 compile gate 显式拦截，并直接发出 `sema.compile_check` `error`。
 
 这里需要同时保持两条事实：
 
@@ -122,6 +121,14 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - shared type-check 继续把 `assert` condition 当成普通 source condition 处理
 
 因此，`assert` 的 compile-only block 只表达“lowering/backend 尚未接通”，而不是 source contract 已被收紧。
+
+`ForStatement` 使用更窄的临时 bridge：
+
+- blocker 只锚定 owning `ForStatement` root。
+- 不进入 body，不重新扫描 iterator/body 已发布的 semantic facts。
+- 不读取 iterable type、iteration plan、route readiness 或 diagnostic-derived state。
+- shared `analyze(...)` 不包含该 blocker；只有 `analyzeForCompile(...)` 会阻止 for 进入尚未支持的 CFG/lowering。
+- 后续 route-aware compile policy 只能替换该 blocker，不能控制 iterator inventory、completeness certificate 或 child-suite dispatch。
 
 ### 3.2 declaration 级封口
 
@@ -374,6 +381,7 @@ compile gate 当前统一使用：
 这条规则同样适用于：
 
 - `assert`
+- `ForStatement`
 - `ConditionalExpression`
 - `ArrayExpression`
 - `DictionaryExpression`
@@ -400,6 +408,7 @@ compile gate 当前统一使用：
   - `DYNAMIC` 不误判为 blocker
   - `ConditionalExpression` 只在 compile-only 路径被拦截，不污染 shared analyze
   - `assert` 继续保持 shared condition contract，只在 compile-only 路径被拦截
+  - for shared semantic 正常发布 body facts，compile-only 路径只产生单一 statement-root blocker且不扫描 body
 - `FrontendSemanticAnalyzerFrameworkTest`
   - `analyze(...)` 与 `analyzeForCompile(...)` 的分离
   - compile gate 在 type-check 之后执行
@@ -418,7 +427,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert` 与 8 类显式拦截表达式的真正 lowering/backend 支持仍待后续阶段补齐
+- `assert`、for route-aware CFG/lowering 与 8 类显式拦截表达式的真正 lowering/backend 支持仍待后续阶段补齐
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

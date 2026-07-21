@@ -11,7 +11,7 @@ import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
-import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
+import gd.script.gdcc.frontend.sema.FrontendBodyStructuralCompleteness;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalEnvironment;
@@ -73,10 +73,13 @@ public class FrontendSuiteResolver {
     public void resolveSuite(@NotNull FrontendSuiteContext context, @NotNull Block block) {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(block, "block must not be null");
-        var blockScope = blockScopeFor(context, block);
-        if (blockScope == null || !isCallableLocalValueInventoryReady(context, block, blockScope)) {
-            return;
-        }
+        var blockScope = requireBlockScope(context, block);
+        FrontendBodyStructuralCompleteness.requireStructurallyCompleteBody(
+                context.analysisData(),
+                context.interfaceSurface(),
+                block,
+                blockScope
+        );
         for (var statement : block.statements()) {
             statementResolver.resolveStatement(context, statement, this::resolveChildSuite);
         }
@@ -98,12 +101,12 @@ public class FrontendSuiteResolver {
             @NotNull DiagnosticManager diagnosticManager
     ) {
         var body = callableBody(callableOwner);
-        if (body == null || !interfaceSurface.suiteEntryRoots().containsSupportedBlock(body)) {
-            return;
+        if (body == null) {
+            throw new IllegalStateException("Suite entry callable owner has no executable body");
         }
         var bodyScope = analysisData.scopesByAst().get(body);
         if (!(bodyScope instanceof BlockScope blockScope)) {
-            return;
+            throw new IllegalStateException("Suite entry callable body has no published BlockScope");
         }
         var environment = new FrontendTypedLexicalEnvironment(
                 blockScope,
@@ -238,31 +241,19 @@ public class FrontendSuiteResolver {
 
     /// Resolves a child block with its own overlay while sharing the parent's callable export batch.
     private void resolveChildSuite(@NotNull FrontendSuiteContext parentContext, @NotNull Block childBlock) {
-        var blockScope = blockScopeFor(parentContext, childBlock);
-        if (blockScope == null || !isCallableLocalValueInventoryReady(parentContext, childBlock, blockScope)) {
-            return;
-        }
+        var blockScope = requireBlockScope(parentContext, childBlock);
         resolveSuite(parentContext.withChildBlock(childBlock, blockScope), childBlock);
     }
 
-    private static boolean isCallableLocalValueInventoryReady(
-            @NotNull FrontendSuiteContext context,
-            @NotNull Block block,
-            @NotNull BlockScope blockScope
-    ) {
-        return FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(
-                blockScope,
-                block,
-                context.interfaceSurface().inventoryGateRegistry()
-        );
-    }
-
-    private static @Nullable BlockScope blockScopeFor(
+    private static @NotNull BlockScope requireBlockScope(
             @NotNull FrontendSuiteContext context,
             @NotNull Block block
     ) {
         var scope = context.analysisData().scopesByAst().get(block);
-        return scope instanceof BlockScope blockScope ? blockScope : null;
+        if (scope instanceof BlockScope blockScope) {
+            return blockScope;
+        }
+        throw new IllegalStateException("Suite body has no published BlockScope");
     }
 
     private static @Nullable Block callableBody(@NotNull Node callableOwner) {

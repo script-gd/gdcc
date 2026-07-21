@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticManager;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
+import gd.script.gdcc.frontend.diagnostic.FrontendRange;
 import gd.script.gdcc.frontend.parse.FrontendModule;
 import gd.script.gdcc.frontend.parse.FrontendSourceUnit;
 import gd.script.gdcc.frontend.parse.GdScriptParserService;
@@ -33,6 +34,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ClassNameStatement;
 import dev.superice.gdparser.frontend.ast.ClassDeclaration;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -1055,7 +1057,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
     }
 
     @Test
-    void defaultInterfaceBodyPipelineKeepsUnsupportedSubtreesFailClosed() throws Exception {
+    void defaultInterfaceBodyPipelineSupportsForWhileOtherUnsupportedSubtreesStayFailClosed() throws Exception {
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", "segmented_unsupported_equivalence.gd"), """
                 class_name SegmentedUnsupportedEquivalence
@@ -1088,9 +1090,15 @@ class FrontendSemanticAnalyzerFrameworkTest {
         var hiddenUseSite = assertInstanceOf(IdentifierExpression.class, hiddenLocal.value());
 
         assertNull(interfaceBody.slotTypes().get(blockedConst));
-        assertNull(interfaceBody.slotTypes().get(hiddenLocal));
-        assertNull(interfaceBody.symbolBindings().get(hiddenUseSite));
+        assertEquals(GdVariantType.VARIANT, interfaceBody.slotTypes().get(hiddenLocal));
+        assertEquals(FrontendBindingKind.LOCAL_VAR, interfaceBody.symbolBindings().get(hiddenUseSite).kind());
         assertFalse(diagnosticsByCategory(interfaceBody.diagnostics(), "sema.unsupported_binding_subtree").isEmpty());
+        assertTrue(interfaceBody.diagnostics().asList().stream().noneMatch(diagnostic ->
+                diagnostic.category().equals("sema.unsupported_variable_inventory_subtree")
+                        && diagnostic.range().equals(FrontendRange.fromAstRange(
+                        findNode(pingFunction.body(), ForStatement.class, _ -> true).range()
+                ))
+        ));
         assertEquals(interfaceBodyDiagnostics.snapshot(), interfaceBody.diagnostics());
     }
 

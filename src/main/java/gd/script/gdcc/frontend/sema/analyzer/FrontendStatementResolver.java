@@ -22,15 +22,11 @@ import java.util.Objects;
 
 /// Root-bounded statement dispatcher for the new body SuiteResolver skeleton.
 ///
-/// The no-op constructor is retained for traversal tests and explicit legacy shims. Production
-/// wiring reaches this dispatcher through `FrontendSuiteResolver`, which supplies real owner
-/// procedures and publishes facts through the typed lexical environment.
+/// Production wiring reaches this dispatcher through `FrontendSuiteResolver`, which supplies real
+/// owner procedures and publishes facts through the typed lexical environment. Tests may inject
+/// custom owner procedures for traversal recording.
 public class FrontendStatementResolver {
     private final @NotNull OwnerProcedures ownerProcedures;
-
-    public FrontendStatementResolver() {
-        this(OwnerProcedures.noop());
-    }
 
     public FrontendStatementResolver(@NotNull OwnerProcedures ownerProcedures) {
         this.ownerProcedures = Objects.requireNonNull(ownerProcedures, "ownerProcedures must not be null");
@@ -59,7 +55,7 @@ public class FrontendStatementResolver {
             case AssertStatement assertStatement -> resolveSupportedRoot(context, assertStatement);
             case IfStatement ifStatement -> resolveIfStatement(context, ifStatement, childSuiteResolver);
             case WhileStatement whileStatement -> resolveWhileStatement(context, whileStatement, childSuiteResolver);
-            case ForStatement forStatement -> resolveUnsupportedRoot(context, forStatement);
+            case ForStatement forStatement -> resolveForStatement(context, forStatement, childSuiteResolver);
             case MatchStatement matchStatement -> resolveUnsupportedRoot(context, matchStatement);
             case PassStatement _, BreakStatement _, ContinueStatement _ -> flushStatementBoundary(context);
             default -> resolveUnsupportedRoot(context, statement);
@@ -110,14 +106,32 @@ public class FrontendStatementResolver {
         childSuiteResolver.resolveChildSuite(context, whileStatement.body());
     }
 
+    private void resolveForStatement(
+            @NotNull FrontendSuiteContext context,
+            @NotNull ForStatement forStatement,
+            @NotNull ChildSuiteResolver childSuiteResolver
+    ) {
+        // Header facts share one statement boundary. The body is entered only through the ordinary
+        // child-suite path so header typing can never become a body-entry gate.
+        if (forStatement.iteratorType() != null) {
+            runSupportedRoot(context, forStatement.iteratorType());
+        }
+        runSupportedRoot(context, forStatement.iterable());
+        flushStatementBoundary(context);
+        childSuiteResolver.resolveChildSuite(context, forStatement.body());
+    }
+
     private void resolveSupportedRoot(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        runSupportedRoot(context, root);
+        flushStatementBoundary(context);
+    }
+
+    private void runSupportedRoot(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         ownerProcedures.runTopBinding(context, root);
         ownerProcedures.runLocalTypeStabilization(context, root);
         ownerProcedures.runChainBinding(context, root);
         ownerProcedures.runExprType(context, root);
-        ownerProcedures.runGateClassifier(context, root);
         ownerProcedures.runVarTypePost(context, root);
-        flushStatementBoundary(context);
     }
 
     private void resolveUnsupportedRoot(@NotNull FrontendSuiteContext context, @NotNull Node root) {
@@ -138,11 +152,6 @@ public class FrontendStatementResolver {
     }
 
     public interface OwnerProcedures {
-        static @NotNull OwnerProcedures noop() {
-            return new OwnerProcedures() {
-            };
-        }
-
         default void runTopBinding(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         }
 
@@ -153,12 +162,6 @@ public class FrontendStatementResolver {
         }
 
         default void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
-        }
-
-        /// Runs after header expression facts are finalized into the current overlay but before the
-        /// statement boundary is flushed. Phase F test classifiers use this hook to advance synthetic
-        /// gate lifecycle without implementing any feature-specific rules.
-        default void runGateClassifier(@NotNull FrontendSuiteContext context, @NotNull Node root) {
         }
 
         default void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {

@@ -418,9 +418,17 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// `for` remains outside compile mode until the lowering/backend route is implemented.
+        /// `for` is shared-semantic supported but remains blocked before CFG/lowering is entered.
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(forStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            reportExplicitCompileBlock(
+                    forStatement,
+                    "For statement is supported by shared semantic analysis but cannot be compiled until its CFG "
+                            + "and lowering route is implemented"
+            );
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 

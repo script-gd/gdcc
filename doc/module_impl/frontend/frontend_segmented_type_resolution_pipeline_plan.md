@@ -45,11 +45,10 @@ frontend feature 实施文档。
   baseline -> `SuiteResolver` body entry -> typed resolution -> type refinement / lowering route。
   compile gate 的 route readiness 属于 lowering 边界，不是 semantic body entry gate。
 
-第 4.5 节、第 4.8 节和阶段 F 中的 `FrontendInventoryGate` / readiness 设计是当前遗留实现
-的记录与清理参照，不能作为后续 feature 的实施方案。现有 typed-dependent gate registry、
-resolver readiness fallback、pending-gate 注册与 synthetic classifier 必须在其不再承担当前
-unsupported compatibility 行为后删除或重写为纯结构性支持判断；不得为它们补充新的 feature
-consumer 或 publication protocol。
+阶段 L 已删除早期 synthetic typed-dependent gate 试验。第 4.5 节现定义 structural policy 与
+completeness certificate，第 4.8 节现定义 resolver 的纯结构边界，阶段 F 只保留迁移历史结论。
+生产代码不存在 registry、readiness fallback、pending-gate 注册或 synthetic classifier；后续 feature
+不得恢复等价 lifecycle 或 publication protocol。
 
 ## 2. 背景与问题
 
@@ -386,56 +385,22 @@ Overlay 的目标是模拟 Godot “当前 statement 已解析出的类型可被
 - Diagnostics-only phase、compile gate 与 lowering 只能读取 suite export 后的 stable facts。
 - Nested supported suite 收敛后，必须把其 per-owner patch transaction 追加到外层 callable export batch；lexical visibility 仍由 scope graph 与 resolver filter 决定，不能因为 transaction 合并放宽 local 可见性。
 
-### 4.5 已废弃：Feature gate 与 body readiness
+### 4.5 Structural support 与 completeness certificate
 
-本节描述当前代码中仍存在的 typed-dependent gate scaffolding，仅用于界定遗留清理范围。
-它已被第 1.1 节的无条件结构性 inventory 决定取代，不得用于新增 feature；后续实现应删除
-本节所述的 registry/readiness body-entry 路径，而不是补全其 publication protocol。
+Body entry 已冻结为两个互不替代的结构事实：
 
-新增 `FrontendInventoryGate` 记录 typed-dependent subtree 的待决状态。第一版至少表达：
+- `FrontendBodySemanticSupportPolicy` 只按 AST/scope kind 回答某类位置是否发布 lexical inventory、
+  是否进入 `FrontendSuiteResolver`，以及 unsupported 位置使用哪个精确 deferred domain。
+- `FrontendBodyStructuralCompleteness` 对本次 Interface surface 做 fail-fast 验证：scope identity、suite
+  entry、body declaration index、declaration/binding/scope identity 与 source-facing typed baseline 必须
+  同时完整；`FOR_BODY` 还必须包含以 `ForStatement` 为 identity 的 iterator entry。
 
-```java
-enum FrontendInventoryGateStatus {
-    PENDING,
-    SUPPORTED,
-    UNSUPPORTED
-}
+Policy 不读取 expression type、typed overlay、iteration plan、diagnostic state 或 compile surface；
+certificate 不读取 pending/committed overlay、slot refinement 或 semantic/lowering route。Typed fact 只能
+驱动 refinement、type diagnostic 与 route planning，不能改变 body inventory 或 child-suite dispatch。
 
-enum FrontendBodyInventoryReadiness {
-    NOT_PUBLISHED,
-    PUBLISHING,
-    PUBLISHED
-}
-
-record FrontendInventoryGate(
-        @NotNull Node owner,
-        @NotNull Node headerRoot,
-        @NotNull Node bodyRoot,
-        @NotNull FrontendVisibleValueDomain deferredDomain,
-        @NotNull FrontendInventoryGateStatus status,
-        @NotNull FrontendBodyInventoryReadiness bodyInventoryReadiness
-) {}
-```
-
-生命周期固定为：
-
-1. Interface phase 发现 typed-dependent gate：`PENDING + NOT_PUBLISHED`。
-2. Body suite 解析 gate header 所需 expression facts。
-3. classifier 判定 unsupported：`UNSUPPORTED + NOT_PUBLISHED`，保留 deferred / unsupported boundary。
-4. classifier 判定 supported：`SUPPORTED + NOT_PUBLISHED`，此时 body 仍不可解析。
-5. body inventory publication 开始：临时 `PUBLISHING`，resolver / binder 仍 fail-closed。
-6. gate-owned body binding 与 body 完整 local inventory 成功发布后：`SUPPORTED + PUBLISHED`。
-7. 只有 `SUPPORTED + PUBLISHED` 的 body 可以进入 `SuiteResolver`。
-
-需要提供共享 readiness policy 作为唯一入口，例如 `FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(BlockScope scope, Node useSite, FrontendAnalysisData data)`、`FrontendInventoryGateRegistry.isResolverGateReady(...)` 或等价命名。它不能只回答 `BlockScopeKind`，还必须能回答 owner/body/domain 级别的问题。它必须：
-
-- 对无条件支持的 block kind 继续返回 true。
-- 对 gate body，只在能找到 owning gate，且 `status == SUPPORTED && bodyInventoryReadiness == PUBLISHED` 时返回 true。
-- 对缺失 gate、`PENDING`、`SUPPORTED + NOT_PUBLISHED`、`SUPPORTED + PUBLISHING`、`UNSUPPORTED`、合成但无 owning gate 的 body 返回 false。
-- 为 resolver request-domain、AST boundary edge、current-scope fail-closed 三处使用同一 readiness 事实，避免三处各自判断 `BlockScopeKind.FOR_BODY` 或 deferred domain。
-- 被 `FrontendVariableAnalyzer`、`FrontendVisibleValueResolver`、`FrontendLocalTypeStabilizationAnalyzer`、`FrontendVarTypePostAnalyzer`、`FrontendCompileCheckAnalyzer` 等所有 callable-local inventory 消费者共同使用。
-
-现有 `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(BlockScopeKind)` 只能继续表达无条件支持的 block kind，不得成为 typed-dependent body readiness 的事实源。
+未转正的 lambda、match、block-local `const`、parameter default 与 unknown/skipped structure 由 policy、
+AST boundary 和 current-scope backstop 直接 fail-closed，不存在 body lifecycle 或 publication setter。
 
 ### 4.6 Stable export 与 per-owner patch transaction
 
@@ -519,35 +484,33 @@ Overlay 可在导出前提供 effective type，但最终 stable `BlockScope.rese
 
 ### 4.8 Resolver 复用规则
 
-第 1.1 节已废弃本节后文的 typed-dependent readiness 规则。保留这些文字仅为识别当前
-`FrontendVisibleValueResolver` 的遗留 gate 分支；新增或转正 AST 节点必须以完整结构性
-inventory 和纯结构性 supported-body 判断进入 resolver，不得查询 typed readiness。
-
 `FrontendVisibleValueResolver` 继续一次性索引完整 source AST，并继续读取已经发布的完整 lexical inventory。完整 inventory 是 `DECLARATION_AFTER_USE_SITE` filtered hit 的前提条件；重构时不得让 resolver 自己扫描 AST 补找普通 `var`，也不得把 supported block inventory 缩成只包含当前 source-order 前缀的 incremental view。
 
 新增 resolver 能力：
 
 - 接受 `TypedLexicalEnvironment` 或等价 effective lexical view，用于读取当前 statement / current suite 的 typed overlay。
 - 继续通过 declaration-order filter 处理 future local 与 initializer self-reference。
-- 对 gate header / gate body 使用共享 readiness policy，不允许只靠 `BlockScopeKind.FOR_BODY`、`FrontendVisibleValueDomain.FOR_SUBTREE` 或 scope 存在放行。
-- domain gate、AST boundary 检测与 current-scope fail-closed 三道封口都必须保留，并作为同一个 gate readiness contract 同步条件化。
+- request-domain hard boundary、AST boundary 与 current-scope backstop 三道结构检查必须保留。
+- `FOR_BODY` 与 for header edge 直接允许 ordinary lookup；lambda、match、block-local `const`、parameter
+  default 与 unknown/skipped structure 使用 structural policy 的精确 deferred domain。
 
-三道封口的 gate 化规则：
+三道结构检查的规则：
 
-1. Request-domain gate：gate body use-site 的 `FrontendVisibleValueResolveRequest` 不能由各 analyzer 手写 domain。`SuiteResolver` / `FrontendSuiteContext` / resolver request factory 必须根据 owning gate readiness 统一决定 domain。`SUPPORTED + PUBLISHED` 的 body lookup 才能作为 `EXECUTABLE_BODY` 进入 resolver；未发布、unsupported、缺失 owning gate 的 body lookup 继续返回 deferred domain 或不进入 resolver。若过渡实现仍允许传入 `FOR_SUBTREE` 等 deferred domain，domain gate 必须先通过同一个 readiness policy 做 owner/body 归属校验与 normalization，不能在裸 `domain != EXECUTABLE_BODY` 判断处提前拒止一个已经 `PUBLISHED` 的 owning body。
-2. AST boundary gate：`classifyBoundaryEdge(...)` 不能只按 `ForStatement.body() == childNode` 恒定返回 `FOR_SUBTREE`。对 gate owner 的 body edge，只有 owning gate `SUPPORTED + PUBLISHED` 时才返回 `null` 并允许继续 normal lookup；所有非 published 状态继续返回原 deferred boundary。对 gate header edge，只有当前正在解析该 owner 的 header/classifier 时才允许读取前缀 executable facts；header edge 放行不代表 body edge 已发布。非 gate 或 unsupported edge 保持 fail-closed。
-3. Current-scope gate：`BlockScopeKind.FOR_BODY`、`MATCH_SECTION_BODY`、`LAMBDA_BODY` 等 current-scope 兜底仍保留。对 typed-dependent gate body，resolver 必须从 use-site scope 找到 owning body/gate，并且只有 `SUPPORTED + PUBLISHED` 返回 `null`；找不到 owner、gate 缺失、`PENDING`、`SUPPORTED + NOT_PUBLISHED`、`PUBLISHING`、`UNSUPPORTED` 都继续返回对应 deferred boundary。
-
-Header/body edge 需要显式区分。`FrontendInventoryGate.headerRoot` 表示 gate-owned header region；如果某个 feature 有多个 header child root，实施时可以把它扩展为 immutable roots 列表或使用等价的 edge classifier，但必须能判断“当前 use-site 是 header 解析”还是“当前 use-site 是 body 解析”。Body readiness 为 `PUBLISHED` 只打开 body lookup，不自动赋予 header feature-specific state 或 body-local visibility。
+1. Request-domain hard boundary：`EXECUTABLE_BODY` 才进入 ordinary lookup；其它 domain 直接返回
+   `DEFERRED_UNSUPPORTED`，不做 readiness normalization。
+2. AST boundary：parameter default、lambda body、match pattern/guard/body 与 block-local `const`
+   initializer 直接返回 structural deferred boundary；`ForStatement.body()`、iterator type 与 iterable
+   edge 不再封口。
+3. Current-scope backstop：`LAMBDA_BODY`、`MATCH_SECTION_BODY` 与 lambda callable scope 即使缺少 AST
+   edge 也继续 fail-closed；`FOR_BODY` 是 supported executable scope。
 
 Overlay 不得绕过 resolver filter：
 
 - Resolver 先按 request-domain gate、AST boundary、current-scope gate、declaration order 与 initializer self-reference 过滤候选 declaration，再从 `TypedLexicalEnvironment` 读取该候选的 effective type / binding payload。
 - 当前 statement pending slot fact 可被同一 statement 后续 owner 子过程消费，但不能让 `var x := x` 的右侧 `x` 通过 self-reference 过滤。
 - 跨 statement committed fact 可被后续 statement 消费，但 future declaration 仍必须报告 `DECLARATION_AFTER_USE_SITE` filtered hit。
-- Gate classifier 使用 resolver 时也只能读取 header use-site 当前可见的 overlay fact，不能扫描后续 suite statement 弥补 typed fact。
-
-Feature-specific header state 仍属于 gate header 语义，不得因为 body readiness 为 `PUBLISHED` 自动获得 body-local visibility。非 supported 或 readiness 未发布的 gate body 继续返回 `DEFERRED_UNSUPPORTED` 或对应 deferred domain。
+- Feature-specific header planning 只能读取 header use-site 当前可见的 overlay fact，不能扫描后续
+  suite statement，也不能以 typed result 改写 body entry。
 
 ### 4.9 已实施资产分类
 
@@ -668,16 +631,16 @@ Compiler-only guard payload matrix：
 
 - [x] B1 新增 `FrontendInterfacePhase` coordinator；它在 skeleton / scope / variable inventory 之后构建独立 `FrontendInterfaceSurface`，不写入 stable typed side table，也不改变 legacy analyzer 顺序。
 - [x] B2 新增 `FrontendBodyDeclarationIndex`，按 supported body root 记录已发布 ordinary local declaration 与 body-local source order；该 index 是 baseline inventory 的只读 view，不重新发布 local。
-- [x] B3 新增 `FrontendInventoryGateRegistry`，记录 typed-dependent subtree 与 body readiness；Phase B gate 固定从 `PENDING + NOT_PUBLISHED` 起步，非 `SUPPORTED + PUBLISHED` 查询必须 fail-closed。
+- [x] B3 早期 synthetic typed-dependent registry 试验已完成并在阶段 L 物理删除；最终 `FrontendInterfaceSurface` 不持有 lifecycle registry。
 - [x] B4 新增 `FrontendTypedLexicalBaseline`，记录 parameter / ordinary local source-facing slot baseline，并在写入时 fail-fast 拒绝 `GdCompilerType`。
-- [x] B5 新增 `FrontendSuiteEntryRoots`，列出 body layer 可进入的 callable / property initializer / supported block roots，并明确 typed-dependent body 在 gate 发布前不进入 entry roots。
+- [x] B5 新增 `FrontendSuiteEntryRoots`，列出 body layer 可进入的 callable / property initializer / structural supported block roots；entry 不依赖 typed fact。
 - [x] B6 保持 skeleton / scope / variable analyzer public contract 不变；新增 `FrontendInterfacePhaseTest` 只调用已发布基础结构层并断言 Interface phase 不写 typed stable side table，现有 phase-boundary / variable inventory focused tests 继续作为回归锚点。
 
 实施内容：
 
 - 新增 `FrontendInterfacePhase` 或等价 coordinator。
 - 新增 `FrontendBodyDeclarationIndex`，按 callable/block 记录完整 ordinary local declaration 与 source order。
-- 新增 `FrontendInventoryGateRegistry`，记录 typed-dependent subtree 与 body readiness。
+- 使用 `FrontendBodySemanticSupportPolicy` 表达结构支持面，并由 `FrontendBodyStructuralCompleteness` 验证本次 interface surface 的 scope、suite entry、declaration index 与 baseline 完整性。
 - 新增 `FrontendTypedLexicalBaseline`，记录 interface 层可确定的 source-facing typed baseline。
 - 新增 `FrontendSuiteEntryRoots`，列出 body layer 可进入的 callable/property initializer/supported block roots。
 - 保持 skeleton/scope/variable analyzer 的 public contract 不变。
@@ -688,7 +651,7 @@ Compiler-only guard payload matrix：
 - `FrontendSemanticAnalyzerFrameworkTest` 继续证明 skeleton/scope/variable phase boundary 未漂移。
 - `FrontendVariableAnalyzerTest` 继续证明 supported block 的完整 local inventory 先发布。
 - `var x := y; var y := 1` 仍能通过 resolver 看到 future declaration 并过滤为 `DECLARATION_AFTER_USE_SITE`。
-- `for` / `match` / lambda / block-local `const` 仍默认 deferred / unsupported。
+- `for` 已通过后续阶段 B/D0 与 L 系列转正；`match` / lambda / block-local `const` 继续 structural deferred / unsupported。
 
 ### 阶段 C：引入 `TypedLexicalEnvironment` overlay
 
@@ -732,7 +695,7 @@ Compiler-only guard payload matrix：
 - [x] D2 `FrontendSemanticAnalyzer.analyze()` 已在 skeleton / scope / variable inventory 之后构建真实 `FrontendInterfaceSurface`，并在 legacy body analyzers 之前传入 `FrontendSuiteResolver`；legacy analyzer 顺序保留，SuiteResolver 目前是 shadow no-op body path。
 - [x] D3 新增 `FrontendSuiteContext`，显式携带 source path、callable owner、current block scope / scope、restriction、static context、property initializer context、interface surface、typed lexical environment、analysis data、diagnostic manager 与 class registry。
 - [x] D4 新增 `FrontendStatementResolver` dispatcher；supported roots 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 固定顺序调用 injected owner hooks，并在每个 statement/header boundary flush pending overlay。
-- [x] D5 `if` / `elif` / `else` / `while` 的 Phase D traversal 已建立 header-first / child-suite-after-header 形状；`for` / `match` / block-local `const` 只触发 fail-closed unsupported hook，不进入 body。
+- [x] D5 `if` / `elif` / `else` / `while` 的 Phase D traversal 已建立 header-first / child-suite-after-header 形状；Phase D 当时让 `for` / `match` / block-local `const` 走 fail-closed hook。最终状态由 for-range B/D0 与阶段 L 覆盖：`for` 已进入普通 child-suite path，match/const 仍 structural fail-closed。
 - [x] D6 新增并运行 `FrontendSuiteResolverTest` 及相关 targeted regressions，覆盖 source-order、owner order、header-before-body、unsupported body not entered、overlay export boundary、main pipeline surface hand-off；`FrontendInterfacePhaseTest`、`FrontendTypedLexicalEnvironmentTest`、`FrontendVisibleValueResolverTest`、`FrontendAnalysisDataTest`、`FrontendSemanticAnalyzerFrameworkTest`、`FrontendVariableAnalyzerTest`、`FrontendLocalTypeStabilizationAnalyzerTest`、`FrontendVarTypePostAnalyzerTest`、`FrontendChainBindingAnalyzerTest`、`FrontendExprTypeAnalyzerTest` 均通过。
 
 实施内容：
@@ -809,35 +772,17 @@ Compiler-only guard payload matrix：
 - 每个 owner 子过程的 suite export 以独立 per-owner patch 出现在 transaction 中；transaction coordinator 按 top binding -> local stabilization -> chain binding -> expr typing -> var type post 顺序 apply。
 - Var type post procedure 在 statement flush 前不得改变 stable `slotTypes()`；targeted test 必须在 procedure 运行、flush、suite export 三个点分别断言 stable table 只在 export/apply patch 后变化。
 
-### 阶段 F：接入 generic typed-dependent gate readiness
+### 阶段 F：历史 typed-dependent gate 试验（已由阶段 L 删除）
 
-本阶段只验收 gate registry、readiness 查询与 fail-closed 生命周期，不使用 for-range 作为验收目标。`frontend_for_range_loop_implementation_plan.md` 是该基础设施的后续真实消费者，不是本阶段的前置或完成条件。
+阶段 F 曾用于验证 synthetic body-entry lifecycle，但没有 production feature consumer。阶段 L 已完成清理：
 
-实施内容：
-
-- [x] F1 建立 typed-dependent inventory gate 的注册、lookup、status update 与 readiness update API。当前实现以 `FrontendInventoryGate` 的 immutable state transition helper、`FrontendInventoryGateRegistry` 的 mutable lifecycle API，以及 `FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(...)` 作为 shared readiness 入口；非 `SUPPORTED + PUBLISHED` 的 gate 仍统一 fail-closed。
-- [x] F2 使用合成 fixture 或最小测试 gate 验证 `PENDING + NOT_PUBLISHED`、`SUPPORTED + NOT_PUBLISHED`、`PUBLISHING`、`SUPPORTED + PUBLISHED`、`UNSUPPORTED` 的转换。`FrontendInventoryGateRegistryTest.registryTransitionsOnlySupportedPublishedGateToReady` 锚定所有有效生命周期状态，invalid-state tests 锚定 pending / unsupported 不得携带 published readiness。
-- [x] F3 支持由前缀 statement typed fact 驱动的测试 classifier，但 classifier 只服务于 gate lifecycle，不实现任何 for-range 规则。`FrontendStatementResolver.OwnerProcedures.runGateClassifier(...)` 接在 top/local/chain/expr 后与 flush 前，`FrontendSuiteResolverTest.classifierReadsPrefixOverlayAndDoesNotOpenUnpublishedBody` 证明 classifier 可读取前缀 `:=` local exact overlay 与 expr typing 已最终发布的 expression overlay；同测例证明 local stabilization 的 transient expression cache 不会提前进入 overlay，并且 classifier 只推进指定 synthetic gate。
-- [x] F4 `SUPPORTED` 只表示 header/classifier 通过，不能使 body resolver / binder 放行。`FrontendVisibleValueResolverTest.resolveKeepsSupportedButUnpublishedGateBodyFailClosed` 覆盖 `SUPPORTED + NOT_PUBLISHED` / `SUPPORTED + PUBLISHING`，`FrontendSuiteResolverTest.classifierReadsPrefixOverlayAndDoesNotOpenUnpublishedBody` 覆盖 binder 不进入未发布 body。
-- [x] F5 body inventory publication 成功后才原子推进为 `PUBLISHED`。`FrontendInventoryGateRegistry.markBodyInventoryPublished(...)` 是唯一 readiness published transition，resolver / suite entry 只接受 `SUPPORTED + PUBLISHED`；`FrontendSuiteResolverTest.publishedGateBodyIsResolvedBySuiteResolver` 证明 published 后 body facts 可发布。
-- [x] F6 建立 resolver gate readiness policy，并接入 request-domain gate、AST boundary gate、current-scope gate 三处判断。`FrontendVisibleValueResolver` 三处封口、`FrontendSuiteResolver` body entry 与 body-local stabilization 均复用 `FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(...)` / `FrontendInventoryGateRegistry` readiness；`resolvePublishedGateBodyPassesRequestAstAndCurrentScopeGates` 使用 deferred request domain 证明任一旧常量封口未接入都会失败。
-- [x] F7 统一 resolver request 创建路径：gate header / gate body lookup 都必须由 `SuiteResolver` / `FrontendSuiteContext` 构造，不能由 analyzer 直接决定 deferred domain。body owner path 已改为通过 `FrontendSuiteContext.visibleValueResolveRequest(...)` 创建请求，并随 current body readiness 选择 `EXECUTABLE_BODY` 或 gate deferred domain；`missingOwningGateBodyContextUsesDeferredDomainAndStaysFailClosed` 锚定缺失 gate 的 typed-dependent body 不回退为 executable lookup。
-- [x] F8 unsupported gate 继续保留对应 deferred / unsupported boundary。`FrontendVisibleValueResolverTest.resolveUnsupportedGateBodyDoesNotFallBackToOuterBinding` 证明 `UNSUPPORTED` body lookup 不回退到外层同名 binding。
-- 明确非目标：不实现 `range(...)` AST shape 识别、不实现 `INT_SHORTHAND`、不发布 iterator binding、不解封 supported for-range body、不调整 for-range compile gate。
-
-验收细则：
-
-- 合成 gate classifier 可读取前缀 `:=` local 的 typed fact，并只推进该合成 gate 的 lifecycle。
-- classifier 已返回 supported 但 body readiness 仍为 `NOT_PUBLISHED` / `PUBLISHING` 时，body lookup 仍必须是 `DEFERRED_UNSUPPORTED` 或对应 deferred domain。
-- Classifier 只能在 header statement 的 top binding、local stabilization、chain binding 与 expr typing 子过程完成后读取 overlay。
-- Classifier 可读取前序 statement committed typed fact，但不能读取后续 statement 或未运行子过程的 fact。
-- Classifier 只能读取 expr typing 已最终发布到 overlay 的 expression facts，不能读取 owner-local transient cache 中未导出的中间 expression type。
-- body inventory publication 成功后，readiness 原子推进为 `PUBLISHED`，resolver 才允许进入该合成 body。
-- 合成 gate 的 body use-site 在 `PUBLISHED` 后必须同时通过 request-domain gate、AST boundary gate 与 current-scope gate；任一 gate 仍按旧常量逻辑封口都应有测试失败。
-- 合成 gate 的 header use-site 可在 header/classifier 上下文读取前缀 overlay fact，但 header 放行不能让 body lookup 提前通过。
-- `UNSUPPORTED` gate body lookup 不能 fallback 到外层并制造误导 binding。
-- 缺失 owning gate 的合成 body 即使已有 scope，也必须返回 readiness false。
-- source-facing facts 仍拒绝所有 feature-specific `GdCompilerType`。
+- [x] registry、status/readiness 类型、publication setter 与 synthetic classifier 已物理删除。
+- [x] Interface surface 不产出 body gate；SuiteResolver、body-local stabilization 与 visible-value resolver
+  不接收或查询 registry。
+- [x] F 中仍有价值的 overlay 顺序测试保留在普通 statement/header 测试中，但 typed result 只能驱动
+  refinement 或 route planning，不能决定 child body entry。
+- [x] 未转正 feature 通过 structural policy、AST boundary 与 current-scope backstop fail-closed。
+- [x] source-facing facts 继续拒绝 feature-specific `GdCompilerType`。
 
 ### 阶段 G：收敛 diagnostics 与 compile gate
 
@@ -1012,10 +957,10 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
 
 #### 阶段 L0：冻结 for 前置与 compile safety bridge
 
-- [ ] 确认 for-range 阶段 B 与 D0 已完成，且 `FOR_BODY` 不再查询 gate registry。
-- [ ] 确认临时 `FrontendCompileCheckAnalyzer.handleForStatement(...)` blocker 只锚定
+- [x] 确认 for-range 阶段 B 与 D0 已完成，且 `FOR_BODY` 不再查询 gate registry。
+- [x] 确认临时 `FrontendCompileCheckAnalyzer.handleForStatement(...)` blocker 只锚定
   `ForStatement`、不进入 body、不读取 iterable type / iteration plan / route。
-- [ ] 增加 for-only characterization：shared `analyze(...)` 无 `FOR_SUBTREE` unsupported；
+- [x] 增加 for-only characterization：shared `analyze(...)` 无 `FOR_SUBTREE` unsupported；
   `analyzeForCompile(...)` 有明确 `sema.compile_check` error，lowering pipeline 在 CFG 前停止。
 
 验收细则：
@@ -1027,11 +972,11 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
 
 #### 阶段 L1：建立不可变 structural semantic support matrix
 
-- [ ] 新增 `FrontendBodySemanticSupportPolicy` 或等价不可变 helper，统一表达当前结构支持面；
+- [x] 新增 `FrontendBodySemanticSupportPolicy` 或等价不可变 helper，统一表达当前结构支持面；
   `FrontendExecutableInventorySupport` 必须委托该事实源或被其替代，不能保留平行 allowlist。
-- [ ] policy 只能由 AST/scope kind 决定，不能读取 `GdType`、expression type、typed overlay、
+- [x] policy 只能由 AST/scope kind 决定，不能读取 `GdType`、expression type、typed overlay、
   iteration plan、diagnostic state、compile surface 或 gate lifecycle。
-- [ ] policy 必须覆盖下列结构位置，且每一行都有 focused test。
+- [x] policy 必须覆盖下列结构位置，且每一行都有 focused test。
 
 结构支持矩阵最低合同：
 
@@ -1049,7 +994,7 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
 - 未知或 skipped structure：不发布 inventory，不进入 `SuiteResolver`，domain 为
   `UNKNOWN_OR_SKIPPED_SUBTREE`。
 
-- [ ] enum switch 必须 exhaustive；新增 `BlockScopeKind` / `CallableScopeKind` 时必须显式选择
+- [x] enum switch 必须 exhaustive；新增 `BlockScopeKind` / `CallableScopeKind` 时必须显式选择
   policy，不能通过 `default -> EXECUTABLE_BODY` 自动放行。
 
 验收细则：
@@ -1059,16 +1004,16 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
 
 #### 阶段 L2：增加 structural completeness fail-fast certificate
 
-- [ ] 在 `FrontendSuiteResolver` 进入 root/child body 前，通过
+- [x] 在 `FrontendSuiteResolver` 进入 root/child body 前，通过
   `requireStructurallyCompleteBody(...)` 或等价 helper 验证：
   - `scopesByAst()` 中 body root 映射到预期 identity / kind 的 `BlockScope`。
   - `FrontendSuiteEntryRoots` 明确包含该 supported body。
   - `FrontendBodyDeclarationIndex.containsBodyRoot(body)` 为 true，即使 body 没有 ordinary local。
   - 每个 index entry 的 declaration/binding/scope identity 一致，且 typed baseline 包含该
     source-facing declaration；`FOR_BODY` 的 iterator `Node` identity 也必须覆盖。
-- [ ] certificate 只读取 scope graph、suite entry roots、declaration index 与 baseline；不得读取
+- [x] certificate 只读取 scope graph、suite entry roots、declaration index 与 baseline；不得读取
   pending/committed overlay、expression type、slot refinement 或 iteration plan。
-- [ ] 结构事实缺洞属于 phase protocol / programmer error，必须 fail-fast，不得伪装成源码
+- [x] 结构事实缺洞属于 phase protocol / programmer error，必须 fail-fast，不得伪装成源码
   diagnostic，也不得静默跳过 body。
 
 验收细则：
@@ -1079,54 +1024,54 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
 
 #### 阶段 L3：迁移 SuiteResolver 与 body-local consumer
 
-- [ ] `FrontendSuiteResolver`、`FrontendSuiteContext` 与
+- [x] `FrontendSuiteResolver`、`FrontendSuiteContext` 与
   `FrontendBodyOwnerProcedures.eligibleInferredLocalScope(...)` 改为消费 structural policy 与
   completeness certificate，不再用 gate readiness 决定 suite entry / ordinary local
   stabilization。
-- [ ] `FrontendSuiteContext.visibleValueDomainForCurrentBody()` 对 supported body 直接生成
+- [x] `FrontendSuiteContext.visibleValueDomainForCurrentBody()` 对 supported body 直接生成
   `EXECUTABLE_BODY`；unsupported body 根据 policy 返回精确 deferred domain，未知 kind 不得
   fallback 为 `EXECUTABLE_BODY`。
-- [ ] 本阶段允许 `FrontendInterfaceSurface` 暂时继续携带 registry 供尚未迁移的 resolver 使用；
+- [x] 本阶段允许 `FrontendInterfaceSurface` 暂时继续携带 registry 供尚未迁移的 resolver 使用；
   不得为了提前删除字段形成不可编译的中间状态。
 
 #### 阶段 L4：迁移 FrontendVisibleValueResolver 的结构封口
 
-- [ ] 删除 resolver 的 gate registry constructor dependency、request-domain readiness
+- [x] 删除 resolver 的 gate registry constructor dependency、request-domain readiness
   normalization、`gateBodyBoundary(...)`、`isNearestOwningGateReady(...)`、
   `nearestOwningGate(...)` 及所有 `SUPPORTED + PUBLISHED` 分支。
-- [ ] 保留 request-domain hard boundary、AST boundary 与 current-scope fail-closed。删除的是 typed
+- [x] 保留 request-domain hard boundary、AST boundary 与 current-scope fail-closed。删除的是 typed
   readiness 条件，不是这三类结构检查本身；AST boundary 与 current-scope 两层结构封口都不得
   删除。
-- [ ] `ForStatement.body()`、for header edge 与 `FOR_BODY` current scope 直接允许 normal lookup；
+- [x] `ForStatement.body()`、for header edge 与 `FOR_BODY` current scope 直接允许 normal lookup；
   lambda/match/const/parameter-default 根据 structural policy 直接返回 deferred boundary。
-- [ ] 保留 declaration-order、initializer self-reference、skipped subtree 以及 visible block-local
+- [x] 保留 declaration-order、initializer self-reference、skipped subtree 以及 visible block-local
   `const` 不得 fallback 到 outer same-name binding 的合同。
-- [ ] 同批更新 `FrontendBodyOwnerProcedures` 的 resolver 构造点和 focused resolver tests。
+- [x] 同批更新 `FrontendBodyOwnerProcedures` 的 resolver 构造点和 focused resolver tests。
 
 #### 阶段 L5：删除 synthetic statement classifier
 
-- [ ] 删除 `FrontendStatementResolver.OwnerProcedures.runGateClassifier(...)`、
+- [x] 删除 `FrontendStatementResolver.OwnerProcedures.runGateClassifier(...)`、
   `resolveSupportedRoot(...)` 中的调用及 synthetic classifier fixtures。
-- [ ] 该删除只针对 body-entry classifier。for-range 阶段 D1 后续可以在 header expr typing 后、
+- [x] 该删除只针对 body-entry classifier。for-range 阶段 D1 后续可以在 header expr typing 后、
   iterator var type post 前新增 concrete `runForIterationPlanning(...)`；不得复用 classifier 名称、
   lifecycle 或 readiness 语义。
-- [ ] 真实 feature typed result 只能驱动 refinement、semantic route、type diagnostic 或 lowering
+- [x] 真实 feature typed result 只能驱动 refinement、semantic route、type diagnostic 或 lowering
   route，不能决定是否调用 `resolveChildSuite(...)`。
 
 #### 阶段 L6：删除 interface gate producer 与 surface dependency
 
-- [ ] 移除 `FrontendInterfacePhase` 的 `FrontendInventoryGateRegistry.Builder`、
+- [x] 移除 `FrontendInterfacePhase` 的 `FrontendInventoryGateRegistry.Builder`、
   `addPendingGate(...)`、match registration 及 lambda/match/block-local `const` 调用点。
-- [ ] 已转正 `for` 继续使用阶段 B/D0 的 structural path；未转正节点只跳过其 feature-owned
+- [x] 已转正 `for` 继续使用阶段 B/D0 的 structural path；未转正节点只跳过其 feature-owned
   inventory，并由 structural policy / AST boundary 表达限制。
-- [ ] `FrontendInterfaceSurface`、`FrontendSuiteEntryRoots` 的字段、构造器与文档不再产出、持有
+- [x] `FrontendInterfaceSurface`、`FrontendSuiteEntryRoots` 的字段、构造器与文档不再产出、持有
   或描述 gate registry。
 
 #### 阶段 L7：迁移测试合同
 
-- [ ] 重写 `FrontendInterfacePhaseTest`、`FrontendSuiteResolverTest`、
+- [x] 重写 `FrontendInterfacePhaseTest`、`FrontendSuiteResolverTest`、
   `FrontendVisibleValueResolverTest` 中 pending/published gate、registry 与 classifier fixture。
-- [ ] 新增/保留以下结构合同：
+- [x] 新增/保留以下结构合同：
   - `FOR_BODY` 在 typed resolution 前已有 iterator、ordinary local、index、baseline 与 suite entry。
   - supported kind 但 certificate 任一事实缺失时 fail-fast。
   - iterable 分别为 exact、`Variant`、error fact 时，body inventory 与 entry 保持不变。
@@ -1134,25 +1079,25 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
   - visible block-local `const` 不 fallback；future declaration 与 initializer self-reference filtered
     hit 不退化。
   - for-only compile path 在 CFG 未支持时命中临时 blocker。
-- [ ] 删除手工推进 gate lifecycle 的 fixture 与 `FrontendInventoryGateRegistryTest`。
+- [x] 删除手工推进 gate lifecycle 的 fixture 与 `FrontendInventoryGateRegistryTest`。
 
 #### 阶段 L8：物理删除 gate lifecycle 类型
 
-- [ ] 仅在 L3-L7 的生产/测试消费者全部清除后，物理删除
+- [x] 仅在 L3-L7 的生产/测试消费者全部清除后，物理删除
   `FrontendInventoryGate`、`FrontendInventoryGateRegistry`、
   `FrontendInventoryGateStatus`、`FrontendBodyInventoryReadiness`。
-- [ ] 不保留 compatibility shim、empty registry、反射检查或公开
+- [x] 不保留 compatibility shim、empty registry、反射检查或公开
   `markSupported(...)` / `markBodyInventoryPublished(...)` setter。
-- [ ] `src/main/java` 与 `src/test/java` 中不存在上述类型、`runGateClassifier`、
+- [x] `src/main/java` 与 `src/test/java` 中不存在上述类型、`runGateClassifier`、
   `markBodyInventoryPublished` 或 `isBodyInventoryReady` 引用。
 
 #### 阶段 L9：同步文档、风险与完成定义
 
-- [ ] 删除或改写本文第 4.5、4.8、阶段 F 中把 `SUPPORTED + PUBLISHED` 作为 body entry 条件的
+- [x] 删除或改写本文第 4.5、4.8、阶段 F 中把 `SUPPORTED + PUBLISHED` 作为 body entry 条件的
   历史设计；复核第 6/7/8 节不再保留 readiness registry 不变量。
-- [ ] 更新 `frontend_rules.md`：`for` 已进入 shared semantic，但在 route-aware compile gate 落地前
+- [x] 更新 `frontend_rules.md`：`for` 已进入 shared semantic，但在 route-aware compile gate 落地前
   由临时 blocker 阻断；compile gate 不得把该 blocker 反向变成 semantic body gate。
-- [ ] 更新 `frontend_segmented_type_resolution_pipeline_execution_summary.md`、visible-value
+- [x] 更新 `frontend_segmented_type_resolution_pipeline_execution_summary.md`、visible-value
   resolver、interface phase 与 for-range 文档，明确 structural policy、completeness certificate、
   semantic body entry 与 compile route readiness 四者分离。
 

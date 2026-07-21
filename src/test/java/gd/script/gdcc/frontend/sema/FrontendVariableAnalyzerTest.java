@@ -80,7 +80,7 @@ class FrontendVariableAnalyzerTest {
         var unit = parserService.parseUnit(Path.of("tmp", "missing_scope_boundary.gd"), """
                 class_name MissingScopeBoundary
                 extends Node
-                
+
                 func ping(value):
                     pass
                 """, diagnostics);
@@ -109,7 +109,7 @@ class FrontendVariableAnalyzerTest {
         var phaseInput = publishedPhaseInput("phase4_supported_locals.gd", """
                 class_name VariablePhaseBoundary
                 extends Node
-                
+
                 func ping(value: int, alias):
                     var local := value
                     if value > 0:
@@ -122,7 +122,7 @@ class FrontendVariableAnalyzerTest {
                         var loop_local := value
                         break
                     return alias
-                
+
                 func _init(seed: int, mirror):
                     var ctor_local := seed
                     pass
@@ -342,7 +342,7 @@ class FrontendVariableAnalyzerTest {
     }
 
     @Test
-    void analyzeWarnsForDeferredForMatchAndBlockLocalConstWhileKeepingOtherLocalsBound() throws Exception {
+    void analyzeBindsForInventoryWhileMatchAndBlockLocalConstRemainUnsupported() throws Exception {
         var phaseInput = publishedPhaseInput("phase4_deferred_boundaries.gd", """
                 class_name DeferredBoundaries
                 extends Node
@@ -373,6 +373,11 @@ class FrontendVariableAnalyzerTest {
         );
         var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
         var forBodyScope = assertInstanceOf(BlockScope.class, phaseInput.analysisData().scopesByAst().get(forStatement.body()));
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_for")
+        );
         var matchStatement = findStatement(pingFunction.body().statements(), MatchStatement.class, _ -> true);
         var firstSectionScope = assertInstanceOf(
                 BlockScope.class,
@@ -390,16 +395,10 @@ class FrontendVariableAnalyzerTest {
 
         var diagnosticsAfter = phaseInput.diagnostics().snapshot();
         var newDiagnostics = newDiagnostics(diagnosticsBefore, diagnosticsAfter);
-        var forWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(forStatement.range()));
         var matchWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(matchStatement.range()));
         var constWarning = findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(answerConst.range()));
 
-        assertEquals(3, newDiagnostics.size());
-        assertEquals(FrontendDiagnosticSeverity.ERROR, forWarning.severity());
-        assertEquals("sema.unsupported_variable_inventory_subtree", forWarning.category());
-        assertTrue(forWarning.message().contains("does not support `for` subtrees"));
-        assertTrue(forWarning.message().contains("loop iterator binding"));
-        assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), forWarning.sourcePath());
+        assertEquals(2, newDiagnostics.size());
         assertEquals(FrontendDiagnosticSeverity.ERROR, matchWarning.severity());
         assertEquals("sema.unsupported_variable_inventory_subtree", matchWarning.category());
         assertTrue(matchWarning.message().contains("does not support `match` subtrees"));
@@ -415,7 +414,14 @@ class FrontendVariableAnalyzerTest {
         assertEquals(GdVariantType.VARIANT, plainLocalBinding.type());
         assertEquals(ScopeValueKind.LOCAL, plainLocalBinding.kind());
         assertSame(plainLocal, plainLocalBinding.declaration());
-        assertNull(forBodyScope.resolveValueHere("from_for"));
+        var iteratorBinding = forBodyScope.resolveValueHere("item");
+        assertNotNull(iteratorBinding);
+        assertEquals(GdIntType.INT, iteratorBinding.type());
+        assertSame(forStatement, iteratorBinding.declaration());
+        var fromForBinding = forBodyScope.resolveValueHere("from_for");
+        assertNotNull(fromForBinding);
+        assertEquals(GdVariantType.VARIANT, fromForBinding.type());
+        assertSame(fromFor, fromForBinding.declaration());
         assertNull(firstSectionScope.resolveValueHere("from_match"));
         assertNull(pingBodyScope.resolveValueHere("answer"));
     }
@@ -452,6 +458,71 @@ class FrontendVariableAnalyzerTest {
         assertTrue(error.message().contains("does not support lambda subtrees"));
         assertEquals(FrontendDiagnostic.sourcePathText(phaseInput.unit().path()), error.sourcePath());
         assertEquals(FrontendRange.fromAstRange(returnedLambda.range()), error.range());
+    }
+
+    @Test
+    void analyzeReportsIteratorConflictsAndKeepsIteratorRecoveryBinding() throws Exception {
+        var phaseInput = publishedPhaseInput("phase4_for_iterator_conflicts.gd", """
+                class_name ForIteratorConflicts
+                extends Node
+
+                func parameter_conflict(item, values):
+                    for item in values:
+                        pass
+
+                func outer_conflict(values):
+                    var item := 0
+                    for item in values:
+                        pass
+
+                func body_conflict(values):
+                    for item in values:
+                        var item := 0
+                """);
+        var parameterFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("parameter_conflict")
+        );
+        var outerFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("outer_conflict")
+        );
+        var bodyFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("body_conflict")
+        );
+        var parameterFor = findStatement(parameterFunction.body().statements(), ForStatement.class, _ -> true);
+        var outerFor = findStatement(outerFunction.body().statements(), ForStatement.class, _ -> true);
+        var bodyFor = findStatement(bodyFunction.body().statements(), ForStatement.class, _ -> true);
+        var duplicateBodyLocal = findStatement(
+                bodyFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("item")
+        );
+        var diagnosticsBefore = phaseInput.diagnostics().snapshot();
+
+        new FrontendVariableAnalyzer().analyze(phaseInput.analysisData(), phaseInput.diagnostics());
+
+        var newDiagnostics = newDiagnostics(diagnosticsBefore, phaseInput.diagnostics().snapshot());
+        assertEquals(3, newDiagnostics.size());
+        assertTrue(findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(parameterFor.range()))
+                .message().contains("shadows parameter"));
+        assertTrue(findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(outerFor.range()))
+                .message().contains("shadows outer local"));
+        assertTrue(findDiagnostic(newDiagnostics, FrontendRange.fromAstRange(duplicateBodyLocal.range()))
+                .message().contains("Duplicate local variable"));
+        for (var forStatement : List.of(parameterFor, outerFor, bodyFor)) {
+            var bodyScope = assertInstanceOf(
+                    BlockScope.class,
+                    phaseInput.analysisData().scopesByAst().get(forStatement.body())
+            );
+            var iteratorBinding = bodyScope.resolveValueHere("item");
+            assertNotNull(iteratorBinding);
+            assertSame(forStatement, iteratorBinding.declaration());
+        }
     }
 
     @Test

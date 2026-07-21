@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（diagnostics-only type check、utility void normalization、Godot-compatible condition contract、unary/binary stable-fact consumption、property initializer boundary consumption、bare-return contract 收紧、`@onready` usage validation 已落地）
-- 更新时间：2026-04-05
+- 状态：事实源维护中（diagnostics-only type check、for body stable-fact consumption、utility void normalization、Godot-compatible condition contract、property initializer boundary consumption与 `@onready` usage validation 已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -33,7 +33,8 @@
   - 不在这里新增 `FrontendAnalysisData` side table
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
-  - 不在这里转正 `lambda`、`for`、`match`、parameter default、block-local `const`、class `const` 的正式 body 语义
+  - 不在这里转正 `lambda`、`match`、parameter default、block-local `const`、class `const` 的正式 body 语义
+  - 不在这里实现 `FrontendForIterationPlan`、iterable route validation 或 iterator element conversion；这些属于 for-range 后续阶段
   - 不在这里实现 property-side inference/backfill，也不在 type-check analyzer 内维护平行 implicit conversion 规则；`int -> float`、同维度 `Vector*i -> Vector*` 与 `StringName` / `String` 互转只通过 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 生效
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义
 
@@ -385,7 +386,8 @@ owner 分工固定为：
 - property-side inference / metadata backfill
 - frontend -> LIR 的 truthiness / condition normalization
 - `@onready` runtime / ready-time lowering
-- `lambda`、`for`、`match`、parameter default、block-local `const`、class `const` 的正式 body semantics
+- `lambda`、`match`、parameter default、block-local `const`、class `const` 的正式 body semantics
+- for iteration plan、iterator element compatibility 与 route-aware type diagnostics；for body 本身已经进入 shared semantic，并复用普通 stable-fact type-check path
 
 后续工程若继续扩展本区域，必须遵守以下约束：
 

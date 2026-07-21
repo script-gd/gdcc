@@ -16,8 +16,7 @@ import java.util.Set;
 
 /// Body-entry roots produced by the Interface phase.
 ///
-/// Only roots listed here are legal for the future `SuiteResolver` to enter. Typed-dependent bodies
-/// are deliberately excluded while their `FrontendInventoryGate` remains unpublished.
+/// Only structurally supported roots listed here are legal for `FrontendSuiteResolver` to enter.
 public record FrontendSuiteEntryRoots(
         @NotNull List<Node> callableOwners,
         @NotNull List<VariableDeclaration> propertyInitializers,

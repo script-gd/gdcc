@@ -98,7 +98,10 @@ class FrontendInterfacePhaseTest {
 
         var bodyDeclarations = surface.bodyDeclarationIndex().declarationsFor(pingFunction.body());
         assertEquals(List.of("first", "second"), bodyDeclarations.stream()
-                .map(localDeclaration -> localDeclaration.declaration().name())
+                .map(localDeclaration -> assertInstanceOf(
+                        VariableDeclaration.class,
+                        localDeclaration.declaration()
+                ).name())
                 .toList());
         assertEquals(0, bodyDeclarations.getFirst().sourceOrder());
         assertEquals(1, bodyDeclarations.getLast().sourceOrder());
@@ -152,7 +155,10 @@ class FrontendInterfacePhaseTest {
         var secondUseSite = findNode(firstInitializer, IdentifierExpression.class, identifier -> identifier.name().equals("second"));
 
         var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
-        var resolver = new FrontendVisibleValueResolver(phaseInput.analysisData());
+        var resolver = new FrontendVisibleValueResolver(
+                phaseInput.analysisData(),
+                surface.bodyDeclarationIndex()
+        );
         var resolution = resolver.resolve(new FrontendVisibleValueResolveRequest(
                 "second",
                 secondUseSite,
@@ -162,7 +168,10 @@ class FrontendInterfacePhaseTest {
         assertEquals(List.of("first", "second"), surface.bodyDeclarationIndex()
                 .declarationsFor(pingFunction.body())
                 .stream()
-                .map(localDeclaration -> localDeclaration.declaration().name())
+                .map(localDeclaration -> assertInstanceOf(
+                        VariableDeclaration.class,
+                        localDeclaration.declaration()
+                ).name())
                 .toList());
         assertEquals(FrontendVisibleValueStatus.NOT_FOUND, resolution.status());
         assertNull(resolution.visibleValue());
@@ -173,7 +182,7 @@ class FrontendInterfacePhaseTest {
     }
 
     @Test
-    void recordsPendingTypedDependentGatesWithoutOpeningTheirBodies() throws Exception {
+    void publishesForInventoryWhileUnsupportedFeatureOwnedBodiesStayExcluded() throws Exception {
         var phaseInput = phaseInput("interface_pending_gates.gd", """
                 class_name InterfacePendingGates
                 extends Node
@@ -209,24 +218,124 @@ class FrontendInterfacePhaseTest {
                 VariableDeclaration.class,
                 variableDeclaration -> variableDeclaration.name().equals("answer")
         );
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("from_for")
+        );
 
         var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
-        var registry = surface.inventoryGateRegistry();
 
-        assertPendingGate(registry.gateForBodyRoot(forStatement.body()), FrontendVisibleValueDomain.FOR_SUBTREE);
-        assertPendingGate(
-                registry.gateForBodyRoot(matchStatement.sections().getFirst().body()),
-                FrontendVisibleValueDomain.MATCH_SUBTREE
-        );
-        assertPendingGate(registry.gateForBodyRoot(lambda.body()), FrontendVisibleValueDomain.LAMBDA_SUBTREE);
-        assertPendingGate(registry.gateForBodyRoot(answer), FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE);
-        assertFalse(registry.isBodyInventoryReady(forStatement.body()));
-        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
+        var forDeclarations = surface.bodyDeclarationIndex().declarationsFor(forStatement.body());
+        assertEquals(2, forDeclarations.size());
+        assertSame(forStatement, forDeclarations.getFirst().declaration());
+        assertEquals(FrontendBodyLocalDeclaration.Kind.ITERATOR, forDeclarations.getFirst().kind());
+        assertSame(fromFor, forDeclarations.getLast().declaration());
+        assertEquals(FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR, forDeclarations.getLast().kind());
+        assertEquals(GdIntType.INT, surface.typedLexicalBaseline().typeFor(forStatement));
+        assertEquals(GdVariantType.VARIANT, surface.typedLexicalBaseline().typeFor(fromFor));
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
         assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
-        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(forStatement.body()));
+        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
+        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
         assertFalse(surface.typedLexicalBaseline().containsDeclaration(answer));
         assertTrue(surface.typedLexicalBaseline().containsDeclaration(callback));
+    }
+
+    @Test
+    void forStructuralInventoryIsInvariantAcrossExactVariantAndErrorIterables() throws Exception {
+        var cases = List.of(
+                new IterableCase("exact", "items: Array[int]", "items"),
+                new IterableCase("variant", "items", "items"),
+                new IterableCase("error", "", "missing_items")
+        );
+
+        for (var iterableCase : cases) {
+            var phaseInput = phaseInput("interface_for_" + iterableCase.name() + ".gd", """
+                    class_name InterfaceFor%s
+                    extends Node
+
+                    func ping(%s):
+                        for item in %s:
+                            var copy := item
+                    """.formatted(
+                    iterableCase.name(),
+                    iterableCase.parameterText(),
+                    iterableCase.iterableText()
+            ));
+            var pingFunction = findStatement(
+                    phaseInput.unit().ast().statements(),
+                    FunctionDeclaration.class,
+                    functionDeclaration -> functionDeclaration.name().equals("ping")
+            );
+            var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+            var copy = findStatement(
+                    forStatement.body().statements(),
+                    VariableDeclaration.class,
+                    variableDeclaration -> variableDeclaration.name().equals("copy")
+            );
+
+            var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+            var declarations = surface.bodyDeclarationIndex().declarationsFor(forStatement.body());
+
+            assertEquals(2, declarations.size(), iterableCase.name());
+            assertSame(forStatement, declarations.getFirst().declaration(), iterableCase.name());
+            assertSame(copy, declarations.getLast().declaration(), iterableCase.name());
+            assertEquals(GdVariantType.VARIANT, surface.typedLexicalBaseline().typeFor(forStatement));
+            assertEquals(GdVariantType.VARIANT, surface.typedLexicalBaseline().typeFor(copy));
+            assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()), iterableCase.name());
+        }
+    }
+
+    @Test
+    void nestedForBodiesPublishInventoryWithoutOpeningLambdaMatchOrConstSubtrees() throws Exception {
+        var phaseInput = phaseInput("interface_nested_for_boundaries.gd", """
+                class_name InterfaceNestedForBoundaries
+                extends Node
+
+                func ping(values):
+                    for outer in values:
+                        for inner in outer:
+                            var deep := inner
+                        var callback = func():
+                            return outer
+                        match outer:
+                            _:
+                                var matched := outer
+                        const blocked = outer
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var callback = findStatement(
+                outerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("callback")
+        );
+        var lambda = assertInstanceOf(LambdaExpression.class, callback.value());
+        var matchStatement = findStatement(outerFor.body().statements(), MatchStatement.class, _ -> true);
+        var blocked = findStatement(
+                outerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("blocked")
+        );
+
+        var surface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
+
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(outerFor.body()));
+        assertTrue(surface.suiteEntryRoots().containsSupportedBlock(innerFor.body()));
+        assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(outerFor.body()));
+        assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(innerFor.body()));
+        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(lambda.body()));
+        assertFalse(surface.suiteEntryRoots().containsSupportedBlock(matchStatement.sections().getFirst().body()));
+        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(lambda.body()));
+        assertFalse(surface.bodyDeclarationIndex().containsBodyRoot(matchStatement.sections().getFirst().body()));
+        assertFalse(surface.typedLexicalBaseline().containsDeclaration(blocked));
     }
 
     @Test
@@ -249,18 +358,6 @@ class FrontendInterfacePhaseTest {
                 .build());
 
         assertTrue(error.getMessage().contains("compiler-only type leaked"));
-    }
-
-    private static void assertPendingGate(
-            FrontendInventoryGate maybeGate,
-            @NotNull FrontendVisibleValueDomain domain
-    ) {
-        if (maybeGate == null) {
-            fail("Expected pending gate for domain: " + domain);
-        }
-        assertEquals(domain, maybeGate.deferredDomain());
-        assertEquals(FrontendInventoryGateStatus.PENDING, maybeGate.status());
-        assertEquals(FrontendBodyInventoryReadiness.NOT_PUBLISHED, maybeGate.bodyInventoryReadiness());
     }
 
     private static @NotNull FrontendFilteredValueHitReason primaryFilteredHitReason(
@@ -351,6 +448,13 @@ class FrontendInterfacePhaseTest {
             @NotNull ClassRegistry registry,
             @NotNull FrontendAnalysisData analysisData,
             @NotNull DiagnosticManager diagnostics
+    ) {
+    }
+
+    private record IterableCase(
+            @NotNull String name,
+            @NotNull String parameterText,
+            @NotNull String iterableText
     ) {
     }
 }

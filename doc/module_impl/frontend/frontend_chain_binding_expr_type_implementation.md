@@ -7,8 +7,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、SuiteResolver statement-local owner procedures、typed overlay-aware shared expression semantic support、unary/binary expression semantics、class property initializer support island、subscript / assignment typed contract、explicit self assignment-target prefix publication、`:=` 局部类型稳定化与 expr-owned diagnostics 已落地）
-- 更新时间：2026-07-10
+- 状态：事实源维护中（`resolvedMembers()` / `resolvedCalls()` / `expressionTypes()`、SuiteResolver statement-local owner procedures、for header/body dispatch、typed overlay-aware expression semantics、property initializer support island与 expr-owned diagnostics 已落地）
+- 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -34,7 +34,8 @@
   - 不引入 whole-module fixpoint，不把 body 语义改造成多轮全局收敛
   - 不新增新的全局 side table，也不让已有 side table 互相越权
   - 不把 `FrontendBinding` 重塑为 usage-aware 模型
-  - 不在这里转正 parameter default、lambda、`for`、`match`、block-local `const`、class constant 的正式 body 语义
+  - 不在这里转正 parameter default、lambda、`match`、block-local `const`、class constant 的正式 body 语义
+  - 不在这里实现 for iteration planning、iterator slot refinement 或 lowering route classification
   - 不在这里扩张 keyed builtin、numeric promotion 或其它 typed-boundary 兼容矩阵；`StringName` / `String` 互转由 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 独立管理
 
 ---
@@ -479,11 +480,12 @@ writable / compatibility 规则为：
 
 - parameter default
 - lambda subtree
-- `for` subtree
 - `match` subtree
 - block-local `const`
 - class constant
 - scope-local 手动 `type-meta`
+
+`ForStatement` 已使用 header-only statement boundary：iterator type 与 iterable expression 在外层 lexical context 中运行 owner procedures，flush 后通过普通 child-suite path 解析 `FOR_BODY`。For body 中的 ordinary expressions 与 locals 复用本合同；typed result 不能决定是否进入 body。Iteration plan 与 iterator exact refinement 属于后续独立 owner，不由 chain/expr owner 猜测。
 
 当前 remaining explicit-deferred expression set 固定为：
 

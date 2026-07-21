@@ -12,7 +12,6 @@ import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
-import dev.superice.gdparser.frontend.ast.MatchSection;
 import dev.superice.gdparser.frontend.ast.MatchStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Parameter;
@@ -28,14 +27,12 @@ import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendBodyLocalDeclaration;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendInterfaceSurface;
-import gd.script.gdcc.frontend.sema.FrontendInventoryGate;
-import gd.script.gdcc.frontend.sema.FrontendInventoryGateRegistry;
 import gd.script.gdcc.frontend.sema.FrontendSuiteEntryRoots;
 import gd.script.gdcc.frontend.sema.FrontendTypedLexicalBaseline;
-import gd.script.gdcc.frontend.sema.resolver.FrontendVisibleValueDomain;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.Scope;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -48,8 +45,7 @@ import java.util.Objects;
 ///
 /// This phase is deliberately read-only with respect to stable semantic side tables. It consumes the
 /// already-published skeleton, scope graph, and variable inventory, then produces a separate surface
-/// describing supported body entries, declaration source order, typed baseline slots, and pending
-/// typed-dependent gates.
+/// describing supported body entries, declaration source order, and typed baseline slots.
 public class FrontendInterfacePhase {
     public @NotNull FrontendInterfaceSurface analyze(
             @NotNull ClassRegistry classRegistry,
@@ -73,8 +69,6 @@ public class FrontendInterfacePhase {
         private final @NotNull Map<Node, List<FrontendBodyLocalDeclaration>> declarationsByBodyRoot =
                 new IdentityHashMap<>();
         private final @NotNull Map<Node, Path> sourcePathsByEntryRoot = new IdentityHashMap<>();
-        private final @NotNull FrontendInventoryGateRegistry.Builder gateRegistryBuilder =
-                FrontendInventoryGateRegistry.builder();
         private final @NotNull FrontendTypedLexicalBaseline.Builder typedBaselineBuilder =
                 FrontendTypedLexicalBaseline.builder();
         private final @NotNull List<Node> callableOwners = new ArrayList<>();
@@ -97,7 +91,6 @@ public class FrontendInterfacePhase {
         private @NotNull FrontendInterfaceSurface build() {
             return new FrontendInterfaceSurface(
                     new FrontendBodyDeclarationIndex(declarationsByBodyRoot),
-                    gateRegistryBuilder.build(),
                     typedBaselineBuilder.build(),
                     new FrontendSuiteEntryRoots(
                             callableOwners,
@@ -146,14 +139,6 @@ public class FrontendInterfacePhase {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleLambdaExpression(@NotNull LambdaExpression lambdaExpression) {
-            if (!isNotPublished(lambdaExpression.body())) {
-                addPendingGate(
-                        lambdaExpression,
-                        lambdaExpression,
-                        lambdaExpression.body(),
-                        FrontendVisibleValueDomain.LAMBDA_SUBTREE
-                );
-            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -211,24 +196,12 @@ public class FrontendInterfacePhase {
                 astWalker.walk(forStatement.iteratorType());
             }
             astWalker.walk(forStatement.iterable());
-            addPendingGate(
-                    forStatement,
-                    forStatement,
-                    forStatement.body(),
-                    FrontendVisibleValueDomain.FOR_SUBTREE
-            );
+            enterSupportedBlock(forStatement.body(), forStatement);
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleMatchStatement(@NotNull MatchStatement matchStatement) {
-            if (supportedBodyDepth <= 0 || isNotPublished(matchStatement)) {
-                return FrontendASTTraversalDirective.SKIP_CHILDREN;
-            }
-            astWalker.walk(matchStatement.value());
-            for (var section : matchStatement.sections()) {
-                registerMatchSectionGate(matchStatement, section);
-            }
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -241,12 +214,6 @@ public class FrontendInterfacePhase {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.CONST) {
-                addPendingGate(
-                        variableDeclaration,
-                        variableDeclaration,
-                        variableDeclaration,
-                        FrontendVisibleValueDomain.BLOCK_LOCAL_CONST_SUBTREE
-                );
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
             if (variableDeclaration.kind() == DeclarationKind.VAR) {
@@ -295,6 +262,10 @@ public class FrontendInterfacePhase {
         }
 
         private void enterSupportedBlock(@NotNull Block block) {
+            enterSupportedBlock(block, null);
+        }
+
+        private void enterSupportedBlock(@NotNull Block block, @Nullable ForStatement ownerFor) {
             var scope = scopesByAst.get(block);
             if (!(scope instanceof BlockScope blockScope)
                     || !FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind())) {
@@ -307,6 +278,9 @@ public class FrontendInterfacePhase {
             currentBodyDeclarations = bodyDeclarations;
             supportedBodyDepth++;
             try {
+                if (ownerFor != null) {
+                    recordIteratorDeclaration(ownerFor, blockScope);
+                }
                 walkStatements(block.statements());
             } finally {
                 supportedBodyDepth--;
@@ -328,36 +302,27 @@ public class FrontendInterfacePhase {
             currentBodyDeclarations.add(new FrontendBodyLocalDeclaration(
                     variableDeclaration,
                     binding,
+                    FrontendBodyLocalDeclaration.Kind.ORDINARY_VAR,
                     currentBodyDeclarations.size()
             ));
             typedBaselineBuilder.put(variableDeclaration, binding.type());
         }
 
-        private void registerMatchSectionGate(
-                @NotNull MatchStatement matchStatement,
-                @NotNull MatchSection section
+        private void recordIteratorDeclaration(
+                @NotNull ForStatement forStatement,
+                @NotNull BlockScope blockScope
         ) {
-            for (var pattern : section.patterns()) {
-                astWalker.walk(pattern);
+            var binding = blockScope.resolveValueHere(forStatement.iterator().trim());
+            if (binding == null || binding.declaration() != forStatement) {
+                return;
             }
-            if (section.guard() != null) {
-                astWalker.walk(section.guard());
-            }
-            addPendingGate(
-                    matchStatement,
-                    matchStatement,
-                    section.body(),
-                    FrontendVisibleValueDomain.MATCH_SUBTREE
-            );
-        }
-
-        private void addPendingGate(
-                @NotNull Node owner,
-                @NotNull Node headerRoot,
-                @NotNull Node bodyRoot,
-                @NotNull FrontendVisibleValueDomain deferredDomain
-        ) {
-            gateRegistryBuilder.add(FrontendInventoryGate.pending(owner, headerRoot, bodyRoot, deferredDomain));
+            currentBodyDeclarations.add(new FrontendBodyLocalDeclaration(
+                    forStatement,
+                    binding,
+                    FrontendBodyLocalDeclaration.Kind.ITERATOR,
+                    0
+            ));
+            typedBaselineBuilder.put(forStatement, binding.type());
         }
 
         private void walkStatements(@NotNull List<Statement> statements) {

@@ -29,11 +29,11 @@ import gd.script.gdcc.frontend.scope.CallableScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
+import gd.script.gdcc.frontend.sema.FrontendBodySemanticSupportPolicy;
 import gd.script.gdcc.frontend.sema.FrontendBodyDeclarationIndex;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
-import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
@@ -639,11 +639,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         }
         var declarationScope = context.analysisData().scopesByAst().get(variableDeclaration);
         if (!(declarationScope instanceof BlockScope blockScope)
-                || !FrontendExecutableInventorySupport.isCallableLocalValueInventoryReady(
-                blockScope,
-                context.currentBlockRoot(),
-                context.interfaceSurface().inventoryGateRegistry()
-        )) {
+                || !FrontendBodySemanticSupportPolicy.forBlockScopeKind(
+                blockScope.kind()
+        ).publishesLexicalInventory()) {
             return null;
         }
         var survivingLocal = blockScope.resolveValueHere(variableDeclaration.name().trim());
@@ -1038,7 +1036,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
             cachedBodyDeclarationIndex = bodyDeclarationIndex;
             cachedVisibleValueResolver = new FrontendVisibleValueResolver(
                     context.analysisData(),
-                    context.interfaceSurface().inventoryGateRegistry(),
                     bodyDeclarationIndex
             );
         }
