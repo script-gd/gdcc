@@ -1,12 +1,12 @@
 # Frontend for-in loop 实施计划
 
-> 本文档记录 `for iterator[: Type] in expr` 的分阶段实施。阶段 B 已把所有 `for-in` body 转为 frontend shared semantic 结构支持面；D0 已落地 ordinary iterable 的 header/body 调度骨架，但 bare `range(...)` 仍缺少进入 ordinary owner pipeline 前的专用预路由，因此 D0 尚未完成。iterator 先以保守 source-facing type 进入 lexical inventory；后续 `SuiteResolver` iteration-planning 阶段再发布 `FrontendForIterationPlan`，并在可静态确定 element type 时精化 iterator slot。lowering 最终根据 iteration plan 选择 `range(...)` / known iterable 专用 helper 或 generic Variant iterator helper。
+> 本文档记录 `for iterator[: Type] in expr` 的分阶段实施。阶段 B 已把所有 `for-in` body 转为 frontend shared semantic 结构支持面；D0 已落地 ordinary iterable 的 header/body 调度骨架，但 bare `range(...)` 仍缺少进入 ordinary owner pipeline 前的专用预路由，因此 D0 尚未完成。iterator 先以保守 source-facing type 进入 lexical inventory；后续 `SuiteResolver` iteration-planning 阶段再发布 `FrontendForIterationPlan`，并在可静态确定 element type 时精化 iterator slot。lowering 最终根据 iteration plan 选择 `range(...)` / known iterable 专用 helper 或 generic Variant iterator helper。loop-carried iterator state 使用 dedicated hidden mutable slot，不作为 CFG value id，也不通过 `MergeValueItem` 表达。
 
 ## 文档状态
 
-- 状态：实施中（阶段 B 已完成；阶段 D0 仅完成结构性 header/body path，bare `range(...)` header 预路由与 canonical regression tests 尚未完成；阶段 C/D1 及后续 route、CFG、lowering 尚未实施）
+- 状态：实施中（阶段 B 已完成；阶段 D0 仅完成结构性 header/body path；阶段 C/D1 及后续 route、CFG、lowering 尚未实施。2026-07-23 已冻结 dedicated hidden iterator slot 方向，当前 PR 不实施代码，下一 PR 按下述原子范围完整接通 range/int route）
 - 创建日期：2026-07-03
-- 最近校对：2026-07-22（撤销 D0 完成声明：canonical `for i in range(3)` 当前仍产生 `sema.binding` / `sema.expression_resolution`；body structural entry 已落地，compile-only 仍由临时 root blocker 阻断）
+- 最近校对：2026-07-23（确认阶段 G 不能脱离阶段 C/D0/D1 单独进入 production path；loop-carried iterator state 改用 graph-owned dedicated hidden slot，不扩展 `MergeValueItem`）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -43,6 +43,20 @@
   - Godot source `core/variant/variant_setget.cpp` 的 `Variant::iter_init` / `iter_next` / `iter_get`
   - Godot GDExtension API `variant_iter_init` / `variant_iter_next` / `variant_iter_get`
 
+### 下一 PR 原子实施边界
+
+下一 PR 不再提交一个只能由测试手工注入 fact 才可到达的阶段 G 半成品。它必须按依赖顺序完成以下闭环：
+
+1. 阶段 C：冻结 `FrontendForIterationPlan`、route、operation contract 与 `FrontendAnalysisData.forIterationPlans()` publication surface。
+2. 完成阶段 D0：bare `range(...)` header 预路由和 canonical regression tests。
+3. 阶段 D1：发布 iteration plan、iterator slot refinement 与 final source-facing `slotTypes()[ForStatement]`。
+4. 阶段 E 中 range/int route 必需的 arity、argument boundary、zero-step 与 iterator conversion type-check。
+5. 阶段 G：发布 `FrontendForRegion`、dedicated hidden-slot registry、for-loop CFG items、graph validation 与控制流。
+6. 阶段 H：把 range/int route 降低为既有 intrinsic，并用 distinct next temp 执行 temp-then-commit。
+7. 最后替换阶段 F 的临时 root blocker：只解封已有完整 sema/CFG/LIR/backend 测试闭环的 `RANGE_CALL` 与 `INT_SHORTHAND`；generic/known routes 继续给出 route-not-ready diagnostic。
+
+以上步骤属于一个生产链路原子 PR。不得先放宽 compile gate，也不得在 plan producer 尚不存在时通过测试专用 side-table mutation 声称阶段 G 已完成。generic Variant route、known iterable 专用 route 仍留在后续阶段。
+
 ## 1. 范围与非目标
 
 本计划把 `for-in` 拆成两个互不混淆的支持面：
@@ -73,6 +87,8 @@ compile / lowering 最终目标必须覆盖：
 - 不在 frontend semantic 阶段强制证明任意 `expr` 一定可迭代；无法静态确定时保留 `Variant` iterator type，并让 generic runtime helper 处理 Godot 运行时语义。
 - 不在第一批 known-route 中强行复刻所有 Godot 特例。`float` 数值简写、`Vector2` / `Vector3` 迭代、Object `_iter_*` 专用优化可以在 generic route 之后逐步转成专用 route。
 - 不恢复已删除的 whole-module body analyzers；所有 typed fact 仍必须通过 `SuiteResolver`、statement-local owner procedures 与 per-owner patch transaction 发布。
+- 不把 hidden iterator state 编码成普通 CFG value id、`CfgValueMaterializationKind`、`MergeValueItem` result 或 `operandValueIds()` entry。
+- 不用 `sourceOrder == 0` 推导 runtime slot id。该值只表示每个 `FOR_BODY` declaration inventory 中 iterator 是 synthetic 第 0 项。
 
 ## 2. 当前基线
 
@@ -90,6 +106,7 @@ compile / lowering 最终目标必须覆盖：
 - `FrontendBodyLocalDeclaration` 与 `FrontendBodyDeclarationIndex` 已支持 `Node` declaration identity，并以 `ForStatement` 作为 `ITERATOR` entry identity；ordinary local 继续使用 `VariableDeclaration` identity。
 - `FrontendCompileCheckAnalyzer` 当前对每个 `ForStatement` root 发布一个临时、无条件的 `sema.compile_check` blocker，不读取 iterable typed fact、iteration plan 或 route，也不进入 body。
 - `FrontendCfgGraphBuilder.processStatement(...)` 当前没有 `ForStatement` 分支；`FrontendCfgRegion` 当前只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
+- `FrontendCfgGraphBuilder.ExecutableBodyBuild` 与 `FunctionLoweringContext` 当前只有 graph/region publication surface，没有 compiler-only hidden-local registry；因此 dedicated state 不能退化为 processor 内临时拼接的字符串。
 - `GdccForRangeIterType.FOR_RANGE_ITER` 已作为 compiler-only `GdCompilerType` 子类型存在。
 - `doc/gdcc_lir_intrinsic.md` 已冻结四个 backend-owned range intrinsic：`gdcc.for_range_iter.init`、`gdcc.for_range_iter.should_continue`、`gdcc.for_range_iter.next`、`gdcc.for_range_iter.get`；C backend 与 runtime helper 已有对应实现。
 - generic Variant iterator helper、typed container iterator helper、Object `_iter_*` helper 在本仓库 runtime / intrinsic 层尚未实现。
@@ -100,6 +117,7 @@ compile / lowering 最终目标必须覆盖：
 - loop-control semantic 已把 `for` 当成合法 loop boundary。
 - backend/LIR 已具备 range iterator state 与 intrinsic。
 - frontend shared semantic 已承认 `for-in` body 为 structural supported surface，但 bare `range(...)` header 仍未接通；compile gate、CFG 与 body lowering 也尚未承认任何 `for-in` route 为 compile-ready surface。
+- 当前 CFG value 模型只为 ordinary single-definition value、branch merge value 与 source-slot alias 建模。用同一个 result value id 表达 init/update 的 loop-carried state 会混淆 value producer 与 mutable storage；本计划改为显式 hidden-slot registry，不扩展 `MergeValueItem` 的 branch-result 合同。
 
 本计划的实施目标就是把这个张力收口为：“所有 `for-in` 在 shared semantic 中都是 supported body；iteration plan 决定 iterator type refinement 与 lowering route；compile surface 按 route helper 准备度分阶段打开”。
 
@@ -243,7 +261,7 @@ record FrontendForIterationPlan(
 
 - `rawElementType` 是 runtime helper / intrinsic 产出的元素类型。
 - `exposedIteratorType` 是 body 中 iterator local 的 source-facing type。
-- `iteratorStateType` 只允许出现在该 dedicated iteration plan 与 lowering-internal state，不得进入 ordinary expression / slot / binding tables。
+- `iteratorStateType` 只允许出现在该 dedicated iteration plan 与 lowering-internal state，不得进入 ordinary expression / slot / binding tables。任何被 compile gate 放行的 route 都必须具有 non-null compiler-only state type；尚无 state contract 的 route 必须保持 route-not-ready。
 - `operationNames` 由 route contract 提供，consumer 不得在 CFG builder / lowering processor 中散落硬编码 intrinsic 名称。
 - `sourceOperands` 保留源码 expression，不伪造 AST。
 
@@ -255,11 +273,76 @@ record FrontendForIterationPlan(
 
 generic Variant route 需要新增 contract：
 
-- `iteratorStateType` 使用新的 compiler-only generic iterator state type，或由 LIR item 隐藏为 backend-owned storage。
+- `iteratorStateType` 使用新的 compiler-only generic iterator state type。generic route 在该类型及其 lifecycle/intrinsic contract 冻结前不得进入 compile-ready surface。
 - `rawElementType = GdVariantType.VARIANT`
 - `operationNames` 使用新 intrinsic，例如 `gdcc.for_variant_iter.init / should_continue / next / get`，具体名称在 intrinsic catalog 阶段冻结。
 
-### 3.5 `range(...)` header 预路由与 ordinary call route 隔离
+### 3.5 dedicated hidden iterator state slot
+
+loop-carried iterator state 是 lowering-owned mutable storage，不是 source expression value。每个 compile-ready `ForStatement` 必须在 frontend CFG build artifact 中发布一个 `FrontendForIteratorStateSlot` 或等价 immutable metadata，key 使用 owning `ForStatement` identity。建议形状：
+
+```java
+record FrontendForIteratorStateSlot(
+        @NotNull ForStatement statement,
+        @NotNull String slotId,
+        @NotNull GdCompilerType stateType
+) {}
+```
+
+第一版稳定命名为 `cfg_for_iter_<n>`，其中序号由单个 executable-body CFG build 按 source traversal order 分配。该 metadata 与 graph/regions 一起复制并发布到 `FunctionLoweringContext`，由 body lowering session 声明对应 LIR function local。它不是 semantic published fact，不进入 `FrontendAnalysisData`；route、type 与 operation names 仍以 `FrontendForIterationPlan` 为唯一 sema 事实源。
+
+隐藏槽必须遵守：
+
+- `slotId` 不是 CFG value id；不得出现在 `ValueOpItem.resultValueIdOrNull()`、`operandValueIds()`、value producer map、`cfg_tmp_*` / `cfg_merge_*` materialization collection 中。
+- 不新增 `HIDDEN_COMPILER_STATE` 一类 `CfgValueMaterializationKind`。value materialization 只负责 CFG value；hidden mutable local 由独立 registry 声明和验证。
+- 每个 `FrontendForRegion` 恰好引用一个 hidden slot；每个 hidden slot 恰好归属一个 `ForStatement` / `FrontendForRegion`。
+- 同一 executable body 内 `slotId` 唯一，nested/sibling loops 不得复用；slot type 必须严格等于对应 plan 的 non-null `iteratorStateType`。
+- range/int route 的 state type 是 `GdccForRangeIterType.FOR_RANGE_ITER`，只允许进入 dedicated plan、hidden-slot metadata、LIR function local、intrinsic argument/result 与 backend storage。
+- source-facing iterator local 仍以 `ForStatement` 为 declaration identity，类型来自 final `slotTypes()[ForStatement]`；hidden slot 与 source local 不共享 id、type 或 lifecycle。
+
+CFG item 对 hidden slot 的访问是显式字段合同，而不是 ordinary operand：
+
+```text
+ForLoopInitItem:
+    ordinary operands = range/int source value ids
+    hidden effect = initialize iteratorStateSlotId
+    ordinary result = none
+
+ForLoopShouldContinueItem:
+    hidden read = iteratorStateSlotId
+    ordinary result = bool condition value id
+
+ForLoopGetItem:
+    hidden read = iteratorStateSlotId
+    ordinary result = raw element value id
+    source effect = convert if required, then commit to iterator local
+
+ForLoopNextItem:
+    hidden read/write = iteratorStateSlotId
+    ordinary result = none
+```
+
+四个 for-loop item 都实现 `ValueOpItem`，并加入 `ValueOpItem` sealed permits；`SequenceItem` 已 permits `ValueOpItem`，无需为每个 item 单独扩展。`ForLoopInitItem` 与 `ForLoopNextItem` 必须返回 `null` result、`hasStandaloneMaterializationSlot() == false`，且只把真正的 source operands 放入 `operandValueIds()`。`ForLoopShouldContinueItem` 与 `ForLoopGetItem` 的 bool/raw result 仍是 ordinary single-definition CFG value。
+
+next intrinsic 返回一个新 state，不是 in-place mutation。阶段 H 必须使用 distinct lowering-owned temp：
+
+```text
+cfg_for_iter_next_<n> = next(cfg_for_iter_<n>)
+cfg_for_iter_<n> = cfg_for_iter_next_<n>
+```
+
+第二步使用现有 `AssignInsn` lifecycle path。不得直接生成 `cfg_for_iter_<n> = next(cfg_for_iter_<n>)`；当前 range state 虽然是 direct-assign-safe POD 且 destroy 为 no-op，generic state 未来可能包含 destroyable resource，计划不能依赖该偶然事实。
+
+build artifact 构造时必须执行跨表验证，而不是只在 processor 中 fail fast：
+
+- hidden-slot metadata 的 key、`statement`、region owner 必须 identity 一致。
+- init/condition/body/update sequence 中的四个 item 必须引用同一 slot。
+- init item 必须位于首次 condition 前；next item 必须位于 update entry，并在 backedge 前提交。
+- should-continue 结果必须是 `bool`，condition branch 必须消费该 ordinary value id。
+- get item 必须在 body statements 前提交 source-facing iterator local。
+- 缺失 metadata、重复 slot id、state type mismatch、跨 nested-loop slot 引用、把 slot id 混入 value-id surface 均为 graph construction error。
+
+### 3.6 `range(...)` header 预路由与 ordinary call route 隔离
 
 `range(...)` 在 `for` iterable 位置是 loop-specific syntax form：
 
@@ -273,7 +356,7 @@ generic Variant route 需要新增 contract：
 
 该分流在 AST-shape 识别模式上与 Godot compiler 的 lowering 边界一致，但 GDCC 把识别提前到 semantic owner 调度层：Godot compiler 按 for-list AST shape 识别 bare `range(...)`，逐个处理 operands，并跳过 ordinary list-expression call lowering。GDCC 不机械复制 Godot analyzer 的内部 utility-function 模型；当前 GDCC 既没有可供 `range` 使用的 ordinary binding，又明确禁止为 for-range root 发布 ordinary call fact，因此必须在 `resolveForStatement(...)` 的 statement-local owner 调度入口完成更早的预路由。
 
-### 3.6 Godot iteration 语义落点
+### 3.7 Godot iteration 语义落点
 
 外部语义参考表明 Godot 对 `for-in` 使用统一 iteration 协议：
 
@@ -527,6 +610,8 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 F：compile gate 分阶段解封
 
+状态：未实施。下一 PR 中先实现 route-aware policy，但只有阶段 G/H 与对应测试完成后才实际解封 range/int route；不得让阶段编号顺序变成提前开放 production path 的理由。
+
 目标：
 
 - shared semantic 支持与 compile-ready 支持分离。
@@ -563,21 +648,32 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 G：frontend CFG graph
 
+状态：未实施。2026-07-23 确认不得脱离阶段 C、完整 D0、D1 与 range/int 必要 type-check 单独进入 production path；下一 PR 与这些前置及阶段 H 一起原子实施。
+
 目标：
 
 - 在 `FrontendCfgGraphBuilder` 中为 `for-in` 建立显式 CFG。
 - `break` 跳到 loop exit。
 - `continue` 跳到 iterator update，再回 condition。
+- 用 dedicated hidden mutable slot 表达 loop-carried iterator state，不扩展 `MergeValueItem` 或 CFG value producer 合同。
 
 实施内容：
 
 - 新增 `FrontendForRegion`，不要复用 `FrontendWhileRegion`。
 - `FrontendCfgRegion` sealed permits 增加 `FrontendForRegion`。
+- 新增 AST-keyed `FrontendForIteratorStateSlot` registry 或等价 immutable graph artifact，并与 graph/regions 一起发布到 `FunctionLoweringContext`。
+- `FrontendForRegion` 至少记录 `initEntryId`（即 `entryId()`）、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId` 与 `iteratorStateSlotId`。
 - `FrontendCfgGraphBuilder.processStatement(...)` 增加 `case ForStatement forStatement -> processForStatement(...)`。
 - `processForStatement(...)` 只消费已发布的 `FrontendForIterationPlan`，不得重新推导 iterable 语义。
+- 在 `frontend.lowering.cfg.item` 增加通用的 `ForLoopInitItem`、`ForLoopShouldContinueItem`、`ForLoopGetItem`、`ForLoopNextItem`。item 消费 plan 已冻结的 route/type/operation 信息，不硬编码 range intrinsic 名称。
+- 四个 item 使用独立 `iteratorStateSlotId` 字段引用 hidden slot。该 id 不进入 ordinary result/operand value-id surface：
+  - init：消费 source operand value ids，初始化 hidden slot，不发布 ordinary result。
+  - should-continue：读取 hidden slot，发布 ordinary `bool` result。
+  - get：读取 hidden slot，发布 ordinary raw element result，并在 body statements 前提交 source-facing iterator local。
+  - next：读取并更新 hidden slot，不发布 ordinary result。
 - CFG shape 建议：
   - iterable / source operands 在进入 loop 前按 source order 计算。
-  - init entry 调用 plan 指定的 init operation，产出 hidden iterator state。
+  - init entry 调用 plan 指定的 init operation，写入 dedicated hidden iterator state slot。
   - condition entry 调用 should-continue operation，产出 bool condition value。
   - body entry 调用 get operation，写入 source-facing iterator local，再执行 body statements。
   - update entry 调用 next operation，更新 iterator state，再跳回 condition entry。
@@ -585,20 +681,28 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - active loop frame 对 `for` 应使用：
   - `breakTargetId = exitId`
   - `continueTargetId = updateEntryId`
-- hidden iterator state value id / slot id 必须稳定命名，建议沿用现有 `cfg_tmp_<valueId>` 风格或使用明确前缀，例如 `cfg_for_iter_<n>`；一旦选择，测试锁定。
+- hidden iterator state slot 固定使用 `cfg_for_iter_<n>`；next commit temp 固定使用独立 `cfg_for_iter_next_<n>` namespace。两者都不是 CFG value id。
+- build artifact 必须验证 slot owner/type/uniqueness、四个 item 的 slot 引用、init-before-condition、get-before-body、next-before-backedge，以及 hidden slot 未泄漏到 ordinary value producer/materialization surface。
 
 验收细则：
 
 - CFG regions 中 `ForStatement` 映射到 `FrontendForRegion`。
-- `FrontendForRegion` 至少暴露 `initEntryId`、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId`。
+- `FrontendForRegion` 暴露 `initEntryId`、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId` 与 `iteratorStateSlotId`。
+- 每个 region 恰好有一个 `FrontendForIteratorStateSlot` metadata；nested/sibling loop slot id 唯一。
 - `continue` 的 target 是 update entry，不是 condition entry。
 - `break` 的 target 是 exit。
 - `range(...)` arguments、`INT_SHORTHAND` stop operand 或 generic iterable value ids 在 init item 前已经发布。
 - condition branch 的 condition value type 是 `bool`，不会触发 compiler-only condition normalization。
+- hidden slot id 不在 value producer map、ordinary operand ids 或 CFG value materialization map 中。
+- init/next 不发布 ordinary result；should-continue/get 各自只有一个 ordinary single-definition result。
+- get item 的 ordinary raw result 使用独立 `cfg_tmp_*` slot，不与 source-facing iterator local alias；需要 conversion 时两者允许具有不同类型。
+- graph construction 对 missing metadata、duplicate slot id、type mismatch、cross-loop slot reference、错误 entry 中的 item 和 slot-id/value-id 混用 fail fast。
 - nested `if` 中的 `break` / `continue` 能正确连边。
 - unreachable body 后续 statement 处理仍遵守现有 reachability 规则。
 
 ### 阶段 H：range route LIR lowering
+
+状态：未实施。下一 PR 与阶段 C/D0/D1/E/G 和 range/int compile-gate 解封一起原子实施。
 
 目标：
 
@@ -607,33 +711,31 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 实施内容：
 
-- 在 `frontend.lowering.cfg.item` 增加最小 dedicated item，保持通用命名：
-  - `ForLoopInitItem`
-  - `ForLoopShouldContinueItem`
-  - `ForLoopGetItem`
-  - `ForLoopNextItem`
-- 这些 item 都实现现有 `ValueOpItem`，并持有：
-  - AST anchor
-  - operand value ids
-  - result value id
-  - route / iterator state type / element type / lowering operation 必要信息
+- 消费阶段 G 已冻结的 `ForLoopInitItem`、`ForLoopShouldContinueItem`、`ForLoopGetItem`、`ForLoopNextItem`，不在 body lowering 阶段重新解释 item shape。
 - body lowering 在 `FrontendSequenceItemInsnLoweringProcessors` 中增加对应 processor。
-- processor 消费 `FrontendForIterationPlan` 并生成 `CallIntrinsicInsn`；range route 对应：
+- processor 消费阶段 G 从 `FrontendForIterationPlan` 固化到 item/hidden-slot metadata 的 operation/type payload，并生成 `CallIntrinsicInsn`；processor 不重新查询 AST shape 或重新分类 route。range route 对应：
   - init：`gdcc.for_range_iter.init`
   - should_continue：`gdcc.for_range_iter.should_continue`
   - get：`gdcc.for_range_iter.get`
   - next：`gdcc.for_range_iter.next`
 - `FrontendBodyLoweringSession` 必须能为 hidden iterator state 声明 `compiler::GdccForRangeIter` local，并沿用 `GdCompilerType` storage/lifecycle 合同。
+- hidden local declaration 读取 dedicated registry，不通过 `collectCfgValueMaterializations()` 或 `slotIdForValue()` 声明。
+- `ForLoopNextItem` 必须先把 intrinsic result 写入 distinct `cfg_for_iter_next_<n>` compiler-only temp，再用 `AssignInsn` commit 到 `cfg_for_iter_<n>`；不得让 intrinsic result target 与 state argument slot 相同。
+- `ForLoopGetItem` 先把 raw element 写入 ordinary temp，再复用现有 typed-boundary conversion 写入 `ForStatement` identity 对应的 source local。
+- source-local declaration/lookup helper 必须接受 `ForStatement` identity，不能继续假设所有 body local 都是 `VariableDeclaration`。
 - `INT_SHORTHAND` source form 不生成伪造 `range(stop)` AST；init item/lowering processor 负责按 `(0, stop, 1)` 解释。
+- `INT_SHORTHAND` 的 `0` 与 `1` 必须先通过既有 integer constant lowering 物化为 LIR variables，再作为 `CallIntrinsicInsn` arguments 传入；intrinsic argument 位置不接受 literal。
 - 不通过 `PackVariantInsn` / `UnpackVariantInsn` materialize range iterator state。
 
 验收细则：
 
 - LIR function variables 包含 hidden `compiler::GdccForRangeIter` local。
+- LIR function variables 包含与 state slot 不同的 next temp；instruction 顺序锁定为 `next(oldState) -> nextTemp`、`AssignInsn(state, nextTemp)`。
 - range init / should_continue / get / next 以 `CallIntrinsicInsn` 出现，参数顺序符合 `doc/gdcc_lir_intrinsic.md`。
 - `INT_SHORTHAND` source form 经由同一组 intrinsic 降低，不新增第二套数值简写专用 intrinsic。
 - source-facing loop variable slot 是 `int` 或 declared compatible type。
 - generated C 使用 `gdcc_for_range_iter_*` helper，不出现 `godot_GdccForRangeIter`、`godot_new_GdccForRangeIter...`、`Variant` pack/unpack 相关路径。
+- compiler-only state 与 next temp 的 prepare/final cleanup、每轮 overwrite lifecycle 均由既有 `GdCompilerType` / `AssignInsn` 合同覆盖，并有正反测试证明没有 public boundary 泄漏。
 - `step == 0` literal 在 frontend 阶段阻断；动态零 step 仍由 runtime helper 防止无限循环。
 
 ### 阶段 I：generic Variant iterator route
@@ -650,7 +752,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
   - `gdcc.for_variant_iter.should_continue`
   - `gdcc.for_variant_iter.next`
   - `gdcc.for_variant_iter.get`
-- 新增 compiler-only iterator state type，或明确由 backend helper 持有 opaque state；无论哪种形态，都不得进入 ordinary type tables。
+- 新增 compiler-only generic iterator state type，并冻结 init/copy/destroy/direct-assignment contract；该类型不得进入 ordinary type tables。
 - 在 C runtime 中新增 helper，优先通过 GDExtension Variant iteration API：
   - `variant_iter_init`
   - `variant_iter_next`
@@ -743,6 +845,11 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 ### CFG
 
 - `FrontendCfgGraphBuilderTest` 覆盖 `FrontendForRegion` shape。
+- `FrontendCfgGraphBuilderTest` 覆盖 range/int source operands 在 init 前按 source order 发布，且 init/next 不产生 ordinary value result。
+- `FrontendCfgGraphTest` 或 dedicated build-artifact test 覆盖 hidden-slot metadata owner/type/uniqueness 与 item-slot cross validation。
+- 负向测试覆盖 missing metadata、duplicate slot id、state type mismatch、nested loop cross-slot reference、item 位于错误 entry、slot id 混入 ordinary operand/result value ids。
+- value producer/materialization 测试明确断言 `cfg_for_iter_<n>` 不进入 producer map、`cfg_tmp_*` / `cfg_merge_*` collection 或 `CfgValueMaterializationKind`。
+- nested/sibling loops 获得不同 hidden slot，source-facing iterator local 仍分别以 owning `ForStatement` 为 identity。
 - `continue` target 为 update entry。
 - `break` target 为 exit。
 - nested `if` 中的 `continue` / `break` 能正确连边。
@@ -751,7 +858,11 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 ### Body lowering / LIR / backend
 
 - `FrontendLoweringBuildCfgPassTest` 覆盖 function context 中发布 `FrontendForRegion`。
+- `FrontendLoweringBuildCfgPassTest` 同时覆盖 hidden-slot registry 发布，且 compile-ready range/int context 不依赖测试手工注入 iteration plan。
 - `FrontendLoweringBodyInsnPassTest` 覆盖 range intrinsic instruction sequence，并锁住 `INT_SHORTHAND` 仍走相同 intrinsic 路线。
+- update lowering 测试锁定 distinct next temp、`CallIntrinsicInsn(next)` 后接 `AssignInsn(state, nextTemp)`，并拒绝 source/target 使用同一 state slot。
+- get lowering 测试锁定 raw-element temp、必要 conversion、source-facing iterator local commit 的顺序。
+- compiler-only boundary 负向测试覆盖 state/next temp 不得进入 ordinary call argument、return、property/store、Variant pack/unpack 或 public ABI；不使用源码文本扫描代替行为断言。
 - generic Variant route 完成后，测试锁住 generic iterator intrinsic sequence。
 - `DomLirParserTest` / `DomLirSerializerTest` 覆盖新增 compiler-only iterator state round-trip。
 - `GdccForRangeIterTypeTest` / `GdCompilerTypeTest` 继续覆盖 compiler-only type contract。
@@ -799,6 +910,12 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - `int` 简写不允许通过 AST rewrite 伪装成 `range(stop)` call；否则 parser/scope/diagnostic anchor、future object-iterator classifier 与测试都会被污染。
 - explicit iterator type 的兼容规则必须复用 ordinary typed-boundary helper；不要为 `for` 私下硬编码 `int -> T` 或 `Variant -> T` 特例。
 - `continue` 对 `for` 的目标不是 condition entry，而是 update entry。这一点和 `while` 不同，不能复用 `FrontendWhileRegion`。
+- `sourceOrder == 0` 只是 `FOR_BODY` inventory 的 declaration order。若把它复用为 hidden slot number、LIR variable index 或每轮 definition version，会把 lexical fact 与 runtime storage 错误耦合。
+- loop-carried iterator state 不是 CFG expression value。不得通过两个 `MergeValueItem` 分别把 init/next 写入同一 result id，也不得扩展现有 branch-result merge 合同来掩盖 mutable storage。
+- dedicated hidden slot 若只在 lowering processor 中拼接名称而不随 graph artifact 发布，就会绕过 owner/type/uniqueness 与 nested-loop cross-reference validation。registry、region 与 items 必须在 CFG build 完成时交叉验证。
+- 不得新增 `HIDDEN_COMPILER_STATE` value materialization kind。该做法仍会让 hidden storage 进入 value-id producer/materialization 模型，只是更换枚举名称，并未解决模型混淆。
+- `next` intrinsic 是 new-value operation，不是 in-place mutation。即使当前 `GdccForRangeIterType` destroy 为 no-op，也必须使用 distinct next temp 再通过 `AssignInsn` commit，为 future destroyable generic state 保留正确生命周期顺序。
+- 阶段 G 的 production path 依赖 C/D0/D1；阶段 F 的 range/int 解封又依赖 G/H。下一 PR 必须按依赖链提交，不能用手工注入 plan 的 builder test 替代真实 source -> sema -> CFG/LIR integration test。
 - generic Variant iterator helper 当前不存在。shared semantic 可以先完成，但 compile gate 不得在 helper / backend / runtime 未完成时静默放行 generic route。
 - Godot 的 `float`、Vector2 / Vector3、Object custom iterator 等语义应优先通过 generic route 保持运行时一致；专用 route 必须有 dedicated semantic tests 后再启用。
 - `Dictionary` 迭代返回 key。任何 typed dictionary route 都必须锁住 key type，不能误用 value type。
@@ -813,8 +930,10 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 3. `FrontendForIterationPlan` 是 type-check、compile gate、CFG builder 与 lowering 选择 route 的唯一事实源；CFG / lowering 不重新扫描 AST 推导 iterable 语义。
 4. `range(...)` 与 `int` shorthand 复用 `gdcc.for_range_iter.*` route，且不把 `range(...)` 作为 ordinary call 发布。
 5. generic Variant route 有完整 LIR intrinsic、runtime helper、C backend codegen 与 tests；unknown iterable 不再需要 compile-time unsupported。
-6. compiler-only iterator state type 只出现在 dedicated iteration plan、hidden LIR local / intrinsic operand-result / backend C storage 路径。
-7. CFG 中存在独立 `FrontendForRegion`，且 `continue` / `break` 连边正确；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
+6. compiler-only iterator state type 只出现在 dedicated iteration plan、CFG hidden-slot metadata、hidden LIR local / intrinsic operand-result / backend C storage 路径；hidden slot id 不属于 CFG value-id/materialization surface。
+7. CFG 中存在独立 `FrontendForRegion` 与 validated hidden-slot registry，且 `continue` / `break` 连边正确；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
 
 阶段性完成门槛：D0 只有在 ordinary iterable regression 与 canonical `for i in range(3)` regression 同时通过，且后者证明“arguments 有 facts、callee/call root 无 ordinary facts、header 无 ordinary resolution diagnostic、body 仍进入”后，才能重新标注为已完成。仅证明 header 错误不关闭 body，或仅证明全部现有相关测试为绿色，都不满足 D0 完成定义。
+
+下一 PR 的 range/int 原子闭环只有在以下条件同时满足后才能合并：C/D0/D1/E facts 由真实 production pipeline 发布；阶段 G graph/region/hidden-slot validation 通过正反测试；阶段 H 生成 temp-then-commit LIR 并通过 lifecycle/boundary 测试；compile gate 最后解封且 end-to-end source test 无手工 side-table mutation。任一条件缺失时应保留 range/int route blocker，不得把局部绿色测试标记为阶段完成。
