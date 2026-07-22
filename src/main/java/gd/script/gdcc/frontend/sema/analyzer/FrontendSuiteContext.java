@@ -21,7 +21,7 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.Path;
 import java.util.Objects;
 
-/// Statement-local context passed through the new body SuiteResolver skeleton.
+/// Statement-local context passed through the body SuiteResolver.
 ///
 /// The context deliberately carries the typed lexical environment as an explicit dependency so later
 /// owner procedures cannot fall back to hidden analyzer-local side-table snapshots. Callable roots

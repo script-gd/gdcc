@@ -70,10 +70,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-/// Statement-local owner procedures used by the new body SuiteResolver path.
+/// Statement-local owner procedures used by the body SuiteResolver path.
 ///
 /// This class is intentionally root-bounded: it may walk the current statement/header expression, but
-/// it must never start from a `SourceFile` or call any legacy whole-module analyzer entrypoint. Facts
+/// it must never start from a `SourceFile` or invoke a whole-module analyzer entrypoint. Facts
 /// are written only through `FrontendTypedLexicalEnvironment`, so pending/current-suite visibility and
 /// ordered per-owner export stay centralized in one place.
 public final class FrontendBodyOwnerProcedures implements FrontendStatementResolver.OwnerProcedures {

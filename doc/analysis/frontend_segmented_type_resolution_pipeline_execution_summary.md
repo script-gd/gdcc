@@ -1,6 +1,6 @@
 # Frontend Segmented Type Resolution Pipeline Execution Summary
 
-本文总结 `doc/module_impl/frontend/frontend_segmented_type_resolution_pipeline_plan.md` 执行完成后的前端分析流水线形态。内容只描述目标架构、执行顺序与不变量，不展开旧 whole-module 流水线或过渡实现资产。
+本文总结 `doc/module_impl/frontend/frontend_resolution_pipeline_implementation.md` 所述前端分析流水线的目标架构形态。内容只描述目标架构、执行顺序与不变量，不展开旧 whole-module 流水线或过渡实现资产。
 
 ## 1. 总体形态
 

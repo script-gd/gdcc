@@ -29,7 +29,7 @@ import java.util.Objects;
 
 /// Body-suite coordinator for the staged semantic pipeline.
 ///
-/// The default resolver now uses statement-local owner procedures. Tests may still inject a custom
+/// The resolver uses statement-local owner procedures. Tests may inject a custom
 /// `FrontendStatementResolver` to record traversal shape, but production body facts must flow through
 /// the typed lexical environment and ordered patch transaction.
 public class FrontendSuiteResolver {

@@ -1,12 +1,12 @@
 # Frontend for-in loop 实施计划
 
-> 本文档记录 `for iterator[: Type] in expr` 的分阶段实施。阶段 B 已把所有 `for-in` body 转为 frontend shared semantic 结构支持面；D0 已落地 ordinary iterable 的 header/body 调度骨架，但 bare `range(...)` 仍缺少进入 ordinary owner pipeline 前的专用预路由，因此 D0 尚未完成。iterator 先以保守 source-facing type 进入 lexical inventory；后续 `SuiteResolver` iteration-planning 阶段再发布 `FrontendForIterationPlan`，并在可静态确定 element type 时精化 iterator slot。lowering 最终根据 iteration plan 选择 `range(...)` / known iterable 专用 helper 或 generic Variant iterator helper。loop-carried iterator state 使用 dedicated hidden mutable slot，不作为 CFG value id，也不通过 `MergeValueItem` 表达。
+> 本文档是 `for iterator[: Type] in expr` 的长期实施事实源，定义 shared semantic / compile / lowering 三层支持面的架构合同、核心设计与分阶段实施步骤。不再保留已完成阶段的验收流水账。
 
 ## 文档状态
 
-- 状态：实施中（阶段 B 已完成；阶段 D0 仅完成结构性 header/body path；阶段 C/D1 及后续 route、CFG、lowering 尚未实施。2026-07-23 已冻结 dedicated hidden iterator slot 方向，当前 PR 不实施代码，下一 PR 按下述原子范围完整接通 range/int route）
+- 状态：实施中（shared semantic 结构支持已完成；bare `range(...)` header 预路由、iteration plan、CFG、lowering 尚未实施）
 - 创建日期：2026-07-03
-- 最近校对：2026-07-23（确认阶段 G 不能脱离阶段 C/D0/D1 单独进入 production path；loop-carried iterator state 改用 graph-owned dedicated hidden slot，不扩展 `MergeValueItem`）
+- 更新时间：2026-07-23
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -20,7 +20,7 @@
 - 关联事实源：
   - `doc/module_impl/common_rules.md`
   - `doc/module_impl/frontend/frontend_rules.md`
-  - `doc/module_impl/frontend/frontend_segmented_type_resolution_pipeline_plan.md`
+  - `doc/module_impl/frontend/frontend_resolution_pipeline_implementation.md`
   - `doc/module_impl/frontend/frontend_variable_analyzer_implementation.md`
   - `doc/module_impl/frontend/frontend_visible_value_resolver_implementation.md`
   - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
@@ -43,19 +43,10 @@
   - Godot source `core/variant/variant_setget.cpp` 的 `Variant::iter_init` / `iter_next` / `iter_get`
   - Godot GDExtension API `variant_iter_init` / `variant_iter_next` / `variant_iter_get`
 
-### 下一 PR 原子实施边界
-
-下一 PR 不再提交一个只能由测试手工注入 fact 才可到达的阶段 G 半成品。它必须按依赖顺序完成以下闭环：
-
-1. 阶段 C：冻结 `FrontendForIterationPlan`、route、operation contract 与 `FrontendAnalysisData.forIterationPlans()` publication surface。
-2. 完成阶段 D0：bare `range(...)` header 预路由和 canonical regression tests。
-3. 阶段 D1：发布 iteration plan、iterator slot refinement 与 final source-facing `slotTypes()[ForStatement]`。
-4. 阶段 E 中 range/int route 必需的 arity、argument boundary、zero-step 与 iterator conversion type-check。
-5. 阶段 G：发布 `FrontendForRegion`、dedicated hidden-slot registry、for-loop CFG items、graph validation 与控制流。
-6. 阶段 H：把 range/int route 降低为既有 intrinsic，并用 distinct next temp 执行 temp-then-commit。
-7. 最后替换阶段 F 的临时 root blocker：只解封已有完整 sema/CFG/LIR/backend 测试闭环的 `RANGE_CALL` 与 `INT_SHORTHAND`；generic/known routes 继续给出 route-not-ready diagnostic。
-
-以上步骤属于一个生产链路原子 PR。不得先放宽 compile gate，也不得在 plan producer 尚不存在时通过测试专用 side-table mutation 声称阶段 G 已完成。generic Variant route、known iterable 专用 route 仍留在后续阶段。
+- 明确非目标：
+  - 不在这里定义 generic Variant iterator route 的 runtime helper 或 C backend 实现细节
+  - 不在这里定义 known iterable 专用 route 的 helper 准备度
+  - 不在这里改变 Godot range runtime 语义
 
 ## 1. 范围与非目标
 
@@ -92,34 +83,27 @@ compile / lowering 最终目标必须覆盖：
 
 ## 2. 当前基线
 
-当前代码库已经具备的基础：
+已完成：
 
-- `gdparser` 的 `ForStatement` AST 已包含 `iterator`、`iteratorType`、`iterable`、`body`、`range` 字段；其中 `range()` 是 AST source-location anchor，不是 `range(...)` builtin classifier，D0 pre-route 必须检查 `iterable` expression shape。
-- `GdScriptParserService` 只是外部 parser adapter，本仓库没有本地 parser grammar 可改；若 parse smoke 发现 `for` AST 形态不足，应先升级或修复外部 parser，而不是在 frontend analyzer 中猜文本。
-- `FrontendScopeAnalyzer` 已为 `ForStatement` 建立 `FOR_BODY` scope，并保证 `iteratorType` 与 `iterable` 在外层 scope 下遍历，`body` 在独立 `FOR_BODY` scope 下遍历。
-- `FrontendLoopControlFlowAnalyzer` 已把 `for` 与 `while` 一样视为 loop boundary，`break` / `continue` 在 `for` body 内不再报 `sema.loop_control_flow`。
-- `FrontendSemanticAnalyzer` 的 shared phase 顺序固定为 skeleton -> scope -> variable inventory -> interface surface -> `SuiteResolver` -> diagnostics-only analyzers。`SuiteResolver` 是逐语句运行的 typed fact owner，能在 `var limit := 3` flush 后让后续 `for i in limit:` 读取 `limit:int`。
-- `FrontendTypedLexicalEnvironment` 已支持 pending / committed overlay、per-owner patch transaction、`Variant -> exact` 的 local slot update 校验；但当前 API 只允许 `LOCAL_TYPE_STABILIZATION` owner 发布 local slot update。
+- `gdparser` 的 `ForStatement` AST 已包含 `iterator`、`iteratorType`、`iterable`、`body`、`range` 字段；其中 `range()` 是 AST source-location anchor，不是 `range(...)` builtin classifier，pre-route 必须检查 `iterable` expression shape。
+- `FrontendScopeAnalyzer` 已为 `ForStatement` 建立 `FOR_BODY` scope，`iteratorType` 与 `iterable` 在外层 scope 下遍历，`body` 在独立 `FOR_BODY` scope 下遍历。
+- `FrontendLoopControlFlowAnalyzer` 已把 `for` 视为 loop boundary，`break` / `continue` 在 `for` body 内合法。
 - `FrontendVariableAnalyzer` 已无条件发布 iterator 与 for body ordinary local inventory；`FrontendInterfacePhase` 已发布 iterator declaration index、typed baseline 与 suite entry；`FrontendStatementResolver` 已通过 header-only statement boundary 进入普通 child-suite path；`FrontendVisibleValueResolver` 已允许 for header/body ordinary lookup。
-- 当前 `FrontendStatementResolver.resolveForStatement(...)` 仍无条件对整个 `forStatement.iterable()` 调用 ordinary `runSupportedRoot(...)`。由于 `range` 不是当前 registry 中可绑定的 ordinary value / utility function，canonical `for i in range(3)` 会先为 callee 发布 unknown binding，再让 identifier 与 call root expression typing 失败；argument `3` 也不会获得可供 planning 消费的 stable expression type。
-- 上述 header 错误不会关闭 body：iterator 与 `var x := i` 仍以 `Variant` baseline 进入 body。这只证明 structural child-suite entry 已落地，不证明 `range(...)` header 已受 shared semantic 支持。
-- `FrontendBodyLocalDeclaration` 与 `FrontendBodyDeclarationIndex` 已支持 `Node` declaration identity，并以 `ForStatement` 作为 `ITERATOR` entry identity；ordinary local 继续使用 `VariableDeclaration` identity。
-- `FrontendCompileCheckAnalyzer` 当前对每个 `ForStatement` root 发布一个临时、无条件的 `sema.compile_check` blocker，不读取 iterable typed fact、iteration plan 或 route，也不进入 body。
-- `FrontendCfgGraphBuilder.processStatement(...)` 当前没有 `ForStatement` 分支；`FrontendCfgRegion` 当前只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
-- `FrontendCfgGraphBuilder.ExecutableBodyBuild` 与 `FunctionLoweringContext` 当前只有 graph/region publication surface，没有 compiler-only hidden-local registry；因此 dedicated state 不能退化为 processor 内临时拼接的字符串。
-- `GdccForRangeIterType.FOR_RANGE_ITER` 已作为 compiler-only `GdCompilerType` 子类型存在。
-- `doc/gdcc_lir_intrinsic.md` 已冻结四个 backend-owned range intrinsic：`gdcc.for_range_iter.init`、`gdcc.for_range_iter.should_continue`、`gdcc.for_range_iter.next`、`gdcc.for_range_iter.get`；C backend 与 runtime helper 已有对应实现。
-- generic Variant iterator helper、typed container iterator helper、Object `_iter_*` helper 在本仓库 runtime / intrinsic 层尚未实现。
+- `FrontendBodyLocalDeclaration` 与 `FrontendBodyDeclarationIndex` 已支持 `Node` declaration identity，以 `ForStatement` 作为 `ITERATOR` entry identity。
+- `FrontendBodySemanticSupportPolicy` 已将 `FOR_BODY` 映射为 `EXECUTABLE_BODY`；`FrontendBodyStructuralCompleteness` 已实现 `FOR_BODY` 双向校验（iterator entry 位于 sourceOrder==0）。
+- `GdccForRangeIterType.FOR_RANGE_ITER` 已作为 compiler-only `GdCompilerType` 子类型存在，backend 与 runtime helper 已有对应实现。
+- `doc/gdcc_lir_intrinsic.md` 已冻结四个 range intrinsic：`gdcc.for_range_iter.init`、`gdcc.for_range_iter.should_continue`、`gdcc.for_range_iter.next`、`gdcc.for_range_iter.get`。
 
-当前实现张力：
+尚未实施：
 
-- 早期文档曾把 `for` 放在 post-MVP / deferred 范围；阶段 B 与 D0 的结构性子集落地后，shared semantic 文档已改为 body 结构支持，但 D0 range header 预路由、compile/lowering 仍分阶段开放。
-- loop-control semantic 已把 `for` 当成合法 loop boundary。
-- backend/LIR 已具备 range iterator state 与 intrinsic。
-- frontend shared semantic 已承认 `for-in` body 为 structural supported surface，但 bare `range(...)` header 仍未接通；compile gate、CFG 与 body lowering 也尚未承认任何 `for-in` route 为 compile-ready surface。
-- 当前 CFG value 模型只为 ordinary single-definition value、branch merge value 与 source-slot alias 建模。用同一个 result value id 表达 init/update 的 loop-carried state 会混淆 value producer 与 mutable storage；本计划改为显式 hidden-slot registry，不扩展 `MergeValueItem` 的 branch-result 合同。
+- `FrontendStatementResolver.resolveForStatement(...)` 仍无条件对整个 `forStatement.iterable()` 调用 ordinary `runSupportedRoot(...)`。bare `range(...)` 缺少专用预路由，canonical `for i in range(3)` 会为 callee 发布 unknown binding 并让 call root expression typing 失败。
+- `FrontendForIterationPlan`、`FrontendForIterationRoute` 不存在；iteration planning owner 未实现。
+- `FrontendCompileCheckAnalyzer` 对每个 `ForStatement` root 发布临时、无条件的 `sema.compile_check` blocker。
+- `FrontendCfgGraphBuilder.processStatement(...)` 没有 `ForStatement` 分支；`FrontendCfgRegion` 只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
+- `FrontendCfgGraphBuilder.ExecutableBodyBuild` 与 `FunctionLoweringContext` 没有 compiler-only hidden-local registry。
+- generic Variant iterator helper、typed container iterator helper、Object `_iter_*` helper 尚未实现。
 
-本计划的实施目标就是把这个张力收口为：“所有 `for-in` 在 shared semantic 中都是 supported body；iteration plan 决定 iterator type refinement 与 lowering route；compile surface 按 route helper 准备度分阶段打开”。
+实施目标：所有 `for-in` 在 shared semantic 中都是 supported body；iteration plan 决定 iterator type refinement 与 lowering route；compile surface 按 route helper 准备度分阶段打开。
 
 ## 3. 核心设计
 
@@ -372,87 +356,12 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ## 4. 分阶段实施步骤
 
-### 阶段 A：parse / AST / scope 基线测试
+range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F 解封）属于一个原子实施边界。不得先放宽 compile gate，也不得在 plan producer 尚不存在时通过测试专用 side-table mutation 声称某阶段已完成。generic Variant route（阶段 I）与 known iterable 专用 route（阶段 J）留在后续独立实施。
 
-目标：
 
-- 锁住外部 parser 对 `for-in` 的 AST shape。
-- 确认 `FrontendScopeAnalyzer` 的 header/body scope 分层满足 all for-in 支持面。
+### 阶段 A/B：parse / scope 基线与 body inventory 解封（已完成）
 
-实施内容：
-
-- 增加或扩展 parse smoke / scope 测试，覆盖：
-  - `for i in range(3):`
-  - `for i in 3:`
-  - `for i in limit:`
-  - `for i in values:`
-  - `for i: int in values:`
-- 不修改 `GdScriptParserService`，除非 parser diagnostic mapping 本身有问题。
-- 确认 `iteratorType` 与 `iterable` 仍在外层 scope 解析，`body` 仍在独立 `FOR_BODY` scope 下解析。
-
-验收细则：
-
-- `ForStatement.iterator()` 返回源码 iterator name。
-- `ForStatement.iteratorType()` 对 typed iterator 非空，对 untyped iterator 为空。
-- `ForStatement.iterable()` 保持原始 expression shape，不被 rewrite。
-- `ForStatement.body()` 已由 `FrontendScopeAnalyzer` 发布 `BlockScopeKind.FOR_BODY`。
-- nested `for` 的内层 body 也有独立 `FOR_BODY`，且 parent scope 链正确。
-
-### 阶段 B：body inventory 与 declaration index 解封
-
-状态：已完成（2026-07-20）。
-
-目标：
-
-- 把 `for` 从 shared semantic 的 unsupported boundary 中移除。
-- 为所有 `for-in` 发布 iterator binding 与完整 body local inventory。
-- 扩展 body declaration index，使 iterator 不绕过 published inventory guard。
-
-实施内容：
-
-- `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(BlockScopeKind)` 增加 `FOR_BODY`。这是 all for-in semantic supported 的明确边界变化；`MATCH_SECTION_BODY`、`LAMBDA_BODY` 等仍不得一起打开。
-- `FrontendVariableAnalyzer.handleForStatement(...)` 改为 supported path：
-  - 找到 `forStatement.body()` 对应 `BlockScope`。
-  - 用 `ForStatement` 作为 declaration identity 定义 iterator local。
-  - 无显式 iterator type 时使用 `GdVariantType.VARIANT` baseline。
-  - 有显式 iterator type 时通过既有 declared-type resolver 解析 source-facing type。
-  - 使用现有 duplicate / same-callable shadow 规则检查 iterator 与参数、外层 local、同 body local 的冲突。
-  - 遍历 body，发布 body 内 ordinary local `var`。
-- 在移除 shared semantic 的 `ForStatement` unsupported diagnostic 前，先让
-  `FrontendCompileCheckAnalyzer.handleForStatement(...)` 对所有 `for-in` 发布临时、无条件的
-  statement-root `sema.compile_check` blocker：
-  - blocker 只锚定 `ForStatement`，不得进入 body 重扫 semantic facts。
-  - blocker 不读取 iteration plan、iterable type 或 route readiness。
-  - 阶段 F 以 route-aware compile policy 替换该临时 blocker；在此之前任何 `for-in` 都不能进入
-    `FrontendCfgGraphBuilder`。
-- 移除 `UnsupportedVariableBoundaryReporter` 对 `ForStatement` 的 unsupported diagnostic。
-- `FrontendBodyLocalDeclaration` / `FrontendBodyDeclarationIndex` 扩展为支持 iterator declaration identity：
-  - declaration key 使用 `Node` 或 `Object` identity，而不是只接受 `VariableDeclaration`。
-  - iterator entry kind 为 `ITERATOR`，作为 synthetic 第 0 项固定 `sourceOrder == 0`，表示 body-start visible。
-  - ordinary `var` entry kind 为 `ORDINARY_VAR`，继续使用 source-order visibility。
-- `FrontendInterfacePhase.handleForStatement(...)` 不再注册 `FOR_SUBTREE` pending gate；它应：
-  - walk `iteratorType` 与 `iterable`。
-  - 记录 iterator baseline 到 `FrontendTypedLexicalBaseline`。
-  - `enterSupportedBlock(forStatement.body())`，使 nested body local 与 nested for 都进入 interface surface。
-- `FrontendVisibleValueResolver` 删除 for-specific body/header deferred boundary：
-  - `ForStatement.body()` edge 不再返回 `FOR_SUBTREE`。
-  - `ForStatement.iteratorType()` / `iterable()` header edge 不再被 deferred。
-  - `BlockScopeKind.FOR_BODY` current-scope gate 不再 fail-closed。
-
-验收细则：
-
-- `for i in values: print(i)` 中 `i` 在 body 内解析为 `LOCAL`，baseline type 为 `Variant`。
-- `for i in range(3): print(i)` 在本阶段也至少解析为 `LOCAL`，即使还未精化为 `int`。
-- `i` 在 loop 后不可见。
-- body 内 `var local := i` 正常发布为 `FOR_BODY` ordinary local。
-- `for i in values: var item := i` 的 `item` 出现在 body declaration index 中。
-- iterator entry 出现在 body declaration index 中，且 resolver 的 published inventory guard 覆盖该 entry。
-- 同一 callable 内 iterator name 与已有 parameter/local 冲突时按现有 local conflict 规则报错。
-- body 内 `var i := ...` 与 iterator `i` 冲突，不能覆盖 iterator。
-- `match`、lambda、block-local `const` 的旧 unsupported / deferred 行为不因 `FOR_BODY` 解封而改变。
-- 默认 shared `analyze(...)` 不再为 `for-in` 产生 `FOR_SUBTREE` / variable-inventory unsupported
-  diagnostic；同一 source 通过 `analyzeForCompile(...)` 时由临时 `sema.compile_check` blocker
-  明确阻断，且 lowering pipeline 不进入 CFG build。
+阶段 A（parse/AST/scope 基线测试）与阶段 B（body inventory 与 declaration index 解封）已完成。所有 `for-in` body 已转为 shared semantic 结构支持面；iterator binding、body local inventory、declaration index、typed baseline、suite entry 均已无条件发布。`FrontendCompileCheckAnalyzer` 对所有 `ForStatement` 发布临时无条件 `sema.compile_check` blocker，等待后续 route-aware policy 替换。
 
 ### 阶段 C：iteration plan 数据结构与 publication surface
 
@@ -493,14 +402,14 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 D0：SuiteResolver header-only for path 与 baseline body entry
 
-状态：未完成。2026-07-20 已落地 ordinary iterable 的结构性 header/body path；2026-07-22 复核确认 bare `range(...)` 仍被错误送入 ordinary owner pipeline，canonical range header 不可用，因此不得保留“D0 已完成”声明。
+状态：未完成。ordinary iterable 的结构性 header/body path 已落地；bare `range(...)` 仍被错误送入 ordinary owner pipeline，canonical range header 不可用。
 
 目标：
 
 - 让 `SuiteResolver` 先解析 for header，再以阶段 B 已发布的 iterator baseline 进入 child body。
 - 在 statement-local owner pipeline 之前完成 bare `range(...)` header 预路由，使 canonical range form 不依赖 ordinary callable binding。
 - 本阶段只依赖阶段 B，不依赖阶段 C 的 iteration plan 数据结构，也不做 iterator slot refinement。
-- 为 segmented pipeline 阶段 L 提供“没有 typed gate 也能进入 for body”的 production path。
+- 为 resolution pipeline 提供“没有 typed gate 也能进入 for body”的 production path。
 
 实施内容：
 
@@ -610,7 +519,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 F：compile gate 分阶段解封
 
-状态：未实施。下一 PR 中先实现 route-aware policy，但只有阶段 G/H 与对应测试完成后才实际解封 range/int route；不得让阶段编号顺序变成提前开放 production path 的理由。
+状态：未实施。先实现 route-aware policy，但只有阶段 G/H 与对应测试完成后才实际解封 range/int route。
 
 目标：
 
@@ -648,7 +557,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 G：frontend CFG graph
 
-状态：未实施。2026-07-23 确认不得脱离阶段 C、完整 D0、D1 与 range/int 必要 type-check 单独进入 production path；下一 PR 与这些前置及阶段 H 一起原子实施。
+状态：未实施。不得脱离阶段 C、完整 D0、D1 与 range/int 必要 type-check 单独进入 production path；必须与这些前置及阶段 H 一起原子实施。
 
 目标：
 
@@ -702,7 +611,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 H：range route LIR lowering
 
-状态：未实施。下一 PR 与阶段 C/D0/D1/E/G 和 range/int compile-gate 解封一起原子实施。
+状态：未实施。与阶段 C/D0/D1/E/G 和 range/int compile-gate 解封一起原子实施。
 
 目标：
 
@@ -915,7 +824,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - dedicated hidden slot 若只在 lowering processor 中拼接名称而不随 graph artifact 发布，就会绕过 owner/type/uniqueness 与 nested-loop cross-reference validation。registry、region 与 items 必须在 CFG build 完成时交叉验证。
 - 不得新增 `HIDDEN_COMPILER_STATE` value materialization kind。该做法仍会让 hidden storage 进入 value-id producer/materialization 模型，只是更换枚举名称，并未解决模型混淆。
 - `next` intrinsic 是 new-value operation，不是 in-place mutation。即使当前 `GdccForRangeIterType` destroy 为 no-op，也必须使用 distinct next temp 再通过 `AssignInsn` commit，为 future destroyable generic state 保留正确生命周期顺序。
-- 阶段 G 的 production path 依赖 C/D0/D1；阶段 F 的 range/int 解封又依赖 G/H。下一 PR 必须按依赖链提交，不能用手工注入 plan 的 builder test 替代真实 source -> sema -> CFG/LIR integration test。
+- 阶段 G 的 production path 依赖 C/D0/D1；阶段 F 的 range/int 解封又依赖 G/H。必须按依赖链原子提交，不能用手工注入 plan 的 builder test 替代真实 source -> sema -> CFG/LIR integration test。
 - generic Variant iterator helper 当前不存在。shared semantic 可以先完成，但 compile gate 不得在 helper / backend / runtime 未完成时静默放行 generic route。
 - Godot 的 `float`、Vector2 / Vector3、Object custom iterator 等语义应优先通过 generic route 保持运行时一致；专用 route 必须有 dedicated semantic tests 后再启用。
 - `Dictionary` 迭代返回 key。任何 typed dictionary route 都必须锁住 key type，不能误用 value type。
@@ -936,4 +845,4 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 
 阶段性完成门槛：D0 只有在 ordinary iterable regression 与 canonical `for i in range(3)` regression 同时通过，且后者证明“arguments 有 facts、callee/call root 无 ordinary facts、header 无 ordinary resolution diagnostic、body 仍进入”后，才能重新标注为已完成。仅证明 header 错误不关闭 body，或仅证明全部现有相关测试为绿色，都不满足 D0 完成定义。
 
-下一 PR 的 range/int 原子闭环只有在以下条件同时满足后才能合并：C/D0/D1/E facts 由真实 production pipeline 发布；阶段 G graph/region/hidden-slot validation 通过正反测试；阶段 H 生成 temp-then-commit LIR 并通过 lifecycle/boundary 测试；compile gate 最后解封且 end-to-end source test 无手工 side-table mutation。任一条件缺失时应保留 range/int route blocker，不得把局部绿色测试标记为阶段完成。
+range/int 原子闭环只有在以下条件同时满足后才能合并：C/D0/D1/E facts 由真实 production pipeline 发布；阶段 G graph/region/hidden-slot validation 通过正反测试；阶段 H 生成 temp-then-commit LIR 并通过 lifecycle/boundary 测试；compile gate 最后解封且 end-to-end source test 无手工 side-table mutation。任一条件缺失时应保留 range/int route blocker，不得把局部绿色测试标记为阶段完成。

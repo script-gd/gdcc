@@ -779,7 +779,7 @@ class FrontendSemanticAnalyzerFrameworkTest {
         assertFalse(result.slotTypes().isEmpty());
     }
 
-    /// Locks the Stage K boundary: active phase injection remains available while legacy body-owner
+    /// Locks the constructor boundary: active phase injection remains available while body-owner
     /// classes are absent from both constructor signatures and the runtime classpath.
     @Test
     void activeDependencyConstructorAndClasspathExcludeLegacyBodyOwners() throws Exception {

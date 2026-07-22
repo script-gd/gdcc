@@ -224,9 +224,9 @@ public final class FrontendSemanticAnalyzer {
         variableAnalyzer.analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
 
-        // Interface analysis freezes callable/property entry roots before the only body owner
-        // publication path runs. Phase I removes the legacy whole-phase bypass so shared facts can
-        // only enter stable storage through SuiteResolver's per-owner export transaction.
+        // Interface analysis freezes callable/property entry roots before the body owner
+        // publication path runs. Shared facts can only enter stable storage through
+        // SuiteResolver's per-owner export transaction.
         var interfaceSurface = interfacePhase.analyze(classRegistry, analysisData);
         suiteResolver.resolve(interfaceSurface, classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());

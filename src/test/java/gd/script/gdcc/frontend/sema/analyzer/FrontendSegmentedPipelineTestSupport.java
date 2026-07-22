@@ -11,7 +11,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.EnumSet;
 import java.util.Set;
 
-/// Test harness for running real root-bounded owner procedures without restoring whole-module analyzers.
+/// Test harness for running real root-bounded owner procedures through the body SuiteResolver path.
 final class FrontendSegmentedPipelineTestSupport {
     private FrontendSegmentedPipelineTestSupport() {
     }

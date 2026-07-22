@@ -20,7 +20,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
 
-/// Root-bounded statement dispatcher for the new body SuiteResolver skeleton.
+/// Root-bounded statement dispatcher for the body SuiteResolver.
 ///
 /// Production wiring reaches this dispatcher through `FrontendSuiteResolver`, which supplies real
 /// owner procedures and publishes facts through the typed lexical environment. Tests may inject
