@@ -43,7 +43,7 @@ public final class FrontendBodyStructuralCompleteness {
     ///
     /// Validation proceeds from the coarsest body-entry fact to declaration-level identities:
     ///
-    /// 1. `expectedScope.kind()` must map to a policy that enters the suite resolver.
+    /// 1. `expectedScope.kind()` must map to a policy that is a supported suite body root.
     /// 2. The scope graph must map `body` to the exact `expectedScope` instance.
     /// 3. The Interface surface must list `body` as a supported suite-entry root.
     /// 4. The declaration index must contain `body`, including an explicit empty entry for a body without locals.
@@ -52,7 +52,8 @@ public final class FrontendBodyStructuralCompleteness {
     ///    published lexical binding type.
     /// 6. Every published `LOCAL` value in `expectedScope` must have a matching declaration-index entry.
     /// 7. A `FOR_BODY` must contain exactly one iterator entry identified by its owning `ForStatement`, and
-    ///    that entry must occupy `sourceOrder` 0 at the head of the body inventory list.
+    ///    that entry must be the synthetic 0th item occupying `sourceOrder` 0 at the head of the body
+    ///    inventory list.
     ///
     /// The method intentionally returns no boolean. A caller may enter a supported suite only after this method
     /// returns normally; any missing fact is an internal phase-order or publication error that must stop analysis.
@@ -76,7 +77,7 @@ public final class FrontendBodyStructuralCompleteness {
         Objects.requireNonNull(expectedScope, "expectedScope");
 
         var policy = FrontendBodySemanticSupportPolicy.forBlockScopeKind(expectedScope.kind());
-        if (!policy.entersSuiteResolver()) {
+        if (!policy.isSupportedSuiteBodyRoot()) {
             throw incomplete(body, "scope kind " + expectedScope.kind() + " is not a supported suite body");
         }
         if (analysisData.scopesByAst().get(body) != expectedScope) {
@@ -200,8 +201,9 @@ public final class FrontendBodyStructuralCompleteness {
         }
     }
 
-    /// Requires the Interface-phase `FOR_BODY` inventory contract: exactly one iterator entry, list head,
-    /// `sourceOrder == 0`. Ordinary body locals may follow only at contiguous `sourceOrder >= 1`.
+    /// Requires the Interface-phase `FOR_BODY` inventory contract: exactly one iterator entry as the
+    /// synthetic 0th item, list head, `sourceOrder == 0`. Ordinary body locals may follow only at contiguous
+    /// `sourceOrder >= 1`.
     private static void requireForBodyIteratorInventory(
             @NotNull Block body,
             @NotNull List<FrontendBodyLocalDeclaration> declarations

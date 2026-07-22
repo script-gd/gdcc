@@ -546,22 +546,8 @@ public class FrontendVariableAnalyzer {
                 @NotNull BlockScope blockScope,
                 @NotNull String variableName
         ) {
-            Scope currentScope = blockScope.getParentScope();
-            while (currentScope != null) {
-                if (currentScope instanceof BlockScope outerBlockScope) {
-                    var outerLocal = outerBlockScope.resolveValueHere(variableName);
-                    if (outerLocal != null) {
-                        return outerLocal;
-                    }
-                    currentScope = outerBlockScope.getParentScope();
-                    continue;
-                }
-                if (currentScope instanceof CallableScope callableScope) {
-                    return callableScope.resolveValueHere(variableName);
-                }
-                return null;
-            }
-            return null;
+            return FrontendBodyOwnerProcedures.findCallableLocalBindingUpScopes(
+                    blockScope.getParentScope(), variableName);
         }
 
         private void reportUnsupportedDefaultValue(@NotNull Parameter parameter) {

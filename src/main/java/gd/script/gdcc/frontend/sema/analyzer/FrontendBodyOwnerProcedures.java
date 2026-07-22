@@ -11,7 +11,6 @@ import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
-import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
@@ -244,6 +243,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
     ) {
         if (expressionType == null
                 || expressionType.status() != FrontendExpressionTypeStatus.RESOLVED
+                || expressionType.publishedType() == null
                 || expressionType.publishedType() instanceof GdVoidType) {
             return;
         }
@@ -362,7 +362,17 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         if (currentLayerSlot != null) {
             return currentLayerSlot;
         }
-        Scope currentScope = declarationScope.getParentScope();
+        return findCallableLocalBindingUpScopes(declarationScope.getParentScope(), variableName);
+    }
+
+    /// Walks outer scopes from [startScope] up to the enclosing callable boundary, returning the
+    /// first binding named [variableName] found in an intermediate block scope or the callable scope
+    /// itself. Returns `null` when no such binding exists before the callable boundary.
+    static @Nullable ScopeValue findCallableLocalBindingUpScopes(
+            @Nullable Scope startScope,
+            @NotNull String variableName
+    ) {
+        Scope currentScope = startScope;
         while (currentScope != null) {
             if (currentScope instanceof BlockScope outerBlockScope) {
                 var outerLocal = outerBlockScope.resolveValueHere(variableName);
@@ -435,14 +445,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
                 reportUnsupportedBinding(context, variableDeclaration.value(), "block-local const initializer");
                 reportUnsupportedChain(context, variableDeclaration.value(), "block-local const initializer");
             }
-            case ForStatement forStatement -> {
-                reportUnsupportedBinding(context, forStatement, "for subtree");
-                reportUnsupportedChain(context, forStatement, "for subtree");
-            }
             case MatchStatement matchStatement -> {
                 reportUnsupportedBinding(context, matchStatement, "match subtree");
                 reportUnsupportedChain(context, matchStatement, "match subtree");
-                // `match` sections remain sealed until their gate is supported, but the subject
+                // `match` sections remain sealed as a structurally deferred domain, but the subject
                 // expression belongs to the enclosing executable surface and must stay visible.
                 runTopBinding(context, matchStatement.value());
                 runChainBinding(context, matchStatement.value());

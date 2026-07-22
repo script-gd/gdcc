@@ -705,7 +705,7 @@ Compiler-only guard payload matrix：
 
 - 新增 `FrontendSuiteResolver`。
 - 在 `FrontendSemanticAnalyzer.analyze()` 主 pipeline 中，于 skeleton / scope / variable inventory 之后构建 `FrontendInterfaceSurface`，并把它作为 `FrontendSuiteResolver` 的输入；不能继续只依赖测试或手动 fixture 构造 interface surface。
-- 新增 `FrontendSuiteContext`，携带 source path、callable owner、current block scope、restriction、static context、property initializer context、gate registry、typed lexical environment。
+- 新增 `FrontendSuiteContext`，携带 source path、callable owner、current block scope / scope、restriction、static context、property initializer context、interface surface、typed lexical environment、analysis data、diagnostic manager 与 class registry。
 - 新增 `FrontendStatementResolver` 或等价 statement dispatcher。
 - 新增 owner procedure registry / dispatch contract，但第一版只接线 no-op 或 fail-closed hook，不复用 whole-module `analyzeInWindow(...)`。
 - `FrontendSuiteContext` / owner procedure registry 必须把 `FrontendTypedLexicalEnvironment` 作为显式依赖暴露给后续 owner procedure；阶段 C8 的 expression semantic support 与 chain reduction facade 接入点由阶段 E 真正替换，阶段 D 只建立可传递该依赖的骨架。
@@ -837,7 +837,7 @@ Compiler-only guard payload matrix：
 验收细则：
 
 - 所有 frontend semantic focused tests 通过。
-- 新 pipeline 测试覆盖 per-owner patch merge、patch transaction 顺序、typed overlay、backfill guard-only、source-order typed fact、pending gate、resolver filtered hit、diagnostic dedup、compile gate。
+- 新 pipeline 测试覆盖 per-owner patch merge、patch transaction 顺序、typed overlay、backfill guard-only、source-order typed fact、pending overlay flush、resolver filtered hit、diagnostic dedup、compile gate。
 - `doc/analysis/frontend_segmented_type_resolution_pipeline_execution_summary.md` 已与最终代码行为和本计划完成定义同步，且未把 legacy whole-phase 或 window / scheduler 过渡资产写成目标流水线的一部分。
 - `./gradlew classes --no-daemon --info --console=plain` 通过。
 - 相关 targeted tests 使用 `script/run-gradle-targeted-tests.sh --tests ...` 通过。
@@ -929,11 +929,11 @@ inventory 决定，typed fact 只能影响后续 refinement、semantic route 与
 typed-dependent gate scaffolding；不得将其扩展为 publication protocol、failure state 或新的
 feature integration API。
 
-阶段 L 系列只依赖 `frontend_for_range_loop_implementation_plan.md` 的阶段 B 与阶段 D0：
+阶段 L 系列只依赖 `frontend_for_range_loop_implementation_plan.md` 的阶段 B 与阶段 D0 结构性 header/body 子集，不依赖 bare `range(...)` header 预路由：
 
 - 阶段 B 已为 `FOR_BODY` 发布 iterator、完整 ordinary local inventory、declaration index 与
   source-facing baseline。
-- 阶段 D0 已建立 header-only dispatch，并在 header facts flush 后通过普通
+- 阶段 D0 的结构性子集已建立 header-only dispatch，并在 header facts flush 后通过普通
   `resolveChildSuite(...)` 进入 body；iterator 此时允许保持 `Variant` 或显式 declared baseline。
 - 阶段 B 在移除 shared semantic unsupported diagnostic 前，已经安装临时、无条件的
   `ForStatement` compile blocker，确保 for-range 阶段 F/G 尚未完成时不会进入 CFG/lowering。
@@ -960,7 +960,7 @@ feature-owned surface 理解：lambda 包括 parameter/capture/body，match 包�
 
 #### 阶段 L0：冻结 for 前置与 compile safety bridge
 
-- [x] 确认 for-range 阶段 B 与 D0 已完成，且 `FOR_BODY` 不再查询 gate registry。
+- [x] 确认 for-range 阶段 B 与 D0 结构性 header/body 子集已完成（bare `range(...)` pre-route 不属于阶段 L 依赖），且 `FOR_BODY` 不再查询 gate registry。
 - [x] 确认临时 `FrontendCompileCheckAnalyzer.handleForStatement(...)` blocker 只锚定
   `ForStatement`、不进入 body、不读取 iterable type / iteration plan / route。
 - [x] 增加 for-only characterization：shared `analyze(...)` 无 `FOR_SUBTREE` unsupported；

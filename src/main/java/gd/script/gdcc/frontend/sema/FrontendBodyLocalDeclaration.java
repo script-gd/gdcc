@@ -13,10 +13,10 @@ import java.util.Objects;
 /// start-byte order. Production lookup still uses declaration identity plus source byte-range filters
 /// for visibility; `sourceOrder` is a structural inventory fact certified at suite entry.
 ///
-/// For `FOR_BODY` inventory the contract is stricter: exactly one [Kind#ITERATOR] entry must exist,
-/// it must occupy list position 0, and its `sourceOrder` must be `0`. Ordinary body locals follow at
-/// `sourceOrder >= 1`. [FrontendBodyStructuralCompleteness] and the Interface-phase publisher both
-/// preserve this shape.
+/// For `FOR_BODY` inventory the contract is stricter: exactly one [Kind#ITERATOR] entry must exist as a
+/// synthetic 0th item occupying list position 0 with `sourceOrder == 0` (no negative sentinel is used;
+/// `sourceOrder` is never negative). Ordinary body locals follow at `sourceOrder >= 1`.
+/// [FrontendBodyStructuralCompleteness] and the Interface-phase publisher both preserve this shape.
 public record FrontendBodyLocalDeclaration(
         @NotNull Node declaration,
         @NotNull ScopeValue binding,

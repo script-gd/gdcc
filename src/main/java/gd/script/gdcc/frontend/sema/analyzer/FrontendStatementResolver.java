@@ -112,7 +112,7 @@ public class FrontendStatementResolver {
             @NotNull ChildSuiteResolver childSuiteResolver
     ) {
         // Header facts share one statement boundary. The body is entered only through the ordinary
-        // child-suite path so header typing can never become a body-entry gate.
+        // child-suite path so header typing can never become a body-entry condition.
         if (forStatement.iteratorType() != null) {
             runSupportedRoot(context, forStatement.iteratorType());
         }

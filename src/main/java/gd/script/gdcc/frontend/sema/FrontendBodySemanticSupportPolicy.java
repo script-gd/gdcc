@@ -43,8 +43,8 @@ public enum FrontendBodySemanticSupportPolicy {
     /// body resolution, preventing either capability from being inferred indirectly by consumers.
     ///
     /// @param publishesLexicalInventory whether the location owns and publishes feature-specific lexical inventory
-    /// @param entersSuiteResolver whether the location is a body root accepted by `FrontendSuiteResolver`
-    /// @param visibleValueDomain the request/deferred domain used by visible-value resolution at this location
+    /// @param entersSuiteResolver       whether the location is a body root accepted by `FrontendSuiteResolver`
+    /// @param visibleValueDomain        the request/deferred domain used by visible-value resolution at this location
     FrontendBodySemanticSupportPolicy(
             boolean publishesLexicalInventory,
             boolean entersSuiteResolver,
@@ -72,6 +72,21 @@ public enum FrontendBodySemanticSupportPolicy {
     ///
     /// @return `true` when this policy represents a supported suite body
     public boolean entersSuiteResolver() {
+        return entersSuiteResolver;
+    }
+
+    /// Reports whether this structural location is a supported suite body root.
+    ///
+    /// This is the single semantic entry consumed both by `FrontendInterfacePhase` (to decide which blocks become
+    /// suite-entry roots with a published declaration index) and by `FrontendBodyStructuralCompleteness` (as the
+    /// first certificate gate). Both consumers must read this method instead of inferring body-entry from
+    /// `publishesLexicalInventory()` or `entersSuiteResolver()` independently, so the structural matrix stays the
+    /// single source of truth even if the two boolean capabilities diverge for future features. Inventory-only
+    /// consumers (visible-value boundary, deferred const detection, inferred-local-scope eligibility) continue to
+    /// read `publishesLexicalInventory()` directly, because they answer a different question.
+    ///
+    /// @return `true` when this policy represents a body root that may enter `FrontendSuiteResolver`
+    public boolean isSupportedSuiteBodyRoot() {
         return entersSuiteResolver;
     }
 

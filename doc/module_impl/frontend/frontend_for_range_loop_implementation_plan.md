@@ -1,12 +1,12 @@
 # Frontend for-in loop 实施计划
 
-> 本文档记录 `for iterator[: Type] in expr` 的分阶段实施。阶段 B/D0 已把所有 `for-in` body 转为 frontend shared semantic 正式支持面：body entry 不依赖 range-like classifier，iterator 先以保守 source-facing type 进入 lexical inventory；后续 `SuiteResolver` iteration-planning 阶段再发布 `FrontendForIterationPlan`，并在可静态确定 element type 时精化 iterator slot。lowering 最终根据 iteration plan 选择 `range(...)` / known iterable 专用 helper或 generic Variant iterator helper。
+> 本文档记录 `for iterator[: Type] in expr` 的分阶段实施。阶段 B 已把所有 `for-in` body 转为 frontend shared semantic 结构支持面；D0 已落地 ordinary iterable 的 header/body 调度骨架，但 bare `range(...)` 仍缺少进入 ordinary owner pipeline 前的专用预路由，因此 D0 尚未完成。iterator 先以保守 source-facing type 进入 lexical inventory；后续 `SuiteResolver` iteration-planning 阶段再发布 `FrontendForIterationPlan`，并在可静态确定 element type 时精化 iterator slot。lowering 最终根据 iteration plan 选择 `range(...)` / known iterable 专用 helper 或 generic Variant iterator helper。
 
 ## 文档状态
 
-- 状态：实施中（阶段 B 与 D0 已完成；阶段 C/D1 及后续 route、CFG、lowering 尚未实施）
+- 状态：实施中（阶段 B 已完成；阶段 D0 仅完成结构性 header/body path，bare `range(...)` header 预路由与 canonical regression tests 尚未完成；阶段 C/D1 及后续 route、CFG、lowering 尚未实施）
 - 创建日期：2026-07-03
-- 最近校对：2026-07-20（阶段 B/D0 已落地；all for-in shared semantic 已解封，compile-only 仍由临时 root blocker 阻断）
+- 最近校对：2026-07-22（撤销 D0 完成声明：canonical `for i in range(3)` 当前仍产生 `sema.binding` / `sema.expression_resolution`；body structural entry 已落地，compile-only 仍由临时 root blocker 阻断）
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -36,6 +36,8 @@
   - `doc/gdcc_runtime_lib.md`
 - 外部语义参考：
   - Godot docs `tutorials/scripting/gdscript/gdscript_basics.rst` 的 `for` 语义说明
+  - Godot source `modules/gdscript/gdscript_analyzer.cpp` 的 `GDScriptAnalyzer::resolve_for(...)`
+  - Godot source `modules/gdscript/gdscript_compiler.cpp` 的 for-statement lowering path
   - Godot source `modules/gdscript/gdscript_byte_codegen.cpp` 的 `write_for(...)`
   - Godot source `modules/gdscript/gdscript_vm.cpp` 的 `OPCODE_ITERATE*`
   - Godot source `core/variant/variant_setget.cpp` 的 `Variant::iter_init` / `iter_next` / `iter_get`
@@ -76,13 +78,15 @@ compile / lowering 最终目标必须覆盖：
 
 当前代码库已经具备的基础：
 
-- `gdparser` 的 `ForStatement` AST 已包含 `iterator`、`iteratorType`、`iterable`、`body`、`range` 字段。
+- `gdparser` 的 `ForStatement` AST 已包含 `iterator`、`iteratorType`、`iterable`、`body`、`range` 字段；其中 `range()` 是 AST source-location anchor，不是 `range(...)` builtin classifier，D0 pre-route 必须检查 `iterable` expression shape。
 - `GdScriptParserService` 只是外部 parser adapter，本仓库没有本地 parser grammar 可改；若 parse smoke 发现 `for` AST 形态不足，应先升级或修复外部 parser，而不是在 frontend analyzer 中猜文本。
 - `FrontendScopeAnalyzer` 已为 `ForStatement` 建立 `FOR_BODY` scope，并保证 `iteratorType` 与 `iterable` 在外层 scope 下遍历，`body` 在独立 `FOR_BODY` scope 下遍历。
 - `FrontendLoopControlFlowAnalyzer` 已把 `for` 与 `while` 一样视为 loop boundary，`break` / `continue` 在 `for` body 内不再报 `sema.loop_control_flow`。
 - `FrontendSemanticAnalyzer` 的 shared phase 顺序固定为 skeleton -> scope -> variable inventory -> interface surface -> `SuiteResolver` -> diagnostics-only analyzers。`SuiteResolver` 是逐语句运行的 typed fact owner，能在 `var limit := 3` flush 后让后续 `for i in limit:` 读取 `limit:int`。
 - `FrontendTypedLexicalEnvironment` 已支持 pending / committed overlay、per-owner patch transaction、`Variant -> exact` 的 local slot update 校验；但当前 API 只允许 `LOCAL_TYPE_STABILIZATION` owner 发布 local slot update。
 - `FrontendVariableAnalyzer` 已无条件发布 iterator 与 for body ordinary local inventory；`FrontendInterfacePhase` 已发布 iterator declaration index、typed baseline 与 suite entry；`FrontendStatementResolver` 已通过 header-only statement boundary 进入普通 child-suite path；`FrontendVisibleValueResolver` 已允许 for header/body ordinary lookup。
+- 当前 `FrontendStatementResolver.resolveForStatement(...)` 仍无条件对整个 `forStatement.iterable()` 调用 ordinary `runSupportedRoot(...)`。由于 `range` 不是当前 registry 中可绑定的 ordinary value / utility function，canonical `for i in range(3)` 会先为 callee 发布 unknown binding，再让 identifier 与 call root expression typing 失败；argument `3` 也不会获得可供 planning 消费的 stable expression type。
+- 上述 header 错误不会关闭 body：iterator 与 `var x := i` 仍以 `Variant` baseline 进入 body。这只证明 structural child-suite entry 已落地，不证明 `range(...)` header 已受 shared semantic 支持。
 - `FrontendBodyLocalDeclaration` 与 `FrontendBodyDeclarationIndex` 已支持 `Node` declaration identity，并以 `ForStatement` 作为 `ITERATOR` entry identity；ordinary local 继续使用 `VariableDeclaration` identity。
 - `FrontendCompileCheckAnalyzer` 当前对每个 `ForStatement` root 发布一个临时、无条件的 `sema.compile_check` blocker，不读取 iterable typed fact、iteration plan 或 route，也不进入 body。
 - `FrontendCfgGraphBuilder.processStatement(...)` 当前没有 `ForStatement` 分支；`FrontendCfgRegion` 当前只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
@@ -92,10 +96,10 @@ compile / lowering 最终目标必须覆盖：
 
 当前实现张力：
 
-- 早期文档曾把 `for` 放在 post-MVP / deferred 范围；阶段 B/D0/L 完成后，shared semantic 文档已改为结构支持，compile/lowering 仍分阶段开放。
+- 早期文档曾把 `for` 放在 post-MVP / deferred 范围；阶段 B 与 D0 的结构性子集落地后，shared semantic 文档已改为 body 结构支持，但 D0 range header 预路由、compile/lowering 仍分阶段开放。
 - loop-control semantic 已把 `for` 当成合法 loop boundary。
 - backend/LIR 已具备 range iterator state 与 intrinsic。
-- frontend shared semantic、compile gate、CFG 与 body lowering 尚未承认 `for-in` 为 supported surface。
+- frontend shared semantic 已承认 `for-in` body 为 structural supported surface，但 bare `range(...)` header 仍未接通；compile gate、CFG 与 body lowering 也尚未承认任何 `for-in` route 为 compile-ready surface。
 
 本计划的实施目标就是把这个张力收口为：“所有 `for-in` 在 shared semantic 中都是 supported body；iteration plan 决定 iterator type refinement 与 lowering route；compile surface 按 route helper 准备度分阶段打开”。
 
@@ -170,8 +174,8 @@ record FrontendBodyLocalDeclaration(
 
 约束：
 
-- `ORDINARY_VAR` 的 `declaration` 仍必须是 `VariableDeclaration`，`sourceOrder >= 0`。
-- `ITERATOR` 的 `declaration` 必须是 owning `ForStatement`，`sourceOrder` 使用固定 sentinel，例如 `-1`，表示在 body 所有 ordinary statement 之前可见。
+- `ORDINARY_VAR` 的 `declaration` 仍必须是 `VariableDeclaration`，`sourceOrder >= 0`（在 `FOR_BODY` 中 iterator 占用 `0`，因此 ordinary local 从 `sourceOrder >= 1` 开始连续编号）。
+- `ITERATOR` 的 `declaration` 必须是 owning `ForStatement`，作为 synthetic 第 0 项固定使用 `sourceOrder == 0`，位于 body declaration list 头部、在所有 ordinary statement 之前可见；不使用独立前置 sentinel（`sourceOrder` 禁止负数）。
 - `FrontendBodyDeclarationIndex` 必须支持按 `Object` / `Node` declaration identity 查询，而不是只接受 `VariableDeclaration`。
 - `FrontendVisibleValueResolver` 的 published inventory guard 必须覆盖 iterator local，不能让 iterator 成为绕过 declaration index 的 side channel。
 
@@ -255,15 +259,19 @@ generic Variant route 需要新增 contract：
 - `rawElementType = GdVariantType.VARIANT`
 - `operationNames` 使用新 intrinsic，例如 `gdcc.for_variant_iter.init / should_continue / next / get`，具体名称在 intrinsic catalog 阶段冻结。
 
-### 3.5 `range(...)` 与 ordinary call route 隔离
+### 3.5 `range(...)` header 预路由与 ordinary call route 隔离
 
 `range(...)` 在 `for` iterable 位置是 loop-specific syntax form：
 
-- bare `IdentifierExpression("range")` + 1/2/3 positional arguments 才进入 `RANGE_CALL` route。
-- named argument、attribute call、subscript call、`some_range(...)`、`obj.range(...)` 不进入 `RANGE_CALL` route。
-- `range(...)` root 不发布 ordinary `resolvedCalls()`。
-- `range(...)` arguments 必须按 source order 运行 top / chain / expr type，且能进入 `int` boundary。
+- `resolveForStatement(...)` 必须在对 iterable 调用 ordinary owner pipeline 前按 AST shape 识别 bare `IdentifierExpression("range")` call。该预路由不能等待 expr typing 后的 iteration planning，因为届时 unknown callee / failed call facts 已进入 pending overlay，现有 transaction 没有删除或覆盖这些 facts 的协议。
+- bare `range(...)` 的预路由识别与参数合法性验证分离：只要 callee 是 bare `IdentifierExpression("range")` 就先绕开 ordinary call root；1/2/3 positional arguments 才能形成有效 `RANGE_CALL` plan，错误 arity / argument form 由后续 range-specific type-check 诊断。
+- 命中预路由后，只按 source order 对 arguments 分别运行 top binding、local stabilization、chain binding、expr typing 与必要的 var type post。callee identifier 与 call root 都不进入 ordinary top-binding / call-resolution / expr-type publication 路径。
+- `range(...)` root 不发布 ordinary `resolvedCalls()`，也不发布 ordinary `expressionTypes()`；arguments 必须各自拥有 planning/type-check 所需的 expression type，并进入既有 `int` boundary。
+- attribute call、subscript call、`some_range(...)`、`obj.range(...)` 不触发该预路由，继续把整个 iterable 交给 ordinary `runSupportedRoot(...)`。named argument 是否被 parser 表达为 bare call argument form，不改变预路由；它必须由 range-specific validation 拒绝，而不是退回 unknown ordinary callee 诊断。D0 pre-route 仍按 source order 对 named argument 的 value expression 运行 owner procedures；named-ness 本身在阶段 E range-specific validation 中拒绝，不影响 D0 发布 argument expression facts。
+- range arguments、显式 iterator type 与后续 iteration plan facts 仍共享一个 for-statement header flush；不得为每个 argument 单独建立 statement boundary。
 - literal `step == 0` 应在 frontend 发 diagnostic；非 literal step 交给 runtime helper 的防无限循环保护。
+
+该分流在 AST-shape 识别模式上与 Godot compiler 的 lowering 边界一致，但 GDCC 把识别提前到 semantic owner 调度层：Godot compiler 按 for-list AST shape 识别 bare `range(...)`，逐个处理 operands，并跳过 ordinary list-expression call lowering。GDCC 不机械复制 Godot analyzer 的内部 utility-function 模型；当前 GDCC 既没有可供 `range` 使用的 ordinary binding，又明确禁止为 for-range root 发布 ordinary call fact，因此必须在 `resolveForStatement(...)` 的 statement-local owner 调度入口完成更早的预路由。
 
 ### 3.6 Godot iteration 语义落点
 
@@ -337,7 +345,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - 移除 `UnsupportedVariableBoundaryReporter` 对 `ForStatement` 的 unsupported diagnostic。
 - `FrontendBodyLocalDeclaration` / `FrontendBodyDeclarationIndex` 扩展为支持 iterator declaration identity：
   - declaration key 使用 `Node` 或 `Object` identity，而不是只接受 `VariableDeclaration`。
-  - iterator entry kind 为 `ITERATOR`，source order 表示 body-start visible。
+  - iterator entry kind 为 `ITERATOR`，作为 synthetic 第 0 项固定 `sourceOrder == 0`，表示 body-start visible。
   - ordinary `var` entry kind 为 `ORDINARY_VAR`，继续使用 source-order visibility。
 - `FrontendInterfacePhase.handleForStatement(...)` 不再注册 `FOR_SUBTREE` pending gate；它应：
   - walk `iteratorType` 与 `iterable`。
@@ -345,7 +353,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
   - `enterSupportedBlock(forStatement.body())`，使 nested body local 与 nested for 都进入 interface surface。
 - `FrontendVisibleValueResolver` 删除 for-specific body/header deferred boundary：
   - `ForStatement.body()` edge 不再返回 `FOR_SUBTREE`。
-  - `ForStatement.iteratorType()` / `iterable()` header edge 不再返回 `VARIABLE_INVENTORY_NOT_PUBLISHED`。
+  - `ForStatement.iteratorType()` / `iterable()` header edge 不再被 deferred。
   - `BlockScopeKind.FOR_BODY` current-scope gate 不再 fail-closed。
 
 验收细则：
@@ -402,21 +410,28 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 D0：SuiteResolver header-only for path 与 baseline body entry
 
-状态：已完成（2026-07-20）。
+状态：未完成。2026-07-20 已落地 ordinary iterable 的结构性 header/body path；2026-07-22 复核确认 bare `range(...)` 仍被错误送入 ordinary owner pipeline，canonical range header 不可用，因此不得保留“D0 已完成”声明。
 
 目标：
 
 - 让 `SuiteResolver` 先解析 for header，再以阶段 B 已发布的 iterator baseline 进入 child body。
+- 在 statement-local owner pipeline 之前完成 bare `range(...)` header 预路由，使 canonical range form 不依赖 ordinary callable binding。
 - 本阶段只依赖阶段 B，不依赖阶段 C 的 iteration plan 数据结构，也不做 iterator slot refinement。
 - 为 segmented pipeline 阶段 L 提供“没有 typed gate 也能进入 for body”的 production path。
 
 实施内容：
 
-- `FrontendStatementResolver` 增加 `resolveForStatement(...)`，替换当前 `resolveUnsupportedRoot(context, forStatement)`。
+- 已落地：`FrontendStatementResolver` 增加 `resolveForStatement(...)`，替换原 `resolveUnsupportedRoot(context, forStatement)`。
 - `resolveForStatement(...)` 必须是 header-only：
   - 如果 `iteratorType` 非空，解析该 type ref 相关 expression / type use-site 所需 facts。
-  - 解析 `iterable` 或 `range(...)` arguments。
+  - 若 iterable 是 bare `range(...)`，只逐个解析 arguments，不解析 callee identifier 或 call root。
+  - 其他 iterable 继续解析整个 expression root。
   - 不在 header pass 中遍历 body statements。
+- 尚未落地的 D0 blocker：在调用 ordinary `runSupportedRoot(...)` 前增加 range shape pre-route：
+  - `CallExpression` 的 callee 必须是名称严格为 `range` 的 bare `IdentifierExpression`。
+  - 命中后按 source order 对每个 argument 单独运行现有 owner procedures；不得对 call root 或 callee 运行 ordinary top binding / call resolution / expr typing。
+  - 未命中的 ordinary iterable 保持当前整 root `runSupportedRoot(context, iterable)` 路径。
+  - pre-route 只负责正确划分 owner domain，不构造 iteration plan、不精化 iterator slot，也不在本阶段承担 arity/type diagnostic。
 - header facts 在同一个 statement boundary flush；不得把 `iteratorType`、`iterable` 与 body 分别当成
   三个独立 statement flush。
 - 本阶段不增加 `runForIterationPlanning(...)`，也不要求 `FrontendForIterationPlan` 已存在。
@@ -427,6 +442,11 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 验收细则：
 
+- D0 完成前必须增加 canonical `for i in range(3): var x := i` production resolver test；默认 shared `analyze(...)` 不得产生 `range` callee 的 `sema.binding` 或 identifier/call-root `sema.expression_resolution`。
+- 同一 canonical test 必须断言 argument `3` 已发布 expression type，而 `range` callee identifier 与 call root 均不出现在 ordinary successful `resolvedCalls()` / `expressionTypes()` 中。
+- 在 D1 尚未实现时，canonical range body 仍应正常进入，`i` 与 `x` 可以保持 `Variant`。该断言与“header 无 ordinary resolution error”必须同时成立，不能再用单独的 body-entry 绿色测试替代 header 验收。
+- `range()`、`range(1, 2, 3, 4)` 与非法 argument form 也必须走 range header pre-route：arguments 能按 source order 解析，且不产生 unknown `range` binding 噪声；精确 arity/type diagnostic 在阶段 E 落地。
+- `obj.range(3)`、`some_range(3)` 等非 bare form 必须继续走 ordinary iterable pipeline，证明 pre-route 没有按文本或任意 method name 误分类。
 - `var limit := 3; for i in limit: var x := i` 中 header 能读取前缀 `limit:int`，但 body 中 `i` 与
   `x` 在本阶段仍可以保持 `Variant`。
 - `for item in values: var x := item` 中 `item`、`x` 均进入 ordinary shared semantic，不产生
@@ -439,7 +459,7 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### 阶段 D1：iteration planning 与 iterator slot refinement
 
-依赖：阶段 C 与阶段 D0。
+依赖：阶段 C 与完整完成的阶段 D0，包括 bare `range(...)` header 预路由及其 canonical regression tests。
 
 目标：
 
@@ -450,10 +470,11 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 实施内容：
 
 - 增加 feature-specific owner hook，例如 `runForIterationPlanning(context, forStatement)`，执行位置
-  固定在 header expr typing 后、iterator var type post 前。该 hook 不复用或恢复
+  固定在 ordinary iterable root expr typing 或 bare range arguments expr typing 完成后、iterator var type post 前。该 hook 不复用或恢复
   `runGateClassifier(...)`。
 - `runForIterationPlanning(...)`：
-  - 读取 `iterable` 的 effective expression / slot typed fact。
+  - 对 ordinary iterable 读取 root 的 effective expression / slot typed fact。
+  - 对 bare `range(...)` 读取 D0 已发布的 argument expression facts 并检查原始 AST shape；不得要求或补发 range callee/call-root ordinary binding、expression type 或 resolved call。
   - 调用 `FrontendForLoopSupport` 构造 plan。
   - 发布 `FrontendForIterationPlan`。
   - 若 iterator baseline 是 `Variant` 且 plan 的 `exposedIteratorType` 是 exact source-facing type，则发布 iterator slot refinement。
@@ -461,14 +482,15 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 - `runVarTypePost(...)` 扩展为支持 `ForStatement` iterator declaration：
   - 为 iterator declaration key 发布 final source-facing `slotTypes()` fact。
   - `slotTypes()` value 必须是 exposed iterator type，不能是 compiler-only state type。
-- D0 的 header flush 必须发生在 planning 与 iterator var type post 之后；child body 的
-  `FrontendSuiteContext` 通过 parent environment 读取 iterator slot refinement。
+- D1 落地后的完整 header 顺序必须是：iterator type facts -> ordinary iterable root 或 bare range arguments 的 owner procedures -> `FOR_ITERATION_PLANNING` -> iterator var type post -> 单次 statement flush -> child suite。child body 的 `FrontendSuiteContext` 通过 parent environment 读取 iterator slot refinement。
+- planning 不得承担“清理 ordinary range call 失败 facts”的职责。D0 pre-route 必须保证这些 facts 从未发布；pending / committed overlay 与 patch transaction 均不新增 delete/overwrite 机制来掩盖错误 owner routing。
 
 验收细则：
 
 - `var limit := 3; for i in limit: var x := i + 1` 中 body resolver 看到 `i:int`。
 - `for item in values: var x := item` 中 `item` 在 unknown route 下保持 `Variant`。
 - `for i in range(3): var x := i + 1` 不发布 ordinary `range(...)` call route，但 `range` argument 有 expression type。
+- canonical range planning 前不得存在 callee/call-root `FAILED` expression fact 或 `sema.binding` / `sema.expression_resolution`；否则 D1 验收直接失败，不能仅凭 plan 已发布判定通过。
 - `for i: float in range(3): print(i)` 若现有 boundary 允许 `int -> float`，body 中 `i` 是 `float`，plan 记录 per-element conversion；若不允许则发 type diagnostic。
 - `for i: String in range(3): pass` 不静默通过。
 - nested `for j in range(i):` 可以读取外层 `i` 的 refined type。
@@ -695,6 +717,9 @@ GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationR
 
 ### SuiteResolver / type facts
 
+- D0 canonical regression：`for i in range(3): var x := i` 不产生 unknown `range` binding 或 identifier/call-root expression-resolution error；argument `3` 有 expression type，range callee/call root 没有 ordinary expression type / resolved call，body 仍能进入。
+- D0 ordinary-route regression：`for i in limit:` 继续解析整个 iterable root；`obj.range(3)` / `some_range(3)` 不被 bare range pre-route 捕获。
+- 当前已有的 `FrontendSuiteResolverTest` 只覆盖 `items` / `values` / `limit` 等 ordinary iterable，不能作为 D0 range header 的完成证据。阶段 D0 的 targeted test 必须显式包含 canonical `range(...)` source。
 - `var limit := 3; for i in limit: var x := i + 1` 中 `i` 在 body 中为 `int`。
 - `for i in range(3): var x := i + 1` 中 `i` 为 `int`，`range(...)` root 不出现在 ordinary successful `resolvedCalls()` 中。
 - `for item in values: var x := item` 中 unknown route 的 `item` 为 `Variant`。
@@ -768,7 +793,9 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - `FOR_BODY` 已加入 unconditional supported block kind；resolver 的 request domain、AST edge 与 current-scope 三处必须持续允许 for ordinary lookup，否则会重新出现 inventory 已发布但 lookup fail-closed 的矛盾。
 - Iterator 使用 `ForStatement` 作为 declaration identity 会触及 `FrontendBodyLocalDeclaration`、`FrontendBodyDeclarationIndex`、visible resolver inventory guard、slot type publication 与 lowering lookup；这些位置必须一起改，不能只改 scope binding。
 - Header-derived iterator refinement 发生在 expr typing 之后，不能伪装成原有 statement-local local stabilization。需要明确的 iteration planning owner / patch order。
+- bare `range(...)` 的“expr typing 之后”指 arguments typing 之后，不是 call root ordinary typing 之后。若先让 call root 失败再运行 planning，错误 diagnostic 与 `FAILED` fact 已进入 pending overlay，现有 transaction 无法删除或覆盖，D1 不能补救 D0 owner routing 错误。
 - `range(...)` root 是否发布 expression type 必须统一。当前计划是不发布 ordinary root type，只发布 arguments 与 iteration plan，避免把 range 当作 user-facing builtin call。
+- bare `range` 与同名 local/callable shadowing 的语义必须在 D0 实现前用 Godot focused case 锁定；不得把 `ForStatement.range()` source anchor 当作 classifier，也不得在没有语义证据时擅自让 ordinary binding 改写 AST-shape pre-route。
 - `int` 简写不允许通过 AST rewrite 伪装成 `range(stop)` call；否则 parser/scope/diagnostic anchor、future object-iterator classifier 与测试都会被污染。
 - explicit iterator type 的兼容规则必须复用 ordinary typed-boundary helper；不要为 `for` 私下硬编码 `int -> T` 或 `Variant -> T` 特例。
 - `continue` 对 `for` 的目标不是 condition entry，而是 update entry。这一点和 `while` 不同，不能复用 `FrontendWhileRegion`。
@@ -789,3 +816,5 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 6. compiler-only iterator state type 只出现在 dedicated iteration plan、hidden LIR local / intrinsic operand-result / backend C storage 路径。
 7. CFG 中存在独立 `FrontendForRegion`，且 `continue` / `break` 连边正确；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
+
+阶段性完成门槛：D0 只有在 ordinary iterable regression 与 canonical `for i in range(3)` regression 同时通过，且后者证明“arguments 有 facts、callee/call root 无 ordinary facts、header 无 ordinary resolution diagnostic、body 仍进入”后，才能重新标注为已完成。仅证明 header 错误不关闭 body，或仅证明全部现有相关测试为绿色，都不满足 D0 完成定义。
