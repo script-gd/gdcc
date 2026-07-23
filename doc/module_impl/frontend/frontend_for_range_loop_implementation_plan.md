@@ -338,7 +338,8 @@ build artifact 构造时必须执行跨表验证，而不是只在 processor 中
 - `range(...)` root 不发布 ordinary `resolvedCalls()`，也不发布 ordinary `expressionTypes()`；arguments 必须各自拥有 planning/type-check 所需的 expression type，并进入既有 `int` boundary。
 - attribute call、subscript call、`some_range(...)`、`obj.range(...)` 不触发该预路由，继续把整个 iterable 交给 ordinary `runSupportedRoot(...)`。named argument 是否被 parser 表达为 bare call argument form，不改变预路由；它必须由 range-specific validation 拒绝，而不是退回 unknown ordinary callee 诊断。D0 pre-route 仍按 source order 对 named argument 的 value expression 运行 owner procedures；named-ness 本身在阶段 E range-specific validation 中拒绝，不影响 D0 发布 argument expression facts。
 - range arguments、显式 iterator type 与后续 iteration plan facts 仍共享一个 for-statement header flush；不得为每个 argument 单独建立 statement boundary。
-- literal `step == 0` 应在 frontend 发 diagnostic；非 literal step 交给 runtime helper 的防无限循环保护。
+- literal 与 dynamic `step == 0` 都是有效的空 range：frontend 不发 diagnostic，runtime 的
+  `should_continue` 直接返回 `false`，使 loop body 零次执行。
 
 该分流在 AST-shape 识别模式上与 Godot compiler 的 lowering 边界一致，但 GDCC 把识别提前到 semantic owner 调度层：Godot compiler 按 for-list AST shape 识别 bare `range(...)`，逐个处理 operands，并跳过 ordinary list-expression call lowering。GDCC 不机械复制 Godot analyzer 的内部 utility-function 模型；当前 GDCC 既没有可供 `range` 使用的 ordinary binding，又明确禁止为 for-range root 发布 ordinary call fact，因此必须在 `resolveForStatement(...)` 的 statement-local owner 调度入口完成更早的预路由。
 
@@ -507,7 +508,6 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendTypeCheckAnalyzer` 消费 `FrontendForIterationPlan`：
   - `RANGE_CALL` arguments 必须能进入 `int` slot。
   - `INT_SHORTHAND` stop expression 必须能进入 `int` slot。
-  - literal `range(..., 0)` 发 frontend diagnostic。
   - explicit iterator type 必须能接收 raw element type；不新增 parallel conversion matrix。
   - `GENERIC_VARIANT` 不因无法静态证明 iterable 而发 unsupported diagnostic。
 - `FLOAT_SHORTHAND` 第一版可以保持 generic Variant route；只有在 `ceil` 语义、element exposed type 与 C helper 都被测试锁住后，才转为专用 route。
@@ -517,7 +517,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 验收细则：
 
 - `range()` 与 `range(1, 2, 3, 4)` 有清晰 diagnostic。
-- `range(1, 2, 0)` literal zero step 有清晰 diagnostic。
+- `range(1, 2, 0)` 不发 diagnostic，loop body 零次执行。
 - `for i in values:` 不再产生 `FOR_SUBTREE` unsupported diagnostic。
 - `for i in 2.2:` 在未专用化前进入 generic Variant route，shared semantic 不失败。
 - typed dictionary route 测试锁定 iterator 是 key，不是 value 或 pair。
@@ -655,7 +655,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - source-facing loop variable slot 是 `int` 或 declared compatible type。
 - generated C 使用 `gdcc_for_range_iter_*` helper，不出现 `godot_GdccForRangeIter`、`godot_new_GdccForRangeIter...`、`Variant` pack/unpack 相关路径。
 - compiler-only state 与 next temp 的 prepare/final cleanup、每轮 overwrite lifecycle 均由既有 `GdCompilerType` / `AssignInsn` 合同覆盖，并有正反测试证明没有 public boundary 泄漏。
-- `step == 0` literal 在 frontend 阶段阻断；动态零 step 仍由 runtime helper 防止无限循环。
+- literal 与 dynamic `step == 0` 都不在 frontend 阶段阻断；runtime `should_continue` 直接返回
+  `false`，使 loop body 零次执行。
 
 ### 阶段 I：generic Variant iterator route
 
@@ -749,7 +750,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### Type-check
 
-- `range()`、`range(1, 2, 3, 4)`、literal `range(1, 2, 0)` 均有明确 diagnostic。
+- `range()` 与 `range(1, 2, 3, 4)` 均有明确 diagnostic；`range(1, 2, 0)` 不发 diagnostic，且
+  loop body 零次执行。
 - `for i: String in range(3): pass` 不静默通过。
 - `for i in 2.2:` 在未专用化前不报 frontend unsupported；若启用 float route，测试锁定 `ceil` 语义。
 - `Dictionary` route 测试锁定 iterator 是 key。

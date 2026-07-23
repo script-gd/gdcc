@@ -212,7 +212,7 @@ backend 当前对 compiler-only 类型的稳定合同是：
 
 - helper 只操作 compiler-owned iterator state，不引入 Godot object ownership
 - `init` 使用 `gdcc_for_range_iter_from_bounds(...)` 建立按值 iterator state
-- `step == 0` 通过明确 runtime error helper 路径处理，不允许静默形成无限循环语义
+- `step == 0` 产生零次迭代：`should_continue` 直接返回 `false`，与 Godot 4.5.1 optimized range loop 一致
 - `should_continue` / `next` 对正负步长的边界处理以 runtime helper 语义为准
 
 prepare block 额外保留 `gdcc_for_range_iter_init()` 作为 local 默认初始化 helper，它服务的是 slot 生命周期初始化，而不是 `range(...)` 语义层面的 bounds 归一化。

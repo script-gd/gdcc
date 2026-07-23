@@ -5,6 +5,7 @@ import gd.script.gdcc.backend.c.gen.CCodegen;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.*;
+import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
@@ -170,5 +171,89 @@ public class CProjectBuilderIntegrationTest {
         assertTrue(combinedOutput.contains("Pitch radians check passed."), "Godot output should confirm radian pitch check.\nOutput:\n" + combinedOutput);
         assertFalse(combinedOutput.contains("Pitch check failed"), "Pitch check should not fail.\nOutput:\n" + combinedOutput);
         assertFalse(combinedOutput.contains("Pitch radians check failed"), "Radian pitch check should not fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
+    public void rangeIteratorZeroStepShouldTerminateInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/for_range_iter_runtime");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("for_range_iter_runtime", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var context = new CodegenContext(projectInfo, new ClassRegistry(api));
+        var probeClass = new LirClassDef("GDForRangeIterProbe", "Node");
+        probeClass.setSourceFile("for_range_iter_probe.gd");
+        var probeType = new GdObjectType(probeClass.getName());
+        var checkFunction = new LirFunctionDef("should_continue", "entry");
+        checkFunction.setReturnType(GdBoolType.BOOL);
+        checkFunction.addParameter(new LirParameterDef("self", probeType, null, checkFunction));
+        checkFunction.addParameter(new LirParameterDef("start", GdIntType.INT, null, checkFunction));
+        checkFunction.addParameter(new LirParameterDef("end", GdIntType.INT, null, checkFunction));
+        checkFunction.addParameter(new LirParameterDef("step", GdIntType.INT, null, checkFunction));
+        checkFunction.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        checkFunction.createAndAddVariable("result", GdBoolType.BOOL);
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new CallIntrinsicInsn(
+                "iter",
+                "gdcc.for_range_iter.init",
+                List.of(
+                        new LirInstruction.VariableOperand("start"),
+                        new LirInstruction.VariableOperand("end"),
+                        new LirInstruction.VariableOperand("step")
+                )
+        ));
+        entryBlock.appendInstruction(new CallIntrinsicInsn(
+                "result",
+                "gdcc.for_range_iter.should_continue",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        entryBlock.appendInstruction(new ReturnInsn("result"));
+        checkFunction.addBasicBlock(entryBlock);
+        probeClass.addFunction(checkFunction);
+
+        var codegen = new CCodegen();
+        codegen.prepare(context, new LirModule("for_range_iter_module", List.of(probeClass)));
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ForRangeIterProbe",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec("""
+                        extends Node
+
+                        func _ready() -> void:
+                            var probe = get_parent().get_node_or_null("ForRangeIterProbe")
+                            if probe == null:
+                                push_error("For-range iterator probe missing.")
+                                return
+
+                            var forward = bool(probe.call("should_continue", 0, 5, 0))
+                            var backward = bool(probe.call("should_continue", 5, 0, 0))
+                            if not forward and not backward:
+                                print("Zero-step range iterator check passed.")
+                            else:
+                                push_error("Zero-step range iterator check failed.")
+                        """)
+        ));
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("Zero-step range iterator check passed."), "Missing zero-step success marker.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("Zero-step range iterator check failed."), "Zero-step check should not fail.\nOutput:\n" + combinedOutput);
     }
 }

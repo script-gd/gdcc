@@ -62,10 +62,10 @@ extend the runtime-provided `godot_*` surface.
   - `gdcc_for_range_iter` is the backend-owned C storage struct for `compiler::GdccForRangeIter`
   - `gdcc_for_range_iter_init()` is the prepare-block default initializer
   - `gdcc_for_range_iter_destroy()` is the matching destroy hook; it is intentionally a no-op today
-  - `gdcc_for_range_iter_from_bounds()` materializes normalized `start/end/step` bounds and reports
-    `step == 0` through `godot_print_error(...)` before returning an always-terminating fallback state with
-    `step=1`. A zero-step argument is a programming error; frontend lowering and generated code must not
-    emit zero-step range iterators under any normal path.
+  - `gdcc_for_range_iter_from_bounds()` materializes `start/end/step` bounds verbatim. For the optimized
+    `for ... in range(...)` route, `gdcc_for_range_iter_should_continue()` treats `step == 0` as an empty
+    range and returns `false` without a diagnostic, matching Godot 4.5.1. This differs from the ordinary
+    `range()` utility route, which keeps Godot's native call-error behavior for a zero step.
   - `gdcc_for_range_iter_should_continue()`, `gdcc_for_range_iter_next()` and
     `gdcc_for_range_iter_get()` implement the range intrinsic family
   - these helpers are GDCC-owned runtime support and must keep the `gdcc_*` namespace instead of

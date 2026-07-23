@@ -2,6 +2,7 @@
 #define GDCC_INTRINSIC_H
 
 #include <godot_binding.h>
+#include "gdcc_likely.h"
 
 typedef struct gdcc_for_range_iter {
     godot_int current;
@@ -22,14 +23,14 @@ static inline gdcc_for_range_iter gdcc_for_range_iter_from_bounds(
     godot_int end,
     godot_int step
 ) {
-    if (step == 0) {
-        godot_print_error("range step argument is zero", "gdcc_for_range_iter_from_bounds", "<generated>", 0, true);
-        return (gdcc_for_range_iter){ .current = start, .end = end, .step = 1 };
-    }
     return (gdcc_for_range_iter){ .current = start, .end = end, .step = step };
 }
 
 static inline godot_bool gdcc_for_range_iter_should_continue(const gdcc_for_range_iter *iter) {
+    // Godot's optimized range loop treats a zero step as an empty range.
+    if (unlikely(iter->step == 0)) {
+        return false;
+    }
     if (iter->step > 0) {
         return iter->current < iter->end;
     }

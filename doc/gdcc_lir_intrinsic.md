@@ -195,8 +195,10 @@ $target = gdcc_for_range_iter_from_bounds($start, $end, $step);
 
 `step == 0` 策略：
 
-- `gdcc_for_range_iter_from_bounds(...)` 显式调用 runtime error helper（`godot_print_error(...)`）并返回不可无限循环的 fallback state。
-- 前端未来 lowering 仍应避免生成零步长；手写 LIR 不会静默获得无限循环语义。
+- `gdcc_for_range_iter_from_bounds(...)` 原样保存 `start`、`end` 与 `step`。
+- `gdcc_for_range_iter_should_continue(...)` 对 `step == 0` 直接返回 `false`；专用 `for ... in range(...)`
+  route 因此零次迭代且不产生诊断，与 Godot 4.5.1 的 optimized range loop 一致。
+- `next` 只可在 `should_continue` 已返回 `true` 后调用，因此 zero-step state 不会进入 `next`。
 
 Lifecycle / ownership：
 
@@ -234,7 +236,7 @@ $target = gdcc_for_range_iter_should_continue(&$iter);
 Lifecycle / ownership：
 
 - 只读 iterator state，不销毁或转移 iterator ownership。
-- 正步长使用 `current < end`，负步长使用 `current > end`，end 为排他边界。
+- 零步长直接返回 `false`；正步长使用 `current < end`，负步长使用 `current > end`，end 为排他边界。
 
 长期事实源：
 
