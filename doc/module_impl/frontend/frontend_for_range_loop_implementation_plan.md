@@ -419,6 +419,8 @@ build artifact 构造时必须执行跨表验证，而不是只在 processor 中
 
 该分流在 AST-shape 识别模式上与 Godot compiler 的 lowering 边界一致，但 GDCC 把识别提前到 semantic owner 调度层：Godot compiler 按 for-list AST shape 识别 bare `range(...)`，逐个处理 operands，并跳过 ordinary list-expression call lowering。GDCC 不机械复制 Godot analyzer 的内部 utility-function 模型；当前 GDCC 既没有可供 `range` 使用的 ordinary binding，又明确禁止为 for-range root 发布 ordinary call fact，因此必须在 `resolveForStatement(...)` 的 statement-local owner 调度入口完成更早的预路由。
 
+**Shadow 兼容合同（已由 Godot 4.5.1 上游锁定）**：Godot analyzer（`gdscript_analyzer.cpp` `resolve_for`）与 compiler（`gdscript_compiler.cpp` `_parse_block`）均只检查 `list->type == CALL && get_callee_type() == IDENTIFIER && name == "range"`；analyzer 虽在该检查前对 list 节点执行 `resolve_node`，但 `is_range` 判定本身不依赖解析结果，不执行名称解析或 utility-function lookup。因此同名 local variable、parameter 或 callable shadow 不会取消 Godot 的 range 特判——即使存在 `var range = ...`，`for i in range(3)` 仍走 range 路径。GDCC 的 D0 AST-shape pre-route 与此行为完全一致：pre-route 仅检查 callee 是否为 bare `IdentifierExpression("range")`，不查询 scope binding，同名 shadow 不影响预路由命中。该合同已通过上游源码确认，不再作为未决风险。
+
 ### 3.7 Godot iteration 语义落点
 
 外部语义参考表明 Godot 对 `for-in` 使用统一 iteration 协议：
@@ -840,6 +842,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 - D0 canonical regression：`for i in range(3): var x := i` 不产生 unknown `range` binding 或 identifier/call-root expression-resolution error；argument `3` 有 expression type，range callee/call root 没有 ordinary expression type / resolved call，body 仍能进入。
 - D0 ordinary-route regression：`for i in limit:` 继续解析整个 iterable root；`obj.range(3)` / `some_range(3)` 不被 bare range pre-route 捕获。
+- D0 shadow regression：`var range = 42; for i in range(3): pass` 仍命中 bare range pre-route（与 Godot 4.5.1 行为一致），不因同名 local 存在而退回 ordinary call route；`func range(): pass; for i in range(3): pass` 同理；`func f(range): for i in range(3): pass` 同理（parameter shadow）。
+- D0 shadow negative：`var range = 42; for i in range:` 不命中 pre-route（callee 不是 `CallExpression`）；`var range = 42; for i in range.call(3):` 不命中 pre-route（callee 不是 bare identifier）。
 - 当前已有的 `FrontendSuiteResolverTest` 只覆盖 `items` / `values` / `limit` 等 ordinary iterable，不能作为 D0 range header 的完成证据。阶段 D0 的 targeted test 必须显式包含 canonical `range(...)` source。
 - `var limit := 3; for i in limit: var x := i + 1` 中 `i` 在 body 中为 `int`。
 - `for i in range(3): var x := i + 1` 中 `i` 为 `int`，`range(...)` root 不出现在 ordinary successful `resolvedCalls()` 中。
@@ -930,7 +934,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - Header-derived iterator refinement 发生在 expr typing 之后，不能伪装成原有 statement-local local stabilization。必须由明确的 `FOR_ITERATION_RESOLUTION` owner 按固定 patch order 发布。
 - bare `range(...)` 的“expr typing 之后”指 arguments typing 之后，不是 call root ordinary typing 之后。若先让 call root 失败再运行 `FOR_ITERATION_RESOLUTION`，错误 diagnostic 与 `FAILED` fact 已进入 pending overlay，现有 transaction 无法删除或覆盖，D1 不能补救 D0 owner routing 错误。
 - `range(...)` root 是否发布 expression type 必须统一。当前计划是不发布 ordinary root type，只发布 arguments 与 iteration plan，避免把 range 当作 user-facing builtin call。
-- bare `range` 与同名 local/callable shadowing 的语义必须在 D0 实现前用 Godot focused case 锁定；不得把 `ForStatement.range()` source anchor 当作 classifier，也不得在没有语义证据时擅自让 ordinary binding 改写 AST-shape pre-route。
+- ~~bare `range` 与同名 local/callable shadowing~~（已解决，见 §3.6 Shadow 兼容合同）：Godot 4.5.1 analyzer 与 compiler 均按纯 AST shape 检查 `name == "range"`，不做名称解析；同名 shadow 不取消 range 特判。GDCC D0 pre-route 与此一致，不再需要额外语义证据。验收测试须覆盖 shadow case（见 §5 SuiteResolver / type facts）。
 - `int` 简写不允许通过 AST rewrite 伪装成 `range(stop)` call；否则 parser/scope/diagnostic anchor、future object-iterator classifier 与测试都会被污染。
 - explicit iterator type 的兼容规则必须复用 ordinary typed-boundary helper；不要为 `for` 私下硬编码 `int -> T` 或 `Variant -> T` 特例。
 - `continue` 对 `for` 的目标不是 condition entry，而是 update entry。这一点和 `while` 不同，不能复用 `FrontendWhileRegion`。
