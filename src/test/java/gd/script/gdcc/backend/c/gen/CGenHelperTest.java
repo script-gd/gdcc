@@ -857,7 +857,7 @@ class CGenHelperTest {
         assertTrue(source.contains("gdcc_for_range_iter_should_continue"), source);
         assertTrue(source.contains("gdcc_for_range_iter_next"), source);
         assertTrue(source.contains("gdcc_for_range_iter_get"), source);
-        assertTrue(source.contains("godot_print_error(\"range step argument is zero\""), source);
+        assertTrue(source.contains("step == 0"), source);
     }
 
     @Test

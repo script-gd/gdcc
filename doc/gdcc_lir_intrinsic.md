@@ -233,10 +233,17 @@ C backend 语义：
 $target = gdcc_for_range_iter_should_continue(&$iter);
 ```
 
+边界方向语义：
+
+- 零步长（literal 或 dynamic）直接返回 `false`，产生零次迭代，不产生诊断。
+- 正步长使用 `current < end`（end 为排他上界）：若 `start >= end`（含 `start == end`），首次即返回 `false`。
+- 负步长使用 `current > end`（end 为排他下界）：若 `start <= end`（含 `start == end`），首次即返回 `false`。
+- 因此：正 step 配逆向边界（`start > end`）和负 step 配正向边界（`start < end`）均为零次迭代，
+  与 Godot 4.5.1 `OPCODE_ITERATE_BEGIN_RANGE` 的方向兼容性检查一致。
+
 Lifecycle / ownership：
 
 - 只读 iterator state，不销毁或转移 iterator ownership。
-- 零步长直接返回 `false`；正步长使用 `current < end`，负步长使用 `current > end`，end 为排他边界。
 
 长期事实源：
 
@@ -264,6 +271,16 @@ C backend 语义：
 ```c
 $target = gdcc_for_range_iter_next(&$iter);
 ```
+
+溢出策略：
+
+- `gdcc_for_range_iter_next(...)` 使用无保护的 `int64_t` 加法（`current + step`），与 Godot 4.5.1
+  `gdscript_vm.cpp` 中 `OPCODE_ITERATE_RANGE` 的 `*count += step` 行为完全一致。
+- 若加法溢出（wrap past `INT64_MAX` 或 below `INT64_MIN`），`should_continue` 的方向比较可能永远
+  不满足终止条件，导致无限循环。这与 Godot 上游行为相同——GDCC 选择兼容性而非引入额外的安全检查。
+- 不插入 saturating arithmetic、overflow builtin 或运行时 trap。
+- 注意：C 标准中 `int64_t` 有符号溢出为未定义行为；此处依赖主流编译器（GCC/Clang/Zig CC）
+  在无 `-ftrapv` 时的 de facto wrapping 行为，与 Godot 上游 C++ 代码的风险假设一致。
 
 Lifecycle / ownership：
 

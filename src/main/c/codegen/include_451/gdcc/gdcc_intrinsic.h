@@ -37,6 +37,8 @@ static inline godot_bool gdcc_for_range_iter_should_continue(const gdcc_for_rang
     return iter->current > iter->end;
 }
 
+/// Unprotected int64 addition, matching Godot 4.5.1 OPCODE_ITERATE_RANGE (`*count += step`).
+/// Overflow wraps and may cause an infinite loop; this is intentional for upstream compatibility.
 static inline gdcc_for_range_iter gdcc_for_range_iter_next(const gdcc_for_range_iter *iter) {
     return (gdcc_for_range_iter){
         .current = iter->current + iter->step,

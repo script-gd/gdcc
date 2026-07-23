@@ -2,12 +2,17 @@ package gd.script.gdcc.backend.c.build;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.c.gen.CCodegen;
+import gd.script.gdcc.enums.GodotOperator;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.lir.*;
+import gd.script.gdcc.lir.insn.AssignInsn;
+import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
+import gd.script.gdcc.lir.insn.GotoInsn;
+import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralStringInsn;
 import gd.script.gdcc.lir.insn.LoadPropertyInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
@@ -255,5 +260,224 @@ public class CProjectBuilderIntegrationTest {
         assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
         assertTrue(combinedOutput.contains("Zero-step range iterator check passed."), "Missing zero-step success marker.\nOutput:\n" + combinedOutput);
         assertFalse(combinedOutput.contains("Zero-step range iterator check failed."), "Zero-step check should not fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
+    public void rangeIteratorBoundaryDirectionShouldProduceZeroIterationsInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/for_range_iter_boundary");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("for_range_iter_boundary", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var context = new CodegenContext(projectInfo, new ClassRegistry(api));
+        var probeClass = new LirClassDef("GDForRangeBoundaryProbe", "Node");
+        probeClass.setSourceFile("for_range_boundary_probe.gd");
+        var probeType = new GdObjectType(probeClass.getName());
+        var checkFunction = new LirFunctionDef("should_continue", "entry");
+        checkFunction.setReturnType(GdBoolType.BOOL);
+        checkFunction.addParameter(new LirParameterDef("self", probeType, null, checkFunction));
+        checkFunction.addParameter(new LirParameterDef("start", GdIntType.INT, null, checkFunction));
+        checkFunction.addParameter(new LirParameterDef("end", GdIntType.INT, null, checkFunction));
+        checkFunction.addParameter(new LirParameterDef("step", GdIntType.INT, null, checkFunction));
+        checkFunction.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        checkFunction.createAndAddVariable("result", GdBoolType.BOOL);
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new CallIntrinsicInsn(
+                "iter",
+                "gdcc.for_range_iter.init",
+                List.of(
+                        new LirInstruction.VariableOperand("start"),
+                        new LirInstruction.VariableOperand("end"),
+                        new LirInstruction.VariableOperand("step")
+                )
+        ));
+        entryBlock.appendInstruction(new CallIntrinsicInsn(
+                "result",
+                "gdcc.for_range_iter.should_continue",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        entryBlock.appendInstruction(new ReturnInsn("result"));
+        checkFunction.addBasicBlock(entryBlock);
+        probeClass.addFunction(checkFunction);
+
+        var codegen = new CCodegen();
+        codegen.prepare(context, new LirModule("for_range_boundary_module", List.of(probeClass)));
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ForRangeBoundaryProbe",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec("""
+                        extends Node
+
+                        func _ready() -> void:
+                            var probe = get_parent().get_node_or_null("ForRangeBoundaryProbe")
+                            if probe == null:
+                                push_error("For-range boundary probe missing.")
+                                return
+
+                            var positive_reverse = bool(probe.call("should_continue", 5, 0, 1))
+                            var negative_forward = bool(probe.call("should_continue", 0, 5, -1))
+                            var positive_forward = bool(probe.call("should_continue", 0, 5, 1))
+                            var negative_reverse = bool(probe.call("should_continue", 5, 0, -1))
+                            var equal_bounds_pos = bool(probe.call("should_continue", 3, 3, 1))
+                            var equal_bounds_neg = bool(probe.call("should_continue", 3, 3, -1))
+
+                            if not positive_reverse and not negative_forward \
+                                    and positive_forward and negative_reverse \
+                                    and not equal_bounds_pos and not equal_bounds_neg:
+                                print("Boundary direction check passed.")
+                            else:
+                                push_error("Boundary direction check failed: +%d -%d +%s -%s =%s =%s" % [
+                                    positive_reverse, negative_forward,
+                                    positive_forward, negative_reverse,
+                                    equal_bounds_pos, equal_bounds_neg])
+                        """)
+        ));
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("Boundary direction check passed."), "Missing boundary direction success marker.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("Boundary direction check failed"), "Boundary direction check should not fail.\nOutput:\n" + combinedOutput);
+    }
+
+    @Test
+    public void rangeIteratorFullLoopShouldAccumulatePerIterationValuesInRealGodot() throws IOException, InterruptedException {
+        if (!hasZig()) {
+            Assumptions.abort("Zig not found; skipping integration test");
+            return;
+        }
+        var tempDir = Path.of("tmp/test/for_range_iter_full_loop");
+        Files.createDirectories(tempDir);
+
+        var projectInfo = new CProjectInfo("for_range_iter_full_loop", GodotVersion.V451, tempDir, COptimizationLevel.DEBUG, TargetPlatform.getNativePlatform());
+        var builder = new CProjectBuilder();
+        builder.initProject(projectInfo);
+
+        var api = ExtensionApiLoader.loadVersion(GodotVersion.V451);
+        var context = new CodegenContext(projectInfo, new ClassRegistry(api));
+        var probeClass = new LirClassDef("GDForRangeFullLoopProbe", "Node");
+        probeClass.setSourceFile("for_range_full_loop_probe.gd");
+        var probeType = new GdObjectType(probeClass.getName());
+
+        var sumFunction = new LirFunctionDef("sum_range", "entry");
+        sumFunction.setReturnType(GdIntType.INT);
+        sumFunction.addParameter(new LirParameterDef("self", probeType, null, sumFunction));
+        sumFunction.addParameter(new LirParameterDef("start", GdIntType.INT, null, sumFunction));
+        sumFunction.addParameter(new LirParameterDef("end", GdIntType.INT, null, sumFunction));
+        sumFunction.addParameter(new LirParameterDef("step", GdIntType.INT, null, sumFunction));
+        sumFunction.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        sumFunction.createAndAddVariable("next_iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        sumFunction.createAndAddVariable("acc", GdIntType.INT);
+        sumFunction.createAndAddVariable("cond", GdBoolType.BOOL);
+        sumFunction.createAndAddVariable("value", GdIntType.INT);
+
+        var entryBlock = new LirBasicBlock("entry");
+        entryBlock.appendInstruction(new CallIntrinsicInsn(
+                "iter",
+                "gdcc.for_range_iter.init",
+                List.of(
+                        new LirInstruction.VariableOperand("start"),
+                        new LirInstruction.VariableOperand("end"),
+                        new LirInstruction.VariableOperand("step")
+                )
+        ));
+        entryBlock.appendInstruction(new LiteralIntInsn("acc", 0));
+        entryBlock.appendInstruction(new GotoInsn("loop_cond"));
+
+        var condBlock = new LirBasicBlock("loop_cond");
+        condBlock.appendInstruction(new CallIntrinsicInsn(
+                "cond",
+                "gdcc.for_range_iter.should_continue",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        condBlock.appendInstruction(new GoIfInsn("cond", "loop_body", "loop_exit"));
+
+        var bodyBlock = new LirBasicBlock("loop_body");
+        bodyBlock.appendInstruction(new CallIntrinsicInsn(
+                "value",
+                "gdcc.for_range_iter.get",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        bodyBlock.appendInstruction(new BinaryOpInsn("acc", GodotOperator.ADD, "acc", "value"));
+        bodyBlock.appendInstruction(new CallIntrinsicInsn(
+                "next_iter",
+                "gdcc.for_range_iter.next",
+                List.of(new LirInstruction.VariableOperand("iter"))
+        ));
+        bodyBlock.appendInstruction(new AssignInsn("iter", "next_iter"));
+        bodyBlock.appendInstruction(new GotoInsn("loop_cond"));
+
+        var exitBlock = new LirBasicBlock("loop_exit");
+        exitBlock.appendInstruction(new ReturnInsn("acc"));
+
+        sumFunction.addBasicBlock(entryBlock);
+        sumFunction.addBasicBlock(condBlock);
+        sumFunction.addBasicBlock(bodyBlock);
+        sumFunction.addBasicBlock(exitBlock);
+        sumFunction.setEntryBlockId("entry");
+        probeClass.addFunction(sumFunction);
+
+        var codegen = new CCodegen();
+        codegen.prepare(context, new LirModule("for_range_full_loop_module", List.of(probeClass)));
+        var buildResult = builder.buildProject(projectInfo, codegen);
+        assertTrue(buildResult.success(), "Compilation should succeed. Build log:\n" + buildResult.buildLog());
+
+        var runner = new GodotGdextensionTestRunner(Path.of("test_project"));
+        runner.prepareProject(new GodotGdextensionTestRunner.ProjectSetup(
+                buildResult.artifacts(),
+                List.of(new GodotGdextensionTestRunner.SceneNodeSpec(
+                        "ForRangeFullLoopProbe",
+                        probeClass.getName(),
+                        ".",
+                        Map.of()
+                )),
+                new GodotGdextensionTestRunner.TestScriptSpec("""
+                        extends Node
+
+                        func _ready() -> void:
+                            var probe = get_parent().get_node_or_null("ForRangeFullLoopProbe")
+                            if probe == null:
+                                push_error("For-range full loop probe missing.")
+                                return
+
+                            var forward_sum = int(probe.call("sum_range", 0, 5, 1))
+                            var backward_sum = int(probe.call("sum_range", 5, 0, -1))
+                            var step2_sum = int(probe.call("sum_range", 0, 10, 2))
+                            var empty_pos = int(probe.call("sum_range", 5, 0, 1))
+                            var empty_neg = int(probe.call("sum_range", 0, 5, -1))
+                            var empty_zero_step = int(probe.call("sum_range", 0, 5, 0))
+
+                            var ok = forward_sum == 10 and backward_sum == 15 \
+                                    and step2_sum == 20 and empty_pos == 0 \
+                                    and empty_neg == 0 and empty_zero_step == 0
+                            if ok:
+                                print("Full loop accumulation check passed.")
+                            else:
+                                push_error("Full loop check failed: fwd=%d bwd=%d s2=%d ep=%d en=%d ez=%d" % [
+                                    forward_sum, backward_sum, step2_sum, empty_pos, empty_neg, empty_zero_step])
+                        """)
+        ));
+        var runResult = runner.run(true);
+        var combinedOutput = runResult.combinedOutput();
+
+        assertTrue(runResult.stopSignalSeen(), "Godot run should emit stop signal.\nOutput:\n" + combinedOutput);
+        assertTrue(combinedOutput.contains("Full loop accumulation check passed."), "Missing full loop success marker.\nOutput:\n" + combinedOutput);
+        assertFalse(combinedOutput.contains("Full loop check failed"), "Full loop check should not fail.\nOutput:\n" + combinedOutput);
     }
 }
