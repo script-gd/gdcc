@@ -1,10 +1,10 @@
 # Frontend for-in loop 实施计划
 
-> 本文档是 `for iterator[: Type] in expr` 的长期实施事实源，定义 shared semantic / compile / lowering 三层支持面的架构合同、核心设计与分阶段实施步骤。不再保留已完成阶段的验收流水账。
+> 本文档是 `for iterator[: Type] in expr` 的长期实施事实源，定义 shared semantic structural、type-check、compile / lowering 支持面的架构合同、核心设计与分阶段实施步骤。不再保留已完成阶段的验收流水账。
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持已完成；bare `range(...)` header 预路由、iteration plan、CFG、lowering 尚未实施）
+- 状态：实施中（shared semantic 结构支持已完成；完整 shared semantic 尚未完成：`FrontendTypeCheckAnalyzer` 仍未遍历 `ForStatement` 的 header 或 body；bare `range(...)` header 预路由、iteration plan、CFG、lowering 尚未实施）
 - 创建日期：2026-07-03
 - 更新时间：2026-07-23
 - 适用范围：
@@ -50,9 +50,10 @@
 
 ## 1. 范围与非目标
 
-本计划把 `for-in` 拆成两个互不混淆的支持面：
+本计划把 `for-in` 拆成三个互不混淆的支持面：
 
-- shared semantic 支持面：所有 `for iterator[: Type] in expr` 都是 supported body statement。
+- shared semantic structural 支持面：所有 `for iterator[: Type] in expr` 都是 supported body statement，且 scope、binding、inventory、declaration index 与 typed resolution 可进入 body。
+- type-check 支持面：在 structural 支持基础上遍历 for header 与 body，并基于 iteration plan 检查 route-specific 合同及 body 内 ordinary semantic boundary。
 - compile / lowering 支持面：最终所有 `for-in` 都通过 iteration plan 进入 lowering；实现上可以先接通 range route，再接通 generic Variant route，再追加 known iterable 专用 route。
 
 shared semantic 第一轮必须支持：
@@ -88,7 +89,7 @@ compile / lowering 最终目标必须覆盖：
 - `gdparser` 的 `ForStatement` AST 已包含 `iterator`、`iteratorType`、`iterable`、`body`、`range` 字段；其中 `range()` 是 AST source-location anchor，不是 `range(...)` builtin classifier，pre-route 必须检查 `iterable` expression shape。
 - `FrontendScopeAnalyzer` 已为 `ForStatement` 建立 `FOR_BODY` scope，`iteratorType` 与 `iterable` 在外层 scope 下遍历，`body` 在独立 `FOR_BODY` scope 下遍历。
 - `FrontendLoopControlFlowAnalyzer` 已把 `for` 视为 loop boundary，`break` / `continue` 在 `for` body 内合法。
-- `FrontendVariableAnalyzer` 已无条件发布 iterator 与 for body ordinary local inventory；`FrontendInterfacePhase` 已发布 iterator declaration index、typed baseline 与 suite entry；`FrontendStatementResolver` 已通过 header-only statement boundary 进入普通 child-suite path；`FrontendVisibleValueResolver` 已允许 for header/body ordinary lookup。
+- `FrontendVariableAnalyzer` 已无条件发布 iterator 与 for body ordinary local inventory；`FrontendInterfacePhase` 已发布 iterator declaration index、typed baseline 与 suite entry；`FrontendStatementResolver` 已通过 header-only statement boundary 进入普通 child-suite path；`FrontendVisibleValueResolver` 已允许 for header/body ordinary lookup。这些是 structural / typed-resolution 事实，不代表 diagnostics-only `FrontendTypeCheckAnalyzer` 已遍历 for subtree。
 - `FrontendBodyLocalDeclaration` 与 `FrontendBodyDeclarationIndex` 已支持 `Node` declaration identity，以 `ForStatement` 作为 `ITERATOR` entry identity。
 - `FrontendBodySemanticSupportPolicy` 已将 `FOR_BODY` 映射为 `EXECUTABLE_BODY`；`FrontendBodyStructuralCompleteness` 已实现 `FOR_BODY` 双向校验（iterator entry 位于 sourceOrder==0）。
 - `GdccForRangeIterType.FOR_RANGE_ITER` 已作为 compiler-only `GdCompilerType` 子类型存在，backend 与 runtime helper 已有对应实现。
@@ -99,11 +100,12 @@ compile / lowering 最终目标必须覆盖：
 - `FrontendStatementResolver.resolveForStatement(...)` 仍无条件对整个 `forStatement.iterable()` 调用 ordinary `runSupportedRoot(...)`。bare `range(...)` 缺少专用预路由，canonical `for i in range(3)` 会为 callee 发布 unknown binding 并让 call root expression typing 失败。
 - `FrontendForIterationPlan`、`FrontendForIterationRoute` 不存在；iteration planning owner 未实现。
 - `FrontendCompileCheckAnalyzer` 对每个 `ForStatement` root 发布临时、无条件的 `sema.compile_check` blocker。
+- `FrontendTypeCheckAnalyzer` 尚未实现 `handleForStatement(...)`。其默认 node handler 返回 `SKIP_CHILDREN`，因此当前不会 type-check `iterable`、iterator conversion 或整个 for body；这与已显式遍历 body 的 `if` / `while` 不同。
 - `FrontendCfgGraphBuilder.processStatement(...)` 没有 `ForStatement` 分支；`FrontendCfgRegion` 只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
 - `FrontendCfgGraphBuilder.ExecutableBodyBuild` 与 `FunctionLoweringContext` 没有 compiler-only hidden-local registry。
 - generic Variant iterator helper、typed container iterator helper、Object `_iter_*` helper 尚未实现。
 
-实施目标：所有 `for-in` 在 shared semantic 中都是 supported body；iteration plan 决定 iterator type refinement 与 lowering route；compile surface 按 route helper 准备度分阶段打开。
+实施目标：所有 `for-in` 都完成 structural shared semantic 与 body type-check；iteration plan 决定 iterator type refinement、route-specific type-check 与 lowering route；compile surface 按 route helper 准备度分阶段打开。
 
 ## 3. 核心设计
 
@@ -361,7 +363,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### 阶段 A/B：parse / scope 基线与 body inventory 解封（已完成）
 
-阶段 A（parse/AST/scope 基线测试）与阶段 B（body inventory 与 declaration index 解封）已完成。所有 `for-in` body 已转为 shared semantic 结构支持面；iterator binding、body local inventory、declaration index、typed baseline、suite entry 均已无条件发布。`FrontendCompileCheckAnalyzer` 对所有 `ForStatement` 发布临时无条件 `sema.compile_check` blocker，等待后续 route-aware policy 替换。
+阶段 A（parse/AST/scope 基线测试）与阶段 B（body inventory 与 declaration index 解封）已完成。所有 `for-in` body 已转为 shared semantic 结构支持面；iterator binding、body local inventory、declaration index、typed baseline、suite entry 均已无条件发布。该完成状态不包括 diagnostics-only type-check：`FrontendTypeCheckAnalyzer` 尚未遍历 `ForStatement` subtree，完整 shared semantic 必须等待阶段 E。`FrontendCompileCheckAnalyzer` 对所有 `ForStatement` 发布临时无条件 `sema.compile_check` blocker，等待后续 route-aware policy 替换。
 
 ### 阶段 C：iteration plan 数据结构与 publication surface
 
@@ -498,6 +500,10 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 实施内容：
 
+- 新增 `FrontendTypeCheckAnalyzer.handleForStatement(...)`，作为阶段 E 的先决实现：
+  - 与 `handleWhileStatement(...)` 保持相同的 executable-depth 与 published-fact guard。
+  - 在 iteration plan 已发布后检查 for header；ordinary iterable 复用既有 expression type-check path，bare `range(...)` 只检查其 arguments，不把 range callee/call root 当作 ordinary call。
+  - 无论 route 是 known、generic 或仍被 compile gate 阻断，都必须调用现有 `walkSupportedExecutableBlock(forStatement.body())` 遍历 body；route classification 只能影响 header / iterator conversion diagnostic，不能使 body type-check 再次成为 deferred boundary。
 - `FrontendTypeCheckAnalyzer` 消费 `FrontendForIterationPlan`：
   - `RANGE_CALL` arguments 必须能进入 `int` slot。
   - `INT_SHORTHAND` stop expression 必须能进入 `int` slot。
@@ -516,6 +522,10 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `for i in 2.2:` 在未专用化前进入 generic Variant route，shared semantic 不失败。
 - typed dictionary route 测试锁定 iterator 是 key，不是 value 或 pair。
 - type-check 不把 generic route 的运行时不可迭代可能性误报为 compile-time unsupported。
+- `for i in values: var value: int = "invalid"` 仍报告 ordinary local initializer type error，不能因 for subtree 被跳过而静默通过。
+- nested `for` 的内外 body 都进入 type-check；内层 body 的 ordinary error 不能被外层 traversal 掩盖。
+- for body 内的 return 保留既有 type-check diagnostic；连同 ordinary local initializer regression 证明 `handleForStatement(...)` 的 supported-block traversal 覆盖现有 type-check statement handler，而不只覆盖 local initializer。
+- for body 内的 assignment 与 call boundary 各有 ordinary semantic error regression。这些 diagnostic 由上游 resolution / expression typing 阶段发布；regression 锁定 D0 的 child-suite dispatch 在 bare range pre-route 后仍然进入 body，不作为 `handleForStatement(...)` traversal 的验收证据。
 
 ### 阶段 F：compile gate 分阶段解封
 
@@ -743,6 +753,10 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `for i: String in range(3): pass` 不静默通过。
 - `for i in 2.2:` 在未专用化前不报 frontend unsupported；若启用 float route，测试锁定 `ceil` 语义。
 - `Dictionary` route 测试锁定 iterator 是 key。
+- `for i in values: var value: int = "invalid"` 报 ordinary local initializer type error，证明 for body 已由 `FrontendTypeCheckAnalyzer` 遍历。
+- nested for 的内外 body 均有 type-check regression，内层 body error 不得静默遗漏。
+- for body 的 return 与 ordinary local initializer 各有 type-error regression，证明 `handleForStatement(...)` 经由 supported-block traversal 覆盖现有 type-check statement handler。
+- for body 的 assignment 与 call boundary 各有 ordinary semantic error regression，锁定上游 resolution / expression typing 的 child-suite traversal 在 for header 预路由后仍生效；它们不作为 `handleForStatement(...)` traversal 的验收证据。
 
 ### Compile gate
 
@@ -842,6 +856,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 6. compiler-only iterator state type 只出现在 dedicated iteration plan、CFG hidden-slot metadata、hidden LIR local / intrinsic operand-result / backend C storage 路径；hidden slot id 不属于 CFG value-id/materialization surface。
 7. CFG 中存在独立 `FrontendForRegion` 与 validated hidden-slot registry，且 `continue` / `break` 连边正确；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
+9. `FrontendTypeCheckAnalyzer.handleForStatement(...)` 检查 iteration plan 所需 header facts 并遍历 for body；for body 的 ordinary local initializer、nested for 与 return type-check regression 均已通过。assignment / call boundary 的 ordinary semantic error regression 同时锁定上游 resolution / expression typing 的 for-body child-suite traversal。
 
 阶段性完成门槛：D0 只有在 ordinary iterable regression 与 canonical `for i in range(3)` regression 同时通过，且后者证明“arguments 有 facts、callee/call root 无 ordinary facts、header 无 ordinary resolution diagnostic、body 仍进入”后，才能重新标注为已完成。仅证明 header 错误不关闭 body，或仅证明全部现有相关测试为绿色，都不满足 D0 完成定义。
 
