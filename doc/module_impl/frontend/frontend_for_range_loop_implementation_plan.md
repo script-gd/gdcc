@@ -242,7 +242,13 @@ enum FrontendForIterationRoute {
         OBJECT_CUSTOM,
         GENERIC_VARIANT
 }
+```
 
+iteration plan 拆分为两个合同：纯语义事实（frontend-owned, frozen）与 lowering 合同（由 compile gate / CFG builder 根据 route 查询派生）。
+
+```java
+/// 纯语义事实。Phase C 发布，frozen，type-check / compile gate / CFG builder 共同消费。
+/// 不携带任何 lowering-internal state 或 backend operation 协议。
 record FrontendForIterationPlan(
         @NotNull ForStatement statement,
         @NotNull FrontendForIterationRoute route,
@@ -251,31 +257,59 @@ record FrontendForIterationPlan(
         @NotNull GdType rawElementType,
         @NotNull GdType exposedIteratorType,
         boolean requiresPerElementConversion,
-        @NotNull List<Expression> sourceOperands,
-        @Nullable GdCompilerType iteratorStateType,
-        @NotNull List<String> operationNames
+        @NotNull List<Expression> sourceOperands
 ) {}
 ```
+
+```java
+/// 具名、带签名的迭代操作描述符。替代原 List<String> operationNames。
+record ForIterationOperationDescriptor(
+        @NotNull String intrinsicName,
+        @NotNull GdType resultType,
+        @NotNull List<GdType> argumentTypes
+) {}
+```
+
+```java
+/// lowering 合同。由 compile gate / CFG builder 根据 route 从 ForLoweringContractRegistry 查询获得。
+/// 只有 compile-ready 的 route 才具有对应 contract；尚无 contract 的 route 即 route-not-ready。
+/// 不进入 FrontendAnalysisData published facts，不由 semantic phase 发布。
+record FrontendForLoweringContract(
+        @NotNull GdCompilerType iteratorStateType,
+        @NotNull ForIterationOperationDescriptor init,
+        @NotNull ForIterationOperationDescriptor shouldContinue,
+        @NotNull ForIterationOperationDescriptor next,
+        @NotNull ForIterationOperationDescriptor get
+) {}
+```
+
+`ForLoweringContractRegistry` 是 compile-time 静态注册表（不是 runtime dispatch table），按 `FrontendForIterationRoute` 查询：
+
+- 返回 non-null contract → route compile-ready。
+- 返回 null → route-not-ready，compile gate 发 diagnostic 阻断。
+- registry 是单调递增的：contract 一旦注册不得移除或替换；每个 route 至多注册一次，在该 route 的 helper/intrinsic/backend 链路冻结后执行。
 
 约束：
 
 - `rawElementType` 是 runtime helper / intrinsic 产出的元素类型。
 - `exposedIteratorType` 是 body 中 iterator local 的 source-facing type。
-- `iteratorStateType` 只允许出现在该 dedicated iteration plan 与 lowering-internal state，不得进入 ordinary expression / slot / binding tables。任何被 compile gate 放行的 route 都必须具有 non-null compiler-only state type；尚无 state contract 的 route 必须保持 route-not-ready。
-- `operationNames` 由 route contract 提供，consumer 不得在 CFG builder / lowering processor 中散落硬编码 intrinsic 名称。
 - `sourceOperands` 保留源码 expression，不伪造 AST。
+- `FrontendForIterationPlan` 是纯语义事实，不携带 `GdCompilerType`、intrinsic 名称或任何 lowering 协议。
+- `FrontendForLoweringContract.iteratorStateType` 只允许出现在 lowering-internal state（hidden-slot metadata、LIR function local、intrinsic operand-result、backend C storage），不得进入 ordinary expression / slot / binding tables。
+- `ForIterationOperationDescriptor` 携带 arity 与签名，consumer 不得在 CFG builder / lowering processor 中散落硬编码 intrinsic 名称。
+- route-not-ready 的形式化：compile gate 查询 `ForLoweringContractRegistry.get(route)` 返回 null 即 route-not-ready；不需要在 plan record 中表达 readiness。
 
-`range(...)` route 第一版使用已有 contract：
+`range(...)` route 第一版使用已有 contract（`ForLoweringContractRegistry` 静态注册）：
 
 - `iteratorStateType = GdccForRangeIterType.FOR_RANGE_ITER`
-- `rawElementType = GdIntType.INT`
-- `operationNames = gdcc.for_range_iter.init / should_continue / next / get`
+- `rawElementType = GdIntType.INT`（plan 语义事实）
+- operations = `gdcc.for_range_iter.init / should_continue / next / get`（lowering contract）
 
-generic Variant route 需要新增 contract：
+generic Variant route 需要新增 contract（Phase I 冻结后注册）：
 
-- `iteratorStateType` 使用新的 compiler-only generic iterator state type。generic route 在该类型及其 lifecycle/intrinsic contract 冻结前不得进入 compile-ready surface。
-- `rawElementType = GdVariantType.VARIANT`
-- `operationNames` 使用新 intrinsic，例如 `gdcc.for_variant_iter.init / should_continue / next / get`，具体名称在 intrinsic catalog 阶段冻结。
+- `iteratorStateType` 使用新的 compiler-only generic iterator state type。generic route 在该类型及其 lifecycle/intrinsic contract 冻结前，`ForLoweringContractRegistry` 不注册该 route，compile gate 自然阻断。
+- `rawElementType = GdVariantType.VARIANT`（plan 语义事实，Phase C 即可确定）
+- operations 使用新 intrinsic，例如 `gdcc.for_variant_iter.init / should_continue / next / get`，具体名称与签名在 Phase I intrinsic catalog 阶段冻结后注册到 `ForLoweringContractRegistry`。
 
 ### 3.5 iterator slots
 
@@ -314,7 +348,7 @@ record FrontendForIteratorStateSlot(
 ) {}
 ```
 
-第一版稳定命名为 `cfg_for_iter_<n>`，其中序号由单个 executable-body CFG build 按 source traversal order 分配。该 metadata 与 graph/regions 一起复制并发布到 `FunctionLoweringContext`，由 body lowering session 声明对应 LIR function local。它不是 semantic published fact，不进入 `FrontendAnalysisData`；route、type 与 operation names 仍以 `FrontendForIterationPlan` 为唯一 sema 事实源。
+第一版稳定命名为 `cfg_for_iter_<n>`，其中序号由单个 executable-body CFG build 按 source traversal order 分配。该 metadata 与 graph/regions 一起复制并发布到 `FunctionLoweringContext`，由 body lowering session 声明对应 LIR function local。它不是 semantic published fact，不进入 `FrontendAnalysisData`；route 与 source-facing type 以 `FrontendForIterationPlan` 为唯一 sema 事实源；state type 与 operation descriptors 以 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract` 为唯一 lowering 事实源。
 
 隐藏槽必须遵守：
 
@@ -322,7 +356,7 @@ record FrontendForIteratorStateSlot(
 - `nextTempSlotId` 固定使用 `cfg_for_iter_next_<n>` namespace，与 `slotId` 使用不同字符串；它同样不是 CFG value id，不进入 ordinary value producer/materialization surface。
 - 不新增 `HIDDEN_COMPILER_STATE` 一类 `CfgValueMaterializationKind`。value materialization 只负责 CFG value；hidden mutable local 由独立 registry 声明和验证。
 - 每个 `FrontendForRegion` 恰好引用一个 hidden slot；每个 hidden slot 恰好归属一个 `ForStatement` / `FrontendForRegion`。
-- 同一 executable body 内 `slotId` 与 `nextTempSlotId` 均唯一，nested/sibling loops 不得复用；二者必须不同；两者的 type 都必须严格等于对应 plan 的 non-null `iteratorStateType`。
+- 同一 executable body 内 `slotId` 与 `nextTempSlotId` 均唯一，nested/sibling loops 不得复用；二者必须不同；两者的 type 都必须严格等于对应 `FrontendForLoweringContract.iteratorStateType()`。
 - range/int route 的 state type 是 `GdccForRangeIterType.FOR_RANGE_ITER`，只允许进入 dedicated plan、hidden-slot metadata、LIR function local、intrinsic argument/result 与 backend storage。
 - source-facing iterator local 仍以 `ForStatement` 为 declaration identity，类型来自 final `slotTypes()[ForStatement]`；hidden slot 与 source local 不共享 id、type 或 lifecycle。
 
@@ -431,9 +465,13 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - 在 `FrontendAnalysisData` 或等价 stable surface 中新增 `forIterationPlans()` side table，key 为 `ForStatement`。
 - 新增 patch / transaction support，使 iteration plan 通过 owner-specific patch 发布，而不是在 CFG builder 中重新推导。
 - `FrontendPublishedFactTypeGuard` 增加 iteration plan guard：
-  - source-facing fields 不得含 compiler-only type。
-  - `iteratorStateType` 只允许在 dedicated iteration plan field 中携带。
-  - operation name 必须非空，且 route 与 operation arity 合法。
+  - `FrontendForIterationPlan` 的 source-facing fields 不得含 compiler-only type。
+  - `FrontendForIterationPlan` 不得携带 `GdCompilerType`、intrinsic 名称或任何 lowering 协议字段。
+  - `rawElementType` 与 `exposedIteratorType` 必须是 source-visible type。
+- 新增 `ForLoweringContractRegistry`（compile-time 静态注册表）：
+  - Phase C 只注册 `RANGE_CALL` 与 `INT_SHORTHAND` 的 `FrontendForLoweringContract`。
+  - `GENERIC_VARIANT` 在 Phase C 不注册；compile gate 查询返回 null 即 route-not-ready。
+  - registry 中每个 contract 的 `ForIterationOperationDescriptor` 必须具有非空 intrinsicName、合法 arity 与签名。
 - `FrontendForLoopSupport` 只做纯分类与 plan construction helper，不读源码文本，不扫描后续 statements，不直接写 scope 或 side table。
 
 验收细则：
@@ -442,8 +480,9 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendForLoopSupportTest` 覆盖 bare `range(...)`、非 bare `range`、`int` shorthand、unknown iterable fallback。
 - `RANGE_CALL` plan 的 `sourceOperands` 保留源码 arguments。
 - `INT_SHORTHAND` plan 的 `sourceOperands` 只包含 stop expression，不伪造 `0` / `1` AST。
-- `GENERIC_VARIANT` plan 不携带 range iterator state type。
-- route 与 operation name 不在 CFG builder / lowering processor 中重复硬编码。
+- `GENERIC_VARIANT` plan 只携带语义事实（route、rawElementType=Variant、exposedIteratorType），不携带任何 lowering 合同字段。
+- `ForLoweringContractRegistry` 对 `RANGE_CALL` / `INT_SHORTHAND` 返回 non-null contract；对 `GENERIC_VARIANT` 返回 null。
+- route 与 operation descriptor 不在 CFG builder / lowering processor 中重复硬编码。
 
 ### 阶段 D0：SuiteResolver header-only for path 与 baseline body entry
 
@@ -577,15 +616,15 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 目标：
 
 - shared semantic 支持与 compile-ready 支持分离。
-- 只有对应 lowering helper 已准备好的 route 才能通过 `analyzeForCompile(...)`。
+- 只有 `ForLoweringContractRegistry` 中已注册 contract 的 route 才能通过 `analyzeForCompile(...)`。
 
 实施内容：
 
 - shared semantic 阶段完成后，`FrontendCompileCheckAnalyzer.handleForStatement(...)` 用 route-aware
-  policy 替换阶段 B 的临时无条件 blocker，并按 route 分阶段阻断 compile：
-  - range route 已有 intrinsic/backend/runtime，可以优先解封。
-  - generic Variant route 必须等 LIR intrinsic、runtime helper、C backend codegen 与 tests 全部完成后再解封。
-  - known iterable 专用 route 必须等对应 helper 准备好后再解封；否则先降级到 generic Variant route。
+  policy 替换阶段 B 的临时无条件 blocker：查询 `ForLoweringContractRegistry.get(plan.route())`，返回 null 即发 route-not-ready diagnostic 阻断 compile。
+  - range route 已有 intrinsic/backend/runtime，Phase C 已注册 contract，可以优先解封。
+  - generic Variant route 必须等 Phase I 冻结 contract 并注册后再解封。
+  - known iterable 专用 route 必须等对应 helper 准备好并注册 contract 后再解封；否则先降级到 generic Variant route。
 - compile gate 解封时必须 mark：
   - `ForStatement`
   - iterator declaration key
@@ -630,8 +669,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendForRegion` 至少记录 `initEntryId`（即 `entryId()`）、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId`、`sourceIteratorSlotId` 与 `iteratorStateSlotId`；两个 slot id 必须来自不同 registry。
 - `sourceIteratorSlotId` 与 `iteratorStateSlotId` 是 slot references，不是 frontend CFG node ids；它们不得通过 node-id validator、value-id producer map 或 ordinary operand surface 解释。
 - `FrontendCfgGraphBuilder.processStatement(...)` 增加 `case ForStatement forStatement -> processForStatement(...)`。
-- `processForStatement(...)` 只消费已发布的 `FrontendForIterationPlan` 与 `FrontendForSourceIteratorSlot`，不得重新推导 iterable 语义、source iterator name 或 source-facing type。
-- 在 `frontend.lowering.cfg.item` 增加通用的 `ForLoopInitItem`、`ForLoopShouldContinueItem`、`ForLoopGetItem`、`ForLoopNextItem`。item 消费 plan 已冻结的 route/type/operation 信息，不硬编码 range intrinsic 名称。
+- `processForStatement(...)` 只消费已发布的 `FrontendForIterationPlan`、`FrontendForSourceIteratorSlot` 与 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract`，不得重新推导 iterable 语义、source iterator name 或 source-facing type。
+- 在 `frontend.lowering.cfg.item` 增加通用的 `ForLoopInitItem`、`ForLoopShouldContinueItem`、`ForLoopGetItem`、`ForLoopNextItem`。item 消费 `FrontendForIterationPlan` 的语义事实与 `FrontendForLoweringContract` 的 operation/state 信息，不硬编码 range intrinsic 名称。
 - 四个 item 使用独立 `iteratorStateSlotId` 字段引用 hidden slot。该 id 不进入 ordinary result/operand value-id surface：
   - init：消费 source operand value ids，初始化 hidden slot，不发布 ordinary result。
   - should-continue：读取 hidden slot，发布 ordinary `bool` result。
@@ -666,7 +705,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - hidden slot id 不在 value producer map、ordinary operand ids 或 CFG value materialization map 中。
 - init/next 不发布 ordinary result；should-continue/get 各自只有一个 ordinary single-definition result。
 - get item 的 ordinary raw result 使用独立 `cfg_tmp_*` slot，不与 source-facing iterator local alias；需要 conversion 时两者允许具有不同类型。
-- source-facing iterator local 的 slot type 是普通 `slotTypes()[ForStatement]` exposed type，不能是 `GdCompilerType`；hidden state type 只能来自 `iteratorStateType` / hidden-state metadata。
+- source-facing iterator local 的 slot type 是普通 `slotTypes()[ForStatement]` exposed type，不能是 `GdCompilerType`；hidden state type 只能来自 `FrontendForLoweringContract.iteratorStateType()` / hidden-state metadata。
 - graph construction 对 missing metadata、duplicate slot id、type mismatch、cross-loop slot reference、错误 entry 中的 item 和 slot-id/value-id 混用 fail fast。
 - graph construction 对 missing source-slot metadata、`slotTypes()[ForStatement]` 缺失、source-facing type 为 compiler-only type、source slot 未在 `ForLoopGetItem` 前注册等情况 fail fast。
 - 阶段 G 完成时首次同步 `frontend_lowering_cfg_pass_implementation.md`：更新 region 形状（含 `FrontendForRegion`）、`ValueOpItem` 子类列表（含四个 `ForLoop*Item`）及 build pass 发布面（含 source-slot / hidden-state registries）；阶段 F 只做 compile-gate 解封前复核。
@@ -686,7 +725,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 - 消费阶段 G 已冻结的 `ForLoopInitItem`、`ForLoopShouldContinueItem`、`ForLoopGetItem`、`ForLoopNextItem`，不在 body lowering 阶段重新解释 item shape。
 - body lowering 在 `FrontendSequenceItemInsnLoweringProcessors` 中增加对应 processor。
-- processor 消费阶段 G 从 `FrontendForIterationPlan` 固化到 item/hidden-slot metadata 的 operation/type payload，并生成 `CallIntrinsicInsn`；processor 不重新查询 AST shape 或重新分类 route。range route 对应：
+- processor 消费阶段 G 从 `FrontendForLoweringContract` 固化到 item/hidden-slot metadata 的 operation/state payload，并生成 `CallIntrinsicInsn`；processor 不重新查询 AST shape 或重新分类 route。range route 对应：
   - init：`gdcc.for_range_iter.init`
   - should_continue：`gdcc.for_range_iter.should_continue`
   - get：`gdcc.for_range_iter.get`
@@ -732,6 +771,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
   - `gdcc.for_variant_iter.next`
   - `gdcc.for_variant_iter.get`
 - 新增 compiler-only generic iterator state type，并冻结 init/copy/destroy/direct-assignment contract；该类型不得进入 ordinary type tables。
+- 冻结后，将 `GENERIC_VARIANT` 的 `FrontendForLoweringContract`（含 state type 与四个 typed `ForIterationOperationDescriptor`）注册到 `ForLoweringContractRegistry`，compile gate 自然解封该 route。
 - 在 C runtime 中新增 helper，优先通过 GDExtension Variant iteration API：
   - `variant_iter_init`
   - `variant_iter_next`
@@ -898,7 +938,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - loop-carried iterator state 不是 CFG expression value。不得通过两个 `MergeValueItem` 分别把 init/next 写入同一 result id，也不得扩展现有 branch-result merge 合同来掩盖 mutable storage。
 - dedicated hidden slot 若只在 lowering processor 中拼接名称而不随 graph artifact 发布，就会绕过 owner/type/uniqueness 与 nested-loop cross-reference validation。registry、region 与 items 必须在 CFG build 完成时交叉验证。
 - source-facing iterator slot 若只由 `ForLoopGetItem` processor 根据 `ForStatement` 临时拼接名称，就会绕过 source declaration identity、最终 exposed type 与 LIR predeclaration validation。source-slot registry、region、`ForLoopGetItem` 与 body predeclaration 必须在 lowering 前交叉验证。
-- source-facing iterator slot 与 hidden iterator state 即使都由同一个 `ForStatement` 关联，也不得共用 slot record 或 type lookup：前者来自 `slotTypes()[ForStatement]`，后者来自 `FrontendForIterationPlan.iteratorStateType()` / hidden-state metadata。
+- source-facing iterator slot 与 hidden iterator state 即使都由同一个 `ForStatement` 关联，也不得共用 slot record 或 type lookup：前者来自 `slotTypes()[ForStatement]`，后者来自 `FrontendForLoweringContract.iteratorStateType()` / hidden-state metadata。
 - 不得新增 `HIDDEN_COMPILER_STATE` value materialization kind。该做法仍会让 hidden storage 进入 value-id producer/materialization 模型，只是更换枚举名称，并未解决模型混淆。
 - `next` intrinsic 是 new-value operation，不是 in-place mutation。即使当前 `GdccForRangeIterType` destroy 为 no-op，也必须使用 distinct next temp 再通过 `AssignInsn` commit，为 future destroyable generic state 保留正确生命周期顺序。
 - 阶段 G 的 production path 依赖 C/D0/D1；阶段 F 的 range/int 解封又依赖 G/H。必须按依赖链原子提交，不能用手工注入 plan 的 builder test 替代真实 source -> sema -> CFG/LIR integration test。
@@ -913,10 +953,10 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 
 1. 所有 `for iterator[: Type] in expr` 在 shared semantic 中都不再触发 `FOR_SUBTREE` unsupported boundary。
 2. loop iterator 在 body 内是 source-facing local；无显式 type 时 baseline 为 `Variant`，可由 iteration plan 精化为 exact element type；显式 type 时 body 使用 declared type。
-3. `FrontendForIterationPlan` 是 type-check、compile gate、CFG builder 与 lowering 选择 route 的唯一事实源；CFG / lowering 不重新扫描 AST 推导 iterable 语义。
+3. `FrontendForIterationPlan` 是 type-check、compile gate 与 CFG builder 选择 route 的唯一语义事实源；`FrontendForLoweringContract`（经由 `ForLoweringContractRegistry`）是 lowering 选择 state type 与 operation 的唯一 lowering 事实源；CFG / lowering 不重新扫描 AST 推导 iterable 语义。
 4. `range(...)` 与 `int` shorthand 复用 `gdcc.for_range_iter.*` route，且不把 `range(...)` 作为 ordinary call 发布。
 5. generic Variant route 有完整 LIR intrinsic、runtime helper、C backend codegen 与 tests；unknown iterable 不再需要 compile-time unsupported。
-6. compiler-only iterator state type 只出现在 dedicated iteration plan、CFG hidden-slot metadata、hidden LIR local / intrinsic operand-result / backend C storage 路径；hidden slot id 不属于 CFG value-id/materialization surface。
+6. compiler-only iterator state type 只出现在 `FrontendForLoweringContract`、CFG hidden-slot metadata、hidden LIR local / intrinsic operand-result / backend C storage 路径；hidden slot id 不属于 CFG value-id/materialization surface。
 7. CFG 中存在独立 `FrontendForRegion`、validated source-iterator slot registry 与 validated hidden-slot registry，且 `continue` / `break` 连边正确；source slot 与 hidden slot 的 id/type/lifecycle 始终分离；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
 9. `FrontendTypeCheckAnalyzer.handleForStatement(...)` 检查 iteration plan 所需 header facts 并遍历 for body；for body 的 ordinary local initializer、nested for 与 return type-check regression 均已通过。assignment / call boundary 的 ordinary semantic error regression 同时锁定上游 resolution / expression typing 的 for-body child-suite traversal。
