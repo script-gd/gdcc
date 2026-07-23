@@ -1,6 +1,8 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
+import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
@@ -43,6 +45,10 @@ public final class FrontendAnalysisData {
     private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
     private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
     private final @NotNull FrontendAstSideTable<GdType> slotTypes;
+    /// Published for-in iteration plans keyed by the owning `ForStatement`. Consumed by type-check,
+    /// compile gate and CFG builder as the single route/element-type truth; never carries lowering
+    /// protocol or compiler-only types.
+    private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
 
     private FrontendAnalysisData(
             @NotNull FrontendAstSideTable<List<FrontendGdAnnotation>> annotationsByAst,
@@ -52,7 +58,8 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendExpressionType> expressionTypes,
             @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
             @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
-            @NotNull FrontendAstSideTable<GdType> slotTypes
+            @NotNull FrontendAstSideTable<GdType> slotTypes,
+            @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans
     ) {
         this.annotationsByAst = Objects.requireNonNull(annotationsByAst, "annotationsByAst must not be null");
         this.skippedSubtreeRoots = Objects.requireNonNull(
@@ -68,11 +75,16 @@ public final class FrontendAnalysisData {
                 slotTypes,
                 "slotTypes must not be null"
         );
+        this.forIterationPlans = Objects.requireNonNull(
+                forIterationPlans,
+                "forIterationPlans must not be null"
+        );
     }
 
     /// Creates an empty analysis data carrier with the full side-table topology already present.
     public static @NotNull FrontendAnalysisData bootstrap() {
         return new FrontendAnalysisData(
+                new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
                 new FrontendAstSideTable<>(),
@@ -131,6 +143,11 @@ public final class FrontendAnalysisData {
         );
     }
 
+    public void updateForIterationPlans(@NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans) {
+        FrontendPublishedFactTypeGuard.checkForIterationPlans(forIterationPlans);
+        replaceSideTableContents(this.forIterationPlans, forIterationPlans, "forIterationPlans");
+    }
+
     /// Applies one single-owner patch without replacing any stable side-table reference.
     ///
     /// Conflict checks and local-slot validation are scoped to this patch. Repeated calls, including
@@ -145,6 +162,7 @@ public final class FrontendAnalysisData {
                 checkedPatch.resolvedCalls(),
                 checkedPatch.expressionTypes(),
                 checkedPatch.slotTypes(),
+                checkedPatch.forIterationPlans(),
                 checkedPatch.localSlotTypeUpdates()
         );
     }
@@ -156,6 +174,7 @@ public final class FrontendAnalysisData {
             @NotNull FrontendAstSideTable<FrontendResolvedCall> patchResolvedCalls,
             @NotNull FrontendAstSideTable<FrontendExpressionType> patchExpressionTypes,
             @NotNull FrontendAstSideTable<GdType> patchSlotTypes,
+            @NotNull FrontendAstSideTable<FrontendForIterationPlan> patchForIterationPlans,
             @NotNull List<FrontendLocalSlotTypeUpdate> localSlotTypeUpdates
     ) {
         var validatedLocalSlotUpdates = validateLocalSlotTypeUpdates(stage, localSlotTypeUpdates);
@@ -179,12 +198,19 @@ public final class FrontendAnalysisData {
                 FrontendAnalysisData::sameExpressionType
         );
         checkPatchConflicts(slotTypes, patchSlotTypes, "slotTypes", FrontendAnalysisData::sameType);
+        checkPatchConflicts(
+                forIterationPlans,
+                patchForIterationPlans,
+                "forIterationPlans",
+                FrontendForIterationPlan::samePlan
+        );
 
         mergeSideTable(symbolBindings, patchSymbolBindings);
         mergeSideTable(resolvedMembers, patchResolvedMembers);
         mergeSideTable(resolvedCalls, patchResolvedCalls);
         mergeSideTable(expressionTypes, patchExpressionTypes);
         mergeSideTable(slotTypes, patchSlotTypes);
+        mergeSideTable(forIterationPlans, patchForIterationPlans);
         for (var validatedUpdate : validatedLocalSlotUpdates) {
             applyLocalSlotTypeUpdate(validatedUpdate);
         }
@@ -231,6 +257,10 @@ public final class FrontendAnalysisData {
 
     public @NotNull FrontendAstSideTable<GdType> slotTypes() {
         return slotTypes;
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans() {
+        return forIterationPlans;
     }
 
     /// Refreshes published local bindings after a verified local-slot rewrite.
@@ -289,17 +319,46 @@ public final class FrontendAnalysisData {
         if (localSlotTypeUpdates.isEmpty()) {
             return List.of();
         }
-        if (stage != FrontendSemanticStage.LOCAL_TYPE_STABILIZATION) {
+        // Two disjoint slot-update owners share the Variant->exact rewrite rules: LOCAL_TYPE_STABILIZATION
+        // for ordinary `var :=` (VariableDeclaration identity) and FOR_ITERATION_RESOLUTION for the for-in
+        // iterator (owning ForStatement identity). Every other stage is rejected.
+        if (stage != FrontendSemanticStage.LOCAL_TYPE_STABILIZATION
+                && stage != FrontendSemanticStage.FOR_ITERATION_RESOLUTION) {
             throw patchFailure(
-                    "Only LOCAL_TYPE_STABILIZATION patches may publish local slot type updates, but got "
+                    "Only LOCAL_TYPE_STABILIZATION or FOR_ITERATION_RESOLUTION patches may publish local slot "
+                            + "type updates, but got "
                             + stage
             );
         }
         var validatedUpdates = new ArrayList<ValidatedLocalSlotTypeUpdate>(localSlotTypeUpdates.size());
         for (var update : localSlotTypeUpdates) {
+            checkSlotUpdateDeclarationDomain(stage, update);
             validatedUpdates.add(validateLocalSlotTypeUpdate(update, validatedUpdates));
         }
         return List.copyOf(validatedUpdates);
+    }
+
+    /// Enforces the two disjoint declaration-identity domains at the data boundary: ordinary local
+    /// stabilization may only target `VariableDeclaration`, while for-iteration resolution may only
+    /// target the owning `ForStatement` iterator. This keeps the two slot-update owners mutually
+    /// exclusive even if a future producer misroutes an update.
+    private static void checkSlotUpdateDeclarationDomain(
+            @NotNull FrontendSemanticStage stage,
+            @NotNull FrontendLocalSlotTypeUpdate update
+    ) {
+        var declaration = update.declaration();
+        if (stage == FrontendSemanticStage.FOR_ITERATION_RESOLUTION && !(declaration instanceof ForStatement)) {
+            throw patchFailure(
+                    "FOR_ITERATION_RESOLUTION slot update must target a ForStatement iterator, but got "
+                            + declaration.getClass().getSimpleName()
+            );
+        }
+        if (stage == FrontendSemanticStage.LOCAL_TYPE_STABILIZATION && !(declaration instanceof VariableDeclaration)) {
+            throw patchFailure(
+                    "LOCAL_TYPE_STABILIZATION slot update must target a VariableDeclaration, but got "
+                            + declaration.getClass().getSimpleName()
+            );
+        }
     }
 
     private @NotNull ValidatedLocalSlotTypeUpdate validateLocalSlotTypeUpdate(

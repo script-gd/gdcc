@@ -4,9 +4,9 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持已完成；完整 shared semantic 尚未完成：`FrontendTypeCheckAnalyzer` 仍未遍历 `ForStatement` 的 header 或 body；bare `range(...)` header 预路由、iteration plan、CFG、lowering 尚未实施）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；完整 shared semantic 尚未完成：`FrontendTypeCheckAnalyzer` 仍未遍历 `ForStatement` 的 header 或 body；bare `range(...)` header 预路由（D0/D1）、compile gate 解封（F）、CFG（G）、lowering（H）尚未实施）
 - 创建日期：2026-07-03
-- 更新时间：2026-07-23
+- 更新时间：2026-07-24
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -98,7 +98,7 @@ compile / lowering 最终目标必须覆盖：
 尚未实施：
 
 - `FrontendStatementResolver.resolveForStatement(...)` 仍无条件对整个 `forStatement.iterable()` 调用 ordinary `runSupportedRoot(...)`。bare `range(...)` 缺少专用预路由，canonical `for i in range(3)` 会为 callee 发布 unknown binding 并让 call root expression typing 失败。
-- `FrontendForIterationPlan`、`FrontendForIterationRoute` 不存在；`FOR_ITERATION_RESOLUTION` owner 未实现。
+- `FrontendForIterationPlan`、`FrontendForIterationRoute`、`FrontendForLoopSupport`、`ForLoweringContractRegistry`、`FrontendForLoweringContract`、`ForIterationOperationDescriptor` 已建立（阶段 C），`forIterationPlans()` side table、`FrontendForIterationResolutionPatch` 与 `FOR_ITERATION_RESOLUTION` stage/guard 已就位；但发布 plan 与 iterator slot refinement 的 owner procedure `runForIterationResolution(...)` 尚未实现（阶段 D1）。
 - `FrontendCompileCheckAnalyzer` 对每个 `ForStatement` root 发布临时、无条件的 `sema.compile_check` blocker。
 - `FrontendTypeCheckAnalyzer` 尚未实现 `handleForStatement(...)`。其默认 node handler 返回 `SKIP_CHILDREN`，因此当前不会 type-check `iterable`、iterator conversion 或整个 for body；这与已显式遍历 body 的 `if` / `while` 不同。
 - `FrontendCfgGraphBuilder.processStatement(...)` 没有 `ForStatement` 分支；`FrontendCfgRegion` 只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
@@ -445,6 +445,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 阶段 A（parse/AST/scope 基线测试）与阶段 B（body inventory 与 declaration index 解封）已完成。所有 `for-in` body 已转为 shared semantic 结构支持面；iterator binding、body local inventory、declaration index、typed baseline、suite entry 均已无条件发布。该完成状态不包括 diagnostics-only type-check：`FrontendTypeCheckAnalyzer` 尚未遍历 `ForStatement` subtree，完整 shared semantic 必须等待阶段 E。`FrontendCompileCheckAnalyzer` 对所有 `ForStatement` 发布临时无条件 `sema.compile_check` blocker，等待后续 route-aware policy 替换。
 
 ### 阶段 C：iteration plan 数据结构与 publication surface
+
+状态：已完成。`FrontendForIterationRoute` / `FrontendForIterationPlan` / `FrontendForLoopSupport`（纯分类与 plan 构造）已落地；`forIterationPlans()` side table、`FrontendForIterationResolutionPatch`、`FOR_ITERATION_RESOLUTION` stage 与 `FrontendPublishedFactTypeGuard` iteration-plan guard 已就位；`ForLoweringContractRegistry` 已静态注册 `RANGE_CALL` 与 `INT_SHORTHAND` 的 `FrontendForLoweringContract`（`GENERIC_VARIANT` 与保留 route 返回 null）。正反测试见 `FrontendForLoopSupportTest`、`ForLoweringContractRegistryTest`、`FrontendAnalysisDataTest`（forIterationPlans idempotent/conflict/compiler-only guard）。本阶段不发布 plan（owner procedure 在 D1），不解封 compile gate（在 F）。
 
 目标：
 

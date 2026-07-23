@@ -1,12 +1,18 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
+import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendExprTypePatch;
+import gd.script.gdcc.frontend.sema.patch.FrontendForIterationResolutionPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalSlotTypeUpdate;
 import gd.script.gdcc.frontend.sema.patch.FrontendLocalTypeStabilizationPatch;
 import gd.script.gdcc.frontend.sema.patch.FrontendOwnerPatch;
@@ -846,8 +852,225 @@ class FrontendAnalysisDataTest {
         );
     }
 
+    @Test
+    void applyPatchPublishesForIterationPlansWithoutReplacingStableSideTableReference() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var stableReference = analysisData.forIterationPlans();
+        var statement = forStatement(bareRangeCall());
+        var plan = rangePlan(statement, statement.iterable());
+        var plans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        plans.put(statement, plan);
+
+        analysisData.applyPatch(new FrontendForIterationResolutionPatch(plans, List.of()));
+
+        assertSame(stableReference, analysisData.forIterationPlans());
+        assertSame(plan, analysisData.forIterationPlans().get(statement));
+    }
+
+    @Test
+    void applyPatchAllowsIdempotentForIterationPlanMerge() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var statement = forStatement(bareRangeCall());
+        var operand = statement.iterable();
+        analysisData.forIterationPlans().put(statement, rangePlan(statement, operand));
+
+        var idempotentPlans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        idempotentPlans.put(statement, rangePlan(statement, operand));
+
+        analysisData.applyPatch(new FrontendForIterationResolutionPatch(idempotentPlans, List.of()));
+
+        assertEquals(FrontendForIterationRoute.RANGE_CALL,
+                Objects.requireNonNull(analysisData.forIterationPlans().get(statement)).route());
+    }
+
+    @Test
+    void applyPatchRejectsConflictingForIterationPlanOnSameStatement() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var statement = forStatement(bareRangeCall());
+        var operand = statement.iterable();
+        analysisData.forIterationPlans().put(statement, rangePlan(statement, operand));
+
+        var conflictingPlans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        conflictingPlans.put(statement, intShorthandPlan(statement, operand));
+
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendForIterationResolutionPatch(conflictingPlans, List.of()))
+        );
+        assertEquals(FrontendForIterationRoute.RANGE_CALL,
+                Objects.requireNonNull(analysisData.forIterationPlans().get(statement)).route());
+    }
+
+    @Test
+    void forIterationResolutionPatchGuardRejectsCompilerOnlyElementTypes() {
+        var statement = forStatement(bareRangeCall());
+        var compilerOnlyPlan = new FrontendForIterationPlan(
+                statement,
+                FrontendForIterationRoute.RANGE_CALL,
+                "i",
+                null,
+                GdccForRangeIterType.FOR_RANGE_ITER,
+                GdIntType.INT,
+                false,
+                List.of(statement.iterable())
+        );
+        var plans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        plans.put(statement, compilerOnlyPlan);
+
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> new FrontendForIterationResolutionPatch(plans, List.of())
+        );
+    }
+
+    @Test
+    void updateForIterationPlansWholeTablePublicationUsesCompilerOnlyGuard() {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var statement = forStatement(bareRangeCall());
+        var compilerOnlyPlan = new FrontendForIterationPlan(
+                statement,
+                FrontendForIterationRoute.GENERIC_VARIANT,
+                "i",
+                null,
+                GdVariantType.VARIANT,
+                GdccForRangeIterType.FOR_RANGE_ITER,
+                false,
+                List.of(statement.iterable())
+        );
+        var plans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        plans.put(statement, compilerOnlyPlan);
+
+        assertThrows(FrontendAnalysisPatchException.class, () -> analysisData.updateForIterationPlans(plans));
+    }
+
+    @Test
+    void forIterationResolutionPatchRefinesIteratorSlotFromVariantToExact() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var scope = newBodyScope();
+        var statement = forStatement(bareRangeCall());
+        scope.defineLocal("i", GdVariantType.VARIANT, statement);
+
+        analysisData.applyPatch(new FrontendForIterationResolutionPatch(
+                new FrontendAstSideTable<>(),
+                List.of(new FrontendLocalSlotTypeUpdate(scope, "i", statement, GdIntType.INT))
+        ));
+
+        assertSame(GdIntType.INT, requireLocal(scope, "i").type());
+    }
+
+    @Test
+    void forIterationResolutionPatchRejectsExactToExactIteratorSlotRewrite() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var scope = newBodyScope();
+        var statement = forStatement(bareRangeCall());
+        scope.defineLocal("i", GdIntType.INT, statement);
+
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendForIterationResolutionPatch(
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(scope, "i", statement, GdFloatType.FLOAT))
+                ))
+        );
+    }
+
+    @Test
+    void slotUpdateOwnersEnforceDisjointDeclarationIdentityDomains() throws Exception {
+        var analysisData = FrontendAnalysisData.bootstrap();
+        var scope = newBodyScope();
+        var statement = forStatement(bareRangeCall());
+        var ordinaryDeclaration = variable("local");
+        scope.defineLocal("i", GdVariantType.VARIANT, statement);
+        scope.defineLocal("local", GdVariantType.VARIANT, ordinaryDeclaration);
+
+        // FOR_ITERATION_RESOLUTION must only target the owning ForStatement iterator.
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendForIterationResolutionPatch(
+                        new FrontendAstSideTable<>(),
+                        List.of(new FrontendLocalSlotTypeUpdate(scope, "local", ordinaryDeclaration, GdIntType.INT))
+                ))
+        );
+        // LOCAL_TYPE_STABILIZATION must only target a VariableDeclaration.
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> analysisData.applyPatch(new FrontendLocalTypeStabilizationPatch(
+                        List.of(new FrontendLocalSlotTypeUpdate(scope, "i", statement, GdIntType.INT))
+                ))
+        );
+    }
+
+    @Test
+    void patchTransactionOrdersForIterationResolutionBetweenExprTypeAndVarTypePost() {
+        var statement = forStatement(bareRangeCall());
+        var plans = new FrontendAstSideTable<FrontendForIterationPlan>();
+        plans.put(statement, rangePlan(statement, statement.iterable()));
+        var slotTypes = new FrontendAstSideTable<GdType>();
+        slotTypes.put(statement, GdIntType.INT);
+
+        var analysisData = FrontendAnalysisData.bootstrap();
+        new FrontendPatchTransaction(List.of(
+                new FrontendExprTypePatch(new FrontendAstSideTable<>(), new FrontendAstSideTable<>()),
+                new FrontendForIterationResolutionPatch(plans, List.of()),
+                new FrontendVarTypePostPatch(slotTypes)
+        )).applyTo(analysisData);
+        assertSame(plans.get(statement), analysisData.forIterationPlans().get(statement));
+
+        assertThrows(
+                FrontendAnalysisPatchException.class,
+                () -> new FrontendPatchTransaction(List.of(
+                        new FrontendForIterationResolutionPatch(plans, List.of()),
+                        new FrontendExprTypePatch(new FrontendAstSideTable<>(), new FrontendAstSideTable<>())
+                ))
+        );
+    }
+
     private static PassStatement passNode() {
         return new PassStatement(RANGE);
+    }
+
+    private static @NotNull CallExpression bareRangeCall() {
+        return new CallExpression(
+                new IdentifierExpression("range", RANGE),
+                List.of(new LiteralExpression("int", "3", RANGE)),
+                RANGE
+        );
+    }
+
+    private static @NotNull ForStatement forStatement(@NotNull Expression iterable) {
+        return new ForStatement("i", null, iterable, new Block(List.of(passNode()), RANGE), RANGE);
+    }
+
+    private static @NotNull FrontendForIterationPlan rangePlan(
+            @NotNull ForStatement statement,
+            @NotNull Expression operand
+    ) {
+        return new FrontendForIterationPlan(
+                statement,
+                FrontendForIterationRoute.RANGE_CALL,
+                "i",
+                null,
+                GdIntType.INT,
+                GdIntType.INT,
+                false,
+                List.of(operand)
+        );
+    }
+
+    private static @NotNull FrontendForIterationPlan intShorthandPlan(
+            @NotNull ForStatement statement,
+            @NotNull Expression operand
+    ) {
+        return new FrontendForIterationPlan(
+                statement,
+                FrontendForIterationRoute.INT_SHORTHAND,
+                "i",
+                null,
+                GdIntType.INT,
+                GdIntType.INT,
+                false,
+                List.of(operand)
+        );
     }
 
     private static @NotNull IdentifierExpression identifier(@NotNull String name) {
@@ -913,6 +1136,10 @@ class FrontendAnalysisDataTest {
             case LOCAL_TYPE_STABILIZATION -> new FrontendLocalTypeStabilizationPatch(localSlotTypeUpdates);
             case CHAIN_BINDING -> new FrontendChainBindingPatch(resolvedMembers, resolvedCalls);
             case EXPR_TYPE -> new FrontendExprTypePatch(expressionTypes, resolvedCalls);
+            case FOR_ITERATION_RESOLUTION -> new FrontendForIterationResolutionPatch(
+                    new FrontendAstSideTable<>(),
+                    localSlotTypeUpdates
+            );
             case VAR_TYPE_POST -> new FrontendVarTypePostPatch(slotTypes);
         };
     }

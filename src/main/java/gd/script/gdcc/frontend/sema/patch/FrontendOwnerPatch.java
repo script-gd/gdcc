@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.patch;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
@@ -20,6 +21,7 @@ public sealed interface FrontendOwnerPatch permits
         FrontendLocalTypeStabilizationPatch,
         FrontendChainBindingPatch,
         FrontendExprTypePatch,
+        FrontendForIterationResolutionPatch,
         FrontendVarTypePostPatch {
     @NotNull FrontendSemanticStage stage();
 
@@ -40,6 +42,10 @@ public sealed interface FrontendOwnerPatch permits
     }
 
     default @NotNull FrontendAstSideTable<GdType> slotTypes() {
+        return FrontendPatchTables.emptySideTable();
+    }
+
+    default @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans() {
         return FrontendPatchTables.emptySideTable();
     }
 

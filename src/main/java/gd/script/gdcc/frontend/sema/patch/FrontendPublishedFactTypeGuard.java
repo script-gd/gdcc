@@ -4,6 +4,7 @@ import gd.script.gdcc.exception.FrontendAnalysisPatchException;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
 import gd.script.gdcc.scope.ScopeValue;
@@ -26,6 +27,7 @@ public final class FrontendPublishedFactTypeGuard {
         checkResolvedCalls(patch.resolvedCalls());
         checkExpressionTypes(patch.expressionTypes());
         checkSlotTypes(patch.slotTypes());
+        checkForIterationPlans(patch.forIterationPlans());
         checkLocalSlotTypeUpdates(patch.localSlotTypeUpdates());
     }
 
@@ -86,6 +88,25 @@ public final class FrontendPublishedFactTypeGuard {
         for (var slotType : slotTypes.values()) {
             checkNoCompilerOnlyLeak(slotType, "slotTypes() value");
         }
+    }
+
+    public static void checkForIterationPlans(@NotNull FrontendAstSideTable<FrontendForIterationPlan> plans) {
+        for (var plan : plans.values()) {
+            checkForIterationPlan(plan);
+        }
+    }
+
+    /// The plan is a source-facing semantic fact: both element types must be ordinary source-visible
+    /// types, never compiler-only iterator state.
+    public static void checkForIterationPlan(@NotNull FrontendForIterationPlan plan) {
+        checkNoCompilerOnlyLeak(
+                plan.rawElementType(),
+                "forIterationPlans() raw element type for '" + plan.iteratorName() + "'"
+        );
+        checkNoCompilerOnlyLeak(
+                plan.exposedIteratorType(),
+                "forIterationPlans() exposed iterator type for '" + plan.iteratorName() + "'"
+        );
     }
 
     public static void checkLocalSlotTypeUpdates(@NotNull Iterable<FrontendLocalSlotTypeUpdate> updates) {
