@@ -277,7 +277,31 @@ generic Variant route 需要新增 contract：
 - `rawElementType = GdVariantType.VARIANT`
 - `operationNames` 使用新 intrinsic，例如 `gdcc.for_variant_iter.init / should_continue / next / get`，具体名称在 intrinsic catalog 阶段冻结。
 
-### 3.5 dedicated hidden iterator state slot
+### 3.5 iterator slots
+
+#### 3.5.1 dedicated source-facing iterator slot
+
+Source-facing iterator local 与 loop-carried hidden state 必须有两条独立的发现、类型与声明路径。iterator 的 declaration identity 仍是 `ForStatement`，不能伪造 `VariableDeclaration` 或把 iterator local 放入 hidden-state registry：
+
+```java
+record FrontendForSourceIteratorSlot(
+        @NotNull ForStatement statement,
+        @NotNull String sourceIteratorSlotId,
+        @NotNull GdType exposedType
+) {}
+```
+
+约束：
+
+- 每个 compile-ready `ForStatement` 恰好发布一个 `FrontendForSourceIteratorSlot`；`statement` 必须与 owning `FrontendForRegion` 及 `FrontendForIterationPlan.statement()` identity 一致。
+- `sourceIteratorSlotId` 是源码 iterator name（例如 `i`），不是 `cfg_for_iter_<n>`，也不是 CFG value id。region、`ForLoopGetItem` 与 registry 使用的 `sourceIteratorSlotId` 是同一个字符串，不存在额外的间接 slot；它必须与 `FrontendForIterationPlan.iteratorName()` 以及 `ForStatement.iterator()` 一致。
+- `exposedType` 必须来自最终发布的 `analysisData.slotTypes().get(statement)`，并严格等于 source-facing iterator type；缺失、identity 不一致或类型不一致必须在 CFG artifact 构造时 fail fast。
+- `exposedType` 只能是普通 `GdType`，不得是 `GdCompilerType`。`GdccForRangeIterType` 只能出现在 dedicated hidden-state metadata、hidden LIR local、intrinsic argument/result 与 backend storage 路径。
+- source slot registry 与 `FrontendForIteratorStateSlot` registry 都随 graph/regions 发布到 `FunctionLoweringContext`，但二者的 record、type validation、declaration pass 与 lifecycle 合同保持分离。
+- source iterator slot 不通过 `LocalDeclarationItem<VariableDeclaration>` 伪造声明，也不进入 `collectCfgValueMaterializations()`、`slotIdForValue()` 或 hidden-state materialization path。
+- `FrontendBodyLoweringSession` 必须在 `createBlocks()` / `lowerBlocks()` 前增加 source-iterator predeclaration phase，使用 `sourceIteratorSlotId` 与 `exposedType` 调用普通 LIR function-local declaration path；缺少 source-slot metadata 时不得由 `ForLoopGetItem` processor 延迟创建变量。
+
+#### 3.5.2 dedicated hidden iterator state slot
 
 loop-carried iterator state 是 lowering-owned mutable storage，不是 source expression value。每个 compile-ready `ForStatement` 必须在 frontend CFG build artifact 中发布一个 `FrontendForIteratorStateSlot` 或等价 immutable metadata，key 使用 owning `ForStatement` identity。建议形状：
 
@@ -285,6 +309,7 @@ loop-carried iterator state 是 lowering-owned mutable storage，不是 source e
 record FrontendForIteratorStateSlot(
         @NotNull ForStatement statement,
         @NotNull String slotId,
+        @NotNull String nextTempSlotId,
         @NotNull GdCompilerType stateType
 ) {}
 ```
@@ -294,9 +319,10 @@ record FrontendForIteratorStateSlot(
 隐藏槽必须遵守：
 
 - `slotId` 不是 CFG value id；不得出现在 `ValueOpItem.resultValueIdOrNull()`、`operandValueIds()`、value producer map、`cfg_tmp_*` / `cfg_merge_*` materialization collection 中。
+- `nextTempSlotId` 固定使用 `cfg_for_iter_next_<n>` namespace，与 `slotId` 使用不同字符串；它同样不是 CFG value id，不进入 ordinary value producer/materialization surface。
 - 不新增 `HIDDEN_COMPILER_STATE` 一类 `CfgValueMaterializationKind`。value materialization 只负责 CFG value；hidden mutable local 由独立 registry 声明和验证。
 - 每个 `FrontendForRegion` 恰好引用一个 hidden slot；每个 hidden slot 恰好归属一个 `ForStatement` / `FrontendForRegion`。
-- 同一 executable body 内 `slotId` 唯一，nested/sibling loops 不得复用；slot type 必须严格等于对应 plan 的 non-null `iteratorStateType`。
+- 同一 executable body 内 `slotId` 与 `nextTempSlotId` 均唯一，nested/sibling loops 不得复用；二者必须不同；两者的 type 都必须严格等于对应 plan 的 non-null `iteratorStateType`。
 - range/int route 的 state type 是 `GdccForRangeIterType.FOR_RANGE_ITER`，只允许进入 dedicated plan、hidden-slot metadata、LIR function local、intrinsic argument/result 与 backend storage。
 - source-facing iterator local 仍以 `ForStatement` 为 declaration identity，类型来自 final `slotTypes()[ForStatement]`；hidden slot 与 source local 不共享 id、type 或 lifecycle。
 
@@ -315,10 +341,12 @@ ForLoopShouldContinueItem:
 ForLoopGetItem:
     hidden read = iteratorStateSlotId
     ordinary result = raw element value id
-    source effect = convert if required, then commit to iterator local
+    source effect = convert if required, then commit to sourceIteratorSlotId
 
 ForLoopNextItem:
-    hidden read/write = iteratorStateSlotId
+    hidden read = iteratorStateSlotId
+    hidden result temp = nextTempSlotId
+    hidden state commit = iteratorStateSlotId via AssignInsn
     ordinary result = none
 ```
 
@@ -571,7 +599,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
   - `frontend_local_type_stabilization_implementation.md`
   - `frontend_compile_check_analyzer_implementation.md`
   - `frontend_lowering_plan.md`
-  - `frontend_lowering_cfg_pass_implementation.md`
+   - `frontend_lowering_cfg_pass_implementation.md`（阶段 G 首次同步；阶段 F 解封前复核）
   - `frontend_gdcompiler_type_implementation.md` 如新增 compiler-only iterator state
   - `gdcc_lir_intrinsic.md` 与 `gdcc_runtime_lib.md` 如新增 generic helper
 
@@ -597,15 +625,17 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 - 新增 `FrontendForRegion`，不要复用 `FrontendWhileRegion`。
 - `FrontendCfgRegion` sealed permits 增加 `FrontendForRegion`。
+- 新增 AST-keyed `FrontendForSourceIteratorSlot` registry，并与 graph/regions 一起发布到 `FunctionLoweringContext`；它只携带 `ForStatement` identity、源码 iterator name 与 exposed source type，不能与 hidden-state registry 合并。
 - 新增 AST-keyed `FrontendForIteratorStateSlot` registry 或等价 immutable graph artifact，并与 graph/regions 一起发布到 `FunctionLoweringContext`。
-- `FrontendForRegion` 至少记录 `initEntryId`（即 `entryId()`）、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId` 与 `iteratorStateSlotId`。
+- `FrontendForRegion` 至少记录 `initEntryId`（即 `entryId()`）、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId`、`sourceIteratorSlotId` 与 `iteratorStateSlotId`；两个 slot id 必须来自不同 registry。
+- `sourceIteratorSlotId` 与 `iteratorStateSlotId` 是 slot references，不是 frontend CFG node ids；它们不得通过 node-id validator、value-id producer map 或 ordinary operand surface 解释。
 - `FrontendCfgGraphBuilder.processStatement(...)` 增加 `case ForStatement forStatement -> processForStatement(...)`。
-- `processForStatement(...)` 只消费已发布的 `FrontendForIterationPlan`，不得重新推导 iterable 语义。
+- `processForStatement(...)` 只消费已发布的 `FrontendForIterationPlan` 与 `FrontendForSourceIteratorSlot`，不得重新推导 iterable 语义、source iterator name 或 source-facing type。
 - 在 `frontend.lowering.cfg.item` 增加通用的 `ForLoopInitItem`、`ForLoopShouldContinueItem`、`ForLoopGetItem`、`ForLoopNextItem`。item 消费 plan 已冻结的 route/type/operation 信息，不硬编码 range intrinsic 名称。
 - 四个 item 使用独立 `iteratorStateSlotId` 字段引用 hidden slot。该 id 不进入 ordinary result/operand value-id surface：
   - init：消费 source operand value ids，初始化 hidden slot，不发布 ordinary result。
   - should-continue：读取 hidden slot，发布 ordinary `bool` result。
-  - get：读取 hidden slot，发布 ordinary raw element result，并在 body statements 前提交 source-facing iterator local。
+  - get：读取 hidden slot，发布 ordinary raw element result，并在 body statements 前通过冻结的 `sourceIteratorSlotId` 提交 source-facing iterator local。
   - next：读取并更新 hidden slot，不发布 ordinary result。
 - CFG shape 建议：
   - iterable / source operands 在进入 loop 前按 source order 计算。
@@ -619,12 +649,16 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
   - `continueTargetId = updateEntryId`
 - hidden iterator state slot 固定使用 `cfg_for_iter_<n>`；next commit temp 固定使用独立 `cfg_for_iter_next_<n>` namespace。两者都不是 CFG value id。
 - build artifact 必须验证 slot owner/type/uniqueness、四个 item 的 slot 引用、init-before-condition、get-before-body、next-before-backedge，以及 hidden slot 未泄漏到 ordinary value producer/materialization surface。
+- build artifact 必须验证 source-slot registry 的 statement/name/exposed type、region 的 `sourceIteratorSlotId` 与 `ForLoopGetItem` 的 source-slot 引用三者 identity 一致；source slot 与 hidden slot 不得共享 id、type 或 registry。
+- source-slot registry、region 与 item 的 graph-time 验证在阶段 G 完成；body predeclaration 对 registry 的存在性、LIR variable name/type 的验证在阶段 H 的 `lowerBlocks()` 前完成，四者的闭环必须在任何 instruction lowering 前成立。
 
 验收细则：
 
 - CFG regions 中 `ForStatement` 映射到 `FrontendForRegion`。
 - `FrontendForRegion` 暴露 `initEntryId`、`conditionEntryId`、`bodyEntryId`、`updateEntryId`、`exitId` 与 `iteratorStateSlotId`。
+- `FrontendForRegion` 同时暴露 `sourceIteratorSlotId`；该 id 能解析到 source-facing iterator name 和最终 `slotTypes()[ForStatement]` type。
 - 每个 region 恰好有一个 `FrontendForIteratorStateSlot` metadata；nested/sibling loop slot id 唯一。
+- 每个 region 恰好有一个 `FrontendForSourceIteratorSlot` metadata；nested/sibling source slot 的 declaration identity、name 与 exposed type 均可验证。
 - `continue` 的 target 是 update entry，不是 condition entry。
 - `break` 的 target 是 exit。
 - `range(...)` arguments、`INT_SHORTHAND` stop operand 或 generic iterable value ids 在 init item 前已经发布。
@@ -632,7 +666,10 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - hidden slot id 不在 value producer map、ordinary operand ids 或 CFG value materialization map 中。
 - init/next 不发布 ordinary result；should-continue/get 各自只有一个 ordinary single-definition result。
 - get item 的 ordinary raw result 使用独立 `cfg_tmp_*` slot，不与 source-facing iterator local alias；需要 conversion 时两者允许具有不同类型。
+- source-facing iterator local 的 slot type 是普通 `slotTypes()[ForStatement]` exposed type，不能是 `GdCompilerType`；hidden state type 只能来自 `iteratorStateType` / hidden-state metadata。
 - graph construction 对 missing metadata、duplicate slot id、type mismatch、cross-loop slot reference、错误 entry 中的 item 和 slot-id/value-id 混用 fail fast。
+- graph construction 对 missing source-slot metadata、`slotTypes()[ForStatement]` 缺失、source-facing type 为 compiler-only type、source slot 未在 `ForLoopGetItem` 前注册等情况 fail fast。
+- 阶段 G 完成时首次同步 `frontend_lowering_cfg_pass_implementation.md`：更新 region 形状（含 `FrontendForRegion`）、`ValueOpItem` 子类列表（含四个 `ForLoop*Item`）及 build pass 发布面（含 source-slot / hidden-state registries）；阶段 F 只做 compile-gate 解封前复核。
 - nested `if` 中的 `break` / `continue` 能正确连边。
 - unreachable body 后续 statement 处理仍遵守现有 reachability 规则。
 
@@ -655,10 +692,12 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
   - get：`gdcc.for_range_iter.get`
   - next：`gdcc.for_range_iter.next`
 - `FrontendBodyLoweringSession` 必须能为 hidden iterator state 声明 `compiler::GdccForRangeIter` local，并沿用 `GdCompilerType` storage/lifecycle 合同。
-- hidden local declaration 读取 dedicated registry，不通过 `collectCfgValueMaterializations()` 或 `slotIdForValue()` 声明。
+- `FrontendBodyLoweringSession` 必须从独立的 `FrontendForSourceIteratorSlot` registry 声明 source-facing iterator local；该 phase 必须发生在 `createBlocks()` / `lowerBlocks()` 前，并使用 registry 的 `sourceIteratorSlotId` 与普通 `exposedType`。它不得读取 hidden-state type，也不得把 source iterator 放入 hidden-state registry。
+- hidden local declaration 同样必须在 `createBlocks()` / `lowerBlocks()` 前从 dedicated hidden-state registry 完成，不得由 init/next processor 延迟创建，也不通过 `collectCfgValueMaterializations()` 或 `slotIdForValue()` 声明。
 - `ForLoopNextItem` 必须先把 intrinsic result 写入 distinct `cfg_for_iter_next_<n>` compiler-only temp，再用 `AssignInsn` commit 到 `cfg_for_iter_<n>`；不得让 intrinsic result target 与 state argument slot 相同。
-- `ForLoopGetItem` 先把 raw element 写入 ordinary temp，再复用现有 typed-boundary conversion 写入 `ForStatement` identity 对应的 source local。
-- source-local declaration/lookup helper 必须接受 `ForStatement` identity，不能继续假设所有 body local 都是 `VariableDeclaration`。
+- `nextTempSlotId` 由 hidden-state storage metadata 提供，并与 state slot 一起在 block materialization 前声明；`ForLoopNextItem` 只消费该冻结 id，不得在 processor 中通过 `ensureVariable()` 延迟创建 next temp。
+- `ForLoopGetItem` 先把 raw element 写入 ordinary temp，再复用现有 typed-boundary conversion 写入其冻结 `sourceIteratorSlotId` 对应的 source local；processor 不得通过 `ensureVariable()` 延迟创建该 local。
+- source-local declaration/type helper 必须接受 `ForStatement` identity，不能继续假设所有 body local 都是 `VariableDeclaration`；`ForStatement` lookup 使用 `slotTypes()[ForStatement]` 的 exposed type，不能使用 `iteratorStateType`。
 - `INT_SHORTHAND` source form 不生成伪造 `range(stop)` AST；init item/lowering processor 负责按 `(0, stop, 1)` 解释。
 - `INT_SHORTHAND` 的 `0` 与 `1` 必须先通过既有 integer constant lowering 物化为 LIR variables，再作为 `CallIntrinsicInsn` arguments 传入；intrinsic argument 位置不接受 literal。
 - 不通过 `PackVariantInsn` / `UnpackVariantInsn` materialize range iterator state。
@@ -666,10 +705,13 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 验收细则：
 
 - LIR function variables 包含 hidden `compiler::GdccForRangeIter` local。
+- LIR function variables 包含 source-facing iterator local，类型为最终 `slotTypes()[ForStatement]` 的 exposed type；该 local 与 hidden state、next temp 均使用不同 id。
 - LIR function variables 包含与 state slot 不同的 next temp；instruction 顺序锁定为 `next(oldState) -> nextTemp`、`AssignInsn(state, nextTemp)`。
 - range init / should_continue / get / next 以 `CallIntrinsicInsn` 出现，参数顺序符合 `doc/gdcc_lir_intrinsic.md`。
 - `INT_SHORTHAND` source form 经由同一组 intrinsic 降低，不新增第二套数值简写专用 intrinsic。
 - source-facing loop variable slot 是 `int` 或 declared compatible type。
+- `ForLoopGetItem` 的 target source slot 在 body lowering 开始前已经存在；缺失 source-slot artifact、source slot type mismatch 或 source slot 使用 compiler-only type 均 fail fast，不允许 processor 隐式修复。
+- source-slot registry 与 hidden-state registry 的 predeclaration 均在 block materialization 前完成；两类 LIR local 的 variable-table type 必须分别等于 exposed source type 与 compiler-only state type。
 - generated C 使用 `gdcc_for_range_iter_*` helper，不出现 `godot_GdccForRangeIter`、`godot_new_GdccForRangeIter...`、`Variant` pack/unpack 相关路径。
 - compiler-only state 与 next temp 的 prepare/final cleanup、每轮 overwrite lifecycle 均由既有 `GdCompilerType` / `AssignInsn` 合同覆盖，并有正反测试证明没有 public boundary 泄漏。
 - literal 与 dynamic `step == 0` 都不在 frontend 阶段阻断；runtime `should_continue` 直接返回
@@ -855,6 +897,8 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - `sourceOrder == 0` 只是 `FOR_BODY` inventory 的 declaration order。若把它复用为 hidden slot number、LIR variable index 或每轮 definition version，会把 lexical fact 与 runtime storage 错误耦合。
 - loop-carried iterator state 不是 CFG expression value。不得通过两个 `MergeValueItem` 分别把 init/next 写入同一 result id，也不得扩展现有 branch-result merge 合同来掩盖 mutable storage。
 - dedicated hidden slot 若只在 lowering processor 中拼接名称而不随 graph artifact 发布，就会绕过 owner/type/uniqueness 与 nested-loop cross-reference validation。registry、region 与 items 必须在 CFG build 完成时交叉验证。
+- source-facing iterator slot 若只由 `ForLoopGetItem` processor 根据 `ForStatement` 临时拼接名称，就会绕过 source declaration identity、最终 exposed type 与 LIR predeclaration validation。source-slot registry、region、`ForLoopGetItem` 与 body predeclaration 必须在 lowering 前交叉验证。
+- source-facing iterator slot 与 hidden iterator state 即使都由同一个 `ForStatement` 关联，也不得共用 slot record 或 type lookup：前者来自 `slotTypes()[ForStatement]`，后者来自 `FrontendForIterationPlan.iteratorStateType()` / hidden-state metadata。
 - 不得新增 `HIDDEN_COMPILER_STATE` value materialization kind。该做法仍会让 hidden storage 进入 value-id producer/materialization 模型，只是更换枚举名称，并未解决模型混淆。
 - `next` intrinsic 是 new-value operation，不是 in-place mutation。即使当前 `GdccForRangeIterType` destroy 为 no-op，也必须使用 distinct next temp 再通过 `AssignInsn` commit，为 future destroyable generic state 保留正确生命周期顺序。
 - 阶段 G 的 production path 依赖 C/D0/D1；阶段 F 的 range/int 解封又依赖 G/H。必须按依赖链原子提交，不能用手工注入 plan 的 builder test 替代真实 source -> sema -> CFG/LIR integration test。
@@ -873,7 +917,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 4. `range(...)` 与 `int` shorthand 复用 `gdcc.for_range_iter.*` route，且不把 `range(...)` 作为 ordinary call 发布。
 5. generic Variant route 有完整 LIR intrinsic、runtime helper、C backend codegen 与 tests；unknown iterable 不再需要 compile-time unsupported。
 6. compiler-only iterator state type 只出现在 dedicated iteration plan、CFG hidden-slot metadata、hidden LIR local / intrinsic operand-result / backend C storage 路径；hidden slot id 不属于 CFG value-id/materialization surface。
-7. CFG 中存在独立 `FrontendForRegion` 与 validated hidden-slot registry，且 `continue` / `break` 连边正确；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
+7. CFG 中存在独立 `FrontendForRegion`、validated source-iterator slot registry 与 validated hidden-slot registry，且 `continue` / `break` 连边正确；source slot 与 hidden slot 的 id/type/lifecycle 始终分离；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
 9. `FrontendTypeCheckAnalyzer.handleForStatement(...)` 检查 iteration plan 所需 header facts 并遍历 for body；for body 的 ordinary local initializer、nested for 与 return type-check regression 均已通过。assignment / call boundary 的 ordinary semantic error regression 同时锁定上游 resolution / expression typing 的 for-body child-suite traversal。
 
