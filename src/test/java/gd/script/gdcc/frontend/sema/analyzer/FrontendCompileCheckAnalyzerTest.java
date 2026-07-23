@@ -91,7 +91,7 @@ class FrontendCompileCheckAnalyzerTest {
         var source = """
                 class_name CompileCheckExplicitBlocks
                 extends Node
-                
+
                 var property_array = [1]
                 var property_preload = preload("res://icon.svg")
                 
@@ -115,8 +115,10 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(8, compileDiagnostics.size());
         assertTrue(compileDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "compile_check_explicit_blocks.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "compile_check_explicit_blocks.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(compileDiagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("assert statement")));
@@ -787,8 +789,16 @@ class FrontendCompileCheckAnalyzerTest {
         var payloadCopyDeclaration = findVariable(pingFunction.body().statements(), "payload_copy");
         var readValueDeclaration = findVariable(pingFunction.body().statements(), "read_value");
         var copyIdentifier = assertInstanceOf(dev.superice.gdparser.frontend.ast.IdentifierExpression.class, copyDeclaration.value());
-        var payloadStep = findNode(payloadCopyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
-        var readStep = findNode(readValueDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var payloadStep = findNode(
+                Objects.requireNonNull(payloadCopyDeclaration.value()),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var readStep = findNode(
+                Objects.requireNonNull(readValueDeclaration.value()),
+                AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
 
         preparedInput.analysisData().expressionTypes().put(
                 copyIdentifier,
@@ -918,7 +928,7 @@ class FrontendCompileCheckAnalyzerTest {
         assertEquals(FrontendReceiverKind.INSTANCE, publishedBareCall.receiverKind());
         preparedInput.analysisData().expressionTypes().put(
                 bareCall,
-                FrontendExpressionType.resolved(publishedBareCall.returnType())
+                FrontendExpressionType.resolved(Objects.requireNonNull(publishedBareCall.returnType()))
         );
 
         runCompileCheck(preparedInput);
@@ -947,7 +957,7 @@ class FrontendCompileCheckAnalyzerTest {
         var pingFunction = findFunction(preparedInput.unit().ast().statements(), "ping");
         var valueDeclaration = findVariable(pingFunction.body().statements(), "value");
         var payloadsStep = findNode(
-                valueDeclaration.value(),
+                Objects.requireNonNull(valueDeclaration.value()),
                 AttributeSubscriptStep.class,
                 step -> step.name().equals("payloads")
         );
@@ -992,12 +1002,12 @@ class FrontendCompileCheckAnalyzerTest {
         var callValueDeclaration = findVariable(preparedInput.unit().ast().statements(), "call_value");
         var exprLiteral = assertInstanceOf(LiteralExpression.class, exprValueDeclaration.value());
         var handleStep = findNode(
-                memberValueDeclaration.value(),
+                Objects.requireNonNull(memberValueDeclaration.value()),
                 AttributePropertyStep.class,
                 step -> step.name().equals("handle")
         );
         var readStep = findNode(
-                callValueDeclaration.value(),
+                Objects.requireNonNull(callValueDeclaration.value()),
                 AttributeCallStep.class,
                 step -> step.name().equals("read")
         );
@@ -1110,8 +1120,16 @@ class FrontendCompileCheckAnalyzerTest {
         var payloadCopyDeclaration = findVariable(pingFunction.body().statements(), "payload_copy");
         var readValueDeclaration = findVariable(pingFunction.body().statements(), "read_value");
         var copyIdentifier = assertInstanceOf(dev.superice.gdparser.frontend.ast.IdentifierExpression.class, copyDeclaration.value());
-        var payloadStep = findNode(payloadCopyDeclaration.value(), AttributePropertyStep.class, step -> step.name().equals("payload"));
-        var readStep = findNode(readValueDeclaration.value(), AttributeCallStep.class, step -> step.name().equals("read"));
+        var payloadStep = findNode(
+                Objects.requireNonNull(payloadCopyDeclaration.value()),
+                AttributePropertyStep.class,
+                step -> step.name().equals("payload")
+        );
+        var readStep = findNode(
+                Objects.requireNonNull(readValueDeclaration.value()),
+                AttributeCallStep.class,
+                step -> step.name().equals("read")
+        );
         var originalMember = Objects.requireNonNull(preparedInput.analysisData().resolvedMembers().get(payloadStep));
         var originalCall = Objects.requireNonNull(preparedInput.analysisData().resolvedCalls().get(readStep));
 
@@ -1289,7 +1307,7 @@ class FrontendCompileCheckAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        FrontendSegmentedPipelineTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
+        FrontendSuiteResolverStageTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         new FrontendAnnotationUsageAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendTypeCheckAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);

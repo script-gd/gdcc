@@ -47,6 +47,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 
@@ -60,6 +61,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@SuppressWarnings("DataFlowIssue")
 class FrontendBodyOwnerProceduresExprTypeTest {
     @Test
     void analyzePublishesResolvedAtomicAndChainExpressionTypes() throws Exception {
@@ -2486,7 +2488,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         var unsupportedDeclaration = findVariable(pingFunction.body().statements(), "unsupported_value");
         var blockedDeclaration = findVariable(pingFunction.body().statements(), "blocked_value");
         var unsupportedHead = findNode(
-                unsupportedDeclaration.value(),
+                Objects.requireNonNull(unsupportedDeclaration.value()),
                 IdentifierExpression.class,
                 identifier -> identifier.name().equals("Worker")
         );
@@ -2679,11 +2681,11 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         var diagnostics = new DiagnosticManager();
         var parserService = new GdScriptParserService();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnostics);
-        var analysisData = analyzeWithSegmentedPipeline(unit, registry, diagnostics, topLevelCanonicalNameMap);
+        var analysisData = analyzeWithFrontendPipeline(unit, registry, diagnostics, topLevelCanonicalNameMap);
         return new AnalyzedScript(unit.ast(), analysisData);
     }
 
-    private static @NotNull FrontendAnalysisData analyzeWithSegmentedPipeline(
+    private static @NotNull FrontendAnalysisData analyzeWithFrontendPipeline(
             @NotNull FrontendSourceUnit unit,
             @NotNull ClassRegistry classRegistry,
             @NotNull DiagnosticManager diagnostics,
@@ -2696,6 +2698,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
         );
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull PreparedExpressionInput prepareInputBeforeExpressionTyping(
             @NotNull String fileName,
             @NotNull String source
@@ -2732,7 +2735,7 @@ class FrontendBodyOwnerProceduresExprTypeTest {
                 FrontendSemanticStage.CHAIN_BINDING
         )
                 : Set.of(FrontendSemanticStage.TOP_BINDING, FrontendSemanticStage.CHAIN_BINDING);
-        FrontendSegmentedPipelineTestSupport.resolveOwners(
+        FrontendSuiteResolverStageTestSupport.resolveOwners(
                 classRegistry,
                 analysisData,
                 diagnostics,

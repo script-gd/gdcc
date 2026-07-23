@@ -603,7 +603,7 @@ class FrontendAnalysisDataTest {
     }
 
     @Test
-    void applyPatchRejectsWrongStageLocalSlotUpdatesAndSourceFacingCompilerOnlyLeaks() throws Exception {
+    void applyPatchRejectsCompilerOnlyLeaksAcrossExpressionAndSlotTypePayloads() throws Exception {
         var analysisData = FrontendAnalysisData.bootstrap();
         var expressionTypes = new FrontendAstSideTable<FrontendExpressionType>();
         expressionTypes.put(identifier("iter"), FrontendExpressionType.resolved(GdccForRangeIterType.FOR_RANGE_ITER));
@@ -791,7 +791,10 @@ class FrontendAnalysisDataTest {
         )).applyTo(analysisData);
 
         assertSame(binding, analysisData.symbolBindings().get(bindingNode));
-        assertEquals(GdIntType.INT, analysisData.expressionTypes().get(expressionNode).publishedType());
+        assertEquals(
+                GdIntType.INT,
+                Objects.requireNonNull(analysisData.expressionTypes().get(expressionNode)).publishedType()
+        );
         assertThrows(
                 FrontendAnalysisPatchException.class,
                 () -> new FrontendPatchTransaction(List.of(
@@ -863,6 +866,7 @@ class FrontendAnalysisDataTest {
         );
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull FrontendBinding localBinding(
             @NotNull String name,
             @NotNull Object declaration,
@@ -877,6 +881,7 @@ class FrontendAnalysisDataTest {
         );
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull ScopeValue requireLocal(@NotNull BlockScope scope, @NotNull String name) {
         var value = scope.resolveValueHere(name);
         if (value == null) {
@@ -893,6 +898,7 @@ class FrontendAnalysisDataTest {
         return new BlockScope(callableScope, BlockScopeKind.FUNCTION_BODY);
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull FrontendOwnerPatch patch(
             @NotNull FrontendSemanticStage stage,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings,
@@ -911,6 +917,7 @@ class FrontendAnalysisDataTest {
         };
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull FrontendOwnerPatch patch(
             @NotNull FrontendSemanticStage stage,
             @NotNull FrontendAstSideTable<FrontendBinding> symbolBindings

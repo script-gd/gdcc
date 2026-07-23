@@ -158,28 +158,43 @@ class FrontendVirtualOverrideAnalyzerTest {
                         && diagnostic.range() != null
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "ready_with_arg.gd")))
+                Objects.equals(
+                        diagnostic.sourcePath(),
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "ready_with_arg.gd"))
+                )
                         && diagnostic.message().contains("_ready")
                         && diagnostic.message().contains("declares 1 parameter(s); expected 0")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "ready_returns_int.gd")))
+                Objects.equals(
+                        diagnostic.sourcePath(),
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "ready_returns_int.gd"))
+                )
                         && diagnostic.message().contains("returns 'int'; expected 'void'")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "process_delta_variant.gd")))
+                Objects.equals(
+                        diagnostic.sourcePath(),
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "process_delta_variant.gd"))
+                )
                         && diagnostic.message().contains("parameter #1 'delta'")
                         && diagnostic.message().contains("Variant")
                         && diagnostic.message().contains("float")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "physics_process_int.gd")))
+                Objects.equals(
+                        diagnostic.sourcePath(),
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "physics_process_int.gd"))
+                )
                         && diagnostic.message().contains("_physics_process")
                         && diagnostic.message().contains("int")
                         && diagnostic.message().contains("float")
         ));
         assertTrue(overrideDiagnostics.stream().anyMatch(diagnostic ->
-                diagnostic.sourcePath().equals(FrontendDiagnostic.sourcePathText(Path.of("tmp", "static_ready.gd")))
+                Objects.equals(
+                        diagnostic.sourcePath(),
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "static_ready.gd"))
+                )
                         && diagnostic.message().contains("declared static")
         ));
 
@@ -231,6 +246,7 @@ class FrontendVirtualOverrideAnalyzerTest {
         assertEquals(GdVariantType.VARIANT, analyzedModule.analysisData().slotTypes().get(aliasVariable));
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull AnalyzedModule analyze(
             @NotNull String fileName,
             @NotNull String source
@@ -282,7 +298,7 @@ class FrontendVirtualOverrideAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        FrontendSegmentedPipelineTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
+        FrontendSuiteResolverStageTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         new FrontendAnnotationUsageAnalyzer().analyze(classRegistry, analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         return new PreparedVirtualOverrideInput(units, analysisData, diagnosticManager, classRegistry);
@@ -326,10 +342,12 @@ class FrontendVirtualOverrideAnalyzerTest {
                 .orElseThrow(() -> new AssertionError("Function not found: " + functionName));
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull FunctionDeclaration findFunction(@NotNull Node root, @NotNull String functionName) {
         return findNode(root, FunctionDeclaration.class, function -> function.name().equals(functionName));
     }
 
+    @SuppressWarnings("SameParameterValue")
     private static @NotNull VariableDeclaration findVariable(
             @NotNull List<Statement> statements,
             @NotNull String variableName
@@ -377,9 +395,9 @@ class FrontendVirtualOverrideAnalyzerTest {
     ) {
         private AnalyzedModule {
             units = List.copyOf(Objects.requireNonNull(units, "units must not be null"));
-            analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
-            diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
-            classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+            Objects.requireNonNull(analysisData, "analysisData must not be null");
+            Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+            Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         }
     }
 
@@ -391,9 +409,9 @@ class FrontendVirtualOverrideAnalyzerTest {
     ) {
         private PreparedVirtualOverrideInput {
             units = List.copyOf(Objects.requireNonNull(units, "units must not be null"));
-            analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
-            diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
-            classRegistry = Objects.requireNonNull(classRegistry, "classRegistry must not be null");
+            Objects.requireNonNull(analysisData, "analysisData must not be null");
+            Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
+            Objects.requireNonNull(classRegistry, "classRegistry must not be null");
         }
     }
 }

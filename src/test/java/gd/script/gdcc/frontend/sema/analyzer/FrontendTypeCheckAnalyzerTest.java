@@ -612,8 +612,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(4, typeHintDiagnostics.size());
         assertTrue(typeHintDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.WARNING
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_property_compatibility.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_property_compatibility.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(typeHintDiagnostics.stream().anyMatch(diagnostic ->
@@ -685,8 +687,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(4, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_vector_initializer_compatibility.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_vector_initializer_compatibility.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
@@ -776,8 +780,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(3, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_string_family_boundaries.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_string_family_boundaries.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
@@ -832,8 +838,10 @@ class FrontendTypeCheckAnalyzerTest {
         );
         assertEquals(
                 "int",
-                requireInitializerType(preparedInput.unit().ast(), "allowed_helper", preparedInput)
-                        .publishedType()
+                Objects.requireNonNull(
+                                requireInitializerType(preparedInput.unit().ast(), "allowed_helper", preparedInput)
+                                        .publishedType()
+                        )
                         .getTypeName()
         );
         assertTrue(diagnosticsByCategory(
@@ -903,8 +911,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(5, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_return_compatibility.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_return_compatibility.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
@@ -1020,8 +1030,10 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(2, typeCheckDiagnostics.size());
         assertTrue(typeCheckDiagnostics.stream().allMatch(diagnostic ->
                 diagnostic.severity() == FrontendDiagnosticSeverity.ERROR
-                        && FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_vector_return_compatibility.gd"))
-                        .equals(diagnostic.sourcePath())
+                        && Objects.equals(
+                        FrontendDiagnostic.sourcePathText(Path.of("tmp", "type_check_vector_return_compatibility.gd")),
+                        diagnostic.sourcePath()
+                )
                         && diagnostic.range() != null
         ));
         assertTrue(typeCheckDiagnostics.stream().anyMatch(diagnostic ->
@@ -1277,7 +1289,7 @@ class FrontendTypeCheckAnalyzerTest {
             @NotNull String fileName,
             @NotNull String source,
             @NotNull ClassRegistry classRegistry
-    ) throws Exception {
+    ) {
         var parserService = new GdScriptParserService();
         var diagnosticManager = new DiagnosticManager();
         var unit = parserService.parseUnit(Path.of("tmp", fileName), source, diagnosticManager);
@@ -1296,7 +1308,7 @@ class FrontendTypeCheckAnalyzerTest {
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
         new FrontendVariableAnalyzer().analyze(analysisData, diagnosticManager);
         analysisData.updateDiagnostics(diagnosticManager.snapshot());
-        FrontendSegmentedPipelineTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
+        FrontendSuiteResolverStageTestSupport.resolveAllOwners(classRegistry, analysisData, diagnosticManager);
         return new PreparedTypeCheckInput(unit, analysisData, diagnosticManager, classRegistry);
     }
 

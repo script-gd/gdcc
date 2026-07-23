@@ -12,8 +12,8 @@ import java.util.EnumSet;
 import java.util.Set;
 
 /// Test harness for running real root-bounded owner procedures through the body SuiteResolver path.
-final class FrontendSegmentedPipelineTestSupport {
-    private FrontendSegmentedPipelineTestSupport() {
+final class FrontendSuiteResolverStageTestSupport {
+    private FrontendSuiteResolverStageTestSupport() {
     }
 
     static void resolveAllOwners(
