@@ -11,6 +11,7 @@ import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.LambdaExpression;
@@ -35,6 +36,8 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
+import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendSemanticStage;
@@ -299,6 +302,10 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
 
     @Override
     public void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        if (root instanceof ForStatement forStatement) {
+            publishForIteratorSlotType(context, forStatement);
+            return;
+        }
         if (!(root instanceof VariableDeclaration variableDeclaration)
                 || variableDeclaration.kind() != DeclarationKind.VAR) {
             return;
@@ -317,6 +324,106 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         context.typedEnvironment().putSlotType(
                 FrontendSemanticStage.VAR_TYPE_POST,
                 variableDeclaration,
+                effectiveSlot.type()
+        );
+    }
+
+    @Override
+    public void runForIterationResolution(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {
+        var declaredIteratorType = resolveDeclaredIteratorType(context, forStatement);
+        var iterableType = resolveIterableType(context, forStatement);
+        var plan = FrontendForLoopSupport.buildPlan(forStatement, declaredIteratorType, iterableType);
+        context.typedEnvironment().putForIterationPlan(
+                FrontendSemanticStage.FOR_ITERATION_RESOLUTION,
+                forStatement,
+                plan
+        );
+        refineIteratorSlot(context, forStatement, plan);
+    }
+
+    private @Nullable GdType resolveDeclaredIteratorType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull ForStatement forStatement
+    ) {
+        if (forStatement.iteratorType() == null
+                || FrontendDeclaredTypeSupport.isInferredTypeRef(forStatement.iteratorType())) {
+            return null;
+        }
+        var forBodyScope = context.analysisData().scopesByAst().get(forStatement.body());
+        if (!(forBodyScope instanceof BlockScope blockScope)) {
+            return null;
+        }
+        var iteratorSlot = blockScope.resolveValueHere(forStatement.iterator());
+        if (iteratorSlot == null || iteratorSlot.declaration() != forStatement) {
+            return null;
+        }
+        // An explicit Variant declaration is semantically equivalent to no declaration:
+        // the raw element type wins as the exposed iterator type.
+        if (iteratorSlot.type() instanceof GdVariantType) {
+            return null;
+        }
+        return iteratorSlot.type();
+    }
+
+    private @Nullable GdType resolveIterableType(
+            @NotNull FrontendSuiteContext context,
+            @NotNull ForStatement forStatement
+    ) {
+        if (FrontendForLoopSupport.isBareRangeCall(forStatement.iterable())) {
+            return null;
+        }
+        var expressionType = context.typedEnvironment().expressionType(forStatement.iterable());
+        if (expressionType == null || expressionType.status() != FrontendExpressionTypeStatus.RESOLVED) {
+            return null;
+        }
+        return expressionType.publishedType();
+    }
+
+    private void refineIteratorSlot(
+            @NotNull FrontendSuiteContext context,
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        var forBodyScope = context.analysisData().scopesByAst().get(forStatement.body());
+        if (!(forBodyScope instanceof BlockScope blockScope)) {
+            return;
+        }
+        var iteratorSlot = blockScope.resolveValueHere(plan.iteratorName());
+        if (iteratorSlot == null || iteratorSlot.declaration() != forStatement) {
+            return;
+        }
+        var effectiveSlot = context.typedEnvironment().effectiveScopeValue(iteratorSlot, blockScope);
+        if (!(effectiveSlot.type() instanceof GdVariantType)) {
+            return;
+        }
+        if (plan.exposedIteratorType() instanceof GdVariantType) {
+            return;
+        }
+        context.typedEnvironment().addLocalSlotTypeUpdate(
+                FrontendSemanticStage.FOR_ITERATION_RESOLUTION,
+                new FrontendLocalSlotTypeUpdate(
+                        blockScope,
+                        plan.iteratorName(),
+                        forStatement,
+                        plan.exposedIteratorType()
+                )
+        );
+    }
+
+    private void publishForIteratorSlotType(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {
+        var forBodyScope = context.analysisData().scopesByAst().get(forStatement.body());
+        if (!(forBodyScope instanceof BlockScope blockScope)) {
+            return;
+        }
+        var iteratorName = forStatement.iterator();
+        var slot = blockScope.resolveValueHere(iteratorName);
+        if (slot == null || slot.declaration() != forStatement) {
+            return;
+        }
+        var effectiveSlot = context.typedEnvironment().effectiveScopeValue(slot, blockScope);
+        context.typedEnvironment().putSlotType(
+                FrontendSemanticStage.VAR_TYPE_POST,
+                forStatement,
                 effectiveSlot.type()
         );
     }

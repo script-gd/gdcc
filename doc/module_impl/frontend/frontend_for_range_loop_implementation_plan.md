@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；完整 shared semantic 尚未完成：`FrontendTypeCheckAnalyzer` 仍未遍历 `ForStatement` 的 header 或 body；bare `range(...)` header 预路由（D0/D1）、compile gate 解封（F）、CFG（G）、lowering（H）尚未实施）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；完整 shared semantic 尚未完成：`FrontendTypeCheckAnalyzer` 仍未遍历 `ForStatement` 的 header 或 body；compile gate 解封（F）、CFG（G）、lowering（H）尚未实施）
 - 创建日期：2026-07-03
 - 更新时间：2026-07-24
 - 适用范围：
@@ -61,6 +61,7 @@ shared semantic 第一轮必须支持：
 - `for i in range(stop):`
 - `for i in range(start, end):`
 - `for i in range(start, end, step):`
+- 例如 `var start: int = 1; var end: int = 10; for i in range(start, end):`。
 - `for i in 3:`、`for i in limit:`、`for i in values:`、`for i in some_object:` 等任意 iterable expression 形态。
 - `for i: Type in expr:` 显式 iterator type。
 - body 内 iterator local lookup、body local `var` inventory、source-order local stabilization、`break` / `continue` legality。
@@ -97,8 +98,6 @@ compile / lowering 最终目标必须覆盖：
 
 尚未实施：
 
-- `FrontendStatementResolver.resolveForStatement(...)` 仍无条件对整个 `forStatement.iterable()` 调用 ordinary `runSupportedRoot(...)`。bare `range(...)` 缺少专用预路由，canonical `for i in range(3)` 会为 callee 发布 unknown binding 并让 call root expression typing 失败。
-- `FrontendForIterationPlan`、`FrontendForIterationRoute`、`FrontendForLoopSupport`、`ForLoweringContractRegistry`、`FrontendForLoweringContract`、`ForIterationOperationDescriptor` 已建立（阶段 C），`forIterationPlans()` side table、`FrontendForIterationResolutionPatch` 与 `FOR_ITERATION_RESOLUTION` stage/guard 已就位；但发布 plan 与 iterator slot refinement 的 owner procedure `runForIterationResolution(...)` 尚未实现（阶段 D1）。
 - `FrontendCompileCheckAnalyzer` 对每个 `ForStatement` root 发布临时、无条件的 `sema.compile_check` blocker。
 - `FrontendTypeCheckAnalyzer` 尚未实现 `handleForStatement(...)`。其默认 node handler 返回 `SKIP_CHILDREN`，因此当前不会 type-check `iterable`、iterator conversion 或整个 for body；这与已显式遍历 body 的 `if` / `while` 不同。
 - `FrontendCfgGraphBuilder.processStatement(...)` 没有 `ForStatement` 分支；`FrontendCfgRegion` 只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
@@ -490,7 +489,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### 阶段 D0：SuiteResolver header-only for path 与 baseline body entry
 
-状态：未完成。ordinary iterable 的结构性 header/body path 已落地；bare `range(...)` 仍被错误送入 ordinary owner pipeline，canonical range header 不可用。
+状态：已完成。ordinary iterable 的结构性 header/body path 已落地；bare `range(...)` 预路由已实现，canonical range header 可用。
 
 目标：
 
@@ -507,18 +506,18 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
   - 若 iterable 是 bare `range(...)`，只逐个解析 arguments，不解析 callee identifier 或 call root。
   - 其他 iterable 继续解析整个 expression root。
   - 不在 header pass 中遍历 body statements。
-- 尚未落地的 D0 blocker：在调用 ordinary `runSupportedRoot(...)` 前增加 range shape pre-route：
-  - `CallExpression` 的 callee 必须是名称严格为 `range` 的 bare `IdentifierExpression`。
-  - 命中后按 source order 对每个 argument 单独运行现有 owner procedures；不得对 call root 或 callee 运行 ordinary top binding / call resolution / expr typing。
-  - 未命中的 ordinary iterable 保持当前整 root `runSupportedRoot(context, iterable)` 路径。
-  - pre-route 只负责正确划分 owner domain，不构造 iteration plan、不精化 iterator slot，也不在本阶段承担 arity/type diagnostic。
+- 已落地：bare `range(...)` header 预路由（`resolveForIterable(...)`）：
+  - `CallExpression` 的 callee 必须是名称严格为 `range` 的 bare `IdentifierExpression`（纯 AST 形状匹配，不查询 scope binding，同名 shadow 不影响命中）。
+  - 命中后按 source order 对每个 argument 单独运行现有 owner procedures；不对 call root 或 callee 运行 ordinary top binding / call resolution / expr typing。
+  - 未命中的 ordinary iterable 保持整 root `runSupportedRoot(context, iterable)` 路径。
+  - pre-route 只负责正确划分 owner domain，不构造 iteration plan、不精化 iterator slot，不承担 arity/type diagnostic。
 - header facts 在同一个 statement boundary flush；不得把 `iteratorType`、`iterable` 与 body 分别当成
   三个独立 statement flush。
-- 本阶段不增加 `runForIterationResolution(...)`，也不要求 `FrontendForIterationPlan` 已存在。
+- 已落地（D1）：`runForIterationResolution(...)` owner hook 在 expr typing 后、var type post 前执行，构造并发布 `FrontendForIterationPlan` 与受限 iterator slot refinement。
 - `resolveForStatement(...)` 在 header facts flush 后调用
   `childSuiteResolver.resolveChildSuite(context, forStatement.body())`。
 - child body 读取阶段 B 的 iterator baseline：无显式 type 时为 `Variant`，有显式 declared type 时为该
-  source-facing type。
+  source-facing type。D1 落地后，body 读取的是经 iteration plan 精化后的 effective type。
 
 验收细则：
 
@@ -538,6 +537,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - owner procedure 不从 `SourceFile` root 重新 walk，不恢复 legacy whole-module analyzer。
 
 ### 阶段 D1：for iteration resolution 与 iterator slot refinement
+
+状态：已完成。`runForIterationResolution(...)` owner hook 已实现，iteration plan 与 iterator slot refinement 通过 `FrontendForIterationResolutionPatch` 发布；`runVarTypePost(...)` 已扩展支持 `ForStatement` iterator declaration。
 
 依赖：阶段 C 与完整完成的阶段 D0，包括 bare `range(...)` header 预路由及其 canonical regression tests。
 
@@ -604,6 +605,9 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 - `range()` 与 `range(1, 2, 3, 4)` 有清晰 diagnostic。
 - `range(1, 2, 0)` 不发 diagnostic，loop body 零次执行。
+- `for i in range(start, end):` 中动态 `start` / `end` expression 各自进入 `int` slot，且不因参数不是字面量产生 diagnostic。
+- `for i in range(1, end):` 等字面量与动态边界混合形式同样有效；若任一动态边界 expression 不能进入 `int` slot，必须在对应 argument 位置报告清晰 diagnostic。
+- `for i in range(start, end, step):` 的动态 `step` 也进入 `int` slot；若 `step` expression 不能进入该 slot，必须在对应 argument 位置报告清晰 diagnostic；其运行时值为 `0` 时不在 type-check 阶段阻断。
 - `for i in values:` 不再产生 `FOR_SUBTREE` unsupported diagnostic。
 - `for i in 2.2:` 在未专用化前进入 generic Variant route，shared semantic 不失败。
 - typed dictionary route 测试锁定 iterator 是 key，不是 value 或 pair。
@@ -857,6 +861,9 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 - `range()` 与 `range(1, 2, 3, 4)` 均有明确 diagnostic；`range(1, 2, 0)` 不发 diagnostic，且
   loop body 零次执行。
+- `var start: int = 1; var end: int = 3; for i in range(start, end): pass` 不产生 range header diagnostic，两个 argument 均保留 expression type。
+- `var end: int = 3; for i in range(1, end): pass` 覆盖字面量与动态边界混合形式；动态边界不能进入 `int` slot 时，在对应 argument 位置报告 type diagnostic。
+- `var start: int = 1; var end: int = 5; var step: int = 2; for i in range(start, end, step): pass` 覆盖三个动态参数；动态 `step` 不能进入 `int` slot 时在对应 argument 位置报告 type diagnostic，但不因可能为 `0` 而在 type-check 阶段报错。
 - `for i: String in range(3): pass` 不静默通过。
 - `for i in 2.2:` 在未专用化前不报 frontend unsupported；若启用 float route，测试锁定 `ceil` 语义。
 - `Dictionary` route 测试锁定 iterator 是 key。

@@ -2,6 +2,7 @@ package gd.script.gdcc.frontend.sema;
 
 import dev.superice.gdparser.frontend.ast.AttributePropertyStep;
 import dev.superice.gdparser.frontend.ast.Block;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
@@ -35,6 +36,7 @@ import gd.script.gdcc.frontend.sema.patch.FrontendVarTypePostPatch;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ResolveRestriction;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
@@ -47,6 +49,7 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -332,7 +335,7 @@ class FrontendSuiteResolverTest {
         var itemBinding = phaseInput.analysisData().symbolBindings().get(itemUseSite);
         assertNotNull(itemBinding);
         assertEquals(FrontendBindingKind.LOCAL_VAR, itemBinding.kind());
-        assertEquals(GdVariantType.VARIANT, phaseInput.analysisData().slotTypes().get(fromFor));
+        assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor));
         assertTrue(surface.suiteEntryRoots().containsSupportedBlock(forStatement.body()));
         assertTrue(surface.bodyDeclarationIndex().containsBodyRoot(forStatement.body()));
         assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(limit));
@@ -455,11 +458,11 @@ class FrontendSuiteResolverTest {
         );
         assertCertificateFailure(phaseInput, missingBaseline, pingFunction, forStatement.body(), "typed baseline");
 
-        var publishedScope = assertInstanceOf(
+        var publishedScope = requireValue(assertInstanceOf(
                 BlockScope.class,
                 phaseInput.analysisData().scopesByAst().get(forStatement.body())
-        );
-        var foreignScope = new BlockScope(publishedScope.getParentScope(), publishedScope.kind());
+        ));
+        var foreignScope = new BlockScope(requireValue(publishedScope.getParentScope()), publishedScope.kind());
         var scopeError = assertThrows(
                 IllegalStateException.class,
                 () -> FrontendBodyStructuralCompleteness.requireStructurallyCompleteBody(
@@ -531,29 +534,7 @@ class FrontendSuiteResolverTest {
         var originalSurface = new FrontendInterfacePhase().analyze(phaseInput.registry(), phaseInput.analysisData());
         var bodyDeclarations = originalSurface.bodyDeclarationIndex().declarationsFor(pingFunction.body());
         assertEquals(2, bodyDeclarations.size());
-        var reordered = List.of(
-                new FrontendBodyLocalDeclaration(
-                        bodyDeclarations.get(1).declaration(),
-                        bodyDeclarations.get(1).binding(),
-                        bodyDeclarations.get(1).kind(),
-                        0
-                ),
-                new FrontendBodyLocalDeclaration(
-                        bodyDeclarations.get(0).declaration(),
-                        bodyDeclarations.get(0).binding(),
-                        bodyDeclarations.get(0).kind(),
-                        1
-                )
-        );
-        var declarationsByBody = new IdentityHashMap<>(
-                originalSurface.bodyDeclarationIndex().declarationsByBodyRoot()
-        );
-        declarationsByBody.put(pingFunction.body(), reordered);
-        var reorderedSurface = new FrontendInterfaceSurface(
-                new FrontendBodyDeclarationIndex(declarationsByBody),
-                originalSurface.typedLexicalBaseline(),
-                originalSurface.suiteEntryRoots()
-        );
+        var reorderedSurface = reorderBodyDeclarations(originalSurface, pingFunction.body(), bodyDeclarations);
 
         assertCertificateFailure(
                 phaseInput,
@@ -703,17 +684,17 @@ class FrontendSuiteResolverTest {
         resolveWithDefaultOwnerProcedures(phaseInput);
 
         assertAll(
-                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(a)), "Point"),
-                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(b)), "Point"),
-                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(c)), "Point"),
-                () -> assertExpressionTypeNameEndsWith(phaseInput.analysisData(), requireExpression(a.value()), "Point"),
-                () -> assertExpressionTypeNameEndsWith(phaseInput.analysisData(), requireExpression(b.value()), "Point"),
-                () -> assertExpressionTypeNameEndsWith(phaseInput.analysisData(), requireExpression(c.value()), "Point")
+                () -> assertPointType(requireType(phaseInput.analysisData().slotTypes().get(a))),
+                () -> assertPointType(requireType(phaseInput.analysisData().slotTypes().get(b))),
+                () -> assertPointType(requireType(phaseInput.analysisData().slotTypes().get(c))),
+                () -> assertExpressionPointType(phaseInput.analysisData(), requireExpression(a.value())),
+                () -> assertExpressionPointType(phaseInput.analysisData(), requireExpression(b.value())),
+                () -> assertExpressionPointType(phaseInput.analysisData(), requireExpression(c.value()))
         );
         var resolvedMember = phaseInput.analysisData().resolvedMembers().get(markerStep);
         assertNotNull(resolvedMember);
         assertAll(
-                () -> assertTypeNameEndsWith(requireType(resolvedMember.receiverType()), "Point"),
+                () -> assertPointType(requireType(resolvedMember.receiverType())),
                 () -> assertEquals("int", requireType(resolvedMember.resultType()).getTypeName())
         );
     }
@@ -760,13 +741,13 @@ class FrontendSuiteResolverTest {
         resolveWithDefaultOwnerProcedures(phaseInput);
 
         assertAll(
-                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(stable)), "Point"),
-                () -> assertTypeNameEndsWith(requireType(phaseInput.analysisData().slotTypes().get(child)), "Point"),
+                () -> assertPointType(requireType(phaseInput.analysisData().slotTypes().get(stable))),
+                () -> assertPointType(requireType(phaseInput.analysisData().slotTypes().get(child))),
                 () -> assertNull(phaseInput.analysisData().slotTypes().get(rejectedShadow))
         );
         var resolvedMember = phaseInput.analysisData().resolvedMembers().get(markerStep);
         assertNotNull(resolvedMember);
-        assertTypeNameEndsWith(requireType(resolvedMember.receiverType()), "Point");
+        assertPointType(requireType(resolvedMember.receiverType()));
     }
 
     @Test
@@ -888,6 +869,677 @@ class FrontendSuiteResolverTest {
         );
     }
 
+    @Test
+    void bareRangePreRoutePublishesArgumentFactsWithoutCalleeOrCallRootFacts() throws Exception {
+        var phaseInput = phaseInput("suite_d0_range_canonical.gd", """
+                class_name SuiteD0RangeCanonical
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        var x := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+        var callee = assertInstanceOf(IdentifierExpression.class, rangeCall.callee());
+        var argument = rangeCall.arguments().getFirst();
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().symbolBindings().get(callee),
+                        "range callee must not have ordinary binding"),
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(callee),
+                        "range callee must not have expression type"),
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall),
+                        "range call root must not have expression type"),
+                () -> assertNull(phaseInput.analysisData().resolvedCalls().get(rangeCall),
+                        "range call root must not have resolved call"),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(argument),
+                        "range argument must have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(argument)).publishedType()),
+                        "range argument literal 3 must be int"),
+                () -> assertNotNull(phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x must have slot type"),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x is int because iterator i is refined to int by D1")
+        );
+        var bindingErrors = diagnosticsByCategory(phaseInput.analysisData().diagnostics(), "sema.binding");
+        assertTrue(bindingErrors.stream().noneMatch(d -> d.message().contains("range")),
+                "no unknown range binding diagnostic expected");
+    }
+
+    @Test
+    void bareRangePreRouteHandlesMultipleArgumentsInSourceOrder() throws Exception {
+        var phaseInput = phaseInput("suite_d0_range_multi_args.gd", """
+                class_name SuiteD0RangeMultiArgs
+                extends Node
+                
+                func ping():
+                    for i in range(1, 5, 2):
+                        pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertEquals(3, rangeCall.arguments().size()),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().getFirst())),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(1))),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(2))),
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall)),
+                () -> assertNull(phaseInput.analysisData().resolvedCalls().get(rangeCall))
+        );
+    }
+
+    @Test
+    void bareRangePreRouteHandlesEmptyAndExcessArityWithoutBindingNoise() throws Exception {
+        var phaseInput = phaseInput("suite_d0_range_arity.gd", """
+                class_name SuiteD0RangeArity
+                extends Node
+                
+                func ping():
+                    for i in range():
+                        pass
+                    for j in range(1, 2, 3, 4):
+                        pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatements = pingFunction.body().statements().stream()
+                .filter(ForStatement.class::isInstance)
+                .map(ForStatement.class::cast)
+                .toList();
+        var emptyRange = assertInstanceOf(CallExpression.class, forStatements.getFirst().iterable());
+        var excessRange = assertInstanceOf(CallExpression.class, forStatements.get(1).iterable());
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(emptyRange),
+                        "empty range call root must not have expression type"),
+                () -> assertNull(phaseInput.analysisData().resolvedCalls().get(emptyRange),
+                        "empty range call root must not have resolved call"),
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(excessRange),
+                        "excess-arity range call root must not have expression type"),
+                () -> assertNull(phaseInput.analysisData().resolvedCalls().get(excessRange),
+                        "excess-arity range call root must not have resolved call")
+        );
+        var bindingErrors = diagnosticsByCategory(phaseInput.analysisData().diagnostics(), "sema.binding");
+        assertTrue(bindingErrors.stream().noneMatch(d -> d.message().contains("range")),
+                "no unknown range binding diagnostic for any arity");
+    }
+
+    @Test
+    void nonBareRangeFormsContinueThroughOrdinaryIterablePipeline() throws Exception {
+        var phaseInput = phaseInput("suite_d0_non_bare_range.gd", """
+                class_name SuiteD0NonBareRange
+                extends Node
+                
+                func ping(obj, some_range):
+                    for i in obj.range(3):
+                        pass
+                    for j in some_range(3):
+                        pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatements = pingFunction.body().statements().stream()
+                .filter(ForStatement.class::isInstance)
+                .map(ForStatement.class::cast)
+                .toList();
+        var attributeIterable = forStatements.getFirst().iterable();
+        var someRangeIterable = forStatements.get(1).iterable();
+        var someRangeCall = assertInstanceOf(CallExpression.class, someRangeIterable);
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(attributeIterable),
+                        "obj.range(3) iterable must have expression type via ordinary pipeline"),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(someRangeCall),
+                        "some_range(3) call root must have expression type via ordinary pipeline"),
+                () -> assertNotNull(phaseInput.analysisData().resolvedCalls().get(someRangeCall),
+                        "some_range(3) must produce resolved call via ordinary pipeline")
+        );
+    }
+
+    @Test
+    void ordinaryIterableReadsPrefixOverlayAndBodyEnters() throws Exception {
+        var phaseInput = phaseInput("suite_d0_ordinary_iterable.gd", """
+                class_name SuiteD0OrdinaryIterable
+                extends Node
+                
+                func ping():
+                    var limit := 3
+                    for i in limit:
+                        var x := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var iterableType = requireValue(phaseInput.analysisData().expressionTypes().get(forStatement.iterable()));
+        assertAll(
+                () -> assertEquals(GdIntType.INT, requireType(iterableType.publishedType()),
+                        "limit must be stabilized to int"),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x is int because iterator i is refined to int by D1")
+        );
+    }
+
+    @Test
+    void unknownIterableBodyEntersOrdinarySharedSemantic() throws Exception {
+        var phaseInput = phaseInput("suite_d0_unknown_iterable.gd", """
+                class_name SuiteD0UnknownIterable
+                extends Node
+                
+                func ping(values):
+                    for item in values:
+                        var x := item
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var itemUseSite = findNode(fromFor, IdentifierExpression.class, id -> id.name().equals("item"));
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var itemBinding = requireValue(phaseInput.analysisData().symbolBindings().get(itemUseSite));
+        assertAll(
+                () -> assertEquals(FrontendBindingKind.LOCAL_VAR,
+                        itemBinding.kind()),
+                () -> assertNotNull(phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x must have slot type")
+        );
+        var deferredDiagnostics = diagnosticsByCategory(
+                phaseInput.analysisData().diagnostics(), "sema.deferred_expression_resolution");
+        assertTrue(deferredDiagnostics.isEmpty(), "no FOR_SUBTREE deferred result expected");
+    }
+
+    @Test
+    void explicitIteratorTypeProvidesDeclaredBaselineInBody() throws Exception {
+        var phaseInput = phaseInput("suite_d0_explicit_iterator_type.gd", """
+                class_name SuiteD0ExplicitIteratorType
+                extends Node
+                
+                func ping():
+                    for i: float in range(3):
+                        var x := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var iUseSite = findNode(fromFor, IdentifierExpression.class, id -> id.name().equals("i"));
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var iBinding = requireValue(phaseInput.analysisData().symbolBindings().get(iUseSite));
+        var iValue = requireValue(iBinding.resolvedValue());
+        assertAll(
+                () -> assertEquals(GdFloatType.FLOAT, iValue.type(),
+                        "iterator baseline must be declared float type")
+        );
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+        assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall),
+                "range call root must not have expression type even with explicit iterator type");
+    }
+
+    @Test
+    void shadowedRangeNameStillHitsBareRangePreRoute() throws Exception {
+        var phaseInput = phaseInput("suite_d0_shadow_range.gd", """
+                class_name SuiteD0ShadowRange
+                extends Node
+                
+                func ping():
+                    var range = 42
+                    for i in range(3):
+                        pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+        var callee = assertInstanceOf(IdentifierExpression.class, rangeCall.callee());
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall),
+                        "shadowed range(3) must still hit pre-route, no call-root expression type"),
+                () -> assertNull(phaseInput.analysisData().resolvedCalls().get(rangeCall),
+                        "shadowed range(3) must still hit pre-route, no resolved call"),
+                () -> assertNull(phaseInput.analysisData().symbolBindings().get(callee),
+                        "shadowed range callee must not have ordinary binding")
+        );
+    }
+
+    @Test
+    void bareIdentifierRangeDoesNotHitPreRoute() throws Exception {
+        var phaseInput = phaseInput("suite_d0_bare_identifier_range.gd", """
+                class_name SuiteD0BareIdentifierRange
+                extends Node
+                
+                func ping():
+                    var range = 42
+                    for i in range:
+                        pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var iterable = forStatement.iterable();
+        assertInstanceOf(IdentifierExpression.class, iterable);
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertNotNull(phaseInput.analysisData().expressionTypes().get(iterable),
+                "bare identifier range must go through ordinary pipeline and get expression type");
+    }
+
+    @Test
+    void nestedForUsesSameD0PreRoutePath() throws Exception {
+        var phaseInput = phaseInput("suite_d0_nested_for.gd", """
+                class_name SuiteD0NestedFor
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        for j in range(i):
+                            var x := j
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var outerRange = assertInstanceOf(CallExpression.class, outerFor.iterable());
+        var innerRange = assertInstanceOf(CallExpression.class, innerFor.iterable());
+        var fromInner = findStatement(
+                innerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(outerRange),
+                        "outer range call root must not have expression type"),
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(innerRange),
+                        "inner range call root must not have expression type"),
+                () -> assertNotNull(phaseInput.analysisData().slotTypes().get(fromInner),
+                        "inner body local must have slot type"),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(innerRange.arguments().getFirst()),
+                        "inner range argument i must have expression type")
+        );
+    }
+
+    @Test
+    void d1PublishesIterationPlanForRangeCall() throws Exception {
+        var phaseInput = phaseInput("suite_d1_range_plan.gd", """
+                class_name SuiteD1RangePlan
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        var x := i + 1
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
+        assertAll(
+                () -> assertEquals(FrontendForIterationRoute.RANGE_CALL, plan.route()),
+                () -> assertEquals("i", plan.iteratorName()),
+                () -> assertEquals(GdIntType.INT, plan.rawElementType()),
+                () -> assertEquals(GdIntType.INT, plan.exposedIteratorType()),
+                () -> assertFalse(plan.requiresPerElementConversion()),
+                () -> assertEquals(1, plan.sourceOperands().size())
+        );
+        assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(forStatement),
+                "slotTypes()[ForStatement] must be exposed iterator type");
+    }
+
+    @Test
+    void d1PublishesIntShorthandPlanForIntIterable() throws Exception {
+        var phaseInput = phaseInput("suite_d1_int_shorthand_plan.gd", """
+                class_name SuiteD1IntShorthandPlan
+                extends Node
+                
+                func ping():
+                    var limit := 5
+                    for i in limit:
+                        var x := i + 1
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
+        assertAll(
+                () -> assertEquals(FrontendForIterationRoute.INT_SHORTHAND, plan.route()),
+                () -> assertEquals(GdIntType.INT, plan.rawElementType()),
+                () -> assertEquals(GdIntType.INT, plan.exposedIteratorType()),
+                () -> assertFalse(plan.requiresPerElementConversion()),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x must be int via refined iterator")
+        );
+    }
+
+    @Test
+    void d1UnknownIterablePublishesGenericVariantPlanAndKeepsIteratorVariant() throws Exception {
+        var phaseInput = phaseInput("suite_d1_generic_plan.gd", """
+                class_name SuiteD1GenericPlan
+                extends Node
+                
+                func ping(values):
+                    for item in values:
+                        var x := item
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
+        assertAll(
+                () -> assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, plan.route()),
+                () -> assertEquals(GdVariantType.VARIANT, plan.rawElementType()),
+                () -> assertEquals(GdVariantType.VARIANT, plan.exposedIteratorType()),
+                () -> assertFalse(plan.requiresPerElementConversion()),
+                () -> assertEquals(GdVariantType.VARIANT, phaseInput.analysisData().slotTypes().get(forStatement),
+                        "iterator slot stays Variant for generic route")
+        );
+    }
+
+    @Test
+    void d1ExplicitIteratorTypeRecordsPerElementConversion() throws Exception {
+        var phaseInput = phaseInput("suite_d1_explicit_type_conversion.gd", """
+                class_name SuiteD1ExplicitTypeConversion
+                extends Node
+                
+                func ping():
+                    for i: float in range(3):
+                        var x := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
+        assertAll(
+                () -> assertEquals(FrontendForIterationRoute.RANGE_CALL, plan.route()),
+                () -> assertEquals(GdIntType.INT, plan.rawElementType(),
+                        "raw element type is still int for range"),
+                () -> assertEquals(GdFloatType.FLOAT, plan.exposedIteratorType(),
+                        "exposed iterator type is declared float"),
+                () -> assertTrue(plan.requiresPerElementConversion(),
+                        "int -> float requires per-element conversion"),
+                () -> assertEquals(GdFloatType.FLOAT, phaseInput.analysisData().slotTypes().get(forStatement),
+                        "slotTypes()[ForStatement] must be declared float")
+        );
+    }
+
+    @Test
+    void d1NestedForReadsOuterRefinedIteratorType() throws Exception {
+        var phaseInput = phaseInput("suite_d1_nested_refined.gd", """
+                class_name SuiteD1NestedRefined
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        for j in range(i):
+                            pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var innerRange = assertInstanceOf(CallExpression.class, innerFor.iterable());
+        var innerArg = innerRange.arguments().getFirst();
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var innerArgType = requireValue(phaseInput.analysisData().expressionTypes().get(innerArg));
+        assertAll(
+                () -> assertEquals(GdIntType.INT, requireType(innerArgType.publishedType()),
+                        "inner range argument i must be refined to int from outer loop")
+        );
+        var innerPlan = phaseInput.analysisData().forIterationPlans().get(innerFor);
+        assertNotNull(innerPlan, "inner iteration plan must be published");
+        assertEquals(FrontendForIterationRoute.RANGE_CALL, innerPlan.route());
+    }
+
+    @Test
+    void bareRangePreRouteResolvesDynamicVariableArguments() throws Exception {
+        var phaseInput = phaseInput("suite_d0_range_dynamic_args.gd", """
+                class_name SuiteD0RangeDynamicArgs
+                extends Node
+                
+                func ping(start: int, end: int):
+                    for i in range(start, end):
+                        var x := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+        var callee = assertInstanceOf(IdentifierExpression.class, rangeCall.callee());
+        var startArg = rangeCall.arguments().getFirst();
+        var endArg = rangeCall.arguments().get(1);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().symbolBindings().get(callee),
+                        "range callee must not have ordinary binding"),
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall),
+                        "range call root must not have expression type"),
+                () -> assertNull(phaseInput.analysisData().resolvedCalls().get(rangeCall),
+                        "range call root must not have resolved call"),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(startArg),
+                        "start argument must have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(startArg)).publishedType()),
+                        "start argument must resolve to int parameter type"),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(endArg),
+                        "end argument must have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(endArg)).publishedType()),
+                        "end argument must resolve to int parameter type"),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x is int via refined iterator")
+        );
+        var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
+        assertAll(
+                () -> assertEquals(FrontendForIterationRoute.RANGE_CALL, plan.route()),
+                () -> assertEquals(2, plan.sourceOperands().size(),
+                        "plan must preserve both source operands")
+        );
+    }
+
+    @Test
+    void bareRangePreRouteResolvesThreeDynamicArguments() throws Exception {
+        var phaseInput = phaseInput("suite_d0_range_three_dynamic_args.gd", """
+                class_name SuiteD0RangeThreeDynamicArgs
+                extends Node
+                
+                func ping():
+                    var start := 2
+                    var end := 10
+                    var step := 3
+                    for i in range(start, end, step):
+                        pass
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall),
+                        "range call root must not have expression type"),
+                () -> assertEquals(3, rangeCall.arguments().size()),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().getFirst()),
+                        "start argument must have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().getFirst())).publishedType())),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(1)),
+                        "end argument must have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(1))).publishedType())),
+                () -> assertNotNull(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(2)),
+                        "step argument must have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(2))).publishedType()))
+        );
+        var plan = phaseInput.analysisData().forIterationPlans().get(forStatement);
+        assertNotNull(plan);
+        assertEquals(3, plan.sourceOperands().size(), "plan must preserve all three source operands");
+    }
+
+    @Test
+    void bareRangePreRouteResolvesMixedLiteralAndDynamicArguments() throws Exception {
+        var phaseInput = phaseInput("suite_d0_range_mixed_args.gd", """
+                class_name SuiteD0RangeMixedArgs
+                extends Node
+                
+                func ping(limit: int):
+                    for i in range(0, limit, 2):
+                        var x := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var forStatement = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var rangeCall = assertInstanceOf(CallExpression.class, forStatement.iterable());
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertNull(phaseInput.analysisData().expressionTypes().get(rangeCall),
+                        "range call root must not have expression type"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().getFirst())).publishedType()),
+                        "literal 0 must be int"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(1))).publishedType()),
+                        "dynamic limit must resolve to int"),
+                () -> assertEquals(GdIntType.INT,
+                        requireType(requireValue(phaseInput.analysisData().expressionTypes().get(rangeCall.arguments().get(2))).publishedType()),
+                        "literal 2 must be int"),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor),
+                        "body local x is int via refined iterator")
+        );
+    }
+
     private static void resolveWith(
             @NotNull PhaseInput phaseInput,
             @NotNull FrontendStatementResolver.OwnerProcedures ownerProcedures
@@ -911,30 +1563,60 @@ class FrontendSuiteResolverTest {
         );
     }
 
-    private static void assertExpressionTypeNameEndsWith(
-            @NotNull FrontendAnalysisData analysisData,
-            @NotNull Expression expression,
-            @NotNull String suffix
+    private static @NotNull FrontendInterfaceSurface reorderBodyDeclarations(
+            @NotNull FrontendInterfaceSurface originalSurface,
+            @NotNull Block body,
+            @NotNull List<FrontendBodyLocalDeclaration> bodyDeclarations
     ) {
-        var expressionType = analysisData.expressionTypes().get(expression);
-        assertNotNull(expressionType);
-        assertNotNull(expressionType.publishedType());
-        assertTypeNameEndsWith(requireType(expressionType.publishedType()), suffix);
+        var reordered = List.of(
+                new FrontendBodyLocalDeclaration(
+                        bodyDeclarations.get(1).declaration(),
+                        bodyDeclarations.get(1).binding(),
+                        bodyDeclarations.get(1).kind(),
+                        0
+                ),
+                new FrontendBodyLocalDeclaration(
+                        bodyDeclarations.getFirst().declaration(),
+                        bodyDeclarations.getFirst().binding(),
+                        bodyDeclarations.getFirst().kind(),
+                        1
+                )
+        );
+        var declarationsByBody = new IdentityHashMap<>(
+                originalSurface.bodyDeclarationIndex().declarationsByBodyRoot()
+        );
+        declarationsByBody.put(body, reordered);
+        return new FrontendInterfaceSurface(
+                new FrontendBodyDeclarationIndex(declarationsByBody),
+                originalSurface.typedLexicalBaseline(),
+                originalSurface.suiteEntryRoots()
+        );
+    }
+
+    private static void assertExpressionPointType(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull Expression expression
+    ) {
+        var expressionType = requireValue(analysisData.expressionTypes().get(expression));
+        assertPointType(requireType(expressionType.publishedType()));
     }
 
     private static @NotNull Expression requireExpression(@Nullable Expression expression) {
-        assertNotNull(expression);
-        return expression;
+        return requireValue(expression);
     }
 
     private static @NotNull GdType requireType(@Nullable GdType type) {
-        assertNotNull(type);
-        return type;
+        return requireValue(type);
     }
 
-    private static void assertTypeNameEndsWith(@NotNull GdType type, @NotNull String suffix) {
-        assertTrue(type.getTypeName().endsWith(suffix),
-                () -> "Expected type name to end with '" + suffix + "' but was " + type.getTypeName());
+    private static <T> @NotNull T requireValue(@Nullable T value) {
+        assertNotNull(value);
+        return Objects.requireNonNull(value);
+    }
+
+    private static void assertPointType(@NotNull GdType type) {
+        assertTrue(type.getTypeName().endsWith("Point"),
+                () -> "Expected type name to end with 'Point' but was " + type.getTypeName());
     }
 
     private static void assertOwnerSequence(@NotNull List<OwnerEvent> events, int offset, @NotNull Node root) {

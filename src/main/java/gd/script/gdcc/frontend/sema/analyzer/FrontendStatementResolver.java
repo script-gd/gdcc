@@ -3,6 +3,7 @@ package gd.script.gdcc.frontend.sema.analyzer;
 import dev.superice.gdparser.frontend.ast.AssertStatement;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.BreakStatement;
+import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ContinueStatement;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
@@ -16,6 +17,7 @@ import dev.superice.gdparser.frontend.ast.ReturnStatement;
 import dev.superice.gdparser.frontend.ast.Statement;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
@@ -116,9 +118,30 @@ public class FrontendStatementResolver {
         if (forStatement.iteratorType() != null) {
             runSupportedRoot(context, forStatement.iteratorType());
         }
-        runSupportedRoot(context, forStatement.iterable());
+        resolveForIterable(context, forStatement);
+        ownerProcedures.runForIterationResolution(context, forStatement);
+        ownerProcedures.runVarTypePost(context, forStatement);
         flushStatementBoundary(context);
         childSuiteResolver.resolveChildSuite(context, forStatement.body());
+    }
+
+    /// Routes the for-in iterable expression through the correct owner domain.
+    ///
+    /// A bare `range(...)` call is recognized purely by AST shape (callee is an
+    /// `IdentifierExpression` named "range"), mirroring Godot 4.5.1 behavior where same-named
+    /// locals or callables do not cancel the range special case. When matched, only the call
+    /// arguments enter the ordinary owner pipeline; the callee identifier and call root never
+    /// produce ordinary binding, expression-type or resolved-call facts.
+    private void resolveForIterable(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {
+        var iterable = forStatement.iterable();
+        if (FrontendForLoopSupport.isBareRangeCall(iterable)) {
+            var rangeCall = (CallExpression) iterable;
+            for (var argument : rangeCall.arguments()) {
+                runSupportedRoot(context, argument);
+            }
+        } else {
+            runSupportedRoot(context, iterable);
+        }
     }
 
     private void resolveSupportedRoot(@NotNull FrontendSuiteContext context, @NotNull Node root) {
@@ -162,6 +185,9 @@ public class FrontendStatementResolver {
         }
 
         default void runExprType(@NotNull FrontendSuiteContext context, @NotNull Node root) {
+        }
+
+        default void runForIterationResolution(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {
         }
 
         default void runVarTypePost(@NotNull FrontendSuiteContext context, @NotNull Node root) {
