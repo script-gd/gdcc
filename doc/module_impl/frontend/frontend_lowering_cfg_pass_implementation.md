@@ -665,6 +665,7 @@ body-lowering 合同：
 - `GetNodeExpression`
 - callable-value invocation
 - multi-key subscript lowering
+- `for`（compile gate 已改 route-aware：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 lowering contract 放行，其余 route 发 route-not-ready blocker；`FrontendForRegion` 与 `ForLoop*Item` 的 CFG/lowering 合同仍待 for-in 计划阶段 G/H，本文档对应 region 形状 / value-op item 列表 / build pass 发布面将在阶段 G 首次同步）
 
 其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
 

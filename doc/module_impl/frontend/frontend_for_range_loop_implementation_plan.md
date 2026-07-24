@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；compile gate 解封（F）、CFG（G）、lowering（H）尚未实施）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；CFG（G）、lowering（H）尚未实施，range/int 端到端生产闭环与 G/H 原子合并）
 - 创建日期：2026-07-03
 - 更新时间：2026-07-24
 - 适用范围：
@@ -98,8 +98,6 @@ compile / lowering 最终目标必须覆盖：
 
 尚未实施：
 
-- `FrontendCompileCheckAnalyzer` 对每个 `ForStatement` root 发布临时、无条件的 `sema.compile_check` blocker。
-- `FrontendTypeCheckAnalyzer` 尚未实现 `handleForStatement(...)`。其默认 node handler 返回 `SKIP_CHILDREN`，因此当前不会 type-check `iterable`、iterator conversion 或整个 for body；这与已显式遍历 body 的 `if` / `while` 不同。
 - `FrontendCfgGraphBuilder.processStatement(...)` 没有 `ForStatement` 分支；`FrontendCfgRegion` 只允许 `BlockRegion`、`FrontendIfRegion`、`FrontendElifRegion`、`FrontendWhileRegion`。
 - `FrontendCfgGraphBuilder.ExecutableBodyBuild` 与 `FunctionLoweringContext` 没有 compiler-only hidden-local registry。
 - generic Variant iterator helper、typed container iterator helper、Object `_iter_*` helper 尚未实现。
@@ -441,7 +439,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### 阶段 A/B：parse / scope 基线与 body inventory 解封（已完成）
 
-阶段 A（parse/AST/scope 基线测试）与阶段 B（body inventory 与 declaration index 解封）已完成。所有 `for-in` body 已转为 shared semantic 结构支持面；iterator binding、body local inventory、declaration index、typed baseline、suite entry 均已无条件发布。该完成状态不包括 diagnostics-only type-check：`FrontendTypeCheckAnalyzer` 尚未遍历 `ForStatement` subtree，完整 shared semantic 必须等待阶段 E。`FrontendCompileCheckAnalyzer` 对所有 `ForStatement` 发布临时无条件 `sema.compile_check` blocker，等待后续 route-aware policy 替换。
+阶段 A（parse/AST/scope 基线测试）与阶段 B（body inventory 与 declaration index 解封）已完成。所有 `for-in` body 已转为 shared semantic 结构支持面；iterator binding、body local inventory、declaration index、typed baseline、suite entry 均已无条件发布。该完成状态不包括 diagnostics-only type-check：`FrontendTypeCheckAnalyzer` 当时尚未遍历 `ForStatement` subtree，完整 shared semantic 等待阶段 E（已完成）。`FrontendCompileCheckAnalyzer` 当时对所有 `ForStatement` 发布临时无条件 `sema.compile_check` blocker，已由阶段 F 的 route-aware policy 替换。
 
 ### 阶段 C：iteration plan 数据结构与 publication surface
 
@@ -621,7 +619,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### 阶段 F：compile gate 分阶段解封
 
-状态：未实施。先实现 route-aware policy，但只有阶段 G/H 与对应测试完成后才实际解封 range/int route。
+状态：已完成。`FrontendCompileCheckAnalyzer.handleForStatement(...)` 已实现 route-aware policy：读取已发布的 `FrontendForIterationPlan`，查询 `ForLoweringContractRegistry.get(plan.route())`，contract 非 null 的 route（当前 `RANGE_CALL` / `INT_SHORTHAND`）放行并 mark ForStatement / source operands / body 后进入 body 重扫 facts，contract 为 null 的 route（当前 `GENERIC_VARIANT` 及其余保留 route）在 statement root 发 route-not-ready blocker。range/int route 的端到端生产闭环仍与阶段 G/H 原子合并（见文末依赖链说明），在此之前通过 compile gate 的 for-range 脚本会在尚未实现的 CFG/lowering 处 fail-fast。
 
 目标：
 

@@ -5,6 +5,7 @@ import gd.script.gdcc.frontend.diagnostic.FrontendDiagnostic;
 import gd.script.gdcc.frontend.diagnostic.DiagnosticSnapshot;
 import gd.script.gdcc.frontend.diagnostic.FrontendDiagnosticSeverity;
 import gd.script.gdcc.frontend.diagnostic.FrontendRange;
+import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.scope.ClassScope;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
@@ -14,6 +15,8 @@ import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExecutableInventorySupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
+import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
 import gd.script.gdcc.frontend.sema.FrontendResolvedMember;
@@ -126,6 +129,7 @@ public class FrontendCompileCheckAnalyzer {
                     analysisData.resolvedMembers(),
                     analysisData.resolvedCalls(),
                     analysisData.slotTypes(),
+                    analysisData.forIterationPlans(),
                     diagnosticManager
             ).walk(sourceClassRelation.unit().ast());
         }
@@ -145,6 +149,15 @@ public class FrontendCompileCheckAnalyzer {
         return Objects.requireNonNull(expressionKind, "expressionKind must not be null")
                 + " is recognized by the frontend but is blocked in compile mode because "
                 + "lowering support lands";
+    }
+
+    /// Route-not-ready blocker for a `for-in` whose iteration route has no registered lowering contract.
+    /// The message names the missing lowering route rather than reporting the loop as an unsupported
+    /// subtree, so the gap is attributed to the absent contract instead of shared semantic support.
+    private static @NotNull String forRouteNotReadyMessage(@NotNull FrontendForIterationRoute route) {
+        return "for-in loop is recognized by shared semantic analysis but is blocked in compile mode because its '"
+                + Objects.requireNonNull(route, "route must not be null")
+                + "' iteration route has no registered lowering contract yet";
     }
 
     private static @NotNull String staticPropertyCompileBlockedMessage(@NotNull String propertyName) {
@@ -213,6 +226,7 @@ public class FrontendCompileCheckAnalyzer {
         private final @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers;
         private final @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls;
         private final @NotNull FrontendAstSideTable<GdType> slotTypes;
+        private final @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans;
         private final @NotNull DiagnosticManager diagnosticManager;
         private final @NotNull ASTWalker astWalker;
         private final @NotNull Set<Node> compileSurfaceNodes = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -228,6 +242,7 @@ public class FrontendCompileCheckAnalyzer {
                 @NotNull FrontendAstSideTable<FrontendResolvedMember> resolvedMembers,
                 @NotNull FrontendAstSideTable<FrontendResolvedCall> resolvedCalls,
                 @NotNull FrontendAstSideTable<GdType> slotTypes,
+                @NotNull FrontendAstSideTable<FrontendForIterationPlan> forIterationPlans,
                 @NotNull DiagnosticManager diagnosticManager
         ) {
             this.sourcePath = Objects.requireNonNull(sourcePath, "sourcePath must not be null");
@@ -240,6 +255,7 @@ public class FrontendCompileCheckAnalyzer {
             this.resolvedMembers = Objects.requireNonNull(resolvedMembers, "resolvedMembers must not be null");
             this.resolvedCalls = Objects.requireNonNull(resolvedCalls, "resolvedCalls must not be null");
             this.slotTypes = Objects.requireNonNull(slotTypes, "slotTypes must not be null");
+            this.forIterationPlans = Objects.requireNonNull(forIterationPlans, "forIterationPlans must not be null");
             this.diagnosticManager = Objects.requireNonNull(diagnosticManager, "diagnosticManager must not be null");
             astWalker = new ASTWalker(this);
         }
@@ -418,17 +434,25 @@ public class FrontendCompileCheckAnalyzer {
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
-        /// `for` is shared-semantic supported but remains blocked before CFG/lowering is entered.
+        /// `for` is shared-semantic supported; whether it is compile-ready is decided per route by the
+        /// lowering contract registry. A route with a registered contract is released onto the compile
+        /// surface (loop node, source operands and body); a route without one is blocked with a
+        /// route-not-ready diagnostic instead of the old unconditional statement-root blocker.
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
             if (supportedExecutableBlockDepth <= 0 || isNotPublished(forStatement)) {
                 return FrontendASTTraversalDirective.SKIP_CHILDREN;
             }
-            reportExplicitCompileBlock(
-                    forStatement,
-                    "For statement is supported by shared semantic analysis but cannot be compiled until its CFG "
-                            + "and lowering route is implemented"
-            );
+            var plan = requirePublishedForIterationPlan(forStatement);
+            if (ForLoweringContractRegistry.get(plan.route()) == null) {
+                reportExplicitCompileBlock(forStatement, forRouteNotReadyMessage(plan.route()));
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            markCompileSurfaceNode(forStatement);
+            for (var sourceOperand : plan.sourceOperands()) {
+                walkExpression(sourceOperand);
+            }
+            walkSupportedExecutableBlock(forStatement.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
@@ -895,6 +919,19 @@ public class FrontendCompileCheckAnalyzer {
             return variableDeclaration.kind() == DeclarationKind.VAR
                     && scopesByAst.get(variableDeclaration) instanceof BlockScope blockScope
                     && FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind());
+        }
+
+        /// The iteration plan is the single route truth and must already be published by the for-iteration
+        /// resolution owner before the compile gate runs (type-check enforces the same boundary). A missing
+        /// plan means the upstream phase boundary was not honored, so this path fails fast instead of
+        /// masking the invariant break as an ordinary compile block.
+        private @NotNull FrontendForIterationPlan requirePublishedForIterationPlan(@NotNull ForStatement forStatement) {
+            Objects.requireNonNull(forStatement, "forStatement must not be null");
+            var plan = forIterationPlans.get(forStatement);
+            if (plan != null) {
+                return plan;
+            }
+            throw new IllegalStateException("for-in iteration plan has not been published for ForStatement");
         }
 
         /// Compile mode only reasons about nodes that survived the shared publication pipeline.
