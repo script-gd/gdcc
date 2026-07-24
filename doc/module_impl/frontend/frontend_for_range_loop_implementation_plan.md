@@ -191,14 +191,19 @@ for i: float in range(3):
     print(i)
 ```
 
-此时 body 中 `i` 的 source-facing type 是 `float`，iteration plan 的 raw element type 仍是 `int`。type-check 阶段必须验证 raw element 可以进入 explicit iterator type；lowering 必要时插入 per-element conversion。
+此时 body 中 `i` 的 source-facing type 是 `float`，iteration plan 的 semantic element type 仍是 `int`。type-check 阶段必须验证 semantic element 可以进入 explicit iterator type；lowering 必要时插入 per-element conversion。
 
-无显式 type 时：
+无显式 type 时（阶段 F2 后 `semanticElementType` 按 Godot 静态分析规则推导，不再统一为 `Variant`）：
 
-- `range(...)`、`int` 数值简写 -> raw element type 为 `int`，iterator 可精化为 `int`。
-- typed `Array[T]` -> raw element type 为 `T`，iterator 可精化为 `T`。
-- typed `Dictionary[K, V]` -> Godot 语义迭代 key，raw element type 为 `K`。
-- plain `Dictionary`、unknown `Variant`、Object custom iterator -> raw element type 为 `Variant`，iterator 保持 `Variant`。
+- `range(...)`、`int` 数值简写 -> semantic element type 为 `int`，iterator 可精化为 `int`。
+- `float` -> semantic element type 为 `float`，iterator 可精化为 `float`。
+- `String` -> semantic element type 为 `String`，iterator 可精化为 `String`。
+- typed `Array[T]` -> semantic element type 为 `T`，iterator 可精化为 `T`。
+- typed `Dictionary[K, V]` -> Godot 语义迭代 key，semantic element type 为 `K`。
+- typed packed array（如 `PackedInt32Array`）-> semantic element type 为对应元素类型。
+- `Vector2`/`Vector3` -> semantic element type 为 `float`；`Vector2i`/`Vector3i` -> `int`。
+- plain `Dictionary`、untyped `Array`、unknown `Variant`、Object custom iterator -> semantic element type 为 `Variant`，iterator 保持 `Variant`。
+- 不可迭代 hard type（`bool`、`Nil`、`Callable`、`Signal`、`RID`、`StringName`、`NodePath`、compound vector 等）-> semantic element type fallback 为 `Variant`，type-check 阶段报 `Unable to iterate on value of type "X"` 诊断（阶段 F2）。
 
 当前 `FrontendTypedLexicalEnvironment.addLocalSlotTypeUpdate(...)` 只允许
 `LOCAL_TYPE_STABILIZATION` owner 写 local slot update，并拒绝 exact -> exact 改写。计划正式采用
@@ -245,15 +250,17 @@ iteration plan 拆分为两个合同：纯语义事实（frontend-owned, frozen�
 
 ```java
 /// 纯语义事实。Phase C 发布，frozen，type-check / compile gate / CFG builder 共同消费。
-/// 不携带任何 lowering-internal state 或 backend operation 协议。
+/// 不携带任何 lowering-internal state、backend operation 协议或 runtime helper 返回类型。
+/// 阶段 F2 将原 rawElementType 替换为 semanticElementType（Godot 静态分析推导的元素类型），
+/// 解耦 body type-check 语义与 lowering 实现。lowering 所需的 helper result type 由
+/// ForLoweringContractRegistry 查询的 FrontendForLoweringContract.get().resultType() 提供。
 record FrontendForIterationPlan(
         @NotNull ForStatement statement,
         @NotNull FrontendForIterationRoute route,
         @NotNull String iteratorName,
-        @Nullable TypeRef declaredIteratorType,
-        @NotNull GdType rawElementType,
+        @Nullable TypeRef declaredIteratorTypeRef,        // 源码 AST TypeRef，非 resolved GdType（阶段 F2 重命名）
+        @NotNull GdType semanticElementType,              // Godot 静态分析推导的元素类型（阶段 F2）
         @NotNull GdType exposedIteratorType,
-        boolean requiresPerElementConversion,
         @NotNull List<Expression> sourceOperands
 ) {}
 ```
@@ -288,10 +295,13 @@ record FrontendForLoweringContract(
 
 约束：
 
-- `rawElementType` 是 runtime helper / intrinsic 产出的元素类型。
-- `exposedIteratorType` 是 body 中 iterator local 的 source-facing type。
+- `semanticElementType` 是按 Godot 静态分析规则从 iterable 类型推导的元素类型（阶段 F2 引入）。它驱动 body 中 iterator 的静态类型、显式 iterator type 兼容性检查和 body 内 `is` 表达式类型收窄。对当前 frontend 能静态分类的 builtin/container 类型（`int`、`float`、`String`、typed/untyped `Array`、typed/untyped `Dictionary`、`PackedArray` 族、`Vector2`/`Vector3`/`Vector2i`/`Vector3i`），该字段从阶段 F2 起即为最终语义，不随阶段 I/J 的 lowering 实现变化。`GdObjectType` 的 `semanticElementType` 当前为保守 `Variant`（Object iterator protocol 的精确语义留待独立阶段完成，见分类表注释）。
+- lowering 所需的 helper/intrinsic 实际返回类型**不在 plan 中存储**。该信息由 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract.get().resultType()` 提供，是 lowering 唯一事实源。plan 不猜测、不缓存、不提前写入任何 lowering ABI。
+- lowering 所需的 runtime unpack 判定（helper result → source-facing type 是否需要转换）**不在 plan 中存储**。该判定由 lowering 在 contract 已存在时根据 `contract.get().resultType()` 与 `plan.exposedIteratorType()` 通过 `materializeFrontendBoundaryValue` 统一决策。
+- `exposedIteratorType` 是 body 中 iterator local 的 source-facing type。无显式注解时镜像 `semanticElementType`。
+- `requiresPerElementConversion` 已从 plan record 中移除（阶段 F2）。type-check 直接调用 `checkAssignmentCompatible(semanticElementType, exposedIteratorType)` 验证兼容性，不依赖 plan 中的派生 boolean。lowering 通过 `materializeFrontendBoundaryValue` 调用统一 `determineFrontendBoundaryDecision` 决策。
 - `sourceOperands` 保留源码 expression，不伪造 AST。
-- `FrontendForIterationPlan` 是纯语义事实，不携带 `GdCompilerType`、intrinsic 名称或任何 lowering 协议。
+- `FrontendForIterationPlan` 是纯语义事实，不携带 `GdCompilerType`、intrinsic 名称、runtime helper 返回类型或任何 lowering 协议。`semanticElementType` 必须是 source-visible type。
 - `FrontendForLoweringContract.iteratorStateType` 只允许出现在 lowering-internal state（hidden-slot metadata、LIR function local、intrinsic operand-result、backend C storage），不得进入 ordinary expression / slot / binding tables。
 - `ForIterationOperationDescriptor` 携带 arity 与签名，consumer 不得在 CFG builder / lowering processor 中散落硬编码 intrinsic 名称。
 - route-not-ready 的形式化：compile gate 查询 `ForLoweringContractRegistry.get(route)` 返回 null 即 route-not-ready；不需要在 plan record 中表达 readiness。
@@ -299,13 +309,13 @@ record FrontendForLoweringContract(
 `range(...)` route 第一版使用已有 contract（`ForLoweringContractRegistry` 静态注册）：
 
 - `iteratorStateType = GdccForRangeIterType.FOR_RANGE_ITER`
-- `rawElementType = GdIntType.INT`（plan 语义事实）
+- `semanticElementType = GdIntType.INT`（plan 语义事实）；helper result type 由 `contract.get().resultType()` 提供（lowering 事实，当前同为 `int`）
 - operations = `gdcc.for_range_iter.init / should_continue / next / get`（lowering contract）
 
 generic Variant route 需要新增 contract（Phase I 冻结后注册）：
 
 - `iteratorStateType` 使用新的 compiler-only generic iterator state type。generic route 在该类型及其 lifecycle/intrinsic contract 冻结前，`ForLoweringContractRegistry` 不注册该 route，compile gate 自然阻断。
-- `rawElementType = GdVariantType.VARIANT`（plan 语义事实，Phase C 即可确定）
+- helper result type 由 Phase I 注册的 `contract.get().resultType()` 提供（lowering 事实），plan 不提前写入。`semanticElementType` 按 iterable 静态类型推导（阶段 F2）：已知可迭代类型（如 `String`、`Array[int]`）获得具体元素类型，未知/Variant 保持 `Variant`。
 - operations 使用新 intrinsic，例如 `gdcc.for_variant_iter.init / should_continue / next / get`，具体名称与签名在 Phase I intrinsic catalog 阶段冻结后注册到 `ForLoweringContractRegistry`。
 
 ### 3.5 iterator slots
@@ -420,21 +430,51 @@ build artifact 构造时必须执行跨表验证，而不是只在 processor 中
 
 ### 3.7 Godot iteration 语义落点
 
-外部语义参考表明 Godot 对 `for-in` 使用统一 iteration 协议：
+外部语义参考表明 Godot 对 `for-in` 使用统一 iteration 协议（`gdscript_analyzer.cpp:2332-2450`，commit `30a0296`）：
 
 - `int`：类似 `range(0, n, 1)`，`n <= 0` 时 0 次迭代。
 - `float`：类似 `range(ceil(n))`，但 element 精确类型与 conversion 需要专门测试锁定后再做 high-performance route。
 - `Array` / packed array：按 index 返回元素。
 - `Dictionary`：迭代 key，不是 pair，也不是 value。
 - `String`：迭代字符。
-- `Object`：通过 `_iter_init` / `_iter_next` / `_iter_get` 协议。
+- `Vector2`/`Vector3`：按分量迭代，元素类型为 `float`。`Vector2i`/`Vector3i`：元素类型为 `int`。`Vector4`/`Vector4i` 不可迭代。
+- `Object`：通过 `_iter_init` / `_iter_next` / `_iter_get` 协议。hard-typed Object 无 `_iter_get` 时 Godot 报编译错误；GDCC 当前不具备 classdb 查询能力，Object 统一走 `GENERIC_VARIANT`，推迟到运行时。
 - unknown `Variant`：通过 `Variant::iter_init` / `iter_next` / `iter_get` runtime dispatch。
 
-GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationRoute` 和 tests 保留扩展位。无法静态确定或尚未实现专用 helper 的类型必须落到 `GENERIC_VARIANT`，而不是重新把 body 关回 deferred boundary。
+阶段 F2 引入的完整可迭代/不可迭代分类（对齐 Godot `resolve_for` 与 `Variant::iter_init`）：
+
+**可迭代类型与 semantic element type：**
+
+| 类型 | semanticElementType | 说明 |
+|---|---|---|
+| `int` | `int` | 由 `INT_SHORTHAND` route 处理 |
+| `float` | `float` | 类似 `range(ceil(n))` |
+| `String` | `String` | 逐字符迭代 |
+| `Vector2`/`Vector3` | `float` | 按分量迭代 |
+| `Vector2i`/`Vector3i` | `int` | 按分量迭代 |
+| typed `Array[T]` | `T` | `getValueType()` |
+| untyped `Array` | `Variant` | 运行时确定 |
+| typed `Dictionary[K, V]` | `K`（key type） | Godot 迭代 key |
+| untyped `Dictionary` | `Variant` | 运行时确定 |
+| `PackedByteArray`/`PackedInt32Array`/`PackedInt64Array` | `int` | `getValueType()` |
+| `PackedFloat32Array`/`PackedFloat64Array` | `float` | `getValueType()` |
+| `PackedStringArray` | `String` | `getValueType()` |
+| `PackedVector2Array`/`PackedVector3Array`/`PackedVector4Array` | 对应 Vector 类型 | `getValueType()` |
+| `PackedColorArray` | `Color` | `getValueType()` |
+| `Object` | `Variant` | GDCC 当前无 classdb `_iter_get` 查询能力，保守取 Variant（见 F2 分类表注释） |
+| `Variant`（动态/未知） | `Variant` | 运行时 dispatch |
+
+**不可迭代 hard type（阶段 F2 type-check 报 `Unable to iterate on value of type "X"`）：**
+
+`bool`、`Nil`、`StringName`、`NodePath`、`Callable`、`Signal`、`RID`、`Void`、`Vector4`、`Vector4i`、所有 `GdCompoundVectorType`（`Rect2`、`Rect2i`、`AABB`、`Plane`、`Quaternion`、`Color`、`Basis`、`Transform2D`、`Transform3D`、`Projection`）。
+
+注意：`Variant`（动态/未知）和静态未知（`null`）不视为不可迭代——它们推迟到运行时，由 generic Variant iterator helper 处理。
+
+GDCC 第一批 route 不必全部专用化，但必须让 `FrontendForIterationRoute` 和 tests 保留扩展位。无法静态确定或尚未实现专用 helper 的类型必须落到 `GENERIC_VARIANT`，而不是重新把 body 关回 deferred boundary。阶段 F2 确保即使 route 为 `GENERIC_VARIANT`，`semanticElementType` 仍按 Godot 静态分析规则推导；对当前 frontend 能静态分类的 builtin/container 类型，body type-check 结果不随阶段 I/J 的 lowering 实现变化。`GdObjectType` 的精确 iterator protocol 语义留待独立阶段。
 
 ## 4. 分阶段实施步骤
 
-range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F 解封）属于一个原子实施边界。不得先放宽 compile gate，也不得在 plan producer 尚不存在时通过测试专用 side-table mutation 声称某阶段已完成。generic Variant route（阶段 I）与 known iterable 专用 route（阶段 J）留在后续独立实施。
+range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F 解封）属于一个原子实施边界。不得先放宽 compile gate，也不得在 plan producer 尚不存在时通过测试专用 side-table mutation 声称某阶段已完成。阶段 F2（semantic element type 替换与不可迭代类型静态诊断）必须在阶段 G 之前完成，因为 CFG builder 与 lowering 消费替换后的 plan 字段；阶段 I（generic Variant route）与阶段 J（known iterable 专用 route）依赖 F2 提供的语义模型，留在后续独立实施。
 
 
 ### 阶段 A/B：parse / scope 基线与 body inventory 解封（已完成）
@@ -468,7 +508,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendPublishedFactTypeGuard` 增加 iteration plan guard：
   - `FrontendForIterationPlan` 的 source-facing fields 不得含 compiler-only type。
   - `FrontendForIterationPlan` 不得携带 `GdCompilerType`、intrinsic 名称或任何 lowering 协议字段。
-  - `rawElementType` 与 `exposedIteratorType` 必须是 source-visible type。
+  - `rawElementType` 与 `exposedIteratorType` 必须是 source-visible type。（阶段 F2 将 `rawElementType` 替换为 `semanticElementType`，须为 source-visible type。lowering helper result type 不在 plan 中存储，由 `FrontendForLoweringContract.get().resultType()` 提供。）
 - 新增 `ForLoweringContractRegistry`（compile-time 静态注册表）：
   - Phase C 只注册 `RANGE_CALL` 与 `INT_SHORTHAND` 的 `FrontendForLoweringContract`。
   - `GENERIC_VARIANT` 在 Phase C 不注册；compile gate 查询返回 null 即 route-not-ready。
@@ -481,7 +521,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendForLoopSupportTest` 覆盖 bare `range(...)`、非 bare `range`、`int` shorthand、unknown iterable fallback。
 - `RANGE_CALL` plan 的 `sourceOperands` 保留源码 arguments。
 - `INT_SHORTHAND` plan 的 `sourceOperands` 只包含 stop expression，不伪造 `0` / `1` AST。
-- `GENERIC_VARIANT` plan 只携带语义事实（route、rawElementType=Variant、exposedIteratorType），不携带任何 lowering 合同字段。
+- `GENERIC_VARIANT` plan 只携带语义事实（route、rawElementType=Variant、exposedIteratorType），不携带任何 lowering 合同字段。（阶段 F2 将 `rawElementType` 替换为 `semanticElementType`，按 iterable 静态类型推导；lowering helper result type 不在 plan 中存储，由阶段 I 注册的 `FrontendForLoweringContract.get().resultType()` 提供。）
 - `ForLoweringContractRegistry` 对 `RANGE_CALL` / `INT_SHORTHAND` 返回 non-null contract；对 `GENERIC_VARIANT` 返回 null。
 - route 与 operation descriptor 不在 CFG builder / lowering processor 中重复硬编码。
 
@@ -595,7 +635,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendTypeCheckAnalyzer` 消费 `FrontendForIterationPlan`：
   - `RANGE_CALL` arguments 必须能进入 `int` slot。
   - `INT_SHORTHAND` stop expression 必须能进入 `int` slot。
-  - explicit iterator type 必须能接收 raw element type；不新增 parallel conversion matrix。
+  - explicit iterator type 必须能接收 semantic element type（阶段 F2 起为 `semanticElementType`）；不新增 parallel conversion matrix。
   - `GENERIC_VARIANT` 不因无法静态证明 iterable 而发 unsupported diagnostic。
 - `FLOAT_SHORTHAND` 第一版可以保持 generic Variant route；只有在 `ceil` 语义、element exposed type 与 C helper 都被测试锁住后，才转为专用 route。
 - `DICTIONARY_KEYS` route 必须明确 iterator 是 key type。
@@ -656,6 +696,341 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - range route 在无 semantic error 时可通过 `analyzeForCompile(...)`。
 - generic Variant route 完成后，unknown iterable 的 `for-in` 可通过 compile gate。
 - compile gate 不为已有 upstream semantic error 追加同级 generic `sema.compile_check` 噪声。
+
+### 阶段 F2：semantic element type 替换与不可迭代类型静态诊断
+
+状态：未实施。必须在阶段 G 之前完成（CFG builder 与 lowering 消费替换后的 plan 字段）。阶段 I（generic Variant route）与阶段 J（known iterable 专用 route）依赖本阶段提供的语义模型。
+
+依赖：阶段 C/D0/D1/E 已完成（plan 数据结构、publication surface、type-check 基础设施已就位）。
+
+目标：
+
+- 将 `FrontendForIterationPlan.rawElementType` 替换为 `semanticElementType`（Godot 静态分析推导的元素类型，驱动 body type-check），解耦 body 语义与 lowering 实现。lowering 所需的 helper result type 不在 plan 中存储，由 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract.get().resultType()` 提供（lowering 唯一事实源）。
+- 在 `FrontendForLoopSupport.buildPlan` 中按 Godot `resolve_for`（`gdscript_analyzer.cpp:2332-2450`，commit `30a0296`）语义为已知可迭代类型推导 `semanticElementType`，不再统一退化为 `Variant`。
+- 对静态已知的不可迭代 hard type 在 type-check 阶段添加编译期诊断，贴近 Godot `Unable to iterate on value of type "X"` 行为。
+- 保持 body type-check 结果在阶段 I/J 启用前后不变：对当前 frontend 能静态分类的 builtin/container 类型，`semanticElementType` 从本阶段起即为最终语义，后续阶段只改变 lowering contract 的注册和 helper result type。`GdObjectType` 的 `semanticElementType` 当前为保守 `Variant`，Object iterator protocol 的精确语义（通过 `_iter_get` 返回类型推导）留待独立阶段完成。
+- 修复显式 `Variant` iterator type 被错误精化为具体类型的语义缺陷：`for i: Variant in range(3):` 的 body 中 `i` 必须保持 `Variant`，不得被精化为 `int`。对齐 Godot `resolve_for`（`gdscript_analyzer.cpp:2409`：`specified_type.is_variant()` 时跳过类型检查，`type_constraint = specified_type` 保留 Variant）和 §8 完成定义第 2 条（"显式 type 时 body 使用 declared type"）。
+
+实施内容：
+
+**Step 1：`FrontendForIterationPlan` record 字段替换**
+
+将 `rawElementType` 替换为 `semanticElementType`，不引入任何 lowering 字段：
+
+```java
+record FrontendForIterationPlan(
+        @NotNull ForStatement statement,
+        @NotNull FrontendForIterationRoute route,
+        @NotNull String iteratorName,
+        @Nullable TypeRef declaredIteratorTypeRef,        // 重命名：源码 AST TypeRef，非 resolved GdType
+        @NotNull GdType semanticElementType,              // 替代原 rawElementType（语义角色）
+        @NotNull GdType exposedIteratorType,
+        @NotNull List<Expression> sourceOperands
+) {}
+```
+
+字段语义合同：
+
+- `declaredIteratorTypeRef`（阶段 F2 重命名，原 `declaredIteratorType`）：源码中 `for i: Type in expr` 的 `Type` AST 节点（`TypeRef`），或 null（无显式注解）。**注意**：此字段是未解析的源码引用（`TypeRef.sourceText()` 为类型名字符串），不是 resolved `GdType`。`buildPlan(..., @Nullable GdType declaredIteratorType, ...)` 的参数是已解析的 `GdType`，两者同名不同义。重命名消除此歧义。
+- `semanticElementType`：按 Godot 静态分析规则从 iterable 类型推导的元素类型。决定 body 中 iterator 的静态类型（无显式注解时 `exposedIteratorType` 镜像此字段）、显式 iterator type 兼容性检查、body 内 `is` 表达式类型收窄。对当前 frontend 能静态分类的 builtin/container 类型，该字段从本阶段起即为最终语义，不随阶段 I/J 的 lowering 实现变化。`GdObjectType` 当前为保守 `Variant`（Object protocol 精确语义留待独立阶段）。
+- **lowering helper result type 不在 plan 中存储。** 该信息由 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract.get().resultType()` 提供，是 lowering 唯一事实源。plan 不猜测、不缓存、不提前写入任何 lowering ABI——尤其是 GENERIC_VARIANT 的 contract 要到阶段 I 才注册，F2 不得在 plan 中预先写入其未来的 helper result type。
+- **runtime unpack 判定不在 plan 中存储。** lowering 在 contract 已存在时根据 `contract.get().resultType()` 与 `plan.exposedIteratorType()` 通过 `materializeFrontendBoundaryValue` 统一决策是否需要转换及具体转换方式。
+- `exposedIteratorType`：推导规则不变——有显式注解时为 declared type，否则镜像 `semanticElementType`（原来是镜像 `rawElementType`）。
+- **`requiresPerElementConversion` 已从 record 中移除（阶段 F2）。** 原因：(1) 零功能性消费者；(2) 完全可从 `!sameType(exposedIteratorType, semanticElementType)` 推导；(3) 名称 "requires...Conversion" 暗示 lowering conversion decision，但实际只表示"类型不同"——真正的 conversion 决策由 `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(classRegistry, sourceType, targetType)` 返回的 7 种 `Decision`（`ALLOW_DIRECT`/`ALLOW_WITH_PACK`/`ALLOW_WITH_UNPACK`/`ALLOW_WITH_INTRINSIC_CAST`/`ALLOW_WITH_BUILTIN_CONSTRUCTOR`/`ALLOW_WITH_LITERAL_NULL`/`REJECT`）决定；(4) 保留会风险建立第二套与 `FrontendVariantBoundaryCompatibility` 平行的 conversion matrix。lowering 通过 `materializeFrontendBoundaryValue(sourceType=contract.get().resultType(), targetType=exposedIteratorType)` 调用统一 decision helper，不消费任何 plan boolean。
+- `samePlan` 比较逻辑同步更新：比较 `semanticElementType`（替代原 `rawElementType`）和 `declaredIteratorTypeRef`（AST identity 比较，替代原 `declaredIteratorType`），移除 `requiresPerElementConversion` 比较（该字段已不存在，且其值可从 `semanticElementType` + `exposedIteratorType` 推导）。
+- javadoc `@param` 同步更新，明确 `semanticElementType` 的语义角色和阶段稳定性，`declaredIteratorTypeRef` 的 TypeRef 语义，并说明 lowering 信息不由 plan 携带。
+
+约束：
+
+- `semanticElementType` 必须是 source-visible type，不得是 `GdCompilerType`。
+- `FrontendPublishedFactTypeGuard.checkForIterationPlan` 检查 `semanticElementType` 不泄漏 compiler-only type。
+- 对于 `RANGE_CALL` 和 `INT_SHORTHAND`：`semanticElementType == GdIntType.INT`。行为与替换前完全一致（原 `rawElementType` 也是 `int`）。
+- plan 中不得出现 `loweringRuntimeHelperResultType`、`requiresRuntimeUnpack` 或任何 lowering 协议字段。这些信息的唯一事实源是 `FrontendForLoweringContract`。
+
+Lowering materialization 模型（阶段 H/I 消费）：
+
+F2 明确区分两条独立路径，避免 plan 中的 boolean 成为另一套 conversion decision system：
+
+- **semantic compatibility path**（type-check 消费）：检查 `semanticElementType` → `exposedIteratorType` 是否为语言允许的赋值边界（`checkAssignmentCompatible`）。当 `declaredIteratorTypeRef != null` 时，type-check 验证 `semanticElementType` 可进入 `exposedIteratorType`（即 declared type）。此检查直接调用 `checkAssignmentCompatible`，不依赖 plan 中的派生 boolean。
+- **lowering representation path**（阶段 H/I 消费）：根据 `contract.get().resultType()` → `exposedIteratorType` 选择实际 materialization。复用既有 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(block, sourceSlotId, sourceType=contract.get().resultType(), targetType=exposedIteratorType, boundaryUse)` 和 `FrontendVariantBoundaryCompatibility.determineFrontendBoundaryDecision(...)`，不新增 for-loop 专用 conversion 逻辑。
+- **route guarantee**：即使 helper 的静态返回类型是 `Variant`（generic route），它返回的运行时值也应符合 `semanticElementType` 的逻辑约束（例如 `Array[int]` 的 generic iterator 返回的 Variant 内部是 int）。`semanticElementType` 不参与 lowering materialization 决策，但为 body type-check 提供静态精度。
+- **单步 materialization**：lowering 只执行一步转换 `contract.get().resultType()` → `exposedIteratorType`，不经过 `semanticElementType` 中间步骤。当两者相同时（如 range route 的 `int` → `int`），无需转换，直接赋值。当 helper 返回 `Variant` 且 `exposedIteratorType` 也是 `Variant` 时（如 `for i: Variant in values:`），同样无需转换。当两者不同但兼容时（如 `for i: float in range(3):` 的 `int → float`），由 `determineFrontendBoundaryDecision` 选择具体 conversion route（此例为 `ALLOW_WITH_INTRINSIC_CAST`），仍为单步 materialization。
+- **destroyable 中间值**：materialization 产生的临时值（如 unpack 后的具体类型值）的生命周期由既有 `materializeFrontendBoundaryValue` 的 temp slot 合同管理，与 assignment/call boundary 的 temp 处理一致。for-loop 不引入额外的 destroyable 生命周期负担。
+
+**Step 1b：修复显式 `Variant` iterator type 被错误精化为具体类型**
+
+当前 `FrontendBodyOwnerProcedures.resolveDeclaredIteratorType(...)` (line 362-363) 将显式 `Variant` 声明视为"无声明"并返回 `null`：
+
+```java
+// 当前错误行为（FrontendBodyOwnerProcedures.java:362-363）
+if (iteratorSlot.type() instanceof GdVariantType) {
+    return null;  // 显式 Variant 被当作无声明
+}
+```
+
+这导致 `buildPlan` 收到 `declaredIteratorType = null`，`exposedIteratorType` 回退为 `rawElementType`（range 时为 `int`），随后 `refineIteratorSlot` 将 slot 从 `Variant` 精化为 `int`。最终 `for i: Variant in range(3):` 的 body 中 `i` 被错误地视为 `int` 而非 `Variant`。
+
+Godot 上游行为（`gdscript_analyzer.cpp:2409-2431`）：当 `specified_type.is_variant()` 时跳过类型兼容性检查，直接设置 `p_for->variable->type_constraint = specified_type`（即 `Variant`）。body 中 `i` 保持 `Variant`。
+
+§8 完成定义第 2 条要求："显式 type 时 body 使用 declared type"。§4 D1 实施内容第 601-602 行要求："若 iterator 有显式 declared type，不自动改写 exact type"。当前代码违反这两条。
+
+修复方案：
+
+- 移除 `resolveDeclaredIteratorType` 中的 `GdVariantType` 特判。显式 `Variant` 声明应返回 `GdVariantType.VARIANT`，而非 `null`。
+- `buildPlan` 中 `declaredIteratorType != null` 时 `exposedIteratorType = declaredIteratorType`（即 `Variant`）。lowering 时 `contract.get().resultType()=int` → `exposedIteratorType=Variant` 的转换由 `materializeFrontendBoundaryValue` 统一决策（此例为 `ALLOW_WITH_PACK`）。
+- `refineIteratorSlot` 中 `plan.exposedIteratorType() instanceof GdVariantType` 为 `true`，跳过精化。slot 保持 `Variant`。
+- 对齐 Godot：`for i: Variant in range(3):` body 中 `i` 为 `Variant`。lowering 时 `int → Variant` 转换由 `materializeFrontendBoundaryValue` 统一决策。
+
+影响范围：
+
+- `FrontendBodyOwnerProcedures.resolveDeclaredIteratorType`：移除 `GdVariantType` 特判（2 行删除）。
+- `FrontendForLoopSupport.buildPlan`：无需修改（`declaredIteratorType != null` 分支已正确处理）。
+- `FrontendBodyOwnerProcedures.refineIteratorSlot`：无需修改（`exposedIteratorType instanceof GdVariantType` 守卫已正确跳过精化）。
+- `FrontendTypeCheckAnalyzer.visitExplicitIteratorTypeConversion`：`checkAssignmentCompatible(Variant, int)` 通过（Variant 可接收任何类型），无诊断。
+
+注意事项：
+
+- 该修复与 Step 1 的字段替换正交：即使不替换 `rawElementType`，显式 Variant 精化问题也独立存在。但替换后 `exposedIteratorType` 的推导更清晰（`semanticElementType=int`，buildPlan 参数 `declaredIteratorType=Variant`，`exposedIteratorType=Variant`）。
+- 未知类型 fallback（`for i: UnknownType in range(3):`）：若 declared type resolver 以 `Variant` 恢复，修复后 `resolveDeclaredIteratorType` 返回 `Variant`，slot 不被精化，body 中 `i` 保持 `Variant`。这是正确行为——未知类型不应被精化为具体类型。
+- 该修复必须在 Step 1 的字段替换之前或同时完成，因为 `exposedIteratorType` 的推导逻辑在 Step 1 中被调整。
+
+**Step 2：`FrontendForLoopSupport` 统一可迭代性分类**
+
+新增单一分类方法，替代原设计的 `resolveSemanticElementType` + `isStaticallyNonIterable` 双函数方案。`GdType` 是 sealed interface（`GdType.java:6-7`，11 个直接 permits），因此分类器使用 exhaustive switch，未来新增 `GdType` 子类型时编译器强制分类器显式决定其语义，不会静默 fallback。
+
+```java
+/// 对 iterable 的静态类型进行一次性分类，同时决定：
+/// 1. 是否可迭代（静态已知不可迭代 vs 动态/运行时决定）
+/// 2. semantic element type（已知可迭代时）
+/// 3. 是否需要静态诊断（不可迭代时）
+///
+/// 返回 null 表示 iterable 类型静态未知（iterableType == null），调用方使用 Variant 语义。
+public static @Nullable FrontendIterableSemantics classifyIterableSemantics(@Nullable GdType iterableType)
+```
+
+分类结果（sealed interface，放置在 `gd.script.gdcc.frontend.sema` 包）：
+
+```java
+/// 一次性可迭代性分类结果。由 exhaustive switch over sealed GdType 产出，
+/// 消除"是否可迭代"与"元素类型"两个判定分离导致的内部矛盾风险。
+public sealed interface FrontendIterableSemantics {
+    /// 静态已知可迭代，元素类型确定。
+    record StaticIterable(@NotNull GdType elementType) implements FrontendIterableSemantics {}
+    /// 可迭代性由运行时决定（Variant、Object）。元素类型为 Variant，不触发静态诊断。
+    record DynamicIterable() implements FrontendIterableSemantics {}
+    /// 静态已知不可迭代 hard type。type-check 阶段报诊断，plan 仍以 Variant 元素类型发布。
+    record NonIterable(@NotNull GdType iterableType) implements FrontendIterableSemantics {}
+}
+```
+
+分类规则（对齐 Godot `gdscript_analyzer.cpp:2357-2403`，exhaustive switch over sealed `GdType`）：
+
+| iterable 静态类型 | 分类结果 | 说明 |
+|---|---|---|
+| `null`（静态未知） | 返回 `null`（调用方使用 `Variant`） | 保留运行时语义 |
+| `GdVariantType` | `DynamicIterable` | 动态分派 |
+| `GdObjectType` | `DynamicIterable` | Object custom iterator 由运行时决定 |
+| `GdIntType` | `StaticIterable(int)` | 由 `INT_SHORTHAND` route 处理，不会进入此方法 |
+| `GdFloatType` | `StaticIterable(float)` | Godot: 类似 `range(ceil(n))`，元素为 float |
+| `GdStringType` | `StaticIterable(String)` | Godot: 逐字符迭代 |
+| `GdArrayType`（typed） | `StaticIterable(element type)` | `getValueType()` |
+| `GdArrayType`（untyped） | `StaticIterable(Variant)` | untyped Array 始终可迭代，元素类型未知 |
+| `GdDictionaryType`（typed） | `StaticIterable(key type)` | Godot: 迭代 key |
+| `GdDictionaryType`（untyped） | `StaticIterable(Variant)` | untyped Dictionary 始终可迭代，key 类型未知 |
+| `GdPackedArrayType` 族 | `StaticIterable(对应元素类型)` | `getValueType()` |
+| `GdFloatVectorType`（size 2/3） | `StaticIterable(float)` | Vector2/Vector3 按分量迭代 |
+| `GdIntVectorType`（size 2/3） | `StaticIterable(int)` | Vector2i/Vector3i 按分量迭代 |
+| `GdFloatVectorType`（size 4） | `NonIterable` | Vector4 不可迭代 |
+| `GdIntVectorType`（size 4） | `NonIterable` | Vector4i 不可迭代 |
+| `GdBoolType` | `NonIterable` | Godot: `Unable to iterate on value of type "bool"` |
+| `GdNilType` | `NonIterable` | Godot: `Unable to iterate on value of type "Nil"` |
+| `GdStringNameType` | `NonIterable` | StringName 不支持迭代协议 |
+| `GdNodePathType` | `NonIterable` | NodePath 不支持迭代协议 |
+| `GdRidType` | `NonIterable` | RID 不支持迭代协议 |
+| `GdVoidType` | `NonIterable` | 防御性包含 |
+| 所有 `GdCompoundVectorType` | `NonIterable` | Rect2, AABB, Plane, Quaternion, Color, Basis, Transform, Projection 不支持迭代 |
+| `GdCallableType` | `NonIterable` | Callable 不支持迭代协议 |
+| `GdSignalType` | `NonIterable` | Signal 不支持迭代协议 |
+| `GdCompilerType` | `NonIterable`（防御性） | 不应出现在 iterable 位置 |
+
+Vector 维度判定：`GdFloatVectorType` 和 `GdIntVectorType` 通过 `size` 字段（`getDimension()`）区分。只有 `size <= 3` 可迭代。维度判定只在分类器的一个 switch 分支中出现一次，不存在两个函数各自判断维度的风险。
+
+注意：`GdObjectType` 分类为 `DynamicIterable`。Object 可能实现 `_iter_init`/`_iter_next`/`_iter_get` 协议，是否可迭代由运行时决定。Godot 对 hard-typed Object 会通过 classdb 查询 `_iter_get`：有则使用其返回类型作为 iterator element type，无则编译期报不可迭代。GDCC 当前不具备 engine class 的 classdb 查询能力（GDExtension metadata 不暴露 `_iter_*` 协议方法），因此 engine class Object 统一走 `DynamicIterable` + `semanticElementType = Variant`，推迟到运行时。现有 `ScopeMethodResolver.resolveInstanceMethod` 已能为 GDCC 用户类查询 `_iter_get` 返回类型，Object iterator protocol 的精确语义（用户类 `_iter_get` 推导 + engine class 不可迭代诊断）留待独立阶段完成，届时 `GdObjectType` 的分类可能从 `DynamicIterable` 细化为 `StaticIterable(returnType)` 或 `NonIterable`。
+
+注意：`GdCallableType` 和 `GdSignalType` 是 `GdMetaType`（sealed interface）的直接 permits，`GdMetaType` 是 `GdType` 的一级 permits。exhaustive switch 可直接匹配这两个子类型，将其归为 `NonIterable`。
+
+`buildPlan` 调整：
+
+```java
+public static @NotNull FrontendForIterationPlan buildPlan(
+        @NotNull ForStatement statement,
+        @Nullable GdType declaredIteratorType,
+        @Nullable GdType iterableType
+) {
+    var iterable = statement.iterable();
+    if (isBareRangeCall(iterable)) {
+        // RANGE_CALL: semantic=int
+        var rangeCall = (CallExpression) iterable;
+        return buildPlan(statement, RANGE_CALL, GdIntType.INT,
+                declaredIteratorType, rangeCall.arguments());
+    }
+    if (iterableType instanceof GdIntType) {
+        // INT_SHORTHAND: semantic=int
+        return buildPlan(statement, INT_SHORTHAND, GdIntType.INT,
+                declaredIteratorType, List.of(iterable));
+    }
+    // GENERIC_VARIANT: semantic 由统一分类器推导
+    var classification = classifyIterableSemantics(iterableType);
+    var semanticElement = switch (classification) {
+        case null -> GdVariantType.VARIANT;
+        case StaticIterable(var elementType) -> elementType;
+        case DynamicIterable() -> GdVariantType.VARIANT;
+        case NonIterable(_) -> GdVariantType.VARIANT;
+    };
+    return buildPlan(statement, GENERIC_VARIANT, semanticElement,
+            declaredIteratorType, List.of(iterable));
+}
+```
+
+私有 `buildPlan` 重载签名调整为接受 `semanticElementType` 一个类型参数（不再接受 lowering 参数），并推导：
+
+```java
+var exposedIteratorType = declaredIteratorType != null ? declaredIteratorType : semanticElementType;
+// requiresPerElementConversion 已移除：lowering 通过 materializeFrontendBoundaryValue 统一决策
+```
+
+**Step 3：`FrontendTypeCheckAnalyzer` 不可迭代类型诊断**
+
+在 `visitOrdinaryIterableHeader` 中消费统一分类结果（不再调用独立的 `isStaticallyNonIterable`）：
+
+```java
+private static void visitOrdinaryIterableHeader(
+        @NotNull TypeCheckAccess access,
+        @NotNull ForStatement forStatement
+) {
+    var iterableType = stableNonCompilerExpressionTypeOrNull(access, forStatement.iterable(), "for-in iterable");
+    if (iterableType == null) {
+        return;
+    }
+    var classification = FrontendForLoopSupport.classifyIterableSemantics(iterableType);
+    if (classification instanceof NonIterable(var nonIterableType)) {
+        reportNonIterableType(access, forStatement, nonIterableType);
+    }
+}
+```
+
+新增诊断方法：
+
+```java
+private static void reportNonIterableType(
+        @NotNull TypeCheckAccess access,
+        @NotNull ForStatement forStatement,
+        @NotNull GdType iterableType
+) {
+    access.diagnosticManager().error(
+            TYPE_CHECK_CATEGORY,
+            "Unable to iterate on value of type \"" + iterableType.getTypeName() + "\"",
+            access.sourcePath(),
+            FrontendRange.fromAstRange(forStatement.iterable().range())
+    );
+}
+```
+
+诊断合同：
+
+- category：`sema.type_check`（与现有 for-header 诊断一致）。
+- anchor：iterable expression 的源码范围（与 Godot 的 `push_error(..., p_for->list)` 一致）。
+- 消息格式：`Unable to iterate on value of type "X"`，贴近 Godot 上游。
+- 只对 hard type 生效：`GdVariantType`（动态/未知）和 `null`（静态未知）不触发此诊断，推迟到运行时。
+- 该诊断不阻止 plan 发布和 body 遍历：plan 仍以 `GENERIC_VARIANT` + `semanticElementType = Variant` 发布，body 仍被遍历。诊断是 type-check 层面的错误报告，不是 structural boundary。
+- 去重合同：如果 iterable expression 已有 upstream `sema.expression_resolution` 或 `sema.binding` 错误导致类型不稳定（`BLOCKED`/`FAILED`/`UNSUPPORTED`），`stableNonCompilerExpressionTypeOrNull` 返回 null，不追加此诊断。
+
+**Step 4：消费者适配**
+
+以下消费者引用了原 `rawElementType`，需要按语义角色选择新字段：
+
+| 消费者 | 原用法 | 新用法 |
+|---|---|---|
+| `FrontendBodyOwnerProcedures.resolveDeclaredIteratorType` (line 362-363) | `GdVariantType` 特判返回 `null`（显式 Variant 视为无声明） | **移除 `GdVariantType` 特判**（Step 1b）。显式 `Variant` 声明返回 `GdVariantType.VARIANT`，不再返回 `null`。 |
+| `FrontendTypeCheckAnalyzer.visitExplicitIteratorTypeConversion` (line 350) | `checkAssignmentCompatible(exposed, rawElementType)` | `checkAssignmentCompatible(exposed, semanticElementType)` |
+| `FrontendTypeCheckAnalyzer.reportIteratorTypeMismatch` (line 659-660) | 消息中引用 `rawElementType` | 消息中引用 `semanticElementType` |
+| `FrontendBodyOwnerProcedures.refineIteratorSlot` (line 399) | `plan.exposedIteratorType() instanceof GdVariantType` | 不变（仍使用 `exposedIteratorType`）。Step 1b 修复后，显式 Variant 的 `exposedIteratorType` 为 `Variant`，此守卫正确跳过精化。 |
+| `FrontendPublishedFactTypeGuard.checkForIterationPlan` (line 102-109) | 检查 `rawElementType` 和 `exposedIteratorType` | 检查 `semanticElementType` 和 `exposedIteratorType` |
+| `FrontendForIterationPlan.samePlan` (line 78-79) | 比较 `rawElementType` 和 `exposedIteratorType` | 比较 `semanticElementType` 和 `exposedIteratorType` |
+| 所有 `plan.declaredIteratorType()` 调用点 | 访问 record 字段（返回 `TypeRef`） | 重命名为 `plan.declaredIteratorTypeRef()`（阶段 F2）。影响：`FrontendTypeCheckAnalyzer` (line 347)、`FrontendForIterationPlan.samePlan` (line 77)、`FrontendForLoopSupportTest` (line 45) 等。 |
+
+**Step 5：测试更新与新增**
+
+更新现有测试：
+
+- `FrontendForLoopSupportTest`：所有 `plan.rawElementType()` 断言改为 `plan.semanticElementType()`。`fallsBackToGenericVariantForUnknownOrVariantIterable` 中 float case 的 `semanticElementType` 从 `Variant` 改为 `float`。
+- `FrontendSuiteResolverTest`：`plan.rawElementType()` 断言改为 `plan.semanticElementType()`（range/int 场景两者相同，均为 `int`）。
+- `FrontendTypeCheckAnalyzerTest`：`plan.rawElementType()` 引用改为 `plan.semanticElementType()`。
+- `FrontendAnalysisDataTest`：`forIterationPlans` compiler-only guard 测试中 `rawElementType` 字段引用改为 `semanticElementType`；确认 guard 拒绝 `semanticElementType` 为 `GdCompilerType` 的 plan。
+
+新增测试：
+
+- `FrontendForLoopSupportTest` 新增：
+  - `resolvesSemanticElementTypeForStringIterable`：`for c in "abc"` → `semanticElementType == String`，route 为 `GENERIC_VARIANT`。
+  - `resolvesSemanticElementTypeForTypedArray`：`for e in typed_array`（`Array[int]`）→ `semanticElementType == int`。
+  - `resolvesSemanticElementTypeForTypedDictionary`：`for k in typed_dict`（`Dictionary[String, int]`）→ `semanticElementType == String`（key type）。
+  - `resolvesSemanticElementTypeForPackedArray`：`for v in packed`（`PackedInt32Array`）→ `semanticElementType == int`。
+  - `resolvesSemanticElementTypeForFloatIterable`：`for f in 2.2` → `semanticElementType == float`。
+  - `resolvesVariantSemanticElementForUntypedContainers`：untyped `Array`、untyped `Dictionary` → `semanticElementType == Variant`。
+  - `resolvesVariantSemanticElementForObjectType`：`for x in obj` → `semanticElementType == Variant`。
+  - `classifiesNonIterableHardTypes`：`bool`、`Callable`、`Signal`、`RID`、`StringName`、`NodePath`、`Vector4`、`Rect2`、`Color` 等 → `classifyIterableSemantics` 返回 `NonIterable`。
+  - `classifiesIterableTypesCorrectly`：`int`、`float`、`String`、`Vector2`、`Vector3`、`Vector2i`、`Vector3i`、typed `Array`、typed `Dictionary`、所有 `PackedArray` → `classifyIterableSemantics` 返回 `StaticIterable` 且 `elementType` 正确。untyped `Array`、untyped `Dictionary` → 返回 `StaticIterable(Variant)`。`Object`、`Variant` → 返回 `DynamicIterable`。
+  - `explicitVariantDeclaredTypePreservesVariantExposedType`（Step 1b）：`for i: Variant in range(3)` → `declaredIteratorTypeRef != null`（record 字段，`TypeRef.sourceText() == "Variant"`），`exposedIteratorType == Variant`（不是 `int`）。
+  - `explicitVariantDeclaredTypeOnIntShorthand`（Step 1b）：`for i: Variant in limit`（int）→ `exposedIteratorType == Variant`。
+  - `explicitVariantDeclaredTypeOnGenericVariantRoute`（Step 1b）：`for i: Variant in values`（unknown）→ `exposedIteratorType == Variant`。
+- `FrontendTypeCheckAnalyzerTest` 新增：
+  - `analyzeReportsNonIterableHardTypeDiagnostic`：`for b in true:` → 1 个 `sema.type_check` 诊断，消息包含 `Unable to iterate on value of type "bool"`。
+  - `analyzeReportsNonIterableForCallableAndSignal`：`for c in some_callable:` 和 `for s in some_signal:` → 各自产生诊断。
+  - `analyzeDoesNotReportNonIterableForVariantOrUnknown`：`for x in some_variant:` → 无诊断（Variant 推迟到运行时）。
+  - `analyzeStillTraversesBodyAfterNonIterableDiagnostic`：`for b in true: var x: int = "bad"` → 2 个诊断（non-iterable + body local init mismatch），body 仍被遍历。
+  - `analyzeExplicitIteratorTypeUsesSemanticElementType`：`for i: String in typed_int_array:`（`Array[int]`）→ 诊断 `cannot receive iterated element type 'int'`（使用 `semanticElementType` 而非 `Variant`）。
+  - `analyzeExplicitVariantIteratorKeepsVariantInBody`（Step 1b）：`for i: Variant in range(3):` → 无诊断，`exposedIteratorType == Variant`，body 中 `i` 的 slot type 为 `Variant`（不被精化为 `int`）。
+  - `analyzeExplicitVariantIteratorOnGenericRouteKeepsVariant`（Step 1b）：`for i: Variant in values:` → 无诊断，`exposedIteratorType == Variant`。
+  - `analyzeExplicitVariantIteratorAcceptsCompatibleElement`（Step 1b）：`for i: Variant in range(3):` → `checkAssignmentCompatible(Variant, int)` 通过（Variant 可接收任何类型），无 type-check 诊断。
+
+**Step 6：文档同步**
+
+- 本文件 §3.3：更新 iterator baseline 描述，将 `raw element type` 引用改为 `semantic element type`。
+- 本文件 §3.4：更新 `FrontendForIterationPlan` record 定义和约束说明。
+- 本文件 §3.7：补充完整的可迭代/不可迭代类型表和 Godot 对齐说明。
+- 本文件 §7：新增风险条目。
+- 本文件 §8：更新完成定义。
+- `frontend_rules.md`：更新 type-check 规则，说明不可迭代诊断。
+- `frontend_type_check_analyzer_implementation.md`：更新 §3.8 for-in header contract。
+- `frontend_compile_check_analyzer_implementation.md`：确认 compile gate 不受影响（仍按 route 查询 contract）。
+
+验收细则：
+
+- `for i in range(3)` 和 `for i in limit`（int）：`semanticElementType == int`，`exposedIteratorType == int`。行为与替换前完全一致，所有现有 range/int 测试不修改断言语义（只更新字段名称）。
+- `for c in "abc"`：`semanticElementType == String`，`exposedIteratorType == String`。body 中 `c` 的静态类型为 `String`。route 为 `GENERIC_VARIANT`。lowering helper result type 由阶段 I 注册的 contract 提供，plan 不存储。
+- `for e in typed_array`（`Array[int]`）：`semanticElementType == int`，`exposedIteratorType == int`。
+- `for k in typed_dict`（`Dictionary[String, int]`）：`semanticElementType == String`（key type），`exposedIteratorType == String`。
+- `for v in packed`（`PackedFloat64Array`）：`semanticElementType == float`。
+- `for f in 2.2`：`semanticElementType == float`。route 仍为 `GENERIC_VARIANT`。
+- `for x in some_variant`：`semanticElementType == Variant`。无诊断。
+- `for x in obj`（Object）：`semanticElementType == Variant`。无诊断（Object 可能实现 `_iter_*`）。
+- `for b in true:`：产生 1 个 `sema.type_check` 诊断 `Unable to iterate on value of type "bool"`。body 仍被遍历。route 仍为 `GENERIC_VARIANT`。
+- `for c in some_callable:`：产生诊断 `Unable to iterate on value of type "Callable"`。
+- `for s in some_signal:`：产生诊断 `Unable to iterate on value of type "Signal"`。
+- `for r in some_rid:`：产生诊断 `Unable to iterate on value of type "RID"`。
+- `for sn in some_string_name:`：产生诊断 `Unable to iterate on value of type "StringName"`。
+- `for v4 in some_vector4:`：产生诊断 `Unable to iterate on value of type "Vector4"`。
+- `for r in some_rect2:`：产生诊断 `Unable to iterate on value of type "Rect2"`。
+- `for i: String in typed_int_array:`（`Array[int]`）：诊断 `for-in iterator declared type 'String' cannot receive iterated element type 'int'`（使用 `semanticElementType` 而非 `Variant`）。替换前此检查为 `String ← Variant`（通过），替换后为 `String ← int`（不通过）。
+- `for i: float in "abc"`：`semanticElementType == String`，`exposedIteratorType == float`。兼容性检查 `float ← String` 由 `checkAssignmentCompatible` 判定。
+- compile gate 行为不变：`GENERIC_VARIANT` route 仍被 route-not-ready 阻断（阶段 I 解封前）；`RANGE_CALL`/`INT_SHORTHAND` 仍放行。
+- `FrontendPublishedFactTypeGuard` 对 `semanticElementType` 执行 compiler-only type 泄漏检查。
+- 所有现有 `FrontendForLoopSupportTest`、`FrontendSuiteResolverTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendCompileCheckAnalyzerTest` 中的 for-loop 测试在字段重命名后通过。
+- 不可迭代诊断不与 upstream 错误重复：当 iterable expression 已有 `BLOCKED`/`FAILED` 类型时，不追加 non-iterable 诊断。
+- `for i: Variant in range(3):`（Step 1b）：`exposedIteratorType == Variant`（不是 `int`），body 中 `i` 的 slot type 为 `Variant`（`refineIteratorSlot` 跳过精化）。无 type-check 诊断（`checkAssignmentCompatible(Variant, int)` 通过）。对齐 Godot：`specified_type.is_variant()` 时 `type_constraint = specified_type`（Variant）。
+- `for i: Variant in limit:`（int shorthand，Step 1b）：`exposedIteratorType == Variant`，slot 不被精化为 `int`。
+- `for i: Variant in values:`（generic route，Step 1b）：`exposedIteratorType == Variant`，slot 保持 `Variant`。
+- `for i: UnknownType in range(3):`（Step 1b 边界）：若 declared type resolver 以 `Variant` 恢复，`resolveDeclaredIteratorType` 返回 `Variant`，slot 不被精化为 `int`，body 中 `i` 保持 `Variant`。
 
 ### 阶段 G：frontend CFG graph
 
@@ -743,7 +1118,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - hidden local declaration 同样必须在 `createBlocks()` / `lowerBlocks()` 前从 dedicated hidden-state registry 完成，不得由 init/next processor 延迟创建，也不通过 `collectCfgValueMaterializations()` 或 `slotIdForValue()` 声明。
 - `ForLoopNextItem` 必须先把 intrinsic result 写入 distinct `cfg_for_iter_next_<n>` compiler-only temp，再用 `AssignInsn` commit 到 `cfg_for_iter_<n>`；不得让 intrinsic result target 与 state argument slot 相同。
 - `nextTempSlotId` 由 hidden-state storage metadata 提供，并与 state slot 一起在 block materialization 前声明；`ForLoopNextItem` 只消费该冻结 id，不得在 processor 中通过 `ensureVariable()` 延迟创建 next temp。
-- `ForLoopGetItem` 先把 raw element 写入 ordinary temp，再复用现有 typed-boundary conversion 写入其冻结 `sourceIteratorSlotId` 对应的 source local；processor 不得通过 `ensureVariable()` 延迟创建该 local。
+- `ForLoopGetItem` 先把 get operation 的 raw element（类型为 `contract.get().resultType()`，即 `ForIterationOperationDescriptor.resultType()`）写入 ordinary temp，再调用 `FrontendBodyLoweringSession.materializeFrontendBoundaryValue(block, tempSlotId, sourceType=contract.get().resultType(), targetType=exposedIteratorType, boundaryUse="for-in get")` 获得 materialized slot，再 `AssignInsn(sourceIteratorSlotId, materializedSlotId)` 提交到冻结 source local（与 local_init / assignment boundary 的既有 caller 模式一致）；processor 不得通过 `ensureVariable()` 延迟创建该 local。当 `contract.get().resultType()` 与 `exposedIteratorType` 相同时（如 range route 的 `int` → `int`），`materializeFrontendBoundaryValue` 返回输入 slot（`ALLOW_DIRECT`），`AssignInsn` 退化为同类型赋值。`semanticElementType` 不参与此 materialization 路径。
 - source-local declaration/type helper 必须接受 `ForStatement` identity，不能继续假设所有 body local 都是 `VariableDeclaration`；`ForStatement` lookup 使用 `slotTypes()[ForStatement]` 的 exposed type，不能使用 `iteratorStateType`。
 - `INT_SHORTHAND` source form 不生成伪造 `range(stop)` AST；init item/lowering processor 负责按 `(0, stop, 1)` 解释。
 - `INT_SHORTHAND` 的 `0` 与 `1` 必须先通过既有 integer constant lowering 物化为 LIR variables，再作为 `CallIntrinsicInsn` arguments 传入；intrinsic argument 位置不接受 literal。
@@ -785,13 +1160,13 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
   - `variant_iter_next`
   - `variant_iter_get`
 - 如果 gdextension-lite 未暴露这些 API，应先增加薄 wrapper，再让 gdcc runtime helper 调用 wrapper。
-- `GENERIC_VARIANT` route 的 `get` 返回 `Variant`；显式 iterator type 或后续 use-site 需要通过既有 Variant boundary / unpack materialization 处理。
+- `GENERIC_VARIANT` route 的 `get` 返回 `Variant`（即 `contract.get().resultType() == Variant`）。`ForLoopGetItem` 的 materialization 路径为 `Variant` → `exposedIteratorType`，复用 `materializeFrontendBoundaryValue`：当 `exposedIteratorType` 为 `Variant` 时退化为直接赋值（无 unpack/pack）；当 `exposedIteratorType` 为具体类型时执行 Variant unpack。`semanticElementType` 不参与此 materialization——即使 `semanticElementType == int` 且 `exposedIteratorType == Variant`（如 `for i: Variant in typed_int_array:`），lowering 仍为 `Variant → Variant` 直接赋值，不经过 `Variant → int → Variant` 两段转换。
 - runtime helper 必须定义不可迭代值的错误策略，尽量贴近 Godot：运行时 fail / print error，而不是 frontend 编译期 unsupported。
 
 验收细则：
 
 - `for item in values:` 在 `values` 静态类型未知时 lowering 到 generic Variant route。
-- generic route 的 iterator local body type 是 `Variant`，除非有显式 iterator type。
+- generic route 的 lowering helper 返回 `Variant`（`contract.get().resultType() == Variant`），但 source-facing iterator local type 由 `plan.exposedIteratorType()` 决定（F2 后为 `semanticElementType` 或 declared type），不因走 generic route 退化为 `Variant`。例如 `for e in typed_int_array`（`Array[int]`）走 generic route 时，`exposedIteratorType == int`，lowering 执行 `Variant → int` unpack。
 - `Dictionary` 在 generic route 下按 Godot runtime 迭代 key。
 - Object custom iterator 不需要 frontend 特判；runtime route 负责调用 Godot protocol。
 - generic iterator state 不出现在 ordinary `expressionTypes()` / `slotTypes()` / public ABI。
@@ -819,8 +1194,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 验收细则：
 
-- known route 成功时 iterator slot 从 `Variant` 精化为对应 element type。
-- known route 未启用时，同一源码仍能走 `GENERIC_VARIANT` route。
+- known route 成功时 lowering helper 直接返回具体元素类型（`contract.get().resultType()` 为具体类型），减少或消除 unpack 开销。source-facing iterator slot type 始终由 `plan.exposedIteratorType()` 决定（F2 后为 `semanticElementType` 或 declared type），route 只决定 lowering helper，不决定 source-facing type。
+- known route 未启用时，同一源码仍能走 `GENERIC_VARIANT` route，`exposedIteratorType` 不变（仍为 `semanticElementType`），lowering 通过 `Variant → exposedIteratorType` unpack 处理。
 - `Array[int]` route 使 body 中 iterator 是 `int`。
 - typed dictionary route 使 body 中 iterator 是 key type。
 - plain container route 不假装拥有 exact element type。
@@ -959,6 +1334,11 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - Godot 的 `float`、Vector2 / Vector3、Object custom iterator 等语义应优先通过 generic route 保持运行时一致；专用 route 必须有 dedicated semantic tests 后再启用。
 - `Dictionary` 迭代返回 key。任何 typed dictionary route 都必须锁住 key type，不能误用 value type。
 - known iterable 专用 route 是优化，不是 body semantic 前置条件；专用 helper 缺失时应 fallback generic route 或 compile-gate route-not-ready，而不是恢复 `FOR_SUBTREE`。
+- 阶段 F2 将 `rawElementType` 替换为 `semanticElementType`。替换后 body type-check 只消费 `semanticElementType`，lowering 只消费 `FrontendForLoweringContract.get().resultType()`（经由 `ForLoweringContractRegistry` 查询）。plan 不存储任何 lowering 信息（helper result type、runtime unpack 判定等），避免形成两个 lowering 真源。所有消费 `rawElementType` 的位置必须在 F2 中逐一审查并按语义角色选择新字段。
+- 阶段 F2 的不可迭代诊断只对 hard type 生效。`Variant`（动态/未知）和 `null`（静态未知）不触发诊断，推迟到运行时。这与 Godot 的 `is_hard_type()` 守卫一致。若误对 Variant 报编译错误，会破坏 `for x in some_variant:` 的合法性。
+- 阶段 F2 的 `semanticElementType` 推导依赖 `GdContainerType.getValueType()`/`getKeyType()` 和 `GdVectorType` 维度判定。若容器类型参数未正确传播（例如 `Array[int]` 被擦除为 untyped `Array`），`semanticElementType` 会退化为 `Variant`，body type-check 丧失精度。这不影响正确性，但影响诊断质量。
+- `Vector2`/`Vector3`/`Vector2i`/`Vector3i` 可迭代但 `Vector4`/`Vector4i` 不可迭代。阶段 F2 使用单一 `classifyIterableSemantics` exhaustive switch 同时决定可迭代性和元素类型，维度判定只在一个 switch 分支中出现一次，从结构上消除了原双函数方案中两个独立分类器维度逻辑不同步的风险。`GdType` 是 sealed interface，未来新增子类型时编译器强制分类器显式决定其语义。
+- 阶段 F2 Step 1b 修复显式 `Variant` iterator 被错误精化为具体类型的缺陷。当前 `resolveDeclaredIteratorType` 将 `GdVariantType` 视为"无声明"返回 `null`，导致 `for i: Variant in range(3):` 的 body 中 `i` 被精化为 `int`。这违反 §8 完成定义第 2 条（"显式 type 时 body 使用 declared type"）和 §4 D1 实施内容（"若 iterator 有显式 declared type，不自动改写 exact type"），也偏离 Godot 上游行为（`gdscript_analyzer.cpp:2409`：`specified_type.is_variant()` 时 `type_constraint = specified_type` 保留 Variant）。修复后 `resolveDeclaredIteratorType` 对显式 Variant 返回 `GdVariantType.VARIANT`，`refineIteratorSlot` 的 `exposedIteratorType instanceof GdVariantType` 守卫正确跳过精化。该修复必须在阶段 G/H 之前完成，因为 H 的 source-facing iterator local 类型来自最终 `slotTypes()[ForStatement]`，一旦精化错误，source slot 和 per-element conversion 都建立在错误类型上。
 
 ## 8. 完成定义
 
@@ -973,6 +1353,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 7. CFG 中存在独立 `FrontendForRegion`、validated source-iterator slot registry 与 validated hidden-slot registry，且 `continue` / `break` 连边正确；source slot 与 hidden slot 的 id/type/lifecycle 始终分离；同一 region/item/processor 基础设施能承载 range、generic Variant 与 known iterable route。
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
 9. `FrontendTypeCheckAnalyzer.handleForStatement(...)` 检查 iteration plan 所需 header facts 并遍历 for body；for body 的 ordinary local initializer、nested for 与 return type-check regression 均已通过。assignment / call boundary 的 ordinary semantic error regression 同时锁定上游 resolution / expression typing 的 for-body child-suite traversal。
+10. `FrontendForIterationPlan` 的 `rawElementType` 已替换为 `semanticElementType`（阶段 F2）：body type-check 只消费 `semanticElementType`，lowering 只消费 `FrontendForLoweringContract.get().resultType()`（经由 `ForLoweringContractRegistry` 查询）；plan 不存储任何 lowering 信息（helper result type、runtime unpack 判定等），避免形成两个 lowering 真源；已知可迭代 builtin/container 类型（`int`（经由 RANGE_CALL/INT_SHORTHAND）、`float`、`String`、typed/untyped `Array`、typed/untyped `Dictionary`、packed array、`Vector2`/`Vector3`/`Vector2i`/`Vector3i`）的 `semanticElementType` 按 Godot 静态分析规则推导，不再统一退化为 `Variant`（untyped 容器的正确语义本身即为 `Variant`），且从 F2 起稳定不随阶段 I/J 变化；不可迭代 hard type（`bool`、`Nil`、`Callable`、`Signal`、`RID`、`StringName`、`NodePath`、`Vector4`/`Vector4i`、compound vector）在 type-check 阶段产生 `Unable to iterate on value of type "X"` 诊断；`Variant` 和静态未知类型不触发此诊断。`GdObjectType` 当前为保守 `Variant`（Object iterator protocol 精确语义留待独立阶段）。阶段 I/J 启用新 route 时只注册新的 `FrontendForLoweringContract`，不改变 builtin/container 类型的 `semanticElementType` 和 body type-check 结果。
 
 阶段性完成门槛：D0 只有在 ordinary iterable regression 与 canonical `for i in range(3)` regression 同时通过，且后者证明“arguments 有 facts、callee/call root 无 ordinary facts、header 无 ordinary resolution diagnostic、body 仍进入”后，才能重新标注为已完成。仅证明 header 错误不关闭 body，或仅证明全部现有相关测试为绿色，都不满足 D0 完成定义。
 
