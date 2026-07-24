@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（diagnostics-only type check、for body stable-fact consumption、utility void normalization、Godot-compatible condition contract、property initializer boundary consumption与 `@onready` usage validation 已落地）
-- 更新时间：2026-07-20
+- 状态：事实源维护中（diagnostics-only type check、for-in header route-aware type-check 与 for body traversal、utility void normalization、Godot-compatible condition contract、property initializer boundary consumption与 `@onready` usage validation 已落地）
+- 更新时间：2026-07-24
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/sema/analyzer/**`
@@ -34,7 +34,7 @@
   - 不在这里重做表达式求值、binding、member/call 解析或 scope 构建
   - 不在这里补 suite merge、missing-return、all-path return exhaustiveness 分析
   - 不在这里转正 `lambda`、`match`、parameter default、block-local `const`、class `const` 的正式 body 语义
-  - 不在这里实现 `FrontendForIterationPlan`、iterable route validation 或 iterator element conversion；这些属于 for-range 后续阶段
+  - 不在这里实现或发布 `FrontendForIterationPlan`（它由 for-iteration resolution owner 发布）；type-check 只消费已发布 plan 做 route-aware header 校验（range arity / argument int slot / 显式 iterator element conversion）并遍历 for body，不重新推导 iterable route
   - 不在这里实现 property-side inference/backfill，也不在 type-check analyzer 内维护平行 implicit conversion 规则；`int -> float`、同维度 `Vector*i -> Vector*` 与 `StringName` / `String` 互转只通过 `frontend_implicit_conversion_matrix.md` 与 shared boundary helper 生效
   - 不在这里实现 frontend -> LIR 的 truthiness lowering 或 `@onready` 的 runtime / ready-time 语义
 
@@ -66,6 +66,7 @@
 - class property initializer compatibility
 - bare `return` / `return expr` 与 callable return slot 的兼容性
 - condition root 是否已经发布稳定 typed fact
+- `for-in` header 的 route-aware contract：消费已发布的 `FrontendForIterationPlan`，校验 `RANGE_CALL` arity（1..3）与各 argument 进入 `int` slot、`INT_SHORTHAND` stop operand 进入 `int` slot、显式 iterator type 能接收 raw element type；其余 route 仅要求稳定 iterable 事实且不发 unsupported diagnostic。无论 route 一律遍历 for body
 - property `:=` / 未声明显式类型 property 的 `sema.type_hint`
 
 这里的 “稳定 typed fact” 当前已经包含 unary / binary 根节点：
@@ -276,6 +277,27 @@ condition 当前采用 Godot-compatible source contract：
 - value-required site 会继续收到普通 typed diagnostic
 - frontend pipeline 不再因为 `return_type == null` 在 expr typing / visible-value 相关回归中提前崩溃
 
+### 3.8 for-in header contract
+
+`handleForStatement(...)` 与 `handleWhileStatement(...)` 共用 executable-depth 与 published-fact guard，并在 iteration plan 已发布后检查 for header。route 与 element type 的唯一事实源是已发布的 `FrontendForIterationPlan`；type-check 不重新扫描 AST 推导 iterable 语义。
+
+header 校验按 `route()` 分流：
+
+- `RANGE_CALL`：bare `range(...)` 的 argument 数量必须是 1..3，否则在 range call 上发 arity diagnostic；每个 present argument 必须能进入 `int` slot（走 `checkAssignmentCompatible(GdIntType.INT, argType)`），不兼容时在对应 argument 位置发 diagnostic。callee / call root 不被当作 ordinary call。literal 或动态 `step == 0` 是合法空 range，不在 type-check 阶段阻断。
+- `INT_SHORTHAND`：单个 stop operand 必须能进入 `int` slot（隐式 `0` start 与 `1` step 是 lowering 常量，不参与 type-check）。
+- 其余 route（当前 `GENERIC_VARIANT`，以及保留的专用 route）：复用 ordinary iterable 稳定事实检查，只要求 iterable 已发布稳定 typed fact；是否可迭代是 generic Variant iterator route 的 runtime 责任，type-check 不发 compile-time unsupported diagnostic。
+
+与 route 无关地，显式 iterator type 必须能接收 raw element type：
+
+- `plan.declaredIteratorType() != null` 时校验 `checkAssignmentCompatible(exposedIteratorType, rawElementType)`。
+- `for i: float in range(3)` 经 `int -> float` intrinsic cast 兼容，不报错，plan 记录 `requiresPerElementConversion`。
+- `for i: String in range(3)` 不兼容，在 `iteratorType` 上发 diagnostic。
+- 推断 iterator（无显式 type）镜像 raw element type，无需 conversion 校验。
+
+body traversal 与 route 解耦：无论 route 是 known、generic 还是仍被 compile gate 阻断，`handleForStatement(...)` 一律调用 `walkSupportedExecutableBlock(forStatement.body())`。route classification 只影响 header / iterator conversion diagnostic，不会使 for body 再次成为 deferred / unsupported boundary。因此 for body 内的 ordinary local initializer、nested for、return 等现有 type-check statement handler 全部生效。
+
+missing iteration plan 视为 upstream phase boundary 未被遵守，fail fast（与 `requirePublishedExpressionType` 一致），不静默跳过 header。
+
 ---
 
 ## 4. Property initializer 输入边界
@@ -361,6 +383,7 @@ owner 分工固定为：
   - `void` utility 进入 value-required slot 的显式错误
   - Godot-compatible condition contract
   - property initializer upstream boundary 的 skip 语义
+  - for-in header route-aware contract：range arity（`range()` / `range(1,2,3,4)` 报错、`range(1,2,0)` 合法）、动态/字面量 boundary 与 step 的 `int` slot 校验、generic route 不发 unsupported、显式 iterator type 接收 raw element（`float` 兼容 / `String` 拒绝）、for body / nested for / return traversal、bare-range for body 上游 assignment+call boundary regression
 - `FrontendAnnotationUsageAnalyzerTest`
   - `@onready` owner-class / staticness / placement validation
 - `FrontendSemanticAnalyzerFrameworkTest`
@@ -387,7 +410,7 @@ owner 分工固定为：
 - frontend -> LIR 的 truthiness / condition normalization
 - `@onready` runtime / ready-time lowering
 - `lambda`、`match`、parameter default、block-local `const`、class `const` 的正式 body semantics
-- for iteration plan、iterator element compatibility 与 route-aware type diagnostics；for body 本身已经进入 shared semantic，并复用普通 stable-fact type-check path
+- for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。仍顺延：`DICTIONARY_KEYS` 等 known iterable 专用 route 的 iterator element 锁定（for-range 计划阶段 J），以及 compile gate 解封（F）、CFG（G）、lowering（H）
 
 后续工程若继续扩展本区域，必须遵守以下约束：
 

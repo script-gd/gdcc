@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；完整 shared semantic 尚未完成：`FrontendTypeCheckAnalyzer` 仍未遍历 `ForStatement` 的 header 或 body；compile gate 解封（F）、CFG（G）、lowering（H）尚未实施）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；compile gate 解封（F）、CFG（G）、lowering（H）尚未实施）
 - 创建日期：2026-07-03
 - 更新时间：2026-07-24
 - 适用范围：
@@ -581,6 +581,8 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### 阶段 E：type-check 与 Godot iteration 语义
 
+状态：已完成。`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已落地，与 `handleWhileStatement(...)` 共用 executable-depth 与 published-fact guard；header 检查按 `FrontendForIterationPlan.route()` 分流（`RANGE_CALL` 校验 arity 1..3 与各 argument 进入 `int` slot；`INT_SHORTHAND` 校验 stop operand 进入 `int` slot；其余 route 复用 ordinary iterable 稳定事实检查，不发 unsupported diagnostic），并对显式 iterator type 校验 raw element -> exposed type 兼容性；无论 route 一律 `walkSupportedExecutableBlock(forStatement.body())`。正反测试见 `FrontendTypeCheckAnalyzerTest`（range arity / 动态边界 / 显式 iterator type / generic route / body traversal / nested for / return / 上游 assignment+call boundary regression）。`typed dictionary route 测试锁定 iterator 是 key` 一项按决定顺延到阶段 J（buildPlan 当前不生产 `DICTIONARY_KEYS`）。测试 harness `FrontendSuiteResolverStageTestSupport` 已补 `runForIterationResolution` stage gate，使 `resolveAllOwners` 与生产一致地发布 iteration plan。
+
 目标：
 
 - 在不关闭 body semantic 的前提下，对可静态验证的 route 进行 type-check。
@@ -610,7 +612,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `for i in range(start, end, step):` 的动态 `step` 也进入 `int` slot；若 `step` expression 不能进入该 slot，必须在对应 argument 位置报告清晰 diagnostic；其运行时值为 `0` 时不在 type-check 阶段阻断。
 - `for i in values:` 不再产生 `FOR_SUBTREE` unsupported diagnostic。
 - `for i in 2.2:` 在未专用化前进入 generic Variant route，shared semantic 不失败。
-- typed dictionary route 测试锁定 iterator 是 key，不是 value 或 pair。
+- typed dictionary route 测试锁定 iterator 是 key，不是 value 或 pair。（按决定顺延阶段 J：buildPlan 当前不生产 `DICTIONARY_KEYS`）
 - type-check 不把 generic route 的运行时不可迭代可能性误报为 compile-time unsupported。
 - `for i in values: var value: int = "invalid"` 仍报告 ordinary local initializer type error，不能因 for subtree 被跳过而静默通过。
 - nested `for` 的内外 body 都进入 type-check；内层 body 的 ordinary error 不能被外层 traversal 掩盖。
@@ -866,7 +868,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `var start: int = 1; var end: int = 5; var step: int = 2; for i in range(start, end, step): pass` 覆盖三个动态参数；动态 `step` 不能进入 `int` slot 时在对应 argument 位置报告 type diagnostic，但不因可能为 `0` 而在 type-check 阶段报错。
 - `for i: String in range(3): pass` 不静默通过。
 - `for i in 2.2:` 在未专用化前不报 frontend unsupported；若启用 float route，测试锁定 `ceil` 语义。
-- `Dictionary` route 测试锁定 iterator 是 key。
+- `Dictionary` route 测试锁定 iterator 是 key。（按决定顺延阶段 J）
 - `for i in values: var value: int = "invalid"` 报 ordinary local initializer type error，证明 for body 已由 `FrontendTypeCheckAnalyzer` 遍历。
 - nested for 的内外 body 均有 type-check regression，内层 body error 不得静默遗漏。
 - for body 的 return 与 ordinary local initializer 各有 type-error regression，证明 `handleForStatement(...)` 经由 supported-block traversal 覆盖现有 type-check statement handler。

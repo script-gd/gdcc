@@ -8,6 +8,7 @@ import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
+import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
@@ -19,6 +20,7 @@ import gd.script.gdcc.scope.ResolveRestriction;
 import gd.script.gdcc.scope.Scope;
 import gd.script.gdcc.scope.ScopeValue;
 import gd.script.gdcc.type.GdCompilerType;
+import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
@@ -31,6 +33,7 @@ import dev.superice.gdparser.frontend.ast.ConstructorDeclaration;
 import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FrontendASTTraversalDirective;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IfStatement;
@@ -63,6 +66,8 @@ import java.util.Objects;
 public class FrontendTypeCheckAnalyzer {
     private static final @NotNull String TYPE_CHECK_CATEGORY = "sema.type_check";
     private static final @NotNull String TYPE_HINT_CATEGORY = "sema.type_hint";
+    /// Godot `range(...)` accepts one to three positional arguments (stop / start+stop / start+stop+step).
+    private static final int MAX_RANGE_ARGUMENT_COUNT = 3;
 
     private static @NotNull String parameterizedGdccConstructorUnsupportedMessage(@NotNull ClassDef currentClass) {
         return "GDCC custom class constructor '" + Objects.requireNonNull(currentClass, "currentClass must not be null").getName()
@@ -265,6 +270,111 @@ public class FrontendTypeCheckAnalyzer {
         }
     }
 
+    /// Type-checks the header of one `for iterator[: Type] in expr` statement against the already
+    /// published `FrontendForIterationPlan`.
+    ///
+    /// The route decides the header contract:
+    /// - `RANGE_CALL` validates the bare `range(...)` argument arity (1..3) and that every argument
+    ///   enters the `int` slot; the callee/call root are never treated as an ordinary call here.
+    /// - `INT_SHORTHAND` validates that the single stop operand enters the `int` slot.
+    /// - every other route (generic Variant today, reserved specialized routes later) reuses the
+    ///   ordinary expression type-check path: it only requires a stable published iterable fact and
+    ///   never reports a compile-time "not iterable" diagnostic, which stays a runtime concern.
+    ///
+    /// Independently of the route, an explicit iterator type must be able to receive the raw element
+    /// type via the shared typed-boundary matrix. Body traversal is owned by the caller so it always
+    /// happens regardless of route classification.
+    protected void visitForHeader(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(forStatement, "forStatement must not be null");
+        var plan = requirePublishedForIterationPlan(access.analysisData(), forStatement);
+        switch (plan.route()) {
+            case RANGE_CALL -> visitRangeCallHeader(access, forStatement, plan);
+            case INT_SHORTHAND -> visitIntShorthandHeader(access, plan);
+            default -> visitOrdinaryIterableHeader(access, forStatement);
+        }
+        visitExplicitIteratorTypeConversion(access, forStatement, plan);
+    }
+
+    /// Validates a bare `range(...)` header: argument arity must be 1..3 and each present argument
+    /// must enter the `int` slot. A dynamic argument that already carries a stable non-`int` type is
+    /// reported at its own argument position; a literal/dynamic `step == 0` is a valid empty range and
+    /// is never rejected here.
+    private static void visitRangeCallHeader(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        var arguments = plan.sourceOperands();
+        if (arguments.isEmpty() || arguments.size() > MAX_RANGE_ARGUMENT_COUNT) {
+            reportRangeArityMismatch(access, forStatement, arguments.size());
+        }
+        for (var index = 0; index < arguments.size(); index++) {
+            checkIntSlotOperand(access, arguments.get(index), "range(...) argument #" + (index + 1));
+        }
+    }
+
+    /// Validates the integer shorthand `for i in n`: the single stop operand must enter the `int`
+    /// slot. The implicit `0` start and `1` step are lowering constants, not source operands, so they
+    /// are not type-checked here.
+    private static void visitIntShorthandHeader(
+            @NotNull TypeCheckAccess access,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        checkIntSlotOperand(access, plan.sourceOperands().getFirst(), "for-in integer shorthand iterable");
+    }
+
+    /// Ordinary iterable header contract: only a stable published iterable typed fact is required.
+    /// Whether the value is actually iterable is owned by the generic Variant iterator route at
+    /// runtime, so no compile-time unsupported diagnostic is emitted here.
+    private static void visitOrdinaryIterableHeader(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement
+    ) {
+        stableNonCompilerExpressionTypeOrNull(access, forStatement.iterable(), "for-in iterable");
+    }
+
+    /// An explicit `for i: Type in expr` iterator type must be able to receive the raw element type.
+    /// Inferred iterators mirror the raw element type and therefore need no conversion check.
+    private static void visitExplicitIteratorTypeConversion(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        if (plan.declaredIteratorType() == null) {
+            return;
+        }
+        if (access.checkAssignmentCompatible(plan.exposedIteratorType(), plan.rawElementType())) {
+            return;
+        }
+        reportIteratorTypeMismatch(access, forStatement, plan);
+    }
+
+    /// Checks that one source operand enters the `int` slot, reporting a mismatch anchored at the
+    /// operand itself. Unstable operand facts keep their upstream diagnostic owner and are skipped.
+    private static void checkIntSlotOperand(
+            @NotNull TypeCheckAccess access,
+            @NotNull Expression operand,
+            @NotNull String subject
+    ) {
+        var operandType = stableNonCompilerExpressionTypeOrNull(access, operand, subject);
+        if (operandType == null) {
+            return;
+        }
+        if (access.checkAssignmentCompatible(GdIntType.INT, operandType)) {
+            return;
+        }
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                subject + " type '" + operandType.getTypeName() + "' is not assignable to 'int'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(operand.range())
+        );
+    }
+
     protected record TypeCheckAccess(
             @NotNull Path sourcePath,
             @NotNull FrontendAnalysisData analysisData,
@@ -343,6 +453,47 @@ public class FrontendTypeCheckAnalyzer {
             case RESOLVED, DYNAMIC -> publishedType;
             case BLOCKED, DEFERRED, FAILED, UNSUPPORTED -> null;
         };
+    }
+
+    /// The iteration plan is the single route/element-type truth and must already be published by the
+    /// for-iteration resolution owner before type-check runs. A missing plan means the upstream phase
+    /// boundary was not honored, so this path fails fast instead of silently skipping the header.
+    private static @NotNull FrontendForIterationPlan requirePublishedForIterationPlan(
+            @NotNull FrontendAnalysisData analysisData,
+            @NotNull ForStatement forStatement
+    ) {
+        Objects.requireNonNull(analysisData, "analysisData must not be null");
+        Objects.requireNonNull(forStatement, "forStatement must not be null");
+        var plan = analysisData.forIterationPlans().get(forStatement);
+        if (plan != null) {
+            return plan;
+        }
+        throw new IllegalStateException("for-in iteration plan has not been published for ForStatement");
+    }
+
+    /// Returns the stable published type of one expression, or null when the fact is still unstable so
+    /// its upstream diagnostic owner stays authoritative. Mirrors the condition contract by rejecting
+    /// any compiler-only type that must never leak into a source-facing for-in fact.
+    private static @Nullable GdType stableNonCompilerExpressionTypeOrNull(
+            @NotNull TypeCheckAccess access,
+            @NotNull Expression expression,
+            @NotNull String ownerDescription
+    ) {
+        var publishedType = stableExpressionTypeOrNull(access.analysisData(), expression, ownerDescription);
+        if (publishedType == null) {
+            return null;
+        }
+        var type = Objects.requireNonNull(
+                publishedType.publishedType(),
+                "publishedType must not be null for stable expression"
+        );
+        if (type instanceof GdCompilerType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "compiler-only type leaked into frontend for-in fact: "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+        return type;
     }
 
     private static boolean hasExplicitDeclaredType(@Nullable TypeRef typeRef) {
@@ -476,6 +627,41 @@ public class FrontendTypeCheckAnalyzer {
                         + slotType.getTypeName() + "'",
                 access.sourcePath(),
                 FrontendRange.fromAstRange(returnStatement.range())
+        );
+    }
+
+    private static void reportRangeArityMismatch(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement,
+            int actualArgumentCount
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(forStatement, "forStatement must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "range(...) expects between 1 and " + MAX_RANGE_ARGUMENT_COUNT
+                        + " arguments but got " + actualArgumentCount,
+                access.sourcePath(),
+                FrontendRange.fromAstRange(forStatement.iterable().range())
+        );
+    }
+
+    private static void reportIteratorTypeMismatch(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        Objects.requireNonNull(access, "access must not be null");
+        Objects.requireNonNull(forStatement, "forStatement must not be null");
+        Objects.requireNonNull(plan, "plan must not be null");
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "for-in iterator declared type '" + plan.exposedIteratorType().getTypeName()
+                        + "' cannot receive iterated element type '" + plan.rawElementType().getTypeName() + "'",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(
+                        Objects.requireNonNull(forStatement.iteratorType(), "iteratorType must not be null").range()
+                )
         );
     }
 
@@ -712,6 +898,20 @@ public class FrontendTypeCheckAnalyzer {
             }
             visitConditionExpression(callbackAccess(), whileStatement.condition(), whileStatement);
             walkSupportedExecutableBlock(whileStatement.body());
+            return FrontendASTTraversalDirective.SKIP_CHILDREN;
+        }
+
+        /// `for` shares the while-style executable-depth and published-fact guard. The header contract
+        /// is route-aware (via the published iteration plan) while the body is always traversed, so
+        /// route classification can only affect header/iterator diagnostics and never re-defers the
+        /// for body into an unsupported boundary.
+        @Override
+        public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
+            if (supportedExecutableBlockDepth <= 0 || isNotPublished(forStatement)) {
+                return FrontendASTTraversalDirective.SKIP_CHILDREN;
+            }
+            visitForHeader(callbackAccess(), forStatement);
+            walkSupportedExecutableBlock(forStatement.body());
             return FrontendASTTraversalDirective.SKIP_CHILDREN;
         }
 
