@@ -206,11 +206,9 @@ class GdScriptBenchmarkRunnerTest {
                 """
                         class_name FrontendErrorCompiled
                         extends Node
-                        
+
                         func benchmark() -> int:
-                            var total := 0
-                            for index in range(3):
-                                total += index
+                            var total: int = "invalid"
                             return total
                         """
         );

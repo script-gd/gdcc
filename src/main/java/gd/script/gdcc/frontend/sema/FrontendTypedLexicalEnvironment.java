@@ -579,15 +579,15 @@ public final class FrontendTypedLexicalEnvironment {
         }
 
         private boolean hasFacts() {
-            return symbolBindings.isEmpty()
-                    && resolvedMembers.isEmpty()
-                    && chainResolvedCalls.isEmpty()
-                    && exprResolvedCalls.isEmpty()
-                    && expressionTypes.isEmpty()
-                    && slotTypes.isEmpty()
-                    && localSlotTypeUpdates.isEmpty()
-                    && forIterationPlans.isEmpty()
-                    && forIterationSlotTypeUpdates.isEmpty();
+            return !symbolBindings.isEmpty()
+                    || !resolvedMembers.isEmpty()
+                    || !chainResolvedCalls.isEmpty()
+                    || !exprResolvedCalls.isEmpty()
+                    || !expressionTypes.isEmpty()
+                    || !slotTypes.isEmpty()
+                    || !localSlotTypeUpdates.isEmpty()
+                    || !forIterationPlans.isEmpty()
+                    || !forIterationSlotTypeUpdates.isEmpty();
         }
 
         private void clear() {
