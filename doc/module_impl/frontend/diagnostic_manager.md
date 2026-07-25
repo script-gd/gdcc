@@ -253,6 +253,8 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
   - 该 category 只负责 override header 合同，不会把函数 subtree 提前标记为 skipped；后续 body analyzers 仍继续消费该函数体
 - `sema.type_check`
   - type-check analyzer 对 ordinary local / class property / return typed contract 不兼容发出的 error
+  - type-check analyzer 对静态已知不可迭代 hard type 发出的 `Unable to iterate on value of type "X"` error；锚定 iterable expression，不阻断 for body 遍历
+  - `Variant`、`Object` 与静态未知 iterable 保持 runtime-open；已有 upstream 不稳定 typed fact 时不重复包装
 - `sema.type_hint`
   - type-check analyzer 对 property `:=` / 未声明显式类型 property 发出的手动显式类型提醒 warning
   - 该 warning 只提示建议的显式类型，不表示 property metadata 已被推导或回写

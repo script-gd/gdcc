@@ -131,6 +131,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - route-not-ready blocker 复用统一去重合同：同一 `ForStatement` anchor 已有 upstream error 时不再补发同级 `sema.compile_check`。
 - shared `analyze(...)` 不包含该 policy；只有 `analyzeForCompile(...)` 会按 route readiness 决定 for 是否进入 lowering。
 - 该 policy 只消费已发布的 iteration plan 与 lowering contract registry，不控制 iterator inventory、completeness certificate 或 child-suite dispatch。
+- 阶段 F2 的 `rawElementType -> semanticElementType` 替换与 hard non-iterable shared diagnostic 不改变 compile policy：compile gate 仍只按 `plan.route()` 查询 lowering contract。若同一 `ForStatement` 已有 upstream `sema.type_check` error，route-not-ready blocker 继续按统一去重合同省略。
 
 ### 3.2 declaration 级封口
 

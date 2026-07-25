@@ -9,6 +9,8 @@ import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendDeclaredTypeSupport;
 import gd.script.gdcc.frontend.sema.FrontendExpressionType;
 import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
+import gd.script.gdcc.frontend.sema.FrontendForLoopSupport;
+import gd.script.gdcc.frontend.sema.FrontendIterableSemantics;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendPropertyInitializerSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendAssignmentSemanticSupport;
 import gd.script.gdcc.frontend.sema.analyzer.support.FrontendChainReductionFacade;
@@ -277,13 +279,12 @@ public class FrontendTypeCheckAnalyzer {
     /// - `RANGE_CALL` validates the bare `range(...)` argument arity (1..3) and that every argument
     ///   enters the `int` slot; the callee/call root are never treated as an ordinary call here.
     /// - `INT_SHORTHAND` validates that the single stop operand enters the `int` slot.
-    /// - every other route (generic Variant today, reserved specialized routes later) reuses the
-    ///   ordinary expression type-check path: it only requires a stable published iterable fact and
-    ///   never reports a compile-time "not iterable" diagnostic, which stays a runtime concern.
+    /// - every other route (generic Variant today, reserved specialized routes later) classifies a
+    ///   stable iterable type and reports hard types that cannot implement Godot iteration semantics.
     ///
-    /// Independently of the route, an explicit iterator type must be able to receive the raw element
-    /// type via the shared typed-boundary matrix. Body traversal is owned by the caller so it always
-    /// happens regardless of route classification.
+    /// Independently of the route, an explicit iterator type must be able to receive the semantic
+    /// element type via the shared typed-boundary matrix. Body traversal is owned by the caller so it
+    /// always happens regardless of route classification.
     protected void visitForHeader(
             @NotNull TypeCheckAccess access,
             @NotNull ForStatement forStatement
@@ -327,27 +328,37 @@ public class FrontendTypeCheckAnalyzer {
         checkIntSlotOperand(access, plan.sourceOperands().getFirst(), "for-in integer shorthand iterable");
     }
 
-    /// Ordinary iterable header contract: only a stable published iterable typed fact is required.
-    /// Whether the value is actually iterable is owned by the generic Variant iterator route at
-    /// runtime, so no compile-time unsupported diagnostic is emitted here.
+    /// Ordinary iterable header contract: dynamic types remain runtime-open, while a stable hard type
+    /// that cannot implement Godot's iteration protocol is rejected without blocking body traversal.
     private static void visitOrdinaryIterableHeader(
             @NotNull TypeCheckAccess access,
             @NotNull ForStatement forStatement
     ) {
-        stableNonCompilerExpressionTypeOrNull(access, forStatement.iterable(), "for-in iterable");
+        var iterableType = stableNonCompilerExpressionTypeOrNull(
+                access,
+                forStatement.iterable(),
+                "for-in iterable"
+        );
+        if (iterableType == null) {
+            return;
+        }
+        var classification = FrontendForLoopSupport.classifyIterableSemantics(iterableType);
+        if (classification instanceof FrontendIterableSemantics.NonIterable(var nonIterableType)) {
+            reportNonIterableType(access, forStatement, nonIterableType);
+        }
     }
 
-    /// An explicit `for i: Type in expr` iterator type must be able to receive the raw element type.
-    /// Inferred iterators mirror the raw element type and therefore need no conversion check.
+    /// An explicit `for i: Type in expr` iterator type must receive the semantic element type.
+    /// Inferred iterators mirror that type and therefore need no compatibility check.
     private static void visitExplicitIteratorTypeConversion(
             @NotNull TypeCheckAccess access,
             @NotNull ForStatement forStatement,
             @NotNull FrontendForIterationPlan plan
     ) {
-        if (plan.declaredIteratorType() == null) {
+        if (plan.declaredIteratorTypeRef() == null) {
             return;
         }
-        if (access.checkAssignmentCompatible(plan.exposedIteratorType(), plan.rawElementType())) {
+        if (access.checkAssignmentCompatible(plan.exposedIteratorType(), plan.semanticElementType())) {
             return;
         }
         reportIteratorTypeMismatch(access, forStatement, plan);
@@ -657,11 +668,24 @@ public class FrontendTypeCheckAnalyzer {
         access.diagnosticManager().error(
                 TYPE_CHECK_CATEGORY,
                 "for-in iterator declared type '" + plan.exposedIteratorType().getTypeName()
-                        + "' cannot receive iterated element type '" + plan.rawElementType().getTypeName() + "'",
+                        + "' cannot receive iterated element type '" + plan.semanticElementType().getTypeName() + "'",
                 access.sourcePath(),
                 FrontendRange.fromAstRange(
                         Objects.requireNonNull(forStatement.iteratorType(), "iteratorType must not be null").range()
                 )
+        );
+    }
+
+    private static void reportNonIterableType(
+            @NotNull TypeCheckAccess access,
+            @NotNull ForStatement forStatement,
+            @NotNull GdType iterableType
+    ) {
+        access.diagnosticManager().error(
+                TYPE_CHECK_CATEGORY,
+                "Unable to iterate on value of type \"" + iterableType.getTypeName() + "\"",
+                access.sourcePath(),
+                FrontendRange.fromAstRange(forStatement.iterable().range())
         );
     }
 

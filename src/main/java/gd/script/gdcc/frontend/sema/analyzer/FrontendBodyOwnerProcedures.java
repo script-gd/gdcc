@@ -357,11 +357,6 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         if (iteratorSlot == null || iteratorSlot.declaration() != forStatement) {
             return null;
         }
-        // An explicit Variant declaration is semantically equivalent to no declaration:
-        // the raw element type wins as the exposed iterator type.
-        if (iteratorSlot.type() instanceof GdVariantType) {
-            return null;
-        }
         return iteratorSlot.type();
     }
 

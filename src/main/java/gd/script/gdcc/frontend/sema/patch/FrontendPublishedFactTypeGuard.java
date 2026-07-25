@@ -96,12 +96,12 @@ public final class FrontendPublishedFactTypeGuard {
         }
     }
 
-    /// The plan is a source-facing semantic fact: both element types must be ordinary source-visible
-    /// types, never compiler-only iterator state.
+    /// The plan is a source-facing semantic fact: both semantic element and exposed iterator types
+    /// must remain ordinary source-visible types, never compiler-only iterator state.
     public static void checkForIterationPlan(@NotNull FrontendForIterationPlan plan) {
         checkNoCompilerOnlyLeak(
-                plan.rawElementType(),
-                "forIterationPlans() raw element type for '" + plan.iteratorName() + "'"
+                plan.semanticElementType(),
+                "forIterationPlans() semantic element type for '" + plan.iteratorName() + "'"
         );
         checkNoCompilerOnlyLeak(
                 plan.exposedIteratorType(),

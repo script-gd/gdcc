@@ -18,31 +18,28 @@ import java.util.Objects;
 /// lowering contract (iterator state type and operation descriptors) is derived separately from
 /// `gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry`.
 ///
-/// @param statement owning `ForStatement`; also the side-table key and the iterator declaration
+/// @param statement               owning `ForStatement`; also the side-table key and the iterator declaration
 ///                  identity, so it must be identity-equal across plan, region and slot metadata
-/// @param route classified iteration scheme (range call, int shorthand, generic Variant, ...); the
+/// @param route                   classified iteration scheme (range call, int shorthand, generic Variant, ...); the
 ///              single fact type-check, compile gate and CFG builder switch on
-/// @param iteratorName source-facing iterator variable name (for example `i`); equal to
+/// @param iteratorName            source-facing iterator variable name (for example `i`); equal to
 ///                     `statement.iterator()`, never a synthetic hidden-slot name
-/// @param declaredIteratorType explicit source `TypeRef` from `for i: Type in expr`, or null when the
-///                             iterator type is inferred; retained as a source fact, not resolved here
-/// @param rawElementType element type produced by the runtime helper/intrinsic for `route` (int for
-///                       range/int shorthand, Variant for generic); drives iterator slot refinement
-/// @param exposedIteratorType source-facing type the iterator local shows inside the body; the declared
-///                            type when present, otherwise `rawElementType`; never a compiler-only type
-/// @param requiresPerElementConversion true when the raw element must be converted to the exposed type
-///                                     (declared type present and different from `rawElementType`)
-/// @param sourceOperands source expressions feeding the loop, preserved verbatim and never fabricated:
+/// @param declaredIteratorTypeRef explicit source `TypeRef` from `for i: Type in expr`, or null when
+///                                the iterator type is inferred; retained as an unresolved source fact
+/// @param semanticElementType     source-visible element type inferred by frontend semantics; it drives
+///                            body type-check and remains independent from lowering helper result types
+/// @param exposedIteratorType     source-facing type the iterator local shows inside the body; the declared
+///                            type when present, otherwise `semanticElementType`; never compiler-only
+/// @param sourceOperands          source expressions feeding the loop, preserved verbatim and never fabricated:
 ///                       the `range(...)` arguments for RANGE_CALL, or the single stop/iterable
 ///                       expression for INT_SHORTHAND / GENERIC_VARIANT
 public record FrontendForIterationPlan(
         @NotNull ForStatement statement,
         @NotNull FrontendForIterationRoute route,
         @NotNull String iteratorName,
-        @Nullable TypeRef declaredIteratorType,
-        @NotNull GdType rawElementType,
+        @Nullable TypeRef declaredIteratorTypeRef,
+        @NotNull GdType semanticElementType,
         @NotNull GdType exposedIteratorType,
-        boolean requiresPerElementConversion,
         @NotNull List<Expression> sourceOperands
 ) {
     public FrontendForIterationPlan {
@@ -52,7 +49,7 @@ public record FrontendForIterationPlan(
         if (iteratorName.isBlank()) {
             throw new IllegalArgumentException("iteratorName must not be blank");
         }
-        Objects.requireNonNull(rawElementType, "rawElementType must not be null");
+        Objects.requireNonNull(semanticElementType, "semanticElementType must not be null");
         Objects.requireNonNull(exposedIteratorType, "exposedIteratorType must not be null");
         sourceOperands = List.copyOf(Objects.requireNonNull(sourceOperands, "sourceOperands must not be null"));
     }
@@ -66,7 +63,7 @@ public record FrontendForIterationPlan(
     /// - Element types are compared by class plus type name (via `FrontendAnalysisData.sameType`)
     ///   instead of identity, so republishing a logically equivalent type instance stays idempotent
     ///   rather than being reported as a conflict (`equals` would treat distinct instances as unequal).
-    /// - `declaredIteratorType` and `sourceOperands` are compared by AST identity instead of structural
+    /// - `declaredIteratorTypeRef` and `sourceOperands` are compared by AST identity instead of structural
     ///   equals, because they are the very same source nodes and must not be matched by shape.
     public static boolean samePlan(
             @NotNull FrontendForIterationPlan first,
@@ -74,10 +71,9 @@ public record FrontendForIterationPlan(
     ) {
         return first.route() == second.route()
                 && first.iteratorName().equals(second.iteratorName())
-                && first.declaredIteratorType() == second.declaredIteratorType()
-                && FrontendAnalysisData.sameType(first.rawElementType(), second.rawElementType())
+                && first.declaredIteratorTypeRef() == second.declaredIteratorTypeRef()
+                && FrontendAnalysisData.sameType(first.semanticElementType(), second.semanticElementType())
                 && FrontendAnalysisData.sameType(first.exposedIteratorType(), second.exposedIteratorType())
-                && first.requiresPerElementConversion() == second.requiresPerElementConversion()
                 && sameOperandList(first.sourceOperands(), second.sourceOperands());
     }
 

@@ -279,13 +279,13 @@ condition 当前采用 Godot-compatible source contract：
 
 ### 3.8 for-in header contract
 
-`handleForStatement(...)` 与 `handleWhileStatement(...)` 共用 executable-depth 与 published-fact guard，并在 iteration plan 已发布后检查 for header。route 与 element type 的唯一事实源是已发布的 `FrontendForIterationPlan`；type-check 不重新扫描 AST 推导 iterable 语义。
+`handleForStatement(...)` 与 `handleWhileStatement(...)` 共用 executable-depth 与 published-fact guard，并在 iteration plan 已发布后检查 for header。route 与 semantic element type 的唯一事实源是已发布的 `FrontendForIterationPlan`；type-check 不重新扫描 AST 推导 plan。普通 iterable 的静态可迭代性诊断与 plan 构造共同复用 `FrontendForLoopSupport.classifyIterableSemantics(...)`，避免“元素类型”与“是否可迭代”采用两套规则。
 
 header 校验按 `route()` 分流：
 
 - `RANGE_CALL`：bare `range(...)` 的 argument 数量必须是 1..3，否则在 range call 上发 arity diagnostic；每个 present argument 必须能进入 `int` slot（走 `checkAssignmentCompatible(GdIntType.INT, argType)`），不兼容时在对应 argument 位置发 diagnostic。callee / call root 不被当作 ordinary call。literal 或动态 `step == 0` 是合法空 range，不在 type-check 阶段阻断。
 - `INT_SHORTHAND`：单个 stop operand 必须能进入 `int` slot（隐式 `0` start 与 `1` step 是 lowering 常量，不参与 type-check）。
-- 其余 route（当前 `GENERIC_VARIANT`，以及保留的专用 route）：复用 ordinary iterable 稳定事实检查，只要求 iterable 已发布稳定 typed fact；是否可迭代是 generic Variant iterator route 的 runtime 责任，type-check 不发 compile-time unsupported diagnostic。
+- 其余 route（当前 `GENERIC_VARIANT`，以及保留的专用 route）：先要求 iterable 已发布稳定 typed fact，再通过统一分类器判定。`StaticIterable` 正常通过；`DynamicIterable`（当前 `Variant` / `Object`）保留 runtime-open；`NonIterable` 在 iterable expression 上发 `sema.type_check` `Unable to iterate on value of type "X"`。静态未知或已有 upstream `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 事实时不追加诊断。
 
 与 route 无关地，显式 iterator type 必须能接收 semantic element type（阶段 F2 起为 `semanticElementType`，替代原 `rawElementType`）：
 
@@ -295,6 +295,8 @@ header 校验按 `route()` 分流：
 - 推断 iterator（无显式 type）镜像 semantic element type（阶段 F2 起为 `semanticElementType`），无需 conversion 校验。
 
 body traversal 与 route 解耦：无论 route 是 known、generic 还是仍被 compile gate 阻断，`handleForStatement(...)` 一律调用 `walkSupportedExecutableBlock(forStatement.body())`。route classification 只影响 header / iterator conversion diagnostic，不会使 for body 再次成为 deferred / unsupported boundary。因此 for body 内的 ordinary local initializer、nested for、return 等现有 type-check statement handler 全部生效。
+
+不可迭代 hard type 的诊断同样不改变这条边界：plan 仍以 `GENERIC_VARIANT` + `semanticElementType=Variant` 发布，body 仍继续遍历。`Variant`、`Object` 与静态未知类型不发该诊断；若 iterable expression 已由 upstream owner 发布不稳定状态，type-check 保留原诊断 owner，不重复包装。
 
 missing iteration plan 视为 upstream phase boundary 未被遵守，fail fast（与 `requirePublishedExpressionType` 一致），不静默跳过 header。
 

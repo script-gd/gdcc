@@ -4,9 +4,30 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdCompilerType;
+import gd.script.gdcc.type.GdCompoundVectorType;
+import gd.script.gdcc.type.GdContainerType;
+import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdMetaType;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
+import gd.script.gdcc.type.GdNumericType;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedArrayType;
+import gd.script.gdcc.type.GdPrimitiveType;
+import gd.script.gdcc.type.GdPureVectorType;
+import gd.script.gdcc.type.GdRidType;
+import gd.script.gdcc.type.GdStringLikeType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdIntType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdVectorType;
+import gd.script.gdcc.type.GdVoidType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -35,6 +56,41 @@ public final class FrontendForLoopSupport {
                 && RANGE_FUNCTION_NAME.equals(callee.name());
     }
 
+    /// Classifies one resolved iterable type according to Godot's static `for-in` semantics. A null
+    /// result means the expression type is not statically known, so callers retain Variant semantics.
+    public static @Nullable FrontendIterableSemantics classifyIterableSemantics(@Nullable GdType iterableType) {
+        if (iterableType == null) {
+            return null;
+        }
+        return switch (iterableType) {
+            case GdContainerType containerType -> switch (containerType) {
+                case GdArrayType arrayType -> staticIterable(arrayType.getValueType());
+                case GdDictionaryType dictionaryType -> staticIterable(dictionaryType.getKeyType());
+                case GdPackedArrayType packedArrayType -> staticIterable(packedArrayType.getValueType());
+            };
+            case GdCompilerType _, GdMetaType _, GdNilType _, GdRidType _, GdVoidType _ ->
+                    nonIterable(iterableType);
+            case GdObjectType _, GdVariantType _ -> new FrontendIterableSemantics.DynamicIterable();
+            case GdPrimitiveType primitiveType -> switch (primitiveType) {
+                case GdBoolType _ -> nonIterable(iterableType);
+                case GdNumericType numericType -> switch (numericType) {
+                    case GdFloatType _ -> staticIterable(GdFloatType.FLOAT);
+                    case GdIntType _ -> staticIterable(GdIntType.INT);
+                };
+            };
+            case GdStringLikeType stringLikeType -> switch (stringLikeType) {
+                case GdNodePathType _, GdStringNameType _ -> nonIterable(iterableType);
+                case GdStringType _ -> staticIterable(GdStringType.STRING);
+            };
+            case GdVectorType vectorType -> switch (vectorType) {
+                case GdCompoundVectorType _ -> nonIterable(iterableType);
+                case GdPureVectorType pureVectorType -> pureVectorType.getDimension() <= 3
+                        ? staticIterable(pureVectorType.getElementType())
+                        : nonIterable(iterableType);
+            };
+        };
+    }
+
     /// Classifies the iterable and builds the matching iteration plan.
     ///
     /// `declaredIteratorType` is the resolved form of `statement.iteratorType()` (null when absent);
@@ -56,32 +112,43 @@ public final class FrontendForLoopSupport {
             return buildPlan(statement, FrontendForIterationRoute.INT_SHORTHAND, GdIntType.INT,
                     declaredIteratorType, List.of(iterable));
         }
-        return buildPlan(statement, FrontendForIterationRoute.GENERIC_VARIANT, GdVariantType.VARIANT,
+        var classification = classifyIterableSemantics(iterableType);
+        var semanticElementType = switch (classification) {
+            case FrontendIterableSemantics.StaticIterable(var elementType) -> elementType;
+            case null -> GdVariantType.VARIANT;
+            case FrontendIterableSemantics.DynamicIterable() -> GdVariantType.VARIANT;
+            case FrontendIterableSemantics.NonIterable(_) -> GdVariantType.VARIANT;
+        };
+        return buildPlan(statement, FrontendForIterationRoute.GENERIC_VARIANT, semanticElementType,
                 declaredIteratorType, List.of(iterable));
     }
 
     private static @NotNull FrontendForIterationPlan buildPlan(
             @NotNull ForStatement statement,
             @NotNull FrontendForIterationRoute route,
-            @NotNull GdType rawElementType,
+            @NotNull GdType semanticElementType,
             @Nullable GdType declaredIteratorType,
             @NotNull List<Expression> sourceOperands
     ) {
-        // Without an explicit iterator type the source-facing iterator mirrors the raw element type;
-        // with one, the declared type wins and a per-element conversion is required whenever the raw
-        // element type differs from it.
-        var exposedIteratorType = declaredIteratorType != null ? declaredIteratorType : rawElementType;
-        var requiresPerElementConversion = declaredIteratorType != null
-                && !FrontendAnalysisData.sameType(rawElementType, declaredIteratorType);
+        // Semantic compatibility and lowering materialization remain separate: the plan records only
+        // the source-facing types, while lowering obtains its helper result type from its route contract.
+        var exposedIteratorType = declaredIteratorType != null ? declaredIteratorType : semanticElementType;
         return new FrontendForIterationPlan(
                 statement,
                 route,
                 statement.iterator(),
                 statement.iteratorType(),
-                rawElementType,
+                semanticElementType,
                 exposedIteratorType,
-                requiresPerElementConversion,
                 sourceOperands
         );
+    }
+
+    private static @NotNull FrontendIterableSemantics.StaticIterable staticIterable(@NotNull GdType elementType) {
+        return new FrontendIterableSemantics.StaticIterable(elementType);
+    }
+
+    private static @NotNull FrontendIterableSemantics.NonIterable nonIterable(@NotNull GdType iterableType) {
+        return new FrontendIterableSemantics.NonIterable(iterableType);
     }
 }

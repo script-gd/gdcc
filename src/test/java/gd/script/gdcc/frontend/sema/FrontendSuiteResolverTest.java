@@ -1256,9 +1256,8 @@ class FrontendSuiteResolverTest {
         assertAll(
                 () -> assertEquals(FrontendForIterationRoute.RANGE_CALL, plan.route()),
                 () -> assertEquals("i", plan.iteratorName()),
-                () -> assertEquals(GdIntType.INT, plan.rawElementType()),
+                () -> assertEquals(GdIntType.INT, plan.semanticElementType()),
                 () -> assertEquals(GdIntType.INT, plan.exposedIteratorType()),
-                () -> assertFalse(plan.requiresPerElementConversion()),
                 () -> assertEquals(1, plan.sourceOperands().size())
         );
         assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(forStatement),
@@ -1293,9 +1292,8 @@ class FrontendSuiteResolverTest {
         var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
         assertAll(
                 () -> assertEquals(FrontendForIterationRoute.INT_SHORTHAND, plan.route()),
-                () -> assertEquals(GdIntType.INT, plan.rawElementType()),
+                () -> assertEquals(GdIntType.INT, plan.semanticElementType()),
                 () -> assertEquals(GdIntType.INT, plan.exposedIteratorType()),
-                () -> assertFalse(plan.requiresPerElementConversion()),
                 () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(fromFor),
                         "body local x must be int via refined iterator")
         );
@@ -1323,16 +1321,15 @@ class FrontendSuiteResolverTest {
         var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
         assertAll(
                 () -> assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, plan.route()),
-                () -> assertEquals(GdVariantType.VARIANT, plan.rawElementType()),
+                () -> assertEquals(GdVariantType.VARIANT, plan.semanticElementType()),
                 () -> assertEquals(GdVariantType.VARIANT, plan.exposedIteratorType()),
-                () -> assertFalse(plan.requiresPerElementConversion()),
                 () -> assertEquals(GdVariantType.VARIANT, phaseInput.analysisData().slotTypes().get(forStatement),
                         "iterator slot stays Variant for generic route")
         );
     }
 
     @Test
-    void d1ExplicitIteratorTypeRecordsPerElementConversion() throws Exception {
+    void d1ExplicitIteratorTypePublishesSemanticAndExposedTypes() throws Exception {
         var phaseInput = phaseInput("suite_d1_explicit_type_conversion.gd", """
                 class_name SuiteD1ExplicitTypeConversion
                 extends Node
@@ -1353,12 +1350,10 @@ class FrontendSuiteResolverTest {
         var plan = requireValue(phaseInput.analysisData().forIterationPlans().get(forStatement));
         assertAll(
                 () -> assertEquals(FrontendForIterationRoute.RANGE_CALL, plan.route()),
-                () -> assertEquals(GdIntType.INT, plan.rawElementType(),
-                        "raw element type is still int for range"),
+                () -> assertEquals(GdIntType.INT, plan.semanticElementType(),
+                        "semantic element type is int for range"),
                 () -> assertEquals(GdFloatType.FLOAT, plan.exposedIteratorType(),
                         "exposed iterator type is declared float"),
-                () -> assertTrue(plan.requiresPerElementConversion(),
-                        "int -> float requires per-element conversion"),
                 () -> assertEquals(GdFloatType.FLOAT, phaseInput.analysisData().slotTypes().get(forStatement),
                         "slotTypes()[ForStatement] must be declared float")
         );

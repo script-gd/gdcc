@@ -11,17 +11,39 @@ import dev.superice.gdparser.frontend.ast.PassStatement;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.TypeRef;
+import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdArrayType;
+import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdCallableType;
+import gd.script.gdcc.type.GdColorType;
+import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdIntVectorType;
+import gd.script.gdcc.type.GdNilType;
+import gd.script.gdcc.type.GdNodePathType;
+import gd.script.gdcc.type.GdObjectType;
+import gd.script.gdcc.type.GdPackedNumericArrayType;
+import gd.script.gdcc.type.GdPackedStringArrayType;
+import gd.script.gdcc.type.GdPackedVectorArrayType;
+import gd.script.gdcc.type.GdRect2Type;
+import gd.script.gdcc.type.GdRidType;
+import gd.script.gdcc.type.GdSignalType;
+import gd.script.gdcc.type.GdStringNameType;
+import gd.script.gdcc.type.GdStringType;
+import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -42,10 +64,9 @@ class FrontendForLoopSupportTest {
 
         assertEquals(FrontendForIterationRoute.RANGE_CALL, plan.route());
         assertEquals("i", plan.iteratorName());
-        assertNull(plan.declaredIteratorType());
-        assertSame(GdIntType.INT, plan.rawElementType());
+        assertNull(plan.declaredIteratorTypeRef());
+        assertSame(GdIntType.INT, plan.semanticElementType());
         assertSame(GdIntType.INT, plan.exposedIteratorType());
-        assertFalse(plan.requiresPerElementConversion());
         assertEquals(1, plan.sourceOperands().size());
         assertSame(stop, plan.sourceOperands().getFirst());
     }
@@ -95,9 +116,8 @@ class FrontendForLoopSupportTest {
         var plan = FrontendForLoopSupport.buildPlan(statement, null, GdIntType.INT);
 
         assertEquals(FrontendForIterationRoute.INT_SHORTHAND, plan.route());
-        assertSame(GdIntType.INT, plan.rawElementType());
+        assertSame(GdIntType.INT, plan.semanticElementType());
         assertSame(GdIntType.INT, plan.exposedIteratorType());
-        assertFalse(plan.requiresPerElementConversion());
         // The shorthand must not fabricate `0` / `1` AST nodes; only the stop expression is kept.
         assertEquals(1, plan.sourceOperands().size());
         assertSame(limit, plan.sourceOperands().getFirst());
@@ -109,9 +129,8 @@ class FrontendForLoopSupportTest {
 
         var unknownPlan = FrontendForLoopSupport.buildPlan(forStatement("item", null, values), null, null);
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, unknownPlan.route());
-        assertSame(GdVariantType.VARIANT, unknownPlan.rawElementType());
+        assertSame(GdVariantType.VARIANT, unknownPlan.semanticElementType());
         assertSame(GdVariantType.VARIANT, unknownPlan.exposedIteratorType());
-        assertFalse(unknownPlan.requiresPerElementConversion());
         assertEquals(1, unknownPlan.sourceOperands().size());
         assertSame(values, unknownPlan.sourceOperands().getFirst());
 
@@ -121,7 +140,7 @@ class FrontendForLoopSupportTest {
                 GdVariantType.VARIANT
         );
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, variantPlan.route());
-        assertSame(GdVariantType.VARIANT, variantPlan.rawElementType());
+        assertSame(GdVariantType.VARIANT, variantPlan.semanticElementType());
 
         // Float shorthand is not specialized yet, so a float iterable stays on the generic route.
         var floatPlan = FrontendForLoopSupport.buildPlan(
@@ -130,11 +149,11 @@ class FrontendForLoopSupportTest {
                 GdFloatType.FLOAT
         );
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, floatPlan.route());
-        assertSame(GdVariantType.VARIANT, floatPlan.rawElementType());
+        assertSame(GdFloatType.FLOAT, floatPlan.semanticElementType());
     }
 
     @Test
-    void declaredIteratorTypeWinsAndRecordsPerElementConversionWhenDifferentFromRaw() {
+    void declaredIteratorTypeWinsWithoutEmbeddingLoweringConversionState() {
         var rangeCall = bareRangeCall(List.of(intLiteral("3")));
 
         var floatPlan = FrontendForLoopSupport.buildPlan(
@@ -143,9 +162,8 @@ class FrontendForLoopSupportTest {
                 null
         );
         assertEquals(FrontendForIterationRoute.RANGE_CALL, floatPlan.route());
-        assertSame(GdIntType.INT, floatPlan.rawElementType());
+        assertSame(GdIntType.INT, floatPlan.semanticElementType());
         assertSame(GdFloatType.FLOAT, floatPlan.exposedIteratorType());
-        assertTrue(floatPlan.requiresPerElementConversion());
 
         var intPlan = FrontendForLoopSupport.buildPlan(
                 forStatement("i", new TypeRef("int", RANGE), rangeCall),
@@ -153,7 +171,128 @@ class FrontendForLoopSupportTest {
                 null
         );
         assertSame(GdIntType.INT, intPlan.exposedIteratorType());
-        assertFalse(intPlan.requiresPerElementConversion());
+    }
+
+    @Test
+    void resolvesSemanticElementTypesForKnownIterableFamilies() {
+        var iterable = new IdentifierExpression("values", RANGE);
+
+        assertPlanSemanticElement(iterable, GdStringType.STRING, GdStringType.STRING);
+        assertPlanSemanticElement(iterable, new GdArrayType(GdIntType.INT), GdIntType.INT);
+        assertPlanSemanticElement(
+                iterable,
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
+                GdStringType.STRING
+        );
+        assertPlanSemanticElement(
+                iterable,
+                GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY,
+                GdFloatType.FLOAT
+        );
+        assertPlanSemanticElement(iterable, GdFloatType.FLOAT, GdFloatType.FLOAT);
+    }
+
+    @Test
+    void resolvesVariantSemanticElementForUntypedContainersAndDynamicTypes() {
+        var iterable = new IdentifierExpression("values", RANGE);
+
+        assertPlanSemanticElement(iterable, new GdArrayType(GdVariantType.VARIANT), GdVariantType.VARIANT);
+        assertPlanSemanticElement(
+                iterable,
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                GdVariantType.VARIANT
+        );
+        assertPlanSemanticElement(iterable, new GdObjectType("Object"), GdVariantType.VARIANT);
+        assertPlanSemanticElement(iterable, GdVariantType.VARIANT, GdVariantType.VARIANT);
+    }
+
+    @Test
+    void classifiesIterableTypesWithTheirGodotElementTypes() {
+        assertStaticElement(GdIntType.INT, GdIntType.INT);
+        assertStaticElement(GdFloatType.FLOAT, GdFloatType.FLOAT);
+        assertStaticElement(GdStringType.STRING, GdStringType.STRING);
+        assertStaticElement(GdFloatVectorType.VECTOR2, GdFloatType.FLOAT);
+        assertStaticElement(GdFloatVectorType.VECTOR3, GdFloatType.FLOAT);
+        assertStaticElement(GdIntVectorType.VECTOR2I, GdIntType.INT);
+        assertStaticElement(GdIntVectorType.VECTOR3I, GdIntType.INT);
+        assertStaticElement(new GdArrayType(GdIntType.INT), GdIntType.INT);
+        assertStaticElement(new GdArrayType(GdVariantType.VARIANT), GdVariantType.VARIANT);
+        assertStaticElement(
+                new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
+                GdStringType.STRING
+        );
+        assertStaticElement(
+                new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
+                GdVariantType.VARIANT
+        );
+        assertStaticElement(GdPackedNumericArrayType.PACKED_INT32_ARRAY, GdIntType.INT);
+        assertStaticElement(GdPackedNumericArrayType.PACKED_FLOAT32_ARRAY, GdFloatType.FLOAT);
+        assertStaticElement(GdPackedStringArrayType.PACKED_STRING_ARRAY, GdStringType.STRING);
+        assertStaticElement(GdPackedVectorArrayType.PACKED_VECTOR3_ARRAY, GdFloatVectorType.VECTOR3);
+    }
+
+    @Test
+    void classifiesNonIterableHardTypesWithoutAStaticElement() {
+        List<GdType> nonIterableTypes = List.of(
+                GdBoolType.BOOL,
+                GdNilType.NIL,
+                new GdCallableType(),
+                new GdSignalType(),
+                GdRidType.RID,
+                GdStringNameType.STRING_NAME,
+                GdNodePathType.NODE_PATH,
+                GdFloatVectorType.VECTOR4,
+                GdIntVectorType.VECTOR4I,
+                GdRect2Type.RECT2,
+                GdColorType.COLOR,
+                GdccForRangeIterType.FOR_RANGE_ITER
+        );
+
+        for (var iterableType : nonIterableTypes) {
+            var semantics = Objects.requireNonNull(assertInstanceOf(
+                    FrontendIterableSemantics.NonIterable.class,
+                    FrontendForLoopSupport.classifyIterableSemantics(iterableType)
+            ));
+            assertSame(iterableType, semantics.iterableType());
+        }
+    }
+
+    @Test
+    void classifiesVariantAndObjectAsDynamicAndUnknownAsUnresolved() {
+        assertInstanceOf(
+                FrontendIterableSemantics.DynamicIterable.class,
+                FrontendForLoopSupport.classifyIterableSemantics(GdVariantType.VARIANT)
+        );
+        assertInstanceOf(
+                FrontendIterableSemantics.DynamicIterable.class,
+                FrontendForLoopSupport.classifyIterableSemantics(new GdObjectType("Object"))
+        );
+        assertNull(FrontendForLoopSupport.classifyIterableSemantics(null));
+    }
+
+    @Test
+    void explicitVariantDeclarationPreservesVariantAcrossAllCurrentRoutes() {
+        var variantTypeRef = new TypeRef("Variant", RANGE);
+        var rangePlan = FrontendForLoopSupport.buildPlan(
+                forStatement("i", variantTypeRef, bareRangeCall(List.of(intLiteral("3")))),
+                GdVariantType.VARIANT,
+                null
+        );
+        var shorthandPlan = FrontendForLoopSupport.buildPlan(
+                forStatement("i", variantTypeRef, new IdentifierExpression("limit", RANGE)),
+                GdVariantType.VARIANT,
+                GdIntType.INT
+        );
+        var genericPlan = FrontendForLoopSupport.buildPlan(
+                forStatement("i", variantTypeRef, new IdentifierExpression("values", RANGE)),
+                GdVariantType.VARIANT,
+                null
+        );
+
+        for (var plan : List.of(rangePlan, shorthandPlan, genericPlan)) {
+            assertSame(variantTypeRef, plan.declaredIteratorTypeRef());
+            assertSame(GdVariantType.VARIANT, plan.exposedIteratorType());
+        }
     }
 
     @Test
@@ -187,5 +326,24 @@ class FrontendForLoopSupportTest {
     ) {
         var body = new Block(List.of(new PassStatement(RANGE)), RANGE);
         return new ForStatement(iterator, iteratorType, iterable, body, RANGE);
+    }
+
+    private static void assertPlanSemanticElement(
+            @NotNull Expression iterable,
+            @NotNull GdType iterableType,
+            @NotNull GdType expectedElementType
+    ) {
+        var plan = FrontendForLoopSupport.buildPlan(forStatement("item", null, iterable), null, iterableType);
+        assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, plan.route());
+        assertSame(expectedElementType, plan.semanticElementType());
+        assertSame(expectedElementType, plan.exposedIteratorType());
+    }
+
+    private static void assertStaticElement(@NotNull GdType iterableType, @NotNull GdType expectedElementType) {
+        var semantics = Objects.requireNonNull(assertInstanceOf(
+                FrontendIterableSemantics.StaticIterable.class,
+                FrontendForLoopSupport.classifyIterableSemantics(iterableType)
+        ));
+        assertSame(expectedElementType, semantics.elementType());
     }
 }

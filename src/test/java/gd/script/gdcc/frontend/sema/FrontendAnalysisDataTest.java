@@ -911,7 +911,6 @@ class FrontendAnalysisDataTest {
                 null,
                 GdccForRangeIterType.FOR_RANGE_ITER,
                 GdIntType.INT,
-                false,
                 List.of(statement.iterable())
         );
         var plans = new FrontendAstSideTable<FrontendForIterationPlan>();
@@ -934,7 +933,6 @@ class FrontendAnalysisDataTest {
                 null,
                 GdVariantType.VARIANT,
                 GdccForRangeIterType.FOR_RANGE_ITER,
-                false,
                 List.of(statement.iterable())
         );
         var plans = new FrontendAstSideTable<FrontendForIterationPlan>();
@@ -1052,7 +1050,6 @@ class FrontendAnalysisDataTest {
                 null,
                 GdIntType.INT,
                 GdIntType.INT,
-                false,
                 List.of(operand)
         );
     }
@@ -1068,7 +1065,6 @@ class FrontendAnalysisDataTest {
                 null,
                 GdIntType.INT,
                 GdIntType.INT,
-                false,
                 List.of(operand)
         );
     }

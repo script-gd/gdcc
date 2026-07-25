@@ -38,7 +38,6 @@ import java.util.Objects;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -1430,10 +1429,11 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, firstPlan.route());
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, secondPlan.route());
         assertSame(GdVariantType.VARIANT, firstPlan.exposedIteratorType());
+        assertEquals("float", secondPlan.semanticElementType().getTypeName());
     }
 
     @Test
-    void analyzeAcceptsCompatibleExplicitIteratorTypeAndRecordsConversion() throws Exception {
+    void analyzeAcceptsCompatibleExplicitIteratorTypeUsingSemanticElementType() throws Exception {
         var preparedInput = prepareTypeCheckInput("for_iterator_compatible.gd", """
                 class_name ForIteratorCompatible
                 extends RefCounted
@@ -1459,13 +1459,11 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.analysisData().forIterationPlans().get(forStatements.getFirst())
         );
         assertEquals("float", floatPlan.exposedIteratorType().getTypeName());
-        assertEquals("int", floatPlan.rawElementType().getTypeName());
-        assertTrue(floatPlan.requiresPerElementConversion());
+        assertEquals("int", floatPlan.semanticElementType().getTypeName());
         var intPlan = Objects.requireNonNull(
                 preparedInput.analysisData().forIterationPlans().get(forStatements.get(1))
         );
         assertEquals("int", intPlan.exposedIteratorType().getTypeName());
-        assertFalse(intPlan.requiresPerElementConversion());
     }
 
     @Test
@@ -1489,6 +1487,195 @@ class FrontendTypeCheckAnalyzerTest {
         assertEquals(1, diagnostics.size());
         assertTrue(diagnostics.getFirst().message()
                 .contains("for-in iterator declared type 'String' cannot receive iterated element type 'int'"));
+    }
+
+    @Test
+    void analyzeReportsNonIterableHardTypesAtTypeCheckBoundary() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_non_iterable_hard_types.gd", """
+                class_name ForNonIterableHardTypes
+                extends RefCounted
+                
+                func ping(callable: Callable, signal_value: Signal, rid: RID, string_name: StringName,
+                        node_path: NodePath, vector4: Vector4, rect2: Rect2):
+                    for item in true:
+                        pass
+                    for item in callable:
+                        pass
+                    for item in signal_value:
+                        pass
+                    for item in rid:
+                        pass
+                    for item in string_name:
+                        pass
+                    for item in node_path:
+                        pass
+                    for item in vector4:
+                        pass
+                    for item in rect2:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(8, diagnostics.size());
+        for (var typeName : List.of("bool", "Callable", "Signal", "RID", "StringName", "NodePath", "Vector4", "Rect2")) {
+            assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message()
+                    .equals("Unable to iterate on value of type \"" + typeName + "\"")));
+        }
+    }
+
+    @Test
+    void analyzeKeepsVariantAndUnresolvedIterableDiagnosticsWithTheirUpstreamOwners() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_dynamic_or_unresolved.gd", """
+                class_name ForDynamicOrUnresolved
+                extends RefCounted
+                
+                func ping(values: Variant):
+                    for value in values:
+                        pass
+                    for missing_value in missing_iterable:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+        assertTrue(preparedInput.diagnosticManager().snapshot().asList().stream()
+                .anyMatch(diagnostic -> diagnostic.message().contains("missing_iterable")));
+    }
+
+    @Test
+    void analyzeStillTraversesBodyAfterNonIterableDiagnostic() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_non_iterable_body.gd", """
+                class_name ForNonIterableBody
+                extends RefCounted
+                
+                func ping():
+                    for item in true:
+                        var invalid: int = "bad"
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(2, diagnostics.size());
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message()
+                .equals("Unable to iterate on value of type \"bool\"")));
+        assertTrue(diagnostics.stream().anyMatch(diagnostic -> diagnostic.message().contains("Local variable 'invalid'")));
+    }
+
+    @Test
+    void analyzeExplicitIteratorTypeUsesTypedContainerSemanticElement() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_typed_container_iterator.gd", """
+                class_name ForTypedContainerIterator
+                extends RefCounted
+                
+                func ping(values: Array[int]):
+                    for item: String in values:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message()
+                .contains("for-in iterator declared type 'String' cannot receive iterated element type 'int'"));
+    }
+
+    @Test
+    void analyzeRejectsExplicitIteratorTypeAgainstStringSemanticElement() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_string_iterator_type.gd", """
+                class_name ForStringIteratorType
+                extends RefCounted
+                
+                func ping():
+                    for item: float in "abc":
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertTrue(diagnostics.getFirst().message()
+                .contains("for-in iterator declared type 'float' cannot receive iterated element type 'String'"));
+    }
+
+    @Test
+    void analyzeNonIterableExplicitIteratorDoesNotAddFallbackConversionDiagnostic() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_non_iterable_explicit_iterator.gd", """
+                class_name ForNonIterableExplicitIterator
+                extends RefCounted
+                
+                func ping():
+                    for item: String in true:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        var diagnostics = diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check");
+        assertEquals(1, diagnostics.size());
+        assertEquals("Unable to iterate on value of type \"bool\"", diagnostics.getFirst().message());
+    }
+
+    @Test
+    void analyzeExplicitVariantIteratorKeepsVariantSlotAcrossRoutes() throws Exception {
+        var preparedInput = prepareTypeCheckInput("for_explicit_variant_iterator.gd", """
+                class_name ForExplicitVariantIterator
+                extends RefCounted
+                
+                func ping(values: Variant):
+                    var limit := 3
+                    for range_item: Variant in range(3):
+                        pass
+                    for shorthand_item: Variant in limit:
+                        pass
+                    for dynamic_item: Variant in values:
+                        pass
+                """);
+
+        new FrontendTypeCheckAnalyzer().analyze(
+                preparedInput.classRegistry(),
+                preparedInput.analysisData(),
+                preparedInput.diagnosticManager()
+        );
+
+        assertTrue(diagnosticsByCategory(preparedInput.diagnosticManager().snapshot(), "sema.type_check").isEmpty());
+        var pingFunction = findFunction(preparedInput.unit().ast(), "ping");
+        var forStatements = findNodes(pingFunction, ForStatement.class, _ -> true);
+        assertEquals(3, forStatements.size());
+        for (var forStatement : forStatements) {
+            var plan = Objects.requireNonNull(preparedInput.analysisData().forIterationPlans().get(forStatement));
+            assertSame(GdVariantType.VARIANT, plan.exposedIteratorType());
+            assertSame(GdVariantType.VARIANT, preparedInput.analysisData().slotTypes().get(forStatement));
+        }
     }
 
     @Test

@@ -508,7 +508,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendPublishedFactTypeGuard` 增加 iteration plan guard：
   - `FrontendForIterationPlan` 的 source-facing fields 不得含 compiler-only type。
   - `FrontendForIterationPlan` 不得携带 `GdCompilerType`、intrinsic 名称或任何 lowering 协议字段。
-  - `rawElementType` 与 `exposedIteratorType` 必须是 source-visible type。（阶段 F2 将 `rawElementType` 替换为 `semanticElementType`，须为 source-visible type。lowering helper result type 不在 plan 中存储，由 `FrontendForLoweringContract.get().resultType()` 提供。）
+  - `semanticElementType` 与 `exposedIteratorType` 必须是 source-visible type。lowering helper result type 不在 plan 中存储，由 `FrontendForLoweringContract.get().resultType()` 提供。
 - 新增 `ForLoweringContractRegistry`（compile-time 静态注册表）：
   - Phase C 只注册 `RANGE_CALL` 与 `INT_SHORTHAND` 的 `FrontendForLoweringContract`。
   - `GENERIC_VARIANT` 在 Phase C 不注册；compile gate 查询返回 null 即 route-not-ready。
@@ -521,7 +521,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 - `FrontendForLoopSupportTest` 覆盖 bare `range(...)`、非 bare `range`、`int` shorthand、unknown iterable fallback。
 - `RANGE_CALL` plan 的 `sourceOperands` 保留源码 arguments。
 - `INT_SHORTHAND` plan 的 `sourceOperands` 只包含 stop expression，不伪造 `0` / `1` AST。
-- `GENERIC_VARIANT` plan 只携带语义事实（route、rawElementType=Variant、exposedIteratorType），不携带任何 lowering 合同字段。（阶段 F2 将 `rawElementType` 替换为 `semanticElementType`，按 iterable 静态类型推导；lowering helper result type 不在 plan 中存储，由阶段 I 注册的 `FrontendForLoweringContract.get().resultType()` 提供。）
+- `GENERIC_VARIANT` plan 只携带语义事实（route、按 iterable 静态类型推导的 `semanticElementType`、`exposedIteratorType`），不携带任何 lowering 合同字段。lowering helper result type 不在 plan 中存储，由阶段 I 注册的 `FrontendForLoweringContract.get().resultType()` 提供。
 - `ForLoweringContractRegistry` 对 `RANGE_CALL` / `INT_SHORTHAND` 返回 non-null contract；对 `GENERIC_VARIANT` 返回 null。
 - route 与 operation descriptor 不在 CFG builder / lowering processor 中重复硬编码。
 
@@ -699,7 +699,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 ### 阶段 F2：semantic element type 替换与不可迭代类型静态诊断
 
-状态：未实施。必须在阶段 G 之前完成（CFG builder 与 lowering 消费替换后的 plan 字段）。阶段 I（generic Variant route）与阶段 J（known iterable 专用 route）依赖本阶段提供的语义模型。
+状态：已完成。Step 1、Step 1b、Step 2、Step 3、Step 4、Step 5、Step 6 均已完成。针对性测试 `FrontendForLoopSupportTest`、`FrontendSuiteResolverTest`、`FrontendTypeCheckAnalyzerTest`、`FrontendAnalysisDataTest` 已通过。阶段 G 的 CFG builder 与后续 lowering 可消费替换后的 plan 字段；阶段 I（generic Variant route）与阶段 J（known iterable 专用 route）可依赖本阶段提供的语义模型。
 
 依赖：阶段 C/D0/D1/E 已完成（plan 数据结构、publication surface、type-check 基础设施已就位）。
 
@@ -713,7 +713,7 @@ range/int route 的生产链路（阶段 C → D0 → D1 → E → G → H → F
 
 实施内容：
 
-**Step 1：`FrontendForIterationPlan` record 字段替换**
+**Step 1：`FrontendForIterationPlan` record 字段替换（已完成）**
 
 将 `rawElementType` 替换为 `semanticElementType`，不引入任何 lowering 字段：
 
@@ -757,7 +757,7 @@ F2 明确区分两条独立路径，避免 plan 中的 boolean 成为另一套 c
 - **单步 materialization**：lowering 只执行一步转换 `contract.get().resultType()` → `exposedIteratorType`，不经过 `semanticElementType` 中间步骤。当两者相同时（如 range route 的 `int` → `int`），无需转换，直接赋值。当 helper 返回 `Variant` 且 `exposedIteratorType` 也是 `Variant` 时（如 `for i: Variant in values:`），同样无需转换。当两者不同但兼容时（如 `for i: float in range(3):` 的 `int → float`），由 `determineFrontendBoundaryDecision` 选择具体 conversion route（此例为 `ALLOW_WITH_INTRINSIC_CAST`），仍为单步 materialization。
 - **destroyable 中间值**：materialization 产生的临时值（如 unpack 后的具体类型值）的生命周期由既有 `materializeFrontendBoundaryValue` 的 temp slot 合同管理，与 assignment/call boundary 的 temp 处理一致。for-loop 不引入额外的 destroyable 生命周期负担。
 
-**Step 1b：修复显式 `Variant` iterator type 被错误精化为具体类型**
+**Step 1b：修复显式 `Variant` iterator type 被错误精化为具体类型（已完成）**
 
 当前 `FrontendBodyOwnerProcedures.resolveDeclaredIteratorType(...)` (line 362-363) 将显式 `Variant` 声明视为"无声明"并返回 `null`：
 
@@ -794,7 +794,7 @@ Godot 上游行为（`gdscript_analyzer.cpp:2409-2431`）：当 `specified_type.
 - 未知类型 fallback（`for i: UnknownType in range(3):`）：若 declared type resolver 以 `Variant` 恢复，修复后 `resolveDeclaredIteratorType` 返回 `Variant`，slot 不被精化，body 中 `i` 保持 `Variant`。这是正确行为——未知类型不应被精化为具体类型。
 - 该修复必须在 Step 1 的字段替换之前或同时完成，因为 `exposedIteratorType` 的推导逻辑在 Step 1 中被调整。
 
-**Step 2：`FrontendForLoopSupport` 统一可迭代性分类**
+**Step 2：`FrontendForLoopSupport` 统一可迭代性分类（已完成）**
 
 新增单一分类方法，替代原设计的 `resolveSemanticElementType` + `isStaticallyNonIterable` 双函数方案。`GdType` 是 sealed interface（`GdType.java:6-7`，11 个直接 permits），因此分类器使用 exhaustive switch，未来新增 `GdType` 子类型时编译器强制分类器显式决定其语义，不会静默 fallback。
 
@@ -830,7 +830,7 @@ public sealed interface FrontendIterableSemantics {
 | `null`（静态未知） | 返回 `null`（调用方使用 `Variant`） | 保留运行时语义 |
 | `GdVariantType` | `DynamicIterable` | 动态分派 |
 | `GdObjectType` | `DynamicIterable` | Object custom iterator 由运行时决定 |
-| `GdIntType` | `StaticIterable(int)` | 由 `INT_SHORTHAND` route 处理，不会进入此方法 |
+| `GdIntType` | `StaticIterable(int)` | `buildPlan` 正常流程会先短路为 `INT_SHORTHAND`；分类器本身仍完整支持 int |
 | `GdFloatType` | `StaticIterable(float)` | Godot: 类似 `range(ceil(n))`，元素为 float |
 | `GdStringType` | `StaticIterable(String)` | Godot: 逐字符迭代 |
 | `GdArrayType`（typed） | `StaticIterable(element type)` | `getValueType()` |
@@ -899,7 +899,7 @@ var exposedIteratorType = declaredIteratorType != null ? declaredIteratorType : 
 // requiresPerElementConversion 已移除：lowering 通过 materializeFrontendBoundaryValue 统一决策
 ```
 
-**Step 3：`FrontendTypeCheckAnalyzer` 不可迭代类型诊断**
+**Step 3：`FrontendTypeCheckAnalyzer` 不可迭代类型诊断（已完成）**
 
 在 `visitOrdinaryIterableHeader` 中消费统一分类结果（不再调用独立的 `isStaticallyNonIterable`）：
 
@@ -943,9 +943,9 @@ private static void reportNonIterableType(
 - 消息格式：`Unable to iterate on value of type "X"`，贴近 Godot 上游。
 - 只对 hard type 生效：`GdVariantType`（动态/未知）和 `null`（静态未知）不触发此诊断，推迟到运行时。
 - 该诊断不阻止 plan 发布和 body 遍历：plan 仍以 `GENERIC_VARIANT` + `semanticElementType = Variant` 发布，body 仍被遍历。诊断是 type-check 层面的错误报告，不是 structural boundary。
-- 去重合同：如果 iterable expression 已有 upstream `sema.expression_resolution` 或 `sema.binding` 错误导致类型不稳定（`BLOCKED`/`FAILED`/`UNSUPPORTED`），`stableNonCompilerExpressionTypeOrNull` 返回 null，不追加此诊断。
+- 去重合同：如果 iterable expression 已有 upstream `sema.expression_resolution` 或 `sema.binding` 错误导致类型不稳定（`BLOCKED`/`DEFERRED`/`FAILED`/`UNSUPPORTED`），`stableNonCompilerExpressionTypeOrNull` 返回 null，不追加此诊断。
 
-**Step 4：消费者适配**
+**Step 4：消费者适配（已完成）**
 
 以下消费者引用了原 `rawElementType`，需要按语义角色选择新字段：
 
@@ -959,7 +959,7 @@ private static void reportNonIterableType(
 | `FrontendForIterationPlan.samePlan` (line 78-79) | 比较 `rawElementType` 和 `exposedIteratorType` | 比较 `semanticElementType` 和 `exposedIteratorType` |
 | 所有 `plan.declaredIteratorType()` 调用点 | 访问 record 字段（返回 `TypeRef`） | 重命名为 `plan.declaredIteratorTypeRef()`（阶段 F2）。影响：`FrontendTypeCheckAnalyzer` (line 347)、`FrontendForIterationPlan.samePlan` (line 77)、`FrontendForLoopSupportTest` (line 45) 等。 |
 
-**Step 5：测试更新与新增**
+**Step 5：测试更新与新增（已完成）**
 
 更新现有测试：
 
@@ -993,7 +993,7 @@ private static void reportNonIterableType(
   - `analyzeExplicitVariantIteratorOnGenericRouteKeepsVariant`（Step 1b）：`for i: Variant in values:` → 无诊断，`exposedIteratorType == Variant`。
   - `analyzeExplicitVariantIteratorAcceptsCompatibleElement`（Step 1b）：`for i: Variant in range(3):` → `checkAssignmentCompatible(Variant, int)` 通过（Variant 可接收任何类型），无 type-check 诊断。
 
-**Step 6：文档同步**
+**Step 6：文档同步（已完成）**
 
 - 本文件 §3.3：更新 iterator baseline 描述，将 `raw element type` 引用改为 `semantic element type`。
 - 本文件 §3.4：更新 `FrontendForIterationPlan` record 定义和约束说明。
