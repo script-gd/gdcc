@@ -1,6 +1,8 @@
 package gd.script.gdcc.frontend.lowering;
 
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendForIteratorStateSlot;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendForSourceIteratorSlot;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
@@ -95,6 +97,24 @@ public final class FunctionLoweringContext {
     /// nodes such as `Block`, `if`/`elif`, and `while`. Like the semantic side tables, the lookup
     /// deliberately uses AST identity instead of structural equality.
     private final @NotNull FrontendAstSideTable<FrontendCfgRegion> frontendCfgRegions = new FrontendAstSideTable<>();
+
+    /// AST-keyed source-facing iterator slots for compile-ready `for-in` loops in this unit.
+    ///
+    /// Published together with the frontend CFG graph/regions so body lowering can predeclare the
+    /// source-facing iterator locals from a validated registry instead of rediscovering them from the
+    /// owning `ForStatement`. Kept separate from the hidden-state registry: the two never share id,
+    /// type or lifecycle.
+    private final @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> frontendForSourceIteratorSlots =
+            new FrontendAstSideTable<>();
+
+    /// AST-keyed hidden loop-carried iterator state slots for compile-ready `for-in` loops in this unit.
+    ///
+    /// Published together with the frontend CFG graph/regions so body lowering can predeclare the
+    /// compiler-only state locals and next temps from a validated registry. The compiler-only state
+    /// type stays restricted to hidden-slot metadata, LIR locals, intrinsic operand/result and backend
+    /// C storage.
+    private final @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> frontendForIteratorStateSlots =
+            new FrontendAstSideTable<>();
 
     public FunctionLoweringContext(
             @NotNull Kind kind,
@@ -209,6 +229,58 @@ public final class FunctionLoweringContext {
 
     public boolean hasFrontendCfgRegion(@NotNull Node astNode) {
         return frontendCfgRegions.containsKey(Objects.requireNonNull(astNode, "astNode must not be null"));
+    }
+
+    /// Publishes one AST-keyed source-facing for-in iterator slot for this lowering unit.
+    ///
+    /// The mapping must remain one-to-one by `ForStatement` identity so body lowering can predeclare
+    /// the source-facing iterator local from a validated registry.
+    public void publishForSourceIteratorSlot(
+            @NotNull Node astNode,
+            @NotNull FrontendForSourceIteratorSlot slot
+    ) {
+        Objects.requireNonNull(astNode, "astNode must not be null");
+        Objects.requireNonNull(slot, "slot must not be null");
+        if (frontendForSourceIteratorSlots.containsKey(astNode)) {
+            throw new IllegalStateException(
+                    "Frontend for-in source iterator slot has already been published for " + describeCfgAstNode(astNode)
+            );
+        }
+        frontendForSourceIteratorSlots.put(astNode, slot);
+    }
+
+    public @Nullable FrontendForSourceIteratorSlot forSourceIteratorSlotOrNull(@NotNull Node astNode) {
+        return frontendForSourceIteratorSlots.get(Objects.requireNonNull(astNode, "astNode must not be null"));
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots() {
+        return frontendForSourceIteratorSlots;
+    }
+
+    /// Publishes one AST-keyed hidden for-in iterator state slot for this lowering unit.
+    ///
+    /// The mapping must remain one-to-one by `ForStatement` identity so body lowering can predeclare
+    /// the compiler-only state local and next temp from a validated registry.
+    public void publishForIteratorStateSlot(
+            @NotNull Node astNode,
+            @NotNull FrontendForIteratorStateSlot slot
+    ) {
+        Objects.requireNonNull(astNode, "astNode must not be null");
+        Objects.requireNonNull(slot, "slot must not be null");
+        if (frontendForIteratorStateSlots.containsKey(astNode)) {
+            throw new IllegalStateException(
+                    "Frontend for-in iterator state slot has already been published for " + describeCfgAstNode(astNode)
+            );
+        }
+        frontendForIteratorStateSlots.put(astNode, slot);
+    }
+
+    public @Nullable FrontendForIteratorStateSlot forIteratorStateSlotOrNull(@NotNull Node astNode) {
+        return frontendForIteratorStateSlots.get(Objects.requireNonNull(astNode, "astNode must not be null"));
+    }
+
+    public @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots() {
+        return frontendForIteratorStateSlots;
     }
 
     public enum Kind {

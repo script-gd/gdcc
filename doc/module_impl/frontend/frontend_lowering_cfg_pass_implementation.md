@@ -4,8 +4,8 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复均已落地；parameter default 仍未接通）
-- 更新时间：2026-04-26
+- 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复、`for-in` CFG build（`FrontendForRegion` / 四个 `ForLoop*Item` / source-slot / hidden-state registry / build-artifact 跨表验证）均已落地；parameter default 与 `for-in` body lowering 仍未接通）
+- 更新时间：2026-07-25
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/cfg/**`
@@ -145,6 +145,16 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `FrontendIfRegion`
 - `FrontendElifRegion`
 - `FrontendWhileRegion`
+- `FrontendForRegion`
+
+`FrontendForRegion` 记录 `for-in` 循环的五个结构锚点与两个独立 iterator slot：`initEntryId`（即 `entryId()`，init 子图入口，物化 source operands 并运行 init operation 写入 hidden state slot）、`conditionEntryId`（should-continue 条件子图入口）、`bodyEntryId`（body 入口，运行 get operation 提交 source-facing iterator local 后再执行 body statements）、`updateEntryId`（运行 next operation 并跳回 condition，是 `continue` target）、`exitId`（`break` target）、`sourceIteratorSlotId` 与 `iteratorStateSlotId`。后两者是 slot reference，不是 frontend CFG node id，分别经由 source-slot registry 与 hidden-state registry 解析，且不共享 id/type/lifecycle。
+
+除 `frontendCfgRegions` 外，build pass 还会为 compile-ready `for-in` 发布两张 AST identity keyed registry：
+
+- `frontendForSourceIteratorSlots`（`FrontendForSourceIteratorSlot`：`ForStatement` identity、source iterator name、来自 `slotTypes()[ForStatement]` 的 ordinary exposed type）
+- `frontendForIteratorStateSlots`（`FrontendForIteratorStateSlot`：`ForStatement` identity、`cfg_for_iter_<n>` state slot、`cfg_for_iter_next_<n>` next temp slot、来自 `FrontendForLoweringContract.iteratorStateType()` 的 compiler-only state type）
+
+这两张 registry 与 graph/regions 一起在 `ExecutableBodyBuild` 构造时接受跨表验证（slot owner/type/uniqueness、item-slot 引用一致、source slot 与 hidden slot 分离、hidden slot id 不进入 ordinary value-id surface），随后发布到 `FunctionLoweringContext` 供 body lowering 预声明对应 LIR local。
 
 这张 side table 当前承担两类职责：
 
@@ -188,6 +198,19 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 - `MergeValueItem`
 - `CastItem`
 - `TypeTestItem`
+- `ForLoopInitItem`
+- `ForLoopShouldContinueItem`
+- `ForLoopGetItem`
+- `ForLoopNextItem`
+
+四个 `ForLoop*Item` 服务于 `for-in` 循环且都实现 `ValueOpItem`，其 hidden iterator state 访问通过独立 `iteratorStateSlotId` 字段表达，不进入 ordinary result/operand value-id surface：
+
+- `ForLoopInitItem`：消费 source operand value ids，初始化 hidden state slot，`resultValueIdOrNull() == null` 且 `hasStandaloneMaterializationSlot() == false`
+- `ForLoopShouldContinueItem`：读取 hidden state slot，发布 ordinary `bool` condition result（被 condition branch 消费）
+- `ForLoopGetItem`：读取 hidden state slot，发布 ordinary raw element result（独立 `cfg_tmp_*`），并经 `sourceIteratorSlotId` 提交 source-facing iterator local
+- `ForLoopNextItem`：读取并经独立 `nextTempSlotId` 更新 hidden state slot，`resultValueIdOrNull() == null` 且 `hasStandaloneMaterializationSlot() == false`
+
+item 携带的 operation descriptor 直接来自 `FrontendForLoweringContract`，lowering 不重新查询 route 或硬编码 intrinsic 名称。
 
 这里的核心合同是：
 
@@ -439,6 +462,7 @@ frontend CFG -> LIR body lowering 当前统一复用以下 normalization 规则�
 - 调用 `frontend.lowering.cfg` 下的 builder
 - 发布 `frontendCfgGraph`
 - 为 executable body 发布 `frontendCfgRegions`
+- 为 compile-ready `for-in` 发布 `frontendForSourceIteratorSlots` 与 `frontendForIteratorStateSlots` registry
 - 对 property initializer 校验 `sourceOwner == property declaration`、`loweringRoot == initializer expression`
 
 当前不负责：
@@ -665,7 +689,7 @@ body-lowering 合同：
 - `GetNodeExpression`
 - callable-value invocation
 - multi-key subscript lowering
-- `for`（compile gate 已改 route-aware：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 lowering contract 放行，其余 route 发 route-not-ready blocker；`FrontendForRegion` 与 `ForLoop*Item` 的 CFG/lowering 合同仍待 for-in 计划阶段 G/H，本文档对应 region 形状 / value-op item 列表 / build pass 发布面将在阶段 G 首次同步）
+- `for`（compile gate 已改 route-aware：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 lowering contract 放行，其余 route 发 route-not-ready blocker；阶段 G 已落地 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证，本文档 region 形状 / value-op item 列表 / build pass 发布面已同步；body lowering 至 LIR 仍待 for-in 计划阶段 H，在此之前通过 compile gate 的 for-range 脚本会在 body lowering 处 fail-fast）
 
 其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
 

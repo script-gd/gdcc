@@ -240,6 +240,20 @@ public final class FrontendBodyLoweringSupport {
             );
             case LocalDeclarationItem _ ->
                     throw new IllegalStateException("LocalDeclarationItem must not publish a result value id");
+            case ForLoopShouldContinueItem _ -> new CfgValueMaterialization(
+                    GdBoolType.BOOL,
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case ForLoopGetItem forLoopGetItem -> new CfgValueMaterialization(
+                    forLoopGetItem.getOperation().resultType(),
+                    CfgValueMaterializationKind.TEMP_SLOT,
+                    null
+            );
+            case ForLoopInitItem _ ->
+                    throw new IllegalStateException("ForLoopInitItem must not publish a result value id");
+            case ForLoopNextItem _ ->
+                    throw new IllegalStateException("ForLoopNextItem must not publish a result value id");
         };
         if ((materialization.kind() == CfgValueMaterializationKind.TEMP_SLOT
                 || materialization.kind() == CfgValueMaterializationKind.MERGE_SLOT)

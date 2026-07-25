@@ -18,7 +18,8 @@ public sealed interface FrontendCfgRegion
         permits FrontendCfgRegion.BlockRegion,
         FrontendIfRegion,
         FrontendElifRegion,
-        FrontendWhileRegion {
+        FrontendWhileRegion,
+        FrontendForRegion {
     /// First graph node reached when control enters the source region.
     @NotNull String entryId();
 

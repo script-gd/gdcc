@@ -4,9 +4,9 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；CFG（G）、lowering（H）尚未实施，range/int 端到端生产闭环与 G/H 原子合并）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；阶段 G frontend CFG graph 已完成：`FrontendCfgGraphBuilder.processForStatement(...)` 建立 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证；lowering（H）尚未实施，range/int 端到端生产闭环与 H 原子合并）
 - 创建日期：2026-07-03
-- 更新时间：2026-07-24
+- 更新时间：2026-07-25
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -1034,7 +1034,7 @@ private static void reportNonIterableType(
 
 ### 阶段 G：frontend CFG graph
 
-状态：未实施。不得脱离阶段 C、完整 D0、D1 与 range/int 必要 type-check 单独进入 production path；必须与这些前置及阶段 H 一起原子实施。
+状态：已完成（CFG build 面）。`FrontendCfgGraphBuilder.processForStatement(...)` 已落地：消费已发布的 `FrontendForIterationPlan`、`slotTypes()[ForStatement]` 与 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract`，为 compile-ready route（当前 `RANGE_CALL` / `INT_SHORTHAND`）建立显式 CFG。新增 `FrontendForRegion`（加入 `FrontendCfgRegion` permits）、四个 `ForLoop*Item`（加入 `ValueOpItem` permits）、AST-keyed `FrontendForSourceIteratorSlot` 与 `FrontendForIteratorStateSlot` registry（随 graph/regions 发布到 `FunctionLoweringContext`），并在 `ExecutableBodyBuild` 构造时执行跨表验证。正反测试见 `FrontendCfgGraphBuilderForLoopTest`。range/int 端到端生产闭环仍与阶段 H 原子合并：通过 compile gate 的 for-range 脚本会在尚未实现的 body lowering（H）处 fail-fast，H 完成前不得标记原子闭环完成。
 
 目标：
 

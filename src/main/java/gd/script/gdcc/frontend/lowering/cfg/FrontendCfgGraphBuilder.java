@@ -9,6 +9,10 @@ import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
@@ -18,16 +22,21 @@ import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SourceAnchorItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.TypeTestItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendForRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
+import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
+import gd.script.gdcc.frontend.lowering.FrontendForLoweringContract;
 import gd.script.gdcc.frontend.sema.FrontendAnalysisData;
 import gd.script.gdcc.frontend.sema.FrontendAstSideTable;
 import gd.script.gdcc.frontend.sema.FrontendBinding;
 import gd.script.gdcc.frontend.sema.FrontendBindingKind;
 import gd.script.gdcc.frontend.sema.FrontendCallResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendExpressionTypeStatus;
+import gd.script.gdcc.frontend.sema.FrontendForIterationPlan;
 import gd.script.gdcc.frontend.sema.FrontendMemberResolutionStatus;
 import gd.script.gdcc.frontend.sema.FrontendReceiverKind;
 import gd.script.gdcc.frontend.sema.FrontendResolvedCall;
@@ -51,6 +60,7 @@ import dev.superice.gdparser.frontend.ast.DeclarationKind;
 import dev.superice.gdparser.frontend.ast.ElifClause;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
@@ -64,6 +74,7 @@ import dev.superice.gdparser.frontend.ast.TypeTestExpression;
 import dev.superice.gdparser.frontend.ast.UnaryExpression;
 import dev.superice.gdparser.frontend.ast.VariableDeclaration;
 import dev.superice.gdparser.frontend.ast.WhileStatement;
+import gd.script.gdcc.type.GdCompilerType;
 import gd.script.gdcc.type.GdContainerType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVoidType;
@@ -77,7 +88,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /// Frontend CFG builder for one compile-ready executable body.
 ///
@@ -104,11 +117,14 @@ public final class FrontendCfgGraphBuilder {
     private @Nullable FrontendAnalysisData analysisData;
     private @Nullable LinkedHashMap<String, FrontendCfgGraph.NodeDef> nodes;
     private @Nullable FrontendAstSideTable<FrontendCfgRegion> regions;
+    private @Nullable FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots;
+    private @Nullable FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots;
     private final @NotNull ArrayDeque<LoopFrame> loopStack = new ArrayDeque<>();
     private int nextSequenceIndex;
     private int nextBranchIndex;
     private int nextStopIndex;
     private int nextValueIndex;
+    private int nextForIterIndex;
 
     /// Builds one executable-body frontend CFG graph plus every AST-keyed region published inside it.
     ///
@@ -187,6 +203,7 @@ public final class FrontendCfgGraphBuilder {
             case ReturnStatement returnStatement -> processReturnStatement(state, returnStatement);
             case IfStatement ifStatement -> processIfStatement(state, ifStatement);
             case WhileStatement whileStatement -> processWhileStatement(state, whileStatement);
+            case ForStatement forStatement -> processForStatement(state, forStatement);
             case BreakStatement breakStatement ->
                     processLoopJump(state, breakStatement, requireLoopFrame().breakTargetId());
             case ContinueStatement continueStatement -> processLoopJump(
@@ -485,6 +502,229 @@ public final class FrontendCfgGraphBuilder {
         );
         state.setCurrentSequence(exitSequence);
         state.setReachable(true);
+    }
+
+    /// Materializes one compile-ready `for-in` loop into an explicit frontend CFG.
+    ///
+    /// The builder consumes only already-published facts: the iteration plan (route, iterator name,
+    /// source operands), the final source-facing iterator slot type and the lowering contract queried
+    /// from `ForLoweringContractRegistry`. It never re-derives iterable semantics, source iterator name
+    /// or source-facing type from AST.
+    ///
+    /// CFG shape (continue targets the update entry, break targets the exit):
+    ///
+    /// ```text
+    /// initEntry [operands..., ForLoopInitItem] -> conditionEntry [ForLoopShouldContinueItem] -> branch
+    ///   branch true  -> bodyEntry [ForLoopGetItem] -> body statements -> updateEntry [ForLoopNextItem] -> conditionEntry
+    ///   branch false -> exit
+    /// ```
+    private void processForStatement(@NotNull BlockState state, @NotNull ForStatement forStatement) {
+        var plan = requireForIterationPlan(forStatement);
+        var contract = requireForLoweringContract(plan);
+        var stateSlot = allocateIteratorStateSlot(forStatement, contract);
+        var sourceSlot = allocateSourceIteratorSlot(forStatement, plan);
+
+        var exitSequence = new OpenSequence(nextSequenceId());
+        var conditionSequence = new OpenSequence(nextSequenceId());
+        var updateSequence = new OpenSequence(nextSequenceId());
+
+        loopStack.push(new LoopFrame(updateSequence.id(), exitSequence.id()));
+        BlockBuild bodyBlockBuild;
+        try {
+            bodyBlockBuild = buildBlock(forStatement.body(), updateSequence.id());
+        } finally {
+            loopStack.pop();
+        }
+
+        var bodyEntryId = publishForBodyGetEntry(forStatement, contract, stateSlot, sourceSlot, bodyBlockBuild.entryId());
+        publishForUpdateEntry(forStatement, contract, stateSlot, updateSequence, conditionSequence.id());
+        publishForConditionEntry(forStatement, contract, stateSlot, conditionSequence, bodyEntryId, exitSequence.id());
+        var initEntryId = publishForInitEntry(forStatement, contract, stateSlot, plan, conditionSequence.id());
+
+        attachStructuredEntry(state, initEntryId);
+        requireRegions().put(
+                forStatement,
+                new FrontendForRegion(
+                        initEntryId,
+                        conditionSequence.id(),
+                        bodyEntryId,
+                        updateSequence.id(),
+                        exitSequence.id(),
+                        sourceSlot.sourceIteratorSlotId(),
+                        stateSlot.slotId()
+                )
+        );
+        requireForSourceIteratorSlots().put(forStatement, sourceSlot);
+        requireForIteratorStateSlots().put(forStatement, stateSlot);
+
+        state.setCurrentSequence(exitSequence);
+        state.setReachable(true);
+    }
+
+    /// Publishes the body entry sequence that runs the get operation, committing the source-facing
+    /// iterator local before the already-built body statements run.
+    private @NotNull String publishForBodyGetEntry(
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForLoweringContract contract,
+            @NotNull FrontendForIteratorStateSlot stateSlot,
+            @NotNull FrontendForSourceIteratorSlot sourceSlot,
+            @NotNull String bodyStatementsEntryId
+    ) {
+        var getSequence = new OpenSequence(nextSequenceId());
+        getSequence.items().add(new ForLoopGetItem(
+                forStatement,
+                contract.get(),
+                stateSlot.slotId(),
+                nextValueId(),
+                sourceSlot.sourceIteratorSlotId()
+        ));
+        publishSequenceNode(getSequence.id(), getSequence.items(), bodyStatementsEntryId);
+        return getSequence.id();
+    }
+
+    /// Publishes the update entry sequence that runs the next operation and jumps back to the
+    /// condition entry; it is the `continue` target.
+    private void publishForUpdateEntry(
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForLoweringContract contract,
+            @NotNull FrontendForIteratorStateSlot stateSlot,
+            @NotNull OpenSequence updateSequence,
+            @NotNull String conditionEntryId
+    ) {
+        updateSequence.items().add(new ForLoopNextItem(
+                forStatement,
+                contract.next(),
+                stateSlot.slotId(),
+                stateSlot.nextTempSlotId()
+        ));
+        publishSequenceNode(updateSequence.id(), updateSequence.items(), conditionEntryId);
+    }
+
+    /// Publishes the condition entry sequence that runs the should-continue operation and branches on
+    /// its ordinary `bool` result.
+    private void publishForConditionEntry(
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForLoweringContract contract,
+            @NotNull FrontendForIteratorStateSlot stateSlot,
+            @NotNull OpenSequence conditionSequence,
+            @NotNull String bodyEntryId,
+            @NotNull String exitId
+    ) {
+        var conditionValueId = nextValueId();
+        conditionSequence.items().add(new ForLoopShouldContinueItem(
+                forStatement,
+                contract.shouldContinue(),
+                stateSlot.slotId(),
+                conditionValueId
+        ));
+        var branchId = nextBranchId();
+        publishSequenceNode(conditionSequence.id(), conditionSequence.items(), branchId);
+        requireNodes().put(
+                branchId,
+                new FrontendCfgGraph.BranchNode(
+                        branchId,
+                        forStatement.iterable(),
+                        conditionValueId,
+                        bodyEntryId,
+                        exitId
+                )
+        );
+    }
+
+    /// Publishes the init entry subgraph: the source operands are materialized in source order first,
+    /// then the init operation writes the hidden iterator state slot.
+    private @NotNull String publishForInitEntry(
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForLoweringContract contract,
+            @NotNull FrontendForIteratorStateSlot stateSlot,
+            @NotNull FrontendForIterationPlan plan,
+            @NotNull String conditionEntryId
+    ) {
+        var initCursor = new BuildCursor(new OpenSequence(nextSequenceId()));
+        var operandsBuild = buildArgumentValues(initCursor, plan.sourceOperands());
+        operandsBuild.cursor().currentSequence().items().add(new ForLoopInitItem(
+                forStatement,
+                contract.init(),
+                operandsBuild.valueIds(),
+                stateSlot.slotId()
+        ));
+        publishSequenceNode(
+                operandsBuild.cursor().currentSequence().id(),
+                operandsBuild.cursor().currentSequence().items(),
+                conditionEntryId
+        );
+        return initCursor.entryId();
+    }
+
+    private @NotNull FrontendForIterationPlan requireForIterationPlan(@NotNull ForStatement forStatement) {
+        var plan = requireAnalysisData().forIterationPlans().get(forStatement);
+        if (plan == null) {
+            throw new IllegalStateException(
+                    "Missing published for-in iteration plan for ForStatement at " + forStatement.range()
+            );
+        }
+        return plan;
+    }
+
+    private @NotNull FrontendForLoweringContract requireForLoweringContract(@NotNull FrontendForIterationPlan plan) {
+        var contract = ForLoweringContractRegistry.get(plan.route());
+        if (contract == null) {
+            throw new IllegalStateException(
+                    "for-in route " + plan.route() + " is not compile-ready: no lowering contract registered"
+            );
+        }
+        return contract;
+    }
+
+    /// Allocates the hidden loop-carried state slot for one for-in loop. The `<n>` index is assigned by
+    /// source traversal order within one executable-body build so nested/sibling loops never reuse ids.
+    private @NotNull FrontendForIteratorStateSlot allocateIteratorStateSlot(
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForLoweringContract contract
+    ) {
+        var index = nextForIterIndex++;
+        return new FrontendForIteratorStateSlot(
+                forStatement,
+                "cfg_for_iter_" + index,
+                "cfg_for_iter_next_" + index,
+                contract.iteratorStateType()
+        );
+    }
+
+    /// Allocates the source-facing iterator slot. The exposed type must come from the final published
+    /// `slotTypes()[ForStatement]` and must agree with the plan's exposed iterator type, so the source
+    /// slot never diverges from the semantic fact.
+    private @NotNull FrontendForSourceIteratorSlot allocateSourceIteratorSlot(
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForIterationPlan plan
+    ) {
+        var exposedType = requireAnalysisData().slotTypes().get(forStatement);
+        if (exposedType == null) {
+            throw new IllegalStateException(
+                    "Missing published slot type for for-in iterator '" + plan.iteratorName() + "' at "
+                            + forStatement.range()
+            );
+        }
+        if (exposedType instanceof GdCompilerType compilerOnlyType) {
+            throw new IllegalStateException(
+                    "for-in iterator '" + plan.iteratorName() + "' must not use compiler-only type "
+                            + compilerOnlyType.getTypeName()
+            );
+        }
+        if (!sameExposedType(exposedType, plan.exposedIteratorType())) {
+            throw new IllegalStateException(
+                    "for-in iterator '" + plan.iteratorName() + "' slot type " + exposedType.getTypeName()
+                            + " disagrees with plan exposed type " + plan.exposedIteratorType().getTypeName()
+            );
+        }
+        return new FrontendForSourceIteratorSlot(forStatement, plan.iteratorName(), exposedType);
+    }
+
+    /// Source-facing iterator type agreement mirrors the semantic side-table equivalence rule: the final
+    /// published slot type and the plan's exposed type must be the same type kind and name.
+    private static boolean sameExposedType(@NotNull GdType first, @NotNull GdType second) {
+        return first == second
+                || (first.getClass() == second.getClass() && first.getTypeName().equals(second.getTypeName()));
     }
 
     private void attachStructuredEntry(@NotNull BlockState state, @NotNull String structuredEntryId) {
@@ -1163,13 +1403,9 @@ public final class FrontendCfgGraphBuilder {
         var finalStep = attributeExpression.steps().getLast();
         return switch (finalStep) {
             case AttributePropertyStep attributePropertyStep -> {
-                requireLoweringReadyCompoundMemberRead(
-                        attributePropertyStep,
-                        "compound attribute-property current-value read"
-                );
+                requireLoweringReadyCompoundMemberRead(attributePropertyStep);
                 var receiverValueId = requireFrozenTargetOperandValue(
                         frozenTargetOperandValueIds,
-                        0,
                         attributeExpression,
                         "receiver"
                 );
@@ -1185,7 +1421,6 @@ public final class FrontendCfgGraphBuilder {
             case AttributeSubscriptStep attributeSubscriptStep -> {
                 var receiverValueId = requireFrozenTargetOperandValue(
                         frozenTargetOperandValueIds,
-                        0,
                         attributeExpression,
                         "receiver"
                 );
@@ -1214,7 +1449,6 @@ public final class FrontendCfgGraphBuilder {
     ) {
         var receiverValueId = requireFrozenTargetOperandValue(
                 frozenTargetOperandValueIds,
-                0,
                 subscriptExpression,
                 "base"
         );
@@ -1734,7 +1968,6 @@ public final class FrontendCfgGraphBuilder {
             case AttributePropertyStep _ -> DirectSlotAliasArgumentSafety.SAFE_TO_ALIAS;
             case AttributeSubscriptStep attributeSubscriptStep ->
                     classifyDirectSlotAliasArguments(attributeSubscriptStep.arguments());
-            case AttributeCallStep _ -> DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT;
             default -> DirectSlotAliasArgumentSafety.REQUIRES_SNAPSHOT;
         };
     }
@@ -2044,6 +2277,20 @@ public final class FrontendCfgGraphBuilder {
         return regions;
     }
 
+    private @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> requireForSourceIteratorSlots() {
+        if (forSourceIteratorSlots == null) {
+            throw new IllegalStateException("Frontend for-in source iterator slots have not been initialized");
+        }
+        return forSourceIteratorSlots;
+    }
+
+    private @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> requireForIteratorStateSlots() {
+        if (forIteratorStateSlots == null) {
+            throw new IllegalStateException("Frontend for-in iterator state slots have not been initialized");
+        }
+        return forIteratorStateSlots;
+    }
+
     private @NotNull LinkedHashMap<String, FrontendCfgGraph.NodeDef> requireNodes() {
         if (nodes == null) {
             throw new IllegalStateException("Frontend CFG nodes have not been initialized");
@@ -2170,9 +2417,9 @@ public final class FrontendCfgGraphBuilder {
     }
 
     private void requireLoweringReadyCompoundMemberRead(
-            @NotNull AttributePropertyStep attributePropertyStep,
-            @NotNull String contractDetail
+            @NotNull AttributePropertyStep attributePropertyStep
     ) {
+        var contractDetail = "compound attribute-property current-value read";
         var publishedMember = requireAnalysisData().resolvedMembers().get(attributePropertyStep);
         if (publishedMember == null) {
             throw new IllegalStateException(
@@ -2235,12 +2482,11 @@ public final class FrontendCfgGraphBuilder {
 
     private static @NotNull String requireFrozenTargetOperandValue(
             @NotNull List<String> frozenTargetOperandValueIds,
-            int index,
             @NotNull Expression targetExpression,
             @NotNull String operandRole
     ) {
-        if (index < frozenTargetOperandValueIds.size()) {
-            return frozenTargetOperandValueIds.get(index);
+        if (!frozenTargetOperandValueIds.isEmpty()) {
+            return frozenTargetOperandValueIds.getFirst();
         }
         throw new IllegalStateException(
                 "Compound assignment target "
@@ -2501,31 +2747,373 @@ public final class FrontendCfgGraphBuilder {
         return copied;
     }
 
+    private static @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> copyForSourceIteratorSlots(
+            @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> slots
+    ) {
+        var copied = new FrontendAstSideTable<FrontendForSourceIteratorSlot>();
+        copied.putAll(slots);
+        return copied;
+    }
+
+    private static @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> copyForIteratorStateSlots(
+            @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> slots
+    ) {
+        var copied = new FrontendAstSideTable<FrontendForIteratorStateSlot>();
+        copied.putAll(slots);
+        return copied;
+    }
+
+    /// Cross-table validation for the for-in build artifact.
+    ///
+    /// The graph alone cannot see the source-slot and hidden-state registries, so the build artifact
+    /// validates them together at construction time instead of deferring to lowering processors. This
+    /// catches missing/duplicate metadata, slot id reuse across nested/sibling loops, slot ids leaking
+    /// into the ordinary value-id surface, and item/region/source-slot identity divergence early.
+    private static void validateForLoopArtifacts(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull FrontendAstSideTable<FrontendCfgRegion> regions,
+            @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> sourceSlots,
+            @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> stateSlots
+    ) {
+        var hiddenSlotIds = new LinkedHashSet<String>();
+        for (var stateSlot : stateSlots.values()) {
+            if (!hiddenSlotIds.add(stateSlot.slotId())) {
+                throw new IllegalStateException(
+                        "Duplicate hidden for-in iterator state slot id '" + stateSlot.slotId() + "'"
+                );
+            }
+            if (!hiddenSlotIds.add(stateSlot.nextTempSlotId())) {
+                throw new IllegalStateException(
+                        "Duplicate hidden for-in iterator next temp slot id '" + stateSlot.nextTempSlotId() + "'"
+                );
+            }
+        }
+
+        var forItemsByStatement = collectForLoopItemsByStatement(graph);
+
+        for (var entry : regions.entrySet()) {
+            if (!(entry.getKey() instanceof ForStatement forStatement)
+                    || !(entry.getValue() instanceof FrontendForRegion region)) {
+                continue;
+            }
+            validateForRegionArtifact(
+                    graph,
+                    forStatement,
+                    region,
+                    sourceSlots,
+                    stateSlots,
+                    hiddenSlotIds,
+                    forItemsByStatement
+            );
+        }
+
+        validateHiddenSlotsAbsentFromValueSurface(graph, hiddenSlotIds);
+    }
+
+    private static void validateForRegionArtifact(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull ForStatement forStatement,
+            @NotNull FrontendForRegion region,
+            @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> sourceSlots,
+            @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> stateSlots,
+            @NotNull Set<String> hiddenSlotIds,
+            @NotNull Map<ForStatement, ForLoopItems> forItemsByStatement
+    ) {
+        var sourceSlot = sourceSlots.get(forStatement);
+        if (sourceSlot == null) {
+            throw new IllegalStateException(
+                    "Missing source-facing for-in iterator slot metadata for ForStatement at " + forStatement.range()
+            );
+        }
+        if (sourceSlot.statement() != forStatement) {
+            throw new IllegalStateException(
+                    "for-in source iterator slot statement identity mismatch at " + forStatement.range()
+            );
+        }
+        if (!sourceSlot.sourceIteratorSlotId().equals(region.sourceIteratorSlotId())) {
+            throw new IllegalStateException(
+                    "for-in region source iterator slot id '" + region.sourceIteratorSlotId()
+                            + "' disagrees with source slot metadata '" + sourceSlot.sourceIteratorSlotId() + "'"
+            );
+        }
+
+        var stateSlot = stateSlots.get(forStatement);
+        if (stateSlot == null) {
+            throw new IllegalStateException(
+                    "Missing hidden for-in iterator state slot metadata for ForStatement at " + forStatement.range()
+            );
+        }
+        if (stateSlot.statement() != forStatement) {
+            throw new IllegalStateException(
+                    "for-in hidden state slot statement identity mismatch at " + forStatement.range()
+            );
+        }
+        if (!stateSlot.slotId().equals(region.iteratorStateSlotId())) {
+            throw new IllegalStateException(
+                    "for-in region hidden state slot id '" + region.iteratorStateSlotId()
+                            + "' disagrees with state slot metadata '" + stateSlot.slotId() + "'"
+            );
+        }
+        if (hiddenSlotIds.contains(region.sourceIteratorSlotId())) {
+            throw new IllegalStateException(
+                    "for-in source iterator slot id '" + region.sourceIteratorSlotId()
+                            + "' must not collide with a hidden state slot id"
+            );
+        }
+
+        var items = forItemsByStatement.get(forStatement);
+        if (items == null) {
+            throw new IllegalStateException(
+                    "Missing for-loop items in graph for ForStatement at " + forStatement.range()
+            );
+        }
+        items.validate(graph, region, stateSlot);
+    }
+
+    private static @NotNull Map<ForStatement, ForLoopItems> collectForLoopItemsByStatement(
+            @NotNull FrontendCfgGraph graph
+    ) {
+        var result = new LinkedHashMap<ForStatement, ForLoopItems>();
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                switch (item) {
+                    case ForLoopInitItem initItem -> {
+                        var collected = result.computeIfAbsent(initItem.statement(), _ -> new ForLoopItems());
+                        collected.init = initItem;
+                        collected.initNodeId = nodeId;
+                    }
+                    case ForLoopShouldContinueItem shouldContinueItem -> {
+                        var collected = result.computeIfAbsent(shouldContinueItem.statement(), _ -> new ForLoopItems());
+                        collected.shouldContinue = shouldContinueItem;
+                        collected.shouldContinueNodeId = nodeId;
+                    }
+                    case ForLoopGetItem getItem -> {
+                        var collected = result.computeIfAbsent(getItem.statement(), _ -> new ForLoopItems());
+                        collected.get = getItem;
+                        collected.getNodeId = nodeId;
+                    }
+                    case ForLoopNextItem nextItem -> {
+                        var collected = result.computeIfAbsent(nextItem.statement(), _ -> new ForLoopItems());
+                        collected.next = nextItem;
+                        collected.nextNodeId = nodeId;
+                    }
+                    default -> {
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    private static void validateHiddenSlotsAbsentFromValueSurface(
+            @NotNull FrontendCfgGraph graph,
+            @NotNull Set<String> hiddenSlotIds
+    ) {
+        if (hiddenSlotIds.isEmpty()) {
+            return;
+        }
+        for (var nodeId : graph.nodeIds()) {
+            if (!(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode(_, var items, _))) {
+                continue;
+            }
+            for (var item : items) {
+                if (!(item instanceof ValueOpItem valueOpItem)) {
+                    continue;
+                }
+                var resultValueId = valueOpItem.resultValueIdOrNull();
+                if (resultValueId != null && hiddenSlotIds.contains(resultValueId)) {
+                    throw new IllegalStateException(
+                            "Hidden for-in slot id '" + resultValueId + "' must not appear as a CFG value result"
+                    );
+                }
+                for (var operandValueId : valueOpItem.operandValueIds()) {
+                    if (hiddenSlotIds.contains(operandValueId)) {
+                        throw new IllegalStateException(
+                                "Hidden for-in slot id '" + operandValueId
+                                        + "' must not appear as an ordinary operand value id"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Per-statement collection of the four for-loop items (with their owning node ids) used for
+    /// cross-validation against the region, hidden-state metadata and graph topology.
+    private static final class ForLoopItems {
+        private @Nullable ForLoopInitItem init;
+        private @Nullable ForLoopShouldContinueItem shouldContinue;
+        private @Nullable ForLoopGetItem get;
+        private @Nullable ForLoopNextItem next;
+        private @Nullable String initNodeId;
+        private @Nullable String shouldContinueNodeId;
+        private @Nullable String getNodeId;
+        private @Nullable String nextNodeId;
+
+        private void validate(
+                @NotNull FrontendCfgGraph graph,
+                @NotNull FrontendForRegion region,
+                @NotNull FrontendForIteratorStateSlot stateSlot
+        ) {
+            validateSlotReferences(region, stateSlot);
+            validateItemPositions(graph, region);
+            validateConditionBranch(graph, region);
+        }
+
+        private void validateSlotReferences(
+                @NotNull FrontendForRegion region,
+                @NotNull FrontendForIteratorStateSlot stateSlot
+        ) {
+            if (init == null || shouldContinue == null || get == null || next == null) {
+                throw new IllegalStateException(
+                        "for-in loop must publish exactly one init/should-continue/get/next item per ForStatement at "
+                                + region.initEntryId()
+                );
+            }
+            var stateSlotId = region.iteratorStateSlotId();
+            if (!init.iteratorStateSlotId().equals(stateSlotId)
+                    || !shouldContinue.iteratorStateSlotId().equals(stateSlotId)
+                    || !get.iteratorStateSlotId().equals(stateSlotId)
+                    || !next.iteratorStateSlotId().equals(stateSlotId)) {
+                throw new IllegalStateException(
+                        "for-in items must all reference the same hidden state slot '" + stateSlotId + "'"
+                );
+            }
+            if (!get.sourceIteratorSlotId().equals(region.sourceIteratorSlotId())) {
+                throw new IllegalStateException(
+                        "for-in get item source iterator slot '" + get.sourceIteratorSlotId()
+                                + "' disagrees with region source iterator slot '" + region.sourceIteratorSlotId() + "'"
+                );
+            }
+            if (!next.nextTempSlotId().equals(stateSlot.nextTempSlotId())) {
+                throw new IllegalStateException(
+                        "for-in next item next temp slot '" + next.nextTempSlotId()
+                                + "' disagrees with state slot metadata '" + stateSlot.nextTempSlotId() + "'"
+                );
+            }
+        }
+
+        /// Anchors each item to its expected entry: should-continue in the condition entry, get in the
+        /// body entry, next in the update entry, and init in a sequence that falls through to the
+        /// condition entry. The update entry must also fall through to the condition entry (backedge).
+        private void validateItemPositions(@NotNull FrontendCfgGraph graph, @NotNull FrontendForRegion region) {
+            if (!region.conditionEntryId().equals(shouldContinueNodeId)) {
+                throw new IllegalStateException(
+                        "for-in should-continue item must live in the condition entry '" + region.conditionEntryId()
+                                + "', but was published in '" + shouldContinueNodeId + "'"
+                );
+            }
+            if (!region.bodyEntryId().equals(getNodeId)) {
+                throw new IllegalStateException(
+                        "for-in get item must live in the body entry '" + region.bodyEntryId()
+                                + "', but was published in '" + getNodeId + "'"
+                );
+            }
+            if (!region.updateEntryId().equals(nextNodeId)) {
+                throw new IllegalStateException(
+                        "for-in next item must live in the update entry '" + region.updateEntryId()
+                                + "', but was published in '" + nextNodeId + "'"
+                );
+            }
+            var initSequence = requireSequence(graph, initNodeId, "init item");
+            if (!initSequence.nextId().equals(region.conditionEntryId())) {
+                throw new IllegalStateException(
+                        "for-in init entry must fall through to the condition entry '" + region.conditionEntryId()
+                                + "', but '" + initNodeId + "' continues to '" + initSequence.nextId() + "'"
+                );
+            }
+            var updateSequence = requireSequence(graph, nextNodeId, "next item");
+            if (!updateSequence.nextId().equals(region.conditionEntryId())) {
+                throw new IllegalStateException(
+                        "for-in update entry must fall through to the condition entry '" + region.conditionEntryId()
+                                + "', but '" + nextNodeId + "' continues to '" + updateSequence.nextId() + "'"
+                );
+            }
+        }
+
+        /// The condition entry must fall through to a branch that tests the should-continue result and
+        /// targets the body entry (true) and the exit (false).
+        private void validateConditionBranch(@NotNull FrontendCfgGraph graph, @NotNull FrontendForRegion region) {
+            var shouldContinueItem = Objects.requireNonNull(
+                    shouldContinue, "shouldContinue must be validated before condition branch"
+            );
+            var conditionSequence = requireSequence(graph, shouldContinueNodeId, "should-continue item");
+            if (!(graph.requireNode(conditionSequence.nextId()) instanceof FrontendCfgGraph.BranchNode branch)) {
+                throw new IllegalStateException(
+                        "for-in condition entry '" + region.conditionEntryId()
+                                + "' must fall through to a condition branch"
+                );
+            }
+            if (!branch.conditionValueId().equals(shouldContinueItem.resultValueId())) {
+                throw new IllegalStateException(
+                        "for-in condition branch must test the should-continue result '"
+                                + shouldContinueItem.resultValueId() + "', but tests '" + branch.conditionValueId() + "'"
+                );
+            }
+            if (!branch.trueTargetId().equals(region.bodyEntryId())
+                    || !branch.falseTargetId().equals(region.exitId())) {
+                throw new IllegalStateException(
+                        "for-in condition branch must target body entry '" + region.bodyEntryId()
+                                + "' and exit '" + region.exitId() + "', but targets '" + branch.trueTargetId()
+                                + "' / '" + branch.falseTargetId() + "'"
+                );
+            }
+        }
+
+        private static @NotNull FrontendCfgGraph.SequenceNode requireSequence(
+                @NotNull FrontendCfgGraph graph,
+                @Nullable String nodeId,
+                @NotNull String description
+        ) {
+            if (nodeId == null || !(graph.requireNode(nodeId) instanceof FrontendCfgGraph.SequenceNode sequence)) {
+                throw new IllegalStateException("for-in " + description + " must live in a sequence node");
+            }
+            return sequence;
+        }
+    }
+
     private void initializeBuildState(@NotNull FrontendAnalysisData analysisData) {
         this.analysisData = Objects.requireNonNull(analysisData, "analysisData must not be null");
         nodes = new LinkedHashMap<>();
         regions = new FrontendAstSideTable<>();
+        forSourceIteratorSlots = new FrontendAstSideTable<>();
+        forIteratorStateSlots = new FrontendAstSideTable<>();
         loopStack.clear();
         nextSequenceIndex = 0;
         nextBranchIndex = 0;
         nextStopIndex = 0;
         nextValueIndex = 0;
+        nextForIterIndex = 0;
     }
 
     private @NotNull ExecutableBodyBuild finishBuild(@NotNull String entryId) {
         return new ExecutableBodyBuild(
                 new FrontendCfgGraph(entryId, orderNodes(entryId)),
-                copyRegions(requireRegions())
+                copyRegions(requireRegions()),
+                copyForSourceIteratorSlots(requireForSourceIteratorSlots()),
+                copyForIteratorStateSlots(requireForIteratorStateSlots())
         );
     }
 
     public record ExecutableBodyBuild(
             @NotNull FrontendCfgGraph graph,
-            @NotNull FrontendAstSideTable<FrontendCfgRegion> regions
+            @NotNull FrontendAstSideTable<FrontendCfgRegion> regions,
+            @NotNull FrontendAstSideTable<FrontendForSourceIteratorSlot> forSourceIteratorSlots,
+            @NotNull FrontendAstSideTable<FrontendForIteratorStateSlot> forIteratorStateSlots
     ) {
         public ExecutableBodyBuild {
             Objects.requireNonNull(graph, "graph must not be null");
             regions = copyRegions(Objects.requireNonNull(regions, "regions must not be null"));
+            forSourceIteratorSlots = copyForSourceIteratorSlots(
+                    Objects.requireNonNull(forSourceIteratorSlots, "forSourceIteratorSlots must not be null")
+            );
+            forIteratorStateSlots = copyForIteratorStateSlots(
+                    Objects.requireNonNull(forIteratorStateSlots, "forIteratorStateSlots must not be null")
+            );
+            validateForLoopArtifacts(graph, regions, forSourceIteratorSlots, forIteratorStateSlots);
         }
     }
 

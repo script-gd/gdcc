@@ -51,6 +51,8 @@ public final class FrontendLoweringBuildCfgPass implements FrontendLoweringPass 
         var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, functionContext.analysisData());
         functionContext.publishFrontendCfgGraph(build.graph());
         build.regions().forEach(functionContext::publishFrontendCfgRegion);
+        build.forSourceIteratorSlots().forEach(functionContext::publishForSourceIteratorSlot);
+        build.forIteratorStateSlots().forEach(functionContext::publishForIteratorStateSlot);
     }
 
     private void publishPropertyInitializerGraph(@NotNull FunctionLoweringContext functionContext) {
