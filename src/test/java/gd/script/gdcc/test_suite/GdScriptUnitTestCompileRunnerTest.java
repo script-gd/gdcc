@@ -50,6 +50,8 @@ public class GdScriptUnitTestCompileRunnerTest {
             "constructor/builtin_variant_container_roundtrip.gd",
             "constructor/builtin_variant_scalar_roundtrip.gd",
             "constructor/int_to_float_builtin_constructor.gd",
+            "control_flow/for_generic_variant_loop.gd",
+            "control_flow/for_range_loop.gd",
             "control_flow/if_elif_truthiness.gd",
             "control_flow/recursive_factorial.gd",
             "initializer/local/arithmetic_chain.gd",

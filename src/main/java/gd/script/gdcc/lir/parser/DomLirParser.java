@@ -268,6 +268,9 @@ public final class DomLirParser implements LirParser {
         if (GdccForRangeIterType.LIR_TYPE_TEXT.equals(typeText)) {
             return GdccForRangeIterType.FOR_RANGE_ITER;
         }
+        if (GdccForVariantIterType.LIR_TYPE_TEXT.equals(typeText)) {
+            return GdccForVariantIterType.FOR_VARIANT_ITER;
+        }
         throw new IllegalArgumentException("Unknown compiler-only type text: " + typeText);
     }
 }

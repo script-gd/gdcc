@@ -3,7 +3,9 @@ package gd.script.gdcc.frontend.lowering;
 import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForVariantIterType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -26,6 +28,11 @@ public final class ForLoweringContractRegistry {
     public static final @NotNull String RANGE_NEXT_INTRINSIC = "gdcc.for_range_iter.next";
     public static final @NotNull String RANGE_GET_INTRINSIC = "gdcc.for_range_iter.get";
 
+    public static final @NotNull String VARIANT_INIT_INTRINSIC = "gdcc.for_variant_iter.init";
+    public static final @NotNull String VARIANT_SHOULD_CONTINUE_INTRINSIC = "gdcc.for_variant_iter.should_continue";
+    public static final @NotNull String VARIANT_NEXT_INTRINSIC = "gdcc.for_variant_iter.next";
+    public static final @NotNull String VARIANT_GET_INTRINSIC = "gdcc.for_variant_iter.get";
+
     private static final Map<FrontendForIterationRoute, FrontendForLoweringContract> CONTRACTS =
             new EnumMap<>(FrontendForIterationRoute.class);
 
@@ -33,6 +40,7 @@ public final class ForLoweringContractRegistry {
         var rangeContract = rangeContract();
         register(FrontendForIterationRoute.RANGE_CALL, rangeContract);
         register(FrontendForIterationRoute.INT_SHORTHAND, rangeContract);
+        register(FrontendForIterationRoute.GENERIC_VARIANT, variantContract());
     }
 
     private ForLoweringContractRegistry() {
@@ -76,6 +84,34 @@ public final class ForLoweringContractRegistry {
                 new ForIterationOperationDescriptor(
                         RANGE_GET_INTRINSIC,
                         intType,
+                        List.of(stateType)
+                )
+        );
+    }
+
+    private static @NotNull FrontendForLoweringContract variantContract() {
+        var stateType = GdccForVariantIterType.FOR_VARIANT_ITER;
+        var variantType = GdVariantType.VARIANT;
+        return new FrontendForLoweringContract(
+                stateType,
+                new ForIterationOperationDescriptor(
+                        VARIANT_INIT_INTRINSIC,
+                        stateType,
+                        List.of(variantType)
+                ),
+                new ForIterationOperationDescriptor(
+                        VARIANT_SHOULD_CONTINUE_INTRINSIC,
+                        GdBoolType.BOOL,
+                        List.of(stateType)
+                ),
+                new ForIterationOperationDescriptor(
+                        VARIANT_NEXT_INTRINSIC,
+                        stateType,
+                        List.of(stateType)
+                ),
+                new ForIterationOperationDescriptor(
+                        VARIANT_GET_INTRINSIC,
+                        variantType,
                         List.of(stateType)
                 )
         );

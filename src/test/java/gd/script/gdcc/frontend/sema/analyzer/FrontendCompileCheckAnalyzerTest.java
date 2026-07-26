@@ -657,13 +657,6 @@ class FrontendCompileCheckAnalyzerTest {
                         body_local is int
                         assert(body_local)
                     const answer = [body_local]
-                    for item in [body_local]:
-                        {"item": item}
-                        preload("res://icon.svg")
-                        $Camera3D
-                        item as int
-                        item is int
-                        assert(item)
                     match body_local:
                         var bound when bound > 0:
                             [bound]
@@ -678,9 +671,7 @@ class FrontendCompileCheckAnalyzerTest {
         var compiled = analyzeForCompile("compile_check_skipped_surface.gd", source);
 
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
-        assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("GENERIC_VARIANT"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("lowering contract"));
+        assertEquals(0, compileDiagnostics.size());
         var unsupportedBindingDiagnostics = diagnosticsByCategory(
                 compiled.diagnostics(),
                 "sema.unsupported_binding_subtree"
@@ -689,7 +680,7 @@ class FrontendCompileCheckAnalyzerTest {
     }
 
     @Test
-    void forIsSharedSemanticSupportedButCompileModeStopsAtStatementRoot() throws Exception {
+    void forGenericVariantRouteReleasesBodyOntoCompileSurface() throws Exception {
         var source = """
                 class_name CompileCheckForBridge
                 extends Node
@@ -710,8 +701,7 @@ class FrontendCompileCheckAnalyzerTest {
         ));
         var compileDiagnostics = diagnosticsByCategory(compiled.diagnostics(), "sema.compile_check");
         assertEquals(1, compileDiagnostics.size());
-        assertTrue(compileDiagnostics.getFirst().message().contains("GENERIC_VARIANT"));
-        assertTrue(compileDiagnostics.getFirst().message().contains("lowering contract"));
+        assertTrue(compileDiagnostics.getFirst().message().contains("assert"));
     }
 
     @Test

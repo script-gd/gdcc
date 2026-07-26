@@ -933,8 +933,8 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @NotNull ForLoopInitItem node,
                 @Nullable Void context
         ) {
-            var boundSlots = resolveRangeBoundSlots(session, block, node);
-            var args = boundSlots.stream()
+            var argSlots = resolveInitArgumentSlots(session, block, node);
+            var args = argSlots.stream()
                     .<LirInstruction.Operand>map(LirInstruction.VariableOperand::new)
                     .toList();
             block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
@@ -945,11 +945,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             return block;
         }
 
-        /// Normalizes the materialized source operands into the `(start, end, step)` triple expected by
-        /// the range init intrinsic. The single-operand forms (INT_SHORTHAND stop and `range(stop)`)
-        /// supply only `end`, so the implicit `0` start and `1` step are materialized as fresh int
-        /// locals; the two-operand form supplies `start`/`end` and defaults the step to `1`.
-        private @NotNull List<String> resolveRangeBoundSlots(
+        /// Resolves the init intrinsic argument slots. When the operand count already matches the
+        /// contract's expected argument count (e.g. generic Variant route with a single source operand),
+        /// operands pass through directly. Otherwise, range normalization pads 1..3 operands into the
+        /// `(start, end, step)` triple by materializing implicit `0`/`1` int constants.
+        private @NotNull List<String> resolveInitArgumentSlots(
                 @NotNull FrontendBodyLoweringSession session,
                 @NotNull LirBasicBlock block,
                 @NotNull ForLoopInitItem node
@@ -957,6 +957,10 @@ final class FrontendSequenceItemInsnLoweringProcessors {
             var operandSlots = node.operandValueIds().stream()
                     .map(session::slotIdForValue)
                     .toList();
+            var expectedArgCount = node.initOperation().argumentTypes().size();
+            if (operandSlots.size() == expectedArgCount) {
+                return operandSlots;
+            }
             return switch (operandSlots.size()) {
                 case 1 -> List.of(
                         session.materializeForLoopIntConstant(block, 0L),
@@ -968,9 +972,9 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                         operandSlots.get(1),
                         session.materializeForLoopIntConstant(block, 1L)
                 );
-                case 3 -> operandSlots;
                 default -> throw new IllegalStateException(
-                        "for-in range init expects 1..3 source operands, but got " + operandSlots.size()
+                        "for-in init expects " + expectedArgCount + " contract arguments, but got "
+                                + operandSlots.size() + " source operands"
                 );
             };
         }

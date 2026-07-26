@@ -324,6 +324,125 @@ Lifecycle / ownership：
 
 - `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
 
+---
+
+### `gdcc.for_variant_iter.init`
+
+状态：Implemented
+
+形态（LIR surface）：
+
+```
+$<iter_result> = call_intrinsic "gdcc.for_variant_iter.init" $<source>;
+```
+
+合同：
+
+- result 必须存在，非 `ref`，slot 类型为 `compiler::GdccForVariantIter`。
+- argument 恰好 1 个，类型为 `Variant`（要迭代的源表达式）。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_variant_iter_from_variant(&$source);
+```
+
+Lifecycle / ownership：
+
+- result 是 destroyable non-object value（`compiler::GdccForVariantIter`），包含两个 `godot_Variant` 字段。
+- 不可直接 struct 赋值；需要 `gdcc_for_variant_iter_copy` 深拷贝。
+- `callAssign` 路径在写入前自动 destroy 旧值。
+
+---
+
+### `gdcc.for_variant_iter.should_continue`
+
+状态：Implemented
+
+形态（LIR surface）：
+
+```
+$<bool_result> = call_intrinsic "gdcc.for_variant_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在，非 `ref`，slot 类型为 `bool`。
+- argument 恰好 1 个，类型为 `compiler::GdccForVariantIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_variant_iter_should_continue(&$iter);
+```
+
+边界语义：
+
+- 返回 `valid && has_element`。不可迭代值在 init 时已 print error 并设 `has_element = false`。
+- 只读，不销毁或转移 ownership。
+
+---
+
+### `gdcc.for_variant_iter.next`
+
+状态：Implemented
+
+形态（LIR surface）：
+
+```
+$<next_iter_result> = call_intrinsic "gdcc.for_variant_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在，非 `ref`，slot 类型为 `compiler::GdccForVariantIter`。
+- argument 恰好 1 个，类型为 `compiler::GdccForVariantIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_variant_iter_next(&$iter);
+```
+
+Lifecycle / ownership：
+
+- 输入只读；返回新 state（深拷贝 source + iter 后调用 `variant_iter_next`）。
+- lowering 使用 temp-then-commit：先写 distinct next temp，再 `AssignInsn` 回 state slot。
+
+---
+
+### `gdcc.for_variant_iter.get`
+
+状态：Implemented
+
+形态（LIR surface）：
+
+```
+$<variant_result> = call_intrinsic "gdcc.for_variant_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在，非 `ref`，slot 类型为 `Variant`。
+- argument 恰好 1 个，类型为 `compiler::GdccForVariantIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_variant_iter_get(&$iter);
+```
+
+边界语义：
+
+- 只读 iterator state，不销毁或转移 iterator ownership。
+- 返回当前元素的 Variant 拷贝，不推进 state。
+- 若 `variant_iter_get` 报告 invalid，print error 并返回 nil Variant。
+- lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`。
+
+长期事实源：
+
+- `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
+
 ## 新增 Intrinsic Checklist
 
 新增 intrinsic 时按以下顺序维护：

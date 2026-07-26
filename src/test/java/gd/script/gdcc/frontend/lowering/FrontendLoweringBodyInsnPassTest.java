@@ -68,6 +68,7 @@ import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForVariantIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
 import gd.script.gdcc.type.GdObjectType;
@@ -6804,6 +6805,109 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    @Test
+    void runLowersGenericVariantForLoopIntoVariantIterIntrinsicSequence() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_variant.gd",
+                """
+                        class_name BodyInsnForVariant
+                        extends RefCounted
+
+                        func ping(values):
+                            for item in values:
+                                print(item)
+                        """,
+                Map.of("BodyInsnForVariant", "RuntimeBodyInsnForVariant"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForVariant",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var init = forVariantIntrinsics(function, "init");
+        var shouldContinue = forVariantIntrinsics(function, "should_continue");
+        var get = forVariantIntrinsics(function, "get");
+        var next = forVariantIntrinsics(function, "next");
+        var assigns = assignSourcesByTarget(allInstructions(function));
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // hidden state and next temp use the variant iter compiler-only type
+                () -> assertEquals(GdccForVariantIterType.FOR_VARIANT_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForVariantIterType.FOR_VARIANT_ITER, requireVariableType(function, "cfg_for_iter_next_0")),
+                // source-facing iterator local is Variant (untyped iterable → Variant element)
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, "item")),
+                // each route operation lowers to exactly one intrinsic
+                () -> assertEquals(1, init.size()),
+                () -> assertEquals(1, shouldContinue.size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, next.size()),
+                // init writes the hidden state slot and takes a single Variant source operand
+                () -> assertEquals("cfg_for_iter_0", init.getFirst().resultId()),
+                () -> assertEquals(1, init.getFirst().args().size()),
+                // should_continue reads the state slot and produces the bool condition temp
+                () -> assertEquals("cfg_for_iter_0", onlyVariableOperandId(shouldContinue.getFirst().args())),
+                () -> assertEquals(GdBoolType.BOOL, requireIntrinsicResultType(function, shouldContinue.getFirst())),
+                // get reads the state slot, produces a Variant element, then commits the source local
+                () -> assertEquals("cfg_for_iter_0", onlyVariableOperandId(get.getFirst().args())),
+                () -> assertEquals(GdVariantType.VARIANT, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertEquals(get.getFirst().resultId(), assigns.get("item")),
+                // next writes the distinct temp first, then commits it back into the state slot
+                () -> assertEquals("cfg_for_iter_next_0", next.getFirst().resultId()),
+                () -> assertEquals("cfg_for_iter_0", onlyVariableOperandId(next.getFirst().args())),
+                () -> assertEquals("cfg_for_iter_next_0", assigns.get("cfg_for_iter_0"))
+        );
+    }
+
+    @Test
+    void runLowersGenericVariantForLoopWithTypedIteratorUnpacking() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_variant_typed.gd",
+                """
+                        class_name BodyInsnForVariantTyped
+                        extends RefCounted
+
+                        func ping(values: Array[int]):
+                            for item in values:
+                                print(item)
+                        """,
+                Map.of("BodyInsnForVariantTyped", "RuntimeBodyInsnForVariantTyped"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForVariantTyped",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var get = forVariantIntrinsics(function, "init");
+        var instructions = allInstructions(function);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // generic route still uses variant iter state
+                () -> assertEquals(GdccForVariantIterType.FOR_VARIANT_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                // source-facing iterator local is int (semanticElementType from Array[int])
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "item")),
+                // get intrinsic returns Variant, then an unpack converts Variant → int for the source local
+                () -> assertEquals(1, forVariantIntrinsics(function, "get").size()),
+                () -> assertEquals(GdVariantType.VARIANT,
+                        requireIntrinsicResultType(function, forVariantIntrinsics(function, "get").getFirst())),
+                // an UnpackVariantInsn bridges the Variant get result to the int source local
+                () -> assertTrue(instructions.stream().anyMatch(UnpackVariantInsn.class::isInstance))
+        );
+    }
+
     private static void rewriteBindingKindToSelf(
             @NotNull Map<Node, FrontendBinding> bindings,
             @NotNull IdentifierExpression identifierExpression
@@ -7122,6 +7226,18 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull String operationSuffix
     ) {
         var intrinsicName = "gdcc.for_range_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forVariantIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_variant_iter." + operationSuffix;
         return allInstructions(function).stream()
                 .filter(CallIntrinsicInsn.class::isInstance)
                 .map(CallIntrinsicInsn.class::cast)
