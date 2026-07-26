@@ -38,6 +38,7 @@ import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
+import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
 import gd.script.gdcc.lir.insn.ConstructObjectInsn;
 import gd.script.gdcc.lir.insn.GoIfInsn;
@@ -65,6 +66,7 @@ import gd.script.gdcc.lir.insn.VariantSetKeyedInsn;
 import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
+import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdccForRangeIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -98,6 +100,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -6446,6 +6449,361 @@ class FrontendLoweringBodyInsnPassTest {
         assertTrue(exception.getMessage().contains("parameter default"), exception.getMessage());
     }
 
+    @Test
+    void runLowersRangeCallForLoopIntoIntrinsicSequenceAndHiddenStateLocals() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range.gd",
+                """
+                        class_name BodyInsnForRange
+                        extends RefCounted
+
+                        func ping():
+                            for i in range(3):
+                                print(i)
+                        """,
+                Map.of("BodyInsnForRange", "RuntimeBodyInsnForRange"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRange",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var init = forRangeIntrinsics(function, "init");
+        var shouldContinue = forRangeIntrinsics(function, "should_continue");
+        var get = forRangeIntrinsics(function, "get");
+        var next = forRangeIntrinsics(function, "next");
+        var assigns = assignSourcesByTarget(allInstructions(function));
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // hidden state, next temp and source iterator locals are declared with distinct ids and types
+                () -> assertEquals(GdccForRangeIterType.FOR_RANGE_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForRangeIterType.FOR_RANGE_ITER, requireVariableType(function, "cfg_for_iter_next_0")),
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "i")),
+                // each route operation lowers to exactly one intrinsic
+                () -> assertEquals(1, init.size()),
+                () -> assertEquals(1, shouldContinue.size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, next.size()),
+                // init writes the hidden state slot and takes the normalized (start, end, step) triple
+                () -> assertEquals("cfg_for_iter_0", init.getFirst().resultId()),
+                () -> assertEquals(3, init.getFirst().args().size()),
+                // should_continue reads the state slot and produces the bool condition temp
+                () -> assertEquals("cfg_for_iter_0", onlyVariableOperandId(shouldContinue.getFirst().args())),
+                () -> assertEquals(GdBoolType.BOOL, requireIntrinsicResultType(function, shouldContinue.getFirst())),
+                // get reads the state slot, produces the raw int element, then commits the source local directly
+                () -> assertEquals("cfg_for_iter_0", onlyVariableOperandId(get.getFirst().args())),
+                () -> assertEquals(GdIntType.INT, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertEquals(get.getFirst().resultId(), assigns.get("i")),
+                // next writes the distinct temp first, then commits it back into the state slot
+                () -> assertEquals("cfg_for_iter_next_0", next.getFirst().resultId()),
+                () -> assertEquals("cfg_for_iter_0", onlyVariableOperandId(next.getFirst().args())),
+                () -> assertEquals("cfg_for_iter_next_0", assigns.get("cfg_for_iter_0")),
+                // the loop condition branches on the bool result without compiler-only normalization
+                () -> assertEquals(1, countInstructions(allInstructions(function), GoIfInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersIntShorthandForLoopThroughSameRangeIntrinsics() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_int_shorthand.gd",
+                """
+                        class_name BodyInsnForIntShorthand
+                        extends RefCounted
+
+                        func ping():
+                            var limit := 3
+                            for i in limit:
+                                print(i)
+                        """,
+                Map.of("BodyInsnForIntShorthand", "RuntimeBodyInsnForIntShorthand"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForIntShorthand",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var init = forRangeIntrinsics(function, "init");
+        var initArgs = intrinsicArgSlotIds(init.getFirst());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // INT_SHORTHAND reuses the range route; no second numeric-shorthand intrinsic set is emitted
+                () -> assertEquals(1, init.size()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "get").size()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "next").size()),
+                // the single stop operand is normalized into (0, stop, 1): start and step are fresh int constants
+                () -> assertEquals(3, initArgs.size()),
+                () -> assertEquals(0L, requireIntConstant(function, initArgs.getFirst())),
+                () -> assertEquals(1L, requireIntConstant(function, initArgs.get(2)))
+        );
+    }
+
+    @Test
+    void runLowersRangeCallWithExplicitBoundsWithoutConstantPadding() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range_full.gd",
+                """
+                        class_name BodyInsnForRangeFull
+                        extends RefCounted
+
+                        func ping():
+                            for i in range(1, 5, 2):
+                                print(i)
+                        """,
+                Map.of("BodyInsnForRangeFull", "RuntimeBodyInsnForRangeFull"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRangeFull",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var init = forRangeIntrinsics(function, "init");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(3, init.getFirst().args().size()),
+                // all three bounds come from source operands, so no lowering-owned constant temps are declared
+                () -> assertTrue(function.getVariables().keySet().stream()
+                        .noneMatch(id -> id.startsWith("cfg_for_range_const_")))
+        );
+    }
+
+    @Test
+    void runLowersRangeCallWithTwoBoundsDefaultingStepToOne() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range_two.gd",
+                """
+                        class_name BodyInsnForRangeTwo
+                        extends RefCounted
+
+                        func ping():
+                            for i in range(1, 5):
+                                print(i)
+                        """,
+                Map.of("BodyInsnForRangeTwo", "RuntimeBodyInsnForRangeTwo"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRangeTwo",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var init = forRangeIntrinsics(function, "init");
+        var initArgs = intrinsicArgSlotIds(init.getFirst());
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(3, initArgs.size()),
+                // only the missing step is materialized as a fresh constant 1; start/end come from operands
+                () -> assertEquals(1L, requireIntConstant(function, initArgs.get(2))),
+                () -> assertEquals(1, function.getVariables().keySet().stream()
+                        .filter(id -> id.startsWith("cfg_for_range_const_"))
+                        .count())
+        );
+    }
+
+    @Test
+    void runLowersExplicitFloatIteratorWithPerElementConversion() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range_float.gd",
+                """
+                        class_name BodyInsnForRangeFloat
+                        extends RefCounted
+
+                        func ping():
+                            for i: float in range(3):
+                                print(i)
+                        """,
+                Map.of("BodyInsnForRangeFloat", "RuntimeBodyInsnForRangeFloat"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRangeFloat",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var get = forRangeIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(allInstructions(function));
+        var committedSource = assigns.get("i");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // source iterator local is float while the get raw element stays int
+                () -> assertEquals(GdFloatType.FLOAT, requireVariableType(function, "i")),
+                () -> assertEquals(GdIntType.INT, requireIntrinsicResultType(function, get.getFirst())),
+                // a float conversion temp sits between the int raw element and the float source local
+                () -> assertNotEquals(get.getFirst().resultId(), committedSource),
+                () -> assertEquals(GdFloatType.FLOAT, requireVariableType(function, committedSource))
+        );
+    }
+
+    @Test
+    void runLowersExplicitVariantIteratorWithPack() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range_variant.gd",
+                """
+                        class_name BodyInsnForRangeVariant
+                        extends RefCounted
+
+                        func ping():
+                            for i: Variant in range(3):
+                                print(i)
+                        """,
+                Map.of("BodyInsnForRangeVariant", "RuntimeBodyInsnForRangeVariant"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRangeVariant",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var get = forRangeIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(instructions);
+        var committedSource = assigns.get("i");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // source iterator local is Variant while the get raw element stays int
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, "i")),
+                () -> assertEquals(GdIntType.INT, requireIntrinsicResultType(function, get.getFirst())),
+                // the int raw element is packed into Variant before committing the source local
+                () -> assertEquals(GdVariantType.VARIANT, requireVariableType(function, committedSource)),
+                () -> assertTrue(packResultIds(instructions).contains(committedSource))
+        );
+    }
+
+    @Test
+    void runLowersNestedForLoopsWithDistinctHiddenStateSlots() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range_nested.gd",
+                """
+                        class_name BodyInsnForRangeNested
+                        extends RefCounted
+
+                        func ping():
+                            for i in range(3):
+                                for j in range(2):
+                                    print(i + j)
+                        """,
+                Map.of("BodyInsnForRangeNested", "RuntimeBodyInsnForRangeNested"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRangeNested",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var stateSlots = function.getVariables().keySet().stream()
+                .filter(id -> id.matches("cfg_for_iter_\\d+"))
+                .toList();
+        var nextTemps = function.getVariables().keySet().stream()
+                .filter(id -> id.matches("cfg_for_iter_next_\\d+"))
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // each loop owns a distinct compiler-only state local and a distinct next temp
+                () -> assertEquals(2, stateSlots.size()),
+                () -> assertEquals(2, nextTemps.size()),
+                () -> assertTrue(stateSlots.stream()
+                        .allMatch(id -> requireVariableType(function, id) == GdccForRangeIterType.FOR_RANGE_ITER)),
+                // source-facing iterator locals keep their exposed int type under their own names
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "i")),
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "j")),
+                // both loops emit their own init/next intrinsics
+                () -> assertEquals(2, forRangeIntrinsics(function, "init").size()),
+                () -> assertEquals(2, forRangeIntrinsics(function, "next").size())
+        );
+    }
+
+    @Test
+    void runKeepsHiddenIteratorStateOutOfOrdinaryValueSurfaces() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_range_boundary.gd",
+                """
+                        class_name BodyInsnForRangeBoundary
+                        extends RefCounted
+
+                        var sink: int
+
+                        func ping() -> int:
+                            for i in range(3):
+                                sink = i
+                                print(i)
+                            return 0
+                        """,
+                Map.of("BodyInsnForRangeBoundary", "RuntimeBodyInsnForRangeBoundary"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForRangeBoundary",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var ordinarySlots = ordinaryValueSurfaceSlots(instructions);
+        var assigns = assignSourcesByTarget(instructions);
+        var storeValues = storeValueIdsForProperty(instructions, "sink");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                // the compiler-only state slot and next temp never reach an ordinary value surface
+                () -> assertFalse(ordinarySlots.contains("cfg_for_iter_0")),
+                () -> assertFalse(ordinarySlots.contains("cfg_for_iter_next_0")),
+                // positive control: the source iterator local does flow into the ordinary property store
+                // (read into a temp the store consumes), proving the ordinary surface set is exercised
+                () -> assertEquals(1, storeValues.size()),
+                () -> assertEquals("i", assigns.get(storeValues.getFirst()))
+        );
+    }
+
     private static void rewriteBindingKindToSelf(
             @NotNull Map<Node, FrontendBinding> bindings,
             @NotNull IdentifierExpression identifierExpression
@@ -6757,6 +7115,70 @@ class FrontendLoweringBodyInsnPassTest {
         var resultId = insn.resultId();
         assertNotNull(resultId, "Expected intrinsic result slot");
         return requireVariableType(function, resultId);
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forRangeIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_range_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<String> intrinsicArgSlotIds(@NotNull CallIntrinsicInsn insn) {
+        return insn.args().stream()
+                .map(operand -> assertInstanceOf(LirInstruction.VariableOperand.class, operand).id())
+                .toList();
+    }
+
+    private static long requireIntConstant(@NotNull LirFunctionDef function, @NotNull String slotId) {
+        return allInstructions(function).stream()
+                .filter(LiteralIntInsn.class::isInstance)
+                .map(LiteralIntInsn.class::cast)
+                .filter(insn -> slotId.equals(insn.resultId()))
+                .map(LiteralIntInsn::value)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No int constant materialized into slot " + slotId));
+    }
+
+    /// Collects every variable slot referenced by ordinary value-consuming surfaces (call arguments,
+    /// return values, property stores and Variant pack/unpack sources). The for-in hidden state slot and
+    /// next temp must never appear here; they are only touched by the range intrinsics and the
+    /// state-commit assign.
+    private static @NotNull Set<String> ordinaryValueSurfaceSlots(@NotNull List<LirInstruction> instructions) {
+        var slots = new LinkedHashSet<String>();
+        for (var instruction : instructions) {
+            switch (instruction) {
+                case StorePropertyInsn store -> slots.add(store.valueId());
+                case ReturnInsn ret -> {
+                    if (ret.returnValueId() != null) {
+                        slots.add(ret.returnValueId());
+                    }
+                }
+                case PackVariantInsn pack -> slots.add(pack.valueId());
+                case UnpackVariantInsn unpack -> slots.add(unpack.variantId());
+                case CallGlobalInsn call -> addVariableOperandIds(call.args(), slots);
+                case CallMethodInsn call -> addVariableOperandIds(call.args(), slots);
+                case CallStaticMethodInsn call -> addVariableOperandIds(call.args(), slots);
+                default -> {}
+            }
+        }
+        return slots;
+    }
+
+    private static void addVariableOperandIds(
+            @NotNull List<LirInstruction.Operand> operands,
+            @NotNull Set<String> slots
+    ) {
+        for (var operand : operands) {
+            if (operand instanceof LirInstruction.VariableOperand(String id)) {
+                slots.add(id);
+            }
+        }
     }
 
     private static int instructionIndex(

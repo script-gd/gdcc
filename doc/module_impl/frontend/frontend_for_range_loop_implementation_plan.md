@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；阶段 G frontend CFG graph 已完成：`FrontendCfgGraphBuilder.processForStatement(...)` 建立 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证；lowering（H）尚未实施，range/int 端到端生产闭环与 H 原子合并）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；阶段 G frontend CFG graph 已完成：`FrontendCfgGraphBuilder.processForStatement(...)` 建立 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证；阶段 H range route LIR lowering 已完成：`FrontendBodyLoweringSession.declareForLoopSlots(...)` 在 block materialization 前预声明 hidden state / next temp / source iterator local，`FrontendSequenceItemInsnLoweringProcessors` 新增四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` `CallIntrinsicInsn` 与 temp-then-commit `AssignInsn`；range/int 端到端生产闭环（C/D0/D1/E/F/G/H）已原子合并）
 - 创建日期：2026-07-03
 - 更新时间：2026-07-25
 - 适用范围：
@@ -1034,7 +1034,7 @@ private static void reportNonIterableType(
 
 ### 阶段 G：frontend CFG graph
 
-状态：已完成（CFG build 面）。`FrontendCfgGraphBuilder.processForStatement(...)` 已落地：消费已发布的 `FrontendForIterationPlan`、`slotTypes()[ForStatement]` 与 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract`，为 compile-ready route（当前 `RANGE_CALL` / `INT_SHORTHAND`）建立显式 CFG。新增 `FrontendForRegion`（加入 `FrontendCfgRegion` permits）、四个 `ForLoop*Item`（加入 `ValueOpItem` permits）、AST-keyed `FrontendForSourceIteratorSlot` 与 `FrontendForIteratorStateSlot` registry（随 graph/regions 发布到 `FunctionLoweringContext`），并在 `ExecutableBodyBuild` 构造时执行跨表验证。正反测试见 `FrontendCfgGraphBuilderForLoopTest`。range/int 端到端生产闭环仍与阶段 H 原子合并：通过 compile gate 的 for-range 脚本会在尚未实现的 body lowering（H）处 fail-fast，H 完成前不得标记原子闭环完成。
+状态：已完成（CFG build 面）。`FrontendCfgGraphBuilder.processForStatement(...)` 已落地：消费已发布的 `FrontendForIterationPlan`、`slotTypes()[ForStatement]` 与 `ForLoweringContractRegistry` 查询的 `FrontendForLoweringContract`，为 compile-ready route（当前 `RANGE_CALL` / `INT_SHORTHAND`）建立显式 CFG。新增 `FrontendForRegion`（加入 `FrontendCfgRegion` permits）、四个 `ForLoop*Item`（加入 `ValueOpItem` permits）、AST-keyed `FrontendForSourceIteratorSlot` 与 `FrontendForIteratorStateSlot` registry（随 graph/regions 发布到 `FunctionLoweringContext`），并在 `ExecutableBodyBuild` 构造时执行跨表验证。正反测试见 `FrontendCfgGraphBuilderForLoopTest`。range/int 端到端生产闭环已与阶段 H 原子合并完成：通过 compile gate 的 for-range 脚本经真实 production pipeline 完成 body lowering（见阶段 H），不再在 body lowering 处 fail-fast。
 
 目标：
 
@@ -1097,7 +1097,7 @@ private static void reportNonIterableType(
 
 ### 阶段 H：range route LIR lowering
 
-状态：未实施。与阶段 C/D0/D1/E/G 和 range/int compile-gate 解封一起原子实施。
+状态：已完成。`FrontendBodyLoweringSession.run()` 在 `declareCfgValueSlots()` 之后、`createBlocks()` 之前新增 `declareForLoopSlots()`，从 `FunctionLoweringContext` 发布的 `forIteratorStateSlots()` / `forSourceIteratorSlots()` registry 预声明 hidden state slot（`cfg_for_iter_<n>`）、distinct next temp（`cfg_for_iter_next_<n>`）与 source-facing iterator local（源码 iterator name），三者 id/type 各自独立。`FrontendSequenceItemInsnLoweringProcessors` 注册四个 processor：init 把 1/2/3 个 source operand 归一化为 `(start, end, step)`（缺失的 `0` start / `1` step 经 `materializeForLoopIntConstant(...)` 物化为 LIR local，INT_SHORTHAND 与 `range(stop)` 统一为单 stop operand）并写 hidden state；should-continue 读 state 产出 bool condition temp；get 读 state 产出 raw element temp，经 `materializeFrontendBoundaryValue(...)`（`contract.get().resultType()` → `exposedType`）转换后 `AssignInsn` 提交 source local；next 先把 intrinsic result 写入 distinct next temp 再 `AssignInsn` commit 回 state slot。processor 只消费阶段 G 冻结到 item/registry 的 payload，不重查 AST、不重分类 route。正反测试见 `FrontendLoweringBodyInsnPassTest`（range/int intrinsic 序列、INT_SHORTHAND 常量归一化、2/3 参数 range、显式 float/Variant iterator 转换、nested loop distinct slot、hidden state 不进入 ordinary value 表面）。range/int 端到端生产闭环（C/D0/D1/E/F/G/H）已原子合并：通过 compile gate 的 for-range 脚本经真实 production pipeline 完成 body lowering，无手工 side-table mutation。
 
 目标：
 
@@ -1159,7 +1159,7 @@ private static void reportNonIterableType(
   - `variant_iter_init`
   - `variant_iter_next`
   - `variant_iter_get`
-- 如果 gdextension-lite 未暴露这些 API，应先增加薄 wrapper，再让 gdcc runtime helper 调用 wrapper。
+- 如果中绑定未暴露这些 API，应先增加薄 wrapper ，对需暴露的API完整进行注册，再让 gdcc runtime helper 调用 wrapper。
 - `GENERIC_VARIANT` route 的 `get` 返回 `Variant`（即 `contract.get().resultType() == Variant`）。`ForLoopGetItem` 的 materialization 路径为 `Variant` → `exposedIteratorType`，复用 `materializeFrontendBoundaryValue`：当 `exposedIteratorType` 为 `Variant` 时退化为直接赋值（无 unpack/pack）；当 `exposedIteratorType` 为具体类型时执行 Variant unpack。`semanticElementType` 不参与此 materialization——即使 `semanticElementType == int` 且 `exposedIteratorType == Variant`（如 `for i: Variant in typed_int_array:`），lowering 仍为 `Variant → Variant` 直接赋值，不经过 `Variant → int → Variant` 两段转换。
 - runtime helper 必须定义不可迭代值的错误策略，尽量贴近 Godot：运行时 fail / print error，而不是 frontend 编译期 unsupported。
 

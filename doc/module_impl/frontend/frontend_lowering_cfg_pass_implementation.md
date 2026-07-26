@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复、`for-in` CFG build（`FrontendForRegion` / 四个 `ForLoop*Item` / source-slot / hidden-state registry / build-artifact 跨表验证）均已落地；parameter default 与 `for-in` body lowering 仍未接通）
+- 状态：事实源维护中（executable-body CFG build / body lowering、property-initializer CFG/body lowering、constructor materialization、compound assignment、explicit self assignment-target prefix consumption、dynamic receiver runtime-gated writeback、`StopNode.kind` 空-return 图修复、`for-in` CFG build（`FrontendForRegion` / 四个 `ForLoop*Item` / source-slot / hidden-state registry / build-artifact 跨表验证）与 `for-in` range route body lowering（hidden-state / source-slot 预声明 + 四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` intrinsic 与 temp-then-commit assign）均已落地；parameter default 仍未接通）
 - 更新时间：2026-07-25
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -689,7 +689,7 @@ body-lowering 合同：
 - `GetNodeExpression`
 - callable-value invocation
 - multi-key subscript lowering
-- `for`（compile gate 已改 route-aware：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 lowering contract 放行，其余 route 发 route-not-ready blocker；阶段 G 已落地 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证，本文档 region 形状 / value-op item 列表 / build pass 发布面已同步；body lowering 至 LIR 仍待 for-in 计划阶段 H，在此之前通过 compile gate 的 for-range 脚本会在 body lowering 处 fail-fast）
+- `for`（compile gate 已改 route-aware：`RANGE_CALL` / `INT_SHORTHAND` 凭已注册 lowering contract 放行，其余 route 发 route-not-ready blocker；阶段 G 已落地 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证，阶段 H 已落地 range route body lowering：`declareForLoopSlots()` 预声明 hidden state / next temp / source iterator local，四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` intrinsic 与 temp-then-commit assign，本文档 region 形状 / value-op item 列表 / build pass 发布面已同步；range/int route 端到端闭环已完成，generic Variant route 仍待 for-in 计划阶段 I 注册 contract 后解封）
 
 其中 `ConditionalExpression` 继续 compile-block 的原因已经固定：
 

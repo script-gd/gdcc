@@ -9,6 +9,10 @@ import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CompoundAssignmentBinaryOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CastItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.DirectSlotAliasValueItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopGetItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopInitItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopNextItem;
+import gd.script.gdcc.frontend.lowering.cfg.item.ForLoopShouldContinueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.LocalDeclarationItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MemberLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.MergeValueItem;
@@ -26,6 +30,7 @@ import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.AssignInsn;
 import gd.script.gdcc.lir.insn.BinaryOpInsn;
 import gd.script.gdcc.lir.insn.CallGlobalInsn;
+import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.CallMethodInsn;
 import gd.script.gdcc.lir.insn.CallStaticMethodInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
@@ -102,7 +107,11 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 new FrontendCompoundAssignmentBinaryInsnLoweringProcessor(),
                 new FrontendAssignmentInsnLoweringProcessor(),
                 new FrontendCastInsnLoweringProcessor(),
-                new FrontendTypeTestInsnLoweringProcessor()
+                new FrontendTypeTestInsnLoweringProcessor(),
+                new FrontendForLoopInitInsnLoweringProcessor(),
+                new FrontendForLoopShouldContinueInsnLoweringProcessor(),
+                new FrontendForLoopGetInsnLoweringProcessor(),
+                new FrontendForLoopNextInsnLoweringProcessor()
         );
     }
 
@@ -901,6 +910,166 @@ final class FrontendSequenceItemInsnLoweringProcessors {
                 @Nullable Void context
         ) {
             throw session.unsupportedSequenceItem(node, "type-test lowering is not implemented yet");
+        }
+    }
+
+    /// Initializes the hidden loop-carried iterator state by calling the route's init intrinsic.
+    ///
+    /// The source operands are already materialized earlier in the init entry sequence; this processor
+    /// only normalizes them into the intrinsic's `(start, end, step)` triple and writes the result into
+    /// the predeclared hidden state slot. It publishes no ordinary value: the state slot is
+    /// lowering-owned mutable storage, never a CFG value id.
+    private static final class FrontendForLoopInitInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ForLoopInitItem, Void> {
+        @Override
+        public @NotNull Class<ForLoopInitItem> nodeType() {
+            return ForLoopInitItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ForLoopInitItem node,
+                @Nullable Void context
+        ) {
+            var boundSlots = resolveRangeBoundSlots(session, block, node);
+            var args = boundSlots.stream()
+                    .<LirInstruction.Operand>map(LirInstruction.VariableOperand::new)
+                    .toList();
+            block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
+                    node.iteratorStateSlotId(),
+                    node.initOperation().intrinsicName(),
+                    args
+            ));
+            return block;
+        }
+
+        /// Normalizes the materialized source operands into the `(start, end, step)` triple expected by
+        /// the range init intrinsic. The single-operand forms (INT_SHORTHAND stop and `range(stop)`)
+        /// supply only `end`, so the implicit `0` start and `1` step are materialized as fresh int
+        /// locals; the two-operand form supplies `start`/`end` and defaults the step to `1`.
+        private @NotNull List<String> resolveRangeBoundSlots(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ForLoopInitItem node
+        ) {
+            var operandSlots = node.operandValueIds().stream()
+                    .map(session::slotIdForValue)
+                    .toList();
+            return switch (operandSlots.size()) {
+                case 1 -> List.of(
+                        session.materializeForLoopIntConstant(block, 0L),
+                        operandSlots.getFirst(),
+                        session.materializeForLoopIntConstant(block, 1L)
+                );
+                case 2 -> List.of(
+                        operandSlots.get(0),
+                        operandSlots.get(1),
+                        session.materializeForLoopIntConstant(block, 1L)
+                );
+                case 3 -> operandSlots;
+                default -> throw new IllegalStateException(
+                        "for-in range init expects 1..3 source operands, but got " + operandSlots.size()
+                );
+            };
+        }
+    }
+
+    /// Publishes the ordinary `bool` loop condition by calling the route's should-continue intrinsic.
+    ///
+    /// The result lands in the predeclared `cfg_tmp_*` slot that the loop condition branch consumes
+    /// directly; because the intrinsic already returns `bool`, no compiler-only condition normalization
+    /// is triggered. The hidden state slot is read by reference and never appears as an ordinary operand.
+    private static final class FrontendForLoopShouldContinueInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ForLoopShouldContinueItem, Void> {
+        @Override
+        public @NotNull Class<ForLoopShouldContinueItem> nodeType() {
+            return ForLoopShouldContinueItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ForLoopShouldContinueItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
+                    FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId()),
+                    node.shouldContinueOperation().intrinsicName(),
+                    List.of(new LirInstruction.VariableOperand(node.iteratorStateSlotId()))
+            ));
+            return block;
+        }
+    }
+
+    /// Reads the raw element from the hidden iterator state and commits the source-facing iterator local.
+    ///
+    /// The get intrinsic writes the raw element (typed as the contract's get result type) into a
+    /// standalone `cfg_tmp_*` slot that intentionally does not alias the source local. The raw value is
+    /// then converted, when required, into the final exposed iterator type through the shared frontend
+    /// boundary helper and assigned into the predeclared source-facing slot before the body runs.
+    private static final class FrontendForLoopGetInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ForLoopGetItem, Void> {
+        @Override
+        public @NotNull Class<ForLoopGetItem> nodeType() {
+            return ForLoopGetItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ForLoopGetItem node,
+                @Nullable Void context
+        ) {
+            var rawSlotId = FrontendBodyLoweringSupport.cfgTempSlotId(node.resultValueId());
+            block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
+                    rawSlotId,
+                    node.getOperation().intrinsicName(),
+                    List.of(new LirInstruction.VariableOperand(node.iteratorStateSlotId()))
+            ));
+            var sourceSlot = session.requireForSourceIteratorSlot(node.statement());
+            var materializedSlotId = session.materializeFrontendBoundaryValue(
+                    block,
+                    rawSlotId,
+                    node.getOperation().resultType(),
+                    sourceSlot.exposedType(),
+                    "for_in_get"
+            );
+            block.appendNonTerminatorInstruction(new AssignInsn(node.sourceIteratorSlotId(), materializedSlotId));
+            return block;
+        }
+    }
+
+    /// Advances the hidden iterator state by calling the route's next intrinsic.
+    ///
+    /// The next operation returns a new state value rather than mutating in place, so the result is
+    /// written into the distinct predeclared next temp first and only then committed back into the state
+    /// slot via an assign. This preserves a correct lifecycle order for future destroyable generic
+    /// states and keeps the intrinsic result target distinct from the state argument slot.
+    private static final class FrontendForLoopNextInsnLoweringProcessor
+            implements FrontendInsnLoweringProcessor<ForLoopNextItem, Void> {
+        @Override
+        public @NotNull Class<ForLoopNextItem> nodeType() {
+            return ForLoopNextItem.class;
+        }
+
+        @Override
+        public @NotNull LirBasicBlock lower(
+                @NotNull FrontendBodyLoweringSession session,
+                @NotNull LirBasicBlock block,
+                @NotNull ForLoopNextItem node,
+                @Nullable Void context
+        ) {
+            block.appendNonTerminatorInstruction(new CallIntrinsicInsn(
+                    node.nextTempSlotId(),
+                    node.nextOperation().intrinsicName(),
+                    List.of(new LirInstruction.VariableOperand(node.iteratorStateSlotId()))
+            ));
+            block.appendNonTerminatorInstruction(new AssignInsn(node.iteratorStateSlotId(), node.nextTempSlotId()));
+            return block;
         }
     }
 }

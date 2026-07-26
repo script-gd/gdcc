@@ -412,7 +412,7 @@ owner 分工固定为：
 - frontend -> LIR 的 truthiness / condition normalization
 - `@onready` runtime / ready-time lowering
 - `lambda`、`match`、parameter default、block-local `const`、class `const` 的正式 body semantics
-- for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。仍顺延：`DICTIONARY_KEYS` 等 known iterable 专用 route 的 iterator element 锁定（for-range 计划阶段 J），以及 compile gate 解封（F）、CFG（G）、lowering（H）
+- for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。compile gate 解封（F）、CFG（G）与 range route lowering（H）均已完成，range/int route 端到端闭环。仍顺延：`DICTIONARY_KEYS` 等 known iterable 专用 route 的 iterator element 锁定（for-range 计划阶段 J）与 generic Variant route lowering（阶段 I）
 
 后续工程若继续扩展本区域，必须遵守以下约束：
 

@@ -4,6 +4,7 @@ import gd.script.gdcc.frontend.lowering.FrontendBodyLoweringSupport;
 import gd.script.gdcc.frontend.lowering.FrontendSubscriptAccessSupport;
 import gd.script.gdcc.frontend.lowering.FunctionLoweringContext;
 import gd.script.gdcc.frontend.lowering.cfg.FrontendCfgGraph;
+import gd.script.gdcc.frontend.lowering.cfg.FrontendForSourceIteratorSlot;
 import gd.script.gdcc.frontend.lowering.cfg.item.AssignmentItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.CallItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.FrontendWritableRoutePayload;
@@ -23,6 +24,7 @@ import gd.script.gdcc.lir.LirFunctionDef;
 import gd.script.gdcc.lir.LirInstruction;
 import gd.script.gdcc.lir.insn.CallIntrinsicInsn;
 import gd.script.gdcc.lir.insn.ConstructBuiltinInsn;
+import gd.script.gdcc.lir.insn.LiteralIntInsn;
 import gd.script.gdcc.lir.insn.LiteralNullInsn;
 import gd.script.gdcc.lir.insn.PackVariantInsn;
 import gd.script.gdcc.lir.insn.UnpackVariantInsn;
@@ -42,6 +44,7 @@ import gd.script.gdcc.type.GdVariantType;
 import gd.script.gdcc.type.GdVoidType;
 import gd.script.gdcc.util.StringUtil;
 import dev.superice.gdparser.frontend.ast.Expression;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.SelfExpression;
@@ -80,6 +83,7 @@ public final class FrontendBodyLoweringSession {
     private int boundaryMaterializationCounter;
     private int writableRouteMaterializationCounter;
     private int writableRouteBlockCounter;
+    private int forLoopConstantCounter;
 
     public FrontendBodyLoweringSession(
             @NotNull FunctionLoweringContext functionContext,
@@ -105,6 +109,7 @@ public final class FrontendBodyLoweringSession {
         declareSelfSlotIfNeeded();
         declareSourceLocalSlots();
         declareCfgValueSlots();
+        declareForLoopSlots();
         createBlocks();
         lowerBlocks();
     }
@@ -694,6 +699,23 @@ public final class FrontendBodyLoweringSession {
         return FrontendBodyLoweringSupport.requireSourceLocalSlotType(analysisData, declaration);
     }
 
+    /// Returns the validated source-facing iterator slot for one compile-ready `for-in` loop.
+    ///
+    /// The get processor consumes this to learn the final exposed iterator type. A missing artifact
+    /// means CFG build never published the source slot, so the lookup fails fast instead of letting a
+    /// processor invent a slot id or type.
+    @NotNull FrontendForSourceIteratorSlot requireForSourceIteratorSlot(@NotNull ForStatement statement) {
+        var sourceSlot = functionContext.forSourceIteratorSlotOrNull(
+                Objects.requireNonNull(statement, "statement must not be null")
+        );
+        if (sourceSlot == null) {
+            throw new IllegalStateException(
+                    "Missing published for-in source iterator slot for ForStatement at " + statement.range()
+            );
+        }
+        return sourceSlot;
+    }
+
     @NotNull GdType requireFunctionVariableType(@NotNull String variableId) {
         var variable = function.getVariableById(StringUtil.requireNonBlank(variableId, "variableId"));
         if (variable == null) {
@@ -1059,6 +1081,19 @@ public final class FrontendBodyLoweringSession {
         return slotId;
     }
 
+    /// Materializes one lowering-owned integer constant into a fresh temp slot.
+    ///
+    /// The range init intrinsic takes its `(start, end, step)` bounds as ordinary int locals, so the
+    /// implicit `0` start and `1` step used by the single-operand forms (INT_SHORTHAND stop and
+    /// `range(stop)`) must be realized as real LIR variables here instead of being passed as raw
+    /// literals, which intrinsic argument positions do not accept.
+    @NotNull String materializeForLoopIntConstant(@NotNull LirBasicBlock block, long value) {
+        var slotId = "cfg_for_range_const_" + forLoopConstantCounter++;
+        ensureVariable(slotId, GdIntType.INT);
+        block.appendNonTerminatorInstruction(new LiteralIntInsn(slotId, value));
+        return slotId;
+    }
+
     /// Allocates one synthetic basic block owned by writable-route lowering.
     ///
     /// The writable-route runtime gate path may need to split the current lexical block into
@@ -1135,6 +1170,24 @@ public final class FrontendBodyLoweringSession {
                     // declaring a second `cfg_tmp_*` variable that call lowering would never truly consume.
                 }
             }
+        }
+    }
+
+    /// Predeclares the for-in lowering-owned locals before any block is materialized.
+    ///
+    /// Each compile-ready `for-in` loop carries two registries published alongside the CFG graph: the
+    /// hidden iterator state slot (plus its distinct next-commit temp) typed as the route's
+    /// compiler-only state type, and the source-facing iterator local typed as the final exposed slot
+    /// type. Declaring them here, instead of lazily inside the item processors, keeps the
+    /// owner/type/uniqueness contract validated up front and guarantees the get/next processors only
+    /// ever consume already-frozen slot ids.
+    private void declareForLoopSlots() {
+        for (var stateSlot : functionContext.forIteratorStateSlots().values()) {
+            ensureVariable(stateSlot.slotId(), stateSlot.stateType());
+            ensureVariable(stateSlot.nextTempSlotId(), stateSlot.stateType());
+        }
+        for (var sourceSlot : functionContext.forSourceIteratorSlots().values()) {
+            ensureVariable(sourceSlot.sourceIteratorSlotId(), sourceSlot.exposedType());
         }
     }
 
