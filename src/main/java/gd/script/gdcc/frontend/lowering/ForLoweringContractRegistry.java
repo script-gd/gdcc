@@ -28,7 +28,7 @@ import java.util.Objects;
 /// after its helper/intrinsic/backend chain is frozen, and is never removed or replaced.
 ///
 /// Intrinsic names are the frontend copy of the frozen contract documented in
-/// `doc/gdcc_lir_intrinsic.md`; the C backend keeps a matching copy in `CForRangeIterIntrinsic`.
+/// `doc/gdcc_lir_intrinsic.md`; the C backend keeps a matching copy in the for-iter intrinsic classes.
 public final class ForLoweringContractRegistry {
     public static final @NotNull String RANGE_INIT_INTRINSIC = "gdcc.for_range_iter.init";
     public static final @NotNull String RANGE_SHOULD_CONTINUE_INTRINSIC = "gdcc.for_range_iter.should_continue";
@@ -55,12 +55,6 @@ public final class ForLoweringContractRegistry {
     public static final @NotNull String DICTIONARY_NEXT_INTRINSIC = "gdcc.for_dictionary_iter.next";
     public static final @NotNull String DICTIONARY_GET_INTRINSIC = "gdcc.for_dictionary_iter.get";
 
-    public static final @NotNull String PACKED_ARRAY_INIT_INTRINSIC = "gdcc.for_packed_array_iter.init";
-    public static final @NotNull String PACKED_ARRAY_SHOULD_CONTINUE_INTRINSIC =
-            "gdcc.for_packed_array_iter.should_continue";
-    public static final @NotNull String PACKED_ARRAY_NEXT_INTRINSIC = "gdcc.for_packed_array_iter.next";
-    public static final @NotNull String PACKED_ARRAY_GET_INTRINSIC = "gdcc.for_packed_array_iter.get";
-
     public static final @NotNull String FLOAT_INIT_INTRINSIC = "gdcc.for_float_iter.init";
     public static final @NotNull String FLOAT_SHOULD_CONTINUE_INTRINSIC = "gdcc.for_float_iter.should_continue";
     public static final @NotNull String FLOAT_NEXT_INTRINSIC = "gdcc.for_float_iter.next";
@@ -77,8 +71,8 @@ public final class ForLoweringContractRegistry {
         register(FrontendForIterationRoute.STRING, stringContract());
         register(FrontendForIterationRoute.ARRAY, arrayContract());
         register(FrontendForIterationRoute.DICTIONARY_KEYS, dictionaryContract());
-        register(FrontendForIterationRoute.PACKED_ARRAY, packedArrayContract());
         register(FrontendForIterationRoute.FLOAT_SHORTHAND, floatContract());
+        registerAllPackedArrayContracts();
     }
 
     private ForLoweringContractRegistry() {
@@ -97,6 +91,32 @@ public final class ForLoweringContractRegistry {
         if (CONTRACTS.putIfAbsent(route, contract) != null) {
             throw new IllegalStateException("for-in lowering contract already registered for route " + route);
         }
+    }
+
+    private static void registerAllPackedArrayContracts() {
+        for (var family : GdccForPackedArrayIterType.all()) {
+            register(routeForPackedFamily(family), packedArrayContract(family));
+        }
+    }
+
+    public static @NotNull FrontendForIterationRoute routeForPackedFamily(
+            @NotNull GdccForPackedArrayIterType family
+    ) {
+        return switch (family.sourceType().getGdExtensionType()) {
+            case PACKED_BYTE_ARRAY -> FrontendForIterationRoute.PACKED_BYTE_ARRAY;
+            case PACKED_INT32_ARRAY -> FrontendForIterationRoute.PACKED_INT32_ARRAY;
+            case PACKED_INT64_ARRAY -> FrontendForIterationRoute.PACKED_INT64_ARRAY;
+            case PACKED_FLOAT32_ARRAY -> FrontendForIterationRoute.PACKED_FLOAT32_ARRAY;
+            case PACKED_FLOAT64_ARRAY -> FrontendForIterationRoute.PACKED_FLOAT64_ARRAY;
+            case PACKED_STRING_ARRAY -> FrontendForIterationRoute.PACKED_STRING_ARRAY;
+            case PACKED_VECTOR2_ARRAY -> FrontendForIterationRoute.PACKED_VECTOR2_ARRAY;
+            case PACKED_VECTOR3_ARRAY -> FrontendForIterationRoute.PACKED_VECTOR3_ARRAY;
+            case PACKED_VECTOR4_ARRAY -> FrontendForIterationRoute.PACKED_VECTOR4_ARRAY;
+            case PACKED_COLOR_ARRAY -> FrontendForIterationRoute.PACKED_COLOR_ARRAY;
+            default -> throw new IllegalArgumentException(
+                    "unsupported packed array family: " + family.sourceType().getTypeName()
+            );
+        };
     }
 
     private static @NotNull FrontendForLoweringContract rangeContract() {
@@ -239,31 +259,32 @@ public final class ForLoweringContractRegistry {
         );
     }
 
-    /// Init argumentTypes uses Variant as the family-wide wildcard marker (same as ARRAY/DICTIONARY):
-    /// C backend accepts any GdPackedArrayType and dispatches to a typed `gdcc_for_packed_*_iter_from`.
-    private static @NotNull FrontendForLoweringContract packedArrayContract() {
-        var stateType = GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER;
-        var variantType = GdVariantType.VARIANT;
+    /// One contract per Packed*Array family: specialized state type, typed source, typed element get.
+    private static @NotNull FrontendForLoweringContract packedArrayContract(
+            @NotNull GdccForPackedArrayIterType stateType
+    ) {
+        var sourceType = stateType.sourceType();
+        var elementType = stateType.elementType();
         return new FrontendForLoweringContract(
                 stateType,
                 new ForIterationOperationDescriptor(
-                        PACKED_ARRAY_INIT_INTRINSIC,
+                        stateType.getInitIntrinsicName(),
                         stateType,
-                        List.of(variantType)
+                        List.of(sourceType)
                 ),
                 new ForIterationOperationDescriptor(
-                        PACKED_ARRAY_SHOULD_CONTINUE_INTRINSIC,
+                        stateType.getShouldContinueIntrinsicName(),
                         GdBoolType.BOOL,
                         List.of(stateType)
                 ),
                 new ForIterationOperationDescriptor(
-                        PACKED_ARRAY_NEXT_INTRINSIC,
+                        stateType.getNextIntrinsicName(),
                         stateType,
                         List.of(stateType)
                 ),
                 new ForIterationOperationDescriptor(
-                        PACKED_ARRAY_GET_INTRINSIC,
-                        variantType,
+                        stateType.getGetIntrinsicName(),
+                        elementType,
                         List.of(stateType)
                 )
         );

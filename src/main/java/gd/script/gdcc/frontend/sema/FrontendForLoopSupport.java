@@ -18,6 +18,7 @@ import gd.script.gdcc.type.GdNodePathType;
 import gd.script.gdcc.type.GdNumericType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdPackedArrayType;
+import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import gd.script.gdcc.type.GdPrimitiveType;
 import gd.script.gdcc.type.GdPureVectorType;
 import gd.script.gdcc.type.GdRidType;
@@ -164,7 +165,7 @@ public final class FrontendForLoopSupport {
             case GdStringType _ -> FrontendForIterationRoute.STRING;
             case GdArrayType _ -> FrontendForIterationRoute.ARRAY;
             case GdDictionaryType _ -> FrontendForIterationRoute.DICTIONARY_KEYS;
-            case GdPackedArrayType _ -> FrontendForIterationRoute.PACKED_ARRAY;
+            case GdPackedArrayType packed -> packedArrayRoute(packed);
             case GdFloatType _ -> FrontendForIterationRoute.FLOAT_SHORTHAND;
             default -> null;
         };
@@ -172,5 +173,9 @@ public final class FrontendForLoopSupport {
             return candidate;
         }
         return FrontendForIterationRoute.GENERIC_VARIANT;
+    }
+
+    private static @NotNull FrontendForIterationRoute packedArrayRoute(@NotNull GdPackedArrayType packed) {
+        return ForLoweringContractRegistry.routeForPackedFamily(GdccForPackedArrayIterType.of(packed));
     }
 }

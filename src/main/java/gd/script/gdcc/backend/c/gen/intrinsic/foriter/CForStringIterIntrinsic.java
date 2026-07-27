@@ -1,71 +1,72 @@
-package gd.script.gdcc.backend.c.gen.intrinsic;
+package gd.script.gdcc.backend.c.gen.intrinsic.foriter;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CIntrinsicFunction;
 import gd.script.gdcc.lir.LirVariable;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdType;
-import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.type.GdccForVariantIterType;
+import gd.script.gdcc.type.GdccForStringIterType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-/// Intrinsics for generic Variant `for-in` iterator state operations.
+/// Intrinsics for String `for-in` iterator state operations.
 ///
-/// Maps LIR intrinsic names (`gdcc.for_variant_iter.*`) to C helper symbols (`gdcc_for_variant_iter_*`).
-/// The state type is `compiler::GdccForVariantIter` which wraps GDExtension Variant iteration API.
-public final class CForVariantIterIntrinsic implements CIntrinsicFunction {
-    public static final @NotNull String INIT_NAME = "gdcc.for_variant_iter.init";
-    public static final @NotNull String SHOULD_CONTINUE_NAME = "gdcc.for_variant_iter.should_continue";
-    public static final @NotNull String NEXT_NAME = "gdcc.for_variant_iter.next";
-    public static final @NotNull String GET_NAME = "gdcc.for_variant_iter.get";
+/// Maps LIR intrinsic names (`gdcc.for_string_iter.*`) to C helper symbols (`gdcc_for_string_iter_*`).
+/// The state type is `compiler::GdccForStringIter` which iterates a String character by character,
+/// producing single-character String elements matching Godot's `Variant::iter_get` semantics.
+public final class CForStringIterIntrinsic implements CIntrinsicFunction {
+    public static final @NotNull String INIT_NAME = "gdcc.for_string_iter.init";
+    public static final @NotNull String SHOULD_CONTINUE_NAME = "gdcc.for_string_iter.should_continue";
+    public static final @NotNull String NEXT_NAME = "gdcc.for_string_iter.next";
+    public static final @NotNull String GET_NAME = "gdcc.for_string_iter.get";
 
-    static final @NotNull String INIT_HELPER_NAME = "gdcc_for_variant_iter_from_variant";
-    static final @NotNull String SHOULD_CONTINUE_HELPER_NAME = "gdcc_for_variant_iter_should_continue";
-    static final @NotNull String NEXT_HELPER_NAME = "gdcc_for_variant_iter_next";
-    static final @NotNull String GET_HELPER_NAME = "gdcc_for_variant_iter_get";
+    static final @NotNull String INIT_HELPER_NAME = "gdcc_for_string_iter_from_string";
+    static final @NotNull String SHOULD_CONTINUE_HELPER_NAME = "gdcc_for_string_iter_should_continue";
+    static final @NotNull String NEXT_HELPER_NAME = "gdcc_for_string_iter_next";
+    static final @NotNull String GET_HELPER_NAME = "gdcc_for_string_iter_get";
 
     private final @NotNull Spec spec;
 
-    private CForVariantIterIntrinsic(@NotNull Spec spec) {
+    private CForStringIterIntrinsic(@NotNull Spec spec) {
         this.spec = spec;
     }
 
-    public static @NotNull CForVariantIterIntrinsic init() {
-        return new CForVariantIterIntrinsic(new Spec(
+    public static @NotNull CForStringIterIntrinsic init() {
+        return new CForStringIterIntrinsic(new Spec(
                 INIT_NAME,
                 INIT_HELPER_NAME,
-                GdccForVariantIterType.FOR_VARIANT_ITER,
-                List.of(GdVariantType.VARIANT)
+                GdccForStringIterType.FOR_STRING_ITER,
+                List.of(GdStringType.STRING)
         ));
     }
 
-    public static @NotNull CForVariantIterIntrinsic shouldContinue() {
-        return new CForVariantIterIntrinsic(new Spec(
+    public static @NotNull CForStringIterIntrinsic shouldContinue() {
+        return new CForStringIterIntrinsic(new Spec(
                 SHOULD_CONTINUE_NAME,
                 SHOULD_CONTINUE_HELPER_NAME,
                 GdBoolType.BOOL,
-                List.of(GdccForVariantIterType.FOR_VARIANT_ITER)
+                List.of(GdccForStringIterType.FOR_STRING_ITER)
         ));
     }
 
-    public static @NotNull CForVariantIterIntrinsic next() {
-        return new CForVariantIterIntrinsic(new Spec(
+    public static @NotNull CForStringIterIntrinsic next() {
+        return new CForStringIterIntrinsic(new Spec(
                 NEXT_NAME,
                 NEXT_HELPER_NAME,
-                GdccForVariantIterType.FOR_VARIANT_ITER,
-                List.of(GdccForVariantIterType.FOR_VARIANT_ITER)
+                GdccForStringIterType.FOR_STRING_ITER,
+                List.of(GdccForStringIterType.FOR_STRING_ITER)
         ));
     }
 
-    public static @NotNull CForVariantIterIntrinsic get() {
-        return new CForVariantIterIntrinsic(new Spec(
+    public static @NotNull CForStringIterIntrinsic get() {
+        return new CForStringIterIntrinsic(new Spec(
                 GET_NAME,
                 GET_HELPER_NAME,
-                GdVariantType.VARIANT,
-                List.of(GdccForVariantIterType.FOR_VARIANT_ITER)
+                GdStringType.STRING,
+                List.of(GdccForStringIterType.FOR_STRING_ITER)
         ));
     }
 

@@ -20,8 +20,26 @@ public enum FrontendForIterationRoute {
     ARRAY,
     /// Dictionary key iteration. The iterator is the key type, never the value or pair.
     DICTIONARY_KEYS,
-    /// Packed array element iteration.
-    PACKED_ARRAY,
+    /// PackedByteArray element iteration.
+    PACKED_BYTE_ARRAY,
+    /// PackedInt32Array element iteration.
+    PACKED_INT32_ARRAY,
+    /// PackedInt64Array element iteration.
+    PACKED_INT64_ARRAY,
+    /// PackedFloat32Array element iteration.
+    PACKED_FLOAT32_ARRAY,
+    /// PackedFloat64Array element iteration.
+    PACKED_FLOAT64_ARRAY,
+    /// PackedStringArray element iteration.
+    PACKED_STRING_ARRAY,
+    /// PackedVector2Array element iteration.
+    PACKED_VECTOR2_ARRAY,
+    /// PackedVector3Array element iteration.
+    PACKED_VECTOR3_ARRAY,
+    /// PackedVector4Array element iteration.
+    PACKED_VECTOR4_ARRAY,
+    /// PackedColorArray element iteration.
+    PACKED_COLOR_ARRAY,
     /// Object custom `_iter_*` protocol; reserved.
     OBJECT_CUSTOM,
     /// Runtime-dispatched Variant iteration for iterables that cannot be statically specialized.

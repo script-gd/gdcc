@@ -1,12 +1,12 @@
 package gd.script.gdcc.frontend.lowering;
 
-import gd.script.gdcc.backend.c.gen.intrinsic.CForArrayIterIntrinsic;
-import gd.script.gdcc.backend.c.gen.intrinsic.CForDictionaryIterIntrinsic;
-import gd.script.gdcc.backend.c.gen.intrinsic.CForFloatIterIntrinsic;
-import gd.script.gdcc.backend.c.gen.intrinsic.CForPackedArrayIterIntrinsic;
-import gd.script.gdcc.backend.c.gen.intrinsic.CForRangeIterIntrinsic;
-import gd.script.gdcc.backend.c.gen.intrinsic.CForStringIterIntrinsic;
-import gd.script.gdcc.backend.c.gen.intrinsic.CForVariantIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForArrayIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForDictionaryIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForFloatIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.packed.CForPackedArrayIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForRangeIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForStringIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.foriter.CForVariantIterIntrinsic;
 import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdFloatType;
@@ -83,11 +83,14 @@ class ForLoweringContractRegistryTest {
     }
 
     @Test
-    void packedArrayRouteExposesFrozenPackedArrayContract() {
-        var contract = ForLoweringContractRegistry.get(FrontendForIterationRoute.PACKED_ARRAY);
-        assertNotNull(contract);
-        assertSame(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER, contract.iteratorStateType());
-        assertPackedArrayOperationSignatures(contract);
+    void packedArrayRoutesExposeFrozenPerFamilyContracts() {
+        for (var family : GdccForPackedArrayIterType.all()) {
+            var route = ForLoweringContractRegistry.routeForPackedFamily(family);
+            var contract = ForLoweringContractRegistry.get(route);
+            assertNotNull(contract, () -> "missing contract for " + route);
+            assertSame(family, contract.iteratorStateType());
+            assertPackedArrayOperationSignatures(contract, family);
+        }
     }
 
     @Test
@@ -160,13 +163,16 @@ class ForLoweringContractRegistryTest {
 
     @Test
     void packedArrayIntrinsicNamesStayAlignedWithBackendContract() {
-        assertEquals(CForPackedArrayIterIntrinsic.INIT_NAME, ForLoweringContractRegistry.PACKED_ARRAY_INIT_INTRINSIC);
-        assertEquals(
-                CForPackedArrayIterIntrinsic.SHOULD_CONTINUE_NAME,
-                ForLoweringContractRegistry.PACKED_ARRAY_SHOULD_CONTINUE_INTRINSIC
-        );
-        assertEquals(CForPackedArrayIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.PACKED_ARRAY_NEXT_INTRINSIC);
-        assertEquals(CForPackedArrayIterIntrinsic.GET_NAME, ForLoweringContractRegistry.PACKED_ARRAY_GET_INTRINSIC);
+        for (var family : GdccForPackedArrayIterType.all()) {
+            var init = CForPackedArrayIterIntrinsic.init(family);
+            var shouldContinue = CForPackedArrayIterIntrinsic.shouldContinue(family);
+            var next = CForPackedArrayIterIntrinsic.next(family);
+            var get = CForPackedArrayIterIntrinsic.get(family);
+            assertEquals(family.getInitIntrinsicName(), init.name());
+            assertEquals(family.getShouldContinueIntrinsicName(), shouldContinue.name());
+            assertEquals(family.getNextIntrinsicName(), next.name());
+            assertEquals(family.getGetIntrinsicName(), get.name());
+        }
     }
 
     @Test
@@ -295,27 +301,25 @@ class ForLoweringContractRegistryTest {
         assertEquals(List.of(state), contract.get().argumentTypes());
     }
 
-    private static void assertPackedArrayOperationSignatures(FrontendForLoweringContract contract) {
-        var state = GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER;
+    private static void assertPackedArrayOperationSignatures(
+            FrontendForLoweringContract contract,
+            GdccForPackedArrayIterType family
+    ) {
+        assertEquals(family.getInitIntrinsicName(), contract.init().intrinsicName());
+        assertSame(family, contract.init().resultType());
+        assertEquals(List.of(family.sourceType()), contract.init().argumentTypes());
 
-        assertEquals(ForLoweringContractRegistry.PACKED_ARRAY_INIT_INTRINSIC, contract.init().intrinsicName());
-        assertSame(state, contract.init().resultType());
-        assertEquals(List.of(GdVariantType.VARIANT), contract.init().argumentTypes());
-
-        assertEquals(
-                ForLoweringContractRegistry.PACKED_ARRAY_SHOULD_CONTINUE_INTRINSIC,
-                contract.shouldContinue().intrinsicName()
-        );
+        assertEquals(family.getShouldContinueIntrinsicName(), contract.shouldContinue().intrinsicName());
         assertSame(GdBoolType.BOOL, contract.shouldContinue().resultType());
-        assertEquals(List.of(state), contract.shouldContinue().argumentTypes());
+        assertEquals(List.of(family), contract.shouldContinue().argumentTypes());
 
-        assertEquals(ForLoweringContractRegistry.PACKED_ARRAY_NEXT_INTRINSIC, contract.next().intrinsicName());
-        assertSame(state, contract.next().resultType());
-        assertEquals(List.of(state), contract.next().argumentTypes());
+        assertEquals(family.getNextIntrinsicName(), contract.next().intrinsicName());
+        assertSame(family, contract.next().resultType());
+        assertEquals(List.of(family), contract.next().argumentTypes());
 
-        assertEquals(ForLoweringContractRegistry.PACKED_ARRAY_GET_INTRINSIC, contract.get().intrinsicName());
-        assertSame(GdVariantType.VARIANT, contract.get().resultType());
-        assertEquals(List.of(state), contract.get().argumentTypes());
+        assertEquals(family.getGetIntrinsicName(), contract.get().intrinsicName());
+        assertEquals(family.elementType(), contract.get().resultType());
+        assertEquals(List.of(family), contract.get().argumentTypes());
     }
 
     private static void assertFloatOperationSignatures(FrontendForLoweringContract contract) {

@@ -8,7 +8,7 @@
     - Container types: `GdArrayType`, `GdDictionaryType`, and `GdPacked*` variants.
 - Object/reference types: `GdObjectType`, `GdNodePathType`, `GdRidType`, `GdSignalType`, `GdCallableType`.
 - Meta/extension types: `GdMetaType`, `GdExtensionTypeEnum` for annotations and extension points.
-- Compiler-only types: `GdCompilerType` as the shared abstraction for backend-only storage types, with `GdccForRangeIterType` as the first concrete example.
+- Compiler-only types: `GdCompilerType` as the shared abstraction for backend-only storage types (for-iter state types including per-family `GdccForPackedArrayIterType` instances, etc.).
 
 ## Compiler-only Types
 
@@ -17,7 +17,8 @@
   - declared type parsers must not resolve them
   - type-meta and outward ABI metadata must not publish them
   - ordinary user-facing semantic facts such as `expressionTypes()` and ordinary slot typing must not expose them
-- `GdccForRangeIterType` is the first concrete `GdCompilerType`. It represents backend-owned range-iterator state storage, not a user-declarable `range(...)` result type.
+- Concrete `GdCompilerType` examples include `GdccForRangeIterType` and per-family
+  `GdccForPackedArrayIterType` instances (one state type per Packed*Array family).
 - Compiler-only types may participate in LIR/backend-local assignment and intrinsic contracts, but they are outside the ordinary frontend assignment/conversion matrix.
 
 ## Major Types (Summary)

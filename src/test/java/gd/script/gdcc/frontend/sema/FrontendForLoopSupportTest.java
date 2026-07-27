@@ -188,7 +188,7 @@ class FrontendForLoopSupportTest {
                 iterable,
                 GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY,
                 GdFloatType.FLOAT,
-                FrontendForIterationRoute.PACKED_ARRAY
+                FrontendForIterationRoute.PACKED_FLOAT64_ARRAY
         );
         assertPlanSemanticElement(
                 iterable,

@@ -1,78 +1,78 @@
-package gd.script.gdcc.backend.c.gen.intrinsic;
+package gd.script.gdcc.backend.c.gen.intrinsic.foriter;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CIntrinsicFunction;
 import gd.script.gdcc.lir.LirVariable;
+import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
-import gd.script.gdcc.type.GdDictionaryType;
 import gd.script.gdcc.type.GdType;
 import gd.script.gdcc.type.GdVariantType;
-import gd.script.gdcc.type.GdccForDictionaryIterType;
+import gd.script.gdcc.type.GdccForArrayIterType;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-/// Intrinsics for Dictionary key `for-in` iterator state operations.
+/// Intrinsics for Array `for-in` iterator state operations.
 ///
-/// Maps LIR intrinsic names (`gdcc.for_dictionary_iter.*`) to C helper symbols
-/// (`gdcc_for_dictionary_iter_*`). The state type is `compiler::GdccForDictionaryIter` which
-/// snapshots all keys at init time and iterates them by index. Godot Dictionary iteration
-/// yields keys, not values.
-/// The init argument accepts any `GdDictionaryType` regardless of key/value type parameters.
-public final class CForDictionaryIterIntrinsic implements CIntrinsicFunction {
-    public static final @NotNull String INIT_NAME = "gdcc.for_dictionary_iter.init";
-    public static final @NotNull String SHOULD_CONTINUE_NAME = "gdcc.for_dictionary_iter.should_continue";
-    public static final @NotNull String NEXT_NAME = "gdcc.for_dictionary_iter.next";
-    public static final @NotNull String GET_NAME = "gdcc.for_dictionary_iter.get";
+/// Maps LIR intrinsic names (`gdcc.for_array_iter.*`) to C helper symbols (`gdcc_for_array_iter_*`).
+/// The state type is `compiler::GdccForArrayIter` which holds a shared Array handle + cached size.
+/// Get resolves each element via `operator_index_const` (no raw base-pointer cache: Array is
+/// reference-semantic and may reallocate if resized during iteration).
+/// The init argument accepts any `GdArrayType` regardless of element type parameter.
+public final class CForArrayIterIntrinsic implements CIntrinsicFunction {
+    public static final @NotNull String INIT_NAME = "gdcc.for_array_iter.init";
+    public static final @NotNull String SHOULD_CONTINUE_NAME = "gdcc.for_array_iter.should_continue";
+    public static final @NotNull String NEXT_NAME = "gdcc.for_array_iter.next";
+    public static final @NotNull String GET_NAME = "gdcc.for_array_iter.get";
 
-    static final @NotNull String INIT_HELPER_NAME = "gdcc_for_dictionary_iter_from_dictionary";
-    static final @NotNull String SHOULD_CONTINUE_HELPER_NAME = "gdcc_for_dictionary_iter_should_continue";
-    static final @NotNull String NEXT_HELPER_NAME = "gdcc_for_dictionary_iter_next";
-    static final @NotNull String GET_HELPER_NAME = "gdcc_for_dictionary_iter_get";
+    static final @NotNull String INIT_HELPER_NAME = "gdcc_for_array_iter_from_array";
+    static final @NotNull String SHOULD_CONTINUE_HELPER_NAME = "gdcc_for_array_iter_should_continue";
+    static final @NotNull String NEXT_HELPER_NAME = "gdcc_for_array_iter_next";
+    static final @NotNull String GET_HELPER_NAME = "gdcc_for_array_iter_get";
 
     private final @NotNull Spec spec;
 
-    private CForDictionaryIterIntrinsic(@NotNull Spec spec) {
+    private CForArrayIterIntrinsic(@NotNull Spec spec) {
         this.spec = spec;
     }
 
-    public static @NotNull CForDictionaryIterIntrinsic init() {
-        return new CForDictionaryIterIntrinsic(new Spec(
+    public static @NotNull CForArrayIterIntrinsic init() {
+        return new CForArrayIterIntrinsic(new Spec(
                 INIT_NAME,
                 INIT_HELPER_NAME,
-                GdccForDictionaryIterType.FOR_DICTIONARY_ITER,
+                GdccForArrayIterType.FOR_ARRAY_ITER,
                 List.of(GdVariantType.VARIANT),
                 true
         ));
     }
 
-    public static @NotNull CForDictionaryIterIntrinsic shouldContinue() {
-        return new CForDictionaryIterIntrinsic(new Spec(
+    public static @NotNull CForArrayIterIntrinsic shouldContinue() {
+        return new CForArrayIterIntrinsic(new Spec(
                 SHOULD_CONTINUE_NAME,
                 SHOULD_CONTINUE_HELPER_NAME,
                 GdBoolType.BOOL,
-                List.of(GdccForDictionaryIterType.FOR_DICTIONARY_ITER),
+                List.of(GdccForArrayIterType.FOR_ARRAY_ITER),
                 false
         ));
     }
 
-    public static @NotNull CForDictionaryIterIntrinsic next() {
-        return new CForDictionaryIterIntrinsic(new Spec(
+    public static @NotNull CForArrayIterIntrinsic next() {
+        return new CForArrayIterIntrinsic(new Spec(
                 NEXT_NAME,
                 NEXT_HELPER_NAME,
-                GdccForDictionaryIterType.FOR_DICTIONARY_ITER,
-                List.of(GdccForDictionaryIterType.FOR_DICTIONARY_ITER),
+                GdccForArrayIterType.FOR_ARRAY_ITER,
+                List.of(GdccForArrayIterType.FOR_ARRAY_ITER),
                 false
         ));
     }
 
-    public static @NotNull CForDictionaryIterIntrinsic get() {
-        return new CForDictionaryIterIntrinsic(new Spec(
+    public static @NotNull CForArrayIterIntrinsic get() {
+        return new CForArrayIterIntrinsic(new Spec(
                 GET_NAME,
                 GET_HELPER_NAME,
                 GdVariantType.VARIANT,
-                List.of(GdccForDictionaryIterType.FOR_DICTIONARY_ITER),
+                List.of(GdccForArrayIterType.FOR_ARRAY_ITER),
                 false
         ));
     }
@@ -118,18 +118,18 @@ public final class CForDictionaryIterIntrinsic implements CIntrinsicFunction {
                     " argument" + (spec.argumentTypes().size() == 1 ? "" : "s") + ", got " + argVars.size());
         }
         for (var i = 0; i < argVars.size(); i++) {
-            if (spec.acceptAnyDictionary() && i == 0) {
-                checkDictionaryType(bodyBuilder, argVars.get(i));
+            if (spec.acceptAnyArray() && i == 0) {
+                checkArrayType(bodyBuilder, argVars.get(i));
             } else {
                 checkType(bodyBuilder, "argument #" + (i + 1), argVars.get(i), spec.argumentTypes().get(i));
             }
         }
     }
 
-    private void checkDictionaryType(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable variable) {
-        if (!(variable.type() instanceof GdDictionaryType)) {
+    private void checkArrayType(@NotNull CBodyBuilder bodyBuilder, @NotNull LirVariable variable) {
+        if (!(variable.type() instanceof GdArrayType)) {
             throw bodyBuilder.invalidInsn("'" + name() + "' argument #1 variable '" + variable.id() +
-                    "' must be a Dictionary type, got '" + variable.type().getTypeName() + "'");
+                    "' must be an Array type, got '" + variable.type().getTypeName() + "'");
         }
     }
 
@@ -147,7 +147,7 @@ public final class CForDictionaryIterIntrinsic implements CIntrinsicFunction {
                         @NotNull String helperName,
                         @NotNull GdType resultType,
                         @NotNull List<GdType> argumentTypes,
-                        boolean acceptAnyDictionary) {
+                        boolean acceptAnyArray) {
         private Spec {
             argumentTypes = List.copyOf(argumentTypes);
         }

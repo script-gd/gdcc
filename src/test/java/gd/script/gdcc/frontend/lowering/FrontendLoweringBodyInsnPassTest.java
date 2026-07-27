@@ -6965,7 +6965,7 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runLowersPackedArrayForLoopThroughPackedArrayIntrinsicsAndUnpacksItems() throws Exception {
+    void runLowersPackedArrayForLoopThroughPackedArrayIntrinsicsWithoutUnpack() throws Exception {
         var prepared = prepareContext(
                 "body_insn_for_packed_array.gd",
                 """
@@ -6992,22 +6992,21 @@ class FrontendLoweringBodyInsnPassTest {
         var instructions = allInstructions(function);
         var get = forPackedArrayIntrinsics(function, "get");
         var assigns = assignSourcesByTarget(instructions);
-        var committedSource = assigns.get("item");
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
+                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_INT32_ARRAY_ITER,
                         requireVariableType(function, "cfg_for_iter_0")),
-                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
+                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_INT32_ARRAY_ITER,
                         requireVariableType(function, "cfg_for_iter_next_0")),
                 () -> assertEquals(GdIntType.INT, requireVariableType(function, "item")),
                 () -> assertEquals(1, forPackedArrayIntrinsics(function, "init").size()),
                 () -> assertEquals(1, forPackedArrayIntrinsics(function, "should_continue").size()),
                 () -> assertEquals(1, get.size()),
                 () -> assertEquals(1, forPackedArrayIntrinsics(function, "next").size()),
-                () -> assertEquals(GdVariantType.VARIANT, requireIntrinsicResultType(function, get.getFirst())),
-                () -> assertNotEquals(get.getFirst().resultId(), committedSource),
-                () -> assertTrue(unpackResultIds(instructions).contains(committedSource))
+                () -> assertEquals(GdIntType.INT, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertEquals(get.getFirst().resultId(), assigns.get("item")),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
         );
     }
 
@@ -7480,7 +7479,7 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull LirFunctionDef function,
             @NotNull String operationSuffix
     ) {
-        var intrinsicName = "gdcc.for_packed_array_iter." + operationSuffix;
+        var intrinsicName = "gdcc.for_packed_int32_array_iter." + operationSuffix;
         return allInstructions(function).stream()
                 .filter(CallIntrinsicInsn.class::isInstance)
                 .map(CallIntrinsicInsn.class::cast)

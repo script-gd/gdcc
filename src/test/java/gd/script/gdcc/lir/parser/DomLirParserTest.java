@@ -243,7 +243,7 @@ public class DomLirParserTest {
                             <variable id="array_iter" type="compiler::GdccForArrayIter"/>
                             <variable id="dictionary_iter" type="compiler::GdccForDictionaryIter"/>
                             <variable id="variant_iter" type="compiler::GdccForVariantIter"/>
-                            <variable id="packed_array_iter" type="compiler::GdccForPackedArrayIter"/>
+                            <variable id="packed_array_iter" type="compiler::GdccForPackedInt32ArrayIter"/>
                             <variable id="float_iter" type="compiler::GdccForFloatIter"/>
                           </variables>
                         <basic_blocks entry="entry">
@@ -272,7 +272,7 @@ public class DomLirParserTest {
                         Objects.requireNonNull(fn.getVariableById("dictionary_iter")).type()),
                 () -> assertEquals(GdccForVariantIterType.FOR_VARIANT_ITER,
                         Objects.requireNonNull(fn.getVariableById("variant_iter")).type()),
-                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
+                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_INT32_ARRAY_ITER,
                         Objects.requireNonNull(fn.getVariableById("packed_array_iter")).type()),
                 () -> assertEquals(GdccForFloatIterType.FOR_FLOAT_ITER,
                         Objects.requireNonNull(fn.getVariableById("float_iter")).type())

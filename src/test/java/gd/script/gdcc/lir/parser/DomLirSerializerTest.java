@@ -109,7 +109,7 @@ public class DomLirSerializerTest {
         fn.createAndAddVariable("array_iter", GdccForArrayIterType.FOR_ARRAY_ITER);
         fn.createAndAddVariable("dictionary_iter", GdccForDictionaryIterType.FOR_DICTIONARY_ITER);
         fn.createAndAddVariable("variant_iter", GdccForVariantIterType.FOR_VARIANT_ITER);
-        fn.createAndAddVariable("packed_array_iter", GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER);
+        fn.createAndAddVariable("packed_array_iter", GdccForPackedArrayIterType.FOR_PACKED_INT32_ARRAY_ITER);
         fn.createAndAddVariable("float_iter", GdccForFloatIterType.FOR_FLOAT_ITER);
         fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
 
@@ -124,14 +124,14 @@ public class DomLirSerializerTest {
         assertTrue(xml.contains("type=\"compiler::GdccForArrayIter\""), xml);
         assertTrue(xml.contains("type=\"compiler::GdccForDictionaryIter\""), xml);
         assertTrue(xml.contains("type=\"compiler::GdccForVariantIter\""), xml);
-        assertTrue(xml.contains("type=\"compiler::GdccForPackedArrayIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForPackedInt32ArrayIter\""), xml);
         assertTrue(xml.contains("type=\"compiler::GdccForFloatIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForRangeIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForStringIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForArrayIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForDictionaryIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForVariantIter\""), xml);
-        assertFalse(xml.contains("type=\"GdccForPackedArrayIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForPackedInt32ArrayIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForFloatIter\""), xml);
     }
 

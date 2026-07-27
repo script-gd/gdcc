@@ -446,7 +446,7 @@ build artifact 构造时必须执行跨表验证，而不是只在 processor 中
 **可迭代类型与 semantic element type：**
 
 | 类型 | semanticElementType | 说明 |
-|---|---|---|
+| -------- | -------------------- | -------- |
 | `int` | `int` | 由 `INT_SHORTHAND` route 处理 |
 | `float` | `float` | 类似 `range(ceil(n))` |
 | `String` | `String` | 逐字符迭代 |
@@ -826,7 +826,7 @@ public sealed interface FrontendIterableSemantics {
 分类规则（对齐 Godot `gdscript_analyzer.cpp:2357-2403`，exhaustive switch over sealed `GdType`）：
 
 | iterable 静态类型 | 分类结果 | 说明 |
-|---|---|---|
+| -------------------- | ---------- | -------- |
 | `null`（静态未知） | 返回 `null`（调用方使用 `Variant`） | 保留运行时语义 |
 | `GdVariantType` | `DynamicIterable` | 动态分派 |
 | `GdObjectType` | `DynamicIterable` | Object custom iterator 由运行时决定 |
@@ -950,7 +950,7 @@ private static void reportNonIterableType(
 以下消费者引用了原 `rawElementType`，需要按语义角色选择新字段：
 
 | 消费者 | 原用法 | 新用法 |
-|---|---|---|
+| ---------- | ---------- | ---------- |
 | `FrontendBodyOwnerProcedures.resolveDeclaredIteratorType` (line 362-363) | `GdVariantType` 特判返回 `null`（显式 Variant 视为无声明） | **移除 `GdVariantType` 特判**（Step 1b）。显式 `Variant` 声明返回 `GdVariantType.VARIANT`，不再返回 `null`。 |
 | `FrontendTypeCheckAnalyzer.visitExplicitIteratorTypeConversion` (line 350) | `checkAssignmentCompatible(exposed, rawElementType)` | `checkAssignmentCompatible(exposed, semanticElementType)` |
 | `FrontendTypeCheckAnalyzer.reportIteratorTypeMismatch` (line 659-660) | 消息中引用 `rawElementType` | 消息中引用 `semanticElementType` |
@@ -1174,7 +1174,7 @@ private static void reportNonIterableType(
 
 ### 阶段 J：known iterable 专用 route
 
-状态：第二批（PACKED_ARRAY/FLOAT_SHORTHAND）已完成；OBJECT_CUSTOM 仍延后。`FrontendForLoopSupport.selectKnownRoute(...)` 按 readiness gate 选择专用 route（contract 已注册时使用专用 route，否则 fallback GENERIC_VARIANT）。`GdccForStringIterType`/`GdccForArrayIterType`/`GdccForDictionaryIterType`/`GdccForPackedArrayIterType` compiler-only state type 已冻结（均含 copy helper，`isDirectStructAssignmentSafe() == false`）；`GdccForFloatIterType` 为 POD float 状态（direct struct assignment）。C runtime helper：String `substr(index, 1)`；Array `Array_get`；Dictionary `keys()` 快照；Packed*Array Variant 快照 + `variant_get_indexed`；Float 匹配 Godot `Variant::iter_*` FLOAT（`0.0, 1.0, ...` while `current < end`，非 int `ceil` range）。`gdcc.for_string_iter.*`/`gdcc.for_array_iter.*`/`gdcc.for_dictionary_iter.*`/`gdcc.for_packed_array_iter.*`/`gdcc.for_float_iter.*` intrinsic catalog 已注册到 `ForLoweringContractRegistry` 与 `CIntrinsicManager`。ARRAY/DICTIONARY_KEYS/PACKED_ARRAY 的 C intrinsic init 接受对应 family 任意子类型。`FrontendLoweringBodyInsnPassTest` 与 `control_flow/for_known_iterable_loop.gd` 锁定全部已启用 known route 的 LIR 与端到端闭环。
+状态：第二批（PACKED_ARRAY/FLOAT_SHORTHAND）已完成；OBJECT_CUSTOM 仍延后。`FrontendForLoopSupport.selectKnownRoute(...)` 按 readiness gate 选择专用 route（contract 已注册时使用专用 route，否则 fallback GENERIC_VARIANT）。`GdccForStringIterType`/`GdccForArrayIterType`/`GdccForDictionaryIterType`/`GdccForPackedArrayIterType` compiler-only state type 已冻结（均含 copy helper，`isDirectStructAssignmentSafe() == false`）；`GdccForFloatIterType` 为 POD float 状态（direct struct assignment）。C runtime helper（`gdcc/intrinsic/*` 拆分）：String `substr(index, 1)`；Array 用 `operator_index_const` 按 index 直接取元素地址（引用语义，不缓存裸基址）；Dictionary keys 堆共享 box（非原子 refcount）+ 缓存连续 `Variant*` 基址；每个 Packed*Array family 使用独立 state/intrinsic（`gdcc_for_packed_<family>_iter_*`），typed COW 快照 + typed 基址；get 返回 typed element，无 kind 运行时分派；Float 匹配 Godot `Variant::iter_*` FLOAT（`0.0, 1.0, ...` while `current < end`，非 int `ceil` range）。`gdcc.for_string_iter.*`/`gdcc.for_array_iter.*`/`gdcc.for_dictionary_iter.*`/`gdcc.for_packed_<family>_iter.*`/`gdcc.for_float_iter.*` intrinsic catalog 已注册到 `ForLoweringContractRegistry` 与 `CIntrinsicManager`。ARRAY/DICTIONARY_KEYS/PACKED_ARRAY 的 C intrinsic init 接受对应 family 任意子类型。`FrontendLoweringBodyInsnPassTest` 与 `control_flow/for_known_iterable_loop.gd` 锁定全部已启用 known route 的 LIR 与端到端闭环。
 
 目标：
 

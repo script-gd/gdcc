@@ -1,4 +1,4 @@
-package gd.script.gdcc.backend.c.gen.intrinsic;
+package gd.script.gdcc.backend.c.gen.intrinsic.foriter;
 
 import gd.script.gdcc.backend.c.gen.CBodyBuilder;
 import gd.script.gdcc.backend.c.gen.CIntrinsicFunction;

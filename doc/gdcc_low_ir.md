@@ -36,7 +36,8 @@ Current MVP contract:
   - class `<properties>`
   - signal parameters
   - lambda captures
-- The first concrete grammar instance is `compiler::GdccForRangeIter`.
+- Concrete grammar instances include `compiler::GdccForRangeIter` and per-family
+  `compiler::GdccForPacked*ArrayIter` (e.g. `compiler::GdccForPackedInt32ArrayIter`).
 
 ## Instructions
 

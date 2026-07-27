@@ -733,101 +733,56 @@ $target = gdcc_for_dictionary_iter_get(&$iter);
 - 通过缓存的 `Variant*` 基址指针做 `ptr[index]`，再返回 owned Variant key 拷贝（不再每元素 `godot_Array_get`）。
 - lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`。
 
-### `gdcc.for_packed_array_iter.init`
+### `gdcc.for_packed_<family>_iter.*`（Packed*Array 总则）
 
-状态：已冻结（阶段 J batch 2；ptr 特化迭代已落地）
+状态：已冻结（阶段 J；per-family 专有 state/intrinsic）
 
-LIR 形态：
+命名模板（`<family>` 为 snake_case family slug）：
+
+| Packed* 源类型 | family slug | state LIR 类型 |
+|---|---|---|
+| PackedByteArray | `byte_array` | `compiler::GdccForPackedByteArrayIter` |
+| PackedInt32Array | `int32_array` | `compiler::GdccForPackedInt32ArrayIter` |
+| PackedInt64Array | `int64_array` | `compiler::GdccForPackedInt64ArrayIter` |
+| PackedFloat32Array | `float32_array` | `compiler::GdccForPackedFloat32ArrayIter` |
+| PackedFloat64Array | `float64_array` | `compiler::GdccForPackedFloat64ArrayIter` |
+| PackedStringArray | `string_array` | `compiler::GdccForPackedStringArrayIter` |
+| PackedVector2Array | `vector2_array` | `compiler::GdccForPackedVector2ArrayIter` |
+| PackedVector3Array | `vector3_array` | `compiler::GdccForPackedVector3ArrayIter` |
+| PackedVector4Array | `vector4_array` | `compiler::GdccForPackedVector4ArrayIter` |
+| PackedColorArray | `color_array` | `compiler::GdccForPackedColorArrayIter` |
+
+每个 family 注册独立的 4 个 intrinsic（**不**再共享单一 `gdcc.for_packed_array_iter.*`）：
 
 ```
-$<iter_result> = call_intrinsic "gdcc.for_packed_array_iter.init" $<source>;
+$<iter_result> = call_intrinsic "gdcc.for_packed_<family>_iter.init" $<source>;
+$<bool_result> = call_intrinsic "gdcc.for_packed_<family>_iter.should_continue" $<iter>;
+$<next_iter_result> = call_intrinsic "gdcc.for_packed_<family>_iter.next" $<iter>;
+$<element_result> = call_intrinsic "gdcc.for_packed_<family>_iter.get" $<iter>;
 ```
 
-合同：
+合同（对每个 family 统一）：
 
-- result 必须存在、非 ref、类型为 `compiler::GdccForPackedArrayIter`。
-- 恰好 1 个 argument，类型为任何 `GdPackedArrayType`。
-- C backend 按 concrete Packed* 选择 `gdcc_for_packed_<Family>_iter_from`，不再 pack 为 Variant。
+- `init`：result 为对应 `compiler::GdccForPacked*Iter`；arg0 为对应具体 `Packed*Array` 源类型（不再用 Variant wildcard）。
+- `should_continue`：result `bool`；arg0 为对应 state。
+- `next`：result/arg0 均为对应 state。
+- `get`：result 为 **typed element**（`int` / `float` / `String` / `Vector*` / `Color`），不是 `Variant`；arg0 为对应 state。
+- state **不可**直接 struct 赋值；`copy` helper 为 `gdcc_for_packed_<family>_iter_copy`（COW 句柄 + 共享 typed base pointer）。
 
 C backend 语义：
 
 ```c
-$target = gdcc_for_packed_<Family>_iter_from(&$source);
+$target = gdcc_for_packed_<family>_iter_from(&$source);
+$target = gdcc_for_packed_<family>_iter_should_continue(&$iter);
+$target = gdcc_for_packed_<family>_iter_next(&$iter);
+$target = gdcc_for_packed_<family>_iter_get(&$iter);
 ```
 
 边界语义：
 
-- 深拷贝 typed Packed*Array（COW），缓存 size，index 初始化为 0，并缓存 `operator_index_const(..., 0)` 元素基址。
-- 不可直接 struct 赋值；需要 `gdcc_for_packed_array_iter_copy` 深拷贝（共享同一 base pointer）。
-
-### `gdcc.for_packed_array_iter.should_continue`
-
-状态：已冻结（阶段 J batch 2）
-
-LIR 形态：
-
-```
-$<bool_result> = call_intrinsic "gdcc.for_packed_array_iter.should_continue" $<iter>;
-```
-
-合同：
-
-- result 必须存在、非 ref、类型为 `bool`。
-- 恰好 1 个 argument，类型为 `compiler::GdccForPackedArrayIter`。
-
-C backend 语义：
-
-```c
-$target = gdcc_for_packed_array_iter_should_continue(&$iter);
-```
-
-### `gdcc.for_packed_array_iter.next`
-
-状态：已冻结（阶段 J batch 2）
-
-LIR 形态：
-
-```
-$<next_iter_result> = call_intrinsic "gdcc.for_packed_array_iter.next" $<iter>;
-```
-
-合同：
-
-- result 必须存在、非 ref、类型为 `compiler::GdccForPackedArrayIter`。
-- 恰好 1 个 argument，类型为 `compiler::GdccForPackedArrayIter`。
-
-C backend 语义：
-
-```c
-$target = gdcc_for_packed_array_iter_next(&$iter);
-```
-
-### `gdcc.for_packed_array_iter.get`
-
-状态：已冻结（阶段 J batch 2）
-
-LIR 形态：
-
-```
-$<variant_result> = call_intrinsic "gdcc.for_packed_array_iter.get" $<iter>;
-```
-
-合同：
-
-- result 必须存在、非 ref、类型为 `Variant`。
-- 恰好 1 个 argument，类型为 `compiler::GdccForPackedArrayIter`。
-
-C backend 语义：
-
-```c
-$target = gdcc_for_packed_array_iter_get(&$iter);
-```
-
-边界语义：
-
-- 按 `kind` 对缓存基址做指针算术读取元素，并构造 owned Variant（无 per-element `variant_get_indexed`）。
-- lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`
-  （如 `PackedInt32Array` → `int`，`PackedStringArray` → `String`）。
+- `from` 深拷贝 typed Packed*Array（COW），缓存 size/index，并缓存 typed 元素基址指针；snapshot 只读，故缓存基址安全。
+- `get` 对 typed 基址做指针算术并返回 **typed element**（无 kind switch，无 per-element Variant 装箱）。
+- lowering 的 `ForLoopGetItem` 在 element 与 `exposedIteratorType` 兼容时可直接赋值，通常无需 `UnpackVariant`。
 
 ### `gdcc.for_float_iter.init`
 

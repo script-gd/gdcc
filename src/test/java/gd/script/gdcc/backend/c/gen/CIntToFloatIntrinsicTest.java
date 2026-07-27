@@ -2,7 +2,7 @@ package gd.script.gdcc.backend.c.gen;
 
 import gd.script.gdcc.backend.CodegenContext;
 import gd.script.gdcc.backend.ProjectInfo;
-import gd.script.gdcc.backend.c.gen.intrinsic.CIntToFloatIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.conversion.CIntToFloatIntrinsic;
 import gd.script.gdcc.enums.GodotVersion;
 import gd.script.gdcc.exception.InvalidInsnException;
 import gd.script.gdcc.gdextension.ExtensionAPI;

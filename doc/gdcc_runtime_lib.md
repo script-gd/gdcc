@@ -69,9 +69,9 @@ extend the runtime-provided `godot_*` surface.
   - `intrinsic/for_dictionary_iter.h`: heap-shared keys box (`Dictionary_keys()` snapshot + non-atomic
     refcount) + cached contiguous key `Variant*` base; `next`/`copy` only bump refcount; last
     `destroy` frees the box. For-iter locals are single-threaded.
-  - `intrinsic/for_packed_array_iter.h`: typed Packed*Array COW union + kind tag + element base pointer
-    from per-family `operator_index_const(..., 0)`; init uses `gdcc_for_packed_<Family>_iter_from`,
-    `get` materializes owned Variant from the cached pointer (no per-element `variant_get_indexed`).
+  - `intrinsic/for_packed_array_iter.h`: per-family Packed*Array iterator structs (no kind union).
+    Each family owns a typed COW snapshot + typed element base pointer; `get` returns the typed
+    element without runtime family dispatch.
   - these helpers are GDCC-owned runtime support and must keep the `gdcc_*` namespace instead of
     pretending to be generated `godot_*` wrappers
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides

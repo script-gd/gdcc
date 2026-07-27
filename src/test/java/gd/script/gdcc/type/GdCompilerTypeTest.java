@@ -2,6 +2,7 @@ package gd.script.gdcc.type;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
@@ -96,7 +97,9 @@ class GdCompilerTypeTest {
         assertDeepCopyContract(GdccForStringIterType.FOR_STRING_ITER, "gdcc_for_string_iter_copy");
         assertDeepCopyContract(GdccForArrayIterType.FOR_ARRAY_ITER, "gdcc_for_array_iter_copy");
         assertDeepCopyContract(GdccForDictionaryIterType.FOR_DICTIONARY_ITER, "gdcc_for_dictionary_iter_copy");
-        assertDeepCopyContract(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER, "gdcc_for_packed_array_iter_copy");
+        for (var family : GdccForPackedArrayIterType.all()) {
+            assertDeepCopyContract(family, family.getCCopyHelperName());
+        }
     }
 
     @Test
@@ -161,15 +164,15 @@ class GdCompilerTypeTest {
     }
 
     private static List<GdCompilerType> compilerTypes() {
-        return List.of(
-                GdccForRangeIterType.FOR_RANGE_ITER,
-                GdccForVariantIterType.FOR_VARIANT_ITER,
-                GdccForStringIterType.FOR_STRING_ITER,
-                GdccForArrayIterType.FOR_ARRAY_ITER,
-                GdccForDictionaryIterType.FOR_DICTIONARY_ITER,
-                GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
-                GdccForFloatIterType.FOR_FLOAT_ITER
-        );
+        var all = new ArrayList<GdCompilerType>();
+        all.add(GdccForRangeIterType.FOR_RANGE_ITER);
+        all.add(GdccForVariantIterType.FOR_VARIANT_ITER);
+        all.add(GdccForStringIterType.FOR_STRING_ITER);
+        all.add(GdccForArrayIterType.FOR_ARRAY_ITER);
+        all.add(GdccForDictionaryIterType.FOR_DICTIONARY_ITER);
+        all.addAll(GdccForPackedArrayIterType.all());
+        all.add(GdccForFloatIterType.FOR_FLOAT_ITER);
+        return List.copyOf(all);
     }
 
     private static void assertDeepCopyContract(GdCompilerType type, String expectedCopyHelper) {
