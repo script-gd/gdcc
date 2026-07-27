@@ -3,8 +3,8 @@ package gd.script.gdcc.type;
 import org.jetbrains.annotations.NotNull;
 
 /// Compiler-only storage type for lowered Dictionary key `for-in` iterator state.
-/// Holds a snapshot Array of keys extracted at init time, current index, and cached size.
-/// Not direct-struct-assignment safe: contains refcounted Array payload requiring deep copy.
+/// Holds a heap-shared keys snapshot box (non-atomic refcount), current index, and cached size.
+/// Not direct-struct-assignment safe: `copy` must bump the shared box refcount.
 public final class GdccForDictionaryIterType implements GdCompilerType {
     public static final @NotNull GdccForDictionaryIterType FOR_DICTIONARY_ITER = new GdccForDictionaryIterType();
 

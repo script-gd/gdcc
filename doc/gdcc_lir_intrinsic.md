@@ -567,8 +567,8 @@ $target = gdcc_for_array_iter_from_array(&$source);
 
 边界语义：
 
-- 深拷贝 source Array，缓存 size，index 初始化为 0。
-- 不可直接 struct 赋值；需要 `gdcc_for_array_iter_copy` 深拷贝。
+- 共享 source Array 句柄（引用语义，refcount +1），缓存 size，index 初始化为 0。
+- 不可直接 struct 赋值；需要 `gdcc_for_array_iter_copy` 深拷贝句柄。
 
 ### `gdcc.for_array_iter.should_continue`
 
@@ -635,7 +635,7 @@ $target = gdcc_for_array_iter_get(&$iter);
 
 边界语义：
 
-- 返回 `godot_Array_get(&source, index)` 的 Variant 拷贝。
+- 每次 get 用 `godot_array_operator_index_const(&source, index)` 取元素地址并 `godot_new_Variant_with_Variant` 返回 owned 拷贝（避免 `godot_Array_get` 方法分发；不缓存裸基址，因 Array 为引用语义）。
 - lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`。
 
 ### `gdcc.for_dictionary_iter.init`
@@ -661,9 +661,9 @@ $target = gdcc_for_dictionary_iter_from_dictionary(&$source);
 
 边界语义：
 
-- 调用 `godot_Dictionary_keys(source)` 快照所有 key 到内部 Array，缓存 size，index 初始化为 0。
+- 调用 `godot_Dictionary_keys(source)` 将 keys 快照到堆分配 box（`gdcc_for_dictionary_iter_box`，非原子 refcount=1），缓存 size/index，并缓存 keys 连续 `Variant` 基址指针。
 - Godot Dictionary 迭代返回 key，不是 value。
-- 不可直接 struct 赋值；需要 `gdcc_for_dictionary_iter_copy` 深拷贝。
+- 不可直接 struct 赋值；需要 `gdcc_for_dictionary_iter_copy` 共享 box（refcount+1）。for-iter 变量不跨线程。
 
 ### `gdcc.for_dictionary_iter.should_continue`
 
@@ -730,12 +730,12 @@ $target = gdcc_for_dictionary_iter_get(&$iter);
 
 边界语义：
 
-- 返回当前 key 的 Variant 拷贝（从快照 Array 按 index 读取）。
+- 通过缓存的 `Variant*` 基址指针做 `ptr[index]`，再返回 owned Variant key 拷贝（不再每元素 `godot_Array_get`）。
 - lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`。
 
 ### `gdcc.for_packed_array_iter.init`
 
-状态：已冻结（阶段 J batch 2）
+状态：已冻结（阶段 J batch 2；ptr 特化迭代已落地）
 
 LIR 形态：
 
@@ -747,19 +747,18 @@ $<iter_result> = call_intrinsic "gdcc.for_packed_array_iter.init" $<source>;
 
 - result 必须存在、非 ref、类型为 `compiler::GdccForPackedArrayIter`。
 - 恰好 1 个 argument，类型为任何 `GdPackedArrayType`。
-- C backend 在调用 helper 前将具体 Packed*Array pack 为 Variant 快照。
+- C backend 按 concrete Packed* 选择 `gdcc_for_packed_<Family>_iter_from`，不再 pack 为 Variant。
 
 C backend 语义：
 
 ```c
-$tmp = godot_new_Variant_with_<Packed*Array>(&$source);
-$target = gdcc_for_packed_array_iter_from_packed_array(&$tmp);
+$target = gdcc_for_packed_<Family>_iter_from(&$source);
 ```
 
 边界语义：
 
-- 深拷贝 source 为 Variant 载体，缓存 size，index 初始化为 0。
-- 不可直接 struct 赋值；需要 `gdcc_for_packed_array_iter_copy` 深拷贝。
+- 深拷贝 typed Packed*Array（COW），缓存 size，index 初始化为 0，并缓存 `operator_index_const(..., 0)` 元素基址。
+- 不可直接 struct 赋值；需要 `gdcc_for_packed_array_iter_copy` 深拷贝（共享同一 base pointer）。
 
 ### `gdcc.for_packed_array_iter.should_continue`
 
@@ -826,7 +825,7 @@ $target = gdcc_for_packed_array_iter_get(&$iter);
 
 边界语义：
 
-- 通过 `godot_variant_get_indexed` 读取当前元素，返回 Variant 拷贝。
+- 按 `kind` 对缓存基址做指针算术读取元素，并构造 owned Variant（无 per-element `variant_get_indexed`）。
 - lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`
   （如 `PackedInt32Array` → `int`，`PackedStringArray` → `String`）。
 

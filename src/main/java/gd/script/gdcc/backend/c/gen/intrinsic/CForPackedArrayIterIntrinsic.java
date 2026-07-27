@@ -16,15 +16,15 @@ import java.util.List;
 /// Intrinsics for Packed*Array `for-in` iterator state operations.
 ///
 /// Maps LIR intrinsic names (`gdcc.for_packed_array_iter.*`) to C helper symbols
-/// (`gdcc_for_packed_array_iter_*`). The state type is `compiler::GdccForPackedArrayIter`.
-/// The init argument accepts any `GdPackedArrayType` subtype.
+/// (`gdcc_for_packed_array_iter_*` / `gdcc_for_packed_*_iter_from`). Init selects a
+/// type-specialized from-helper so the runtime can snapshot the typed array and cache
+/// a contiguous element base pointer (godot-cpp Iterator style) without packing to Variant.
 public final class CForPackedArrayIterIntrinsic implements CIntrinsicFunction {
     public static final @NotNull String INIT_NAME = "gdcc.for_packed_array_iter.init";
     public static final @NotNull String SHOULD_CONTINUE_NAME = "gdcc.for_packed_array_iter.should_continue";
     public static final @NotNull String NEXT_NAME = "gdcc.for_packed_array_iter.next";
     public static final @NotNull String GET_NAME = "gdcc.for_packed_array_iter.get";
 
-    static final @NotNull String INIT_HELPER_NAME = "gdcc_for_packed_array_iter_from_packed_array";
     static final @NotNull String SHOULD_CONTINUE_HELPER_NAME = "gdcc_for_packed_array_iter_should_continue";
     static final @NotNull String NEXT_HELPER_NAME = "gdcc_for_packed_array_iter_next";
     static final @NotNull String GET_HELPER_NAME = "gdcc_for_packed_array_iter_get";
@@ -38,7 +38,7 @@ public final class CForPackedArrayIterIntrinsic implements CIntrinsicFunction {
     public static @NotNull CForPackedArrayIterIntrinsic init() {
         return new CForPackedArrayIterIntrinsic(new Spec(
                 INIT_NAME,
-                INIT_HELPER_NAME,
+                null,
                 GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
                 List.of(GdVariantType.VARIANT),
                 true
@@ -88,37 +88,48 @@ public final class CForPackedArrayIterIntrinsic implements CIntrinsicFunction {
         checkArgs(bodyBuilder, argVars);
 
         if (spec.acceptAnyPackedArray()) {
-            // Runtime helper snapshots the packed array through a Variant carrier so one state
-            // type covers every Packed*Array subtype without per-family C overloads.
             var sourceVar = argVars.getFirst();
-            var tempVariant = bodyBuilder.newTempVariable("packed_iter_source", GdVariantType.VARIANT);
-            bodyBuilder.declareTempVar(tempVariant);
-            var packFunctionName = bodyBuilder.helper().renderPackFunctionName(sourceVar.type());
-            bodyBuilder.callAssign(
-                    tempVariant,
-                    packFunctionName,
-                    GdVariantType.VARIANT,
-                    List.of(bodyBuilder.valueOfVar(sourceVar))
-            );
+            var helperName = specializedFromHelperName((GdPackedArrayType) sourceVar.type());
             bodyBuilder.callAssign(
                     bodyBuilder.targetOfVar(resultVar),
-                    spec.helperName(),
+                    helperName,
                     spec.resultType(),
-                    List.of(tempVariant)
+                    List.of(bodyBuilder.valueOfVar(sourceVar))
             );
-            bodyBuilder.destroyTempVar(tempVariant);
             return;
         }
 
         var args = argVars.stream()
                 .map(bodyBuilder::valueOfVar)
                 .toList();
+        var helperName = spec.helperName();
+        if (helperName == null) {
+            throw new IllegalStateException("non-init packed array intrinsic requires a helper name");
+        }
         bodyBuilder.callAssign(
                 bodyBuilder.targetOfVar(resultVar),
-                spec.helperName(),
+                helperName,
                 spec.resultType(),
                 args
         );
+    }
+
+    private static @NotNull String specializedFromHelperName(@NotNull GdPackedArrayType packedType) {
+        return switch (packedType.getGdExtensionType()) {
+            case PACKED_BYTE_ARRAY -> "gdcc_for_packed_ByteArray_iter_from";
+            case PACKED_INT32_ARRAY -> "gdcc_for_packed_Int32Array_iter_from";
+            case PACKED_INT64_ARRAY -> "gdcc_for_packed_Int64Array_iter_from";
+            case PACKED_FLOAT32_ARRAY -> "gdcc_for_packed_Float32Array_iter_from";
+            case PACKED_FLOAT64_ARRAY -> "gdcc_for_packed_Float64Array_iter_from";
+            case PACKED_STRING_ARRAY -> "gdcc_for_packed_StringArray_iter_from";
+            case PACKED_VECTOR2_ARRAY -> "gdcc_for_packed_Vector2Array_iter_from";
+            case PACKED_VECTOR3_ARRAY -> "gdcc_for_packed_Vector3Array_iter_from";
+            case PACKED_VECTOR4_ARRAY -> "gdcc_for_packed_Vector4Array_iter_from";
+            case PACKED_COLOR_ARRAY -> "gdcc_for_packed_ColorArray_iter_from";
+            default -> throw new IllegalArgumentException(
+                    "unsupported packed array type for specialized iterator: " + packedType.getTypeName()
+            );
+        };
     }
 
     private void checkResult(@NotNull CBodyBuilder bodyBuilder,
@@ -165,12 +176,15 @@ public final class CForPackedArrayIterIntrinsic implements CIntrinsicFunction {
     }
 
     private record Spec(@NotNull String name,
-                        @NotNull String helperName,
+                        @Nullable String helperName,
                         @NotNull GdType resultType,
                         @NotNull List<GdType> argumentTypes,
                         boolean acceptAnyPackedArray) {
         private Spec {
             argumentTypes = List.copyOf(argumentTypes);
+            if (!acceptAnyPackedArray && (helperName == null || helperName.isBlank())) {
+                throw new IllegalArgumentException("non-init packed array intrinsic requires a helper name");
+            }
         }
     }
 }

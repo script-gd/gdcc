@@ -240,7 +240,7 @@ public final class ForLoweringContractRegistry {
     }
 
     /// Init argumentTypes uses Variant as the family-wide wildcard marker (same as ARRAY/DICTIONARY):
-    /// C backend accepts any GdPackedArrayType and packs it before calling the runtime helper.
+    /// C backend accepts any GdPackedArrayType and dispatches to a typed `gdcc_for_packed_*_iter_from`.
     private static @NotNull FrontendForLoweringContract packedArrayContract() {
         var stateType = GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER;
         var variantType = GdVariantType.VARIANT;

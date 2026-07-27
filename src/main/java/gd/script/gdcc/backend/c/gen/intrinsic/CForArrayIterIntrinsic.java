@@ -16,7 +16,9 @@ import java.util.List;
 /// Intrinsics for Array `for-in` iterator state operations.
 ///
 /// Maps LIR intrinsic names (`gdcc.for_array_iter.*`) to C helper symbols (`gdcc_for_array_iter_*`).
-/// The state type is `compiler::GdccForArrayIter` which iterates an Array by index.
+/// The state type is `compiler::GdccForArrayIter` which holds a shared Array handle + cached size.
+/// Get resolves each element via `operator_index_const` (no raw base-pointer cache: Array is
+/// reference-semantic and may reallocate if resized during iteration).
 /// The init argument accepts any `GdArrayType` regardless of element type parameter.
 public final class CForArrayIterIntrinsic implements CIntrinsicFunction {
     public static final @NotNull String INIT_NAME = "gdcc.for_array_iter.init";
