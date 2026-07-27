@@ -5,8 +5,8 @@
 
 ## 文档状态
 
-- 状态：计划中 / 尚未实施
-- 更新时间：2026-07-27
+- 状态：计划中 / 阶段 0 已锚定，后续阶段尚未实施
+- 更新时间：2026-07-28
 - Godot 对齐版本：`4.5.1-stable`
 - Godot 对齐提交：`f62fdbde15035c5576dad93e586201f4d41ef0cb`
 - 主要事实源：
@@ -746,6 +746,24 @@ ref后该路径会生成无效 C。
 
 验收：测试先证明当前裸 pointer输出，后续每阶段有明确需要更新的断言；不得以删除测试完成迁移。
 
+#### 阶段 0 任务状态
+
+| 任务 | 状态 | 锚定测试 |
+|---|---|---|
+| engine/GDCC/unknown object type rendering | 已完成 | `ObjectValueRepresentationCharacterizationTest.TypeRenderingBaseline` |
+| object locals/parameters/returns/default null | 已完成 | `ObjectValueRepresentationCharacterizationTest.FunctionSurfaceBaseline` |
+| registered call_func/ptrcall object ABI | 已完成 | `ObjectValueRepresentationCharacterizationTest.RegisteredWrapperBaseline` |
+| object assignment/upcast/move-return | 已完成 | `ObjectValueLifecycleCharacterizationTest.AssignmentBaseline`、`MoveReturnBaseline` |
+| constructor/singleton/raw method return | 已完成 | `ObjectValueLifecycleCharacterizationTest.ConstructorSingletonBaseline` |
+| Variant pack/unpack | 已完成 | `ObjectValueLifecycleCharacterizationTest.VariantPackUnpackBaseline` |
+| object equality/null comparison | 已完成 | `ObjectValueLifecycleCharacterizationTest.EqualityBaseline` |
+| RefCounted own/release balance | 已完成 | `ObjectValueLifecycleCharacterizationTest.RefCountedMatrixBaseline` |
+
+阶段 0 仅新增 characterization tests，不修改 production backend 行为。property field 的 C 类型渲染由
+`TypeRenderingBaseline` 锁定；entry.h 结构体模板直接复用该 renderer。registered ptrcall object return
+由 `RegisteredWrapperBaseline` 锚定；exact engine method ptrcall object return 需要完整 engine bind fixture，
+其基线推迟到阶段 3C 实施前补充。
+
 ### 阶段 1：ObjectRefSpec、collector 与声明
 
 主要文件：
@@ -942,20 +960,40 @@ generated C 标记为可运行：
 - raw `GDExtensionObjectPtr`只出现在明确 ABI/layout/helper边界。
 - generated C scanner对违规输出 fail-fast。
 
-### 阶段 5（后续优化，非首次迁移阻塞项）：LIR assert 合并 pass
+### 阶段 5：关联文档、代码注释与迁移说明同步
 
-主要工作：
+主要文件：
 
-- 在 LIR 上基于 `assert_object_live` 做 redundancy elimination。
-- 仅在没有 release/free/overwrite/Godot side-effect 边界时合并或 hoist。
-- 对 `RefCountedStatus.YES` 和 null literal 做常量降级。
-- 保留 runtime hard-fail implicit error edge 语义。
+- `doc/gdcc_c_backend.md`
+- `doc/gdcc_runtime_lib.md`
+- `doc/gdcc_ownership_lifecycle_spec.md`
+- `doc/gdcc_low_ir.md`
+- `doc/gdcc_lir_intrinsic.md`
+- `doc/module_impl/backend/*.md`
+- `src/main/java/gd/script/gdcc/backend/c/gen/**`
+- `src/main/c/codegen/template_451/**`
+- `src/main/c/codegen/include_451/gdcc/**`
+- 阶段 0 新增 characterization tests 的注释
+
+工作：
+
+- 将事实文档中“对象值是裸 C 指针”的旧描述更新为 per-static-type fat ref 表示。
+- 更新 `renderGdTypeInC`、`renderGdTypeRefInC`、`renderValueRef`、slot write、return、pack/unpack、registered wrapper
+  等代码注释，使其描述 internal fat ref 与 raw ABI 边界角色，而不是“对象本身已经是指针”。
+- 在 runtime helper 和 FreeMarker 模板中补充/修正注释，标明哪些 helper 是 pure/const 查询、哪些 helper 会改变
+  ownership/ObjectDB 状态。
+- 将阶段 0 characterization tests 中“当前裸指针基线”的注释更新为“fat-ref 迁移后锚点”，并保留后续阶段刻意变更的断言说明。
+- 在相关模块文档中记录 unknown object type fail-fast、`assert_object_live` 守卫、RefCounted ObjectID reference-bit
+  fast path 和 outbound freed Variant ID 丢失限制。
+- 删除或改写已经失效的 legacy 注释、TODO 和迁移期临时说明；对仍需保留的 function-name allowlist 标注长期迁移方向。
+- 检查计划文档自身状态，将已完成阶段标记为已实施，并保留未完成的长期优化项（例如 LIR assert 合并 pass）作为 backlog。
 
 验收：
 
-- 高频 non-RefCounted 访问路径的 ObjectDB lookup 数量下降。
-- RefCounted 路径无新增 ObjectDB lookup。
-- freed/null/equality/ownership 矩阵无回归。
+- 文档搜索不再把 internal object storage/parameter/return 描述为裸 pointer；raw pointer 只描述为 ABI/layout/helper 边界。
+- 生产代码和模板注释与 generated C 实际输出一致，不引用已删除 helper 或旧 fallback。
+- 阶段 0 测试注释能说明每个断言在 fat-ref 迁移中的预期变化，而不是仅描述旧输出。
+- 关联文档之间的合同引用一致，没有互相矛盾的裸指针/胖引用描述。
 
 ---
 
@@ -965,6 +1003,8 @@ generated C 标记为可运行：
 
 重点更新/扩展：
 
+- `ObjectValueRepresentationCharacterizationTest`
+- `ObjectValueLifecycleCharacterizationTest`
 - `CGenHelperTest`
 - `CBodyBuilderPhaseBTest`
 - `CBodyBuilderPhaseCTest`
