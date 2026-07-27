@@ -1427,9 +1427,10 @@ class FrontendTypeCheckAnalyzerTest {
                 preparedInput.analysisData().forIterationPlans().get(forStatements.get(1))
         );
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, firstPlan.route());
-        assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, secondPlan.route());
+        assertEquals(FrontendForIterationRoute.FLOAT_SHORTHAND, secondPlan.route());
         assertSame(GdVariantType.VARIANT, firstPlan.exposedIteratorType());
         assertEquals("float", secondPlan.semanticElementType().getTypeName());
+        assertEquals("float", secondPlan.exposedIteratorType().getTypeName());
     }
 
     @Test
