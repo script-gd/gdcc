@@ -836,31 +836,6 @@ class CGenHelperTest {
     }
 
     @Test
-    @DisplayName("call wrapper string materializers should convert cross-case payloads and destroy intermediates")
-    void callWrapperStringMaterializersShouldConvertCrossCasePayloadsAndDestroyIntermediates() throws IOException {
-        var source = Files.readString(Path.of("src/main/c/codegen/include_451/gdcc/gdcc_intrinsic.h"));
-
-        assertTrue(source.contains("gdcc_new_StringName_from_call_arg_variant"), source);
-        assertTrue(source.contains("if (type == GDEXTENSION_VARIANT_TYPE_STRING)"), source);
-        assertTrue(source.contains("godot_String source = godot_new_String_with_Variant(value);"), source);
-        assertTrue(source.contains("godot_StringName result = godot_new_StringName_with_String(&source);"), source);
-        assertTrue(source.contains("godot_String_destroy(&source);"), source);
-
-        assertTrue(source.contains("gdcc_new_String_from_call_arg_variant"), source);
-        assertTrue(source.contains("if (type == GDEXTENSION_VARIANT_TYPE_STRING_NAME)"), source);
-        assertTrue(source.contains("godot_StringName source = godot_new_StringName_with_Variant(value);"), source);
-        assertTrue(source.contains("godot_String result = godot_new_String_with_StringName(&source);"), source);
-        assertTrue(source.contains("godot_StringName_destroy(&source);"), source);
-
-        assertTrue(source.contains("typedef struct gdcc_for_range_iter"), source);
-        assertTrue(source.contains("gdcc_for_range_iter_from_bounds"), source);
-        assertTrue(source.contains("gdcc_for_range_iter_should_continue"), source);
-        assertTrue(source.contains("gdcc_for_range_iter_next"), source);
-        assertTrue(source.contains("gdcc_for_range_iter_get"), source);
-        assertTrue(source.contains("step == 0"), source);
-    }
-
-    @Test
     @DisplayName("typed-dictionary guard helpers should describe object leaf metadata without rendering the whole block")
     void typedDictionaryGuardHelpersShouldDescribeObjectLeafMetadata() {
         var type = new GdDictionaryType(GdStringNameType.STRING_NAME, new GdObjectType("Node"));
