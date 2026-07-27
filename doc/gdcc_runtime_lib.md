@@ -68,6 +68,11 @@ extend the runtime-provided `godot_*` surface.
     `range()` utility route, which keeps Godot's native call-error behavior for a zero step.
   - `gdcc_for_range_iter_should_continue()`, `gdcc_for_range_iter_next()` and
     `gdcc_for_range_iter_get()` implement the range intrinsic family
+  - `gdcc_for_packed_array_iter` stores a Variant snapshot of any Packed*Array plus index/size;
+    `from_packed_array` / `should_continue` / `next` / `get` implement index-based iteration via
+    `godot_variant_get_indexed`, with `gdcc_for_packed_array_iter_copy` for deep copy
+  - `gdcc_for_float_iter` stores POD `current/end` floats and implements Godot FLOAT shorthand
+    iteration (`current < end`, step `+1.0`); destroy is a no-op and assignment is direct
   - these helpers are GDCC-owned runtime support and must keep the `gdcc_*` namespace instead of
     pretending to be generated `godot_*` wrappers
 - `gdcc_helper.h`: the aggregate helper header included by generated entry code. It provides

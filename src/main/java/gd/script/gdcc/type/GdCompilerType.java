@@ -13,7 +13,9 @@ import org.jetbrains.annotations.Nullable;
 /// helper names. The shared defaults encode the design invariants: no GDExtension metadata,
 /// destroyable non-object lifecycle, and non-nullable value semantics.
 public sealed interface GdCompilerType extends GdType
-        permits GdccForRangeIterType, GdccForVariantIterType {
+        permits GdccForRangeIterType, GdccForVariantIterType,
+                GdccForStringIterType, GdccForArrayIterType, GdccForDictionaryIterType,
+                GdccForPackedArrayIterType, GdccForFloatIterType {
 
     /// LIR-only text grammar: `compiler::<Name>`, recognized solely by the LIR parser/serializer.
     @NotNull String getLirTypeText();

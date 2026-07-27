@@ -6,7 +6,13 @@ import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.lir.*;
 import gd.script.gdcc.lir.insn.*;
 import gd.script.gdcc.type.GdFloatType;
+import gd.script.gdcc.type.GdccForArrayIterType;
+import gd.script.gdcc.type.GdccForDictionaryIterType;
+import gd.script.gdcc.type.GdccForFloatIterType;
+import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForStringIterType;
+import gd.script.gdcc.type.GdccForVariantIterType;
 import gd.script.gdcc.type.GdObjectType;
 import org.junit.jupiter.api.Test;
 
@@ -98,7 +104,13 @@ public class DomLirSerializerTest {
     @Test
     public void serialize_module_usesCompilerOnlyGrammarForFunctionVariables() throws Exception {
         var fn = new LirFunctionDef("_init", "entry");
-        fn.createAndAddVariable("iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        fn.createAndAddVariable("range_iter", GdccForRangeIterType.FOR_RANGE_ITER);
+        fn.createAndAddVariable("string_iter", GdccForStringIterType.FOR_STRING_ITER);
+        fn.createAndAddVariable("array_iter", GdccForArrayIterType.FOR_ARRAY_ITER);
+        fn.createAndAddVariable("dictionary_iter", GdccForDictionaryIterType.FOR_DICTIONARY_ITER);
+        fn.createAndAddVariable("variant_iter", GdccForVariantIterType.FOR_VARIANT_ITER);
+        fn.createAndAddVariable("packed_array_iter", GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER);
+        fn.createAndAddVariable("float_iter", GdccForFloatIterType.FOR_FLOAT_ITER);
         fn.addBasicBlock(new LirBasicBlock("entry", List.of(new ReturnInsn(null))));
 
         var cls = new LirClassDef("RotatingCamera", "Camera3D", false, false, Map.of(), List.of(), List.of(), List.of(fn));
@@ -108,7 +120,19 @@ public class DomLirSerializerTest {
         var xml = serializer.serializeToString(module);
 
         assertTrue(xml.contains("type=\"compiler::GdccForRangeIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForStringIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForArrayIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForDictionaryIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForVariantIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForPackedArrayIter\""), xml);
+        assertTrue(xml.contains("type=\"compiler::GdccForFloatIter\""), xml);
         assertFalse(xml.contains("type=\"GdccForRangeIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForStringIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForArrayIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForDictionaryIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForVariantIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForPackedArrayIter\""), xml);
+        assertFalse(xml.contains("type=\"GdccForFloatIter\""), xml);
     }
 
     @Test

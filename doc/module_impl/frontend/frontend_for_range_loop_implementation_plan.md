@@ -4,9 +4,9 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；阶段 G frontend CFG graph 已完成：`FrontendCfgGraphBuilder.processForStatement(...)` 建立 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证；阶段 H range route LIR lowering 已完成：`FrontendBodyLoweringSession.declareForLoopSlots(...)` 在 block materialization 前预声明 hidden state / next temp / source iterator local，`FrontendSequenceItemInsnLoweringProcessors` 新增四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` `CallIntrinsicInsn` 与 temp-then-commit `AssignInsn`；阶段 I generic Variant iterator route 已完成：`GdccForVariantIterType` compiler-only state type 已冻结（含 copy helper），`gdcc.for_variant_iter.*` intrinsic catalog 已注册到 `ForLoweringContractRegistry` 与 `CIntrinsicManager`，C runtime `gdcc_for_variant_iter_*` helper 经 GDExtension `variant_iter_init/next/get` API 实现，compile gate 自然解封 GENERIC_VARIANT route；range/int/generic 端到端生产闭环（C/D0/D1/E/F/G/H/I）已原子合并）
+- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；阶段 G frontend CFG graph 已完成：`FrontendCfgGraphBuilder.processForStatement(...)` 建立 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证；阶段 H range route LIR lowering 已完成：`FrontendBodyLoweringSession.declareForLoopSlots(...)` 在 block materialization 前预声明 hidden state / next temp / source iterator local，`FrontendSequenceItemInsnLoweringProcessors` 新增四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` `CallIntrinsicInsn` 与 temp-then-commit `AssignInsn`；阶段 I generic Variant iterator route 已完成：`GdccForVariantIterType` compiler-only state type 已冻结（含 copy helper），`gdcc.for_variant_iter.*` intrinsic catalog 已注册到 `ForLoweringContractRegistry` 与 `CIntrinsicManager`，C runtime `gdcc_for_variant_iter_*` helper 经 GDExtension `variant_iter_init/next/get` API 实现，compile gate 自然解封 GENERIC_VARIANT route；阶段 J known iterable 专用 route 已完成 STRING/ARRAY/DICTIONARY_KEYS/PACKED_ARRAY/FLOAT_SHORTHAND（OBJECT_CUSTOM 仍延后）：`GdccForStringIterType`/`GdccForArrayIterType`/`GdccForDictionaryIterType`/`GdccForPackedArrayIterType`/`GdccForFloatIterType`、对应 `gdcc.for_*_iter.*` intrinsic catalog、C runtime helper 与 `selectKnownRoute` readiness gate 均已落地；range/int/generic/known-iterable 端到端生产闭环（C/D0/D1/E/F/G/H/I/J）已原子合并）
 - 创建日期：2026-07-03
-- 更新时间：2026-07-26
+- 更新时间：2026-07-27
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -1174,6 +1174,8 @@ private static void reportNonIterableType(
 
 ### 阶段 J：known iterable 专用 route
 
+状态：第二批（PACKED_ARRAY/FLOAT_SHORTHAND）已完成；OBJECT_CUSTOM 仍延后。`FrontendForLoopSupport.selectKnownRoute(...)` 按 readiness gate 选择专用 route（contract 已注册时使用专用 route，否则 fallback GENERIC_VARIANT）。`GdccForStringIterType`/`GdccForArrayIterType`/`GdccForDictionaryIterType`/`GdccForPackedArrayIterType` compiler-only state type 已冻结（均含 copy helper，`isDirectStructAssignmentSafe() == false`）；`GdccForFloatIterType` 为 POD float 状态（direct struct assignment）。C runtime helper：String `substr(index, 1)`；Array `Array_get`；Dictionary `keys()` 快照；Packed*Array Variant 快照 + `variant_get_indexed`；Float 匹配 Godot `Variant::iter_*` FLOAT（`0.0, 1.0, ...` while `current < end`，非 int `ceil` range）。`gdcc.for_string_iter.*`/`gdcc.for_array_iter.*`/`gdcc.for_dictionary_iter.*`/`gdcc.for_packed_array_iter.*`/`gdcc.for_float_iter.*` intrinsic catalog 已注册到 `ForLoweringContractRegistry` 与 `CIntrinsicManager`。ARRAY/DICTIONARY_KEYS/PACKED_ARRAY 的 C intrinsic init 接受对应 family 任意子类型。`FrontendLoweringBodyInsnPassTest` 与 `control_flow/for_known_iterable_loop.gd` 锁定全部已启用 known route 的 LIR 与端到端闭环。
+
 目标：
 
 - 在不改变 shared semantic 支持面的前提下，为可静态确定的 iterable 类型提供高性能 route。
@@ -1276,10 +1278,11 @@ private static void reportNonIterableType(
 - get lowering 测试锁定 raw-element temp、必要 conversion、source-facing iterator local commit 的顺序。
 - compiler-only boundary 负向测试覆盖 state/next temp 不得进入 ordinary call argument、return、property/store、Variant pack/unpack 或 public ABI；不使用源码文本扫描代替行为断言。
 - generic Variant route 完成后，测试锁住 generic iterator intrinsic sequence。
-- `DomLirParserTest` / `DomLirSerializerTest` 覆盖新增 compiler-only iterator state round-trip。
+- known String、typed Array 与 typed Dictionary route 分别锁住专用 intrinsic sequence、compiler-only state type 与 source-facing element materialization；String 直接提交 `String`，Array/Dictionary key 由 `Variant` unpack 到具体类型。
+- `DomLirParserTest` / `DomLirSerializerTest` 覆盖全部 compiler-only iterator state 的 LIR text parse/serialize grammar。
 - `GdccForRangeIterTypeTest` / `GdCompilerTypeTest` 继续覆盖 compiler-only type contract。
 - `GdccForRangeIterIntrinsicTest` / `CallIntrinsicInsnGenTest` 继续覆盖 intrinsic C generation。
-- 如 test-suite 已具备可运行 GDScript fixture，再增加 `range(3)`、`range(1, 3)`、`range(2, 8, 2)`、`range(8, 2, -2)`、generic `Array` / `Dictionary` route 的 runtime output 锚点。
+- test-suite 的 `control_flow/for_range_loop.gd` 锁住 range/int shorthand，`control_flow/for_generic_variant_loop.gd` 锁住 untyped generic Variant route；`control_flow/for_known_iterable_loop.gd` 锁住 typed String、Array 与 Dictionary key route 的 runtime output。每个 known route 均覆盖非空和空输入。
 
 ## 6. 建议 targeted test 命令
 

@@ -443,6 +443,494 @@ $target = gdcc_for_variant_iter_get(&$iter);
 
 - `doc/module_impl/frontend/frontend_gdcompiler_type_implementation.md`
 
+### `gdcc.for_string_iter.init`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<iter_result> = call_intrinsic "gdcc.for_string_iter.init" $<source>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForStringIter`。
+- 恰好 1 个 argument，类型为 `String`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_string_iter_from_string(&$source);
+```
+
+边界语义：
+
+- 深拷贝 source String，缓存 length，index 初始化为 0。
+- 不可直接 struct 赋值；需要 `gdcc_for_string_iter_copy` 深拷贝。
+
+### `gdcc.for_string_iter.should_continue`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<bool_result> = call_intrinsic "gdcc.for_string_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `bool`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForStringIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_string_iter_should_continue(&$iter);
+```
+
+边界语义：
+
+- `index < length` 时返回 true。
+
+### `gdcc.for_string_iter.next`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<next_iter_result> = call_intrinsic "gdcc.for_string_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForStringIter`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForStringIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_string_iter_next(&$iter);
+```
+
+边界语义：
+
+- 深拷贝 source String，index + 1，length 不变。返回新 state 值。
+
+### `gdcc.for_string_iter.get`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<string_result> = call_intrinsic "gdcc.for_string_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `String`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForStringIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_string_iter_get(&$iter);
+```
+
+边界语义：
+
+- 返回 `godot_String_substr(&source, index, 1)`，即单字符 String，匹配 Godot `Variant::iter_get` 语义。
+
+### `gdcc.for_array_iter.init`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<iter_result> = call_intrinsic "gdcc.for_array_iter.init" $<source>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForArrayIter`。
+- 恰好 1 个 argument，类型为任何 `GdArrayType`（接受 typed 和 untyped Array）。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_array_iter_from_array(&$source);
+```
+
+边界语义：
+
+- 深拷贝 source Array，缓存 size，index 初始化为 0。
+- 不可直接 struct 赋值；需要 `gdcc_for_array_iter_copy` 深拷贝。
+
+### `gdcc.for_array_iter.should_continue`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<bool_result> = call_intrinsic "gdcc.for_array_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `bool`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForArrayIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_array_iter_should_continue(&$iter);
+```
+
+### `gdcc.for_array_iter.next`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<next_iter_result> = call_intrinsic "gdcc.for_array_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForArrayIter`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForArrayIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_array_iter_next(&$iter);
+```
+
+### `gdcc.for_array_iter.get`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<variant_result> = call_intrinsic "gdcc.for_array_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `Variant`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForArrayIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_array_iter_get(&$iter);
+```
+
+边界语义：
+
+- 返回 `godot_Array_get(&source, index)` 的 Variant 拷贝。
+- lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`。
+
+### `gdcc.for_dictionary_iter.init`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<iter_result> = call_intrinsic "gdcc.for_dictionary_iter.init" $<source>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForDictionaryIter`。
+- 恰好 1 个 argument，类型为任何 `GdDictionaryType`（接受 typed 和 untyped Dictionary）。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_dictionary_iter_from_dictionary(&$source);
+```
+
+边界语义：
+
+- 调用 `godot_Dictionary_keys(source)` 快照所有 key 到内部 Array，缓存 size，index 初始化为 0。
+- Godot Dictionary 迭代返回 key，不是 value。
+- 不可直接 struct 赋值；需要 `gdcc_for_dictionary_iter_copy` 深拷贝。
+
+### `gdcc.for_dictionary_iter.should_continue`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<bool_result> = call_intrinsic "gdcc.for_dictionary_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `bool`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForDictionaryIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_dictionary_iter_should_continue(&$iter);
+```
+
+### `gdcc.for_dictionary_iter.next`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<next_iter_result> = call_intrinsic "gdcc.for_dictionary_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForDictionaryIter`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForDictionaryIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_dictionary_iter_next(&$iter);
+```
+
+### `gdcc.for_dictionary_iter.get`
+
+状态：已冻结（阶段 J batch 1）
+
+LIR 形态：
+
+```
+$<variant_result> = call_intrinsic "gdcc.for_dictionary_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `Variant`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForDictionaryIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_dictionary_iter_get(&$iter);
+```
+
+边界语义：
+
+- 返回当前 key 的 Variant 拷贝（从快照 Array 按 index 读取）。
+- lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`。
+
+### `gdcc.for_packed_array_iter.init`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<iter_result> = call_intrinsic "gdcc.for_packed_array_iter.init" $<source>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForPackedArrayIter`。
+- 恰好 1 个 argument，类型为任何 `GdPackedArrayType`。
+- C backend 在调用 helper 前将具体 Packed*Array pack 为 Variant 快照。
+
+C backend 语义：
+
+```c
+$tmp = godot_new_Variant_with_<Packed*Array>(&$source);
+$target = gdcc_for_packed_array_iter_from_packed_array(&$tmp);
+```
+
+边界语义：
+
+- 深拷贝 source 为 Variant 载体，缓存 size，index 初始化为 0。
+- 不可直接 struct 赋值；需要 `gdcc_for_packed_array_iter_copy` 深拷贝。
+
+### `gdcc.for_packed_array_iter.should_continue`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<bool_result> = call_intrinsic "gdcc.for_packed_array_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `bool`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForPackedArrayIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_packed_array_iter_should_continue(&$iter);
+```
+
+### `gdcc.for_packed_array_iter.next`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<next_iter_result> = call_intrinsic "gdcc.for_packed_array_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForPackedArrayIter`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForPackedArrayIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_packed_array_iter_next(&$iter);
+```
+
+### `gdcc.for_packed_array_iter.get`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<variant_result> = call_intrinsic "gdcc.for_packed_array_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `Variant`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForPackedArrayIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_packed_array_iter_get(&$iter);
+```
+
+边界语义：
+
+- 通过 `godot_variant_get_indexed` 读取当前元素，返回 Variant 拷贝。
+- lowering 的 `ForLoopGetItem` 经 `materializeFrontendBoundaryValue` 将 `Variant` → `exposedIteratorType`
+  （如 `PackedInt32Array` → `int`，`PackedStringArray` → `String`）。
+
+### `gdcc.for_float_iter.init`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<iter_result> = call_intrinsic "gdcc.for_float_iter.init" $<end>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForFloatIter`。
+- 恰好 1 个 argument，类型为 `float`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_float_iter_from_end($end);
+```
+
+边界语义：
+
+- 匹配 Godot `Variant::iter_init` FLOAT：`current = 0.0`，`end = n`。
+- POD 状态，允许 direct struct assignment。
+
+### `gdcc.for_float_iter.should_continue`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<bool_result> = call_intrinsic "gdcc.for_float_iter.should_continue" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `bool`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForFloatIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_float_iter_should_continue(&$iter);
+```
+
+边界语义：
+
+- 返回 `current < end`。因此 `n <= 0.0` 零次迭代；`3.5` 产生 `0.0, 1.0, 2.0, 3.0`。
+
+### `gdcc.for_float_iter.next`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<next_iter_result> = call_intrinsic "gdcc.for_float_iter.next" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `compiler::GdccForFloatIter`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForFloatIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_float_iter_next(&$iter);
+```
+
+边界语义：
+
+- `current = current + 1.0`，匹配 Godot `Variant::iter_next` FLOAT。
+
+### `gdcc.for_float_iter.get`
+
+状态：已冻结（阶段 J batch 2）
+
+LIR 形态：
+
+```
+$<float_result> = call_intrinsic "gdcc.for_float_iter.get" $<iter>;
+```
+
+合同：
+
+- result 必须存在、非 ref、类型为 `float`。
+- 恰好 1 个 argument，类型为 `compiler::GdccForFloatIter`。
+
+C backend 语义：
+
+```c
+$target = gdcc_for_float_iter_get(&$iter);
+```
+
+边界语义：
+
+- 返回当前 float 计数器；exposed iterator type 已是 `float` 时无需 Variant unpack。
+
 ## 新增 Intrinsic Checklist
 
 新增 intrinsic 时按以下顺序维护：

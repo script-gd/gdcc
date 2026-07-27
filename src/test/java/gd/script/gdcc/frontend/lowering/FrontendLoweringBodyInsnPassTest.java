@@ -67,7 +67,12 @@ import gd.script.gdcc.lir.insn.VariantSetNamedInsn;
 import gd.script.gdcc.scope.ClassRegistry;
 import gd.script.gdcc.scope.ScopeOwnerKind;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdccForArrayIterType;
+import gd.script.gdcc.type.GdccForDictionaryIterType;
+import gd.script.gdcc.type.GdccForFloatIterType;
+import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForStringIterType;
 import gd.script.gdcc.type.GdccForVariantIterType;
 import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdFloatVectorType;
@@ -6866,7 +6871,7 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
-    void runLowersGenericVariantForLoopWithTypedIteratorUnpacking() throws Exception {
+    void runLowersTypedArrayForLoopThroughArrayIntrinsicsAndUnpacksItems() throws Exception {
         var prepared = prepareContext(
                 "body_insn_for_variant_typed.gd",
                 """
@@ -6890,21 +6895,211 @@ class FrontendLoweringBodyInsnPassTest {
         new FrontendLoweringBodyInsnPass().run(prepared.context());
 
         var function = pingContext.targetFunction();
-        var get = forVariantIntrinsics(function, "init");
         var instructions = allInstructions(function);
+        var get = forArrayIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(instructions);
+        var committedSource = assigns.get("item");
 
         assertAll(
                 () -> assertFalse(prepared.diagnostics().hasErrors()),
-                // generic route still uses variant iter state
-                () -> assertEquals(GdccForVariantIterType.FOR_VARIANT_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                // Array[int] uses the dedicated ARRAY route, never the generic Variant route.
+                () -> assertEquals(GdccForArrayIterType.FOR_ARRAY_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForArrayIterType.FOR_ARRAY_ITER, requireVariableType(function, "cfg_for_iter_next_0")),
                 // source-facing iterator local is int (semanticElementType from Array[int])
                 () -> assertEquals(GdIntType.INT, requireVariableType(function, "item")),
-                // get intrinsic returns Variant, then an unpack converts Variant → int for the source local
-                () -> assertEquals(1, forVariantIntrinsics(function, "get").size()),
+                () -> assertEquals(1, forArrayIntrinsics(function, "init").size()),
+                () -> assertEquals(1, forArrayIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, forArrayIntrinsics(function, "next").size()),
+                // get returns Variant, then unpacking converts it to the typed source iterator local.
                 () -> assertEquals(GdVariantType.VARIANT,
-                        requireIntrinsicResultType(function, forVariantIntrinsics(function, "get").getFirst())),
-                // an UnpackVariantInsn bridges the Variant get result to the int source local
-                () -> assertTrue(instructions.stream().anyMatch(UnpackVariantInsn.class::isInstance))
+                        requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertNotEquals(get.getFirst().resultId(), committedSource),
+                () -> assertTrue(unpackResultIds(instructions).contains(committedSource))
+        );
+    }
+
+    @Test
+    void runLowersTypedStringForLoopThroughStringIntrinsicsWithoutUnpack() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_string.gd",
+                """
+                        class_name BodyInsnForString
+                        extends RefCounted
+
+                        func ping(text: String):
+                            for character in text:
+                                print(character)
+                        """,
+                Map.of("BodyInsnForString", "RuntimeBodyInsnForString"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForString",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var get = forStringIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(instructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GdccForStringIterType.FOR_STRING_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForStringIterType.FOR_STRING_ITER, requireVariableType(function, "cfg_for_iter_next_0")),
+                () -> assertEquals(GdStringType.STRING, requireVariableType(function, "character")),
+                () -> assertEquals(1, forStringIntrinsics(function, "init").size()),
+                () -> assertEquals(1, forStringIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, forStringIntrinsics(function, "next").size()),
+                // String get already returns the exposed String element, so no Variant unpack occurs.
+                () -> assertEquals(GdStringType.STRING, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertEquals(get.getFirst().resultId(), assigns.get("character")),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersPackedArrayForLoopThroughPackedArrayIntrinsicsAndUnpacksItems() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_packed_array.gd",
+                """
+                        class_name BodyInsnForPackedArray
+                        extends RefCounted
+
+                        func ping(values: PackedInt32Array):
+                            for item in values:
+                                print(item)
+                        """,
+                Map.of("BodyInsnForPackedArray", "RuntimeBodyInsnForPackedArray"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForPackedArray",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var get = forPackedArrayIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(instructions);
+        var committedSource = assigns.get("item");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
+                        requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
+                        requireVariableType(function, "cfg_for_iter_next_0")),
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "item")),
+                () -> assertEquals(1, forPackedArrayIntrinsics(function, "init").size()),
+                () -> assertEquals(1, forPackedArrayIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, forPackedArrayIntrinsics(function, "next").size()),
+                () -> assertEquals(GdVariantType.VARIANT, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertNotEquals(get.getFirst().resultId(), committedSource),
+                () -> assertTrue(unpackResultIds(instructions).contains(committedSource))
+        );
+    }
+
+    @Test
+    void runLowersFloatShorthandForLoopThroughFloatIntrinsicsWithoutUnpack() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_float.gd",
+                """
+                        class_name BodyInsnForFloat
+                        extends RefCounted
+
+                        func ping(limit: float):
+                            for value in limit:
+                                print(value)
+                        """,
+                Map.of("BodyInsnForFloat", "RuntimeBodyInsnForFloat"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForFloat",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var get = forFloatIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(instructions);
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GdccForFloatIterType.FOR_FLOAT_ITER, requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForFloatIterType.FOR_FLOAT_ITER, requireVariableType(function, "cfg_for_iter_next_0")),
+                () -> assertEquals(GdFloatType.FLOAT, requireVariableType(function, "value")),
+                () -> assertEquals(1, forFloatIntrinsics(function, "init").size()),
+                () -> assertEquals(1, forFloatIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, forFloatIntrinsics(function, "next").size()),
+                () -> assertEquals(GdFloatType.FLOAT, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertEquals(get.getFirst().resultId(), assigns.get("value")),
+                () -> assertEquals(0, countInstructions(instructions, UnpackVariantInsn.class))
+        );
+    }
+
+    @Test
+    void runLowersTypedDictionaryForLoopThroughDictionaryIntrinsicsAndUnpacksKeys() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_dictionary.gd",
+                """
+                        class_name BodyInsnForDictionary
+                        extends RefCounted
+
+                        func ping(table: Dictionary[String, int]):
+                            for key in table:
+                                print(key)
+                        """,
+                Map.of("BodyInsnForDictionary", "RuntimeBodyInsnForDictionary"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForDictionary",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var get = forDictionaryIntrinsics(function, "get");
+        var assigns = assignSourcesByTarget(instructions);
+        var committedSource = assigns.get("key");
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GdccForDictionaryIterType.FOR_DICTIONARY_ITER,
+                        requireVariableType(function, "cfg_for_iter_0")),
+                () -> assertEquals(GdccForDictionaryIterType.FOR_DICTIONARY_ITER,
+                        requireVariableType(function, "cfg_for_iter_next_0")),
+                // Dictionary iteration exposes its typed key, not its value.
+                () -> assertEquals(GdStringType.STRING, requireVariableType(function, "key")),
+                () -> assertEquals(1, forDictionaryIntrinsics(function, "init").size()),
+                () -> assertEquals(1, forDictionaryIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, get.size()),
+                () -> assertEquals(1, forDictionaryIntrinsics(function, "next").size()),
+                () -> assertEquals(GdVariantType.VARIANT, requireIntrinsicResultType(function, get.getFirst())),
+                () -> assertNotEquals(get.getFirst().resultId(), committedSource),
+                () -> assertTrue(unpackResultIds(instructions).contains(committedSource))
         );
     }
 
@@ -7238,6 +7433,66 @@ class FrontendLoweringBodyInsnPassTest {
             @NotNull String operationSuffix
     ) {
         var intrinsicName = "gdcc.for_variant_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forArrayIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_array_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forStringIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_string_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forDictionaryIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_dictionary_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forPackedArrayIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_packed_array_iter." + operationSuffix;
+        return allInstructions(function).stream()
+                .filter(CallIntrinsicInsn.class::isInstance)
+                .map(CallIntrinsicInsn.class::cast)
+                .filter(insn -> insn.intrinsicName().equals(intrinsicName))
+                .toList();
+    }
+
+    private static @NotNull List<CallIntrinsicInsn> forFloatIntrinsics(
+            @NotNull LirFunctionDef function,
+            @NotNull String operationSuffix
+    ) {
+        var intrinsicName = "gdcc.for_float_iter." + operationSuffix;
         return allInstructions(function).stream()
                 .filter(CallIntrinsicInsn.class::isInstance)
                 .map(CallIntrinsicInsn.class::cast)

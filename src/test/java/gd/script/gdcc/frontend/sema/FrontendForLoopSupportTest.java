@@ -142,13 +142,12 @@ class FrontendForLoopSupportTest {
         assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, variantPlan.route());
         assertSame(GdVariantType.VARIANT, variantPlan.semanticElementType());
 
-        // Float shorthand is not specialized yet, so a float iterable stays on the generic route.
         var floatPlan = FrontendForLoopSupport.buildPlan(
                 forStatement("item", null, values),
                 null,
                 GdFloatType.FLOAT
         );
-        assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, floatPlan.route());
+        assertEquals(FrontendForIterationRoute.FLOAT_SHORTHAND, floatPlan.route());
         assertSame(GdFloatType.FLOAT, floatPlan.semanticElementType());
     }
 
@@ -177,30 +176,39 @@ class FrontendForLoopSupportTest {
     void resolvesSemanticElementTypesForKnownIterableFamilies() {
         var iterable = new IdentifierExpression("values", RANGE);
 
-        assertPlanSemanticElement(iterable, GdStringType.STRING, GdStringType.STRING);
-        assertPlanSemanticElement(iterable, new GdArrayType(GdIntType.INT), GdIntType.INT);
+        assertPlanSemanticElement(iterable, GdStringType.STRING, GdStringType.STRING, FrontendForIterationRoute.STRING);
+        assertPlanSemanticElement(iterable, new GdArrayType(GdIntType.INT), GdIntType.INT, FrontendForIterationRoute.ARRAY);
         assertPlanSemanticElement(
                 iterable,
                 new GdDictionaryType(GdStringType.STRING, GdIntType.INT),
-                GdStringType.STRING
+                GdStringType.STRING,
+                FrontendForIterationRoute.DICTIONARY_KEYS
         );
         assertPlanSemanticElement(
                 iterable,
                 GdPackedNumericArrayType.PACKED_FLOAT64_ARRAY,
-                GdFloatType.FLOAT
+                GdFloatType.FLOAT,
+                FrontendForIterationRoute.PACKED_ARRAY
         );
-        assertPlanSemanticElement(iterable, GdFloatType.FLOAT, GdFloatType.FLOAT);
+        assertPlanSemanticElement(
+                iterable,
+                GdFloatType.FLOAT,
+                GdFloatType.FLOAT,
+                FrontendForIterationRoute.FLOAT_SHORTHAND
+        );
     }
 
     @Test
     void resolvesVariantSemanticElementForUntypedContainersAndDynamicTypes() {
         var iterable = new IdentifierExpression("values", RANGE);
 
-        assertPlanSemanticElement(iterable, new GdArrayType(GdVariantType.VARIANT), GdVariantType.VARIANT);
+        assertPlanSemanticElement(iterable, new GdArrayType(GdVariantType.VARIANT), GdVariantType.VARIANT,
+                FrontendForIterationRoute.ARRAY);
         assertPlanSemanticElement(
                 iterable,
                 new GdDictionaryType(GdVariantType.VARIANT, GdVariantType.VARIANT),
-                GdVariantType.VARIANT
+                GdVariantType.VARIANT,
+                FrontendForIterationRoute.DICTIONARY_KEYS
         );
         assertPlanSemanticElement(iterable, new GdObjectType("Object"), GdVariantType.VARIANT);
         assertPlanSemanticElement(iterable, GdVariantType.VARIANT, GdVariantType.VARIANT);
@@ -333,8 +341,17 @@ class FrontendForLoopSupportTest {
             @NotNull GdType iterableType,
             @NotNull GdType expectedElementType
     ) {
+        assertPlanSemanticElement(iterable, iterableType, expectedElementType, FrontendForIterationRoute.GENERIC_VARIANT);
+    }
+
+    private static void assertPlanSemanticElement(
+            @NotNull Expression iterable,
+            @NotNull GdType iterableType,
+            @NotNull GdType expectedElementType,
+            @NotNull FrontendForIterationRoute expectedRoute
+    ) {
         var plan = FrontendForLoopSupport.buildPlan(forStatement("item", null, iterable), null, iterableType);
-        assertEquals(FrontendForIterationRoute.GENERIC_VARIANT, plan.route());
+        assertEquals(expectedRoute, plan.route());
         assertSame(expectedElementType, plan.semanticElementType());
         assertSame(expectedElementType, plan.exposedIteratorType());
     }

@@ -1,12 +1,24 @@
 package gd.script.gdcc.frontend.lowering;
 
+import gd.script.gdcc.backend.c.gen.intrinsic.CForArrayIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForDictionaryIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForFloatIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForPackedArrayIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.CForRangeIterIntrinsic;
+import gd.script.gdcc.backend.c.gen.intrinsic.CForStringIterIntrinsic;
 import gd.script.gdcc.backend.c.gen.intrinsic.CForVariantIterIntrinsic;
 import gd.script.gdcc.frontend.sema.FrontendForIterationRoute;
 import gd.script.gdcc.type.GdBoolType;
+import gd.script.gdcc.type.GdFloatType;
 import gd.script.gdcc.type.GdIntType;
+import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.type.GdVariantType;
+import gd.script.gdcc.type.GdccForArrayIterType;
+import gd.script.gdcc.type.GdccForDictionaryIterType;
+import gd.script.gdcc.type.GdccForFloatIterType;
+import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForStringIterType;
 import gd.script.gdcc.type.GdccForVariantIterType;
 import org.junit.jupiter.api.Test;
 
@@ -47,12 +59,47 @@ class ForLoweringContractRegistryTest {
     }
 
     @Test
+    void stringRouteExposesFrozenStringContract() {
+        var contract = ForLoweringContractRegistry.get(FrontendForIterationRoute.STRING);
+        assertNotNull(contract);
+        assertSame(GdccForStringIterType.FOR_STRING_ITER, contract.iteratorStateType());
+        assertStringOperationSignatures(contract);
+    }
+
+    @Test
+    void arrayRouteExposesFrozenArrayContract() {
+        var contract = ForLoweringContractRegistry.get(FrontendForIterationRoute.ARRAY);
+        assertNotNull(contract);
+        assertSame(GdccForArrayIterType.FOR_ARRAY_ITER, contract.iteratorStateType());
+        assertArrayOperationSignatures(contract);
+    }
+
+    @Test
+    void dictionaryKeysRouteExposesFrozenDictionaryContract() {
+        var contract = ForLoweringContractRegistry.get(FrontendForIterationRoute.DICTIONARY_KEYS);
+        assertNotNull(contract);
+        assertSame(GdccForDictionaryIterType.FOR_DICTIONARY_ITER, contract.iteratorStateType());
+        assertDictionaryOperationSignatures(contract);
+    }
+
+    @Test
+    void packedArrayRouteExposesFrozenPackedArrayContract() {
+        var contract = ForLoweringContractRegistry.get(FrontendForIterationRoute.PACKED_ARRAY);
+        assertNotNull(contract);
+        assertSame(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER, contract.iteratorStateType());
+        assertPackedArrayOperationSignatures(contract);
+    }
+
+    @Test
+    void floatShorthandRouteExposesFrozenFloatContract() {
+        var contract = ForLoweringContractRegistry.get(FrontendForIterationRoute.FLOAT_SHORTHAND);
+        assertNotNull(contract);
+        assertSame(GdccForFloatIterType.FOR_FLOAT_ITER, contract.iteratorStateType());
+        assertFloatOperationSignatures(contract);
+    }
+
+    @Test
     void reservedRoutesAreNotCompileReady() {
-        assertNull(ForLoweringContractRegistry.get(FrontendForIterationRoute.FLOAT_SHORTHAND));
-        assertNull(ForLoweringContractRegistry.get(FrontendForIterationRoute.STRING));
-        assertNull(ForLoweringContractRegistry.get(FrontendForIterationRoute.ARRAY));
-        assertNull(ForLoweringContractRegistry.get(FrontendForIterationRoute.DICTIONARY_KEYS));
-        assertNull(ForLoweringContractRegistry.get(FrontendForIterationRoute.PACKED_ARRAY));
         assertNull(ForLoweringContractRegistry.get(FrontendForIterationRoute.OBJECT_CUSTOM));
     }
 
@@ -76,6 +123,61 @@ class ForLoweringContractRegistryTest {
         );
         assertEquals(CForVariantIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.VARIANT_NEXT_INTRINSIC);
         assertEquals(CForVariantIterIntrinsic.GET_NAME, ForLoweringContractRegistry.VARIANT_GET_INTRINSIC);
+    }
+
+    @Test
+    void stringIntrinsicNamesStayAlignedWithBackendContract() {
+        assertEquals(CForStringIterIntrinsic.INIT_NAME, ForLoweringContractRegistry.STRING_INIT_INTRINSIC);
+        assertEquals(
+                CForStringIterIntrinsic.SHOULD_CONTINUE_NAME,
+                ForLoweringContractRegistry.STRING_SHOULD_CONTINUE_INTRINSIC
+        );
+        assertEquals(CForStringIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.STRING_NEXT_INTRINSIC);
+        assertEquals(CForStringIterIntrinsic.GET_NAME, ForLoweringContractRegistry.STRING_GET_INTRINSIC);
+    }
+
+    @Test
+    void arrayIntrinsicNamesStayAlignedWithBackendContract() {
+        assertEquals(CForArrayIterIntrinsic.INIT_NAME, ForLoweringContractRegistry.ARRAY_INIT_INTRINSIC);
+        assertEquals(
+                CForArrayIterIntrinsic.SHOULD_CONTINUE_NAME,
+                ForLoweringContractRegistry.ARRAY_SHOULD_CONTINUE_INTRINSIC
+        );
+        assertEquals(CForArrayIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.ARRAY_NEXT_INTRINSIC);
+        assertEquals(CForArrayIterIntrinsic.GET_NAME, ForLoweringContractRegistry.ARRAY_GET_INTRINSIC);
+    }
+
+    @Test
+    void dictionaryIntrinsicNamesStayAlignedWithBackendContract() {
+        assertEquals(CForDictionaryIterIntrinsic.INIT_NAME, ForLoweringContractRegistry.DICTIONARY_INIT_INTRINSIC);
+        assertEquals(
+                CForDictionaryIterIntrinsic.SHOULD_CONTINUE_NAME,
+                ForLoweringContractRegistry.DICTIONARY_SHOULD_CONTINUE_INTRINSIC
+        );
+        assertEquals(CForDictionaryIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.DICTIONARY_NEXT_INTRINSIC);
+        assertEquals(CForDictionaryIterIntrinsic.GET_NAME, ForLoweringContractRegistry.DICTIONARY_GET_INTRINSIC);
+    }
+
+    @Test
+    void packedArrayIntrinsicNamesStayAlignedWithBackendContract() {
+        assertEquals(CForPackedArrayIterIntrinsic.INIT_NAME, ForLoweringContractRegistry.PACKED_ARRAY_INIT_INTRINSIC);
+        assertEquals(
+                CForPackedArrayIterIntrinsic.SHOULD_CONTINUE_NAME,
+                ForLoweringContractRegistry.PACKED_ARRAY_SHOULD_CONTINUE_INTRINSIC
+        );
+        assertEquals(CForPackedArrayIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.PACKED_ARRAY_NEXT_INTRINSIC);
+        assertEquals(CForPackedArrayIterIntrinsic.GET_NAME, ForLoweringContractRegistry.PACKED_ARRAY_GET_INTRINSIC);
+    }
+
+    @Test
+    void floatIntrinsicNamesStayAlignedWithBackendContract() {
+        assertEquals(CForFloatIterIntrinsic.INIT_NAME, ForLoweringContractRegistry.FLOAT_INIT_INTRINSIC);
+        assertEquals(
+                CForFloatIterIntrinsic.SHOULD_CONTINUE_NAME,
+                ForLoweringContractRegistry.FLOAT_SHOULD_CONTINUE_INTRINSIC
+        );
+        assertEquals(CForFloatIterIntrinsic.NEXT_NAME, ForLoweringContractRegistry.FLOAT_NEXT_INTRINSIC);
+        assertEquals(CForFloatIterIntrinsic.GET_NAME, ForLoweringContractRegistry.FLOAT_GET_INTRINSIC);
     }
 
     private static void assertRangeOperationSignatures(FrontendForLoweringContract contract) {
@@ -121,6 +223,121 @@ class ForLoweringContractRegistryTest {
 
         assertEquals(ForLoweringContractRegistry.VARIANT_GET_INTRINSIC, contract.get().intrinsicName());
         assertSame(GdVariantType.VARIANT, contract.get().resultType());
+        assertEquals(List.of(state), contract.get().argumentTypes());
+    }
+
+    private static void assertStringOperationSignatures(FrontendForLoweringContract contract) {
+        var state = GdccForStringIterType.FOR_STRING_ITER;
+
+        assertEquals(ForLoweringContractRegistry.STRING_INIT_INTRINSIC, contract.init().intrinsicName());
+        assertSame(state, contract.init().resultType());
+        assertEquals(List.of(GdStringType.STRING), contract.init().argumentTypes());
+
+        assertEquals(
+                ForLoweringContractRegistry.STRING_SHOULD_CONTINUE_INTRINSIC,
+                contract.shouldContinue().intrinsicName()
+        );
+        assertSame(GdBoolType.BOOL, contract.shouldContinue().resultType());
+        assertEquals(List.of(state), contract.shouldContinue().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.STRING_NEXT_INTRINSIC, contract.next().intrinsicName());
+        assertSame(state, contract.next().resultType());
+        assertEquals(List.of(state), contract.next().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.STRING_GET_INTRINSIC, contract.get().intrinsicName());
+        assertSame(GdStringType.STRING, contract.get().resultType());
+        assertEquals(List.of(state), contract.get().argumentTypes());
+    }
+
+    private static void assertArrayOperationSignatures(FrontendForLoweringContract contract) {
+        var state = GdccForArrayIterType.FOR_ARRAY_ITER;
+
+        assertEquals(ForLoweringContractRegistry.ARRAY_INIT_INTRINSIC, contract.init().intrinsicName());
+        assertSame(state, contract.init().resultType());
+        assertEquals(List.of(GdVariantType.VARIANT), contract.init().argumentTypes());
+
+        assertEquals(
+                ForLoweringContractRegistry.ARRAY_SHOULD_CONTINUE_INTRINSIC,
+                contract.shouldContinue().intrinsicName()
+        );
+        assertSame(GdBoolType.BOOL, contract.shouldContinue().resultType());
+        assertEquals(List.of(state), contract.shouldContinue().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.ARRAY_NEXT_INTRINSIC, contract.next().intrinsicName());
+        assertSame(state, contract.next().resultType());
+        assertEquals(List.of(state), contract.next().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.ARRAY_GET_INTRINSIC, contract.get().intrinsicName());
+        assertSame(GdVariantType.VARIANT, contract.get().resultType());
+        assertEquals(List.of(state), contract.get().argumentTypes());
+    }
+
+    private static void assertDictionaryOperationSignatures(FrontendForLoweringContract contract) {
+        var state = GdccForDictionaryIterType.FOR_DICTIONARY_ITER;
+
+        assertEquals(ForLoweringContractRegistry.DICTIONARY_INIT_INTRINSIC, contract.init().intrinsicName());
+        assertSame(state, contract.init().resultType());
+        assertEquals(List.of(GdVariantType.VARIANT), contract.init().argumentTypes());
+
+        assertEquals(
+                ForLoweringContractRegistry.DICTIONARY_SHOULD_CONTINUE_INTRINSIC,
+                contract.shouldContinue().intrinsicName()
+        );
+        assertSame(GdBoolType.BOOL, contract.shouldContinue().resultType());
+        assertEquals(List.of(state), contract.shouldContinue().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.DICTIONARY_NEXT_INTRINSIC, contract.next().intrinsicName());
+        assertSame(state, contract.next().resultType());
+        assertEquals(List.of(state), contract.next().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.DICTIONARY_GET_INTRINSIC, contract.get().intrinsicName());
+        assertSame(GdVariantType.VARIANT, contract.get().resultType());
+        assertEquals(List.of(state), contract.get().argumentTypes());
+    }
+
+    private static void assertPackedArrayOperationSignatures(FrontendForLoweringContract contract) {
+        var state = GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER;
+
+        assertEquals(ForLoweringContractRegistry.PACKED_ARRAY_INIT_INTRINSIC, contract.init().intrinsicName());
+        assertSame(state, contract.init().resultType());
+        assertEquals(List.of(GdVariantType.VARIANT), contract.init().argumentTypes());
+
+        assertEquals(
+                ForLoweringContractRegistry.PACKED_ARRAY_SHOULD_CONTINUE_INTRINSIC,
+                contract.shouldContinue().intrinsicName()
+        );
+        assertSame(GdBoolType.BOOL, contract.shouldContinue().resultType());
+        assertEquals(List.of(state), contract.shouldContinue().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.PACKED_ARRAY_NEXT_INTRINSIC, contract.next().intrinsicName());
+        assertSame(state, contract.next().resultType());
+        assertEquals(List.of(state), contract.next().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.PACKED_ARRAY_GET_INTRINSIC, contract.get().intrinsicName());
+        assertSame(GdVariantType.VARIANT, contract.get().resultType());
+        assertEquals(List.of(state), contract.get().argumentTypes());
+    }
+
+    private static void assertFloatOperationSignatures(FrontendForLoweringContract contract) {
+        var state = GdccForFloatIterType.FOR_FLOAT_ITER;
+
+        assertEquals(ForLoweringContractRegistry.FLOAT_INIT_INTRINSIC, contract.init().intrinsicName());
+        assertSame(state, contract.init().resultType());
+        assertEquals(List.of(GdFloatType.FLOAT), contract.init().argumentTypes());
+
+        assertEquals(
+                ForLoweringContractRegistry.FLOAT_SHOULD_CONTINUE_INTRINSIC,
+                contract.shouldContinue().intrinsicName()
+        );
+        assertSame(GdBoolType.BOOL, contract.shouldContinue().resultType());
+        assertEquals(List.of(state), contract.shouldContinue().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.FLOAT_NEXT_INTRINSIC, contract.next().intrinsicName());
+        assertSame(state, contract.next().resultType());
+        assertEquals(List.of(state), contract.next().argumentTypes());
+
+        assertEquals(ForLoweringContractRegistry.FLOAT_GET_INTRINSIC, contract.get().intrinsicName());
+        assertSame(GdFloatType.FLOAT, contract.get().resultType());
         assertEquals(List.of(state), contract.get().argumentTypes());
     }
 }

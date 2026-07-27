@@ -4,6 +4,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import gd.script.gdcc.frontend.lowering.ForLoweringContractRegistry;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdBoolType;
 import gd.script.gdcc.type.GdCompilerType;
@@ -119,7 +120,8 @@ public final class FrontendForLoopSupport {
             case FrontendIterableSemantics.DynamicIterable() -> GdVariantType.VARIANT;
             case FrontendIterableSemantics.NonIterable(_) -> GdVariantType.VARIANT;
         };
-        return buildPlan(statement, FrontendForIterationRoute.GENERIC_VARIANT, semanticElementType,
+        var route = selectKnownRoute(iterableType);
+        return buildPlan(statement, route, semanticElementType,
                 declaredIteratorType, List.of(iterable));
     }
 
@@ -150,5 +152,25 @@ public final class FrontendForLoopSupport {
 
     private static @NotNull FrontendIterableSemantics.NonIterable nonIterable(@NotNull GdType iterableType) {
         return new FrontendIterableSemantics.NonIterable(iterableType);
+    }
+
+    /// Selects the most specific compile-ready route for a statically known iterable type.
+    /// Falls back to GENERIC_VARIANT when no specialized contract is registered yet (readiness gate).
+    private static @NotNull FrontendForIterationRoute selectKnownRoute(@Nullable GdType iterableType) {
+        if (iterableType == null) {
+            return FrontendForIterationRoute.GENERIC_VARIANT;
+        }
+        var candidate = switch (iterableType) {
+            case GdStringType _ -> FrontendForIterationRoute.STRING;
+            case GdArrayType _ -> FrontendForIterationRoute.ARRAY;
+            case GdDictionaryType _ -> FrontendForIterationRoute.DICTIONARY_KEYS;
+            case GdPackedArrayType _ -> FrontendForIterationRoute.PACKED_ARRAY;
+            case GdFloatType _ -> FrontendForIterationRoute.FLOAT_SHORTHAND;
+            default -> null;
+        };
+        if (candidate != null && ForLoweringContractRegistry.get(candidate) != null) {
+            return candidate;
+        }
+        return FrontendForIterationRoute.GENERIC_VARIANT;
     }
 }

@@ -3,7 +3,13 @@ package gd.script.gdcc.lir.parser;
 import gd.script.gdcc.gdextension.ExtensionApiLoader;
 import gd.script.gdcc.type.GdArrayType;
 import gd.script.gdcc.type.GdDictionaryType;
+import gd.script.gdcc.type.GdccForArrayIterType;
+import gd.script.gdcc.type.GdccForDictionaryIterType;
+import gd.script.gdcc.type.GdccForFloatIterType;
+import gd.script.gdcc.type.GdccForPackedArrayIterType;
 import gd.script.gdcc.type.GdccForRangeIterType;
+import gd.script.gdcc.type.GdccForStringIterType;
+import gd.script.gdcc.type.GdccForVariantIterType;
 import gd.script.gdcc.type.GdObjectType;
 import gd.script.gdcc.type.GdStringType;
 import gd.script.gdcc.lir.LirModule;
@@ -12,6 +18,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
 import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -230,9 +237,15 @@ public class DomLirParserTest {
                         <parameters/>
                         <captures/>
                         <return_type type="void"/>
-                        <variables>
-                          <variable id="iter" type="compiler::GdccForRangeIter"/>
-                        </variables>
+                          <variables>
+                            <variable id="range_iter" type="compiler::GdccForRangeIter"/>
+                            <variable id="string_iter" type="compiler::GdccForStringIter"/>
+                            <variable id="array_iter" type="compiler::GdccForArrayIter"/>
+                            <variable id="dictionary_iter" type="compiler::GdccForDictionaryIter"/>
+                            <variable id="variant_iter" type="compiler::GdccForVariantIter"/>
+                            <variable id="packed_array_iter" type="compiler::GdccForPackedArrayIter"/>
+                            <variable id="float_iter" type="compiler::GdccForFloatIter"/>
+                          </variables>
                         <basic_blocks entry="entry">
                           <basic_block id="entry">
                             return;
@@ -248,7 +261,22 @@ public class DomLirParserTest {
         var mod = parser.parse(new StringReader(xml));
         var fn = mod.getClassDefs().getFirst().getFunctions().getFirst();
 
-        assertEquals(GdccForRangeIterType.FOR_RANGE_ITER, fn.getVariableById("iter").type());
+        assertAll(
+                () -> assertEquals(GdccForRangeIterType.FOR_RANGE_ITER,
+                        Objects.requireNonNull(fn.getVariableById("range_iter")).type()),
+                () -> assertEquals(GdccForStringIterType.FOR_STRING_ITER,
+                        Objects.requireNonNull(fn.getVariableById("string_iter")).type()),
+                () -> assertEquals(GdccForArrayIterType.FOR_ARRAY_ITER,
+                        Objects.requireNonNull(fn.getVariableById("array_iter")).type()),
+                () -> assertEquals(GdccForDictionaryIterType.FOR_DICTIONARY_ITER,
+                        Objects.requireNonNull(fn.getVariableById("dictionary_iter")).type()),
+                () -> assertEquals(GdccForVariantIterType.FOR_VARIANT_ITER,
+                        Objects.requireNonNull(fn.getVariableById("variant_iter")).type()),
+                () -> assertEquals(GdccForPackedArrayIterType.FOR_PACKED_ARRAY_ITER,
+                        Objects.requireNonNull(fn.getVariableById("packed_array_iter")).type()),
+                () -> assertEquals(GdccForFloatIterType.FOR_FLOAT_ITER,
+                        Objects.requireNonNull(fn.getVariableById("float_iter")).type())
+        );
     }
 
     @Test

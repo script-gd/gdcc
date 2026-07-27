@@ -12,15 +12,15 @@ public enum FrontendForIterationRoute {
     RANGE_CALL,
     /// Integer shorthand `for i in n`, iterating `0..n`; element type is `int`.
     INT_SHORTHAND,
-    /// Float shorthand `for i in n`; reserved until `ceil` semantics and a dedicated helper are locked.
+    /// Float shorthand `for i in n`, iterating `0.0, 1.0, ...` while `i < n`; element type is `float`.
     FLOAT_SHORTHAND,
-    /// String character iteration; reserved.
+    /// String character iteration.
     STRING,
-    /// Array element iteration; reserved.
+    /// Array element iteration.
     ARRAY,
-    /// Dictionary key iteration; reserved. The iterator is the key type, never the value or pair.
+    /// Dictionary key iteration. The iterator is the key type, never the value or pair.
     DICTIONARY_KEYS,
-    /// Packed array element iteration; reserved.
+    /// Packed array element iteration.
     PACKED_ARRAY,
     /// Object custom `_iter_*` protocol; reserved.
     OBJECT_CUSTOM,

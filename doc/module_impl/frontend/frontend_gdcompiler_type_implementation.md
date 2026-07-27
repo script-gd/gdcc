@@ -4,7 +4,7 @@
 
 ## 文档状态
 
-- 状态：事实源维护中（`GdCompilerType` sealed 抽象层、`GdccForRangeIterType`、LIR-only grammar、frontend/backend leak guards、public ABI validator、range iterator intrinsic 已落地）
+- 状态：事实源维护中（`GdCompilerType` sealed 抽象层、`GdccForRangeIterType`/`GdccForVariantIterType`/`GdccForStringIterType`/`GdccForArrayIterType`/`GdccForDictionaryIterType`/`GdccForPackedArrayIterType`/`GdccForFloatIterType`、LIR-only grammar、frontend/backend leak guards、public ABI validator、for-iterator intrinsic 已落地）
 - 更新时间：2026-07-20
 - 适用范围：
   - `src/main/java/gd/script/gdcc/type/**`
@@ -57,7 +57,7 @@
 - `TYPE_META` / `ScopeTypeMeta` 路由的一部分
 - Godot object / builtin metadata 的补充分支
 
-当前首个 concrete type 固定为 `GdccForRangeIterType`，表示 `for i in range(...)` lowering 所需的 compiler-owned iterator state storage。它当前已经作为 compiler-only 类型体系的事实锚点存在，但这并不等于 frontend 已开放 `for` lowering 支持面。
+首个 concrete type 为 `GdccForRangeIterType`；后续已扩展 `GdccForVariantIterType`、`GdccForStringIterType`、`GdccForArrayIterType`、`GdccForDictionaryIterType`、`GdccForPackedArrayIterType`、`GdccForFloatIterType`，分别承载对应 `for-in` route 的 compiler-owned iterator state。
 
 ### 1.2 禁止边界
 
@@ -102,17 +102,7 @@ consumer 必须优先读取显式语义方法，而不是继续通过 `getTypeNa
 
 ### 2.2 `GdccForRangeIterType` 当前事实
 
-`GdccForRangeIterType` 当前是唯一 concrete `GdCompilerType`，其合同固定为：
-
-- internal name：`GdccForRangeIter`
-- LIR text：`compiler::GdccForRangeIter`
-- C storage type：`gdcc_for_range_iter`
-- init helper：`gdcc_for_range_iter_init`
-- destroy helper：`gdcc_for_range_iter_destroy`
-- 传参：按地址传入 C helper
-- copy 语义：direct struct assignment
-
-当前代码库没有第二个 compiler-only type，因此所有扩展规则都必须以 `GdCompilerType` 抽象层为准，而不是继续复制 `GdccForRangeIterType` 的散点特判。
+`GdccForRangeIterType` / `GdccForFloatIterType` 为 POD 状态（direct struct assignment）；其余 for-iterator state 含 refcounted 载荷，`isDirectStructAssignmentSafe() == false` 并提供 `gdcc_*_copy` helper。所有扩展规则以 `GdCompilerType` 抽象层为准，而不是继续复制某一 concrete type 的散点特判。
 
 ---
 
