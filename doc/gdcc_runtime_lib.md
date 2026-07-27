@@ -68,7 +68,10 @@ extend the runtime-provided `godot_*` surface.
     Array is reference-semantic and may reallocate on resize).
   - `intrinsic/for_dictionary_iter.h`: heap-shared keys box (`Dictionary_keys()` snapshot + non-atomic
     refcount) + cached contiguous key `Variant*` base; `next`/`copy` only bump refcount; last
-    `destroy` frees the box. For-iter locals are single-threaded.
+    `destroy` frees the box. For-iter locals are single-threaded. **Semantic divergence**: Godot VM
+    uses a live cursor that invalidates on mutation during iteration; this snapshot approach is a
+    deliberate safer divergence — mutations to the dictionary after the snapshot do not affect the
+    iteration sequence.
   - `intrinsic/for_packed_array_iter.h`: per-family Packed*Array iterator structs (no kind union).
     Each family owns a typed COW snapshot + typed element base pointer; `get` returns the typed
     element without runtime family dispatch.
