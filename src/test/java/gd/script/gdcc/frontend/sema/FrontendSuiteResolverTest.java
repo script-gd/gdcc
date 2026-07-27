@@ -1393,6 +1393,239 @@ class FrontendSuiteResolverTest {
     }
 
     @Test
+    void kNestedForBodyIdentifierUsesCarryRefinedIteratorTypes() throws Exception {
+        var phaseInput = phaseInput("suite_k_nested_for_body_ids.gd", """
+                class_name SuiteKNestedForBodyIds
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        for j in range(2):
+                            var x := j + 1
+                        var y := i + 1
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var fromInner = findStatement(
+                innerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var fromOuter = findStatement(
+                outerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("y")
+        );
+        var jUse = findNode(
+                requireExpression(fromInner.value()),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("j")
+        );
+        var iUse = findNode(
+                requireExpression(fromOuter.value()),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("i")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(outerFor)),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(innerFor)),
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(jUse)).publishedType()),
+                        "inner body use of j must keep FOR_ITERATION_RESOLUTION int, not baseline Variant"),
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
+                        "outer body use of i must keep refined int across nested suite boundary")
+        );
+    }
+
+    @Test
+    void kTripleNestedForBodyIdentifiersAllCarryRefinedInt() throws Exception {
+        var phaseInput = phaseInput("suite_k_triple_nested_for.gd", """
+                class_name SuiteKTripleNestedFor
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        for j in range(2):
+                            for k in range(1):
+                                var x := i + j + k
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var midFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(midFor.body().statements(), ForStatement.class, _ -> true);
+        var fromInner = findStatement(
+                innerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var iUse = findNode(requireExpression(fromInner.value()), IdentifierExpression.class,
+                identifier -> identifier.name().equals("i"));
+        var jUse = findNode(requireExpression(fromInner.value()), IdentifierExpression.class,
+                identifier -> identifier.name().equals("j"));
+        var kUse = findNode(requireExpression(fromInner.value()), IdentifierExpression.class,
+                identifier -> identifier.name().equals("k"));
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(iUse)).publishedType())),
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(jUse)).publishedType())),
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(kUse)).publishedType()))
+        );
+    }
+
+    @Test
+    void kWhileNestedForBodyIdentifierKeepsRefinedIteratorType() throws Exception {
+        var phaseInput = phaseInput("suite_k_while_for_iterator.gd", """
+                class_name SuiteKWhileForIterator
+                extends Node
+                
+                func ping(flag: bool):
+                    while flag:
+                        for i in range(3):
+                            var x := i + 1
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var whileStatement = findStatement(pingFunction.body().statements(), WhileStatement.class, _ -> true);
+        var forStatement = findStatement(whileStatement.body().statements(), ForStatement.class, _ -> true);
+        var fromFor = findStatement(
+                forStatement.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var iUse = findNode(
+                requireExpression(fromFor.value()),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("i")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertEquals(
+                GdIntType.INT,
+                requireType(requireValue(phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
+                "for iterator under while must still expose refined int in body uses"
+        );
+    }
+
+    @Test
+    void kExplicitVariantIteratorStaysVariantInNestedBody() throws Exception {
+        var phaseInput = phaseInput("suite_k_explicit_variant_iterator.gd", """
+                class_name SuiteKExplicitVariantIterator
+                extends Node
+                
+                func ping():
+                    for i: Variant in range(3):
+                        for j in range(2):
+                            var x = i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var fromInner = findStatement(
+                innerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("x")
+        );
+        var iUse = findNode(
+                requireExpression(fromInner.value()),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("i")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        assertAll(
+                () -> assertEquals(GdVariantType.VARIANT, phaseInput.analysisData().slotTypes().get(outerFor),
+                        "explicit Variant iterator must not be refined to int"),
+                () -> assertEquals(GdVariantType.VARIANT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(iUse)).publishedType()),
+                        "nested body use of explicit Variant iterator must stay Variant"),
+                () -> assertEquals(GdIntType.INT, phaseInput.analysisData().slotTypes().get(innerFor))
+        );
+    }
+
+    @Test
+    void kShadowedNestedForIteratorTypesStayBoundToDeclarationIdentity() throws Exception {
+        var phaseInput = phaseInput("suite_k_shadowed_for_iterator.gd", """
+                class_name SuiteKShadowedForIterator
+                extends Node
+                
+                func ping():
+                    for i in range(3):
+                        for i in range(2):
+                            var inner := i
+                        var outer := i
+                """);
+        var pingFunction = findStatement(
+                phaseInput.unit().ast().statements(),
+                FunctionDeclaration.class,
+                functionDeclaration -> functionDeclaration.name().equals("ping")
+        );
+        var outerFor = findStatement(pingFunction.body().statements(), ForStatement.class, _ -> true);
+        var innerFor = findStatement(outerFor.body().statements(), ForStatement.class, _ -> true);
+        var innerLocal = findStatement(
+                innerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("inner")
+        );
+        var outerLocal = findStatement(
+                outerFor.body().statements(),
+                VariableDeclaration.class,
+                variableDeclaration -> variableDeclaration.name().equals("outer")
+        );
+        var innerUse = findNode(
+                requireExpression(innerLocal.value()),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("i")
+        );
+        var outerUse = findNode(
+                requireExpression(outerLocal.value()),
+                IdentifierExpression.class,
+                identifier -> identifier.name().equals("i")
+        );
+
+        resolveWithDefaultOwnerProcedures(phaseInput);
+
+        var innerBinding = requireValue(phaseInput.analysisData().symbolBindings().get(innerUse));
+        var outerBinding = requireValue(phaseInput.analysisData().symbolBindings().get(outerUse));
+        assertAll(
+                () -> assertSame(innerFor, innerBinding.declarationSite(),
+                        "inner body i must bind to inner ForStatement"),
+                () -> assertSame(outerFor, outerBinding.declarationSite(),
+                        "outer body i must bind to outer ForStatement"),
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(innerUse)).publishedType())),
+                () -> assertEquals(GdIntType.INT, requireType(requireValue(
+                        phaseInput.analysisData().expressionTypes().get(outerUse)).publishedType()))
+        );
+    }
+
+    @Test
     void bareRangePreRouteResolvesDynamicVariableArguments() throws Exception {
         var phaseInput = phaseInput("suite_d0_range_dynamic_args.gd", """
                 class_name SuiteD0RangeDynamicArgs

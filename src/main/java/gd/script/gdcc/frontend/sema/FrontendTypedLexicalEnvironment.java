@@ -1,5 +1,6 @@
 package gd.script.gdcc.frontend.sema;
 
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.Node;
 import gd.script.gdcc.frontend.scope.BlockScope;
 import gd.script.gdcc.frontend.sema.patch.FrontendChainBindingPatch;
@@ -30,6 +31,10 @@ import java.util.Objects;
 /// Stable side tables and `BlockScope` slots are only changed after exporting a per-owner patch
 /// transaction and applying it to `FrontendAnalysisData`. The Interface-layer baseline supplies
 /// immutable source-facing slot types until a body fact supersedes them.
+///
+/// For-iterator declarations use a split `scopesByAst` contract: header vs `FOR_BODY`. Overlay
+/// lookup for iterator refinements must use the `FOR_BODY` object identity — see
+/// `owningScopeForDeclaration` and `scope_analyzer_implementation.md` §6.1.
 public final class FrontendTypedLexicalEnvironment {
     private final @NotNull Scope scope;
     private final @NotNull FrontendAnalysisData stableData;
@@ -380,12 +385,27 @@ public final class FrontendTypedLexicalEnvironment {
         if (resolvedValue == null || !(binding.declarationSite() instanceof Node declarationNode)) {
             return binding;
         }
-        var owningScope = stableData.scopesByAst().get(declarationNode);
+        var owningScope = owningScopeForDeclaration(declarationNode);
         if (owningScope == null) {
             return binding;
         }
         var effectiveValue = effectiveScopeValue(resolvedValue, owningScope);
         return effectiveValue == resolvedValue ? binding : binding.withResolvedValue(effectiveValue);
+    }
+
+    /// Resolves the `BlockScope` identity used for local-slot overlays of a declaration site.
+    ///
+    /// `scopesByAst[ForStatement]` records the header outer scope (iterable/header typing), while
+    /// `FOR_ITERATION_RESOLUTION` writes iterator refinements against `scopesByAst[for.body()]`
+    /// (`FOR_BODY`). Lookup must use the same object identity so `findLocalSlotTypeUpdate` can match.
+    private @Nullable Scope owningScopeForDeclaration(@NotNull Node declarationNode) {
+        if (declarationNode instanceof ForStatement forStatement) {
+            var bodyScope = stableData.scopesByAst().get(forStatement.body());
+            if (bodyScope instanceof BlockScope forBodyScope) {
+                return forBodyScope;
+            }
+        }
+        return stableData.scopesByAst().get(declarationNode);
     }
 
     private static @NotNull ScopeValue withType(@NotNull ScopeValue value, @NotNull GdType type) {
@@ -483,6 +503,8 @@ public final class FrontendTypedLexicalEnvironment {
             return chainCall != null ? chainCall : exprResolvedCalls.get(astNode);
         }
 
+        /// Matches by `scope` / `declaration` **object identity** (`==`) and name equality.
+        /// For-iterator updates require the `FOR_BODY` instance written by `refineIteratorSlot`.
         private static @Nullable GdType findLocalSlotTypeUpdate(
                 @NotNull List<FrontendLocalSlotTypeUpdate> updates,
                 @NotNull BlockScope scope,

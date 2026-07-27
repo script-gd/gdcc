@@ -171,7 +171,7 @@ frontend scope 层当前已经冻结为：
 - 普通独立 `Block` -> `BlockScope`
 - `IfStatement.body` / `ElifClause.body` / `elseBody` -> 独立 `BlockScope`
 - `WhileStatement.body` -> 独立 `BlockScope`
-- `ForStatement.body` -> 独立 `BlockScope`
+- `ForStatement.body` -> 独立 `BlockScope`（`FOR_BODY`）；`scopesByAst[ForStatement]` 仍是 header 外层 scope，二者不得混为 iterator 宿主，见 §6.1
 - `MatchSection` -> 独立 branch `BlockScope`
 - `MatchSection.body` 复用所属 section 的 branch `BlockScope`
 - `ClassDeclaration.body` 复用 owning `ClassScope`，不额外生成 `BlockScope`
@@ -292,6 +292,24 @@ mapped top-level gdcc class 当前已同时满足：
 - `MatchSection` 的 pattern、guard 与 body 共享同一个 branch scope，但 pattern binding 仍未注册成 local
 
 后续若要实现 binder，必须在完整 scope graph 建成之后单独做 binding pass，而不是把 binding 写回夹进当前 walker。
+
+### 6.1 `ForStatement` scope 双录与对象身份合同
+
+`handleForStatement` 对同一循环发布两条不同的 `scopesByAst` 记录：
+
+| Key | 记录的 scope | 用途 |
+|-----|----------------|------|
+| `ForStatement` | **header 外层** scope（`recordScope(forStatement, currentScope())`） | iterable / iterator type 等 header 边的当前 lexical scope |
+| `forStatement.body()` | 独立 **`FOR_BODY` `BlockScope`** | iterator local 与 body local 的 inventory 宿主；body suite 的 block scope |
+
+下游必须区分这两条记录，**不能**把 `scopesByAst[ForStatement]` 当成 iterator 所在 scope：
+
+1. Variable inventory 把 iterator 写入 **`FOR_BODY`**（declaration identity 仍是 `ForStatement`）。
+2. `FOR_ITERATION_RESOLUTION` 的 `FrontendLocalSlotTypeUpdate.scope` 必须是 **`scopesByAst[forStatement.body()]` 返回的同一 `BlockScope` 实例**。
+3. `FrontendTypedLexicalEnvironment.findLocalSlotTypeUpdate` 用 `update.scope() == scope`（**对象身份**）匹配；header 外层 scope 与 `FOR_BODY` 是不同对象，混用会静默 miss。
+4. 读路径：`effectiveBinding` → `owningScopeForDeclaration(ForStatement)` **必须**取 `scopesByAst[body]`，不得取 `scopesByAst[ForStatement]`。否则嵌套 suite 中 iterator 精化会落回 Interface baseline `Variant`（见 `frontend_for_range_loop_implementation_plan.md` 阶段 K）。
+
+实现锚点：`FrontendScopeAnalyzer.handleForStatement`、`FrontendBodyOwnerProcedures.refineIteratorSlot`、`FrontendTypedLexicalEnvironment.owningScopeForDeclaration`。
 
 ---
 

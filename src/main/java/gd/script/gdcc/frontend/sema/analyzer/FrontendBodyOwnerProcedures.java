@@ -374,6 +374,9 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         return expressionType.publishedType();
     }
 
+    /// Refines the iterator local via `FOR_ITERATION_RESOLUTION` against **FOR_BODY** scope identity.
+    /// Must use `scopesByAst[forStatement.body()]`, not `scopesByAst[ForStatement]` (header outer),
+    /// so `effectiveBinding` / `findLocalSlotTypeUpdate` can match with `scope ==`.
     private void refineIteratorSlot(
             @NotNull FrontendSuiteContext context,
             @NotNull ForStatement forStatement,
@@ -405,6 +408,7 @@ public final class FrontendBodyOwnerProcedures implements FrontendStatementResol
         );
     }
 
+    /// Publishes source-facing `slotTypes()[ForStatement]` from the effective type on **FOR_BODY**.
     private void publishForIteratorSlotType(@NotNull FrontendSuiteContext context, @NotNull ForStatement forStatement) {
         var forBodyScope = context.analysisData().scopesByAst().get(forStatement.body());
         if (!(forBodyScope instanceof BlockScope blockScope)) {

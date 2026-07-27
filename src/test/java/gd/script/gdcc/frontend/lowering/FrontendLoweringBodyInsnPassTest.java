@@ -7110,6 +7110,57 @@ class FrontendLoweringBodyInsnPassTest {
     }
 
     @Test
+    void runKeepsNestedForIteratorReadsAsIntWithoutBareVariantAssign() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_nested_for_iterator_read.gd",
+                """
+                        class_name BodyInsnNestedForIteratorRead
+                        extends RefCounted
+
+                        func ping() -> int:
+                            var total := 0
+                            for i in range(3):
+                                for j in range(2):
+                                    if j == 1:
+                                        break
+                                    total = total + j
+                                total = total + i
+                            return total
+                        """,
+                Map.of("BodyInsnNestedForIteratorRead", "RuntimeBodyInsnNestedForIteratorRead"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNestedForIteratorRead",
+                "ping"
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var instructions = allInstructions(function);
+        var bareIntToVariantAssigns = instructions.stream()
+                .filter(AssignInsn.class::isInstance)
+                .map(AssignInsn.class::cast)
+                .filter(assign -> requireVariableType(function, assign.resultId()) == GdVariantType.VARIANT
+                        && requireVariableType(function, assign.sourceId()) == GdIntType.INT)
+                .toList();
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "i")),
+                () -> assertEquals(GdIntType.INT, requireVariableType(function, "j")),
+                () -> assertTrue(
+                        bareIntToVariantAssigns.isEmpty(),
+                        () -> "nested for iterator reads must not emit bare AssignInsn(int -> Variant); found "
+                                + bareIntToVariantAssigns
+                )
+        );
+    }
+
+    @Test
     void runLowersForLoopBreakAndContinueToRegionExitAndUpdateGotos() throws Exception {
         var prepared = prepareContext(
                 "body_insn_for_break_continue.gd",
@@ -7452,8 +7503,8 @@ class FrontendLoweringBodyInsnPassTest {
                     && goIf.falseBbId().equals(falseTargetId)) {
                 return goIf;
             }
-            if (terminator instanceof GotoInsn gotoInsn) {
-                worklist.add(gotoInsn.targetBbId());
+            if (terminator instanceof GotoInsn(var targetBbId)) {
+                worklist.add(targetBbId);
             } else if (terminator instanceof GoIfInsn goIf) {
                 worklist.add(goIf.trueBbId());
                 worklist.add(goIf.falseBbId());

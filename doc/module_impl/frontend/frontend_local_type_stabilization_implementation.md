@@ -153,7 +153,7 @@ BlockScope.resetLocalType(...)
 - declaration 所在 scope 是 `BlockScope`
 - `FrontendExecutableInventorySupport.canPublishCallableLocalValueInventory(blockScope.kind()) == true`
 
-这条边界继承 structural callable-local inventory 合同。`FOR_BODY` 中的 ordinary `VariableDeclaration` 可以参与稳定化；iterator identity 是 `ForStatement`，不是 eligible declaration，由后续 iteration planning 负责精化。
+这条边界继承 structural callable-local inventory 合同。`FOR_BODY` 中的 ordinary `VariableDeclaration` 可以参与稳定化；iterator identity 是 `ForStatement`，不是 eligible declaration，由后续 iteration planning（`FOR_ITERATION_RESOLUTION`）负责精化。该精化写入的 slot update 使用 **`FOR_BODY` `BlockScope` 对象身份**，与 ordinary `var` 的 owning-scope 查找不同；见 `scope_analyzer_implementation.md` §6.1。
 
 ### 3.2 Source-order 单遍
 

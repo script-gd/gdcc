@@ -321,10 +321,12 @@ Per-owner patch merge 规则：
 
 `FrontendLocalSlotTypeUpdate` 应用规则：
 
-- `FrontendLocalTypeStabilizationAnalyzer` 是唯一允许产生 source-facing slot update 的 analyzer。
+- `FrontendLocalTypeStabilizationAnalyzer` 是唯一允许产生 source-facing slot update 的 analyzer（ordinary `var :=`）。
+- `FOR_ITERATION_RESOLUTION` 另有 for-iterator 精化 carrier（同一 `FrontendLocalSlotTypeUpdate` 类型，独立 list）。
 - 只允许 `Variant → exact` 或 exact same-type no-op。
 - 不允许 exact A → exact B、`GdVoidType`、`GdCompilerType`。
 - 应用后必须刷新已发布且指向同一 declaration 的 `symbolBindings()` payload。
+- **For-iterator**：update 的 `scope` 必须是 `scopesByAst[forStatement.body()]` 的 **`FOR_BODY` 对象身份**；读路径经 `owningScopeForDeclaration` 对齐。详见 `scope_analyzer_implementation.md` §6.1。
 
 `FrontendExprTypeAnalyzer.backfillInferredLocalType(...)` 必须保持 guard-only：不调用 `BlockScope.resetLocalType(...)`、不刷新 `symbolBindings()` payload、不产生 `FrontendLocalSlotTypeUpdate`。
 

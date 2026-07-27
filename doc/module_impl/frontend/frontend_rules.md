@@ -63,7 +63,8 @@
 ## MVP 支持约定 
 
 - 下述 MVP 约定描述的是当前 frontend 共享语义、body analyzer 与 compile surface 的正式支持面；它们不否认 parser 与 scope phase 对部分语法结构已经能识别或建图。
-- `for` 已进入 frontend shared body semantic 支持面：iterator、ordinary body local、declaration index、typed baseline 与 suite entry 在 typed resolution 前按结构无条件发布，header 解析后通过普通 child-suite path 进入 body。该支持不代表完整 compile-ready；compile-only gate 已改为 route-aware policy（已注册 lowering contract 的 `RANGE_CALL` / `INT_SHORTHAND` route 放行，其余 route 在 statement root 发 route-not-ready blocker），完整 CFG 与 lowering 闭环仍待阶段 G/H 原子落地。`lambda`、`match` 仍按结构性 deferred / unsupported boundary fail-closed。
+- `for` 已进入 frontend shared body semantic 支持面：iterator、ordinary body local、declaration index、typed baseline 与 suite entry 在 typed resolution 前按结构无条件发布，header 解析后通过普通 child-suite path 进入 body。该支持不代表完整 compile-ready；compile-only gate 已改为 route-aware policy（已注册 lowering contract 的 `RANGE_CALL` / `INT_SHORTHAND` route 放行，其余 route 在 statement root 发 route-not-ready blocker），完整 CFG 与 lowering 闭环已由 for-range 实施计划阶段 G–K 落地。`lambda`、`match` 仍按结构性 deferred / unsupported boundary fail-closed。
+- **`ForStatement` scope 双录合同**：`scopesByAst[ForStatement]` 只表示 header 外层 scope；iterator local 与 `FOR_ITERATION_RESOLUTION` slot update 的 scope 必须是 `scopesByAst[forStatement.body()]` 的 **`FOR_BODY` `BlockScope` 对象身份**。`effectiveBinding` / `owningScopeForDeclaration` 对 iterator 声明只能查 `FOR_BODY`，因为 overlay 匹配使用 `scope ==`。细节见 `scope_analyzer_implementation.md` §6.1 与 `frontend_for_range_loop_implementation_plan.md` 阶段 K。
 - 协程与 signal-based coroutine 当前不在 frontend semantic MVP 范围内；`await` / `.emit(...)` 等 use-site 语义仍未闭环。
 - path-based `extends`、autoload superclass、global-script-class superclass 绑定不实施。
 - 多 gdcc module 的 header superclass 绑定不在最小可行产品范围内。

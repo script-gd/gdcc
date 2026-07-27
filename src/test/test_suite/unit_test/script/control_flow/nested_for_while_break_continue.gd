@@ -37,3 +37,27 @@ func nested_while_outer_break() -> int:
 			break
 		outer = outer + 1
 	return total
+
+func while_over_for_continue_reads_iterator() -> int:
+	# while + nested for: body reads of refined for-iterator must stay int.
+	var total := 0
+	var outer := 0
+	while outer < 2:
+		for i in range(4):
+			if i % 2 == 0:
+				continue
+			total = total + i
+		outer = outer + 1
+	return total
+
+func nested_for_over_for_break_reads_both() -> int:
+	var total := 0
+	for i in range(3):
+		for j in range(3):
+			if j == 2:
+				break
+			total = total + j
+		if i == 1:
+			break
+		total = total + i
+	return total

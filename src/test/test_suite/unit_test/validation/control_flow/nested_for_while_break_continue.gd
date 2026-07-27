@@ -25,6 +25,20 @@ func _ready() -> void:
 			% int(target.call("nested_while_outer_break"))
 		)
 		ok = false
+	# two while iters each add i=1+3 => 8
+	if int(target.call("while_over_for_continue_reads_iterator")) != 8:
+		push_error(
+			"while_over_for_continue_reads_iterator: expected 8, got %d"
+			% int(target.call("while_over_for_continue_reads_iterator"))
+		)
+		ok = false
+	# i=0: j 0+1, add i0 => 1; i=1: j 0+1 then outer break => 2
+	if int(target.call("nested_for_over_for_break_reads_both")) != 2:
+		push_error(
+			"nested_for_over_for_break_reads_both: expected 2, got %d"
+			% int(target.call("nested_for_over_for_break_reads_both"))
+		)
+		ok = false
 
 	if ok:
 		print("__UNIT_TEST_PASS_MARKER__")

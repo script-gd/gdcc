@@ -4,9 +4,10 @@
 
 ## 文档状态
 
-- 状态：实施中（shared semantic 结构支持与阶段 C iteration plan 数据结构 / publication surface 已完成；阶段 D0 bare range(...) header 预路由已完成；阶段 D1 for iteration resolution 与 iterator slot refinement 已完成；阶段 E type-check 与 Godot iteration 语义已完成：`FrontendTypeCheckAnalyzer.handleForStatement(...)` 已按 route 消费 `FrontendForIterationPlan` 检查 for header 并遍历 for body；阶段 F compile gate route-aware 解封已完成：`FrontendCompileCheckAnalyzer.handleForStatement(...)` 按 `ForLoweringContractRegistry` 放行已注册 contract 的 range/int route 并对未注册 route 发 route-not-ready blocker；阶段 G frontend CFG graph 已完成：`FrontendCfgGraphBuilder.processForStatement(...)` 建立 `FrontendForRegion`、四个 `ForLoop*Item`、source-slot / hidden-state registry 与 build-artifact 跨表验证；阶段 H range route LIR lowering 已完成：`FrontendBodyLoweringSession.declareForLoopSlots(...)` 在 block materialization 前预声明 hidden state / next temp / source iterator local，`FrontendSequenceItemInsnLoweringProcessors` 新增四个 `ForLoop*Item` processor 生成 `gdcc.for_range_iter.*` `CallIntrinsicInsn` 与 temp-then-commit `AssignInsn`；阶段 I generic Variant iterator route 已完成：`GdccForVariantIterType` compiler-only state type 已冻结（含 copy helper），`gdcc.for_variant_iter.*` intrinsic catalog 已注册到 `ForLoweringContractRegistry` 与 `CIntrinsicManager`，C runtime `gdcc_for_variant_iter_*` helper 经 GDExtension `variant_iter_init/next/get` API 实现，compile gate 自然解封 GENERIC_VARIANT route；阶段 J known iterable 专用 route 已完成 STRING/ARRAY/DICTIONARY_KEYS/PACKED_ARRAY/FLOAT_SHORTHAND（OBJECT_CUSTOM 仍延后）：`GdccForStringIterType`/`GdccForArrayIterType`/`GdccForDictionaryIterType`/`GdccForPackedArrayIterType`/`GdccForFloatIterType`、对应 `gdcc.for_*_iter.*` intrinsic catalog、C runtime helper 与 `selectKnownRoute` readiness gate 均已落地；range/int/generic/known-iterable 端到端生产闭环（C/D0/D1/E/F/G/H/I/J）已原子合并）
+- 状态：阶段 A–K 已完成（K 通过 A.1：`effectiveBinding` 对 `ForStatement` 使用 `FOR_BODY` scope 对象身份匹配 for-iteration update；A.2 baseline 短路加固仍为可选 follow-up）
 - 创建日期：2026-07-03
 - 更新时间：2026-07-27
+- **ForStatement scope 双录合同（跨文档）**：规范叙述在 `scope_analyzer_implementation.md` §6.1；规则摘要在 `frontend_rules.md` MVP；实现锚点 `FrontendTypedLexicalEnvironment.owningScopeForDeclaration`、`FrontendScopeAnalyzer.handleForStatement`、`FrontendBodyOwnerProcedures.refineIteratorSlot`。
 - 适用范围：
   - `src/main/java/gd/script/gdcc/frontend/sema/**`
   - `src/main/java/gd/script/gdcc/frontend/lowering/**`
@@ -1203,6 +1204,194 @@ private static void reportNonIterableType(
 - plain container route 不假装拥有 exact element type。
 - 每个 route 都有 lowering helper readiness gate；没有 helper 时 compile gate 不静默放行。
 
+### 阶段 K：嵌套 for-body iterator 精化跨 suite 可见性（已完成）
+
+状态：已完成（A.1）。阶段 A–J 已建立 range/generic/known-iterable 生产闭环；嵌套 `for`（以及 `while` 内 `for`）在 **inner body 读取精化后的 iterator** 时，曾出现 C codegen：
+
+```text
+InvalidInsnException: assign: Cannot assign value of type 'int' to variable of type 'Variant'
+```
+
+该失败与 `break`/`continue` 控制流连边本身无关（CFG/LIR goto 目标已由阶段 G/H 与现有控制流单元测试锁定）。根因是 **child suite 解析期读取 iterator 的 effective type 时，错误地回落到 Interface baseline 的 `Variant`，覆盖了父 suite 已 flush 的 `FOR_ITERATION_RESOLUTION` / `VAR_TYPE_POST` 精化事实**。
+
+#### K.1 现象与复现
+
+最小复现（嵌套 for + 内层读 iterator + 条件/`break` 或算术）：
+
+```gdscript
+func nested_for_inner_break() -> int:
+	var total := 0
+	for i in range(3):
+		for j in range(2):
+			if j == 1:
+				break
+			total = total + j
+		total = total + i
+	return total
+```
+
+同类失败：`while` 外层 + 内层 `for i in range(...): if i % 2 == 0: continue` 后 `total = total + i`。
+
+对照：单层 `for i in range(3): if i == 1: break; total = total + i` 正常（`cfg_tmp_*` 对 `i` 为 `int`）。
+
+LIR 症状（嵌套失败路径）：
+
+- source-facing local `j` / `i` 在 `declareForLoopSlots` 中声明为 `int`（`slotTypes()[ForStatement]` 最终 stable 事实正确）。
+- body 内读 iterator 的 opaque temp（如 `cfg_tmp_v1`）类型为 `Variant`。
+- `FrontendIdentifierOpaqueExprInsnLoweringProcessor` 直接发出 `AssignInsn(cfg_tmp_v1, j)`，**不经过** `materializeFrontendBoundaryValue`，因此无 `PackVariantInsn`。
+- backend `ClassRegistry.checkAssignable(int, Variant) == false` → `CBodyBuilder.checkAssignable` 失败。
+
+#### K.2 成因链路（已用 production pipeline LIR dump + 语义 DEBUG 交叉验证）
+
+1. **Interface baseline（正确但过宽）**  
+   `FrontendInterfacePhase.recordIteratorDeclaration` 在 inventory 层以 `VariableAnalyzer` 初始绑定类型（无显式 type 时为 `Variant`）写入 `FrontendTypedLexicalBaseline`：`typedBaselineBuilder.put(forStatement, binding.type())`。  
+   文件：`FrontendInterfacePhase.java`（`recordIteratorDeclaration`）。
+
+2. **父 suite 精化与 header 边界（正确）**  
+   外层 / 内层 `ForStatement` 在各自 **header 所在 suite** 中：
+   - `runForIterationResolution` → `refineIteratorSlot` 发布 `FrontendLocalSlotTypeUpdate(FOR_BODY, name, ForStatement, exposedIteratorType)`（如 `int`）；
+   - `runVarTypePost` → `publishForIteratorSlotType` 调用 `putSlotType(VAR_TYPE_POST, forStatement, effectiveType)`；
+   - `flushStatementBoundary` → `flushPendingFacts()` 将 pending 合入 **该 suite 的 committed overlay**。  
+   文件：`FrontendStatementResolver.resolveForStatement`、`FrontendBodyOwnerProcedures.refineIteratorSlot` / `publishForIteratorSlotType`、`FrontendTypedLexicalEnvironment.flushPendingFacts`。
+
+3. **child suite 隔离（合同）**  
+   `FrontendSuiteContext.withChildBlock` 为 body 创建 **新的** `FrontendTypedLexicalEnvironment(blockScope, analysisData, parentEnv, typedBaseline)`。  
+   child 的 pending/committed 独立；父 suite 的 committed facts **不会**自动并入 child 的 pending/committed 表，只能通过：
+   - parent chain 上的 overlay 查询（`parent.localSlotType` / `parent.slotType`）；
+   - 或 `stableData`（仅在 **callable 末尾** `exportBatch.applyTo(analysisData)` 之后才有）；
+   - 或 **shared** `typedBaseline`（Interface 的 `Variant`）。  
+   文件：`FrontendSuiteContext.withChildBlock`、`FrontendSuiteResolver.resolveChildSuite` / `resolveSuite`（export 在 suite 结束时 accumulate，不 mid-resolution apply）。
+
+4. **错误回落点 A：`localSlotType` 在错误 owning scope 上查 for-iteration update**  
+   `effectiveBinding` 使用 `stableData.scopesByAst().get(declarationNode)` 作为 owning scope。  
+   对 iterator，`declarationNode` 是 `ForStatement`；`FrontendScopeAnalyzer.handleForStatement` 把 **`ForStatement` 记录在外层 header scope**（`recordScope(forStatement, currentScope())`），而 **`FOR_BODY` 挂在 `forStatement.body()`**。  
+   因此：
+   - `refineIteratorSlot` 写入 update 时传入的 scope 是 `scopesByAst().get(forStatement.body())` 返回的 **FOR_BODY `BlockScope` 对象实例**；
+   - `effectiveBinding` 却用 **`scopesByAst().get(forStatement)` 返回的 header 外层 scope 实例** 调用 `effectiveScopeValue`；
+   - `findLocalSlotTypeUpdate` 使用 `update.scope() == scope`（**对象身份**比较，非 kind 结构等价），两个不同 `BlockScope` 实例必然匹配失败，pending/committed for-iteration update 被跳过。  
+   文件：`FrontendTypedLexicalEnvironment.effectiveBinding`、`OverlayFacts.localSlotType` / `findLocalSlotTypeUpdate`、`FrontendScopeAnalyzer.handleForStatement`、`FrontendBodyOwnerProcedures.refineIteratorSlot`。
+
+5. **错误回落点 B：`localSlotType` 的 parent 递归顺序 + baseline 短路**  
+   for-iteration update 未命中后，`localSlotType` 的实现顺序是：
+   1. 先 `parent.localSlotType(blockScope, name, declaration)` 递归到 parent chain 末端；
+   2. 仅当 parent 返回 `null` 时，本环境才执行 `slotType(astNode)`（pending/committed/stable/baseline）。
+   
+   **关键短路机制**：root 环境的 `slotType(ForStatement)` 命中 `typedBaseline.typeFor(forStatement) == Variant` 并返回 **non-null**；该值沿 parent chain 向上传播，使 **中间环境**（例如外层 for-body suite 的 env，其 committed `slotTypes[ForStatement_inner] = int` 才是正确事实源）的 `slotType` **永远不被执行**。  
+   这是“嵌套触发、单层不暴露”的结构性原因：
+   - 单层时 refined `slotTypes` 往往已在 **root callable env** 的 committed 中，或 for-iteration update 在正确 scope 下直接命中，baseline 不被走到；
+   - 嵌套时 owning-scope 错位使 update 失败，再叠加 parent 递归优先 + root baseline 短路，把中间 env 的 refined `slotTypes` 盖掉。  
+   文件：`FrontendTypedLexicalEnvironment.localSlotType`（parent 递归段 + `slotType` 段）、`slotType`、`FrontendTypedLexicalBaseline`。
+
+6. **表达式类型发布（消费错误 effective binding）**  
+   body 内 `IdentifierExpression("j")`：`symbolBinding` → `effectiveBinding` → `resolvedValue.type() == Variant` → `resolveValueIdentifierExpressionType` 发布 `expressionTypes[j-use] = RESOLVED(Variant)`。  
+   文件：`FrontendExpressionSemanticSupport.resolveIdentifierExpressionType`。
+
+7. **CFG / LIR 放大（非根因，但是失败面）**  
+   - `OpaqueExprValueItem` / `collectCfgValueMaterializations` 用 `requireOpaqueValueType` → temp 类型 `Variant`。  
+   - identifier opaque lowering：`AssignInsn(resultTemp, symbolName)`，两边类型分别由 temp materialization 与 `declareForLoopSlots(exposedType=int)` 决定，**无 boundary pack**。  
+   - backend 严格 `checkAssignable` 拒绝 `int → Variant`。  
+   文件：`FrontendBodyLoweringSupport`、`FrontendOpaqueExprInsnLoweringProcessors`、`CBodyBuilder.checkAssignable`。
+
+**结论（修复归属）**：根因在 **frontend semantic 的 suite overlay + iterator declaration scope + baseline 回落顺序**，不是 CFG goto、不是 for-range intrinsic contract、也不是 backend 应放宽 `int → Variant`。backend 保持严格；frontend 必须保证 body 内 identifier 的 published expression type 与 `slotTypes()[ForStatement]` / source-facing local 一致。
+
+#### K.3 修复目标
+
+- 嵌套 `for` / `while`+`for` body 中读精化后的 range/int（及任意 exact exposed）iterator 时：
+  - `expressionTypes[IdentifierExpression]` 为精化后类型（如 `int`），不是 baseline `Variant`；
+  - CFG temp materialization 与 source local 同型；
+  - LIR 无裸 `AssignInsn(int → Variant)`；
+  - C codegen / e2e control_flow fixture 通过。
+- 不破坏：
+  - 显式 `for i: Variant in range(3):` 保持 `Variant`（F2 Step 1b）；
+  - child suite overlay 隔离与 callable-end export batch 合同；
+  - 普通 `var` 的 `LOCAL_TYPE_STABILIZATION` 精化；
+  - backend 严格 assignability。
+
+#### K.4 推荐修复方向（禁止仅在 lowering 打补丁）
+
+**方向 A（首选，语义真源对齐）— 修正 iterator effective-type 查找**
+
+**实施策略**：
+
+- **A.1（必要且对已知复现充分）**：先单独做 scope 对齐。for-iteration update 在正确 `BlockScope` 身份下命中后，不再落入 `slotType`/baseline 路径，即可修复所有已锁定的嵌套 for / while+for 复现。
+- **A.2（结构性加固，默认 follow-up）**：A.1 验证通过后再评估是否改 `localSlotType` 的 parent 递归 / baseline 短路顺序。A.2 触及普通 local 与 multi-env 回落通用路径，风险面更大；**不要与 A.1 同提交混改**。
+- **A.3**：不需要额外代码；A.1 修好后 parent overlay 上的 for-iteration update 对 child 自然可见。禁止 mid-resolution `exportBatch.applyTo(stableData)`。
+
+1. **A.1 `effectiveBinding` / owning scope 对齐 FOR_BODY（首修）**  
+   当 `resolvedValue.declaration()` 为 `ForStatement` 时，owning scope 必须取 `scopesByAst().get(forStatement.body())`（与 `refineIteratorSlot` 写入 update 时同一 **对象身份** 的 `FOR_BODY` `BlockScope`），不得用 `scopesByAst().get(forStatement)`（header 外层 scope）。  
+   或：统一规定 for-iteration `FrontendLocalSlotTypeUpdate.scope` 与 `effectiveBinding` 使用同一 scope 身份（仍须 `==` 可匹配）。
+
+2. **A.2 `localSlotType` baseline 短路加固（follow-up）**  
+   在 A.1 之后单独评估：避免 root `typedBaseline` 的 non-null `Variant` 在 parent 递归中短路中间 env 已 committed 的 refined `slotTypes[ForStatement]`。可选手段包括：调整“先 parent.localSlotType 再本 env slotType”的顺序/合成规则；或 for-iterator 的 baseline 仅服务 inventory 完整性、不参与 body lookup 的最终回落。  
+   **注意**：任何 A.2 改动必须带普通 `var` stabilization 与多层 nest 回归，禁止“顺手大改 lookup 顺序”而不测。
+
+**方向 B（防御，不可单独作为根因修复）— opaque identifier lowering 走 boundary**
+
+在 `FrontendIdentifierOpaqueExprInsnLoweringProcessor` 对 LOCAL_VAR 读出时，若 temp 类型与 storage 类型不同，经 `materializeFrontendBoundaryValue` 再 assign。  
+这可避免 backend 崩溃，但会把 **错误的 Variant 表达式类型** 固化为 pack，body 类型检查仍错误。**只可作为 defense-in-depth，不能替代方向 A。**
+
+**明确禁止**
+
+- 放宽 `ClassRegistry.checkAssignable` / backend 允许裸 `int → Variant` assign。
+- 在 for-get 路径“假装”问题出在 `materializeFrontendBoundaryValue(int, int)`。
+- 仅改 e2e fixture 绕过嵌套读 iterator。
+- 用 AST rewrite 或合并 nested suite 到同一 environment 来逃避 overlay 合同。
+- 跳过 A.1 只做 A.2 或只做方向 B。
+
+#### K.5 分步实施细则
+
+| 步骤 | 内容 | 产出 | 状态 |
+|------|------|------|------|
+| K0 | 删除或门控 DEBUG `System.out.println` | 生产 frontend 无噪音日志 | **完成**（调研确认无残留） |
+| K1 | 失败锁定：嵌套/三层/while+for body `expressionTypes`；LIR 无裸 `int→Variant` assign | `FrontendSuiteResolverTest.k*`、`FrontendLoweringBodyInsnPassTest.runKeepsNestedForIteratorReadsAsIntWithoutBareVariantAssign` | **完成** |
+| K2 | 方向 **A.1**：`owningScopeForDeclaration(ForStatement)` → `scopesByAst[body]`（FOR_BODY） | `FrontendTypedLexicalEnvironment` | **完成** |
+| K3 | 回归：Variant 显式、shadow、suite/CFG/lowering | 上述 targeted 测试全绿 | **完成** |
+| K4 | A.2 / 方向 B | 未做（按计划 follow-up） | 可选 |
+| K5 | e2e 恢复嵌套 for + break/continue + 读 iterator | `for_break_continue.gd`、`nested_for_while_break_continue.gd`；control_flow e2e 绿 | **完成** |
+| K6 | 文档标完成 | 本文档 | **完成** |
+
+#### K.6 验收细则
+
+**语义 / suite**
+
+- [x] `for i in range(3): for j in range(2): var x := j + 1`：body 内 `j` 的 expression type 与 slot type 均为 `int`。（`kNestedForBodyIdentifierUsesCarryRefinedIteratorTypes`）
+- [x] 嵌套 for 外层 body 读外层 iterator：`total = total + i` 中 `i` 为 `int`。
+- [x] **三层嵌套** 最内层 body 中 `i`/`j`/`k` expression type 均为 `int`。（`kTripleNestedForBodyIdentifiersAllCarryRefinedInt`）
+- [x] `while` 内 `for` 读 for-iterator 同为精化类型。（`kWhileNestedForBodyIdentifierKeepsRefinedIteratorType`）
+- [x] `for i: Variant in range(3):` 嵌套 body 中 `i` 保持 `Variant`。（`kExplicitVariantIteratorStaysVariantInNestedBody`）
+- [x] 同名 shadow nested for 内外层 declaration identity 不串类型。（`kShadowedNestedForIteratorTypesStayBoundToDeclarationIdentity`）
+
+**Lowering / LIR**
+
+- [x] 嵌套 for + break 后读 iterator：无裸 `AssignInsn(int → Variant)`。（`runKeepsNestedForIteratorReadsAsIntWithoutBareVariantAssign`）
+- [x] source-facing `i`/`j` LIR 变量类型为 `int`。
+- [x] 既有 for break/continue / nested region goto 测试仍绿。
+
+**E2E / codegen**
+
+- [x] `compilesAndValidatesControlFlowScripts` 含嵌套 for + break/continue + 读 iterator 并通过。
+- [x] 不再出现 `CBodyBuilder` `int` → `Variant` assign 失败。
+
+**建议 targeted 命令（Ubuntu）**
+
+```bash
+script/run-gradle-targeted-tests.sh \
+  --tests FrontendSuiteResolverTest \
+  --tests FrontendCfgGraphBuilderForLoopTest \
+  --tests FrontendTypedLexicalEnvironmentTest \
+  --tests "FrontendLoweringBodyInsnPassTest.runLowersForLoopBreakAndContinueToRegionExitAndUpdateGotos" \
+  --tests "FrontendLoweringBodyInsnPassTest.runLowersNestedForAndWhileLoopControlToInnermostRegionGotos" \
+  --tests "FrontendLoweringBodyInsnPassTest.runKeepsNestedForIteratorReadsAsIntWithoutBareVariantAssign" \
+  --tests "GdScriptUnitTestCompileRunnerTest.compilesAndValidatesControlFlowScripts"
+```
+
+#### K.7 范围外
+
+- OBJECT_CUSTOM known route。
+- 放宽 backend assignability。
+- 重新设计整个 suite export batch / mid-resolution stable merge。
+- PackedArray / generic route 的其它独立 bug（除非同一 lookup 路径一并修掉）。
+
 ## 5. 验收测试清单
 
 ### Parser / scope
@@ -1342,6 +1531,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 - 阶段 F2 的 `semanticElementType` 推导依赖 `GdContainerType.getValueType()`/`getKeyType()` 和 `GdVectorType` 维度判定。若容器类型参数未正确传播（例如 `Array[int]` 被擦除为 untyped `Array`），`semanticElementType` 会退化为 `Variant`，body type-check 丧失精度。这不影响正确性，但影响诊断质量。
 - `Vector2`/`Vector3`/`Vector2i`/`Vector3i` 可迭代但 `Vector4`/`Vector4i` 不可迭代。阶段 F2 使用单一 `classifyIterableSemantics` exhaustive switch 同时决定可迭代性和元素类型，维度判定只在一个 switch 分支中出现一次，从结构上消除了原双函数方案中两个独立分类器维度逻辑不同步的风险。`GdType` 是 sealed interface，未来新增子类型时编译器强制分类器显式决定其语义。
 - 阶段 F2 Step 1b 修复显式 `Variant` iterator 被错误精化为具体类型的缺陷。当前 `resolveDeclaredIteratorType` 将 `GdVariantType` 视为"无声明"返回 `null`，导致 `for i: Variant in range(3):` 的 body 中 `i` 被精化为 `int`。这违反 §8 完成定义第 2 条（"显式 type 时 body 使用 declared type"）和 §4 D1 实施内容（"若 iterator 有显式 declared type，不自动改写 exact type"），也偏离 Godot 上游行为（`gdscript_analyzer.cpp:2409`：`specified_type.is_variant()` 时 `type_constraint = specified_type` 保留 Variant）。修复后 `resolveDeclaredIteratorType` 对显式 Variant 返回 `GdVariantType.VARIANT`，`refineIteratorSlot` 的 `exposedIteratorType instanceof GdVariantType` 守卫正确跳过精化。该修复必须在阶段 G/H 之前完成，因为 H 的 source-facing iterator local 类型来自最终 `slotTypes()[ForStatement]`，一旦精化错误，source slot 和 per-element conversion 都建立在错误类型上。
+- **阶段 K（已完成 A.1）**：嵌套 for-body 读精化 iterator 时，曾因 `effectiveBinding` 用 header 外层 scope 匹配 for-iteration update 失败，再叠加 root baseline `Variant` 短路，发布错误 `expressionTypes`。修复：`owningScopeForDeclaration` 对 `ForStatement` 使用 `scopesByAst[body]`（FOR_BODY）与 `refineIteratorSlot` 写入身份对齐。A.2 baseline 短路加固仍为可选 follow-up。
 
 ## 8. 完成定义
 
@@ -1357,6 +1547,7 @@ script/run-gradle-targeted-tests.sh --tests GdCompilerTypeTest,GdccForRangeIterT
 8. 文档、正反测试、targeted tests、compile check、lowering plan、runtime / intrinsic catalog 全部同步。
 9. `FrontendTypeCheckAnalyzer.handleForStatement(...)` 检查 iteration plan 所需 header facts 并遍历 for body；for body 的 ordinary local initializer、nested for 与 return type-check regression 均已通过。assignment / call boundary 的 ordinary semantic error regression 同时锁定上游 resolution / expression typing 的 for-body child-suite traversal。
 10. `FrontendForIterationPlan` 的 `rawElementType` 已替换为 `semanticElementType`（阶段 F2）：body type-check 只消费 `semanticElementType`，lowering 只消费 `FrontendForLoweringContract.get().resultType()`（经由 `ForLoweringContractRegistry` 查询）；plan 不存储任何 lowering 信息（helper result type、runtime unpack 判定等），避免形成两个 lowering 真源；已知可迭代 builtin/container 类型（`int`（经由 RANGE_CALL/INT_SHORTHAND）、`float`、`String`、typed/untyped `Array`、typed/untyped `Dictionary`、packed array、`Vector2`/`Vector3`/`Vector2i`/`Vector3i`）的 `semanticElementType` 按 Godot 静态分析规则推导，不再统一退化为 `Variant`（untyped 容器的正确语义本身即为 `Variant`），且从 F2 起稳定不随阶段 I/J 变化；不可迭代 hard type（`bool`、`Nil`、`Callable`、`Signal`、`RID`、`StringName`、`NodePath`、`Vector4`/`Vector4i`、compound vector）在 type-check 阶段产生 `Unable to iterate on value of type "X"` 诊断；`Variant` 和静态未知类型不触发此诊断。`GdObjectType` 当前为保守 `Variant`（Object iterator protocol 精确语义留待独立阶段）。阶段 I/J 启用新 route 时只注册新的 `FrontendForLoweringContract`，不改变 builtin/container 类型的 `semanticElementType` 和 body type-check 结果。
+11. **阶段 K**：嵌套 `for` / `while`+`for` body 中读取已由 `FOR_ITERATION_RESOLUTION` 精化的 iterator 时，published `expressionTypes`、CFG opaque temp materialization 与 source-facing LIR local 类型一致；不出现无 pack 的 `int → Variant`（或其它 exact → Variant）裸 `AssignInsn`；control_flow e2e 含嵌套 for + break/continue + 读 iterator 且 C codegen 通过。显式 `Variant` iterator 与 child-suite export batch 合同不被破坏。
 
 阶段性完成门槛：D0 只有在 ordinary iterable regression 与 canonical `for i in range(3)` regression 同时通过，且后者证明“arguments 有 facts、callee/call root 无 ordinary facts、header 无 ordinary resolution diagnostic、body 仍进入”后，才能重新标注为已完成。仅证明 header 错误不关闭 body，或仅证明全部现有相关测试为绿色，都不满足 D0 完成定义。
 

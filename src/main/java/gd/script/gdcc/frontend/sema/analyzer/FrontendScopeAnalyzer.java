@@ -248,6 +248,9 @@ public class FrontendScopeAnalyzer {
 
         @Override
         public @NotNull FrontendASTTraversalDirective handleForStatement(@NotNull ForStatement forStatement) {
+            // Split scopes: ForStatement → header outer scope; body → FOR_BODY.
+            // Iterator inventory / FOR_ITERATION_RESOLUTION overlays use FOR_BODY object identity;
+            // owningScopeForDeclaration(ForStatement) must look up scopesByAst[body], not this header record.
             recordScope(forStatement, currentScope());
             if (forStatement.iteratorType() != null) {
                 astWalker.walk(forStatement.iteratorType());

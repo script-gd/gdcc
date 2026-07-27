@@ -35,3 +35,25 @@ func nested_for_no_break_product() -> int:
 		for j in range(2):
 			total = total + 1
 	return total
+
+func nested_for_inner_break_reads_iterators() -> int:
+	# Nested for body must keep refined int iterator types across suite overlays
+	# so C codegen never sees bare int -> Variant assigns when reading i/j.
+	var total := 0
+	for i in range(3):
+		for j in range(2):
+			if j == 1:
+				break
+			total = total + j
+		total = total + i
+	return total
+
+func nested_for_continue_reads_inner_iterator() -> int:
+	var total := 0
+	for i in range(3):
+		for j in range(4):
+			if j % 2 == 0:
+				continue
+			total = total + j
+		total = total + i
+	return total

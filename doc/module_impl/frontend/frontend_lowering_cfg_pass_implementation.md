@@ -151,7 +151,7 @@ fully-terminated 的 `if` / `elif` / `else` 允许把 region `mergeId` 指向 `S
 
 除 `frontendCfgRegions` 外，build pass 还会为 compile-ready `for-in` 发布两张 AST identity keyed registry：
 
-- `frontendForSourceIteratorSlots`（`FrontendForSourceIteratorSlot`：`ForStatement` identity、source iterator name、来自 `slotTypes()[ForStatement]` 的 ordinary exposed type）
+- `frontendForSourceIteratorSlots`（`FrontendForSourceIteratorSlot`：`ForStatement` identity、source iterator name、来自 `slotTypes()[ForStatement]` 的 ordinary exposed type；该 slot type 由 suite 在 **`FOR_BODY` scope 身份** 上精化后经 `VAR_TYPE_POST` 发布，见 `scope_analyzer_implementation.md` §6.1）
 - `frontendForIteratorStateSlots`（`FrontendForIteratorStateSlot`：`ForStatement` identity、`cfg_for_iter_<n>` state slot、`cfg_for_iter_next_<n>` next temp slot、来自 `FrontendForLoweringContract.iteratorStateType()` 的 compiler-only state type）
 
 这两张 registry 与 graph/regions 一起在 `ExecutableBodyBuild` 构造时接受跨表验证（slot owner/type/uniqueness、item-slot 引用一致、source slot 与 hidden slot 分离、hidden slot id 不进入 ordinary value-id surface），随后发布到 `FunctionLoweringContext` 供 body lowering 预声明对应 LIR local。

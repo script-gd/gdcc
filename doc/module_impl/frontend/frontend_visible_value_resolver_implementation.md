@@ -115,7 +115,7 @@ resolver 当前只对 `EXECUTABLE_BODY` 域提供正常 lookup，并要求同时
   - `BlockScopeKind.LAMBDA_BODY`
   - `CallableScopeKind.LAMBDA_EXPRESSION`
 
-这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup。
+这些域当前不能静默回退到 outer local / class property / global，也不能伪装成普通 `NOT_FOUND`。`ForStatement` 的 iterator type、iterable 与 body edge 已转正，`FOR_BODY` current scope 直接进入 normal lookup。body 内 identifier 的精化类型仍依赖 suite overlay 的 `effectiveBinding`：iterator 声明的 owning scope 必须是 `FOR_BODY` 对象身份（`scope_analyzer_implementation.md` §6.1），否则可能回落到 Interface baseline `Variant`。
 
 ### 3.3 `ClassScope` / `ClassRegistry` 不是封口域
 
