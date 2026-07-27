@@ -112,6 +112,55 @@ class FrontendLoopControlFlowAnalyzerTest {
     }
 
     @Test
+    void analyzeAllowsBreakAndContinueInsideNestedForAndWhileLoops() throws Exception {
+        var result = analyzeShared("loop_control_nested_for_while.gd", """
+                class_name LoopControlNestedForWhile
+                extends Node
+                
+                func ping(outer_flag, values, stop_outer):
+                    while outer_flag:
+                        for value in values:
+                            if value:
+                                continue
+                            break
+                        if stop_outer:
+                            break
+                    for outer in values:
+                        while outer_flag:
+                            if stop_outer:
+                                break
+                            continue
+                        if outer:
+                            continue
+                        break
+                """);
+
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow").isEmpty());
+        assertFalse(result.diagnostics().hasErrors());
+    }
+
+    @Test
+    void analyzeAllowsBreakAndContinueInsideNestedWhileLoops() throws Exception {
+        var result = analyzeShared("loop_control_nested_while_loops.gd", """
+                class_name LoopControlNestedWhileLoops
+                extends Node
+                
+                func ping(outer_flag, inner_flag, stop_inner, skip_inner, stop_outer):
+                    while outer_flag:
+                        while inner_flag:
+                            if stop_inner:
+                                break
+                            if skip_inner:
+                                continue
+                        if stop_outer:
+                            break
+                """);
+
+        assertTrue(diagnosticsByCategory(result.diagnostics(), "sema.loop_control_flow").isEmpty());
+        assertFalse(result.diagnostics().hasErrors());
+    }
+
+    @Test
     void analyzeResetsOuterLoopDepthAtLambdaBoundary() throws Exception {
         var result = analyzeShared("loop_control_lambda_boundary.gd", """
                 class_name LoopControlLambdaBoundary

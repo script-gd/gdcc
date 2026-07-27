@@ -12,6 +12,9 @@ import gd.script.gdcc.frontend.lowering.cfg.item.OpaqueExprValueItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SequenceItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendForRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import gd.script.gdcc.frontend.lowering.pass.body.FrontendBodyLoweringSession;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringAnalysisPass;
 import gd.script.gdcc.frontend.lowering.pass.FrontendLoweringBodyInsnPass;
@@ -89,13 +92,17 @@ import dev.superice.gdparser.frontend.ast.AttributeSubscriptStep;
 import dev.superice.gdparser.frontend.ast.Block;
 import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
+import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.SubscriptExpression;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
+import dev.superice.gdparser.frontend.ast.IfStatement;
 import dev.superice.gdparser.frontend.ast.LiteralExpression;
 import dev.superice.gdparser.frontend.ast.Node;
 import dev.superice.gdparser.frontend.ast.Point;
 import dev.superice.gdparser.frontend.ast.Range;
 import dev.superice.gdparser.frontend.ast.ReturnStatement;
+import dev.superice.gdparser.frontend.ast.WhileStatement;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Test;
 
@@ -7102,6 +7109,222 @@ class FrontendLoweringBodyInsnPassTest {
         );
     }
 
+    @Test
+    void runLowersForLoopBreakAndContinueToRegionExitAndUpdateGotos() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_for_break_continue.gd",
+                """
+                        class_name BodyInsnForBreakContinue
+                        extends RefCounted
+
+                        func ping(stop_now: bool, skip_now: bool) -> int:
+                            var total := 0
+                            for i in range(5):
+                                if stop_now:
+                                    break
+                                if skip_now:
+                                    continue
+                                total = total + i
+                            return total
+                        """,
+                Map.of("BodyInsnForBreakContinue", "RuntimeBodyInsnForBreakContinue"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnForBreakContinue",
+                "ping"
+        );
+        var functionDecl = assertInstanceOf(FunctionDeclaration.class, pingContext.sourceOwner());
+        var forStatement = assertInstanceOf(ForStatement.class, functionDecl.body().statements().get(1));
+        var breakIf = assertInstanceOf(IfStatement.class, forStatement.body().statements().get(0));
+        var continueIf = assertInstanceOf(IfStatement.class, forStatement.body().statements().get(1));
+        var forRegion = assertInstanceOf(FrontendForRegion.class, pingContext.requireFrontendCfgRegion(forStatement));
+        var breakIfRegion = assertInstanceOf(FrontendIfRegion.class, pingContext.requireFrontendCfgRegion(breakIf));
+        var continueIfRegion = assertInstanceOf(FrontendIfRegion.class, pingContext.requireFrontendCfgRegion(continueIf));
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var breakThen = requireBlock(function, breakIfRegion.thenEntryId());
+        var continueThen = requireBlock(function, continueIfRegion.thenEntryId());
+        var breakGoto = assertInstanceOf(GotoInsn.class, breakThen.getTerminator());
+        var continueGoto = assertInstanceOf(GotoInsn.class, continueThen.getTerminator());
+        var conditionBranch = requireReachableGoIf(
+                function,
+                forRegion.conditionEntryId(),
+                forRegion.bodyEntryId(),
+                forRegion.exitId()
+        );
+        var updateGoto = assertInstanceOf(
+                GotoInsn.class,
+                requireBlock(function, forRegion.updateEntryId()).getTerminator()
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(forRegion.exitId(), breakGoto.targetBbId()),
+                () -> assertEquals(forRegion.updateEntryId(), continueGoto.targetBbId()),
+                () -> assertNotEquals(forRegion.conditionEntryId(), continueGoto.targetBbId()),
+                () -> assertEquals(forRegion.bodyEntryId(), conditionBranch.trueBbId()),
+                () -> assertEquals(forRegion.exitId(), conditionBranch.falseBbId()),
+                () -> assertEquals(forRegion.conditionEntryId(), updateGoto.targetBbId()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "init").size()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "should_continue").size()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "get").size()),
+                () -> assertEquals(1, forRangeIntrinsics(function, "next").size())
+        );
+    }
+
+    @Test
+    void runLowersWhileLoopBreakAndContinueToRegionExitAndConditionGotos() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_while_break_continue.gd",
+                """
+                        class_name BodyInsnWhileBreakContinue
+                        extends RefCounted
+
+                        func ping(flag: bool, stop_now: bool, skip_now: bool, payload: int) -> int:
+                            while flag:
+                                if stop_now:
+                                    break
+                                if skip_now:
+                                    continue
+                                payload = payload + 1
+                            return payload
+                        """,
+                Map.of("BodyInsnWhileBreakContinue", "RuntimeBodyInsnWhileBreakContinue"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnWhileBreakContinue",
+                "ping"
+        );
+        var functionDecl = assertInstanceOf(FunctionDeclaration.class, pingContext.sourceOwner());
+        var whileStatement = assertInstanceOf(WhileStatement.class, functionDecl.body().statements().getFirst());
+        var breakIf = assertInstanceOf(IfStatement.class, whileStatement.body().statements().get(0));
+        var continueIf = assertInstanceOf(IfStatement.class, whileStatement.body().statements().get(1));
+        var whileRegion = assertInstanceOf(
+                FrontendWhileRegion.class,
+                pingContext.requireFrontendCfgRegion(whileStatement)
+        );
+        var breakIfRegion = assertInstanceOf(FrontendIfRegion.class, pingContext.requireFrontendCfgRegion(breakIf));
+        var continueIfRegion = assertInstanceOf(FrontendIfRegion.class, pingContext.requireFrontendCfgRegion(continueIf));
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var breakThen = requireBlock(function, breakIfRegion.thenEntryId());
+        var continueThen = requireBlock(function, continueIfRegion.thenEntryId());
+        var breakGoto = assertInstanceOf(GotoInsn.class, breakThen.getTerminator());
+        var continueGoto = assertInstanceOf(GotoInsn.class, continueThen.getTerminator());
+        var conditionBranch = requireReachableGoIf(
+                function,
+                whileRegion.conditionEntryId(),
+                whileRegion.bodyEntryId(),
+                whileRegion.exitId()
+        );
+        var bodyTailGoto = assertInstanceOf(
+                GotoInsn.class,
+                requireBlock(function, continueIfRegion.mergeId()).getTerminator()
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(whileRegion.exitId(), breakGoto.targetBbId()),
+                () -> assertEquals(whileRegion.conditionEntryId(), continueGoto.targetBbId()),
+                () -> assertEquals(whileRegion.bodyEntryId(), conditionBranch.trueBbId()),
+                () -> assertEquals(whileRegion.exitId(), conditionBranch.falseBbId()),
+                () -> assertEquals(whileRegion.conditionEntryId(), bodyTailGoto.targetBbId())
+        );
+    }
+
+    @Test
+    void runLowersNestedForAndWhileLoopControlToInnermostRegionGotos() throws Exception {
+        var prepared = prepareContext(
+                "body_insn_nested_for_while_break_continue.gd",
+                """
+                        class_name BodyInsnNestedForWhileBreakContinue
+                        extends RefCounted
+
+                        func ping(
+                                outer_flag: bool,
+                                stop_for: bool,
+                                skip_for: bool,
+                                stop_while: bool
+                        ) -> int:
+                            var total := 0
+                            while outer_flag:
+                                for i in range(3):
+                                    if stop_for:
+                                        break
+                                    if skip_for:
+                                        continue
+                                    total = total + i
+                                if stop_while:
+                                    break
+                            return total
+                        """,
+                Map.of("BodyInsnNestedForWhileBreakContinue", "RuntimeBodyInsnNestedForWhileBreakContinue"),
+                true
+        );
+        var pingContext = requireContext(
+                prepared.context().requireFunctionLoweringContexts(),
+                FunctionLoweringContext.Kind.EXECUTABLE_BODY,
+                "RuntimeBodyInsnNestedForWhileBreakContinue",
+                "ping"
+        );
+        var functionDecl = assertInstanceOf(FunctionDeclaration.class, pingContext.sourceOwner());
+        var outerWhile = assertInstanceOf(WhileStatement.class, functionDecl.body().statements().get(1));
+        var innerFor = assertInstanceOf(ForStatement.class, outerWhile.body().statements().getFirst());
+        var forBreakIf = assertInstanceOf(IfStatement.class, innerFor.body().statements().get(0));
+        var forContinueIf = assertInstanceOf(IfStatement.class, innerFor.body().statements().get(1));
+        var whileBreakIf = assertInstanceOf(IfStatement.class, outerWhile.body().statements().get(1));
+        var whileRegion = assertInstanceOf(
+                FrontendWhileRegion.class,
+                pingContext.requireFrontendCfgRegion(outerWhile)
+        );
+        var forRegion = assertInstanceOf(FrontendForRegion.class, pingContext.requireFrontendCfgRegion(innerFor));
+        var forBreakIfRegion = assertInstanceOf(FrontendIfRegion.class, pingContext.requireFrontendCfgRegion(forBreakIf));
+        var forContinueIfRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                pingContext.requireFrontendCfgRegion(forContinueIf)
+        );
+        var whileBreakIfRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                pingContext.requireFrontendCfgRegion(whileBreakIf)
+        );
+
+        new FrontendLoweringBodyInsnPass().run(prepared.context());
+
+        var function = pingContext.targetFunction();
+        var forBreakGoto = assertInstanceOf(
+                GotoInsn.class,
+                requireBlock(function, forBreakIfRegion.thenEntryId()).getTerminator()
+        );
+        var forContinueGoto = assertInstanceOf(
+                GotoInsn.class,
+                requireBlock(function, forContinueIfRegion.thenEntryId()).getTerminator()
+        );
+        var whileBreakGoto = assertInstanceOf(
+                GotoInsn.class,
+                requireBlock(function, whileBreakIfRegion.thenEntryId()).getTerminator()
+        );
+
+        assertAll(
+                () -> assertFalse(prepared.diagnostics().hasErrors()),
+                () -> assertEquals(forRegion.exitId(), forBreakGoto.targetBbId()),
+                () -> assertEquals(forRegion.updateEntryId(), forContinueGoto.targetBbId()),
+                () -> assertNotEquals(whileRegion.exitId(), forBreakGoto.targetBbId()),
+                () -> assertNotEquals(whileRegion.conditionEntryId(), forContinueGoto.targetBbId()),
+                () -> assertEquals(whileRegion.exitId(), whileBreakGoto.targetBbId()),
+                () -> assertNotEquals(forRegion.exitId(), whileBreakGoto.targetBbId())
+        );
+    }
+
     private static void rewriteBindingKindToSelf(
             @NotNull Map<Node, FrontendBinding> bindings,
             @NotNull IdentifierExpression identifierExpression
@@ -7206,6 +7429,39 @@ class FrontendLoweringBodyInsnPassTest {
         var block = function.getBasicBlock(blockId);
         assertNotNull(block, () -> "Missing basic block " + blockId);
         return block;
+    }
+
+    private static @NotNull GoIfInsn requireReachableGoIf(
+            @NotNull LirFunctionDef function,
+            @NotNull String entryBlockId,
+            @NotNull String trueTargetId,
+            @NotNull String falseTargetId
+    ) {
+        var worklist = new ArrayList<String>();
+        var visited = new LinkedHashSet<String>();
+        worklist.add(entryBlockId);
+        while (!worklist.isEmpty()) {
+            var blockId = worklist.removeFirst();
+            if (!visited.add(blockId)) {
+                continue;
+            }
+            var block = requireBlock(function, blockId);
+            var terminator = block.getTerminator();
+            if (terminator instanceof GoIfInsn goIf
+                    && goIf.trueBbId().equals(trueTargetId)
+                    && goIf.falseBbId().equals(falseTargetId)) {
+                return goIf;
+            }
+            if (terminator instanceof GotoInsn gotoInsn) {
+                worklist.add(gotoInsn.targetBbId());
+            } else if (terminator instanceof GoIfInsn goIf) {
+                worklist.add(goIf.trueBbId());
+                worklist.add(goIf.falseBbId());
+            }
+        }
+        throw new AssertionError(
+                "Missing GoIf from " + entryBlockId + " to true=" + trueTargetId + " false=" + falseTargetId
+        );
     }
 
     private static @NotNull List<LirInstruction> allInstructions(

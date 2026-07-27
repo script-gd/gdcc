@@ -18,6 +18,7 @@ import gd.script.gdcc.frontend.lowering.cfg.item.SubscriptLoadItem;
 import gd.script.gdcc.frontend.lowering.cfg.item.ValueOpItem;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendCfgRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendElifRegion;
+import gd.script.gdcc.frontend.lowering.cfg.region.FrontendForRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendIfRegion;
 import gd.script.gdcc.frontend.lowering.cfg.region.FrontendWhileRegion;
 import gd.script.gdcc.frontend.parse.FrontendModule;
@@ -43,6 +44,7 @@ import dev.superice.gdparser.frontend.ast.CallExpression;
 import dev.superice.gdparser.frontend.ast.CommentStatement;
 import dev.superice.gdparser.frontend.ast.Expression;
 import dev.superice.gdparser.frontend.ast.ExpressionStatement;
+import dev.superice.gdparser.frontend.ast.ForStatement;
 import dev.superice.gdparser.frontend.ast.FunctionDeclaration;
 import dev.superice.gdparser.frontend.ast.IdentifierExpression;
 import dev.superice.gdparser.frontend.ast.IfStatement;
@@ -2467,6 +2469,137 @@ class FrontendCfgGraphBuilderTest {
                 () -> assertEquals(breakIfRegion.mergeId(), breakIfRegion.elseOrNextClauseEntryId()),
                 () -> assertEquals(continueIfRegion.mergeId(), continueIfRegion.elseOrNextClauseEntryId()),
                 () -> assertInstanceOf(FrontendCfgGraph.StopNode.class, graph.requireNode(exitEntry.nextId()))
+        );
+    }
+
+    @Test
+    void buildExecutableBodyConnectsNestedWhileBreakAndContinueToInnermostRegionTargets() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_nested_while_loop_control.gd",
+                """
+                        class_name CfgBuilderNestedWhileLoopControl
+                        extends RefCounted
+                        
+                        func ping(
+                                outer_flag: bool,
+                                inner_flag: bool,
+                                stop_inner: bool,
+                                skip_inner: bool,
+                                stop_outer: bool
+                        ) -> int:
+                            while outer_flag:
+                                while inner_flag:
+                                    if stop_inner:
+                                        break
+                                    if skip_inner:
+                                        continue
+                                if stop_outer:
+                                    break
+                            return 0
+                        """,
+                "ping",
+                Map.of("CfgBuilderNestedWhileLoopControl", "RuntimeCfgBuilderNestedWhileLoopControl")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var outerWhile = assertInstanceOf(WhileStatement.class, rootBlock.statements().getFirst());
+        var innerWhile = assertInstanceOf(WhileStatement.class, outerWhile.body().statements().getFirst());
+        var innerBreakIf = assertInstanceOf(IfStatement.class, innerWhile.body().statements().getFirst());
+        var innerContinueIf = assertInstanceOf(IfStatement.class, innerWhile.body().statements().get(1));
+        var outerBreakIf = assertInstanceOf(IfStatement.class, outerWhile.body().statements().get(1));
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var outerRegion = assertInstanceOf(FrontendWhileRegion.class, build.regions().get(outerWhile));
+        var innerRegion = assertInstanceOf(FrontendWhileRegion.class, build.regions().get(innerWhile));
+        var innerBreakIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(innerBreakIf));
+        var innerContinueIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(innerContinueIf));
+        var outerBreakIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(outerBreakIf));
+        var innerBreakThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(innerBreakIfRegion.thenEntryId())
+        );
+        var innerContinueThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(innerContinueIfRegion.thenEntryId())
+        );
+        var outerBreakThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(outerBreakIfRegion.thenEntryId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(innerRegion.exitId(), innerBreakThen.nextId()),
+                () -> assertEquals(innerRegion.conditionEntryId(), innerContinueThen.nextId()),
+                () -> assertNotEquals(outerRegion.exitId(), innerBreakThen.nextId()),
+                () -> assertNotEquals(outerRegion.conditionEntryId(), innerContinueThen.nextId()),
+                () -> assertEquals(outerRegion.exitId(), outerBreakThen.nextId()),
+                () -> assertNotEquals(innerRegion.exitId(), outerBreakThen.nextId())
+        );
+    }
+
+    @Test
+    void buildExecutableBodyConnectsMixedForAndWhileLoopControlToActiveLoopFrame() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_builder_mixed_for_while_loop_control.gd",
+                """
+                        class_name CfgBuilderMixedForWhileLoopControl
+                        extends RefCounted
+                        
+                        func ping(outer_flag: bool, stop_for: bool, skip_for: bool, stop_while: bool) -> int:
+                            var total := 0
+                            while outer_flag:
+                                for i in range(3):
+                                    if stop_for:
+                                        break
+                                    if skip_for:
+                                        continue
+                                    total = total + i
+                                if stop_while:
+                                    break
+                            return total
+                        """,
+                "ping",
+                Map.of("CfgBuilderMixedForWhileLoopControl", "RuntimeCfgBuilderMixedForWhileLoopControl")
+        );
+
+        var rootBlock = analyzed.function().body();
+        var outerWhile = assertInstanceOf(WhileStatement.class, rootBlock.statements().get(1));
+        var innerFor = assertInstanceOf(ForStatement.class, outerWhile.body().statements().getFirst());
+        var forBreakIf = assertInstanceOf(IfStatement.class, innerFor.body().statements().get(0));
+        var forContinueIf = assertInstanceOf(IfStatement.class, innerFor.body().statements().get(1));
+        var whileBreakIf = assertInstanceOf(IfStatement.class, outerWhile.body().statements().get(1));
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var whileRegion = assertInstanceOf(FrontendWhileRegion.class, build.regions().get(outerWhile));
+        var forRegion = assertInstanceOf(FrontendForRegion.class, build.regions().get(innerFor));
+        var forBreakIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(forBreakIf));
+        var forContinueIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(forContinueIf));
+        var whileBreakIfRegion = assertInstanceOf(FrontendIfRegion.class, build.regions().get(whileBreakIf));
+        var forBreakThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(forBreakIfRegion.thenEntryId())
+        );
+        var forContinueThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(forContinueIfRegion.thenEntryId())
+        );
+        var whileBreakThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(whileBreakIfRegion.thenEntryId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(forRegion.exitId(), forBreakThen.nextId()),
+                () -> assertEquals(forRegion.updateEntryId(), forContinueThen.nextId()),
+                () -> assertNotEquals(forRegion.conditionEntryId(), forContinueThen.nextId()),
+                () -> assertNotEquals(whileRegion.exitId(), forBreakThen.nextId()),
+                () -> assertNotEquals(whileRegion.conditionEntryId(), forContinueThen.nextId()),
+                () -> assertEquals(whileRegion.exitId(), whileBreakThen.nextId()),
+                () -> assertNotEquals(forRegion.exitId(), whileBreakThen.nextId())
         );
     }
 

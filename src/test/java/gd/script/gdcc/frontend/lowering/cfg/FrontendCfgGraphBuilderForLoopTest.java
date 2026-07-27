@@ -278,6 +278,77 @@ class FrontendCfgGraphBuilderForLoopTest {
     }
 
     @Test
+    void connectsNestedForBreakAndContinueToInnermostRegionTargets() throws Exception {
+        var analyzed = analyzeFunction(
+                "cfg_for_nested_break_continue.gd",
+                """
+                        class_name CfgForNestedBreakContinue
+                        extends RefCounted
+
+                        func ping(stop_inner: bool, skip_inner: bool, stop_outer: bool) -> int:
+                            var total := 0
+                            for i in range(3):
+                                for j in range(2):
+                                    if stop_inner:
+                                        break
+                                    if skip_inner:
+                                        continue
+                                    total = total + j
+                                if stop_outer:
+                                    break
+                            return total
+                        """
+        );
+
+        var rootBlock = analyzed.function().body();
+        var outerFor = assertInstanceOf(ForStatement.class, rootBlock.statements().get(1));
+        var innerFor = assertInstanceOf(ForStatement.class, outerFor.body().statements().getFirst());
+        var innerBreakIf = assertInstanceOf(IfStatement.class, innerFor.body().statements().get(0));
+        var innerContinueIf = assertInstanceOf(IfStatement.class, innerFor.body().statements().get(1));
+        var outerBreakIf = assertInstanceOf(IfStatement.class, outerFor.body().statements().get(1));
+        var build = new FrontendCfgGraphBuilder().buildExecutableBody(rootBlock, analyzed.analysisData());
+        var graph = build.graph();
+
+        var outerRegion = assertInstanceOf(FrontendForRegion.class, Objects.requireNonNull(build.regions().get(outerFor)));
+        var innerRegion = assertInstanceOf(FrontendForRegion.class, Objects.requireNonNull(build.regions().get(innerFor)));
+        var innerBreakIfRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                Objects.requireNonNull(build.regions().get(innerBreakIf))
+        );
+        var innerContinueIfRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                Objects.requireNonNull(build.regions().get(innerContinueIf))
+        );
+        var outerBreakIfRegion = assertInstanceOf(
+                FrontendIfRegion.class,
+                Objects.requireNonNull(build.regions().get(outerBreakIf))
+        );
+        var innerBreakThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(innerBreakIfRegion.thenEntryId())
+        );
+        var innerContinueThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(innerContinueIfRegion.thenEntryId())
+        );
+        var outerBreakThen = assertInstanceOf(
+                FrontendCfgGraph.SequenceNode.class,
+                graph.requireNode(outerBreakIfRegion.thenEntryId())
+        );
+
+        assertAll(
+                () -> assertFalse(analyzed.diagnostics().hasErrors()),
+                () -> assertEquals(innerRegion.exitId(), innerBreakThen.nextId()),
+                () -> assertEquals(innerRegion.updateEntryId(), innerContinueThen.nextId()),
+                () -> assertNotEquals(innerRegion.conditionEntryId(), innerContinueThen.nextId()),
+                () -> assertNotEquals(outerRegion.exitId(), innerBreakThen.nextId()),
+                () -> assertNotEquals(outerRegion.updateEntryId(), innerContinueThen.nextId()),
+                () -> assertEquals(outerRegion.exitId(), outerBreakThen.nextId()),
+                () -> assertNotEquals(innerRegion.exitId(), outerBreakThen.nextId())
+        );
+    }
+
+    @Test
     void assignsDistinctHiddenSlotsToNestedAndSiblingLoops() throws Exception {
         var analyzed = analyzeFunction(
                 "cfg_for_nested_sibling.gd",
