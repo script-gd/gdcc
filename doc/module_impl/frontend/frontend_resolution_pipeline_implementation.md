@@ -20,7 +20,7 @@
   - `doc/module_impl/frontend/frontend_compile_check_analyzer_implementation.md`
   - `doc/module_impl/frontend/frontend_lowering_plan.md`
   - `doc/module_impl/frontend/frontend_lowering_cfg_pass_implementation.md`
-  - `doc/module_impl/frontend/frontend_for_range_loop_implementation_plan.md`
+  - `doc/module_impl/frontend/frontend_for_range_loop_implementation.md`
   - `doc/analysis/frontend_segmented_type_resolution_pipeline_execution_summary.md`
 - 明确非目标：
   - 不在这里定义 `for-range` lowering 或 Godot range runtime 语义

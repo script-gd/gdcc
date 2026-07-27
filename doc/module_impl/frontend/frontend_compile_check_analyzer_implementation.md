@@ -122,7 +122,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 
 因此，`assert` 的 compile-only block 只表达“lowering/backend 尚未接通”，而不是 source contract 已被收紧。
 
-`ForStatement` 使用 route-aware compile policy（替换阶段 B 的临时无条件 blocker）：
+`ForStatement` 使用 route-aware compile policy（不再使用无条件 for root blocker）：
 
 - compile gate 读取已发布的 `forIterationPlans()`，并以 `ForLoweringContractRegistry.get(plan.route())` 判定 route 是否 compile-ready。
 - contract 非 null 的 route（当前为 `RANGE_CALL` / `INT_SHORTHAND`）放行：mark owning `ForStatement`（同时即 iterator declaration key 与 iteration plan fact 的 side-table key）、walk `plan.sourceOperands()`（iterable / range arguments）并进入 body 重扫 published facts。
@@ -131,7 +131,7 @@ compile gate 可以沿 callable body 和支持岛 property initializer 继续递
 - route-not-ready blocker 复用统一去重合同：同一 `ForStatement` anchor 已有 upstream error 时不再补发同级 `sema.compile_check`。
 - shared `analyze(...)` 不包含该 policy；只有 `analyzeForCompile(...)` 会按 route readiness 决定 for 是否进入 lowering。
 - 该 policy 只消费已发布的 iteration plan 与 lowering contract registry，不控制 iterator inventory、completeness certificate 或 child-suite dispatch。
-- 阶段 F2 的 `rawElementType -> semanticElementType` 替换与 hard non-iterable shared diagnostic 不改变 compile policy：compile gate 仍只按 `plan.route()` 查询 lowering contract。若同一 `ForStatement` 已有 upstream `sema.type_check` error，route-not-ready blocker 继续按统一去重合同省略。
+- hard non-iterable 的 shared `sema.type_check` 诊断不改变 compile policy：compile gate 仍只按 `plan.route()` 查询 lowering contract。若同一 `ForStatement` 已有 upstream `sema.type_check` error，route-not-ready blocker 继续按统一去重合同省略。
 
 ### 3.2 declaration 级封口
 
@@ -384,7 +384,7 @@ compile gate 当前统一使用：
 这条规则同样适用于：
 
 - `assert`
-- `ForStatement`（已改为 route-aware compile policy：已注册 lowering contract 的 `RANGE_CALL` / `INT_SHORTHAND` route 放行，其余 route 仍按本规则在 statement root 拦截；完整 CFG/lowering 闭环仍待阶段 G/H 原子落地）
+- `ForStatement`（route-aware compile policy：`ForLoweringContractRegistry` 中已注册的 route 放行并进入 body 重扫；未注册 route 在 statement root 拦截；已注册 route 的 CFG/body lowering 已落地，见 `frontend_for_range_loop_implementation.md`）
 - `ConditionalExpression`
 - `ArrayExpression`
 - `DictionaryExpression`
@@ -430,7 +430,7 @@ compile gate 当前统一使用：
 
 - frontend -> LIR lowering 入口必须强制使用 `analyzeForCompile(...)`
 - lowering 在继续前必须检查 `diagnostics().hasErrors() == false`
-- `assert`、for route 的 CFG/lowering（阶段 G/H）与 7 类显式拦截表达式（`ConditionalExpression` 至 `TypeTestExpression`）的真正 lowering/backend 支持仍待后续阶段补齐；for compile gate 本身已改为 route-aware policy（range/int route 凭已注册 contract 放行，generic Variant 及其余保留 route 发 route-not-ready blocker）
+- `assert` 与 7 类显式拦截表达式（`ConditionalExpression` 至 `TypeTestExpression`）的真正 lowering/backend 支持仍待后续补齐；`for` 已注册 route 的 CFG/lowering 已落地，compile gate 为 route-aware policy（registry 已注册 route 放行，`OBJECT_CUSTOM` 等未注册 route 发 route-not-ready blocker）
 
 若未来需要为 LSP 单独呈现 compile-only blocker，正确方向仍是：
 

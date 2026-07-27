@@ -445,7 +445,7 @@ $target = gdcc_for_variant_iter_get(&$iter);
 
 ### `gdcc.for_string_iter.init`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -471,7 +471,7 @@ $target = gdcc_for_string_iter_from_string(&$source);
 
 ### `gdcc.for_string_iter.should_continue`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -496,7 +496,7 @@ $target = gdcc_for_string_iter_should_continue(&$iter);
 
 ### `gdcc.for_string_iter.next`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -521,7 +521,7 @@ $target = gdcc_for_string_iter_next(&$iter);
 
 ### `gdcc.for_string_iter.get`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -546,7 +546,7 @@ $target = gdcc_for_string_iter_get(&$iter);
 
 ### `gdcc.for_array_iter.init`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -572,7 +572,7 @@ $target = gdcc_for_array_iter_from_array(&$source);
 
 ### `gdcc.for_array_iter.should_continue`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -593,7 +593,7 @@ $target = gdcc_for_array_iter_should_continue(&$iter);
 
 ### `gdcc.for_array_iter.next`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -614,7 +614,7 @@ $target = gdcc_for_array_iter_next(&$iter);
 
 ### `gdcc.for_array_iter.get`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -640,7 +640,7 @@ $target = gdcc_for_array_iter_get(&$iter);
 
 ### `gdcc.for_dictionary_iter.init`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -667,7 +667,7 @@ $target = gdcc_for_dictionary_iter_from_dictionary(&$source);
 
 ### `gdcc.for_dictionary_iter.should_continue`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -688,7 +688,7 @@ $target = gdcc_for_dictionary_iter_should_continue(&$iter);
 
 ### `gdcc.for_dictionary_iter.next`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -709,7 +709,7 @@ $target = gdcc_for_dictionary_iter_next(&$iter);
 
 ### `gdcc.for_dictionary_iter.get`
 
-状态：已冻结（阶段 J batch 1）
+状态：已冻结
 
 LIR 形态：
 
@@ -735,7 +735,7 @@ $target = gdcc_for_dictionary_iter_get(&$iter);
 
 ### `gdcc.for_packed_<family>_iter.*`（Packed*Array 总则）
 
-状态：已冻结（阶段 J；per-family 专有 state/intrinsic）
+状态：已冻结（per-family 专有 state/intrinsic）
 
 命名模板（`<family>` 为 snake_case family slug）：
 
@@ -786,7 +786,7 @@ $target = gdcc_for_packed_<family>_iter_get(&$iter);
 
 ### `gdcc.for_float_iter.init`
 
-状态：已冻结（阶段 J batch 2）
+状态：已冻结
 
 LIR 形态：
 
@@ -812,7 +812,7 @@ $target = gdcc_for_float_iter_from_end($end);
 
 ### `gdcc.for_float_iter.should_continue`
 
-状态：已冻结（阶段 J batch 2）
+状态：已冻结
 
 LIR 形态：
 
@@ -837,7 +837,7 @@ $target = gdcc_for_float_iter_should_continue(&$iter);
 
 ### `gdcc.for_float_iter.next`
 
-状态：已冻结（阶段 J batch 2）
+状态：已冻结
 
 LIR 形态：
 
@@ -862,7 +862,7 @@ $target = gdcc_for_float_iter_next(&$iter);
 
 ### `gdcc.for_float_iter.get`
 
-状态：已冻结（阶段 J batch 2）
+状态：已冻结
 
 LIR 形态：
 

@@ -66,7 +66,7 @@
 - class property initializer compatibility
 - bare `return` / `return expr` 与 callable return slot 的兼容性
 - condition root 是否已经发布稳定 typed fact
-- `for-in` header 的 route-aware contract：消费已发布的 `FrontendForIterationPlan`，校验 `RANGE_CALL` arity（1..3）与各 argument 进入 `int` slot、`INT_SHORTHAND` stop operand 进入 `int` slot、显式 iterator type 能接收 semantic element type（阶段 F2 起为 `semanticElementType`，替代原 `rawElementType`）；其余 route 仅要求稳定 iterable 事实且不发 unsupported diagnostic。无论 route 一律遍历 for body
+- `for-in` header 的 route-aware contract：消费已发布的 `FrontendForIterationPlan`，校验 `RANGE_CALL` arity（1..3）与各 argument 进入 `int` slot、`INT_SHORTHAND` stop operand 进入 `int` slot、显式 iterator type 能接收 `semanticElementType`；其余 route 仅要求稳定 iterable 事实且不发 unsupported diagnostic。无论 route 一律遍历 for body
 - property `:=` / 未声明显式类型 property 的 `sema.type_hint`
 
 这里的 “稳定 typed fact” 当前已经包含 unary / binary 根节点：
@@ -287,12 +287,12 @@ header 校验按 `route()` 分流：
 - `INT_SHORTHAND`：单个 stop operand 必须能进入 `int` slot（隐式 `0` start 与 `1` step 是 lowering 常量，不参与 type-check）。
 - 其余 route（当前 `GENERIC_VARIANT`，以及保留的专用 route）：先要求 iterable 已发布稳定 typed fact，再通过统一分类器判定。`StaticIterable` 正常通过；`DynamicIterable`（当前 `Variant` / `Object`）保留 runtime-open；`NonIterable` 在 iterable expression 上发 `sema.type_check` `Unable to iterate on value of type "X"`。静态未知或已有 upstream `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED` 事实时不追加诊断。
 
-与 route 无关地，显式 iterator type 必须能接收 semantic element type（阶段 F2 起为 `semanticElementType`，替代原 `rawElementType`）：
+与 route 无关地，显式 iterator type 必须能接收 `semanticElementType`：
 
-- `plan.declaredIteratorTypeRef() != null` 时校验 `checkAssignmentCompatible(exposedIteratorType, semanticElementType)`（阶段 F2 起字段重命名为 `declaredIteratorTypeRef`，类型为 `TypeRef`；此处 null 检查判断是否存在显式类型注解）。
+- `plan.declaredIteratorTypeRef() != null` 时校验 `checkAssignmentCompatible(exposedIteratorType, semanticElementType)`（`declaredIteratorTypeRef` 为源码 `TypeRef`，null 表示无显式注解）。
 - `for i: float in range(3)` 经 `int -> float` intrinsic cast 兼容，不报错（由 `checkAssignmentCompatible` / `determineFrontendBoundaryDecision` 判定为 `ALLOW_WITH_INTRINSIC_CAST`）。
 - `for i: String in range(3)` 不兼容，在 `iteratorType` 上发 diagnostic。
-- 推断 iterator（无显式 type）镜像 semantic element type（阶段 F2 起为 `semanticElementType`），无需 conversion 校验。
+- 推断 iterator（无显式 type）镜像 `semanticElementType`，无需 conversion 校验。
 
 body traversal 与 route 解耦：无论 route 是 known、generic 还是仍被 compile gate 阻断，`handleForStatement(...)` 一律调用 `walkSupportedExecutableBlock(forStatement.body())`。route classification 只影响 header / iterator conversion diagnostic，不会使 for body 再次成为 deferred / unsupported boundary。因此 for body 内的 ordinary local initializer、nested for、return 等现有 type-check statement handler 全部生效。
 
@@ -412,7 +412,7 @@ owner 分工固定为：
 - frontend -> LIR 的 truthiness / condition normalization
 - `@onready` runtime / ready-time lowering
 - `lambda`、`match`、parameter default、block-local `const`、class `const` 的正式 body semantics
-- for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。compile gate 解封（F）、CFG（G）与 range route lowering（H）均已完成，range/int route 端到端闭环。仍顺延：`DICTIONARY_KEYS` 等 known iterable 专用 route 的 iterator element 锁定（for-range 计划阶段 J）与 generic Variant route lowering（阶段 I）
+- for-in route-aware type-check 已落地：`handleForStatement(...)` 消费 `FrontendForIterationPlan` 校验 range arity / argument int slot / int shorthand stop / 显式 iterator element conversion，并遍历 for body。已注册 route 的 compile gate / CFG / body lowering 已闭环；`OBJECT_CUSTOM` 仍未注册 lowering contract。完整合同见 `frontend_for_range_loop_implementation.md`
 
 后续工程若继续扩展本区域，必须遵守以下约束：
 

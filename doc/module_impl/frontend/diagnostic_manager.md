@@ -272,7 +272,7 @@ deferred / unsupported diagnostics 一律通过 `DiagnosticManager` 发布。
     - compile surface 上 `expressionTypes()` / `resolvedMembers()` / `resolvedCalls()` 中仍残留的 `BLOCKED` / `DEFERRED` / `FAILED` / `UNSUPPORTED`
     - supported callable-local `var` 因 `sema.variable_slot_publication` warning 仍缺失 `slotTypes()` 的 lowering-only fact 缺洞
   - `assert` 在这里仍只是 compile-only blocked；共享 type-check 继续保留 Godot-compatible condition contract，不把它回退成 strict-bool `sema.type_check`
-  - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 `RANGE_CALL` / `INT_SHORTHAND` route 放行并进入 body 重扫 facts，未注册 contract 的 route 在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；放行 route 的完整 CFG/lowering 闭环仍待阶段 G/H
+  - `ForStatement` 已进入 shared semantic 并由 compile gate 按 route-aware policy 处理：读取 `forIterationPlans()` 与 `ForLoweringContractRegistry`，已注册 lowering contract 的 route 放行并进入 body 重扫 facts，未注册 contract 的 route（当前 `OBJECT_CUSTOM`）在 statement root 发 route-not-ready blocker（说明缺少 lowering route，而非 `FOR_SUBTREE` unsupported）；已注册 route 的 CFG/body lowering 已落地
   - 上述 7 类表达式（即 `ConditionalExpression` 至 `TypeTestExpression`，不含 statement 级 `assert` 与 route-aware 的 `ForStatement`）属于 frontend 已识别但 lowering 尚未接通的 temporary compile intercept，不代表 parser / grammar / shared semantic 路径已经把它们判成不支持语法
   - `ConditionalExpression` 当前单独被列入这份清单，是因为真正的 lowering 需要等 frontend CFG graph / condition-evaluation-region 合同冻结后再接通；现有 metadata-only `FrontendLoweringCfgPass` 仍属于过渡层
   - `DYNAMIC` 不属于 compile blocker；它保留为 frontend 已接受的 runtime-open 事实，而不是 lowering 未实现状态

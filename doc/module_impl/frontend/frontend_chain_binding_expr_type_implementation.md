@@ -62,7 +62,7 @@
 - production body facts 只通过 SuiteResolver 的 `FrontendTypedLexicalEnvironment` overlay 与 per-owner patch transaction 导出
 - chain binding owner procedure 只在当前 statement root 内消费已发布 / pending 的 binding 与 stabilized local slot fact
 - expr typing owner procedure 只在 chain-owned member/call facts 已对当前 root 可见后发布 expression facts 与 bare-call facts
-- 阶段 K 已删除 standalone chain/expr whole-module analyzer 与 window shim；focused tests
+- standalone chain/expr whole-module analyzer 与 window shim 已删除；focused tests
   直接覆盖 `FrontendBodyOwnerProcedures`、typed overlay 与 per-owner patch export，不再维护
   comparison publication path
 

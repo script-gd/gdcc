@@ -42,7 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Focused tests for the phase-G `for-in` frontend CFG construction.
+/// Focused tests for `for-in` frontend CFG construction.
 ///
 /// Every test runs the real production pipeline (`analyzeForCompile`) so the consumed iteration plan,
 /// source-facing slot type and compile-gate decisions are genuine published facts, never hand-injected

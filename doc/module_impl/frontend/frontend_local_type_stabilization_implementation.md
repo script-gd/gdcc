@@ -56,8 +56,8 @@
 每个 shared phase 结束后，`FrontendSemanticAnalyzer` 都会调用 `analysisData.updateDiagnostics(...)` 刷新共享诊断快照。SuiteResolver body path 还会在 statement boundary 刷新快照，让后一 statement 读取 current-suite upstream diagnostics。
 
 生产 body path 中，local stabilization 作为 `FrontendBodyOwnerProcedures` 的 statement-local
-owner procedure 运行在 top binding 之后、chain binding 之前。阶段 K 已删除 standalone
-whole-module analyzer 与 window shim；focused coverage 通过 SuiteResolver、typed overlay 和
+owner procedure 运行在 top binding 之后、chain binding 之前。standalone whole-module analyzer
+与 window shim 已删除；focused coverage 通过 SuiteResolver、typed overlay 和
 per-owner patch transaction 锚定，不再存在第二条发布路径。
 
 ### 1.2 当前职责

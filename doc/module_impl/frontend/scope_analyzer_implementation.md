@@ -307,7 +307,7 @@ mapped top-level gdcc class 当前已同时满足：
 1. Variable inventory 把 iterator 写入 **`FOR_BODY`**（declaration identity 仍是 `ForStatement`）。
 2. `FOR_ITERATION_RESOLUTION` 的 `FrontendLocalSlotTypeUpdate.scope` 必须是 **`scopesByAst[forStatement.body()]` 返回的同一 `BlockScope` 实例**。
 3. `FrontendTypedLexicalEnvironment.findLocalSlotTypeUpdate` 用 `update.scope() == scope`（**对象身份**）匹配；header 外层 scope 与 `FOR_BODY` 是不同对象，混用会静默 miss。
-4. 读路径：`effectiveBinding` → `owningScopeForDeclaration(ForStatement)` **必须**取 `scopesByAst[body]`，不得取 `scopesByAst[ForStatement]`。否则嵌套 suite 中 iterator 精化会落回 Interface baseline `Variant`（见 `frontend_for_range_loop_implementation_plan.md` 阶段 K）。
+4. 读路径：`effectiveBinding` → `owningScopeForDeclaration(ForStatement)` **必须**取 `scopesByAst[body]`，不得取 `scopesByAst[ForStatement]`。否则嵌套 suite 中 iterator 精化会落回 Interface baseline `Variant`（见 `frontend_for_range_loop_implementation.md`）。
 
 实现锚点：`FrontendScopeAnalyzer.handleForStatement`、`FrontendBodyOwnerProcedures.refineIteratorSlot`、`FrontendTypedLexicalEnvironment.owningScopeForDeclaration`。
 
