@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Phase 0 characterization for the current bare-pointer object value representation.
 ///
-/// These tests anchor the pre-fat-reference baseline required by
+/// These tests anchor the pre-fat-pointer baseline required by
 /// `doc/module_impl/backend/object_value_fat_reference_implementation_plan.md`:
 /// later phases must update the asserted C shapes deliberately instead of deleting them.
 class ObjectValueRepresentationCharacterizationTest {
@@ -156,7 +156,6 @@ class ObjectValueRepresentationCharacterizationTest {
             func.setReturnType(GdVoidType.VOID);
             func.createAndAddVariable("node", ENGINE_NODE);
             func.createAndAddVariable("worker", GDCC_WORKER);
-            func.createAndAddVariable("unknown", UNKNOWN_OBJECT);
             addEntryReturn(func);
             workerClass.addFunction(func);
 
@@ -164,7 +163,6 @@ class ObjectValueRepresentationCharacterizationTest {
 
             assertTrue(entrySource.contains("$node = NULL;"), entrySource);
             assertTrue(entrySource.contains("$worker = NULL;"), entrySource);
-            assertTrue(entrySource.contains("$unknown = NULL;"), entrySource);
         }
 
         @Test

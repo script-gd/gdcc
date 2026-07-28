@@ -76,6 +76,7 @@ public class CProjectBuilderSharedIncludeTest {
         var expectedGeneratedFiles = List.of(
                 projectDir.resolve("entry.c").toAbsolutePath().normalize(),
                 projectDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
+                projectDir.resolve("object_fat_ptr_types.h").toAbsolutePath().normalize(),
                 projectDir.resolve("entry.h").toAbsolutePath().normalize()
         );
 
@@ -115,6 +116,7 @@ public class CProjectBuilderSharedIncludeTest {
         var expectedGeneratedFiles = List.of(
                 projectDir.resolve("entry.c").toAbsolutePath().normalize(),
                 projectDir.resolve("engine_method_binds.h").toAbsolutePath().normalize(),
+                projectDir.resolve("object_fat_ptr_types.h").toAbsolutePath().normalize(),
                 projectDir.resolve("entry.h").toAbsolutePath().normalize()
         );
 

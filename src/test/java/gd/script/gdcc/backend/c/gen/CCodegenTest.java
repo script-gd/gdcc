@@ -198,8 +198,8 @@ public class CCodegenTest {
         codegen.prepare(ctx, module);
         List<GeneratedFile> files = codegen.generate();
 
-        assertEquals(3, files.size(), "Should produce three files");
-        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertEquals(4, files.size(), "Should produce four files");
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "object_fat_ptr_types.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
 
         var cCode = generatedFileText(files, "entry.c");
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
@@ -493,7 +493,7 @@ public class CCodegenTest {
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
         var hCode = generatedFileText(files, "entry.h");
 
-        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), filePaths);
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "object_fat_ptr_types.h", "entry.h"), filePaths);
         assertTrue(hCode.contains("#include \"engine_method_binds.h\""), hCode);
         assertContainsAll(
                 bindHeaderCode,
@@ -552,7 +552,7 @@ public class CCodegenTest {
         var entrySource = generatedFileText(files, "entry.c");
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
 
-        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "object_fat_ptr_types.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
         assertTrue(entrySource.contains("$node = godot_new_Node();"), entrySource);
         assertContainsAll(
                 bindHeaderCode,
@@ -718,7 +718,7 @@ public class CCodegenTest {
         var entrySource = generatedFileText(files, "entry.c");
         var bindHeaderCode = generatedFileText(files, "engine_method_binds.h");
 
-        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "object_fat_ptr_types.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
         assertTrue(entrySource.contains("godot_Probe_READY();"), entrySource);
         assertTrue(bindHeaderCode.contains("static inline godot_int godot_Probe_READY(void)"), bindHeaderCode);
         assertTrue(bindHeaderCode.contains("return (godot_int)13;"), bindHeaderCode);

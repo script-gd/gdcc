@@ -569,6 +569,13 @@ public class CCodegen implements Codegen {
             var usedEngineMethods = usageSession.engineMethods();
             var usedEngineConstructors = usageSession.engineConstructors();
             var usedModuleLocalBindings = usageSession.moduleLocalBindings();
+            var objectFatPtrSpecs = CObjectFatPtrCollector.collect(
+                    module,
+                    ctx.classRegistry(),
+                    usedEngineMethods,
+                    usedEngineConstructors,
+                    usedModuleLocalBindings
+            );
             var bindTplCtx = Map.of(
                     "module", module,
                     "helper", helper,
@@ -580,6 +587,14 @@ public class CCodegen implements Codegen {
                     "template_451/engine_method_binds.h.ftl",
                     bindTplCtx
             );
+            var objectFatPtrTypesTplCtx = Map.of(
+                    "module", module,
+                    "objectFatPtrSpecs", objectFatPtrSpecs
+            );
+            var objectFatPtrTypesSrc = TemplateLoader.renderFromClasspath(
+                    "template_451/object_fat_ptr_types.h.ftl",
+                    objectFatPtrTypesTplCtx
+            );
             var hTplCtx = Map.of(
                     "module", module,
                     "helper", helper
@@ -587,16 +602,19 @@ public class CCodegen implements Codegen {
             var hSrc = TemplateLoader.renderFromClasspath("template_451/entry.h.ftl", hTplCtx);
             cSrc = CCodeFormatter.format(cSrc);
             engineMethodBindsSrc = CCodeFormatter.format(engineMethodBindsSrc);
+            objectFatPtrTypesSrc = CCodeFormatter.format(objectFatPtrTypesSrc);
             hSrc = CCodeFormatter.format(hSrc);
 
             var cBytes = cSrc.getBytes(StandardCharsets.UTF_8);
             var engineMethodBindsBytes = engineMethodBindsSrc.getBytes(StandardCharsets.UTF_8);
+            var objectFatPtrTypesBytes = objectFatPtrTypesSrc.getBytes(StandardCharsets.UTF_8);
             var hBytes = hSrc.getBytes(StandardCharsets.UTF_8);
 
             var cFile = new GeneratedFile(cBytes, "entry.c");
             var engineMethodBindsFile = new GeneratedFile(engineMethodBindsBytes, "engine_method_binds.h");
+            var objectFatPtrTypesFile = new GeneratedFile(objectFatPtrTypesBytes, "object_fat_ptr_types.h");
             var hFile = new GeneratedFile(hBytes, "entry.h");
-            return List.of(cFile, engineMethodBindsFile, hFile);
+            return List.of(cFile, engineMethodBindsFile, objectFatPtrTypesFile, hFile);
         } catch (IOException | TemplateException e) {
             throw new RuntimeException("Failed to generate C code: " + e.getMessage(), e);
         }

@@ -1,11 +1,11 @@
-# C Backend 对象值胖引用实施计划
+# C Backend 对象值胖指针实施计划
 
 > 本文档记录将 C backend 内部对象值从裸指针迁移为“静态类型指针 + Godot instance
-> ID”胖引用的实施路线。本文档只描述尚未实施的目标、边界、步骤与验收条件；当前已落地事实仍以现有 backend 合同文档为准。
+> ID”胖指针的实施路线。本文档只描述尚未实施的目标、边界、步骤与验收条件；当前已落地事实仍以现有 backend 合同文档为准。
 
 ## 文档状态
 
-- 状态：计划中 / 阶段 0 已锚定，后续阶段尚未实施
+- 状态：计划中 / 阶段 0 已锚定，阶段 1 已实施，后续阶段尚未开始
 - 更新时间：2026-07-28
 - Godot 对齐版本：`4.5.1-stable`
 - Godot 对齐提交：`f62fdbde15035c5576dad93e586201f4d41ef0cb`
@@ -50,9 +50,9 @@ Godot 4.5.1 的 `Variant::ObjData` 同时保存 `ObjectID id` 和 `Object *obj`�
 
 ### 2.1 核心目标
 
-1. 每个可达的静态 `GdObjectType` 都生成独立 C 胖引用类型。
-2. 胖引用按值携带具体静态指针和 `GDObjectInstanceID`。
-3. locals、parameters、returns、properties、temporaries、default values 和内部 direct calls 统一使用胖引用。
+1. 每个可达的静态 `GdObjectType` 都生成独立 C 胖指针类型。
+2. 胖指针按值携带具体静态指针和 `GDObjectInstanceID`。
+3. locals、parameters、returns、properties、temporaries、default values 和内部 direct calls 统一使用胖指针。
 4. 所有进入 GDExtension/Godot raw ABI 的对象值都先取得 live pointer：non-RefCounted 按 ID 验证；满足 ownership
    invariant 的 RefCounted 强引用可直接使用 cached pointer。
 5. 所有从 raw ABI 进入内部表示的对象值都在对象仍存活时立即捕获 instance ID。
@@ -70,10 +70,10 @@ Godot 4.5.1 的 `Variant::ObjData` 同时保存 `ObjectID id` 和 `Object *obj`�
 - 不修改 frontend 或 LIR 的对象类型模型；新增专用 LIR 存活性查询指令不改变对象类型、ownership 或 provenance 模型。
 - 不在首次迁移中实现完整的 LIR assert-merging 优化 pass；只要求硬失败守卫显式建模，为后续 pass 提供稳定输入。
 - 不修改 Godot engine、GDExtension ABI 或 vendored interface layout。
-- 不把 GDCC wrapper 实例本体改成胖引用。
+- 不把 GDCC wrapper 实例本体改成胖指针。
 - 不改变 `_super` 位于偏移 0 的显式继承布局。
 - 不在 generated C 中读取或写入 `godot_Variant` 私有内存布局。
-- 不为所有对象类型增加一个通用 `void *` 胖引用作为 fallback。
+- 不为所有对象类型增加一个通用 `void *` 胖指针作为 fallback。
 - 不新增第二套 ownership 类型系统。
 
 ---
@@ -85,15 +85,15 @@ Godot 4.5.1 的 `Variant::ObjData` 同时保存 `ObjectID id` 和 `Object *obj`�
 建议生成以下形状：
 
 ```c
-typedef struct gdcc_Node_ref {
+typedef struct gdcc_Node_fat_ptr {
     godot_Node *ptr;
     GDObjectInstanceID instance_id;
-} gdcc_Node_ref;
+} gdcc_Node_fat_ptr;
 
-typedef struct gdcc_Player_ref {
+typedef struct gdcc_Player_fat_ptr {
     Player *ptr;
     GDObjectInstanceID instance_id;
-} gdcc_Player_ref;
+} gdcc_Player_fat_ptr;
 ```
 
 规则：
@@ -103,6 +103,11 @@ typedef struct gdcc_Player_ref {
 - ID 字段使用 Godot ABI 的 `GDObjectInstanceID`，其物理语义为 64-bit instance ID。
 - 不生成 `gdcc_object_ref`、`void *ptr` 或 `GDExtensionObjectPtr ptr` 形式的通用内部 fallback。
 - 名字必须通过现有 canonical C identifier 规则生成，并在模块内检查冲突。
+- fat pointer 是 C 层面的值语义 struct：internal storage、internal parameter、return 和临时值都使用 `gdcc_<Type>_fat_ptr`
+  本身，而不是 `gdcc_<Type>_fat_ptr *`；只有显式槽地址角色才使用 `gdcc_<Type>_fat_ptr *`。
+- 这里的“值语义”只描述 C ABI 的存储/传递方式：复制 fat pointer 是复制整个 struct，不会创建新对象，也不重新捕获
+  `instance_id`。对象身份仍然由 `instance_id` 表达，own/release 生命周期合同仍由第 3.2 节和 backend ownership
+  规则约束。
 
 ### 3.2 表示不变量
 
@@ -131,7 +136,7 @@ typedef struct gdcc_Player_ref {
 7. 同静态类型的复制必须原样复制 `ptr` 与 `instance_id`，不得重新捕获 ID。
 8. upcast 或 GDCC/engine 表示转换必须保留原 ID，并从 ID 解析出的 live raw pointer 构造目标 `ptr`；RefCounted fast
    path 下可使用已证明 live 的 source cached pointer 构造目标 `ptr`。
-9. RefCounted fast path 仅适用于当前 fat ref 持有强引用，或其 borrowed source 仍持有强引用的情形；释放、move-out、
+9. RefCounted fast path 仅适用于当前 fat pointer 持有强引用，或其 borrowed source 仍持有强引用的情形；释放、move-out、
    overwrite 或 canonical null 化之后不得再使用旧 cached `ptr`。
 10. Godot 4.5.1 的 ObjectID 最高位（bit 63）是 RefCounted reference bit；GDCC 只把它作为动态 RefCounted 快速路径依据，
     不作为对象身份，也不作为 non-RefCounted liveness 证据。
@@ -156,12 +161,12 @@ struct RootScriptClass {
 
 - `_super` / `_object` 是 GDCC class instance layout，不是 GDScript 对象值表示。
 - `p_instance`、instance binding、create/free/notification callback 仍属于 raw GDExtension ABI。
-- 将 root `_object` 改为胖引用会混淆 instance layout 与 value representation，并扩大 create/free 生命周期风险。
+- 将 root `_object` 改为胖指针会混淆 instance layout 与 value representation，并扩大 create/free 生命周期风险。
 
 ### 3.4 RefCounted liveness fast path
 
 Godot 4.5.1 的 `ObjectID` 使用 bit 63（`OBJECTDB_REFERENCE_BIT`）标记 RefCounted 对象；`GDObjectInstanceID` 在 GDExtension
-ABI 中保留该位。RefCounted 对象在引用计数大于 0 时不会被释放，因此只要 GDCC 当前 fat ref 持有强引用，持有 pointer 即证明存活。
+ABI 中保留该位。RefCounted 对象在引用计数大于 0 时不会被释放，因此只要 GDCC 当前 fat pointer 持有强引用，持有 pointer 即证明存活。
 
 静态策略：
 
@@ -173,8 +178,8 @@ ABI 中保留该位。RefCounted 对象在引用计数大于 0 时不会被释�
 
 适用前提：
 
-- fat ref 所在 slot/value 已经完成应有的 retain，或其 borrowed source 在作用域内仍持有强引用。
-- 对同一 owning fat ref 的释放、move-out、overwrite 或 canonical null 化之后，旧 cached `ptr` 立即失效。
+- fat pointer 所在 slot/value 已经完成应有的 retain，或其 borrowed source 在作用域内仍持有强引用。
+- 对同一 owning fat pointer 的释放、move-out、overwrite 或 canonical null 化之后，旧 cached `ptr` 立即失效。
 - fast path 不得用于已明确释放但仍被错误保留的 stale RefCounted ID；这类状态属于 ownership 合同违约，应通过测试和
   sanitizer 发现，而不是通过运行时 ObjectDB 检查掩盖。
 
@@ -212,7 +217,7 @@ backend generator helper（例如 `CBodyBuilder`/`CGenHelper` 中需要 validate
 
 ## 4. 类型收集与声明顺序
 
-### 4.1 ObjectRefSpec
+### 4.1 ObjectFatPtrSpec
 
 在 Java backend 增加一个简单 immutable spec，至少包含：
 
@@ -260,18 +265,18 @@ spec 不承担 ownership，也不保存运行时值。
 
 1. Godot/runtime includes 和 `class_library`。
 2. GDCC wrapper struct forward declarations。
-3. 所有 generated fat ref typedef。
-4. GDCC wrapper struct definitions；object fields 此时使用 fat ref。
+3. 所有 generated fat pointer typedef。
+4. GDCC wrapper struct definitions；object fields 此时使用 fat pointer。
 5. `<Class>_object_ptr(...)` 等 raw layout helper declarations。
-6. per-type fat ref helper declarations/definitions。
+6. per-type fat pointer helper declarations/definitions。
 7. `engine_method_binds.h`。
 8. internal function declarations和 registered binding wrappers。
 
 这样可以同时满足：
 
-- wrapper fields 使用已声明的 fat ref。
-- fat ref 的 GDCC pointer 可以指向 incomplete wrapper type。
-- exact engine helpers 能使用 fat ref。
+- wrapper fields 使用已声明的 fat pointer。
+- fat pointer 的 GDCC pointer 可以指向 incomplete wrapper type。
+- exact engine helpers 能使用 fat pointer。
 - 需要 `_super` 完整布局的 upcast helper 在 wrapper definition 后生成。
 
 依赖说明：
@@ -279,7 +284,7 @@ spec 不承担 ownership，也不保存运行时值。
 - `class_library` 和 `gdcc_helper.h` 在步骤 1 已可用。
 - `engine_method_binds.h` 后移后，其内部对 `class_library`、Godot constructor API 和 binding lookup failure helper 的依赖仍由步骤
   1 满足。
-- 新增依赖仅是步骤 3 的 fat-ref typedef 和步骤 6 的 per-type helper，因此不能把该 include 提前到它们之前。
+- 新增依赖仅是步骤 3 的 fat-pointer typedef 和步骤 6 的 per-type helper，因此不能把该 include 提前到它们之前。
 
 ---
 
@@ -290,12 +295,16 @@ spec 不承担 ownership，也不保存运行时值。
 
 实施时应至少明确以下角色：
 
-- internal storage type：对象为 `gdcc_<Type>_ref`
-- internal parameter type：对象按值传递 `gdcc_<Type>_ref`
-- internal storage address type：对象槽地址为 `gdcc_<Type>_ref *`
+- internal storage type：对象为 `gdcc_<Type>_fat_ptr`
+- internal parameter type：对象按值传递 `gdcc_<Type>_fat_ptr`
+- internal storage address type：对象槽地址为 `gdcc_<Type>_fat_ptr *`
 - Godot ptrcall slot type：对象为 raw `godot_<Type> *` 或 `GDExtensionObjectPtr`
 - Godot receiver type：`GDExtensionObjectPtr`
 - non-object value-semantic argument type：继续按现有 pointer-to-storage 规则
+
+内部对象角色必须保持值语义：storage、parameter、return/temporary 都是 `gdcc_<Type>_fat_ptr` 本身；只有
+internal storage address 是 `gdcc_<Type>_fat_ptr *`。raw ABI 角色不得被 fat-pointer 值语义反向影响：Godot ptrcall slot 和
+receiver 仍使用 raw object pointer。
 
 可以保留现有 public method name，但必须把所有调用点按角色审核；不能让一个 `renderGdTypeRefInC(...)` 同时表示“对象按值参数”和“对象槽地址”。
 
@@ -343,29 +352,29 @@ static inline godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, 
 
 ### 6.2 Per-type helper
 
-每个 `ObjectRefSpec` 至少需要以下能力：
+每个 `ObjectFatPtrSpec` 至少需要以下能力：
 
 - null 构造
-- live raw Godot pointer -> fat ref
-- Variant -> fat ref
-- fat ref -> validated raw Godot pointer
-- fat ref -> validated typed pointer
+- live raw Godot pointer -> fat pointer
+- Variant -> fat pointer
+- fat pointer -> validated raw Godot pointer
+- fat pointer -> validated typed pointer
 - source static type -> target static type upcast
-- fat ref -> Variant
+- fat pointer -> Variant
 
 建议 helper naming surface：
 
 ```c
-gdcc_Node_ref gdcc_Node_ref_from_raw(GDExtensionObjectPtr raw);
-gdcc_Node_ref gdcc_Node_ref_from_variant(const godot_Variant *value);
-GDExtensionObjectPtr gdcc_Node_ref_live_object(gdcc_Node_ref value);
-godot_Node *gdcc_Node_ref_live_ptr(gdcc_Node_ref value);
-godot_Variant gdcc_Node_ref_to_variant(gdcc_Node_ref value);
+gdcc_Node_fat_ptr gdcc_Node_fat_ptr_from_raw(GDExtensionObjectPtr raw);
+gdcc_Node_fat_ptr gdcc_Node_fat_ptr_from_variant(const godot_Variant *value);
+GDExtensionObjectPtr gdcc_Node_fat_ptr_live_object(gdcc_Node_fat_ptr value);
+godot_Node *gdcc_Node_fat_ptr_live_ptr(gdcc_Node_fat_ptr value);
+godot_Variant gdcc_Node_fat_ptr_to_variant(gdcc_Node_fat_ptr value);
 ```
 
 per-type live helper 按静态 `RefCountedStatus` 特化：
 
-- `YES`：非零 ID 时直接使用 fat ref cached pointer；GDCC 类型通过 wrapper layout helper 得到 raw Godot object，engine
+- `YES`：非零 ID 时直接使用 fat pointer cached pointer；GDCC 类型通过 wrapper layout helper 得到 raw Godot object，engine
   类型直接 cast。不得调用 ObjectDB。
 - `NO`：必须先按 ID 解析 raw Godot object；GDCC 类型再从 instance binding 获得 wrapper，engine 类型 cast。
 - `UNKNOWN`：运行时先检查 reference bit；命中时按 `YES` 路径，未命中时按 `NO` 路径。
@@ -379,7 +388,7 @@ per-type live helper 按静态 `RefCountedStatus` 特化：
 1. 若 raw 为 `NULL`，返回 canonical null。
 2. 在 raw 保证 live 时调用 `godot_object_get_instance_id(raw)`。
 3. 构造静态类型 pointer cache。
-4. 返回 fat ref。
+4. 返回 fat pointer。
 
 constructor、singleton、ptrcall object return、registered ptrcall argument、instance callback self 等入口都复用该合同。
 
@@ -393,7 +402,7 @@ constructor、singleton、ptrcall object return、registered ptrcall argument、
    type gate，不能依赖该防御路径吞掉类型错误。
 4. 使用 ID 解析 live raw pointer；不要对 Variant 解出的 pointer 再调用 `godot_object_get_instance_id(...)`。
 5. live 时构造 typed pointer cache；freed 时 pointer cache 为 `NULL`。
-6. 返回保留 Variant 原 ID 的 fat ref。
+6. 返回保留 Variant 原 ID 的 fat pointer。
 
 ### 6.5 Fat ref -> Variant 的 ABI 限制
 
@@ -406,9 +415,9 @@ Godot 4.5.1 public GDExtension ABI提供：
 
 但没有提供“以任意 instance ID 构造 OBJECT Variant”或“设置 Variant ObjData ID”的接口。因此：
 
-- live fat ref：使用 validated raw pointer 构造 OBJECT Variant。
+- live fat pointer：使用 validated raw pointer 构造 OBJECT Variant。
 - canonical null：构造 OBJECT/null Variant。
-- freed fat ref：也只能安全构造 OBJECT/null Variant，outbound Variant 中 ID 变为 0。
+- freed fat pointer：也只能安全构造 OBJECT/null Variant，outbound Variant 中 ID 变为 0。
 - 禁止把 stale cached pointer 传给 Variant constructor。
 - 禁止写入 Godot private `Variant::ObjData`。
 
@@ -432,22 +441,22 @@ Godot 4.5.1 public GDExtension ABI提供：
 
 ### 7.1 表示 provenance
 
-现有 `PtrKind.GDCC_PTR/GODOT_PTR` 同时描述“值本身是 pointer”与“pointer 指向哪种对象”。胖引用落地后应改为表达实际 value
+现有 `PtrKind.GDCC_PTR/GODOT_PTR` 同时描述“值本身是 pointer”与“pointer 指向哪种对象”。胖指针落地后应改为表达实际 value
 representation，例如：
 
-- internal fat ref
+- internal fat pointer
 - raw Godot pointer producer
 - non-object
 
-具体 static pointer flavor 由 `GdObjectType/ObjectRefSpec` 决定，不需要再为 engine/GDCC fat ref各建一套 ownership 规则。
+具体 static pointer flavor 由 `GdObjectType/ObjectFatPtrSpec` 决定，不需要再为 engine/GDCC fat pointer各建一套 ownership 规则。
 
 ### 7.2 默认值与初始化
 
 所有对象默认值必须从 `NULL` 改为对应 compound literal 或 zero initialization：
 
 ```c
-gdcc_Node_ref value = { 0 };
-value = (gdcc_Node_ref){ 0 };
+gdcc_Node_fat_ptr value = { 0 };
+value = (gdcc_Node_fat_ptr){ 0 };
 ```
 
 覆盖：
@@ -461,18 +470,18 @@ value = (gdcc_Node_ref){ 0 };
 - discarded result temp
 - property first-write initialization
 
-`renderDefaultValueExpr(...)` 当前是无 context static helper，无法为 object 生成具体 fat-ref compound literal。object
+`renderDefaultValueExpr(...)` 当前是无 context static helper，无法为 object 生成具体 fat-pointer compound literal。object
 default rendering 应迁移到 `CGenHelper` 的 context-aware path，或显式传入 rendered object C type。
 
 ### 7.3 对象槽位写入
 
 `emitObjectSlotWrite(...)` 的顺序保持不变：
 
-1. capture old fat ref
-2. 把 RHS 转成 target static fat ref
+1. capture old fat pointer
+2. 把 RHS 转成 target static fat pointer
 3. struct assignment
 4. RHS 为 `BORROWED` 时 retain validated live raw object
-5. release old fat ref 对应的 validated live raw object
+5. release old fat pointer 对应的 validated live raw object
 
 变化点：
 
@@ -490,16 +499,16 @@ default rendering 应迁移到 `CGenHelper` 的 context-aware path，或显式�
 - engine child -> engine parent：保留 ID；live raw pointer cast 为 target engine pointer。
 - GDCC -> engine ancestor：保留 ID；live raw Godot pointer cast 为 target engine pointer。
 - engine/raw -> GDCC：仅在 registry 证明兼容时，通过 instance binding 构造 target wrapper pointer。
-- 不允许通过 C struct cast转换两个不同 fat-ref 类型。
+- 不允许通过 C struct cast转换两个不同 fat-pointer 类型。
 
 ### 7.5 Argument rendering
 
-内部函数调用默认直接按值传 fat ref。
+内部函数调用默认直接按值传 fat pointer。
 
 只有明确标记为 Godot/raw ABI 的 callee 才执行：
 
 ```text
-fat ref -> live pointer acquisition -> validated GDExtensionObjectPtr
+fat pointer -> live pointer acquisition -> validated GDExtensionObjectPtr
 ```
 
 live pointer acquisition 按第 3.4 节选择 RefCounted fast path 或 ObjectDB ID validation。
@@ -509,12 +518,12 @@ binding 验证，同时逐步把对象 argument ABI shape 变为结构化 metada
 
 ### 7.6 Return 与 discard
 
-- internal function object return type改为具体 fat ref。
+- internal function object return type改为具体 fat pointer。
 - `_return_val` 继续是 owning publish slot。
 - borrowed return source retain validated live raw object。
 - owned return source direct consume。
 - move-return 后 source 清为对应 `{0}`。
-- discarded owned fat ref立即按 ID release。
+- discarded owned fat pointer立即按 ID release。
 - non-RefCounted cleanup 规则保持现有合同。
 
 ---
@@ -523,32 +532,32 @@ binding 验证，同时逐步把对象 argument ABI shape 变为结构化 metada
 
 | 边界                                    | 内部形状                         | ABI 形状                             | 适配要求                                          |
 |---------------------------------------|------------------------------|------------------------------------|-----------------------------------------------|
-| GDCC direct function parameter/return | per-type fat ref             | 不跨 ABI                             | 按值传递，转换保留 ID                                  |
-| GDCC instance `self`                  | owner fat ref                | `p_instance` raw wrapper           | owner-specific wrapper 构造 self fat ref        |
-| engine exact method receiver          | fat ref                      | `GDExtensionObjectPtr`             | 调用前取得 live pointer；RefCounted fast path 见 3.4 |
-| engine exact ptrcall object arg       | fat ref                      | raw object pointer slot address    | helper 内物化 local raw slot                     |
-| engine exact ptrcall object return    | fat ref                      | raw object return slot             | raw return 后立即捕获 ID                           |
-| engine vararg fixed object arg        | fat ref                      | Variant                            | 通过 safe fat-ref pack helper                   |
-| engine vararg object return           | fat ref                      | Variant                            | 解包保留 Variant ID，并在销毁临时 Variant 前发布 ownership  |
-| dynamic Object call/property          | fat ref                      | raw receiver + Variant args/return | receiver 取得 live pointer；Variant 解包保留 ID      |
-| utility/fixed/builtin wrapper         | fat ref at caller            | generated raw Godot wrapper        | caller/body builder 显式适配                      |
-| constructor/singleton                 | fat ref at caller            | raw object return                  | live raw 返回后立即捕获 ID                           |
-| registered `call_func` arg            | fat ref in internal function | incoming Variant                   | wrapper-local borrowed fat ref                |
-| registered `call_func` return         | owned fat ref                | outgoing Variant                   | pack 后消费内部 return ownership                   |
-| registered `ptrcall` arg              | fat ref in internal function | incoming raw slot                  | wrapper-local borrowed fat ref                |
-| registered `ptrcall` return           | owned fat ref                | outgoing raw slot                  | validated raw pointer ownership transfer      |
+| GDCC direct function parameter/return | per-type fat pointer             | 不跨 ABI                             | 按值传递，转换保留 ID                                  |
+| GDCC instance `self`                  | owner fat pointer                | `p_instance` raw wrapper           | owner-specific wrapper 构造 self fat pointer        |
+| engine exact method receiver          | fat pointer                      | `GDExtensionObjectPtr`             | 调用前取得 live pointer；RefCounted fast path 见 3.4 |
+| engine exact ptrcall object arg       | fat pointer                      | raw object pointer slot address    | helper 内物化 local raw slot                     |
+| engine exact ptrcall object return    | fat pointer                      | raw object return slot             | raw return 后立即捕获 ID                           |
+| engine vararg fixed object arg        | fat pointer                      | Variant                            | 通过 safe fat-pointer pack helper                   |
+| engine vararg object return           | fat pointer                      | Variant                            | 解包保留 Variant ID，并在销毁临时 Variant 前发布 ownership  |
+| dynamic Object call/property          | fat pointer                      | raw receiver + Variant args/return | receiver 取得 live pointer；Variant 解包保留 ID      |
+| utility/fixed/builtin wrapper         | fat pointer at caller            | generated raw Godot wrapper        | caller/body builder 显式适配                      |
+| constructor/singleton                 | fat pointer at caller            | raw object return                  | live raw 返回后立即捕获 ID                           |
+| registered `call_func` arg            | fat pointer in internal function | incoming Variant                   | wrapper-local borrowed fat pointer                |
+| registered `call_func` return         | owned fat pointer                | outgoing Variant                   | pack 后消费内部 return ownership                   |
+| registered `ptrcall` arg              | fat pointer in internal function | incoming raw slot                  | wrapper-local borrowed fat pointer                |
+| registered `ptrcall` return           | owned fat pointer                | outgoing raw slot                  | validated raw pointer ownership transfer      |
 | create/free/notification callbacks    | 不作为普通对象值                     | raw GDExtension ABI                | 保持现状，不改 callback signature                    |
 
 ### 8.1 Exact engine non-vararg helper
 
-当前 helper 对 object 参数执行 `&arg`，并直接把 object return storage 声明成 `renderGdTypeInC(returnType)`。胖引用后必须改为：
+当前 helper 对 object 参数执行 `&arg`，并直接把 object return storage 声明成 `renderGdTypeInC(returnType)`。胖指针后必须改为：
 
-- helper public/internal surface接收 fat ref。
+- helper public/internal surface接收 fat pointer。
 - 每个 object fixed arg 在 helper 内生成 raw pointer local。
 - `args[]` 保存 raw pointer local 的地址。
 - object return 使用 raw object pointer local 作为 ptrcall return slot。
-- ptrcall 成功后把 raw return 包装成目标 fat ref并捕获 ID。
-- ptrcall lookup/error default 返回对应 `{0}` fat ref。
+- ptrcall 成功后把 raw return 包装成目标 fat pointer并捕获 ID。
+- ptrcall lookup/error default 返回对应 `{0}` fat pointer。
 
 ### 8.2 Exact engine vararg helper
 
@@ -616,15 +625,15 @@ instance wrapper：
 1. 从 `p_instance` 得到 owner wrapper pointer。
 2. 通过 owner `<Class>_object_ptr(...)` 获得 live raw Godot object。
 3. 捕获 ID并构造 owner fat self。
-4. 每个 object Variant argument构造 borrowed fat ref。
+4. 每个 object Variant argument构造 borrowed fat pointer。
 5. 调用 typed internal function。
 6. object return pack 成 Variant。
 7. pack 已建立 Variant ownership 后，消费 internal owned return，避免 RefCounted 泄漏。
 
 ### 9.3 `ptrcall`
 
-- object argument slot按 raw object pointer读取，再构造 borrowed fat ref。
-- object return先接收 internal owned fat ref，再把 validated raw pointer写入 `r_return`。
+- object argument slot按 raw object pointer读取，再构造 borrowed fat pointer。
+- object return先接收 internal owned fat pointer，再把 validated raw pointer写入 `r_return`。
 - successful raw return是 ownership transfer，不额外 release。
 - dead/non-live return安全写 `NULL`。
 - non-object storage-pointer规则保持现状。
@@ -640,8 +649,8 @@ shape决定，否则同 signature 的不同 GDCC owner会构造错误 self type�
 
 ### 10.1 Pack/Unpack
 
-- `renderPackFunctionName(GdObjectType)` 改为 per-type fat-ref pack helper。
-- `renderUnpackFunctionName(GdObjectType)` 改为 per-type Variant -> fat-ref helper。
+- `renderPackFunctionName(GdObjectType)` 改为 per-type fat-pointer pack helper。
+- `renderUnpackFunctionName(GdObjectType)` 改为 per-type Variant -> fat-pointer helper。
 - registered wrapper、dynamic call、operator evaluator、default Variant materialization统一复用。
 - object unpack helper本身只做表示读取，产生 `BORROWED` value；是否 retain由 destination slot或 return publish边界决定。
 
@@ -694,7 +703,7 @@ condition。当前 frontend/LIR 若总是先 lower 为 bool，也应增加防御
 
 所有对象生命周期 helper 调用前都必须取得 live raw pointer：
 
-1. 读取 fat ref `instance_id`。
+1. 读取 fat pointer `instance_id`。
 2. `RefCountedStatus.YES`：ID 非零时按第 3.4 节 fast path 取得 cached/live raw pointer；ID 0 时 no-op。
 3. `RefCountedStatus.NO`：通过 `godot_object_get_instance_from_id(...)` 验证；null/freed 时 no-op。
 4. `RefCountedStatus.UNKNOWN`：运行时 reference-bit 命中时按 RefCounted 路径，否则按 non-RefCounted 路径。
@@ -708,7 +717,7 @@ condition。当前 frontend/LIR 若总是先 lower 为 bool，也应增加防御
 - Variant -> object slot：unpack结果是 borrowed；slot在 Variant销毁前 retain。
 - exact vararg object return：helper在销毁 return Variant前发布 owned fat return。
 - registered call_func object return：Variant pack建立自己的引用后，wrapper消费 internal owned return。
-- object default argument Variant：pack不消费 source fat ref。
+- object default argument Variant：pack不消费 source fat pointer。
 
 这些规则必须通过 RefCounted计数测试验证，不能只断言 generated C string。
 
@@ -764,7 +773,7 @@ ref后该路径会生成无效 C。
 由 `RegisteredWrapperBaseline` 锚定；exact engine method ptrcall object return 需要完整 engine bind fixture，
 其基线推迟到阶段 3C 实施前补充。
 
-### 阶段 1：ObjectRefSpec、collector 与声明
+### 阶段 1：ObjectFatPtrSpec、collector 与声明
 
 主要文件：
 
@@ -772,17 +781,18 @@ ref后该路径会生成无效 C。
 - `CCodegen.java`
 - 新增简单 backend spec/collector class
 - `entry.h.ftl`
+- `object_fat_ptr_types.h.ftl`
 
 工作：
 
 - 建立 deterministic object-ref spec collection。
 - 生成 per-type typedef。
 - 未识别 object fail-fast。
-- 在 ObjectRefSpec 中记录 `RefCountedStatus`，来自现有 `ClassRegistry.getRefCountedStatus(...)`。
+- 在 ObjectFatPtrSpec 中记录 `RefCountedStatus`，来自现有 `ClassRegistry.getRefCountedStatus(...)`。
 - 调整 header include/declaration顺序。
 - 先增加 storage/internal-parameter/storage-address/raw-ABI 等 role-specific renderer；现有 production call site在阶段 3
   前继续显式使用 legacy raw renderer。
-- fat-ref typedef在本阶段可以尚未被 ordinary storage使用，但不得引入 generic fat fallback或让同一 renderer同时表达
+- fat-pointer typedef在本阶段可以尚未被 ordinary storage使用，但不得引入 generic fat fallback或让同一 renderer同时表达
   internal fat value与raw ABI slot。
 
 验收：
@@ -792,6 +802,23 @@ ref后该路径会生成无效 C。
 - 顺序稳定。
 - unknown type生成失败。
 - generated header通过 `GodotAbiHeaderCompileTest`。
+
+#### 阶段 1 任务状态
+
+| 任务 | 状态 | 锚定测试/产出 |
+|---|---|---|
+| `ObjectFatPtrSpec` 与 `RefCountedStatus` 记录 | 已完成 | `ObjectFatPtrDeclarationTest.SpecTests` |
+| deterministic module/engine binding collector | 已完成 | `ObjectFatPtrDeclarationTest.CollectorTests` |
+| unknown object fail-fast | 已完成 | `ObjectFatPtrDeclarationTest.SpecTests`、`CollectorTests`、`HeaderDeclarationTests` |
+| role-specific renderer（add-only） | 已完成 | `ObjectFatPtrDeclarationTest.RendererTests` |
+| per-type typedef 声明、去重与排序 | 已完成 | `ObjectFatPtrDeclarationTest.HeaderDeclarationTests` |
+| `entry.h` include/declaration 顺序调整 | 已完成 | `ObjectFatPtrDeclarationTest.HeaderDeclarationTests`、`gd.script.gdcc.backend.c.build.*` |
+
+阶段 1 新增 `ObjectFatPtrSpec.java`、`CObjectFatPtrCollector.java`、`object_fat_ptr_types.h.ftl` 和
+`ObjectFatPtrDeclarationTest.java`。fat-pointer typedef 由独立生成头文件 `object_fat_ptr_types.h` 承载，`entry.h` 只 include
+该头文件，不再内联生成所有 fat-pointer typedef。ordinary object storage、function signature、registered wrapper 仍保持
+legacy raw pointer；role-specific renderer 仅供后续阶段按角色接入。generated header 的 Zig 编译由现有
+`gd.script.gdcc.backend.c.build.*` 集成测试覆盖。
 
 ### 阶段 2：Runtime/per-type conversion helpers
 
@@ -848,7 +875,7 @@ generated C 标记为可运行：
 
 工作：
 
-- locals、fields、parameters、returns切换为 fat ref。
+- locals、fields、parameters、returns切换为 fat pointer。
 - object default/null/return slot改为 `{0}`。
 - 重构 value representation metadata。
 - slot write、move-return、discard、upcast保留 ID。
@@ -896,7 +923,7 @@ generated C 标记为可运行：
 
 工作：
 
-- `CallMethodInsnGen`/property accessor caller与 generated helper统一传递 fat ref。
+- `CallMethodInsnGen`/property accessor caller与 generated helper统一传递 fat pointer。
 - object param在 helper内生成 raw ptrcall slot。
 - object return使用 raw return slot后包装。
 - vararg fixed object pack和 Variant return ownership闭环。
@@ -916,7 +943,7 @@ generated C 标记为可运行：
 - binding identity加入 owner。
 - instance/static function pointer signature分离。
 - call_func/ptrcall object args/returns适配。
-- owner-specific self fat ref。
+- owner-specific self fat pointer。
 - virtual callback复用正确 owner wrapper。
 
 阶段 3 统一验收：
@@ -977,12 +1004,12 @@ generated C 标记为可运行：
 
 工作：
 
-- 将事实文档中“对象值是裸 C 指针”的旧描述更新为 per-static-type fat ref 表示。
+- 将事实文档中“对象值是裸 C 指针”的旧描述更新为 per-static-type fat pointer 表示。
 - 更新 `renderGdTypeInC`、`renderGdTypeRefInC`、`renderValueRef`、slot write、return、pack/unpack、registered wrapper
-  等代码注释，使其描述 internal fat ref 与 raw ABI 边界角色，而不是“对象本身已经是指针”。
+  等代码注释，使其描述 internal fat pointer 与 raw ABI 边界角色，而不是“对象本身已经是指针”。
 - 在 runtime helper 和 FreeMarker 模板中补充/修正注释，标明哪些 helper 是 pure/const 查询、哪些 helper 会改变
   ownership/ObjectDB 状态。
-- 将阶段 0 characterization tests 中“当前裸指针基线”的注释更新为“fat-ref 迁移后锚点”，并保留后续阶段刻意变更的断言说明。
+- 将阶段 0 characterization tests 中“当前裸指针基线”的注释更新为“fat-pointer 迁移后锚点”，并保留后续阶段刻意变更的断言说明。
 - 在相关模块文档中记录 unknown object type fail-fast、`assert_object_live` 守卫、RefCounted ObjectID reference-bit
   fast path 和 outbound freed Variant ID 丢失限制。
 - 删除或改写已经失效的 legacy 注释、TODO 和迁移期临时说明；对仍需保留的 function-name allowlist 标注长期迁移方向。
@@ -992,8 +1019,8 @@ generated C 标记为可运行：
 
 - 文档搜索不再把 internal object storage/parameter/return 描述为裸 pointer；raw pointer 只描述为 ABI/layout/helper 边界。
 - 生产代码和模板注释与 generated C 实际输出一致，不引用已删除 helper 或旧 fallback。
-- 阶段 0 测试注释能说明每个断言在 fat-ref 迁移中的预期变化，而不是仅描述旧输出。
-- 关联文档之间的合同引用一致，没有互相矛盾的裸指针/胖引用描述。
+- 阶段 0 测试注释能说明每个断言在 fat-pointer 迁移中的预期变化，而不是仅描述旧输出。
+- 关联文档之间的合同引用一致，没有互相矛盾的裸指针/胖指针描述。
 
 ---
 
@@ -1056,8 +1083,8 @@ generated C 标记为可运行：
 
 新增 scanner断言：
 
-- internal function object parameter/return必须是 `gdcc_<Type>_ref`。
-- object field必须是 per-type fat ref。
+- internal function object parameter/return必须是 `gdcc_<Type>_fat_ptr`。
+- object field必须是 per-type fat pointer。
 - ptrcall object slot必须是 raw pointer slot。
 - raw pointer只能出现在 allowlisted ABI/helper/layout位置。
 - 不允许 generated generic `void *` object value。
@@ -1075,7 +1102,7 @@ generated C 标记为可运行：
 1. live engine object复制、传参、返回和 equality。
 2. live GDCC object复制、upcast、property/method调用。
 3. null object与 live/freed object比较。
-4. non-RefCounted对象被外部 `free()` 后，GDCC仍持有 fat ref：
+4. non-RefCounted对象被外部 `free()` 后，GDCC仍持有 fat pointer：
     - `ref == null` 为 true。
     - `ref != null` 为 false。
     - 不发生 use-after-free。
@@ -1112,7 +1139,7 @@ script/run-gradle-targeted-tests.sh --tests GodotAbiHeaderCompileTest
 
 只有同时满足以下条件才可将该计划标记为 implemented：
 
-1. 所有 internal object storage、parameter和return都使用 per-static-type fat ref。
+1. 所有 internal object storage、parameter和return都使用 per-static-type fat pointer。
 2. `GdObjectType` 不再静默 fallback到 `GDExtensionObjectPtr`。
 3. 所有 raw ingress都在 live边界捕获 ID。
 4. 所有 Variant ingress都从 Variant读取 ID。
@@ -1145,7 +1172,7 @@ script/run-gradle-targeted-tests.sh --tests GodotAbiHeaderCompileTest
 8. wrapper instance layout和object value representation必须持续分离；不能因为二者都包含 object pointer而重新合并。
 9. non-RefCounted liveness-sensitive 操作会引入 ObjectDB lookup；高频路径只能在已证明没有失效边界的局部 region 内缓存
    validated pointer，不能以性能为由放宽 ID-authoritative 合同。
-10. RefCounted high-bit fast path 的正确性依赖 ownership invariant；若某个 fat ref 未 retain 却跨越 source 销毁，stale
+10. RefCounted high-bit fast path 的正确性依赖 ownership invariant；若某个 fat pointer 未 retain 却跨越 source 销毁，stale
     RefCounted ID 会被误判为 live。
 11. `pure`/`const` 标注只适用于查询 helper；若误标 own/release/destroy 或把 pure 查询跨 side-effecting call 移动，会产生
     错误优化。

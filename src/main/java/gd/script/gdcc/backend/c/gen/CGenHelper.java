@@ -338,6 +338,36 @@ public final class CGenHelper {
         };
     }
 
+    /// Role-specific object renderers for the fat pointer migration.
+    /// They are add-only before the representation cutover: ordinary production call sites keep the legacy
+    /// raw renderers, and no renderer may mix internal fat pointer and raw ABI roles.
+
+    public @NotNull ObjectFatPtrSpec requireObjectFatPtrSpec(@NotNull GdObjectType objectType, @NotNull String surface) {
+        return ObjectFatPtrSpec.forObjectType(context.classRegistry(), objectType, surface);
+    }
+
+    public @NotNull String renderObjectFatPtrStorageType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "internal storage type").fatPtrTypeName();
+    }
+
+    public @NotNull String renderObjectFatPtrParameterType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "internal parameter type").fatPtrTypeName();
+    }
+
+    public @NotNull String renderObjectFatPtrStorageAddressType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "internal storage address type").fatPtrTypeName() + " *";
+    }
+
+    public @NotNull String renderObjectRawPointerType(@NotNull GdObjectType objectType) {
+        return requireObjectFatPtrSpec(objectType, "raw ABI pointer slot").pointerCType();
+    }
+
+    public @NotNull String renderObjectReceiverType(@NotNull GdObjectType objectType) {
+        // Validate the static object type, but the Godot receiver slot is always the raw ABI pointer.
+        requireObjectFatPtrSpec(objectType, "Godot receiver");
+        return "GDExtensionObjectPtr";
+    }
+
     /// Engine bind accessor symbols must stay backend-owned and collision-free relative to public Godot wrappers.
     /// Static and vararg markers remain explicit because later helper surfaces diverge even when bind lookup
     /// still uses the same owner/method/hash triple.

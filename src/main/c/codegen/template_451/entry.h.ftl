@@ -1,6 +1,5 @@
 <#-- @ftlvariable name="module" type="gd.script.gdcc.lir.LirModule" -->
 <#-- @ftlvariable name="helper" type="gd.script.gdcc.backend.c.gen.CGenHelper" -->
-<#-- @ftlvariable name="gen" type="gd.script.gdcc.backend.c.gen.CCodegen" -->
 <#include "trim.ftl">
 <#include "func.ftl">
 #ifndef GDEXTENSION_${module.moduleName?upper_case}_ENTRY_H
@@ -9,7 +8,6 @@
 #include <godot_binding.h>
 static GDExtensionClassLibraryPtr class_library = NULL;
 #include <gdcc_helper.h>
-#include "engine_method_binds.h"
 
 struct GDExtensionInitializationStatus {
     godot_bool initialized;
@@ -23,6 +21,8 @@ void deinitialize(void* userdata, GDExtensionInitializationLevel p_level);
 <#list module.classDefs as classDef>
 typedef struct ${classDef.name} ${classDef.name};
 </#list>
+
+#include "object_fat_ptr_types.h"
 
 <#list module.classDefs as classDef>
 // Class definition for ${classDef.name}
@@ -117,6 +117,8 @@ static inline ${helper.renderOperatorEvaluatorHelperReturnTypeInC(spec.returnTyp
 }
 </#list>
 </#if>
+
+#include "engine_method_binds.h"
 
 // Method binding helpers
 

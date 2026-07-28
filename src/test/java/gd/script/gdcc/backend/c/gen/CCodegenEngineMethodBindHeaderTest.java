@@ -118,7 +118,7 @@ class CCodegenEngineMethodBindHeaderTest {
         );
 
         var files = codegen.generate();
-        assertEquals(List.of("entry.c", "engine_method_binds.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
+        assertEquals(List.of("entry.c", "engine_method_binds.h", "object_fat_ptr_types.h", "entry.h"), files.stream().map(GeneratedFile::filePath).toList());
 
         var renderedFiles = renderFiles(files);
         var entrySource = renderedFiles.get("entry.c");

@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Phase 0 characterization for current object lifecycle, conversion, comparison and Variant boundary
-/// behavior. These tests anchor the bare-pointer ownership baseline that the fat-reference migration
+/// behavior. These tests anchor the bare-pointer ownership baseline that the fat-pointer migration
 /// must preserve or deliberately change.
 class ObjectValueLifecycleCharacterizationTest {
     private static final GdObjectType ENGINE_NODE = new GdObjectType("Node");
@@ -344,7 +344,6 @@ class ObjectValueLifecycleCharacterizationTest {
             func.createAndAddVariable("node", ENGINE_NODE);
             func.createAndAddVariable("ref", ENGINE_REFCOUNTED);
             func.createAndAddVariable("worker", GDCC_WORKER);
-            func.createAndAddVariable("unknown", UNKNOWN_OBJECT);
             addEntryReturn(func);
             workerClass.addFunction(func);
 
@@ -352,7 +351,6 @@ class ObjectValueLifecycleCharacterizationTest {
 
             assertTrue(entrySource.contains("release_object($ref);"), entrySource);
             assertTrue(entrySource.contains("release_object(gdcc_object_to_godot_object_ptr($worker, GdccWorker_object_ptr));"), entrySource);
-            assertTrue(entrySource.contains("try_release_object($unknown);"), entrySource);
             assertFalse(entrySource.contains("try_destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("destroy_object($node);"), entrySource);
             assertFalse(entrySource.contains("release_object($node);"), entrySource);

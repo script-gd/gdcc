@@ -254,14 +254,16 @@ public class CPhaseAControlFlowAndFinallyTest {
     }
 
     @Test
-    @DisplayName("generate should auto-cleanup unknown object locals but never inject cleanup for _return_val")
-    void generateShouldAutoCleanupUnknownObjectLocalsButExcludeReturnSlot() {
+    @DisplayName("generate should auto-cleanup RefCounted object locals but never inject cleanup for _return_val")
+    void generateShouldAutoCleanupObjectLocalsButExcludeReturnSlot() {
         var clazz = new LirClassDef("TestClass", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
         var func = new LirFunctionDef("object_func");
-        var unknownObjectType = new GdObjectType("UnknownObject");
-        func.setReturnType(unknownObjectType);
-        func.addParameter(new LirParameterDef("param", unknownObjectType, null, func));
-        func.createAndAddVariable("mysteryLocal", unknownObjectType);
+        // Unknown object types fail fast during Phase 1 type collection, so the managed-cleanup
+        // contract is anchored with a known GDCC RefCounted type instead.
+        var managedType = new GdObjectType("TestClass");
+        func.setReturnType(managedType);
+        func.addParameter(new LirParameterDef("param", managedType, null, func));
+        func.createAndAddVariable("managedLocal", managedType);
 
         var entry = new LirBasicBlock("entry");
         entry.appendInstruction(new ReturnInsn("param"));
@@ -280,14 +282,16 @@ public class CPhaseAControlFlowAndFinallyTest {
                 .map(DestructInsn.class::cast)
                 .map(DestructInsn::variableId)
                 .toList();
-        assertTrue(destructIds.contains("mysteryLocal"), "Unknown object locals should stay in managed auto-cleanup set.");
+        assertTrue(destructIds.contains("managedLocal"), "RefCounted object locals should stay in managed auto-cleanup set.");
         assertFalse(destructIds.contains("_return_val"), "The hidden return-publish slot must never be auto-cleaned as a local variable.");
         assertEquals("_return_val", assertInstanceOf(ReturnInsn.class, finallyBlock.getInstructions().getLast()).returnValueId());
 
         var body = codegen.generateFuncBody(clazz, func);
-        assertTrue(body.contains("try_release_object($mysteryLocal);"), body);
-        assertFalse(body.contains("try_release_object(_return_val);"), body);
+        assertTrue(body.contains(
+                "release_object(gdcc_object_to_godot_object_ptr($managedLocal, TestClass_object_ptr));"
+        ), body);
         assertFalse(body.contains("release_object(_return_val);"), body);
+        assertFalse(body.contains("try_release_object(_return_val);"), body);
     }
 
     @Test

@@ -594,14 +594,15 @@ class CallMethodInsnGenEngineTest {
     }
 
     private static LirFunctionDef newObjectDynamicGetInstanceIdFunction(GdObjectType selfType) {
-        var func = newMethod("hidden_object_dynamic_get_instance_id", GdIntType.INT, selfType);
+        var func = newMethod("hidden_object_dynamic_missing_method", GdIntType.INT, selfType);
         func.setHidden(true);
-        func.addParameter(new LirParameterDef("obj", new GdObjectType("MysteryObject"), null, func));
+        // A known object type with a missing method keeps OBJECT_DYNAMIC coverage after unknown object fail-fast.
+        func.addParameter(new LirParameterDef("obj", new GdObjectType("Node"), null, func));
         func.createAndAddVariable("result", GdIntType.INT);
 
         entry(func).appendInstruction(new CallMethodInsn(
                 "result",
-                "get_instance_id",
+                "missing_dynamic_probe",
                 "obj",
                 List.of()
         ));
