@@ -83,17 +83,21 @@
 
 ### 3.5 Object 比较特化（`==` / `!=`）
 
-仅当左右均为 `Object` 类型时生效：
+仅当左右均为 `Object` 类型时生效（fat-pointer C1，见
+`object_value_fat_pointer_implementation_plan.md` §10.2 / 阶段 3C）：
 
-1. `==`：直接比较两侧 raw Godot object pointer（`left_raw == right_raw`）。
-   - 双 `NULL` -> `true`
-   - 单侧 `NULL` -> `false`
-   - 双非空 -> raw pointer identity
-2. `!=`：`left_raw != right_raw`。
-3. 不检查存活，不比较 instance ID；**禁止**从 raw 调用 `godot_object_get_instance_id(...)`。
-4. 其他 Object 运算符：fail-fast。
-5. fat-pointer 迁移后的 null/assert 语义见
-   `object_value_fat_pointer_implementation_plan.md` §3.5 / §6.1 / §10.2。
+1. 两侧各自 materialize **equality-normalized raw**（`CBodyBuilder.renderEqualityNormalizedRaw`）：
+   - 先用 `gdcc_object_is_null_raw_and_id(raw_sentinel, instance_id)` 判定 null ∪ freed；
+   - null/freed → `NULL`；
+   - live engine → `(GDExtensionObjectPtr)value.ptr`；
+   - live GDCC → `gdcc_<Type>_fat_ptr_live_object(value)`（禁止 dead 路径 `Type_object_ptr`）。
+2. `==`：`normalized_left == normalized_right`；`!=` 同理。
+3. 语义折叠：`null == null` / `freed == null` / `freedA == freedB` 为 true；live 与 null/freed 为 false；
+   live 同/异实例按 Godot raw 指针 identity。
+4. **禁止**直接比较 fat struct；**禁止**以 `instance_id` 为 `==` 比较键；**禁止**从 raw 调用
+   `godot_object_get_instance_id(...)`。
+5. nullness 查询仅服务 “禁止解引用 dead wrapper / 折叠 dead”，与 `object_is_null` 指令职责分离。
+6. 其他 Object 运算符：fail-fast。
 
 ### 3.6 Nil 比较特化
 

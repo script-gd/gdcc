@@ -181,8 +181,9 @@ static inline GDCC_PURE godot_bool gdcc_object_is_null(GDObjectInstanceID instan
     return !gdcc_object_is_live(instance_id);
 }
 
-/// Direct raw Godot object pointer equality.
-/// Object `==` / `!=` compare raw pointers only; no liveness check and no instance ID comparison.
+/// Compares two already-normalized raw Godot object pointers for identity.
+/// Callers must materialize equality-normalized raws first (null∪freed → NULL; live → Godot raw).
+/// This helper does not perform liveness checks or compare instance IDs.
 static inline GDCC_CONST godot_bool gdcc_object_live_ptrs_equal(GDExtensionObjectPtr left, GDExtensionObjectPtr right) {
     return left == right;
 }

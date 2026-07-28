@@ -237,19 +237,51 @@ class ObjectValueLifecycleCharacterizationTest {
     }
 
     @Nested
-    @DisplayName("Equality and null comparison phase-2 anchor")
+    @DisplayName("Equality and null comparison phase-3C C1 anchor")
     class EqualityBaseline {
         @Test
-        @DisplayName("object equality compares cached raw Godot object pointers from fat pointers")
-        void objectEqualityUsesCachedRawPointerComparison() {
+        @DisplayName("engine object equality uses C1 normalized raw (null∪freed→NULL, live→.ptr)")
+        void objectEqualityUsesNormalizedRawComparison() {
             var equalBody = generateBinaryOpBody(GodotOperator.EQUAL);
-            assertTrue(equalBody.contains("(GDExtensionObjectPtr)($left).ptr"), equalBody);
-            assertTrue(equalBody.contains("(GDExtensionObjectPtr)($right).ptr"), equalBody);
+            assertTrue(equalBody.contains(
+                            "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left).ptr, $left.instance_id) ? NULL : (GDExtensionObjectPtr)($left).ptr)"),
+                    equalBody);
+            assertTrue(equalBody.contains(
+                            "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right).ptr, $right.instance_id) ? NULL : (GDExtensionObjectPtr)($right).ptr)"),
+                    equalBody);
             assertTrue(equalBody.contains(" == "), equalBody);
             assertFalse(equalBody.contains(".instance_id =="), equalBody);
+            assertFalse(equalBody.contains("godot_object_get_instance_id("), equalBody);
 
             var notEqualBody = generateBinaryOpBody(GodotOperator.NOT_EQUAL);
             assertTrue(notEqualBody.contains(" != "), notEqualBody);
+            assertFalse(notEqualBody.contains(".instance_id !="), notEqualBody);
+        }
+
+        @Test
+        @DisplayName("GDCC object equality uses live_object after nullness gate, never dead object_ptr")
+        void gdccObjectEqualityUsesNormalizedLiveObject() {
+            var workerClass = newClass("Worker");
+            var gdccWorker = newClass("GdccWorker");
+            var func = new LirFunctionDef("gdcc_object_equal");
+            func.setReturnType(GdVoidType.VOID);
+            func.createAndAddVariable("left", GDCC_WORKER);
+            func.createAndAddVariable("right", GDCC_WORKER);
+            func.createAndAddVariable("result", GdBoolType.BOOL);
+            addEntry(func, new BinaryOpInsn("result", GodotOperator.EQUAL, "left", "right"));
+            workerClass.addFunction(func);
+
+            var body = generateFuncBody(workerClass, func, api(), List.of(workerClass, gdccWorker));
+
+            assertTrue(body.contains(
+                            "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left).ptr, $left.instance_id) ? NULL : gdcc_GdccWorker_fat_ptr_live_object($left))"),
+                    body);
+            assertTrue(body.contains(
+                            "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right).ptr, $right.instance_id) ? NULL : gdcc_GdccWorker_fat_ptr_live_object($right))"),
+                    body);
+            assertFalse(body.contains("GdccWorker_object_ptr"), body);
+            assertFalse(body.contains(".instance_id =="), body);
+            assertFalse(body.contains("godot_object_get_instance_id("), body);
         }
 
         @Test

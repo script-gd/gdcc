@@ -436,16 +436,17 @@ public final class OperatorInsnGen implements CInsnGen<LirInstruction> {
             throw bodyBuilder.invalidInsn("Object comparison supports only == and !=");
         }
 
-        // Align with Godot object pointer identity: compare cached raw Godot object pointers.
-        // Do not recover instance IDs, do not compare fat structs/IDs, and do not validate liveness.
+        // C1: compare equality-normalized raw Godot pointers (plan §10.2).
+        // null∪freed fold to NULL; live sides materialize Godot raw without dead GDCC wrapper UAF.
+        // Do not compare fat structs or instance_id as the equality key; do not recover ID from raw.
         if (!(leftVar.type() instanceof GdObjectType leftObjectType) ||
                 !(rightVar.type() instanceof GdObjectType rightObjectType)) {
             throw bodyBuilder.invalidInsn("object comparison requires object operands");
         }
         var leftCode = bodyBuilder.valueOfVar(leftVar).generateCode();
         var rightCode = bodyBuilder.valueOfVar(rightVar).generateCode();
-        var leftRaw = bodyBuilder.renderCachedGodotObjectPtr(leftCode, leftObjectType);
-        var rightRaw = bodyBuilder.renderCachedGodotObjectPtr(rightCode, rightObjectType);
+        var leftRaw = bodyBuilder.renderEqualityNormalizedRaw(leftCode, leftObjectType);
+        var rightRaw = bodyBuilder.renderEqualityNormalizedRaw(rightCode, rightObjectType);
         var operator = op == GodotOperator.EQUAL ? " == " : " != ";
         bodyBuilder.assignExpr(
                 bodyBuilder.targetOfVar(resultVar),

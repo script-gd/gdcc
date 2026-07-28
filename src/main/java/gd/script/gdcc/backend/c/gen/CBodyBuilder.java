@@ -584,16 +584,22 @@ public final class CBodyBuilder {
         return "(GDExtensionObjectPtr)(" + fatPtrCode + ").ptr";
     }
 
-    /// Cached raw Godot object pointer for equality (no liveness check).
-    /// Engine types use the fat pointer's raw field. GDCC types go through `object_ptr` only when
-    /// the wrapper pointer is non-null; freed wrappers remain an open architecture risk for equality
-    /// (see phase 3 review) and must not be used for null/assert paths.
-    public @NotNull String renderCachedGodotObjectPtr(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
-        if (objType.checkGdccType(classRegistry())) {
-            var objectPtrHelper = helper.renderGdccObjectPtrHelperName(objType);
-            return "((" + fatPtrCode + ").ptr == NULL ? NULL : " + objectPtrHelper + "((" + fatPtrCode + ").ptr))";
-        }
-        return "(GDExtensionObjectPtr)(" + fatPtrCode + ").ptr";
+    /// Equality-normalized raw Godot object pointer (phase 3C C1 / plan §10.2).
+    ///
+    /// Contract:
+    /// - null ∪ freed → `NULL` via `gdcc_object_is_null_raw_and_id`
+    ///   (raw operand is only a NULL sentinel; GDCC wrappers are never dereferenced here)
+    /// - live engine → `(GDExtensionObjectPtr)value.ptr`
+    /// - live GDCC → `gdcc_<Type>_fat_ptr_live_object(value)` (never unvalidated `Type_object_ptr`)
+    ///
+    /// Does not use `instance_id` as the comparison key; callers compare two normalized raws with
+    /// `==`/`!=`. Separated from null/assert emitters which only need the nullness query.
+    public @NotNull String renderEqualityNormalizedRaw(@NotNull String fatPtrCode, @NotNull GdObjectType objType) {
+        var isNullExpr = renderObjectIsNullExpr(fatPtrCode);
+        var liveRaw = objType.checkGdccType(classRegistry())
+                ? renderLiveGodotObjectPtr(fatPtrCode, objType)
+                : renderNullQueryRawOperand(fatPtrCode);
+        return "(" + isNullExpr + " ? NULL : " + liveRaw + ")";
     }
 
     /// Validated live raw Godot object pointer from a fat pointer (RefCounted fast path or ObjectDB).

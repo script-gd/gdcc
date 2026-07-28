@@ -79,8 +79,8 @@ class COperatorInsnGenTest {
     }
 
     @Test
-    @DisplayName("object == should compare raw Godot object pointers directly")
-    void objectEqualUsesRawPointerComparison() {
+    @DisplayName("engine object == should compare C1 equality-normalized raw pointers")
+    void objectEqualUsesNormalizedRawComparison() {
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.EQUAL, "left_obj", "right_obj"),
@@ -91,14 +91,20 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("(GDExtensionObjectPtr)($left_obj).ptr"), body);
-        assertTrue(body.contains("(GDExtensionObjectPtr)($right_obj).ptr"), body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_obj).ptr, $left_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($left_obj).ptr)"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_obj).ptr, $right_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($right_obj).ptr)"),
+                body);
         assertTrue(body.contains(" == "), body);
+        assertFalse(body.contains(".instance_id =="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
     }
 
     @Test
-    @DisplayName("object != should compare raw Godot object pointers directly")
-    void objectNotEqualUsesRawPointerComparison() {
+    @DisplayName("engine object != should compare C1 equality-normalized raw pointers")
+    void objectNotEqualUsesNormalizedRawComparison() {
         var body = generateBody(
                 emptyApi(),
                 new BinaryOpInsn("result", GodotOperator.NOT_EQUAL, "left_obj", "right_obj"),
@@ -109,9 +115,68 @@ class COperatorInsnGenTest {
                 )
         );
 
-        assertTrue(body.contains("(GDExtensionObjectPtr)($left_obj).ptr"), body);
-        assertTrue(body.contains("(GDExtensionObjectPtr)($right_obj).ptr"), body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_obj).ptr, $left_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($left_obj).ptr)"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_obj).ptr, $right_obj.instance_id) ? NULL : (GDExtensionObjectPtr)($right_obj).ptr)"),
+                body);
         assertTrue(body.contains(" != "), body);
+        assertFalse(body.contains(".instance_id !="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
+    }
+
+    @Test
+    @DisplayName("GDCC object == should normalize via is_null_raw_and_id and live_object without dead object_ptr")
+    void gdccObjectEqualUsesNormalizedLiveObject() {
+        var myObject = new LirClassDef("MyObject", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left_obj", "right_obj"),
+                List.of(
+                        new VariableSpec("left_obj", new GdObjectType("MyObject"), false),
+                        new VariableSpec("right_obj", new GdObjectType("MyObject"), false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                ),
+                GdVoidType.VOID,
+                List.of(myObject)
+        );
+
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_obj).ptr, $left_obj.instance_id) ? NULL : gdcc_MyObject_fat_ptr_live_object($left_obj))"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_obj).ptr, $right_obj.instance_id) ? NULL : gdcc_MyObject_fat_ptr_live_object($right_obj))"),
+                body);
+        assertTrue(body.contains(" == "), body);
+        assertFalse(body.contains("MyObject_object_ptr"), body);
+        assertFalse(body.contains(".instance_id =="), body);
+        assertFalse(body.contains("godot_object_get_instance_id("), body);
+    }
+
+    @Test
+    @DisplayName("mixed GDCC/engine object == should normalize each side with its own live path")
+    void mixedGdccEngineObjectEqualUsesPerSideNormalization() {
+        var myObject = new LirClassDef("MyObject", "RefCounted", false, false, Map.of(), List.of(), List.of(), List.of());
+        var body = generateBody(
+                emptyApi(),
+                new BinaryOpInsn("result", GodotOperator.EQUAL, "left_gdcc", "right_engine"),
+                List.of(
+                        new VariableSpec("left_gdcc", new GdObjectType("MyObject"), false),
+                        new VariableSpec("right_engine", GdObjectType.OBJECT, false),
+                        new VariableSpec("result", GdBoolType.BOOL, false)
+                ),
+                GdVoidType.VOID,
+                List.of(myObject)
+        );
+
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($left_gdcc).ptr, $left_gdcc.instance_id) ? NULL : gdcc_MyObject_fat_ptr_live_object($left_gdcc))"),
+                body);
+        assertTrue(body.contains(
+                        "(gdcc_object_is_null_raw_and_id((GDExtensionObjectPtr)($right_engine).ptr, $right_engine.instance_id) ? NULL : (GDExtensionObjectPtr)($right_engine).ptr)"),
+                body);
+        assertFalse(body.contains("MyObject_object_ptr"), body);
     }
 
     @Test
